@@ -59,3 +59,18 @@ async def test_resolver_barcode_wins_and_sku_ambiguous(session):
     # No match.
     res = await resolve_item_by_code(session, cid, "NOPE")
     assert res.kind == "none" and res.one is None
+
+
+def test_duplicate_barcode_result_is_flagged_and_never_first_picked():
+    """A barcode matching more than one item - only possible for legacy data predating the
+    per-company barcode unique index - is flagged, never silently resolved to one lot. The one
+    operator-facing message is sourced in a single place for every scan surface."""
+    from celerp_inventory.routes import ResolveResult, duplicate_barcode_detail
+
+    dup = ResolveResult("barcode", ["m1", "m2"])
+    assert dup.duplicate_barcode is True
+    assert dup.one is None            # never silently picks a lot
+    assert dup.ambiguous is False     # ambiguity is the SKU-only concept, distinct from this
+    solo = ResolveResult("barcode", ["m1"])
+    assert solo.duplicate_barcode is False and solo.one == "m1"
+    assert duplicate_barcode_detail("900001") == "Duplicate barcode '900001' exists on multiple inventory items"

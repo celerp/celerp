@@ -3,8 +3,104 @@
 
 import uuid
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event
+from celerp.inventory_codes import BarcodeConflictError
+from celerp.models.company import Company
+from celerp.models.projections import Projection
+
+# Internally assigned SKUs/barcodes are short zero-padded sequences; imported
+# EAN-13/GTIN-14 barcodes (13-14 digits) are excluded from the sequence scan so
+# they are never re-used as the next internal code.
+_MAX_SEQ_DIGITS = 9
+_SEQ_WIDTH = 6
+
+
+async def lock_item_code_namespace(session: AsyncSession, company_id) -> None:
+    """Serialize SKU/barcode allocation for a company.
+
+    Two concurrent creates each read the same max sequence and mint the same next
+    code; the barcode unique index then rejects the loser with a 409. Taking a row
+    lock on the company here makes the second allocator wait for the first to
+    commit, so it reads the updated max and mints the next code instead of colliding.
+    The lock is held until the caller's transaction commits or rolls back; every
+    allocation and barcode check in that request must run after this call.
+
+    The mode is FOR NO KEY UPDATE, not FOR UPDATE. Every ledger insert takes an
+    implicit foreign-key KEY SHARE lock on its company row and holds it to commit,
+    so a plain FOR UPDATE here would have to upgrade past that share lock: two
+    transactions that have each already emitted an event for the company both hold
+    KEY SHARE and then block on each other's row lock, which PostgreSQL breaks by
+    aborting one with a deadlock (40P01). FOR NO KEY UPDATE does not conflict with
+    KEY SHARE, so the upgrade never happens, while it still conflicts with another
+    FOR NO KEY UPDATE, keeping barcode allocators serialized for every module.
+    """
+    await session.execute(
+        select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
+    )
+
+
+async def _next_seq(session: AsyncSession, company_id) -> int:
+    """Return the next integer in the shared SKU/barcode sequence for a company.
+
+    Scans integer-valued SKUs and barcodes together so the two namespaces never
+    collide (a barcode assigned during a split is never re-used as a SKU on the
+    next create). Only barcodes with <= _MAX_SEQ_DIGITS digits count, excluding
+    imported EAN-13/GTIN-14 barcodes while covering every internally assigned one.
+    """
+    sku_vals = (await session.execute(
+        select(Projection.state["sku"].as_string()).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    barcode_vals = (await session.execute(
+        select(Projection.state["barcode"].as_string()).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    all_vals = list(sku_vals) + [v for v in barcode_vals if v and len(v) <= _MAX_SEQ_DIGITS]
+    return max((int(v) for v in all_vals if v and str(v).isdigit()), default=0) + 1
+
+
+async def allocate_internal_codes(session: AsyncSession, company_id, count: int = 1) -> list[str]:
+    """Lock the company's code namespace and return ``count`` fresh sequential codes.
+
+    The lock makes the scan-then-mint atomic against concurrent allocators. Codes
+    are zero-padded to the standard internal width and are guaranteed distinct
+    within the returned batch.
+    """
+    await lock_item_code_namespace(session, company_id)
+    start = await _next_seq(session, company_id)
+    return [str(start + i).zfill(_SEQ_WIDTH) for i in range(count)]
+
+
+async def assert_barcode_available(
+    session: AsyncSession, company_id, barcode, *, exclude_entity_id=None
+) -> None:
+    """Raise BarcodeConflictError if another item in the company already holds ``barcode``.
+
+    An empty or absent barcode is always available. This is the application-side
+    check that yields a clean 409; the DB unique index is the final backstop for
+    writers that bypass it. ``exclude_entity_id`` skips one item's own row so a
+    barcode change that re-asserts the item's current value is not read as a
+    self-collision.
+    """
+    if not barcode:
+        return
+    query = select(Projection.entity_id).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "item",
+        Projection.state["barcode"].as_string() == str(barcode),
+    )
+    if exclude_entity_id is not None:
+        query = query.where(Projection.entity_id != exclude_entity_id)
+    existing = (await session.execute(query)).first()
+    if existing:
+        raise BarcodeConflictError(barcode)
 
 
 async def create_item(session, company_id: str, data: dict, actor_id: str | None = None):

@@ -3994,7 +3994,9 @@ function celerpPrintLabel(entityId, templateId) {
                     lst = await api.get_list(token, target_id)
                     combined = (lst.get("line_items") or []) + new_lines
                     subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
-                    await api.patch_list(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
+                    # Version-guarded line replacement: pass the version we just read so a concurrent
+                    # edit between this GET and the save is rejected, never silently overwritten.
+                    await api.patch_list(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal}, expected_version=lst.get("version"))
                     return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{target_id}"})
                 elif doc_type == "memo":
                     new_lines = await _line_items_from_inventory(token, entity_ids)
@@ -7235,6 +7237,18 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
         else:
             note = None
         cards.append(_card(t("inventory.card_sell_prices"), sell_lists, editable=True, note=note))
+
+    if str(item.get("status") or "").lower() == "sold" and item.get("sold_price") is not None:
+        sold_val = float(item["sold_price"])
+        unit_span, total_span = _readonly_price_cells("sold_price", sold_val, qty, has_qty, rdp)
+        cards.append(Div(
+            H3(t("inventory.card_sold_price"), cls="section-title"),
+            Table(Thead(Tr(Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr))),
+                  Tbody(Tr(Td(t("chip.sold"), cls="detail-label"), Td(_cur(unit_span)),
+                           Td(_cur(total_span) if has_qty else Span(EMPTY)))),
+                  cls="detail-table"),
+            cls="detail-card",
+        ))
 
     return Div(
         Script("""

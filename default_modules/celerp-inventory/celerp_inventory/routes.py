@@ -19,7 +19,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event
+from celerp.events.schemas import reject_comma_sku
+from celerp.inventory_codes import BarcodeConflictError, validate_barcode
 from celerp.models.projections import Projection
+from .services import (
+    _next_seq,
+    allocate_internal_codes,
+    assert_barcode_available,
+    lock_item_code_namespace,
+)
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility
@@ -1118,7 +1126,15 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
         [flat], role, field_schema, can_see_costs,
         can_author_drafts=role_has_permission(settings, role, "edit_inventory"),
     )
-    return filtered[0]
+    result = filtered[0]
+    if str(row.state.get("status") or "").lower() == "sold" and row.state.get("status_doc_id"):
+        from celerp.services.holdings import sold_prices
+        sold_doc = await session.get(Projection, {"company_id": company_id, "entity_id": str(row.state["status_doc_id"])})
+        if sold_doc is not None:
+            result["sold_price"] = sold_prices(
+                [(row.entity_id, row.state)], [(sold_doc.entity_id, sold_doc.state)],
+            ).get(row.entity_id)
+    return result
 
 
 @router.get("/{entity_id}/reorder-suggestion")
@@ -1134,34 +1150,6 @@ async def get_reorder_suggestion(entity_id: str, company_id=Depends(get_current_
     if row is None:
         raise HTTPException(status_code=404, detail="Not found")
     return await suggest_reorder(session, company_id, entity_id)
-
-
-async def _next_seq(session: AsyncSession, company_id: uuid.UUID) -> int:
-    """Return the next integer in the shared SKU/barcode sequence for a company.
-
-    Scans all integer-valued SKUs and barcodes together so the two namespaces
-    never collide (e.g. a barcode assigned during a split won't be re-used as
-    a SKU on the next new item creation).
-
-    Only barcodes with ≤9 digits are considered - this excludes EAN-13/GTIN
-    barcodes imported from external sources while still covering all internally
-    assigned barcodes (which start at 6 digits and grow slowly).
-    """
-    sku_vals = (await session.execute(
-        select(Projection.state["sku"].as_string()).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "item",
-        )
-    )).scalars().all()
-    barcode_vals = (await session.execute(
-        select(Projection.state["barcode"].as_string()).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "item",
-        )
-    )).scalars().all()
-    _MAX_SEQ_DIGITS = 9  # excludes EAN-13/GTIN-14 imported barcodes
-    all_vals = list(sku_vals) + [v for v in barcode_vals if v and len(v) <= _MAX_SEQ_DIGITS]
-    return max((int(v) for v in all_vals if v and str(v).isdigit()), default=0) + 1
 
 
 class ResolveResult:
@@ -1184,9 +1172,23 @@ class ResolveResult:
         return self.kind == "sku" and len(self.matches) > 1
 
     @property
+    def duplicate_barcode(self) -> bool:
+        """True when one barcode matched more than one lot. The per-company barcode unique index
+        makes this impossible for new data; it only surfaces for legacy rows written before the
+        index. Distinct from ``ambiguous`` (the SKU-only concept): a duplicate barcode must be
+        reported, never silently resolved to one lot."""
+        return self.kind == "barcode" and len(self.matches) > 1
+
+    @property
     def one(self):
         """The single match, or None when there are zero or (ambiguously) many."""
         return self.matches[0] if len(self.matches) == 1 else None
+
+
+def duplicate_barcode_detail(code: str) -> str:
+    """The single operator-facing message for a barcode that resolves to more than one lot, shared
+    by every scan surface so the wording is sourced in one place."""
+    return f"Duplicate barcode '{code}' exists on multiple inventory items"
 
 
 async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> ResolveResult:
@@ -1213,6 +1215,53 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
     if sku_matches:
         return ResolveResult("sku", sku_matches)
     return ResolveResult("none", [])
+
+
+async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> dict[str, "ResolveResult"]:
+    """Batch form of :func:`resolve_item_by_code`: resolve many codes against ONE inventory load.
+
+    A per-code caller (a 200-code scan run) would otherwise load every item projection once per
+    code. This loads them once, indexes by barcode and SKU, and returns one ResolveResult per
+    distinct code - the SAME disambiguation rule (barcode wins; a SKU may map to N lots, then
+    ``ambiguous``), so callers behave identically to the single-code path.
+    """
+    wanted = {(c or "").strip() for c in codes if (c or "").strip()}
+    if not wanted:
+        return {}
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    by_barcode: dict[str, list] = {}
+    by_sku: dict[str, list] = {}
+    for r in rows:
+        st = r.state or {}
+        bc = str(st.get("barcode") or "")
+        sku = str(st.get("sku") or "")
+        if bc:
+            by_barcode.setdefault(bc, []).append(r)
+        if sku:
+            by_sku.setdefault(sku, []).append(r)
+    out: dict[str, ResolveResult] = {}
+    for code in wanted:
+        if code in by_barcode:
+            out[code] = ResolveResult("barcode", by_barcode[code])
+        elif code in by_sku:
+            out[code] = ResolveResult("sku", by_sku[code])
+        else:
+            out[code] = ResolveResult("none", [])
+    return out
+
+
+def _validate_sku(sku: str | None) -> None:
+    """Friendly-422 wrapper over the canonical event-boundary rule (celerp.events.schemas), so an
+    interactive route surfaces a clear message instead of the raw write-time rejection."""
+    try:
+        reject_comma_sku(sku)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 @router.post("")
@@ -1245,16 +1294,22 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     if payload.barcode is not None and not payload.barcode.isdigit():
         raise HTTPException(status_code=422, detail="Barcode must contain digits only")
 
+    _validate_sku(payload.sku)
+
+    # Serialize all SKU/barcode allocation and the barcode-uniqueness check for this
+    # company: two concurrent creates must not mint the same code or both pass the
+    # availability check. The lock is held until this request commits.
+    await lock_item_code_namespace(session, company_id)
+
     # Auto-assign sequential SKU if not provided
     if not payload.sku:
-        payload = payload.model_copy(update={"sku": str(await _next_seq(session, company_id)).zfill(6)})
+        payload = payload.model_copy(update={"sku": (await allocate_internal_codes(session, company_id))[0]})
 
-    # Duplicate/clone: mint a fresh unique barcode from the shared SKU/barcode
-    # sequence and discard any inherited one. Mirrors the split child, which
-    # resets barcode for the same reason - a new entity needs a new unique
-    # barcode (barcode is globally unique, so a copy must never carry the source's).
+    # Duplicate/clone: mint a fresh unique barcode and discard any inherited one.
+    # Mirrors the split child - a new entity needs a new unique barcode (barcode is
+    # globally unique, so a copy must never carry the source's).
     if payload.auto_barcode:
-        payload = payload.model_copy(update={"barcode": str(await _next_seq(session, company_id)).zfill(6)})
+        payload = payload.model_copy(update={"barcode": (await allocate_internal_codes(session, company_id))[0]})
     # Auto-copy SKU to barcode when barcode omitted and SKU is purely numeric.
     # SKU is now a (possibly repeated) product-type, so gate the copy on collision:
     # if another item already uses that barcode (e.g. a second item deliberately
@@ -1269,24 +1324,19 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
                 Projection.state["barcode"].as_string() == payload.sku,
             )
         )).scalars().first()
-        new_barcode = str(await _next_seq(session, company_id)).zfill(6) if clash else payload.sku
+        new_barcode = (await allocate_internal_codes(session, company_id))[0] if clash else payload.sku
         payload = payload.model_copy(update={"barcode": new_barcode})
 
     # SKU uniqueness is intentionally NOT enforced: `sku` is a product-type that may
     # repeat across physical lots. Physical-lot uniqueness is carried by `barcode`
     # (below) and the immutable `entity_id`. See the 2026-06-17 sku/batch plan.
 
-    # Barcode uniqueness
-    if payload.barcode:
-        existing_barcode = (await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "item",
-                Projection.state["barcode"].as_string() == payload.barcode,
-            )
-        )).scalars().first()
-        if existing_barcode:
-            raise HTTPException(status_code=409, detail=f"Barcode '{payload.barcode}' already exists")
+    # Barcode uniqueness (final application check under the lock; the DB unique index
+    # is the backstop for any writer that bypasses this path).
+    try:
+        await assert_barcode_available(session, company_id, payload.barcode)
+    except BarcodeConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     entity_id = f"item:{uuid.uuid4()}"
     data = payload.model_dump(exclude_none=True)
@@ -1455,6 +1505,10 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             if _new is not None and coerce_price(_new) is None:
                 raise HTTPException(status_code=422, detail=f"'{_f}' must be a number")
 
+    # A renamed SKU is held to the same rule as a created one: no comma (the OR operator).
+    if "sku" in changed_keys:
+        _validate_sku((payload.fields_changed["sku"] or {}).get("new"))
+
     # Validate sell_by change
     if "sell_by" in changed_keys:
         new_sell_by = (payload.fields_changed["sell_by"] or {}).get("new")
@@ -1493,22 +1547,23 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # SKU uniqueness is intentionally NOT enforced on patch: `sku` is a product-type
     # that may repeat across physical lots (barcode/entity_id carry lot identity).
 
-    # Validate barcode format + uniqueness if changing
+    # Validate barcode format + uniqueness if changing. Acquire the company code
+    # namespace lock BEFORE checking availability and hold it through emit + commit,
+    # so two concurrent patches to the same barcode serialize: one commits, the other
+    # reads the committed value and gets a clean 409 instead of racing to a duplicate
+    # (or a 500 from the unique index). The lock is released when this request commits.
     if "barcode" in changed_keys:
         new_barcode = (payload.fields_changed["barcode"] or {}).get("new")
         if new_barcode is not None:
-            if not str(new_barcode).isdigit():
-                raise HTTPException(status_code=422, detail="Barcode must contain digits only")
-            existing_barcode = (await session.execute(
-                select(Projection).where(
-                    Projection.company_id == company_id,
-                    Projection.entity_type == "item",
-                    Projection.state["barcode"].as_string() == str(new_barcode),
-                    Projection.entity_id != entity_id,
-                )
-            )).scalars().first()
-            if existing_barcode:
-                raise HTTPException(status_code=409, detail=f"Barcode '{new_barcode}' already exists")
+            try:
+                validate_barcode(new_barcode)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            await lock_item_code_namespace(session, company_id)
+            try:
+                await assert_barcode_available(session, company_id, new_barcode, exclude_entity_id=entity_id)
+            except BarcodeConflictError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
 
     # Validate inventory_type if changing
     if "inventory_type" in changed_keys:
@@ -1903,6 +1958,8 @@ async def split_preview(
 
 @router.post("/{entity_id}/split")
 async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    for _child in payload.children:
+        _validate_sku(_child.sku)
     # Fetch parent
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if parent is None or not is_item_available(parent.state):
@@ -1997,7 +2054,10 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     # Create child items
     child_eids: list[str] = []
     child_qty_list: list[float] = []
-    next_barcode_seq = await _next_seq(session, company_id)  # single DB scan; incremented in-memory per child
+    # Lock the code namespace before the scan so concurrent splits/creates cannot
+    # mint the same child barcodes; incremented in-memory per child under the lock.
+    await lock_item_code_namespace(session, company_id)
+    next_barcode_seq = await _next_seq(session, company_id)
 
     # Pre-compute child cost_totals using unit cost invariant: cost_price is the same for
     # parent and child, so child_cost_total = (parent_cost_total / parent_qty) * child_qty.
@@ -2388,6 +2448,8 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
 
     # --- create the child ---
     child_eid = f"item:{uuid.uuid4()}"
+    # Lock the code namespace so a concurrent split/create cannot mint the same barcode.
+    await lock_item_code_namespace(session, company_id)
     next_barcode_seq = await _next_seq(session, company_id)
     child_attrs = dict(parent_attrs)
     if ch_pieces is not None:
@@ -2482,6 +2544,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
 
 @router.post("/{entity_id}/transform")
 async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    _validate_sku(payload.child_sku)
     # Fetch parent
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if parent is None or not is_item_available(parent.state):
@@ -2523,6 +2586,8 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     parent_location_id = parent.state.get("location_id")
 
     child_eid = f"item:{uuid.uuid4()}"
+    # Lock the code namespace so a concurrent allocator cannot mint the same barcode.
+    child_barcode = (await allocate_internal_codes(session, company_id))[0]
 
     # Copy-all-then-override: inherit every parent field; reset only identity/qty/cost/status.
     # Also override sell_by and category — the purpose of a transform is to change these.
@@ -2538,7 +2603,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         "category": payload.child_category,
         "status": "available",
         "attributes": {**parent_attrs},
-        "barcode": str(await _next_seq(session, company_id)).zfill(6),
+        "barcode": child_barcode,
     })
     if payload.child_weight is not None:
         child_data["weight"] = payload.child_weight
@@ -2677,6 +2742,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 
 @router.post("/merge")
 async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    _validate_sku(payload.resulting_sku)
     if len(payload.source_entity_ids) < 2:
         raise HTTPException(status_code=422, detail="At least 2 source_entity_ids are required to merge.")
 
@@ -2867,6 +2933,13 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     # repeat across lots (per-lot identity is the barcode + entity_id), so no
     # uniqueness check is applied - consistent with create/rename.
     merged_sku = (payload.resulting_sku or "").strip() or str(target_state.get("sku") or "")
+    # The merged item is a new physical lot, so it mints a FRESH barcode rather than
+    # inheriting the target's: the source items are deactivated (status="merged") but
+    # keep their barcodes, so copying the target's here would collide with the still
+    # indexed source under uq_projection_company_item_barcode. allocate_internal_codes
+    # locks the company's code namespace, so a concurrent create/split/merge cannot
+    # mint the same barcode.
+    merged_barcode = (await allocate_internal_codes(session, company_id))[0]
     create_data: dict = {
         "sku": merged_sku,
         "name": resulting_name,
@@ -2875,8 +2948,9 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         "status": "available",
         "allow_splitting": splitting_allowed(target_state),
         "attributes": resolved_attrs,
+        "barcode": merged_barcode,
     }
-    for field in ("category", "location_id", "barcode", "description", "unit", "tax_codes"):
+    for field in ("category", "location_id", "description", "unit", "tax_codes"):
         val = target_state.get(field)
         if val is not None:
             create_data[field] = str(val) if field == "location_id" else val

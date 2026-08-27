@@ -198,6 +198,22 @@ TAX_REGIMES: dict[str, _T] = {
              "description": "Tax-exempt", "is_compound": False, "default_order": 0},
         ],
     },
+    # ── Africa ────────────────────────────────────────────────────────────
+    "ET": {
+        "currency": "ETB",
+        "taxes": [
+            {"name": "VAT 15%", "rate": 15.0, "tax_type": "both", "is_default": True,
+             "description": "Ethiopia standard VAT", "is_compound": False, "default_order": 0},
+            {"name": "TOT 2%", "rate": 2.0, "tax_type": "sales", "is_default": False,
+             "description": "Turnover tax on goods (non-VAT-registered)", "is_compound": False, "default_order": 0},
+            {"name": "TOT 10%", "rate": 10.0, "tax_type": "sales", "is_default": False,
+             "description": "Turnover tax on services (non-VAT-registered)", "is_compound": False, "default_order": 0},
+            {"name": "Exempt", "rate": 0.0, "tax_type": "both", "is_default": False,
+             "description": "VAT-exempt", "is_compound": False, "default_order": 0},
+            {"name": "WHT 2%", "rate": -2.0, "tax_type": "purchase", "is_default": False,
+             "description": "Withholding tax on supply of goods", "is_compound": False, "default_order": 1},
+        ],
+    },
     # ── Fallback ──────────────────────────────────────────────────────────
     "_default": {
         "currency": "USD",

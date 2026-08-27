@@ -79,3 +79,27 @@ def test_sold_view_shows_realized_price_column(page, ui_server, api):
         cells.first.scroll_into_view_if_needed()
         page.screenshot(path=shot, full_page=True)
         print(f"SOLD_PRICE_SCREENSHOT={shot}")
+
+
+def test_item_detail_pricing_tab_shows_sold_price(page, ui_server, api):
+    sku = f"SP-D-{uuid.uuid4().hex[:5]}"
+    item_id = _sell_item(api, sku, unit_price=432.10)
+
+    page.goto(f"{ui_server}/inventory/{item_id}?tab=pricing", wait_until="domcontentloaded")
+    body = page.locator("body").inner_text()
+    assert "Internal Server Error" not in body and "Traceback" not in body
+    card = page.locator(".detail-card:has-text('Sold price')")
+    assert card.count() > 0, "Sold price card missing from a sold item's pricing tab"
+    assert "432.1" in card.inner_text()
+
+
+def test_item_detail_pricing_tab_omits_sold_price_when_available(page, ui_server, api):
+    sku = f"SP-U-{uuid.uuid4().hex[:5]}"
+    r = api.post("/items", json={"status": "available", "sku": sku, "name": sku,
+                                 "quantity": 1, "sell_by": "carat"})
+    assert r.status_code in {200, 201}, r.text
+    item_id = r.json()["id"]
+
+    page.goto(f"{ui_server}/inventory/{item_id}?tab=pricing", wait_until="domcontentloaded")
+    assert page.locator(".detail-card:has-text('Sold price')").count() == 0, \
+        "Sold price card must not appear for an item that has not been sold"

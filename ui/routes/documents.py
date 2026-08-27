@@ -4157,11 +4157,13 @@ celerpUpdateBulkAlloc();
             existing_lines = lst.get("line_items") or []
             combined = existing_lines + new_lines
             subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
+            # A line_items replacement is version-guarded: pass the version we just read so a
+            # concurrent edit between this GET and the save is rejected, never silently overwritten.
             await api.patch_list(token, target_id, {
                 "line_items": combined,
                 "subtotal": subtotal,
                 "total": subtotal,
-            })
+            }, expected_version=lst.get("version"))
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="modal-container")
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{target_id}"})
@@ -4494,11 +4496,16 @@ celerpUpdateBulkAlloc();
             "tax": body.get("tax", 0),
             "total": body.get("total", 0),
         }
+        expected_version = body.get("expected_version")
         try:
-            await api.patch_list(token, entity_id, patch_data)
+            result = await api.patch_list(token, entity_id, patch_data, expected_version=expected_version)
         except APIError as e:
+            # A stale expected_version means someone else saved this list first; surface it
+            # structurally (code, not English text) so the page can prompt a reload.
+            if e.status == 409:
+                return JSONResponse({"code": "stale_version", "error": str(e.detail)}, status_code=409)
             return JSONResponse({"error": str(e.detail)}, status_code=400)
-        return JSONResponse({"ok": True})
+        return JSONResponse({"ok": True, "version": result.get("version")})
 
     @app.post("/lists/{entity_id}/action/{action}")
     async def list_action(request: Request, entity_id: str, action: str):
@@ -4651,16 +4658,22 @@ celerpUpdateBulkAlloc();
 
     @app.post("/lists/{entity_id}/scan")
     async def list_scan(request: Request, entity_id: str):
-        """One scan endpoint for every list type (the client fork is gone — DRY). The backend
-        dispatches on (list_type, status); here we only choose the response shape:
+        """One scan endpoint for every list type (the client fork is gone, DRY). The scan bar
+        accumulates codes client-side (Enter appends a comma, never a per-scan request) and submits
+        the whole run here as one comma-separated batch. The backend dispatches on (list_type, status)
+        and adds every resolvable code against a single write; codes that fail to resolve come back in
+        the JSON body so the good ones still land. The reply is always JSON:
 
-        - a finalized audit (the rapid check-off case): swap the re-rendered #line-body tbody for speed;
-        - everything else, including a DRAFT audit building its manifest: plain 204 - the client pulls
-          the fresh tbody out of a background page fetch, so the correct (editable) column layout still
-          renders through the same detail renderer (no duplicated row builder) without a page reload,
-          and the scan bar keeps focus between scans exactly like it does on invoices and memos.
+        - `html`: for a finalized audit (the rapid check-off case), the re-rendered #line-body tbody
+          the client swaps in for speed; empty for every other list, where the client pulls the fresh
+          tbody from a background page fetch so the editable column layout renders through the same
+          detail renderer (no duplicated row builder) without a page reload;
+        - `failed`: the per-code failures (code + detail) - the client repopulates the field with just
+          those to retry. It is deliberately not returned in a response header: a code or detail can be
+          a non-Latin SKU, and Starlette encodes headers as Latin-1, which would 500 after the good
+          scans had already committed and leave the client able to re-submit and duplicate them.
         """
-        from starlette.responses import Response as _R
+        from starlette.responses import JSONResponse as _JSON
         from fasthtml.common import to_xml
         token = _token(request)
         if not token:
@@ -4668,20 +4681,39 @@ celerpUpdateBulkAlloc();
         form = await request.form()
         barcode = str(form.get("barcode", "")).strip()
         price_list = str(form.get("price_list", "")).strip() or None
+        run_key = str(form.get("run_key", "")).strip() or None
         if not barcode:
-            return _R("", status_code=204)
+            return _JSON({"scanned": 0, "failed": [], "html": ""})
         try:
-            await api.scan_list(token, entity_id, barcode, price_list)
+            res = await api.scan_list(token, entity_id, barcode, price_list, run_key)
         except APIError as e:
-            # The scan bar reads resp.text() on a non-2xx response and shows it ("✗ <reason>"), so
-            # return the real reason + status (e.g. "X is not on this audit") rather than a 200 toast.
-            return _R(str(e.detail), status_code=e.status or 400)
+            # A LIST-LEVEL rejection (closed/void, a finalized list whose type disables scanning, or a
+            # spent scan run key reused for a different batch). The scan bar branches on the structured
+            # body: a machine `code` (e.g. scan_run_conflict) drives its recovery, a plain rejection is
+            # shown as-is. Preserve the whole structured body when the backend sent one, else wrap the
+            # string detail. Per-code failures are NOT this - they come back 200 in the JSON body.
+            body = e.data if isinstance(e.data, dict) and e.data.get("code") else {"detail": str(e.detail)}
+            if body.get("code") == "scan_run_conflict":
+                # The conflicting run already committed its batch, so the list projection has advanced.
+                # Hand back the current version so the client can resync its optimistic-lock token after
+                # it reloads the visible lines. If this read fails, the client keeps Add locked and asks
+                # for a page reload rather than submit against stale rows.
+                try:
+                    body = {**body, "version": (await api.get_list(token, entity_id)).get("version")}
+                except APIError:
+                    pass
+            return _JSON(body, status_code=e.status or 400)
         lst = await api.get_list(token, entity_id)
         # Only a finalized audit (the locked counting manifest) gets the fast static tbody swap; a draft
         # audit is editable, so it reloads like every other building list to keep its inputs.
+        html = ""
         if (lst.get("list_type") or "") == "audit" and lst.get("status") in (_LF, _LC):
-            return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
-        return _R("", status_code=204)
+            html = to_xml(await _audit_line_tbody(token, entity_id))
+        # The scanned write advanced the list projection version; hand the fresh version back so the
+        # client's optimistic-lock token tracks it (a later line save must not 409 on a stale version).
+        return _JSON({"scanned": (res or {}).get("scanned", 0),
+                      "failed": (res or {}).get("failed") or [], "html": html,
+                      "version": lst.get("version")})
 
     @app.post("/lists/{entity_id}/set-scanned")
     async def list_set_scanned(request: Request, entity_id: str):
@@ -6986,12 +7018,20 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         # Scan-bar wording follows what a scan actually does for this (type, state): a finalized
         # audit's manifest is locked, so scanning checks items OFF the list (it never adds); a draft
         # audit is still being built, so scanning ADDS; other lists just add a line.
+        # The submit button and its done-confirmation follow the same wording: a finalized audit
+        # CHECKS items off its locked manifest (nothing is added), everything else ADDS.
         if pol["audit"] and status == _LF:
             _scan_placeholder = t("documents.scan_check_off")
+            _scan_btn = t("documents.scan_check_off_btn")
+            _scan_done = t("documents.scan_checked_off_prefix")
         elif pol["audit"]:
             _scan_placeholder = t("documents.scan_add_count")
+            _scan_btn = t("documents.scan_add_btn")
+            _scan_done = t("documents.scan_added_prefix")
         else:
             _scan_placeholder = t("documents.scan_barcode")
+            _scan_btn = t("documents.scan_add_btn")
+            _scan_done = t("documents.scan_added_prefix")
         lines_section = Div(
             *_ai_dropzone,
             _csv_import_el,
@@ -7000,6 +7040,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Span("📷", cls="scan-bar-icon"),
                 Input(type="text", id="scan-bar-input", placeholder=_scan_placeholder,
                       cls="scan-bar-input", autocomplete="off", autofocus=False),
+                # Lists accumulate scans as a comma list (Enter appends a comma, never a request) and
+                # submit the whole run with this one button. Documents look each scan up on the spot,
+                # so they need no submit button.
+                (Button(_scan_btn, type="button", id="scan-bar-add",
+                        cls="btn btn--primary btn--sm") if is_list else None),
                 Span("", id="scan-bar-status", cls="scan-bar-status"),
                 cls="scan-bar",
             ),
@@ -7047,6 +7092,9 @@ const _CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
 // Did this document render with any line items? Drives whether emptying the table
 // persists (deleting the last line must stick) vs. a blank never-used doc (skip).
 let _celerpHadLines = {'true' if line_items else 'false'};
+// Optimistic-concurrency token for lists (null for docs). Sent with every line save and
+// refreshed from the save response, so a tab never false-conflicts against its own last write.
+let _celerpListVersion = {_json.dumps(doc.get("version")) if is_list else 'null'};
 const _CELERP_TAXES = {_json.dumps(_taxes_list)};
 const _CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
 /* Currency precision: amounts use _CELERP_CDP decimals, unit prices may use up to _CELERP_RDP. */
@@ -7077,6 +7125,10 @@ const _CELERP_IS_LIST = {repr("true" if is_list else "false")};
 const _L = {_json.dumps({
     "scanning": t("documents.scanning"),
     "scan_error": t("documents.scan_error"),
+    "scan_add_btn": _scan_btn,
+    "scan_added": _scan_done,
+    "scan_run_committed": t("documents.scan_run_committed"),
+    "scan_reload_needed": t("documents.scan_reload_needed"),
     "scanned": t("documents.scanned_prefix"),
     "not_found": t("documents.not_found_prefix"),
     "lookup_error": t("documents.lookup_error"),
@@ -7124,82 +7176,185 @@ function _celerpDocTypeParam() {{
     const scanInput = document.getElementById('scan-bar-input');
     const scanStatus = document.getElementById('scan-bar-status');
     if (!scanInput) return;
+    const addBtn = document.getElementById('scan-bar-add');
+
+    // LISTS: submit the whole accumulated comma list in ONE request. Every resolvable code is added
+    // against a single write; codes that fail come back in the JSON body, so the good ones still land
+    // and only the failures are left in the field to retry. The body's `html` is either a re-rendered
+    // tbody (finalized-audit fast path) or empty, in which case the fresh tbody comes from a background
+    // page fetch so the editable columns still render through the same detail renderer - never a reload.
+    // One idempotency key per Add click. A retry of the SAME unacknowledged run reuses it, so if the
+    // backend committed but its response (or the tbody refresh) never landed, the re-submit replays
+    // instead of adding the successful lines again. Cleared only once a JSON response is received.
+    let pendingRunKey = null;
+    function _newRunKey() {{
+        return (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+            : String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+    }}
+    function _clearStatusSoon() {{ setTimeout(() => {{ scanStatus.textContent = ''; }}, 3000); }}
+    // Install a fresh #line-body tbody in place and, ONLY on a successful install, advance the tracked
+    // optimistic-lock version. An empty `html` pulls the tbody from a background page fetch. Returns
+    // true iff the rows were installed - callers keep Add locked when it returns false rather than let
+    // a submission run against stale rows.
+    async function _installListBody(html, version) {{
+        if (!html) {{
+            const page = await fetch(location.href);
+            const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
+            const fresh = doc.getElementById('{line_body_id}');
+            html = fresh ? fresh.outerHTML : '';
+        }}
+        const tbody = document.getElementById('{line_body_id}');
+        if (!tbody || !html) return false;
+        tbody.outerHTML = html;
+        const swapped = document.getElementById('{line_body_id}');
+        htmx.process(swapped);
+        swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+        celerpUpdateTotals();
+        _celerpHadLines = true;
+        if (version != null) _celerpListVersion = version;
+        return true;
+    }}
+    async function submitList() {{
+        const raw = scanInput.value.trim();
+        if (!raw) return;
+        if (scanInput.disabled) return;  // a run is already in flight; ignore the double-fire
+        if (!pendingRunKey) pendingRunKey = _newRunKey();
+        // Lock the field, Add button, and price-list selector for the whole round-trip so a second
+        // click or Enter - or a mid-run price-list change - cannot start an overlapping run that races
+        // the run_key and field-pruning logic. All released in finally.
+        const plSelect = document.getElementById('doc-price-list');
+        // Set true only when we cannot safely re-enable Add - a scan-run conflict whose recovery refresh
+        // failed. The finally block leaves Add disabled so no submission runs against stale rows.
+        let keepAddLocked = false;
+        scanInput.disabled = true;
+        if (addBtn) addBtn.disabled = true;
+        if (plSelect) plSelect.disabled = true;
+        scanStatus.textContent = _L.scanning;
+        scanStatus.className = 'scan-bar-status';
+        try {{
+            let data;
+            try {{
+                const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey}});
+                if (plSelect) fd.append('price_list', plSelect.value);
+                const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
+                if (!resp.ok) {{
+                    // Branch on the structured code, never on message text.
+                    let code = null, detail = null, version = null;
+                    try {{ const e = await resp.json(); code = e && e.code; detail = e && e.detail; version = e && e.version; }} catch (_e) {{}}
+                    if (code === 'scan_run_conflict') {{
+                        // An earlier run under this key already committed a DIFFERENT batch: its response
+                        // was lost, so the field may still hold codes that are now on the list. Minting a
+                        // fresh key here would let those be added a second time. Instead end this run
+                        // (key = null), keep the field for the operator, reload the visible lines so they
+                        // can see what actually committed, and sync the version only after that install.
+                        // If the reload fails, keep Add locked - a fresh-key submission against stale rows
+                        // could duplicate lines - and tell the operator to reload the page.
+                        pendingRunKey = null;
+                        let refreshed = false;
+                        try {{ refreshed = await _installListBody('', version); }} catch (_e) {{}}
+                        scanStatus.className = 'scan-bar-status scan-bar-status--err';
+                        if (refreshed) {{
+                            // Rows are current again and Add re-enables in finally: the operator can
+                            // carry on, so let the notice clear on its own.
+                            scanStatus.textContent = '✗ ' + _L.scan_run_committed;
+                            _clearStatusSoon();
+                        }} else {{
+                            // Refresh failed: Add stays locked (keepAddLocked) so no submission runs
+                            // against stale rows. Leave the reload instruction on screen - clearing it
+                            // would hide the only guidance while the field is unusable.
+                            keepAddLocked = true;
+                            scanStatus.textContent = '✗ ' + _L.scan_reload_needed;
+                        }}
+                        return;
+                    }}
+                    // Any other rejection (closed/void list) committed nothing, so keep the field AND the
+                    // key for a plain retry.
+                    scanStatus.textContent = '✗ ' + (typeof detail === 'string' ? detail : _L.scan_error);
+                    scanStatus.className = 'scan-bar-status scan-bar-status--err';
+                    _clearStatusSoon();
+                    return;
+                }}
+                data = await resp.json();
+            }} catch (err) {{
+                // The request never completed: the run may or may not have committed. Keep the field and
+                // the run_key so a retry reuses it and the backend refuses to add the same lines twice.
+                scanStatus.textContent = '✗ ' + _L.scan_error;
+                scanStatus.className = 'scan-bar-status scan-bar-status--err';
+                _clearStatusSoon();
+                return;
+            }}
+            // JSON received = the run is acknowledged. Prune successful codes from the field IMMEDIATELY,
+            // BEFORE any tbody refresh, so a refresh failure can never leave successful codes to be
+            // re-added. Only the failures stay in the field for the operator to fix.
+            pendingRunKey = null;
+            const failed = data.failed || [];
+            if (failed.length) {{
+                scanInput.value = failed.map(f => f.code).join(', ');
+                scanStatus.textContent = '✗ ' + failed.map(f => f.label).join('; ');
+                scanStatus.className = 'scan-bar-status scan-bar-status--err';
+            }} else {{
+                scanInput.value = '';
+                scanStatus.textContent = '✓ ' + _L.scan_added;
+                scanStatus.className = 'scan-bar-status scan-bar-status--ok';
+            }}
+            // Best-effort: refresh the visible lines. A failure here never resurrects the pruned codes -
+            // the lines are already committed and will appear on the next natural render. The version is
+            // advanced only inside a successful install (see _installListBody).
+            try {{
+                await _installListBody(data.html || '', data.version);
+            }} catch (err) {{ /* refresh is best-effort; codes are already acknowledged */ }}
+            _clearStatusSoon();
+        }} finally {{
+            scanInput.disabled = false;
+            if (addBtn) addBtn.disabled = keepAddLocked;
+            if (plSelect) plSelect.disabled = false;
+            if (!keepAddLocked) scanInput.focus();
+        }}
+    }}
+    if (addBtn) addBtn.addEventListener('click', submitList);
+
     scanInput.addEventListener('keydown', async function(e) {{
+        if (e.key === 'Escape') {{ e.preventDefault(); scanInput.blur(); return; }}
         if (e.key !== 'Enter') return;
         e.preventDefault();
         const code = scanInput.value.trim();
         if (!code) return;
+        if (_CELERP_IS_LIST === 'true') {{
+            // Enter is a SEPARATOR, not a submit: append a comma so a fast next scan can never glue
+            // onto this one, and NEVER touch the server per scan. The run submits once via Add.
+            if (!/,\\s*$/.test(scanInput.value)) scanInput.value = scanInput.value.replace(/\\s+$/, '') + ', ';
+            scanInput.focus();
+            return;
+        }}
+        // Documents (invoices, POs, ...): client-side catalog lookup + append, per scan.
         scanStatus.textContent = _L.scanning;
         scanStatus.className = 'scan-bar-status';
-        if (_CELERP_IS_LIST === 'true') {{
-            // Every list type scans through ONE server endpoint that dispatches on (type, status).
-            // The response is either a re-rendered tbody (audit fast-path) or a plain 204; on 204
-            // the fresh tbody comes from a background fetch of this page, so the editable columns
-            // still render via the same detail renderer. Either way the swap is in place - never a
-            // reload - so the scan bar keeps focus and a run of scans flows like it does on
-            // invoices and memos. No client fork.
-            try {{
-                const fd = new URLSearchParams({{barcode: code}});
-                const plSelect = document.getElementById('doc-price-list');
-                if (plSelect) fd.append('price_list', plSelect.value);
-                const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
-                if (!resp.ok) {{
-                    const txt = await resp.text();
-                    scanStatus.textContent = '✗ ' + (txt || _L.scan_error);
-                    scanStatus.className = 'scan-bar-status scan-bar-status--err';
-                }} else {{
-                    let html = await resp.text();
-                    if (!html) {{
-                        const page = await fetch(location.href);
-                        const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
-                        const fresh = doc.getElementById('{line_body_id}');
-                        html = fresh ? fresh.outerHTML : '';
-                    }}
-                    const tbody = document.getElementById('{line_body_id}');
-                    if (tbody && html) {{
-                        tbody.outerHTML = html;
-                        const swapped = document.getElementById('{line_body_id}');
-                        htmx.process(swapped);
-                        swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
-                        celerpUpdateTotals();
-                        _celerpHadLines = true;
-                    }}
-                    scanStatus.textContent = '✓ ' + _L.scanned + code;
-                    scanStatus.className = 'scan-bar-status scan-bar-status--ok';
+        try {{
+            const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam() + _celerpDocTypeParam());
+            if (!resp.ok) throw new Error('lookup failed');
+            const data = await resp.json();
+            if (data.description || data.sku) {{
+                const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
+                const row = tpl.querySelector('tr') || tpl.children[0];
+                if (row) {{
+                    const d = {{...data, sku: data.sku || code}};
+                    celerpFillRow(row, d);
                 }}
-            }} catch (err) {{
-                scanStatus.textContent = '✗ ' + _L.scan_error;
+                const tbody2 = document.getElementById('{line_body_id}');
+                tbody2.appendChild(tpl);
+                const newRow2 = tbody2.lastElementChild;
+                if (newRow2) newRow2.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+                celerpUpdateTotals();
+                celerpAutoSave();
+                scanStatus.textContent = '✓ ' + (data.sku || code);
+                scanStatus.className = 'scan-bar-status scan-bar-status--ok';
+            }} else {{
+                scanStatus.textContent = '✗ ' + _L.not_found + code;
                 scanStatus.className = 'scan-bar-status scan-bar-status--err';
             }}
-        }} else {{
-            // Documents (invoices, POs, ...): client-side catalog lookup + append.
-            try {{
-                const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam() + _celerpDocTypeParam());
-                if (!resp.ok) throw new Error('lookup failed');
-                const data = await resp.json();
-                if (data.description || data.sku) {{
-                    const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
-                    const row = tpl.querySelector('tr') || tpl.children[0];
-                    if (row) {{
-                        const d = {{...data, sku: data.sku || code}};
-                        celerpFillRow(row, d);
-                    }}
-                    const tbody2 = document.getElementById('{line_body_id}');
-                    tbody2.appendChild(tpl);
-                    const newRow2 = tbody2.lastElementChild;
-                    if (newRow2) newRow2.querySelectorAll('.combobox-wrap').forEach(initCombobox);
-                    celerpUpdateTotals();
-                    celerpAutoSave();
-                    scanStatus.textContent = '✓ ' + (data.sku || code);
-                    scanStatus.className = 'scan-bar-status scan-bar-status--ok';
-                }} else {{
-                    scanStatus.textContent = '✗ ' + _L.not_found + code;
-                    scanStatus.className = 'scan-bar-status scan-bar-status--err';
-                }}
-            }} catch (err) {{
-                scanStatus.textContent = '✗ ' + _L.lookup_error;
-                scanStatus.className = 'scan-bar-status scan-bar-status--err';
-            }}
+        }} catch (err) {{
+            scanStatus.textContent = '✗ ' + _L.lookup_error;
+            scanStatus.className = 'scan-bar-status scan-bar-status--err';
         }}
         scanInput.value = '';
         scanInput.focus();
@@ -7907,13 +8062,23 @@ async function _celerpPersist() {{
     const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/lines', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify({{line_items: lines, subtotal, tax, total,
-            discount: hd.value, discount_type: hd.type, discount_amount: hd.amount}})
+            discount: hd.value, discount_type: hd.type, discount_amount: hd.amount,
+            expected_version: _celerpListVersion}})
     }});
     if (resp.ok) {{
+        // Advance the cached version to the one this save produced, so the tab's next
+        // autosave does not false-conflict against its own write. Docs return no version.
+        try {{
+            const data = await resp.json();
+            if (data && data.version != null) _celerpListVersion = data.version;
+        }} catch (_e) {{}}
         statusEl.textContent = '✓';
         statusEl.style.color = '';
         setTimeout(() => {{ statusEl.textContent = ''; }}, 1500);
     }} else {{
+        // A stale-version 409 carries {{code: 'stale_version', error: <reload prompt>}}; every
+        // other failure carries {{error}}. Both surface the server's message (no client-side
+        // English matching), so the same display path handles them.
         let msg = _L.save_failed;
         let conflicts = null;
         try {{

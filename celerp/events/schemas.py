@@ -5,7 +5,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+# The SKU/barcode write-time predicates live in celerp.inventory_codes so the event
+# boundary, the interactive routes, the allocation service, and the scanner share one
+# source of truth. reject_comma_sku/SKU_COMMA_MESSAGE are re-exported here because
+# celerp_inventory.routes imports them from this module.
+from celerp.inventory_codes import (  # noqa: F401 - re-exported for celerp_inventory
+    SKU_COMMA_MESSAGE,
+    reject_comma_sku,
+    validate_barcode,
+    validate_sku,
+)
 
 
 # -----------------
@@ -13,7 +24,27 @@ from pydantic import BaseModel, Field
 # -----------------
 
 
-class ItemCreated(BaseModel):
+class _SkuGuard(BaseModel):
+    """Mixin: enforce the SKU and barcode invariants on any item event that sets them.
+
+    SKU: no comma (Celerp's OR operator in the SKU/search syntax) and a bounded length.
+    Barcode: digits only and a bounded length. These are the canonical write-time
+    predicates; interactive routes wrap them to surface a friendly 422, every other
+    emitter hits them here at the event boundary (imports, connector upserts, document
+    receiving). Replay never runs these schemas (the reducer does), so enforcing here
+    can never brick a historical projection.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _guard_item_codes(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            validate_sku(data.get("sku"))
+            validate_barcode(data.get("barcode"))
+        return data
+
+
+class ItemCreated(_SkuGuard):
     sku: str
     name: str
     quantity: float = 0
@@ -28,7 +59,7 @@ class ItemCreated(BaseModel):
     model_config = {"extra": "allow"}
 
 
-class ItemSnapshot(BaseModel):
+class ItemSnapshot(_SkuGuard):
     """Snapshot of full item state - used for imports. sku/name optional (absent in some sources)."""
 
     sku: str | None = None
@@ -52,6 +83,14 @@ class ItemSnapshot(BaseModel):
 
 class ItemUpdated(BaseModel):
     fields_changed: dict[str, dict[str, Any]]
+
+    @model_validator(mode="after")
+    def _guard_item_codes(self) -> "ItemUpdated":
+        if "sku" in self.fields_changed:
+            validate_sku((self.fields_changed.get("sku") or {}).get("new"))
+        if "barcode" in self.fields_changed:
+            validate_barcode((self.fields_changed.get("barcode") or {}).get("new"))
+        return self
 
 
 class ItemPricingSet(BaseModel):
@@ -188,7 +227,7 @@ class ItemMerged(BaseModel):
     source_entity_ids: list[str]
 
 
-class ItemPatched(BaseModel):
+class ItemPatched(_SkuGuard):
     """CSV upsert patch: accepts any item data fields."""
     model_config = {"extra": "allow"}
 

@@ -93,9 +93,10 @@ def _raise(r: httpx.Response) -> httpx.Response:
         raise APIError(r.status_code, f"Unexpected redirect to {r.headers.get('location', '?')}")
     if r.is_error:
         try:
-            detail = r.json().get("detail", r.text)
+            body = r.json()
         except Exception:
-            detail = r.text
+            body = None
+        detail = body.get("detail", r.text) if isinstance(body, dict) else r.text
         data = None
         if isinstance(detail, dict) and "message" in detail:
             # Structured detail (message + extras): keep detail a plain string for
@@ -104,6 +105,12 @@ def _raise(r: httpx.Response) -> httpx.Response:
             # fulfill/revert/reserve) pass through unchanged - callers json-dump them.
             data = detail
             detail = detail.get("message") or r.text
+        elif isinstance(body, dict) and set(body) - {"detail"}:
+            # An error body carrying structured fields beyond `detail` (a top-level
+            # machine "code" like scan_run_conflict, with a plain-string detail):
+            # keep detail the string the sites render, carry the whole body on
+            # APIError.data so callers can branch on the code.
+            data = body
         if r.status_code == 401:
             # 401 is expected during fresh init / token expiry; not a warning
             logger.debug("API 401: %s", detail)
@@ -1390,10 +1397,13 @@ async def create_list(token: str, data: dict) -> dict:
         return _raise(await c.post("/lists", json=data)).json()
 
 
-async def patch_list(token: str, entity_id: str, data: dict) -> dict:
+async def patch_list(token: str, entity_id: str, data: dict, expected_version: int | None = None) -> dict:
     async with _api_client(token) as c:
         fields_changed = await _wrap_fields_changed(c, f"/lists/{entity_id}", data)
-        return _raise(await c.patch(f"/lists/{entity_id}", json={"fields_changed": fields_changed})).json()
+        body: dict = {"fields_changed": fields_changed}
+        if expected_version is not None:
+            body["expected_version"] = expected_version
+        return _raise(await c.patch(f"/lists/{entity_id}", json=body)).json()
 
 
 # ── Inventory audits (a list_type=audit on the unified /lists lifecycle) ──────
@@ -1406,10 +1416,13 @@ async def get_audit(token: str, entity_id: str) -> dict:
     return await get_list(token, entity_id)
 
 
-async def scan_list(token: str, entity_id: str, barcode: str, price_list: str | None = None) -> dict:
+async def scan_list(token: str, entity_id: str, barcode: str, price_list: str | None = None,
+                    run_key: str | None = None) -> dict:
     body: dict = {"barcode": barcode}
     if price_list:
         body["price_list"] = price_list
+    if run_key:
+        body["run_key"] = run_key
     async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/scan", json=body)).json()
 

@@ -645,7 +645,10 @@ class TestListTotalsRecalc:
             {"name": "A", "quantity": 1, "unit_price": 1000, "line_total": 1000},
         ], discount=0, tax=0)
 
+        # Replacing line_items needs the current version (the concurrency guard a real editor carries).
+        ver = (await client.get(f"/lists/{eid}", headers=_h(token))).json()["version"]
         await client.patch(f"/lists/{eid}", headers=_h(token), json={
+            "expected_version": ver,
             "fields_changed": {
                 "line_items": {
                     "old": [{"name": "A", "quantity": 1, "unit_price": 1000, "line_total": 1000}],
@@ -731,7 +734,8 @@ async def test_list_totals_correct_after_patch_with_per_line_tax(client):
         "tax": {"old": None, "new": 20},   # JS sends tax AMOUNT not rate - this was the bug
         "total": {"old": None, "new": 220},
     }
-    r = await client.patch(f"/lists/{eid}", headers=_h(token), json={"fields_changed": fields_changed})
+    r = await client.patch(f"/lists/{eid}", headers=_h(token),
+                           json={"expected_version": detail["version"], "fields_changed": fields_changed})
     assert r.status_code == 200
 
     detail2 = (await client.get(f"/lists/{eid}", headers=_h(token))).json()

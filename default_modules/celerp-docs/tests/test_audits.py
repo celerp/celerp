@@ -107,7 +107,7 @@ async def test_scan_adds_in_draft_records_presence_when_finalized(client):
 
     # DRAFT scan: ADD a not-yet-on-manifest item; no status change (GDR 2d).
     r = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1003"})
-    assert r.status_code == 200 and r.json()["state"] == "added"
+    assert r.status_code == 200 and r.json()["scanned"] == 1 and r.json()["results"][0]["state"] == "added"
     state = await _state(client, t, audit)
     assert state["status"] == "draft"  # scanning never finalizes
     assert state["line_items"][0]["sku"] == "UNEXP-1"
@@ -117,17 +117,260 @@ async def test_scan_adds_in_draft_records_presence_when_finalized(client):
     # FINALIZED scan: the manifest is LOCKED — scanning only checks off items already on the list
     # (records presence, top-insert). It never adds.
     r = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1002"})
-    assert r.status_code == 200 and r.json()["state"] == "audited"
+    assert r.status_code == 200 and r.json()["results"][0]["state"] == "audited"
     assert (await _state(client, t, audit))["line_items"][0]["audited_at"] is not None
     # Re-scanning the same item just re-confirms it (no error) — you can re-check anything.
-    assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1002"})).status_code == 200
-    # Scanning an item NOT on the locked manifest is rejected (409 with a clear reason), not added.
+    assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1002"})).json()["scanned"] == 1
+    # Scanning an item NOT on the locked manifest is reported as failed (a clear reason), not added.
     await _item(client, t, "EXTRA-1", loc=loc, qty=2, barcode="1099")
     rej = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1099"})
-    assert rej.status_code == 409 and "not on this audit" in rej.json()["detail"].lower()
+    assert rej.status_code == 200 and rej.json()["scanned"] == 0
+    assert "not on this audit" in rej.json()["failed"][0]["label"].lower()
     assert "EXTRA-1" not in {l["sku"] for l in (await _state(client, t, audit))["line_items"]}  # not added
-    # Unknown barcode -> 404 in any state.
-    assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "NOPE"})).status_code == 404
+    # Unknown barcode -> reported as failed in any state, never aborts the submit.
+    nf = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "NOPE"})
+    assert nf.status_code == 200 and [f["code"] for f in nf.json()["failed"]] == ["NOPE"]
+
+
+@pytest.mark.asyncio
+async def test_scan_batch_adds_every_code_in_one_submit_and_reports_failures(client):
+    """The scan bar accumulates codes client-side and submits the whole run as one comma-separated
+    batch. Every resolvable code is added against a single line_items write; an unresolvable code is
+    collected in `failed` and never aborts the good ones."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "AAA", loc=loc, qty=1, barcode="900001")
+    b = await _item(client, t, "BBB", loc=loc, qty=1, barcode="900002")
+    # Empty the audited location so the manifest starts blank and the adds are unambiguous.
+    loc2 = await _location(client, t, "B")
+    await client.post(f"/items/{a}/transfer", headers=_h(t), json={"to_location_id": loc2})
+    await client.post(f"/items/{b}/transfer", headers=_h(t), json={"to_location_id": loc2})
+    audit = (await _audit(client, t, loc))["id"]
+    assert (await _state(client, t, audit))["line_items"] == []
+
+    # ONE request carrying three codes: two resolve, one is unknown.
+    r = await client.post(f"/lists/{audit}/scan", headers=_h(t),
+                          json={"barcode": "900001,900002,NOPE"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["scanned"] == 2
+    assert [f["code"] for f in body["failed"]] == ["NOPE"]
+    # Both good codes landed in a single submit; the bad one did not abort them.
+    assert {l["sku"] for l in (await _state(client, t, audit))["line_items"]} == {"AAA", "BBB"}
+
+
+@pytest.mark.asyncio
+async def test_scan_batch_rejects_oversized_submit(client):
+    """One submit carries its whole accumulated comma list, so an unbounded paste is bounded at the
+    route: past MAX_SCAN_BATCH codes the whole submit is refused with 422 before any line is written,
+    rather than building an arbitrarily large in-memory set behind one write."""
+    from celerp_docs.routes import MAX_SCAN_BATCH
+    t = await _register(client)
+    loc = await _location(client, t)
+    audit = (await _audit(client, t, loc))["id"]
+    codes = ",".join(f"X{i}" for i in range(MAX_SCAN_BATCH + 1))
+    r = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": codes})
+    assert r.status_code == 422
+    # Nothing was written: the batch is refused whole, not partially applied.
+    assert (await _state(client, t, audit))["line_items"] == []
+
+
+async def _quotation(client, t) -> str:
+    r = await client.post("/lists", headers=_h(t), json={"list_type": "quotation"})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_scan_batch_resolves_in_one_inventory_load(client, monkeypatch):
+    """A batch of N codes resolves against ONE inventory load, not one per code: scanning routes the
+    whole run through the batch resolver and never the per-code resolver (the N+1 that a 200-code run
+    would otherwise trigger). Barcode precedence and ambiguity are unchanged - the batch resolver is
+    the same rule, loaded once."""
+    import celerp_inventory.routes as inv
+    calls = {"batch": 0, "single": 0}
+    real_batch, real_single = inv.resolve_items_by_codes, inv.resolve_item_by_code
+
+    async def _batch(session, company_id, codes):
+        calls["batch"] += 1
+        return await real_batch(session, company_id, codes)
+
+    async def _single(session, company_id, code):
+        calls["single"] += 1
+        return await real_single(session, company_id, code)
+
+    monkeypatch.setattr(inv, "resolve_items_by_codes", _batch)
+    monkeypatch.setattr(inv, "resolve_item_by_code", _single)
+
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "Q1", loc=loc, qty=5, barcode="700001")
+    await _item(client, t, "Q2", loc=loc, qty=5, barcode="700002")
+    await _item(client, t, "Q3", loc=loc, qty=5, barcode="700003")
+    q = await _quotation(client, t)
+
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                          json={"barcode": "700001,700002,700003"})
+    assert r.status_code == 200 and r.json()["scanned"] == 3
+    assert {l["sku"] for l in (await _state(client, t, q))["line_items"]} == {"Q1", "Q2", "Q3"}
+    # ONE load for the whole run; the per-code resolver is never used by scanning.
+    assert calls["batch"] == 1
+    assert calls["single"] == 0
+
+
+@pytest.mark.asyncio
+async def test_scan_duplicate_barcode_is_reported_not_silently_picked(client, monkeypatch):
+    """A barcode present on more than one lot - only reachable for legacy data predating the
+    per-company barcode unique index - is reported with the single duplicate-barcode message and
+    never silently checked off to one arbitrary lot. The batch resolver is patched to surface the
+    duplicate for one code; every other code resolves normally."""
+    import celerp_inventory.routes as inv
+    from celerp_inventory.routes import ResolveResult, resolve_items_by_codes as _real
+
+    async def _dup(session, company_id, codes):
+        base = await _real(session, company_id, codes)
+        got = base.get("880001")
+        if got is not None and got.kind == "barcode":
+            base["880001"] = ResolveResult("barcode", list(got.matches) * 2)  # legacy: same barcode, two lots
+        return base
+
+    monkeypatch.setattr(inv, "resolve_items_by_codes", _dup)
+
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "DUP1", loc=loc, qty=5, barcode="880001")
+    q = await _quotation(client, t)
+
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": "880001"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["scanned"] == 0  # never silently picks a lot
+    fail = body["failed"][0]
+    assert fail["code"] == "880001"
+    assert fail["reason"] == "duplicate_barcode"
+    assert fail["label"] == "Duplicate barcode '880001' exists on multiple inventory items"
+    assert (await _state(client, t, q))["line_items"] == []  # nothing appended
+
+
+def test_scan_run_fingerprint_is_canonical_json_no_separator_collision():
+    """The run fingerprint is canonical JSON, so a code that itself contains the old join separator
+    cannot collide with a two-code batch - a collision a newline-joined payload silently produced."""
+    from celerp_docs.routes import _scan_run_fingerprint
+
+    assert _scan_run_fingerprint(["a\nb"], None) != _scan_run_fingerprint(["a", "b"], None)
+    assert _scan_run_fingerprint(["x"], None) == _scan_run_fingerprint(["x"], None)  # stable for the same batch
+
+
+@pytest.mark.asyncio
+async def test_scan_accepts_code_longer_than_legacy_64_char_cap(client):
+    """The scanner code-length cap shares the inventory scan-code ceiling (max sku/barcode length),
+    so a long but valid SKU is scannable rather than rejected by an out-of-date 64-character cap."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    long_sku = "L" + "0" * 120  # 121 chars: within MAX_SKU_LEN, well over the retired 64 cap
+    await _item(client, t, long_sku, loc=loc, qty=5)
+    q = await _quotation(client, t)
+
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": long_sku})
+    assert r.status_code == 200, r.text  # not a 422 length rejection
+    assert r.json()["scanned"] == 1
+    assert [l["sku"] for l in (await _state(client, t, q))["line_items"]] == [long_sku]
+
+
+@pytest.mark.asyncio
+async def test_scan_retry_with_same_run_key_does_not_duplicate(client):
+    """The post-commit duplication guard: a quotation scan APPENDS a line per code. If the response (or
+    the client's tbody refresh) is lost after the write commits, the operator retries the same run. The
+    run_key makes that retry replay the recorded outcome instead of appending the same lines again."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "R1", loc=loc, qty=5, barcode="710001")
+    await _item(client, t, "R2", loc=loc, qty=5, barcode="710002")
+    q = await _quotation(client, t)
+
+    body = {"barcode": "710001,710002", "run_key": "run-abc"}
+    r1 = await client.post(f"/lists/{q}/scan", headers=_h(t), json=body)
+    assert r1.status_code == 200 and r1.json()["scanned"] == 2
+    assert len((await _state(client, t, q))["line_items"]) == 2
+
+    # Retry of the SAME run (same key): replayed as a duplicate, no second append.
+    r2 = await client.post(f"/lists/{q}/scan", headers=_h(t), json=body)
+    assert r2.status_code == 200
+    assert r2.json().get("duplicate") is True
+    assert r2.json()["scanned"] == 2
+    assert len((await _state(client, t, q))["line_items"]) == 2
+
+    # A genuinely new run (different key) still appends normally.
+    r3 = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                           json={"barcode": "710001", "run_key": "run-xyz"})
+    assert r3.status_code == 200 and r3.json()["scanned"] == 1
+    assert len((await _state(client, t, q))["line_items"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_scan_same_run_key_different_batch_is_rejected(client):
+    """The run_key is bound to the batch it acknowledged. If the first response is lost, the operator
+    could edit the still-active field to a NEW batch and resubmit under the same key. Replaying the old
+    run would silently drop the new batch, so a key reused for a different batch is a 409, not a replay."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "B1", loc=loc, qty=5, barcode="720001")
+    await _item(client, t, "B2", loc=loc, qty=5, barcode="720002")
+    q = await _quotation(client, t)
+
+    r1 = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                           json={"barcode": "720001", "run_key": "k1"})
+    assert r1.status_code == 200 and r1.json()["scanned"] == 1
+
+    # Same key, DIFFERENT codes -> rejected, and the new batch is not applied.
+    r2 = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                           json={"barcode": "720002", "run_key": "k1"})
+    assert r2.status_code == 409
+    assert r2.json()["code"] == "scan_run_conflict"  # structured, so the scan bar branches on the code
+    assert len((await _state(client, t, q))["line_items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_scan_same_run_key_different_price_list_is_rejected(client):
+    """The fingerprint covers the price list too: the same codes priced against a different list is a
+    different batch (different money), so the same key with a changed price_list is a 409, not a replay."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "P1", loc=loc, qty=5, barcode="730001")
+    q = await _quotation(client, t)
+
+    r1 = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                           json={"barcode": "730001", "run_key": "k2", "price_list": "Retail"})
+    assert r1.status_code == 200 and r1.json()["scanned"] == 1
+
+    r2 = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                           json={"barcode": "730001", "run_key": "k2", "price_list": "Wholesale"})
+    assert r2.status_code == 409
+    assert r2.json()["code"] == "scan_run_conflict"
+    assert len((await _state(client, t, q))["line_items"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_scan_bounds_code_and_key_length(client):
+    """Persisted replay data is bounded: an over-long individual code or run_key is refused before any
+    line or scan_runs record is written, so a mixed good/oversized batch can never bloat the projection."""
+    from celerp_docs.routes import MAX_CODE_LEN, MAX_RUN_KEY_LEN
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "L1", loc=loc, qty=5, barcode="740001")
+    q = await _quotation(client, t)
+
+    # An over-long single code is refused (422), nothing written.
+    long_code = "7" * (MAX_CODE_LEN + 1)
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                          json={"barcode": f"740001,{long_code}", "run_key": "k3"})
+    assert r.status_code == 422
+    assert (await _state(client, t, q))["line_items"] == []
+
+    # An over-long run_key is refused at the schema boundary (422).
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                          json={"barcode": "740001", "run_key": "x" * (MAX_RUN_KEY_LEN + 1)})
+    assert r.status_code == 422
 
 
 # --- duplicate-sku, distinct-lot audit invariant (2026-06-17 sku/batch plan §7.1) --
@@ -158,13 +401,15 @@ async def test_audit_duplicate_sku_distinct_lots_survive_and_scan_binds_lot(clie
     assert on_hand[a] == 5.0 and on_hand[b] == 7.0  # each froze its own on-hand
 
     # Scan lot B's barcode -> only B checked off, A untouched.
-    assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "3502"})).status_code == 200
+    assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "3502"})).json()["scanned"] == 1
     audited = {l["item_id"]: l.get("audited_at") for l in (await _state(client, t, audit))["line_items"]}
     assert audited[b] is not None and audited[a] is None
 
-    # Scanning/typing the shared SKU is ambiguous -> 409, never a silent check-off.
+    # Scanning/typing the shared SKU is ambiguous -> reported as failed, never a silent check-off.
     rej = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "SH"})
-    assert rej.status_code == 409 and "sku" in rej.json()["detail"].lower()
+    assert rej.status_code == 200 and rej.json()["scanned"] == 0
+    assert rej.json()["failed"][0]["reason"] == "ambiguous_sku"
+    assert "sku" in rej.json()["failed"][0]["label"].lower()
 
     # Count each lot independently, then Adjust: two independent quantity changes.
     assert (await client.patch(f"/lists/{audit}/line/{a}", headers=_h(t), json={"counted_qty": 4})).status_code == 200
@@ -329,7 +574,7 @@ async def test_editable_save_keeps_item_link(client):
     assert (await _state(client, t, audit))["line_items"][0]["on_hand"] == 7.0  # freeze found the item
 
     r = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "8001"})
-    assert r.status_code == 200 and r.json()["state"] == "audited"  # check-off works (was 409)
+    assert r.status_code == 200 and r.json()["results"][0]["state"] == "audited"  # check-off works (was 409)
 
 
 @pytest.mark.asyncio
@@ -343,9 +588,12 @@ async def test_finalize_dedupes_duplicate_item_lines(client):
     audit = (await _audit(client, t, loc))["id"]
 
     # Seeded with one line for the item; inject a second identical line via the editable-save path.
-    line = (await _state(client, t, audit))["line_items"][0]
+    # A line_items patch pins the current version (the concurrency guard a real editor carries).
+    state = await _state(client, t, audit)
+    line = state["line_items"][0]
     await client.patch(f"/lists/{audit}", headers=_h(t),
-                       json={"fields_changed": {"line_items": {"old": [line], "new": [line, dict(line)]}}})
+                       json={"expected_version": state["version"],
+                             "fields_changed": {"line_items": {"old": [line], "new": [line, dict(line)]}}})
     assert len((await _state(client, t, audit))["line_items"]) == 2  # duplicate present pre-finalize
 
     await _finalize(client, t, audit)
@@ -353,3 +601,68 @@ async def test_finalize_dedupes_duplicate_item_lines(client):
     assert len(lines) == 1                 # collapsed to one line per item_id
     assert lines[0]["item_id"] == iid
     assert lines[0]["on_hand"] == 4.0      # surviving line still froze its on-hand snapshot
+
+
+@pytest.mark.asyncio
+async def test_list_patch_optimistic_version_rejects_stale_writes(client):
+    """A draft list carries a version (its latest ledger-entry id), returned by GET. A patch may pin
+    expected_version; a patch whose expected_version is not the current version is a stale write
+    (another editor moved the list on) and is rejected 409, so concurrent editors cannot silently
+    clobber each other. A patch that omits expected_version stays unchecked (backward compatible)."""
+    t = await _register(client)
+    q = await _quotation(client, t)
+
+    v0 = (await client.get(f"/lists/{q}", headers=_h(t))).json()["version"]
+    assert isinstance(v0, int)
+
+    # Correct version -> applied, and the returned version advances.
+    r1 = await client.patch(f"/lists/{q}", headers=_h(t),
+                            json={"fields_changed": {"customer_name": {"new": "Acme"}},
+                                  "expected_version": v0})
+    assert r1.status_code == 200
+    v1 = r1.json()["version"]
+    assert v1 != v0
+
+    # Stale version (v0 again) -> rejected, list unchanged.
+    r2 = await client.patch(f"/lists/{q}", headers=_h(t),
+                            json={"fields_changed": {"customer_name": {"new": "Evil"}},
+                                  "expected_version": v0})
+    assert r2.status_code == 409
+    assert (await _state(client, t, q))["customer_name"] == "Acme"
+
+    # Fresh version -> applied again.
+    r3 = await client.patch(f"/lists/{q}", headers=_h(t),
+                            json={"fields_changed": {"customer_name": {"new": "Beta"}},
+                                  "expected_version": v1})
+    assert r3.status_code == 200
+
+    # No expected_version -> unchecked, still applied.
+    r4 = await client.patch(f"/lists/{q}", headers=_h(t),
+                            json={"fields_changed": {"customer_name": {"new": "Gamma"}}})
+    assert r4.status_code == 200
+    assert (await _state(client, t, q))["customer_name"] == "Gamma"
+
+
+@pytest.mark.asyncio
+async def test_list_patch_line_items_replacement_requires_version(client):
+    """Replacing line_items is a full-array read-modify-write: a stale editor saving its own array
+    would silently drop a concurrent scan's lines. patch_list rejects a line_items replacement that
+    carries no expected_version (409, no silent last-write-wins); the same replacement pinned to the
+    current version is applied. Scalar-only patches stay version-optional (test above)."""
+    t = await _register(client)
+    q = await _quotation(client, t)
+    v0 = (await client.get(f"/lists/{q}", headers=_h(t))).json()["version"]
+
+    new_lines = [{"item_id": "item:zz", "sku": "ZZ", "quantity": 2}]
+    # Replacement without a version pin -> rejected before it can clobber a concurrent write.
+    r_missing = await client.patch(f"/lists/{q}", headers=_h(t),
+                                   json={"fields_changed": {"line_items": {"new": new_lines}}})
+    assert r_missing.status_code == 409
+    assert (await _state(client, t, q)).get("line_items") in (None, [])  # nothing written
+
+    # Same replacement pinned to the current version -> applied.
+    r_ok = await client.patch(f"/lists/{q}", headers=_h(t),
+                              json={"fields_changed": {"line_items": {"new": new_lines}},
+                                    "expected_version": v0})
+    assert r_ok.status_code == 200, r_ok.text
+    assert [li.get("sku") for li in (await _state(client, t, q)).get("line_items") or []] == ["ZZ"]

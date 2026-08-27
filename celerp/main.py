@@ -13,6 +13,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from celerp.db import engine, mask_db_credentials
+from celerp.inventory_codes import BarcodeConflictError
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 load_cloud_config()
 load_backup_config()
@@ -445,6 +446,14 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(_request: Request, _exc: RateLimitExceeded):
     return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
+
+
+@app.exception_handler(BarcodeConflictError)
+async def barcode_conflict_handler(_request: Request, exc: BarcodeConflictError):
+    # The projection applier raises this when the barcode unique index rejects a write
+    # that bypassed the allocation lock (imports, connectors). A more specific handler
+    # than the Exception catch-all, so it maps to 409 instead of a masked 500.
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
 # Kernel routes — always present regardless of module configuration

@@ -9,12 +9,27 @@ import sqlalchemy as sa
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, PrimaryKeyConstraint, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from celerp.inventory_codes import BARCODE_UNIQUE_INDEX
 from celerp.models.base import Base
 
 
 class Projection(Base):
     __tablename__ = "projections"
-    __table_args__ = (PrimaryKeyConstraint("company_id", "entity_id"),)
+    __table_args__ = (
+        PrimaryKeyConstraint("company_id", "entity_id"),
+        # At most one item per (company, non-empty barcode). The final defense behind
+        # the application allocation lock: imports, connectors, or a future writer that
+        # bypasses the lock still cannot create a duplicate barcode. Declared here so
+        # create_all builds it for the test schema; created on existing databases by the
+        # barcode-uniqueness migration.
+        sa.Index(
+            BARCODE_UNIQUE_INDEX,
+            "company_id",
+            sa.text("(state ->> 'barcode')"),
+            unique=True,
+            postgresql_where=sa.text("entity_type = 'item' AND NULLIF(state ->> 'barcode', '') IS NOT NULL"),
+        ),
+    )
 
     entity_id: Mapped[str] = mapped_column(Text, nullable=False)
     company_id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), ForeignKey("companies.id"), nullable=False)

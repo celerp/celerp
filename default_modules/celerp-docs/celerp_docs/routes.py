@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import hashlib
 import io
+import json
 import uuid
 from datetime import datetime, timezone, date as _date
 from typing import Literal
@@ -23,6 +25,7 @@ from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
+from celerp.inventory_codes import MAX_SCAN_CODE_LEN
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.landed_cost import compute_bill_landed_allocation
@@ -2531,16 +2534,23 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     if doc_type == "bill":
         bill_alloc = await compute_bill_landed_allocation(session, company_id, row.state)
 
-    # Received parcels each get a fresh sequential barcode so every physical lot is
-    # scannable and barcode uniqueness (the physical-lot key now that SKU may repeat)
-    # actually holds. Single DB scan; incremented in-memory per created parcel,
-    # mirroring the split path.
-    from celerp_inventory.routes import _next_seq as _inv_next_seq
-    _recv_barcode_seq = await _inv_next_seq(session, company_id)
-
     for it in payload.received_items:
         sell_by = sell_by_map.get(it.sku or "") or doc_line_sell_by.get(it.sku or "", "") or None
         validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
+
+    # Received parcels each get a fresh sequential barcode so every physical lot is
+    # scannable and barcode uniqueness (the physical-lot key now that SKU may repeat)
+    # actually holds. Allocate the whole batch in one locked call AFTER validation so
+    # concurrent receipts mint distinct barcodes; the lock is held until this request
+    # commits. The DB unique index is the backstop, not the normal mechanism.
+    from celerp_inventory.services import allocate_internal_codes
+
+    def _creates_parcel(it) -> bool:
+        return not (it.item_id and not is_inbound) and it.receive_as == "stock"
+
+    _new_parcel_count = sum(1 for it in payload.received_items if _creates_parcel(it))
+    _recv_barcodes = await allocate_internal_codes(session, company_id, _new_parcel_count) if _new_parcel_count else []
+    _recv_barcode_idx = 0
 
     for it in payload.received_items:
         if it.item_id and not is_inbound:
@@ -2625,9 +2635,10 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 "quantity": float(it.quantity_received) * conversion,
                 "location_id": payload.location_id,
             })
-            # Fresh sequential barcode per physical lot (unique + scannable).
-            item_data["barcode"] = str(_recv_barcode_seq).zfill(6)
-            _recv_barcode_seq += 1
+            # Fresh sequential barcode per physical lot (unique + scannable), taken
+            # from the batch allocated under the code-namespace lock above.
+            item_data["barcode"] = _recv_barcodes[_recv_barcode_idx]
+            _recv_barcode_idx += 1
             if it.cost_price is not None:
                 # Emit cost_total when quantity is known (cost_total is the primitive)
                 _recv_qty = float(it.quantity_received) * conversion
@@ -3423,7 +3434,13 @@ class ListCreatePayload(BaseModel):
         return self
 
 
-ListPatch = DocPatch
+class ListPatch(DocPatch):
+    # Optimistic concurrency: when set, the patch applies only if it equals the list's current
+    # version (its latest ledger-entry id). A mismatch means another editor moved the list on since
+    # this client last read it, so the write is a stale clobber and is rejected 409. Omitted = no check.
+    expected_version: int | None = None
+
+
 ListVoidBody = DocVoidBody
 
 
@@ -3437,6 +3454,20 @@ ListBatchImportRequest = DocBatchImportRequest
 
 async def _get_list(session: AsyncSession, company_id, entity_id: str) -> Projection:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if row is None or row.entity_type != "list":
+        raise HTTPException(status_code=404, detail="List not found")
+    return row
+
+
+async def _get_list_for_update(session: AsyncSession, company_id, entity_id: str) -> Projection:
+    """Load a list row under a write lock (SELECT ... FOR UPDATE) so a read-modify-write over its
+    line_items is serialized against concurrent writers. Scan check-off and counting read the whole
+    array, mutate it in Python, and write it back; two writers off the same read would lose one
+    update. The lock makes the second writer block until the first commits, then re-read the
+    committed array. populate_existing forces the locking SELECT even if the row is already in the
+    session's identity map."""
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id},
+                            with_for_update=True, populate_existing=True)
     if row is None or row.entity_type != "list":
         raise HTTPException(status_code=404, detail="List not found")
     return row
@@ -3581,7 +3612,7 @@ async def get_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_list(session, company_id, entity_id)
-    return row.state | {"id": row.entity_id}
+    return row.state | {"id": row.entity_id, "version": row.version}
 
 
 @lists_router.post("")
@@ -3622,15 +3653,26 @@ async def patch_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_list(session, company_id, entity_id)
+    # Locked load so the version check and the emit are one atomic compare-and-set: two concurrent
+    # patches cannot both read version N, both pass the check, and both write (the second clobbering
+    # the first). The second waits, re-reads the advanced version, and its stale expected_version fails.
+    row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
+    # Replacing line_items is a read-modify-write over the whole array: two concurrent editors (or a
+    # scan and a line edit) would each save their own full array and the second would silently drop the
+    # first's lines. Require expected_version for it so the stale writer is rejected; scalar-only patches
+    # touch independent fields and stay backward compatible without a version.
+    _new_lines = (payload.fields_changed.get("line_items") or {}).get("new")
+    if isinstance(_new_lines, list) and payload.expected_version is None:
+        raise HTTPException(status_code=409, detail="Reload the list to get its latest version before saving line changes")
+    if payload.expected_version is not None and row.version != payload.expected_version:
+        raise HTTPException(status_code=409, detail="This list was changed by someone else; reload to get the latest before saving")
     try:
         _validate_shipment_values({f: (c or {}).get("new")
                                    for f, c in payload.fields_changed.items()})
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-    _new_lines = (payload.fields_changed.get("line_items") or {}).get("new")
     if isinstance(_new_lines, list):
         _normalize_line_item_ids(_new_lines)  # keep the item link the editable UI sends as entity_id
         _existing = {li.get("item_id") for li in row.state.get("line_items") or []}
@@ -3638,10 +3680,14 @@ async def patch_list(
             session, company_id,
             {li.get("item_id") for li in _new_lines} - _existing,
         )
+    # expected_version is a concurrency guard, not list data - it never enters the event payload.
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
-                             payload.model_dump(exclude_none=True), user, payload.idempotency_key)
+                             payload.model_dump(exclude_none=True, exclude={"expected_version"}),
+                             user, payload.idempotency_key)
     await session.commit()
-    return {"event_id": entry.id}
+    # entry.id is the list's new version (the projection version tracks the latest entry id), so the
+    # client refreshes its cached version from here and its next save pins the value it just wrote.
+    return {"event_id": entry.id, "version": entry.id}
 
 
 @lists_router.post("/{entity_id}/finalize")
@@ -3658,7 +3704,9 @@ async def finalize_list(
     transfer `issued_at`, an audit freezes each line's on-hand snapshot (for variance + a stable
     On-hand column while counting). Counting / terminal actions happen in the finalized stage.
     """
-    row = await _get_list(session, company_id, entity_id)
+    # Lock the projection: freeze_onhand rebuilds line_items (read-modify-write), and the status guard
+    # must be a compare-and-set against a concurrent scan/patch so only one draft->finalized wins.
+    row = await _get_list_for_update(session, company_id, entity_id)
     state = row.state
     if state.get("status") != DRAFT:
         raise HTTPException(status_code=409, detail="Only a draft list can be finalized")
@@ -4971,6 +5019,15 @@ async def receive_return(
                     detail=f"Only {available:g} sold unit(s) of SKU '{it.sku}' found in inventory; {it.quantity:g} requested.",
                 )
 
+    # --- Allocate a fresh barcode per returned parcel ---
+    # A returned item is a NEW physical lot and must never inherit the sold lot's or
+    # the invoice line's barcode - that barcode still belongs to the sold item and
+    # reusing it would collide. Allocate the whole batch under the code-namespace lock
+    # after validation and before any item.created event, so concurrent returns mint
+    # distinct barcodes; the lock is held until this request commits.
+    from celerp_inventory.services import allocate_internal_codes
+    _return_barcodes = await allocate_internal_codes(session, company_id, len(payload.items))
+
     # --- Create returned inventory items ---
     now = datetime.now(timezone.utc).isoformat()
     total_cogs = 0.0
@@ -4981,7 +5038,7 @@ async def receive_return(
         "location_id", "location_name", "source_doc_id",
     })
 
-    for it in payload.items:
+    for _ridx, it in enumerate(payload.items):
         # Prefer the exact physical lot when the credit-note line carries an item_id
         # (SKUs can repeat across lots, so item_id/barcode is the authoritative bind).
         # Else fall back to the documented LIFO-by-sku tiebreak (most-recent sold lot),
@@ -5027,7 +5084,7 @@ async def receive_return(
             "unit_price": float(ref.get("unit_price") or ref.get("sell_price") or li_fallback.get("unit_price") or 0),
             "wholesale_price": float(ref.get("wholesale_price") or li_fallback.get("wholesale_price") or 0) or None,
             "retail_price": float(ref.get("retail_price") or li_fallback.get("retail_price") or 0) or None,
-            "barcode": ref.get("barcode") or li_fallback.get("barcode") or None,
+            "barcode": _return_barcodes[_ridx],
             "description": ref.get("description") or li_fallback.get("description") or "",
             "category": ref.get("category") or li_fallback.get("category") or "",
             "attributes": ref.get("attributes") or li_fallback.get("attributes") or {},
@@ -5500,9 +5557,22 @@ class AuditCreateBody(BaseModel):
     idempotency_key: str | None = None
 
 
+# A single scan run submits its whole accumulated comma list at once. These bounds cap one
+# submission by count AND by byte size, so a pathological paste can neither build an unbounded
+# in-memory line set behind one write nor bloat the persisted replay data (below).
+MAX_SCAN_BATCH = 200            # max codes in one submitted run
+MAX_CODE_LEN = MAX_SCAN_CODE_LEN  # max chars in a single scanned code: the inventory scan-code ceiling (max sku/barcode length)
+MAX_RUN_KEY_LEN = 64          # max chars in a client-supplied idempotency run key
+_MAX_SCAN_BODY_LEN = MAX_SCAN_BATCH * MAX_CODE_LEN + (MAX_SCAN_BATCH - 1) * len(", ")  # comma-space-joined upper bound
+# Recent scan runs retained on the list for retry dedup (post-commit refresh failure).
+_MAX_SCAN_RUNS = 50
+
+
 class ListScanBody(BaseModel):
-    barcode: str
+    barcode: str = Field(max_length=_MAX_SCAN_BODY_LEN)
     price_list: str | None = None  # money lists price the added line from this list (default Retail)
+    # one Add click; a retry reuses it so a re-submit never re-adds (bounded so replay data stays small)
+    run_key: str | None = Field(default=None, max_length=MAX_RUN_KEY_LEN)
 
 
 class ListCountBody(BaseModel):
@@ -5523,8 +5593,8 @@ def _audit_unit_cost(state: dict) -> float:
     return 0.0
 
 
-async def _get_audit(session: AsyncSession, company_id, entity_id: str) -> Projection:
-    row = await _get_list(session, company_id, entity_id)
+async def _get_audit(session: AsyncSession, company_id, entity_id: str, *, for_update: bool = False) -> Projection:
+    row = await (_get_list_for_update if for_update else _get_list)(session, company_id, entity_id)
     if row.state.get("list_type") != "audit":
         raise HTTPException(status_code=404, detail="Audit not found")
     return row
@@ -5536,21 +5606,9 @@ async def _set_list_fields(session, company_id, entity_id, user, fields: dict):
     return await _emit_list(session, company_id, entity_id, "list.updated", {"fields_changed": fc}, user)
 
 
-async def _resolve_barcode(session, company_id, code: str):
-    """Resolve a scanned code to a single item via the canonical resolver.
-
-    Barcode (unique) wins; an exact SKU may map to N physical lots. When a SKU is
-    ambiguous we do NOT silently pick a lot - we 409 so the caller scans a barcode
-    or picks a lot. Returns the single matching item, or None if no match.
-    """
-    from celerp_inventory.routes import resolve_item_by_code
-    res = await resolve_item_by_code(session, company_id, code)
-    if res.ambiguous:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Multiple items share SKU '{code}'. Scan its barcode or pick a specific lot.",
-        )
-    return res.one
+def _ambiguous_sku_detail(code: str) -> str:
+    """The one message for an ambiguous SKU: never silently pick a lot - the operator disambiguates."""
+    return f"Multiple items share SKU '{code}'. Scan its barcode or pick a specific lot."
 
 
 def _normalize_line_item_ids(lines: list) -> None:
@@ -5619,6 +5677,14 @@ async def create_audit_list(
     return {"event_id": entry.id, "id": entity_id, "ref_id": ref_id, "line_count": len(lines)}
 
 
+def _scan_run_fingerprint(codes: list[str], price_list: str | None) -> str:
+    """A fixed-size digest identifying one scan batch: its ordered normalized codes and the price
+    list they price against. Binds a run_key to the exact batch it acknowledged, so the same key
+    reused for a different batch is caught rather than mis-replayed."""
+    payload = json.dumps({"codes": codes, "price_list": price_list}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 @lists_router.post("/{entity_id}/scan")
 async def scan_list(
     entity_id: str, payload: ListScanBody,
@@ -5634,62 +5700,125 @@ async def scan_list(
       Phase 4 seam).
     - FINALIZED quotation / any closed|void list: scanning is disabled (clear 409).
     """
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     state = row.state
     status = state.get("status")
     lt = state.get("list_type") or DEFAULT_LIST_TYPE
-    code = (payload.barcode or "").strip()
-    if not code:
+    # The scan bar accumulates codes client-side (Enter appends a comma, never a per-scan request) and
+    # submits the whole run at once, so `barcode` is a comma-separated batch. Resolve and apply every
+    # code against ONE in-memory copy of line_items and persist a single time; a code that fails to
+    # resolve is collected in `failed` and reported, never aborting the codes that did resolve.
+    codes = [c.strip() for c in (payload.barcode or "").split(",") if c.strip()]
+    if not codes:
         raise HTTPException(status_code=422, detail="Empty scan")
-    item = await _resolve_barcode(session, company_id, code)
-    if item is None:
-        raise HTTPException(status_code=404, detail=f"Unknown barcode or SKU: {code}")
-    if str((item.state or {}).get("status") or "").lower() == "draft":
-        sku = (item.state or {}).get("sku") or code
-        raise HTTPException(status_code=422, detail=f"{sku}: item is a draft - make it available first")
+    if len(codes) > MAX_SCAN_BATCH:
+        raise HTTPException(status_code=422,
+                            detail=f"Too many codes in one scan ({len(codes)}); the limit is {MAX_SCAN_BATCH}")
+    if any(len(c) > MAX_CODE_LEN for c in codes):
+        raise HTTPException(status_code=422,
+                            detail=f"A scanned code exceeds {MAX_CODE_LEN} characters")
+    if status not in (DRAFT, FINALIZED):
+        raise HTTPException(status_code=409, detail="Cannot scan a closed or void list")
+    scan_mode = behavior(lt).scan_finalized if status == FINALIZED else None
+    if status == FINALIZED and scan_mode != "count":
+        raise HTTPException(status_code=409, detail="This list is finalized; scanning is disabled for this type")
+
+    # A retry of one Add click carries the same run_key AND the same batch still sitting in the field.
+    # The key alone is not enough: if the response is lost, the user could edit the field to a new
+    # batch and resubmit under the same key - replaying the old run would then silently drop the new
+    # one. So each recorded run stores a fingerprint of its normalized codes + price_list; a matching
+    # key with a matching fingerprint replays the recorded outcome (never re-adding the lines), while a
+    # matching key with a DIFFERENT batch is a client error, rejected with 409 rather than mis-replayed.
+    run_fp = _scan_run_fingerprint(codes, payload.price_list) if payload.run_key else None
+    if payload.run_key:
+        for rec in (state.get("scan_runs") or []):
+            if rec.get("key") == payload.run_key:
+                if rec.get("fp") != run_fp:
+                    # Same key, different batch: a client bug (edited the field then resubmitted under
+                    # a spent key). Reply with a code so the scan bar branches on it, not on message text.
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse(status_code=409, content={
+                        "code": "scan_run_conflict",
+                        "detail": "This scan key was already used for a different batch"})
+                return {"scanned": rec.get("scanned", 0), "results": [],
+                        "failed": rec.get("failed", []), "duplicate": True}
+
     lines = [dict(l) for l in (state.get("line_items") or [])]
     _normalize_line_item_ids(lines)  # heal any legacy lines stored with only entity_id so matching works
-    idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item.entity_id), None)
     now = datetime.now(timezone.utc).isoformat()
+    price_config = None  # money lists price new lines; fetched once for the whole batch, lazily
+    results: list[dict] = []
+    failed: list[dict] = []
+    changed = False
 
-    if status == DRAFT:
-        if lt == "audit":
-            # Manifest is a set: move an existing line to top, else add it (no count yet).
-            if idx is not None:
-                lines.insert(0, lines.pop(idx))
-                result_state = "present"
+    # Resolve the whole run against ONE inventory load (vs one load per code).
+    from celerp_inventory.routes import duplicate_barcode_detail, resolve_items_by_codes
+    resolved = await resolve_items_by_codes(session, company_id, codes)
+
+    for code in codes:
+        res = resolved.get(code)
+        reason = detail = None
+        if res is not None and res.duplicate_barcode:
+            item = None
+            reason, detail = "duplicate_barcode", duplicate_barcode_detail(code)
+        elif res is not None and res.ambiguous:
+            item = None
+            reason, detail = "ambiguous_sku", _ambiguous_sku_detail(code)
+        else:
+            item = res.one if res is not None else None
+            if item is None:
+                reason, detail = "unknown_code", f"Unknown barcode or SKU: {code}"
+            elif str((item.state or {}).get("status") or "").lower() == "draft":
+                reason, detail = "draft_item", f"{(item.state or {}).get('sku') or code}: item is a draft - make it available first"
+        if detail is not None:
+            failed.append({"code": code, "reason": reason, "label": detail})
+            results.append({"code": code, "state": "error", "reason": reason, "label": detail})
+            continue
+
+        idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item.entity_id), None)
+        if status == DRAFT:
+            if lt == "audit":
+                # Manifest is a set: move an existing line to top, else add it (no count yet).
+                if idx is not None:
+                    lines.insert(0, lines.pop(idx))
+                    result_state = "present"
+                else:
+                    lines.insert(0, _scan_line_from_item(item, lt, None))
+                    result_state = "added"
             else:
-                lines.insert(0, _scan_line_from_item(item, lt, None))
+                if price_config is None:
+                    price_config = await get_price_config(session, company_id)
+                lines.append(_scan_line_from_item(item, lt, payload.price_list, price_config=price_config))
                 result_state = "added"
         else:
-            lines.append(_scan_line_from_item(item, lt, payload.price_list,
-                                              price_config=await get_price_config(session, company_id)))
-            result_state = "added"
-        await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
+            # FINALIZED audit: the manifest is LOCKED - scanning only checks off items already on the
+            # list and never adds. An item not on the list is reported (add it while still a draft).
+            if idx is None:
+                detail = f"{item.state.get('sku') or code} is not on this audit"
+                failed.append({"code": code, "reason": "not_on_audit", "label": detail})
+                results.append({"code": code, "state": "error", "reason": "not_on_audit", "label": detail})
+                continue
+            ln = lines.pop(idx)
+            ln["audited_at"] = now        # confirm presence -> the row highlights as accounted for
+            lines.insert(0, ln)           # newest scan to the top (GDR 2n)
+            result_state = "audited"
+        changed = True
+        results.append({"code": code, "state": result_state,
+                        "item_id": item.entity_id, "sku": item.state.get("sku")})
+
+    scanned = sum(1 for r in results if r["state"] != "error")
+    if changed:
+        fields = {"line_items": lines}
+        if payload.run_key:
+            # Record this run so a retry replays instead of re-adding (recent runs only). The stored
+            # failed list is already bounded: each code is <= MAX_CODE_LEN and the batch <=
+            # MAX_SCAN_BATCH, so the retained replay data can never bloat the projection.
+            runs = [dict(r) for r in (state.get("scan_runs") or [])]
+            runs.append({"key": payload.run_key, "fp": run_fp, "scanned": scanned, "failed": failed})
+            fields["scan_runs"] = runs[-_MAX_SCAN_RUNS:]
+        await _set_list_fields(session, company_id, entity_id, user, fields)
         await session.commit()
-        return {"state": result_state, "item_id": item.entity_id, "sku": item.state.get("sku")}
-
-    if status != FINALIZED:
-        raise HTTPException(status_code=409, detail="Cannot scan a closed or void list")
-
-    scan_mode = behavior(lt).scan_finalized
-    if scan_mode == "count":
-        # An issued audit's manifest is LOCKED: scanning only checks off items already on the list
-        # (so you can see what's accounted for) and never adds. An item not on the list is rejected
-        # — add it while the audit is still a draft. Re-scanning an item is fine (it re-confirms).
-        if idx is None:
-            # 409 (not 404): the item exists, it's just not on this locked manifest. A 404 here would
-            # be rewritten to a generic "Not found" by the global 404 handler, hiding the reason.
-            raise HTTPException(status_code=409,
-                                detail=f"{item.state.get('sku') or code} is not on this audit")
-        ln = lines.pop(idx)
-        ln["audited_at"] = now        # confirm presence -> the row highlights as accounted for
-        lines.insert(0, ln)           # newest scan to the top (GDR 2n)
-        await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
-        await session.commit()
-        return {"state": "audited", "item_id": item.entity_id, "sku": item.state.get("sku")}
-
-    raise HTTPException(status_code=409, detail="This list is finalized; scanning is disabled for this type")
+    return {"scanned": scanned, "results": results, "failed": failed}
 
 
 @lists_router.patch("/{entity_id}/line/{item_id}")
@@ -5699,7 +5828,7 @@ async def set_audit_count(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set a line's physical count. Editable only while the audit is finalized (counting stage)."""
-    row = await _get_audit(session, company_id, entity_id)
+    row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Counts can only be entered on a finalized audit")
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
@@ -5727,7 +5856,7 @@ async def set_scanned(
     """Toggle the scanned/accounted-for highlight (audited_at) on audit lines. scanned=True marks the
     rows as scanned (stamps audited_at), scanned=False clears it. Pass item_ids to target specific
     rows, or none for every line. The highlight otherwise persists indefinitely."""
-    row = await _get_audit(session, company_id, entity_id)
+    row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Counting happens on a finalized audit")
     targets = set(payload.item_ids)
@@ -5760,7 +5889,9 @@ async def adjust_audit(
     closed). The magnitude and the shrinkage/overage JE are computed against the LIVE item qty at
     adjust time (decision 5.2) — `new_qty = counted`, `delta = counted - live`. Uncounted (blank)
     lines are skipped and reported. Reversible via undo-adjust."""
-    row = await _get_audit(session, company_id, entity_id)
+    # Lock the projection: the terminal action reads every counted line, adjusts stock, and writes the
+    # line_items array back (read-modify-write), so it must serialize against a concurrent count/scan.
+    row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Finalize the count before adjusting stock")
     cycle = int(row.state.get("adjust_count") or 0)
@@ -5815,7 +5946,9 @@ async def undo_audit_adjust(
 ) -> dict:
     """Reverse the last stock adjustment (manager/owner): restore each item's prior quantity and void
     the audit JE. Reopens the audit (closed -> finalized) so it can be re-counted or re-adjusted."""
-    row = await _get_audit(session, company_id, entity_id)
+    # Lock the projection: undo reads each adjusted line, restores its prior qty, and writes the
+    # line_items array back (read-modify-write), so it must serialize against a concurrent re-adjust.
+    row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != CLOSED or row.state.get("result") != "stock_adjusted":
         raise HTTPException(status_code=409, detail="This audit has no adjustment to undo")
     cycle = int(row.state.get("adjust_count") or 1) - 1
@@ -5859,8 +5992,8 @@ class WriteoffLineBody(BaseModel):
     comment: str | None = None
 
 
-async def _get_writeoff(session: AsyncSession, company_id, entity_id: str) -> Projection:
-    row = await _get_list(session, company_id, entity_id)
+async def _get_writeoff(session: AsyncSession, company_id, entity_id: str, *, for_update: bool = False) -> Projection:
+    row = await (_get_list_for_update if for_update else _get_list)(session, company_id, entity_id)
     if row.state.get("list_type") != "writeoff":
         raise HTTPException(status_code=404, detail="Write-off not found")
     return row
@@ -5939,7 +6072,7 @@ async def set_writeoff_line(
     for an item already selectable on the list - the SAME item can be written off to two accounts
     (spoiled -> wastage, sampled -> marketing). qty_out and account are validated at the function
     level."""
-    row = await _get_writeoff(session, company_id, entity_id)
+    row = await _get_writeoff(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != DRAFT:
         raise HTTPException(status_code=409, detail="Write-off lines are editable only while it is a draft")
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
@@ -6077,7 +6210,9 @@ async def undo_write_off(
     child lot is NOT re-merged into its parent - it returns as its own available lot, so quantity is
     conserved (parent remainder + restored child = the original). Reopens the list (closed -> finalized)
     so it can be re-run."""
-    row = await _get_writeoff(session, company_id, entity_id)
+    # Lock the projection: undo reads each disposed line, restores its lot, and writes the line_items
+    # array back (read-modify-write), so it must serialize against a concurrent re-run/undo.
+    row = await _get_writeoff(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != CLOSED or row.state.get("result") != "written_off":
         raise HTTPException(status_code=409, detail="This write-off has no removal to undo")
     cycle = int(row.state.get("adjust_count") or 1) - 1
@@ -6117,7 +6252,7 @@ async def change_list_type(
     fields persist (nothing is zeroed). Switching a FINALIZED list to audit re-freezes the on-hand
     baseline that the audit's own finalize would have captured, so variance/Adjust stay correct.
     Closed/void lists are terminal — duplicate instead."""
-    row = await _get_list(session, company_id, entity_id)
+    row = await _get_list_for_update(session, company_id, entity_id)
     state = row.state
     new_type = payload.list_type
     if new_type not in LIST_TYPES:

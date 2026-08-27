@@ -4070,6 +4070,38 @@ class TestListsCreateBlank:
         assert r.json()["ok"] is True
 
     @pytest.mark.asyncio
+    async def test_save_list_lines_forwards_expected_version_and_returns_new(self, ui_client):
+        """POST /lists/{id}/lines forwards expected_version to api.patch_list and returns the
+        new version from the save, so the page can advance its cached token (optimistic
+        concurrency). Without the plumbing the route neither forwards the token nor returns it."""
+        mock = AsyncMock(return_value={"event_id": 42, "version": 42})
+        with patch("ui.api_client.patch_list", new=mock):
+            r = await ui_client.post(
+                "/lists/list:WO-1/lines",
+                json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0, "expected_version": 7},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert r.json()["version"] == 42
+        assert mock.await_args.kwargs.get("expected_version") == 7
+
+    @pytest.mark.asyncio
+    async def test_save_list_lines_stale_version_returns_structured_409(self, ui_client):
+        """A stale expected_version (backend 409) surfaces as a structured {code: stale_version}
+        body with status 409, so the page branches on the code, never on English message text."""
+        from ui.api_client import APIError
+        mock = AsyncMock(side_effect=APIError(409, "This list was changed by someone else; reload to get the latest before saving"))
+        with patch("ui.api_client.patch_list", new=mock):
+            r = await ui_client.post(
+                "/lists/list:WO-1/lines",
+                json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0, "expected_version": 1},
+                cookies=_authed(),
+            )
+        assert r.status_code == 409
+        assert r.json()["code"] == "stale_version"
+
+    @pytest.mark.asyncio
     async def test_save_lines_unauthorized_redirects(self, ui_client):
         """POST /docs/{id}/lines without cookie redirects to login."""
         r = await ui_client.post(
@@ -10532,12 +10564,19 @@ class TestListScanInPlace:
     }
 
     @pytest.mark.asyncio
-    async def test_building_list_scan_answers_204_without_refresh(self, ui_client):
-        with patch("ui.api_client.scan_list", new=AsyncMock(return_value={"state": "added"})), \
+    async def test_building_list_scan_answers_json_without_refresh(self, ui_client):
+        # A building list answers with the JSON scan result (scanned count, no failures, empty html so
+        # the client refetches the editable tbody itself), never a full-page refresh.
+        _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}], "failed": []}
+        with patch("ui.api_client.scan_list", new=AsyncMock(return_value=_res)), \
              patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
             r = await ui_client.post("/lists/list:1/scan", data={"barcode": "A1"}, cookies=_authed())
-        assert r.status_code == 204
+        assert r.status_code == 200
         assert "HX-Refresh" not in r.headers
+        body = r.json()
+        assert body["scanned"] == 1
+        assert body["failed"] == []
+        assert body["html"] == ""
 
     @pytest.mark.asyncio
     async def test_list_page_scan_script_swaps_tbody_in_place(self, ui_client):
@@ -10547,6 +10586,35 @@ class TestListScanInPlace:
         assert r.status_code == 200
         assert "DOMParser" in r.text
         assert "fetch(location.href)" in r.text
+
+    @pytest.mark.asyncio
+    async def test_list_page_has_scan_add_button(self, ui_client):
+        # A list accumulates scans client-side and submits the whole run with one Add button; Enter
+        # only appends a comma, so the submit button is the sole thing that hits the server.
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
+            r = await ui_client.get("/lists/list:1", cookies=_authed())
+        assert r.status_code == 200
+        assert 'id="scan-bar-add"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_scan_failures_ride_back_in_json_body_not_headers(self, ui_client):
+        # A batch with a bad code still succeeds (200) and lands the good ones; the failures ride back
+        # in the JSON body so the client can repopulate just the failed codes without aborting the run.
+        # The failed code is a non-Latin SKU on purpose: returning it in a response header would raise
+        # UnicodeEncodeError under Starlette's Latin-1 header encoding and 500 AFTER the good scans had
+        # committed, letting a retry duplicate them. The body carries any Unicode safely.
+        _bad = "ዕቃ-99"
+        _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}],
+                "failed": [{"code": _bad, "reason": "unknown_code", "label": f"Unknown barcode or SKU: {_bad}"}]}
+        with patch("ui.api_client.scan_list", new=AsyncMock(return_value=_res)), \
+             patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
+            r = await ui_client.post("/lists/list:1/scan", data={"barcode": f"A1, {_bad}"}, cookies=_authed())
+        assert r.status_code == 200
+        assert "X-Scan-Failed-Codes" not in r.headers
+        body = r.json()
+        assert body["scanned"] == 1
+        assert [f["code"] for f in body["failed"]] == [_bad]
+        assert _bad in body["failed"][0]["label"]
 
 
 class TestAuditColumnAlignment:
@@ -11778,7 +11846,7 @@ class TestBulkActionsPhase6SendTo:
 
     @pytest.mark.asyncio
     async def test_lists_from_items_add_appends_lines(self, ui_client):
-        existing_list = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 50}]}
+        existing_list = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 50}], "version": 7}
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value=self._PIECE_ITEM)),
             patch("ui.api_client.get_list", new=AsyncMock(return_value=existing_list)),
@@ -11792,6 +11860,9 @@ class TestBulkActionsPhase6SendTo:
             )
         assert r.status_code == 204
         assert "list:L-001" in r.headers.get("hx-redirect", "")
+        # The append is version-guarded: the version just read from get_list must be forwarded to
+        # patch_list, or the server rejects a line_items replacement with 409 (optimistic lock).
+        assert mock_patch.call_args.kwargs.get("expected_version") == 7
 
     # -- Memos modal + create + add --
 
@@ -12348,6 +12419,36 @@ class TestSendToPurchaseOrder:
         assert b"No draft purchase orders could be created" in r.content
         assert b"PO-" not in r.content                       # no fabricated draft reference
         assert b"acme failed" in r.content and b"beta failed" in r.content
+
+
+class TestSendToExistingList:
+    """Send-to an existing list/shipping doc on the inventory bulk toolbar (/api/items/send-to):
+    the line_items replacement must be version-guarded so a concurrent edit is rejected."""
+
+    _ITEM = {
+        "entity_id": "item:l1", "sku": "WIDGET", "name": "Widget",
+        "sell_by": "piece", "quantity": 2, "attributes": {},
+    }
+
+    @pytest.mark.asyncio
+    async def test_send_to_existing_list_forwards_expected_version(self, ui_client):
+        existing = {"line_items": [{"description": "Old", "quantity": 1, "unit_price": 5}], "version": 4}
+        mock_patch = AsyncMock(return_value={"event_id": "e1"})
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._ITEM)),
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=existing)),
+            patch("ui.api_client.patch_list", new=mock_patch),
+        ):
+            r = await ui_client.post(
+                "/api/items/send-to",
+                content=b"selected=item%3Al1&send_to_doc_type=list&send_to_target=list%3AL-001",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+        assert "list:L-001" in r.headers.get("hx-redirect", "")
+        # Version just read from get_list must be forwarded, or the server 409s the replacement.
+        assert mock_patch.call_args.kwargs.get("expected_version") == 4
 
 
 async def _api_headers(client) -> dict:
@@ -19546,6 +19647,32 @@ class TestAPIErrorStructuredDetail:
         assert e.detail == detail
         assert e.data is None
 
+    def test_apierror_preserves_top_level_code_with_string_detail(self):
+        """A scan_run_conflict body - a machine `code` beside a plain-string detail -
+        keeps detail the string the UI renders and carries the whole body on
+        APIError.data, so the proxy and scan bar can branch on the code."""
+        import httpx as _httpx
+        from ui.api_client import APIError, _raise
+        req = _httpx.Request("POST", "http://api.test/lists/list:1/scan")
+        msg = "This scan run was already recorded against a different batch."
+        resp = _httpx.Response(409, json={"code": "scan_run_conflict", "detail": msg}, request=req)
+        with pytest.raises(APIError) as exc:
+            _raise(resp)
+        e = exc.value
+        assert e.status == 409
+        assert e.detail == msg
+        assert e.data == {"code": "scan_run_conflict", "detail": msg}
+
+    def test_apierror_plain_string_detail_carries_no_data(self):
+        """A plain {"detail": "..."} rejection (no extra top-level keys) leaves data
+        None: the new code branch must not over-trigger on the ordinary shape."""
+        from ui.api_client import APIError, _raise
+        with pytest.raises(APIError) as exc:
+            _raise(self._resp("closed list"))
+        e = exc.value
+        assert e.detail == "closed list"
+        assert e.data is None
+
 
 def test_picker_item_includes_status():
     """Catalog picker payload carries the item status and its causing doc, so
@@ -19665,6 +19792,64 @@ async def test_save_doc_lines_returns_reserved_conflicts(ui_client):
         )
     assert r2.status_code == 400
     assert "reserved_conflicts" not in r2.json()
+
+
+@pytest.mark.asyncio
+async def test_list_scan_proxy_preserves_run_conflict(ui_client):
+    """A spent scan run key reused for a different batch: the backend 409s with a
+    structured {code: scan_run_conflict} body. The proxy passes the code and status
+    straight through so the scan bar mints a fresh key and lets the operator resubmit,
+    never guessing from message text."""
+    from ui.api_client import APIError
+    msg = "This scan run was already recorded against a different batch."
+    err = APIError(409, msg, data={"code": "scan_run_conflict", "detail": msg})
+    with patch("ui.api_client.scan_list", new=AsyncMock(side_effect=err)):
+        r = await ui_client.post(
+            "/lists/list:L1/scan",
+            data={"barcode": "ABC123", "run_key": "run-1"},
+            cookies=_authed(),
+        )
+    assert r.status_code == 409
+    body = r.json()
+    assert body["code"] == "scan_run_conflict"
+    assert "different batch" in body["detail"]
+
+
+@pytest.mark.asyncio
+async def test_list_scan_proxy_plain_rejection_wraps_detail(ui_client):
+    """A list-level rejection carrying only a string detail (a closed or void list)
+    still returns JSON {detail: "..."} with the backend status - no machine code, so
+    the scan bar shows the reason and keeps the field for a plain retry."""
+    from ui.api_client import APIError
+    with patch("ui.api_client.scan_list",
+               new=AsyncMock(side_effect=APIError(409, "This list is closed."))):
+        r = await ui_client.post(
+            "/lists/list:L1/scan",
+            data={"barcode": "ABC123", "run_key": "run-1"},
+            cookies=_authed(),
+        )
+    assert r.status_code == 409
+    assert r.json() == {"detail": "This list is closed."}
+
+
+@pytest.mark.asyncio
+async def test_list_scan_proxy_returns_fresh_version(ui_client):
+    """On a successful scan the proxy hands back the list's post-write projection
+    version, so the client's optimistic-lock token tracks the scan's write and a
+    later line save does not 409 on a stale version."""
+    scan = AsyncMock(return_value={"scanned": 1, "failed": []})
+    get = AsyncMock(return_value={"list_type": "quotation", "status": "draft", "version": 4242})
+    with patch("ui.api_client.scan_list", new=scan), patch("ui.api_client.get_list", new=get):
+        r = await ui_client.post(
+            "/lists/list:L1/scan",
+            data={"barcode": "ABC123", "run_key": "run-1"},
+            cookies=_authed(),
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["scanned"] == 1
+    assert body["version"] == 4242
+    assert body["html"] == ""
 
 
 def _inventory_nav_slots():
