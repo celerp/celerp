@@ -609,6 +609,10 @@ async def create_user(
             raise HTTPException(status_code=400, detail=f"User creation failed: {e}") from e
         return {"id": str(existing_user.id)}
 
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if not any(c.isalpha() for c in payload.password) or not any(c.isdigit() for c in payload.password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one letter and one number")
     user = User(
         id=uuid.uuid4(),
         email=payload.email,

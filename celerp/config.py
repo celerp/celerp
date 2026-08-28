@@ -83,8 +83,9 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CELERP_PG_BIN_DIR", "pg_bin_dir"),
     )
 
-    # Cookie security — set True in prod (HTTPS); False allows HTTP in dev/CI
-    cookie_secure: bool = False
+    # Cookie security — True by default (fail-secure). Set COOKIE_SECURE=false for
+    # local HTTP dev environments only. Production must never set this to false.
+    cookie_secure: bool = True
     # Redis URL for distributed rate limiting; empty = per-process only
     redis_url: str = ""  # e.g. redis://localhost:6379/0
     # Email: SMTP fallback for self-hosted installs.

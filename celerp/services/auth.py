@@ -145,16 +145,16 @@ async def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Company is deactivated")
 
     # Validate session nonce: rejects tokens minted before the last logout/force-login.
-    # Tokens without the snonce claim (empty string) are allowed through - these are
-    # tokens minted directly in tests or before this deploy, where no nonce was embedded.
+    # If snonce is empty on the token but the user HAS a nonce row in DB, the token
+    # predates session tracking and is treated as stale — reject it so old tokens
+    # cannot bypass forced logouts.
     from celerp.services.session_tracker import get_nonce as _get_nonce, pop_evicted_by_ip as _pop_ip
     token_nonce = claims.get("snonce", "")
-    if token_nonce:
-        current_nonce = await _get_nonce(session, str(user.id))
-        if token_nonce != current_nonce:
-            evicting_ip = await _pop_ip(session, str(user.id))
-            detail = f"Session expired|{evicting_ip}" if evicting_ip else "Session expired"
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+    current_nonce = await _get_nonce(session, str(user.id))
+    if current_nonce and token_nonce != current_nonce:
+        evicting_ip = await _pop_ip(session, str(user.id))
+        detail = f"Session expired|{evicting_ip}" if evicting_ip else "Session expired"
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
 
     return user
 

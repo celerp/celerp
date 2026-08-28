@@ -175,6 +175,12 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         await session.commit()
     except Exception as e:
         await session.rollback()
+        # Catch concurrent bootstrap race: a second simultaneous request may have
+        # inserted a user between our SELECT and our INSERT, violating the "one admin"
+        # guarantee. Treat any uniqueness error as "already bootstrapped".
+        err_str = str(e).lower()
+        if "unique" in err_str or "duplicate" in err_str:
+            raise HTTPException(status_code=403, detail="System already bootstrapped. Contact your admin.")
         logger.error("register failed: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=f"Registration failed: {e}") from e
 
@@ -193,7 +199,7 @@ limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/login")
-@limiter.limit("10/minute")
+@limiter.limit("5/minute")
 async def login(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
     user = (await session.execute(select(User).where(User.email == payload.email))).scalar_one_or_none()
     if not user or not user.auth_hash or not verify_password(payload.password, user.auth_hash) or not user.is_active:
@@ -373,8 +379,12 @@ async def password_reset_request(
         await session.execute(select(User).where(User.email == payload.email))
     ).scalar_one_or_none()
     if user:
+        import hashlib
         token = secrets.token_urlsafe(32)
-        user.reset_token = token
+        # Store only the hash — the raw token travels via email, never persisted.
+        # If the DB leaks, the hash alone cannot be used to trigger a reset.
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        user.reset_token = token_hash
         user.reset_token_expires = datetime.now(timezone.utc) + timedelta(minutes=_RESET_TOKEN_TTL_MINUTES)
         await session.commit()
 
@@ -418,8 +428,10 @@ async def password_reset_confirm(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Confirm password reset with token and new password."""
+    import hashlib
+    token_hash = hashlib.sha256(payload.token.encode()).hexdigest()
     user = (
-        await session.execute(select(User).where(User.reset_token == payload.token))
+        await session.execute(select(User).where(User.reset_token == token_hash))
     ).scalar_one_or_none()
     if not user or not user.reset_token_expires:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
@@ -430,6 +442,8 @@ async def password_reset_confirm(
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
     if len(payload.new_password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if not any(c.isalpha() for c in payload.new_password) or not any(c.isdigit() for c in payload.new_password):
+        raise HTTPException(status_code=400, detail="Password must contain at least one letter and one number")
     user.auth_hash = hash_password(payload.new_password)
     user.reset_token = None
     user.reset_token_expires = None
@@ -453,6 +467,8 @@ async def change_password(
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     if len(payload.new_password) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    if not any(c.isalpha() for c in payload.new_password) or not any(c.isdigit() for c in payload.new_password):
+        raise HTTPException(status_code=400, detail="New password must contain at least one letter and one number")
     user.auth_hash = hash_password(payload.new_password)
     await session.commit()
     return {"detail": "Password changed successfully."}

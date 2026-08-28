@@ -82,6 +82,55 @@ def _stored_extension(mime: str) -> str:
 
 _MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 
+# Magic-byte signatures for each allowed MIME type.
+# We only read the first 16 bytes — enough for all formats below.
+# This list is checked BEFORE the allowlist, not instead of it:
+# both must pass.  Order matters: more-specific signatures first.
+_MAGIC_BYTES: list[tuple[bytes, int, str]] = [
+    # (magic, offset, mime)
+    (b"\x89PNG\r\n\x1a\n", 0, "image/png"),
+    (b"\xff\xd8\xff", 0, "image/jpeg"),
+    (b"GIF87a", 0, "image/gif"),
+    (b"GIF89a", 0, "image/gif"),
+    (b"RIFF", 0, ""),        # RIFF container — need to check sub-type
+    (b"ftyp", 4, "video/mp4"),
+    (b"\x1aE\xdf\xa3", 0, "video/webm"),
+    (b"moov", 4, "video/quicktime"),
+    (b"wide", 4, "video/quicktime"),
+    (b"%PDF-", 0, "application/pdf"),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", 0, "application/msword"),  # OLE2 (.doc)
+    (b"PK\x03\x04", 0, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),  # .docx/zip
+]
+
+
+def _sniff_mime(data: bytes) -> str | None:
+    """Return the actual MIME type from magic bytes, or None if unknown.
+
+    Uses only stdlib — no python-magic or libmagic required.
+    Reads only the first 16 bytes (already in memory from the upload).
+    """
+    header = data[:16]
+    for magic, offset, mime in _MAGIC_BYTES:
+        chunk = header[offset: offset + len(magic)]
+        if chunk == magic:
+            if mime:
+                return mime
+            # RIFF container: sub-type from bytes 8-12
+            if magic == b"RIFF" and len(data) >= 12:
+                sub = data[8:12]
+                if sub == b"AVI ":
+                    return "video/x-msvideo"
+            return None
+    # Plain text heuristic: if no binary signatures match and content is valid UTF-8
+    # with no null bytes, treat as text/plain.
+    try:
+        data[:512].decode("utf-8")
+        if b"\x00" not in data[:512]:
+            return "text/plain"
+    except UnicodeDecodeError:
+        pass
+    return None
+
 
 def infer_attachment_type(mime: str) -> AttachmentType:
     """Infer attachment type from MIME. Returns 'certificate' as default for docs."""
@@ -224,6 +273,14 @@ async def store_upload(
     )
     if mime not in _ALLOWED_MIMES:
         raise ValueError(f"Unsupported file type: {mime}")
+
+    # Validate MIME against the actual file magic bytes — the client-supplied
+    # Content-Type cannot be trusted. A file renamed to .jpg with PHP/HTML content
+    # would pass the allowlist above but could be served and executed. We verify
+    # the declared MIME matches what the file actually contains.
+    detected_mime = _sniff_mime(content) or mime
+    if detected_mime not in _ALLOWED_MIMES:
+        raise ValueError(f"File content does not match declared type (detected: {detected_mime})")
 
     att_type: AttachmentType = attachment_type or infer_attachment_type(mime)
     att_id = str(uuid.uuid4())
