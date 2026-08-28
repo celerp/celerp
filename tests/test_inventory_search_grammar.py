@@ -82,3 +82,54 @@ def test_inventory_search_match_reasons():
     # item_matches_query stays the boolean view of the same grammar.
     assert item_matches_query(item, "255")
     assert not item_matches_query(item, "nope")
+
+
+def test_inventory_search_excludes_internal_bookkeeping():
+    """Issue #306: search must not reach internal bookkeeping. A term that appears
+    only inside the idempotency key, an id, or a lineage reference is not a hit."""
+    # The idempotency key preserves the ORIGINAL import barcode (csv:item:bc:100) even
+    # after the barcode is edited to 200. Searching the obsolete 100 must not find it.
+    item = _item(name="Widget", sku="WDGT", barcode="200",
+                 idempotency_key="csv:item:bc:100")
+    assert query_match_reasons(item, "100") is None
+    assert not item_matches_query(item, "100")
+    assert item_matches_query(item, "200")  # the current barcode still matches
+    # ids and lineage references (the internal *_id / relationship fields) are excluded.
+    leaky = _item(name="Bolt", sku="BLT", parent_id="itm_abc123",
+                  status_doc_id="doc_xyz", merged_into="itm_gone")
+    assert query_match_reasons(leaky, "abc123") is None
+    assert query_match_reasons(leaky, "doc_xyz") is None
+    assert query_match_reasons(leaky, "itm_gone") is None
+
+
+def test_inventory_search_preserves_user_facing_fields():
+    """The user-facing text fields a person reads on an item stay searchable - the #306
+    fix must not narrow this. status_doc_number in particular is what sold and consigned
+    items are traced by (test_fulfillment / test_doc_workflows assert this end to end)."""
+    cases = [
+        ("name", "Special Widget", "special"),
+        ("sku", "WDGT-9", "wdgt-9"),
+        ("barcode", "5901234", "5901234"),
+        ("description", "brushed nickel", "nickel"),
+        ("short_description", "left-hand thread", "thread"),
+        ("category", "Fasteners", "fasteners"),
+        ("notes", "handle with care", "care"),
+        ("hs_code", "7318.15", "7318"),
+        ("batch_no", "B-2026-07", "2026-07"),
+        ("purchase_name", "Hex Bolt M8", "hex bolt"),
+        ("purchase_sku", "SUP-HB-M8", "sup-hb"),
+        ("location_name", "Aisle 4 Bay 2", "aisle 4"),
+        ("sell_by", "carat", "carat"),
+        ("unit", "kilogram", "kilogram"),
+        ("weight_unit", "gram", "gram"),
+        ("gross_weight_unit", "ounce", "ounce"),
+        ("purchase_unit", "dozen", "dozen"),
+        ("inventory_type", "service", "service"),
+        ("status_doc_number", "SO-1042", "so-1042"),
+        ("lot", "LOT-77A", "lot-77a"),
+    ]
+    for field, value, term in cases:
+        assert query_match_reasons(_item(**{field: value}), term) == [(field, term)], field
+        assert item_matches_query(_item(**{field: value}), term), field
+    # A dynamic category attribute is not a core key, so it stays searchable too.
+    assert query_match_reasons(_item(color="ruby red"), "ruby") == [("color", "ruby")]

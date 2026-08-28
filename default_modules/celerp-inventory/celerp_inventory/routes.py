@@ -49,7 +49,7 @@ from celerp.services.pricing import (
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.line_measures import splitting_allowed
-from celerp_inventory.projections import is_item_available
+from celerp_inventory.projections import _is_core_key, is_item_available
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -472,12 +472,20 @@ async def assert_not_draft(session: AsyncSession, company_id, entity_id: str, ac
 # The inventory (and global) search bar accepts: `,` = OR groups, `&` = AND terms,
 # `lo-hi` = numeric range over quantity/weight/pieces, a bare number = numeric-exact
 # OR text substring, anything else = text substring over the fields below.
-_SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category")
+# The closed allowlist of user-facing text fields the free-text search covers. It is
+# every core field a user reads on an item: identity, descriptions, unit-of-measure
+# codes, inventory type, and the status doc number rows are traced by. "Core" here is
+# the projection's write-side storage class, NOT a synonym for "internal", so the list
+# is chosen by what the user actually sees, not by that classification. Core fields
+# left off are genuine bookkeeping (idempotency_key, id/lineage refs like parent_id and
+# status_doc_id, internal classifications) and are deliberately unsearchable (#306);
+# numeric columns match only through the explicit numeric path.
+_SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category",
+                  "short_description", "notes", "hs_code", "batch_no",
+                  "purchase_name", "purchase_sku", "location_name",
+                  "sell_by", "unit", "weight_unit", "gross_weight_unit",
+                  "purchase_unit", "inventory_type", "status_doc_number", "lot")
 _NUMERIC_FIELDS = ("quantity", "weight", "pieces")
-# Keys excluded from the free-text substring loop (numeric columns are matched only
-# by the explicit numeric path, never by substring, so "5" never matches "50").
-_SKIP_KEYS = frozenset({"id", "entity_id", "company_id", "location_id", "quantity",
-                        "weight", "pieces", "status", "created_at", "updated_at"})
 # A range is PURE number-dash-number only, so a hyphenated SKU (SHOT274-005) stays literal.
 _RANGE_RE = re.compile(r"^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$")
 
@@ -503,8 +511,14 @@ def _text_match(record: dict, term: str) -> str | None:
     for field in _SEARCH_FIELDS:
         if term in str(record.get(field, "")).lower():
             return field
+    # Named fields aside, the only other searchable values are DYNAMIC category
+    # attributes, which flatten to the top level. Skipping every core key
+    # (projections._is_core_key marks the closed core set) is what keeps internal
+    # bookkeeping (idempotency_key, id/lineage refs) out of search (#306) while still
+    # matching user-defined attribute values; numeric columns match only via the
+    # explicit numeric path, never by substring.
     for k, v in record.items():
-        if k in _SKIP_KEYS or k in _SEARCH_FIELDS or k.endswith("_price"):
+        if _is_core_key(k) or k in _NUMERIC_FIELDS:
             continue
         if isinstance(v, str) and term in v.lower():
             return k
