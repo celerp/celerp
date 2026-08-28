@@ -124,7 +124,7 @@ def test_inventory_search_preserves_user_facing_fields():
         ("weight_unit", "gram", "gram"),
         ("gross_weight_unit", "ounce", "ounce"),
         ("purchase_unit", "dozen", "dozen"),
-        ("inventory_type", "consignment", "consignment"),
+        ("inventory_type", "service", "service"),
         ("status_doc_number", "SO-1042", "so-1042"),
         ("lot", "LOT-77A", "lot-77a"),
     ]
