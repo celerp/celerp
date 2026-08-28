@@ -82,3 +82,26 @@ def test_inventory_search_match_reasons():
     # item_matches_query stays the boolean view of the same grammar.
     assert item_matches_query(item, "255")
     assert not item_matches_query(item, "nope")
+
+
+def test_inventory_search_excludes_internal_fields():
+    """Issue #306: user-facing search must not reach internal bookkeeping fields.
+    A term that appears only inside the item's idempotency key (or id/lineage refs)
+    is not a hit; current user-facing fields and dynamic attributes still match."""
+    # The idempotency key preserves the ORIGINAL import barcode (csv:item:bc:100) even
+    # after the barcode is edited to 200. Searching the obsolete 100 must not find it.
+    item = _item(name="Widget", sku="WDGT", barcode="200",
+                 idempotency_key="csv:item:bc:100")
+    assert query_match_reasons(item, "100") is None
+    assert not item_matches_query(item, "100")
+    assert item_matches_query(item, "200")  # the current barcode still matches
+    # Other internal identifiers are excluded by the same core-key scoping.
+    leaky = _item(name="Bolt", sku="BLT", parent_id="itm_abc123",
+                  status_doc_id="doc_xyz", inventory_type="consignment")
+    assert query_match_reasons(leaky, "abc123") is None
+    assert query_match_reasons(leaky, "doc_xyz") is None
+    assert query_match_reasons(leaky, "consignment") is None
+    # A genuine attribute value is not a core key, so it stays searchable.
+    assert query_match_reasons(_item(color="ruby red"), "ruby") == [("color", "ruby")]
+    # Legitimate user-facing core text stays searchable.
+    assert query_match_reasons(_item(notes="handle with care"), "care") == [("notes", "care")]

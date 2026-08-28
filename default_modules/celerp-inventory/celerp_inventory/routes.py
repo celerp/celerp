@@ -49,7 +49,7 @@ from celerp.services.pricing import (
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.line_measures import splitting_allowed
-from celerp_inventory.projections import is_item_available
+from celerp_inventory.projections import _is_core_key, is_item_available
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -472,12 +472,14 @@ async def assert_not_draft(session: AsyncSession, company_id, entity_id: str, ac
 # The inventory (and global) search bar accepts: `,` = OR groups, `&` = AND terms,
 # `lo-hi` = numeric range over quantity/weight/pieces, a bare number = numeric-exact
 # OR text substring, anything else = text substring over the fields below.
-_SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category")
+# The closed allowlist of user-facing core fields the free-text search covers. Any
+# core field NOT listed here (idempotency_key, id/lineage refs, unit-of-measure codes,
+# internal classifications) is deliberately excluded - user search reflects the item's
+# user-facing data, not internal bookkeeping (#306).
+_SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category",
+                  "short_description", "notes", "hs_code", "batch_no",
+                  "purchase_name", "purchase_sku", "location_name")
 _NUMERIC_FIELDS = ("quantity", "weight", "pieces")
-# Keys excluded from the free-text substring loop (numeric columns are matched only
-# by the explicit numeric path, never by substring, so "5" never matches "50").
-_SKIP_KEYS = frozenset({"id", "entity_id", "company_id", "location_id", "quantity",
-                        "weight", "pieces", "status", "created_at", "updated_at"})
 # A range is PURE number-dash-number only, so a hyphenated SKU (SHOT274-005) stays literal.
 _RANGE_RE = re.compile(r"^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$")
 
@@ -503,8 +505,12 @@ def _text_match(record: dict, term: str) -> str | None:
     for field in _SEARCH_FIELDS:
         if term in str(record.get(field, "")).lower():
             return field
+    # Beyond the named core fields, only DYNAMIC attribute values are searchable. Core
+    # keys are a closed set (projections._is_core_key), so skipping them keeps internal
+    # bookkeeping (idempotency_key, id/lineage refs, unit codes) out of search (#306);
+    # numeric columns are matched only by the explicit numeric path, never by substring.
     for k, v in record.items():
-        if k in _SKIP_KEYS or k in _SEARCH_FIELDS or k.endswith("_price"):
+        if _is_core_key(k) or k in _NUMERIC_FIELDS:
             continue
         if isinstance(v, str) and term in v.lower():
             return k
