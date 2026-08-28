@@ -25,12 +25,21 @@ _MESSAGES = {
         " unresponsive. Upgrade your RAM or close other applications."
     ),
     "cpu_warning": "Your computer's processor is under heavy load. Response times may be slow.",
-    "disk_warning": "Your disk is getting full. Free up space to keep Celerp running smoothly.",
-    "disk_critical": (
-        "Your disk is almost full. Celerp may stop working if disk space runs out."
-        " Free up space immediately."
-    ),
 }
+
+
+def _disk_message(suffix: str, used_percent: float, free_gb: float, total_gb: float) -> str:
+    """A disk warning that names the numbers the user needs to act: how much is free
+    now, the total, and how much to free to clear the warning. The clear target is the
+    warning threshold (used <= _DISK_WARN), so the same actionable figure is shown for
+    both warning and critical - it is what makes the message disappear."""
+    to_free = round(max(0.0, (used_percent - _DISK_WARN) / 100.0 * total_gb), 1)
+    where = f"{free_gb:.1f} GB free of {total_gb:.1f} GB"
+    if suffix == "critical":
+        return (f"Your disk is almost full: {where}. Free up about {to_free:.1f} GB to"
+                " clear this warning, or Celerp may stop working if space runs out.")
+    return (f"Your disk is getting full: {where}. Free up about {to_free:.1f} GB more"
+            " to clear this warning.")
 
 
 def _threshold(value: float, warn: float, crit: float | None) -> tuple[str, str | None]:
@@ -54,6 +63,8 @@ def get_system_health() -> dict:
     ram_status, ram_suffix = _threshold(mem.percent, _RAM_WARN, _RAM_CRIT)
     cpu_status, cpu_suffix = _threshold(cpu_pct, _CPU_WARN, None)
     disk_status, disk_suffix = _threshold(disk.percent, _DISK_WARN, _DISK_CRIT)
+    disk_free_gb = round(disk.free / _GB, 2)
+    disk_total_gb = round(disk.total / _GB, 2)
 
     return {
         "ram": {
@@ -70,10 +81,10 @@ def get_system_health() -> dict:
         },
         "disk": {
             "used_percent": disk.percent,
-            "free_gb": round(disk.free / _GB, 2),
-            "total_gb": round(disk.total / _GB, 2),
+            "free_gb": disk_free_gb,
+            "total_gb": disk_total_gb,
             "status": disk_status,
-            "message": _MESSAGES.get(f"disk_{disk_suffix}") if disk_suffix else None,
+            "message": _disk_message(disk_suffix, disk.percent, disk_free_gb, disk_total_gb) if disk_suffix else None,
         },
         "overall": _worst(ram_status, cpu_status, disk_status),
     }

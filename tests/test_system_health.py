@@ -76,15 +76,26 @@ def test_cpu_warning():
 
 def test_disk_warning():
     result = _call(*_OK_MEM, _OK_CPU, 85.0, 15.0, 100.0)
+    msg = result["disk"]["message"]
     assert result["disk"]["status"] == "warning"
-    assert "full" in result["disk"]["message"].lower()
+    assert "full" in msg.lower()
+    # The message names the current free space, the total, and how much to free to
+    # clear the warning (used 85% -> free 5.0 GB to reach the 80% threshold on 100 GB).
+    assert "15.0 GB free of 100.0 GB" in msg
+    assert "5.0 GB" in msg
+    assert "clear this warning" in msg
 
 
 def test_disk_critical():
     result = _call(*_OK_MEM, _OK_CPU, 93.0, 7.0, 100.0)
+    msg = result["disk"]["message"]
     assert result["disk"]["status"] == "critical"
-    assert "almost full" in result["disk"]["message"].lower()
+    assert "almost full" in msg.lower()
     assert result["overall"] == "critical"
+    # Critical also names the numbers and the clear-warning target (used 93% -> 13.0 GB).
+    assert "7.0 GB free of 100.0 GB" in msg
+    assert "13.0 GB" in msg
+    assert "clear this warning" in msg
 
 
 def test_overall_worst_wins():
