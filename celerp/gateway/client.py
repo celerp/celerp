@@ -360,6 +360,14 @@ class GatewayClient:
                 from celerp.gateway.state import set_feature_flags
                 set_feature_flags(feature_flags)
                 await self._persist_feature_flags(feature_flags)
+            # commercial_context rides hello_ack when present; its absence must
+            # leave any cached partner_managed identity intact, so the read is
+            # presence-guarded rather than defaulted.
+            if "commercial_context" in payload:
+                from celerp.gateway.state import set_commercial_context
+                ctx = payload["commercial_context"]
+                if set_commercial_context(ctx):
+                    await self._persist_commercial_context(ctx)
             # tier/status ride hello_ack too (not just subscription_updated): a
             # plain free connection never triggers a Stripe billing event, so
             # that push alone would never tell a free instance its own tier.
@@ -425,6 +433,13 @@ class GatewayClient:
         elif msg_type == "invoice.payment":
             self._spawn(self._handle_invoice_payment(payload))
 
+        elif msg_type == "commercial_updated":
+            # The payload is the context itself (flat, like subscription_updated);
+            # the same acceptance gate and persist path as the hello_ack branch.
+            from celerp.gateway.state import set_commercial_context
+            if set_commercial_context(payload):
+                await self._persist_commercial_context(payload)
+
         else:
             log.debug("Unhandled gateway message type: %s", msg_type)
 
@@ -451,6 +466,38 @@ class GatewayClient:
             log.debug("Gateway: feature_flags persisted to config.")
         except Exception as exc:
             log.warning("Gateway: failed to persist feature_flags: %s", exc)
+
+    async def _persist_commercial_context(self, ctx: dict) -> None:
+        """Write commercial_context into Electron's celerp-config.json.
+
+        Best-effort: only works inside Electron where CELERP_DATA_DIR is set; a
+        no-op in dev/server mode. Read-merges the single key so the existing
+        feature_flags entry is preserved, and writes atomically (a temp file on
+        the same directory then os.replace) so a crash mid-write never leaves a
+        torn config for the next startup read.
+        """
+        data_dir = os.environ.get("CELERP_DATA_DIR", "")
+        if not data_dir:
+            return
+        config_path = os.path.join(data_dir, "celerp-config.json")
+        tmp_path = f"{config_path}.{uuid.uuid4().hex}.tmp"
+        try:
+            existing: dict = {}
+            if os.path.exists(config_path):
+                with open(config_path) as f:
+                    existing = json.load(f)
+            existing["commercial_context"] = ctx
+            with open(tmp_path, "w") as f:
+                json.dump(existing, f, indent=2)
+            os.replace(tmp_path, config_path)
+            log.debug("Gateway: commercial_context persisted to config.")
+        except Exception as exc:
+            log.warning("Gateway: failed to persist commercial_context: %s", exc)
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
 
     async def _handle_shopify_webhook(self, payload: dict) -> None:
         """A Shopify webhook the relay forwarded. Trigger a targeted incremental
