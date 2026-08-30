@@ -46,6 +46,7 @@
       "main.js",
       "app-main.js",
       "restart.js",
+      "db-mode.js",
       "migrate_cmd.js",
       "preload.js",
       "assets/**"
