@@ -3054,5 +3054,12 @@
   "settings.tab_line_items": "รายการสินค้า",
   "th.factor": "ตัวคูณ",
   "th.position": "#",
-  "th.rounding": "การปัดเศษ"
+  "th.rounding": "การปัดเศษ",
+  "btn.decline": "ปฏิเสธ",
+  "settings_cloud.partner_claim_title": "การอ้างสิทธิ์ของพาร์ทเนอร์",
+  "settings_cloud.partner_claim_desc": "หากพาร์ทเนอร์ให้รหัสอ้างสิทธิ์แก่คุณเพื่อจัดการการติดตั้งนี้ ให้วางรหัสที่นี่เพื่อตรวจสอบว่าพวกเขาเป็นใครก่อนที่คุณจะยอมรับ",
+  "settings_cloud.partner_claim_token_placeholder": "วางรหัสอ้างสิทธิ์",
+  "settings_cloud.partner_claim_review": "ตรวจสอบการอ้างสิทธิ์",
+  "settings_cloud.partner_claim_managed_by": "การติดตั้งนี้จะถูกจัดการโดย:",
+  "settings_cloud.partner_claim_error": "ไม่สามารถยืนยันการอ้างสิทธิ์นี้ได้ อาจไม่ถูกต้อง หมดอายุ หรือถูกใช้ไปแล้ว"
 }

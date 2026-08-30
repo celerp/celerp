@@ -3054,5 +3054,12 @@
   "settings.rounding_tooltip": "Arrondit les prix calculés à l’incrément le plus proche afin d’obtenir des prix dérivés arrondis.",
   "settings.tab_line_items": "Lignes",
   "th.factor": "Facteur",
-  "th.rounding": "Arrondi"
+  "th.rounding": "Arrondi",
+  "btn.decline": "Refuser",
+  "settings_cloud.partner_claim_title": "Revendication de partenaire",
+  "settings_cloud.partner_claim_desc": "Si un partenaire vous a donné un code de revendication pour gérer cette installation, collez-le ici afin de vérifier son identité avant d'accepter.",
+  "settings_cloud.partner_claim_token_placeholder": "Coller le code de revendication",
+  "settings_cloud.partner_claim_review": "Vérifier la revendication",
+  "settings_cloud.partner_claim_managed_by": "Cette installation sera gérée par :",
+  "settings_cloud.partner_claim_error": "Cette revendication n'a pas pu être vérifiée. Elle est peut-être invalide, expirée ou déjà utilisée."
 }

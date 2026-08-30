@@ -2413,7 +2413,7 @@ async def activate_relay(token: str) -> dict:
 
 
 async def resolve_partner_claim(token: str, claim_token: str) -> dict:
-    """POST /settings/partner-claim/resolve — preview the partner behind a claim
+    """POST /settings/partner-claim/resolve - preview the partner behind a claim
     token. Binds nothing. Returns the identity preview or a neutral error dict."""
     async with _api_client(token) as c:
         return _raise(await c.post(
@@ -2421,7 +2421,7 @@ async def resolve_partner_claim(token: str, claim_token: str) -> dict:
 
 
 async def accept_partner_claim(token: str, claim_token: str) -> dict:
-    """POST /settings/partner-claim/accept — accept the claim; the relay binds the
+    """POST /settings/partner-claim/accept - accept the claim; the relay binds the
     relationship and pushes the new commercial context."""
     async with _api_client(token) as c:
         return _raise(await c.post(

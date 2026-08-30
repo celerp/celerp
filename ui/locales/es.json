@@ -3054,5 +3054,12 @@
   "settings.tab_line_items": "Líneas",
   "th.factor": "Factor",
   "th.position": "#",
-  "th.rounding": "Redondeo"
+  "th.rounding": "Redondeo",
+  "btn.decline": "Rechazar",
+  "settings_cloud.partner_claim_title": "Reclamación de socio",
+  "settings_cloud.partner_claim_desc": "Si un socio le dio un código de reclamación para gestionar esta instalación, péguelo aquí para revisar quién es antes de aceptar.",
+  "settings_cloud.partner_claim_token_placeholder": "Pegar código de reclamación",
+  "settings_cloud.partner_claim_review": "Revisar reclamación",
+  "settings_cloud.partner_claim_managed_by": "Esta instalación será gestionada por:",
+  "settings_cloud.partner_claim_error": "No se pudo verificar esta reclamación. Puede que no sea válida, haya caducado o ya se haya usado."
 }

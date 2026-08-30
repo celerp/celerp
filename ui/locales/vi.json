@@ -3054,5 +3054,12 @@
   "settings.tab_line_items": "Dòng chi tiết",
   "th.factor": "Hệ số",
   "th.position": "#",
-  "th.rounding": "Làm tròn"
+  "th.rounding": "Làm tròn",
+  "btn.decline": "Từ chối",
+  "settings_cloud.partner_claim_title": "Yêu cầu của đối tác",
+  "settings_cloud.partner_claim_desc": "Nếu một đối tác đã cung cấp cho bạn mã yêu cầu để quản lý bản cài đặt này, hãy dán mã vào đây để xem họ là ai trước khi bạn chấp nhận.",
+  "settings_cloud.partner_claim_token_placeholder": "Dán mã yêu cầu",
+  "settings_cloud.partner_claim_review": "Xem lại yêu cầu",
+  "settings_cloud.partner_claim_managed_by": "Bản cài đặt này sẽ được quản lý bởi:",
+  "settings_cloud.partner_claim_error": "Không thể xác minh yêu cầu này. Yêu cầu có thể không hợp lệ, đã hết hạn hoặc đã được sử dụng."
 }
