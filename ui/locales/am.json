@@ -406,6 +406,8 @@
   "cloud.hero_desc1": "ከቤትዎ ሆነው ክምችትን ይመልከቱ። ሰራተኞችዎ ከመሸጫ ቦታ እንዲገቡ ያድርጉ፣ እያንዳንዳቸው በሰጧቸው ፈቃዶች። Celerp በእርስዎ ማሽን ላይ መስራቱን ይቀጥላል ውሂብዎም እዚያው ይቆያል፣ Web Access ከማንኛውም አሳሽ ሊደርሱበት የሚችሉት ደህንነቱ የተጠበቀ URL (እንደ yourname.celerp.com ያለ) ይጨምራል።",
   "cloud.hero_desc2": "የእርስዎ መረጃ ከማሽንዎ ፈጽሞ አይወጣም። እኛ ግንኙነቱን ብቻ እናስተላልፋለን።",
   "cloud.hero_title": "Celerp ከየትኛውም ቦታ ይድረሱበት",
+  "cloud.partner_managed_note": "የእርስዎ የCelerp ደንበኝነት በአተገባበር አጋርዎ ይተዳደራል።",
+  "cloud.partner_support": "የአጋር ድጋፍን ያግኙ",
   "cloud.plan_ai_b1": "በቀላል ቋንቋ ጥያቄዎችን ይጠይቁ",
   "cloud.plan_ai_b2": "የግዢ ትዕዛዞችን በራስ-ሰር ያርቁ፣ የሽያጭ ደረሰኞችን ያስታርቁ",
   "cloud.plan_ai_b3": "200 የAI ጥያቄዎች/ወር",

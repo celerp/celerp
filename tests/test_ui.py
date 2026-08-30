@@ -19925,3 +19925,84 @@ class TestDisposedTab:
             r = await ui_client.get("/inventory?status=disposed", cookies=_authed())
         assert r.status_code == 200
         assert "No disposed items." in r.content.decode()
+
+
+class TestCommercialRoutingRender:
+    """Mode-driven rendering of the /settings/cloud plan area: celerp_direct
+    shows the direct grid, partner_managed shows the partner offer with no
+    direct Celerp price."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_commercial_context(self):
+        import celerp.gateway.state as gw_state
+        gw_state._commercial_context = {}
+        yield
+        gw_state._commercial_context = {}
+
+    @staticmethod
+    def _set_partner(offer="default"):
+        import celerp.gateway.state as gw_state
+        if offer == "default":
+            offer = {
+                "display_name": "Managed Plan",
+                "retail_amount": 4900,
+                "currency": "USD",
+                "billing_interval": "month",
+                "service_bullets": ["Setup", "Support"],
+            }
+        ctx = {
+            "commercial_mode": "partner_managed",
+            "implementation": {"display_name": "Partner Co",
+                               "support_url": "https://partner.example.com/support"},
+        }
+        if offer is not None:
+            ctx["offer"] = offer
+        gw_state._commercial_context = ctx
+
+    def test_partner_managed_grid_hides_direct_prices(self):
+        """A partner-managed install shows the partner offer and none of the
+        direct Celerp prices or plan CTAs (#12)."""
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        self._set_partner()
+        html = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "USD $" not in html          # no direct $29/$49/$99 prices
+        assert "plan=cloud" not in html
+        assert "plan=ai" not in html
+        assert "cloud-plans" not in html
+        assert "Managed Plan" in html        # partner offer rendered instead
+
+    def test_partner_managed_offer_null_shows_neutral_contact(self):
+        """Partner-managed with no synced offer degrades to the neutral contact
+        message, still no direct price (#12)."""
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        self._set_partner(offer=None)
+        html = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "managed by your implementation partner" in html
+        assert "USD $" not in html
+        assert "plan=cloud" not in html
+        assert "cloud-plans" not in html
+
+    def test_direct_grid_unchanged_shows_plan_ai(self):
+        """A celerp_direct install renders the standard direct grid with the AI
+        plan CTA and no partner offer (#13)."""
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        html = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "cloud-plans" in html
+        assert "plan=ai" in html
+        assert "Managed Plan" not in html
+        assert "managed by your implementation partner" not in html
+
+    def test_partner_display_independent_of_tier(self):
+        """The partner display name renders identically regardless of the local
+        billing tier (#14): rendering reads the commercial context, not the
+        tier."""
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        self._set_partner()
+        first = to_xml(_plans_ad("inst-1", lang="en"))
+        second = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "Partner Co" in first
+        assert first == second
