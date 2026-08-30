@@ -22,10 +22,21 @@ from ui.routes.settings_general import _section_breadcrumb
 
 
 def _has_team_features(state: dict) -> bool:
-    """Whether Team-tier infrastructure features are entitled, from fetched
-    commercial state. Pure predicate: no I/O, fail-closed on a neutral state."""
+    """Whether Team-tier infrastructure controls should be shown.
+
+    Active entitlement comes from the fetched commercial state's feature flags.
+    During grace and after grace those flags are false, so also consult the
+    on-disk packaged db-state: infrastructure stays reachable while grace is
+    open, and after grace (an external database still configured on a lapsed
+    install) so the user can read the fallback notice and restore a backup.
+    Fail-closed on a neutral state.
+    """
+    from celerp.gateway.state import get_packaged_db_state
     flags = state.get("feature_flags") or {}
-    return bool(flags.get("external_db") or flags.get("external_storage"))
+    if flags.get("external_db") or flags.get("external_storage"):
+        return True
+    db_state = get_packaged_db_state()
+    return bool(db_state["in_grace"] or (db_state["has_external_url"] and not db_state["external_db_entitled"]))
 
 
 async def _commercial_state(request: Request) -> dict:
@@ -470,13 +481,63 @@ def _infra_storage_section() -> FT:
     )
 
 
-def _infrastructure_tab() -> FT:
-    """Team plan infrastructure config: external DB + S3 storage."""
-    return Div(
-        _infra_db_section(),
-        _infra_storage_section(),
-        cls="settings-card",
-    )
+def _format_deadline(value) -> str:
+    """Format an ISO-8601 grace deadline as a plain date. An unparseable value
+    falls back to its raw string rather than raising."""
+    if not value:
+        return ""
+    from datetime import datetime, timezone
+    try:
+        return datetime.fromisoformat(value).astimezone(timezone.utc).strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        return str(value)
+
+
+def _append_renewal(children: list, partner: dict | None, lang: str) -> None:
+    """Append the renewal affordance: a neutral renewal line always, plus a
+    partner support line only when the install is partner-managed. Never
+    fabricates a partner."""
+    children.append(P(t("grace.renew", lang), cls="settings-hint"))
+    if partner:
+        name = partner.get("display_name") or ""
+        children.append(P(t("grace.partner_support", lang, partner=name), cls="settings-hint"))
+
+
+def _grace_notice(state: dict, partner: dict | None, lang: str = "en") -> FT | None:
+    """Grace-period banner (during grace) or the after-grace persistent notice.
+
+    During grace: the renewal deadline, that the external database stays
+    customer-owned, and the renewal affordance. After grace: that the app has
+    fallen back to the local database, that the external database is still
+    available to reselect, and a warning that reselecting risks divergence.
+    Returns None when neither state applies.
+    """
+    if state.get("in_grace"):
+        children = [
+            P(t("grace.deadline", lang, deadline=_format_deadline(state.get("grace_period_ends")))),
+            P(t("grace.external_owned", lang), cls="settings-hint"),
+        ]
+        _append_renewal(children, partner, lang)
+        return Div(*children, cls="flash flash--warning", style="margin-bottom:12px;")
+    if state.get("has_external_url") and not state.get("external_db_entitled"):
+        children = [
+            P(t("grace.local_now", lang)),
+            P(t("grace.external_available", lang), cls="settings-hint"),
+            P(t("grace.divergence_warning", lang), cls="settings-hint"),
+        ]
+        _append_renewal(children, partner, lang)
+        return Div(*children, cls="flash flash--warning", style="margin-bottom:12px;")
+    return None
+
+
+def _infrastructure_tab(grace_notice: FT | None = None) -> FT:
+    """Team plan infrastructure config: external DB + S3 storage. The grace or
+    after-grace notice, when present, sits above the config sections."""
+    children: list = []
+    if grace_notice is not None:
+        children.append(grace_notice)
+    children.extend([_infra_db_section(), _infra_storage_section()])
+    return Div(*children, cls="settings-card")
 
 
 def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -> FT:
@@ -613,9 +674,11 @@ def setup_routes(app):
         # Connected or connecting - show tabs
         tab = request.query_params.get("tab", "status")
         has_team = _has_team_features(await _commercial_state(request))
+        from celerp.gateway.state import get_packaged_db_state, get_partner_identity
+        grace_notice = _grace_notice(get_packaged_db_state(), get_partner_identity(), lang=lang)
 
         if tab == "infrastructure" and has_team:
-            content = _infrastructure_tab()
+            content = _infrastructure_tab(grace_notice=grace_notice)
         elif tab in ("website", "accounting"):
             from ui.routes.settings_connectors import connectors_tab_content
             content = await connectors_tab_content(lang, token=token, category=tab)
@@ -629,8 +692,11 @@ def setup_routes(app):
             # no public_url and no backup entitlement, so the summary card is omitted
             # entirely rather than showing scheduler/pending state for a plan that
             # never runs backups.
-            parts = [_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier, token_bound=token_bound),
-                     _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)]
+            parts = []
+            if grace_notice is not None:
+                parts.append(grace_notice)
+            parts.extend([_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier, token_bound=token_bound),
+                          _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)])
             # A connected free-tier account keeps its free tabs but still sees
             # the paid-plan advertisement the not-connected page carries - the
             # plans are exactly what the free tier is missing. An unknown tier
