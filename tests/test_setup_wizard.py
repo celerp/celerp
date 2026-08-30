@@ -789,13 +789,16 @@ class TestSettingsSectionTabs:
         assert "tab=infrastructure" in self._xml(_cloud_tabs("status", has_team_features=True))
 
     def test_value_prop_plan_ctas_carry_plan_params(self):
-        """Each plan card's subscribe CTA sends its plan as a query param so
-        the website can attribute the click server-side; fragments never
-        reach the server."""
+        """Each direct plan card's subscribe CTA sends its plan as a query param
+        so the website can attribute the click server-side; fragments never
+        reach the server. The Team card routes to the Enterprise handoff, so it
+        carries no direct plan=team checkout."""
         from ui.routes.settings_cloud import _value_prop_page
         html = self._xml(_value_prop_page("test-instance"))
-        for plan in ("cloud", "ai", "team"):
+        for plan in ("cloud", "ai"):
             assert f"plan={plan}" in html, f"plan={plan} CTA missing"
+        assert "plan=team" not in html, "Team CTA must not emit a direct plan=team checkout"
+        assert "/enterprise?" in html, "Team CTA should resolve to the Enterprise handoff"
         for frag in ("#cloud", "#ai", "#team"):
             assert frag + '"' not in html, f"stale {frag} fragment in CTA"
 
