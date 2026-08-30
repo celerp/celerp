@@ -397,6 +397,8 @@
   "cloud.hero_desc1": "Consulta el stock desde casa. Deja que tu personal inicie sesión desde el local, cada uno con los permisos que tú establezcas. Celerp sigue funcionando en tu equipo y tus datos permanecen allí - el Acceso web añade una URL segura (como yourname.celerp.com) accesible desde cualquier navegador.",
   "cloud.hero_desc2": "Tus datos nunca abandonan tu máquina. Sólo retransmitimos la conexión.",
   "cloud.hero_title": "Accede a Celerp desde cualquier lugar",
+  "cloud.partner_managed_note": "Tu suscripción a Celerp la gestiona tu socio de implementación.",
+  "cloud.partner_support": "Contactar con el soporte del socio",
   "cloud.plan_ai_b1": "Haz preguntas en lenguaje natural",
   "cloud.plan_ai_b2": "Borradores automáticos de órdenes de compra, conciliación de facturas",
   "cloud.plan_ai_b3": "200 consultas de IA al mes",

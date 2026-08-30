@@ -397,6 +397,8 @@
   "cloud.hero_desc1": "Prüfen Sie den Lagerbestand von zu Hause. Lassen Sie Ihre Mitarbeiter sich vor Ort anmelden, jeder mit den von Ihnen festgelegten Berechtigungen. Celerp läuft weiter auf Ihrem Rechner und Ihre Daten bleiben dort - Web-Zugang fügt eine sichere URL hinzu (wie yourname.celerp.com), die Sie von jedem Browser aus erreichen.",
   "cloud.hero_desc2": "Ihre Daten verlassen Ihren Rechner nie. Wir leiten nur die Verbindung weiter.",
   "cloud.hero_title": "Von überall auf Celerp zugreifen",
+  "cloud.partner_managed_note": "Ihr Celerp-Abonnement wird von Ihrem Implementierungspartner verwaltet.",
+  "cloud.partner_support": "Partner-Support kontaktieren",
   "cloud.plan_ai_b1": "Fragen in Alltagssprache stellen",
   "cloud.plan_ai_b2": "Bestellungen automatisch entwerfen, Rechnungen abgleichen",
   "cloud.plan_ai_b3": "200 KI-Anfragen/Monat",

@@ -397,6 +397,8 @@
   "cloud.hero_desc1": "Periksa stok dari rumah. Biarkan staf Anda masuk dari lantai toko, masing-masing dengan izin yang Anda tetapkan. Celerp tetap berjalan di komputer Anda dan data Anda tetap di sana - Akses Web menambahkan URL aman (seperti yourname.celerp.com) yang dapat diakses dari peramban mana pun.",
   "cloud.hero_desc2": "Data Anda tidak pernah meninggalkan mesin Anda. Kami hanya meneruskan koneksi.",
   "cloud.hero_title": "Akses Celerp dari mana saja",
+  "cloud.partner_managed_note": "Langganan Celerp Anda dikelola oleh mitra implementasi Anda.",
+  "cloud.partner_support": "Hubungi dukungan mitra",
   "cloud.plan_ai_b1": "Ajukan pertanyaan dengan bahasa sehari-hari",
   "cloud.plan_ai_b2": "Draf PO otomatis, rekonsiliasi faktur",
   "cloud.plan_ai_b3": "200 kueri AI/bulan",

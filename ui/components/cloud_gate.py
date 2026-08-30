@@ -21,8 +21,8 @@ def _subscribe_url(plan: str = "") -> str:
     it to scroll to the matching plan card.
     """
     from celerp.config import ensure_instance_id
-    from celerp.gateway.state import build_subscribe_url
-    return build_subscribe_url(ensure_instance_id(), extra=f"plan={plan}" if plan else "")
+    from celerp.gateway.state import build_commercial_handoff
+    return build_commercial_handoff(ensure_instance_id(), "subscribe", plan or "")
 
 
 def upgrade_banner(

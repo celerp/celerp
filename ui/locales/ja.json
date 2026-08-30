@@ -397,6 +397,8 @@
   "cloud.hero_desc1": "自宅から在庫を確認。スタッフは現場からログインでき、それぞれに設定した権限が適用されます。Celerpはお使いのマシンで動き続け、データもそこに残ります。ウェブアクセスは、どのブラウザからでもアクセスできる安全なURL（yourname.celerp.comなど）を追加します。",
   "cloud.hero_desc2": "データはお客様のマシンから出ません。接続をリレーするだけです。",
   "cloud.hero_title": "どこからでもCelerp にアクセス",
+  "cloud.partner_managed_note": "お使いのCelerpサブスクリプションは、導入パートナーによって管理されています。",
+  "cloud.partner_support": "パートナーサポートに連絡",
   "cloud.plan_ai_b1": "普通の言葉で質問できる",
   "cloud.plan_ai_b2": "発注書の自動下書き、請求書の消込",
   "cloud.plan_ai_b3": "月200回のAIクエリ",

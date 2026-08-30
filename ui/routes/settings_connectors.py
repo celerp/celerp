@@ -711,12 +711,12 @@ def _connector_card(
 def _entitlement_cta(lang: str = "en") -> FT:
     """Shown when connecting is blocked by no active/trialing subscription - the trial
     paywall moment. A clear CTA to start the trial, not a raw error. Links straight to
-    the relay's subscribe flow (same build_subscribe_url used on the status/plans
-    pages) rather than back to /settings/cloud, which would cost the user an extra
-    click to find the actual subscribe button."""
+    the commercial handoff resolved for this install (same policy used on the
+    status/plans pages) rather than back to /settings/cloud, which would cost the user
+    an extra click to find the actual subscribe button."""
     from celerp.config import ensure_instance_id
-    from celerp.gateway.state import build_subscribe_url
-    href = build_subscribe_url(ensure_instance_id(), extra="plan=cloud")
+    from celerp.gateway.state import build_commercial_handoff
+    href = build_commercial_handoff(ensure_instance_id(), "subscribe", "cloud")
     return Div(
         P(t("connectors.no_subscription", lang), cls="settings-hint"),
         A(t("connectors.start_trial", lang), href=href, target="_blank", cls="btn btn--sm btn--primary"),

@@ -297,3 +297,39 @@ def relay_subscribe_url(plan: str = "") -> str:
     return build_subscribe_url(_instance_id or settings.gateway_instance_id,
                                extra=f"plan={plan}" if plan else "")
 
+
+def build_commercial_handoff(instance_id: str, intent: str, sku: str = "") -> str:
+    """Single policy point resolving every core-app commercial CTA to its correct
+    destination, layered above the URL builders (never changing their signatures).
+
+    Keyed on the install's commercial mode and the requested sku:
+      - partner_managed: the partner's support URL when set, else the Enterprise
+        acquisition route. Never a direct Celerp checkout, so a partner-managed
+        install can never be sent to self-serve billing.
+      - a team sku (direct install, no partner): the Enterprise route; the app
+        never emits a direct plan=team checkout.
+      - celerp_direct with a cloud/ai sku: the same direct subscribe URL the app
+        has always produced for that plan (behavior-preserving).
+      - celerp_direct with an empty or unknown sku: the generic subscribe URL.
+
+    ``intent`` is the acquisition intent every commercial CTA shares
+    ("subscribe"); it keeps the call sites uniform and names what the resolver
+    answers. The returned URL is always non-empty, so callers need no per-site
+    empty-href guard.
+    """
+    if get_commercial_mode() == "partner_managed":
+        support_url = (get_partner_identity() or {}).get("support_url") or ""
+        if support_url:
+            return support_url
+        return _enterprise_handoff(instance_id)
+    if sku == "team":
+        return _enterprise_handoff(instance_id)
+    if sku in ("cloud", "ai"):
+        return build_subscribe_url(instance_id, extra=f"plan={sku}")
+    return build_subscribe_url(instance_id)
+
+
+def _enterprise_handoff(instance_id: str) -> str:
+    """The Enterprise/partner acquisition route, attributed to the instance."""
+    lead = f"instance_id={instance_id}" if instance_id else ""
+    return build_handoff_url("/enterprise", medium="inapp", lead=lead)
