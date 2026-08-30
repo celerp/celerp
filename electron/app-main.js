@@ -170,6 +170,7 @@ let uiPort = null;
 const formerUiPorts = new Set();
 
 const { watchForRestart, classifyNavigation } = require("./restart");
+const { isInGrace, dbModeDecision, applyDbModePersist } = require("./db-mode");
 const { migrateArgs } = require("./migrate_cmd");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
@@ -587,44 +588,58 @@ function readConfig() {
   }
 }
 
-/** Persist config changes. */
+/**
+ * Persist config changes atomically. This runs on the boot-critical path that
+ * decides which database opens, so a torn write must never leave a corrupt
+ * config for the next startup read: write a temp file, then rename it into
+ * place. On failure the temp file is removed and the error is rethrown after
+ * logging only its message - never the config or patch, which hold
+ * external_db_url.
+ */
 function writeConfig(patch) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const current = readConfig();
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify({ ...current, ...patch }, null, 2), { mode: 0o600 });
-}
-
-/** Returns true if the SaaS grace period is still active. */
-function _isInGrace(flags) {
-  return flags.grace_period_ends
-    ? new Date(flags.grace_period_ends) > new Date()
-    : false;
+  const tmp = `${CONFIG_PATH}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify({ ...current, ...patch }, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, CONFIG_PATH);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* temp may not exist */ }
+    console.error("[db-mode] config persist failed:", err.message);
+    throw err;
+  }
 }
 
 /**
- * Determine active DATABASE_URL based on config + feature flags.
- * Returns { url, useBundledPg } where useBundledPg drives whether
- * embedded Postgres is started.
+ * Determine the active DATABASE_URL from config + feature flags. The pure
+ * decision lives in dbModeDecision; this maps it onto the boot shape
+ * { url, useBundledPg, gracePeriod, persistLocal }. app-main.js alone builds the
+ * bundled connection string (it owns dbPort and getBundledDbPassword), so the
+ * Electron-free decision module never fabricates one.
  */
 function resolveDatabaseConfig(dbPort, cfg) {
-  const flags = cfg.feature_flags || {};
-  const inGrace = _isInGrace(flags);
-  const externalAllowed = (flags.external_db || inGrace) && cfg.external_db_url;
+  const decision = dbModeDecision(cfg);
 
-  if (externalAllowed && cfg.db_mode === "external") {
-    return { url: cfg.external_db_url, useBundledPg: false, gracePeriod: inGrace && !flags.external_db };
+  if (decision.startExternal) {
+    return {
+      url: cfg.external_db_url,
+      useBundledPg: false,
+      gracePeriod: decision.gracePeriod,
+      persistLocal: decision.persistLocal,
+    };
   }
   return {
     url: `postgresql+asyncpg://celerp:${getBundledDbPassword()}@localhost:${dbPort}/celerp`,
     useBundledPg: true,
     gracePeriod: false,
+    persistLocal: decision.persistLocal,
   };
 }
 
 /** Build storage-related env vars for API and UI processes. */
 function resolveStorageEnv(cfg) {
   const flags = cfg.feature_flags || {};
-  const storageAllowed = (flags.external_storage || _isInGrace(flags)) && cfg.storage_mode === "s3";
+  const storageAllowed = (flags.external_storage || isInGrace(flags)) && cfg.storage_mode === "s3";
 
   if (storageAllowed) {
     return {
@@ -1192,6 +1207,12 @@ app.whenReady().then(async () => {
     const dbPort = await getFreePort();
     const cfg = readConfig();
     const dbConfig = resolveDatabaseConfig(dbPort, cfg);
+
+    // When grace has expired (external was selected but neither entitlement nor
+    // grace remains) persist db_mode=local before the API and gateway start, so
+    // the next boot opens the local database and this write cannot race the
+    // gateway feature-flag persister. external_db_url is preserved untouched.
+    applyDbModePersist(cfg, dbConfig, writeConfig);
 
     // Create the main window immediately so user sees the loading page (no white frame).
     createWindow();
