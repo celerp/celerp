@@ -42,6 +42,20 @@ class Settings(BaseSettings):
     # No `[gateway_token]` means no gateway connection, no product telemetry, and
     # no cloud dependency, except a startup subscription check.
     gateway_token: str = ""
+    # Reusable partner deployment credential. A one-time registration input sent
+    # only on the first relay `hello` of a partner-provisioned install, distinct
+    # from the live-session gateway_token: it associates the instance with the
+    # partner and is removed from bootstrap state once the relay accepts it.
+    # Env CELERP_DEPLOYMENT_CREDENTIAL or [cloud] deployment_credential.
+    deployment_credential: str = Field(
+        default="",
+        validation_alias=AliasChoices("CELERP_DEPLOYMENT_CREDENTIAL", "deployment_credential"),
+    )
+    # True once the relay has accepted the deployment credential and associated
+    # this instance. Suppresses any re-send of the credential (an env-sourced
+    # credential cannot be erased from the environment). Persisted as
+    # [cloud] deployment_associated.
+    deployment_associated: bool = False
     # True after an explicit Cloud disconnect: the startup probe must not
     # re-link the install. Cleared when the user reconnects (settings or a
     # sign-in flow applies a fresh token). Persisted as [cloud] disconnected.
@@ -152,6 +166,25 @@ def persist_cloud_settings(**values: str) -> None:
     write_config(cfg)
 
 
+def record_deployment_association() -> None:
+    """Record that the relay has associated this instance and remove the
+    deployment credential from bootstrap state.
+
+    Called once, after the first successful hello_ack that carried the
+    credential. persist_cloud_settings never erases a key, so a dedicated helper
+    is needed to pop the credential: it drops [cloud] deployment_credential, sets
+    the sticky deployment_associated marker, persists, and clears the in-memory
+    credential so it cannot be re-offered this session.
+    """
+    cfg = read_config()
+    cloud = cfg.setdefault("cloud", {})
+    cloud.pop("deployment_credential", None)
+    cloud["deployment_associated"] = True
+    write_config(cfg)
+    settings.deployment_credential = ""
+    settings.deployment_associated = True
+
+
 def load_cloud_config() -> None:
     """Load cloud settings from config.toml into the Settings object.
 
@@ -190,6 +223,13 @@ def load_cloud_config() -> None:
         settings.celerp_public_url = cloud["public_url"]
     if cloud.get("backup_encryption_key") and not settings.backup_encryption_key:
         settings.backup_encryption_key = cloud["backup_encryption_key"]
+    # Deployment credential + association marker. The credential is only consumed
+    # on the first hello, so a config value loads unless env already supplied one;
+    # the marker is sticky (an associated install must never re-offer it).
+    if cloud.get("deployment_credential") and not settings.deployment_credential:
+        settings.deployment_credential = cloud["deployment_credential"]
+    if cloud.get("deployment_associated"):
+        settings.deployment_associated = True
     # Auto-enable secure cookies when relay-connected (HTTPS via Caddy/Cloudflare)
     if settings.gateway_token and not os.environ.get("COOKIE_SECURE"):
         settings.cookie_secure = True
@@ -313,6 +353,14 @@ def write_config(cfg: dict) -> None:
         # before this shipped), matching the embedded/headless idiom.
         if cloud.get("disconnected"):
             lines.append("disconnected = true")
+        # Deployment credential survives every [cloud] write until the relay
+        # accepts it: emitted only while non-empty, and the association marker
+        # only once set. A direct install carries neither key. Without this, the
+        # fixed-key serializer would drop the credential before the first hello.
+        if cloud.get("deployment_credential"):
+            lines.append(f'deployment_credential = {_str(cloud["deployment_credential"])}')
+        if cloud.get("deployment_associated"):
+            lines.append("deployment_associated = true")
         lines.append("")
 
     if "storage" in cfg:
