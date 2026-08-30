@@ -3073,5 +3073,12 @@
   "documents.reopen_memo_confirm": "ይህን ማስታወሻ እንደገና ከፍተው ቀድሞ የነበረውን ሁኔታ ይመልሱ?",
   "documents.line_label_returned": "ተመልሷል",
   "documents.line_label_not_shipped": "አልተላከም",
-  "documents.th_shipped": "ተልኳል"
+  "documents.th_shipped": "ተልኳል",
+  "btn.decline": "አትቀበል",
+  "settings_cloud.partner_claim_title": "የአጋር ጥያቄ",
+  "settings_cloud.partner_claim_desc": "አንድ አጋር ይህን ጭነት ለማስተዳደር የጥያቄ ኮድ ከሰጠዎት፣ ከመቀበልዎ በፊት ማንነታቸውን ለመገምገም እዚህ ይለጥፉት።",
+  "settings_cloud.partner_claim_token_placeholder": "የጥያቄ ኮድ ይለጥፉ",
+  "settings_cloud.partner_claim_review": "ጥያቄውን ይገምግሙ",
+  "settings_cloud.partner_claim_managed_by": "ይህ ጭነት የሚተዳደረው በ፦",
+  "settings_cloud.partner_claim_error": "ይህ ጥያቄ ማረጋገጥ አልተቻለም። ልክ ያልሆነ፣ ጊዜው ያለፈበት ወይም አስቀድሞ ጥቅም ላይ የዋለ ሊሆን ይችላል።"
 }
