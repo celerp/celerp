@@ -336,6 +336,88 @@ class TestFirstBootSequence:
         assert cfg["server"]["api_port"] == 8000
 
 
+# ---------------------------------------------------------------------------
+# Deployment credential ([cloud] deployment_credential / deployment_associated)
+# ---------------------------------------------------------------------------
+
+class TestDeploymentCredential:
+    """The reusable partner deployment credential and its association marker
+    survive [cloud] writes, load into settings, and are removed only through the
+    dedicated association helper."""
+
+    def test_write_config_roundtrips_deployment_credential(self, tmp_path, monkeypatch):
+        """A write that touches only unrelated [cloud] fields must preserve both
+        deployment keys: the not-yet-consumed credential (when non-empty) and the
+        association marker (when true). Without this every [cloud] write would
+        silently erase the credential before the first hello can send it."""
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({
+            "cloud": {
+                "token": "gw-live",
+                "instance_id": "iid-1",
+                "public_url": "",
+                "backup_encryption_key": "",
+                "tos_version": "",
+                "deployment_credential": "deploy-cred-xyz",
+                "deployment_associated": True,
+            },
+        })
+        content = cfg_file.read_text()
+        assert 'deployment_credential = "deploy-cred-xyz"' in content
+        assert "deployment_associated = true" in content
+        cfg = mod.read_config()
+        assert cfg["cloud"]["deployment_credential"] == "deploy-cred-xyz"
+        assert cfg["cloud"]["deployment_associated"] is True
+
+    def test_write_config_omits_empty_deployment_credential(self, tmp_path, monkeypatch):
+        """An empty credential and an unset marker emit neither key (conditional,
+        mirroring the disconnected idiom) so a direct install's config is unchanged."""
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({
+            "cloud": {"token": "gw", "instance_id": "iid", "public_url": "",
+                      "backup_encryption_key": "", "tos_version": ""},
+        })
+        content = cfg_file.read_text()
+        assert "deployment_credential" not in content
+        assert "deployment_associated" not in content
+
+    def test_load_cloud_config_reads_deployment_fields(self, tmp_path, monkeypatch):
+        """Startup load reads both new [cloud] fields into settings."""
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({
+            "cloud": {"token": "", "instance_id": "", "public_url": "",
+                      "backup_encryption_key": "", "tos_version": "",
+                      "deployment_credential": "cred-load", "deployment_associated": True},
+        })
+        mod.settings.deployment_credential = ""
+        mod.settings.deployment_associated = False
+        mod.load_cloud_config()
+        assert mod.settings.deployment_credential == "cred-load"
+        assert mod.settings.deployment_associated is True
+
+    def test_record_deployment_association_removes_credential(self, tmp_path, monkeypatch):
+        """The helper pops the credential from [cloud], sets the marker to true,
+        persists, and clears the in-memory setting (the removal path)."""
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({
+            "cloud": {"token": "gw", "instance_id": "iid", "public_url": "",
+                      "backup_encryption_key": "", "tos_version": "",
+                      "deployment_credential": "cred-to-pop"},
+        })
+        mod.settings.deployment_credential = "cred-to-pop"
+        mod.settings.deployment_associated = False
+
+        mod.record_deployment_association()
+
+        cfg = mod.read_config()
+        assert "deployment_credential" not in cfg.get("cloud", {})
+        assert cfg["cloud"]["deployment_associated"] is True
+        assert mod.settings.deployment_credential == ""
+        content = cfg_file.read_text()
+        assert "deployment_credential" not in content
+        assert "deployment_associated = true" in content
+
+
 def test_tomli_declared_for_pre_311():
     """celerp/config.py falls back to `import tomli as tomllib` on 3.10; the
     fallback only works if packaging declares tomli for those interpreters."""
