@@ -6132,25 +6132,37 @@ async def write_off_stock(
     cycle = int(row.state.get("adjust_count") or 0)
     unit_map = await _get_unit_map(session, company_id)
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    # Pre-flight: an "intended" line is one the user entered a quantity on. Every intended line must be
+    # fully valid BEFORE anything is disposed, so a line the user meant to write off but left incomplete
+    # rejects the whole action (no silent skip, no false success). Untouched (no-qty) lines are the only
+    # legitimately skipped-and-reported lines.
+    intended = [l for l in lines if l.get("qty_out") is not None]
+    if not intended:
+        raise HTTPException(status_code=422,
+                            detail="Enter a quantity and a destination account for each item you want to write off")
+    prepared: list[tuple[dict, Projection, float, float]] = []  # (line, item, qty_out, live)
+    for l in intended:
+        name = l.get("name") or l.get("sku") or l.get("item_id") or "item"
+        account = l.get("account")
+        if not account:
+            raise HTTPException(status_code=422, detail=f"{name}: choose a destination account")
+        await _validate_writeoff_account(session, company_id, account)
+        item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
+        if item is None or item.entity_type != "item" or (item.state.get("status") or "available") != "available":
+            raise HTTPException(status_code=422, detail=f"{name}: item is no longer available to write off")
+        live = float(item.state.get("quantity") or 0)
+        qty_out = float(l.get("qty_out"))
+        if qty_out <= 0:
+            raise HTTPException(status_code=422, detail=f"{name}: write-off quantity must be greater than 0")
+        if qty_out > live:
+            raise HTTPException(status_code=422, detail=f"{name}: write-off quantity {qty_out} exceeds stock {live}")
+        prepared.append((l, item, qty_out, live))
+    skipped = len(lines) - len(intended)  # untouched (no-qty) lines, reported alongside the write-off
     debits: dict[str, float] = {}
     total_value = 0.0
     written_off = 0
-    skipped = 0
-    for l in lines:
-        qo = l.get("qty_out")
+    for l, item, qty_out, live in prepared:
         account = l.get("account")
-        if qo is None or not account:
-            skipped += 1  # report-and-skip: an unfilled line removes nothing
-            continue
-        item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
-        if item is None or item.entity_type != "item" or (item.state.get("status") or "available") != "available":
-            skipped += 1  # parent sold/changed since seeding -> skip, never dispose phantom units
-            continue
-        live = float(item.state.get("quantity") or 0)
-        qty_out = float(qo)
-        if qty_out <= 0 or qty_out > live:
-            skipped += 1  # guarded here: split_off_child floors at 0 and never validates qty
-            continue
         unit_cost = _audit_unit_cost(item.state)
         value = round(unit_cost * qty_out, 2)
         sku = item.state.get("sku") or ""  # read before any rollback expires the ORM row
