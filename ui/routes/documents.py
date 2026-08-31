@@ -6025,7 +6025,15 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # slot. Revert-to-draft is rendered by the shared doc block below (consistent placement); the
     # quotation's relay-gated Send / Mark-as-sent come from the shared _can_send block.
     if is_list:
-        if status == _LD:
+        if status == _LD and pol["writeoff"]:
+            # A draft write-off finalizes and removes stock in one step (validation runs server-side),
+            # so its draft primary is the Write off stock terminal, not the generic Issue. GDR 2b.
+            _wo_term = _list_behavior("writeoff").terminal[0]
+            action_btns_left.append(Button(_wo_term.label, hx_post=f"/lists/{entity_id}/action/{_wo_term.key}",
+                                           hx_swap="none", cls="btn btn--primary",
+                                           hx_confirm=_wo_term.confirm,
+                                           title=t("documents.tip_writeoff")))
+        elif status == _LD:
             # The single "what's next" cue for every type (mirrors the invoice's finalize). GDR 2b.
             _list_word = _list_behavior(list_type).label.lower() if list_type else t("documents.word_list")
             action_btns_left.append(Button(t("documents.issue"), hx_post=f"/lists/{entity_id}/action/finalize",

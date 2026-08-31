@@ -6113,11 +6113,14 @@ async def write_off_stock(
     _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Write-off terminal (manager): remove each line's qty_out from stock and post one balanced JE (one
-    debit per destination account against a single Inventory credit). A full-quantity line disposes the
-    whole item row; a partial line carves a child lot via the shared split primitive and disposes that.
-    Every disposed portion ends as a hidden `disposed` item - the permanent disposal record. Uncounted
-    (blank qty_out) lines are skipped and reported. Reversible via undo-write-off."""
+    """Write-off terminal (manager): in one step, validate every intended line, remove each line's
+    qty_out from stock and post one balanced JE (one debit per destination account against a single
+    Inventory credit). Runs from a draft (finalized inline after validation) or a finalized list. A
+    full-quantity line disposes the whole item row; a partial line carves a child lot via the shared
+    split primitive and disposes that. Every disposed portion ends as a hidden `disposed` item - the
+    permanent disposal record. Lines with no quantity entered are skipped and reported; a line with a
+    quantity but an invalid account/item/quantity rejects the whole action. Reversible via
+    undo-write-off."""
     from celerp_inventory.routes import split_off_child
     # Row-lock the list for the whole transaction: this terminal moves ledger value, so a second
     # concurrent run must serialize (a double run would double-carve and post twice). The audit terminal
@@ -6127,8 +6130,9 @@ async def write_off_stock(
     ).with_for_update())).scalar_one_or_none()
     if row is None or row.state.get("list_type") != "writeoff":
         raise HTTPException(status_code=404, detail="Write-off not found")
-    if row.state.get("status") != FINALIZED:
-        raise HTTPException(status_code=409, detail="Finalize the write-off before removing stock")
+    status = row.state.get("status")
+    if status not in (DRAFT, FINALIZED):
+        raise HTTPException(status_code=409, detail="This write-off has already been processed")
     cycle = int(row.state.get("adjust_count") or 0)
     unit_map = await _get_unit_map(session, company_id)
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
@@ -6158,6 +6162,13 @@ async def write_off_stock(
             raise HTTPException(status_code=422, detail=f"{name}: write-off quantity {qty_out} exceeds stock {live}")
         prepared.append((l, item, qty_out, live))
     skipped = len(lines) - len(intended)  # untouched (no-qty) lines, reported alongside the write-off
+    # Single step: a draft write-off is finalized inline here, after validation passes, so the manager
+    # removes stock in one click. The writeoff behaviour has no finalize milestone (pure status
+    # transition), and this runs under the same row lock/transaction as the disposal below, so the
+    # finalize and the disposal are atomic - a later failure rolls both back and the list stays a draft.
+    if status == DRAFT:
+        await _emit_list(session, company_id, entity_id, "list.finalized",
+                         {"status": FINALIZED, "finalized_at": datetime.now(timezone.utc).isoformat()}, user)
     debits: dict[str, float] = {}
     total_value = 0.0
     written_off = 0
