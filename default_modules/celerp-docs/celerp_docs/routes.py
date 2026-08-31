@@ -5927,6 +5927,8 @@ async def adjust_audit(
         l["prior_qty"] = live
         l["adjusted"] = True
         adjusted += 1
+    if shrink_val > 0:
+        await _validate_writeoff_account(session, company_id, auto_je._AUDIT_SHRINKAGE_ACCT)
     await auto_je.create_for_audit_adjustment(
         session, company_id=company_id, user_id=user.id, list_id=entity_id,
         shrinkage_value=shrink_val, overage_value=over_val, cycle=cycle,
