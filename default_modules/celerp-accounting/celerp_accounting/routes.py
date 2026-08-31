@@ -91,6 +91,7 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "6900", "name": "Travel and Transportation", "account_type": "expense", "parent_code": "6000"},
     {"code": "6950", "name": "Miscellaneous Expenses", "account_type": "expense", "parent_code": "6000"},
     {"code": "6960", "name": "Foreign Exchange Difference", "account_type": "expense", "parent_code": "6000"},
+    {"code": "6970", "name": "Inventory Shrinkage & Write-offs", "account_type": "expense", "parent_code": "6000"},
 ]
 
 

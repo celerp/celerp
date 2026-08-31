@@ -6021,7 +6021,7 @@ def _writeoff_seed_line(item: Projection) -> dict:
     st = item.state
     return {"line_id": uuid.uuid4().hex, "item_id": item.entity_id, "sku": st.get("sku"),
             "name": st.get("name"), "quantity": float(st.get("quantity") or 0),
-            "qty_out": None, "account": None, "comment": ""}
+            "qty_out": None, "account": "6970", "comment": ""}
 
 
 @lists_router.post("/writeoff")
