@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 
-MODULE = "c1d2e3f4a5b6_seed_shrinkage_writeoff_account"
+MODULE = "c9d8e7f6a5b4_seed_shrinkage_writeoff_account"
 
 
 def test_migration_seeds_6970_for_existing_company(acc_db):

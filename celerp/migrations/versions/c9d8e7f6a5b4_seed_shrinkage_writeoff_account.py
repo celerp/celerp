@@ -3,7 +3,7 @@
 
 """seed the inventory shrinkage/write-off account 6970 for existing companies
 
-Revision ID: c1d2e3f4a5b6
+Revision ID: c9d8e7f6a5b4
 Revises: bc0d1e2f3a4b
 Create Date: 2026-08-31
 
@@ -17,7 +17,7 @@ from __future__ import annotations
 from alembic import op
 import sqlalchemy as sa
 
-revision = "c1d2e3f4a5b6"
+revision = "c9d8e7f6a5b4"
 down_revision = "bc0d1e2f3a4b"
 branch_labels = None
 depends_on = None
