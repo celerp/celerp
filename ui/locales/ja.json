@@ -2266,6 +2266,7 @@
   "documents.th_due": "期限",
   "documents.th_last_updated": "最終更新日",
   "documents.th_on_hand": "在庫数",
+  "documents.th_in_stock": "在庫数",
   "documents.th_qty_out": "出庫数量",
   "documents.th_who": "担当者",
   "documents.tip_catalog_search": "カタログ検索またはカスタム説明の入力",

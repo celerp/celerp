@@ -5886,7 +5886,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     _wo_acct_options, _wo_acct_labels = _writeoff_account_choices(chart_accounts)
 
     def _writeoff_cells(li: dict) -> list:
-        """Qty out / Account / Comment cells for a write-off line, appended after On hand.
+        """Write off qty / Account / Comment cells for a write-off line, appended after In stock.
         A draft (pol['writeoff_editable']) renders click-to-edit cells saving to the writeoff-line
         routes; finalized/closed renders static text. Each cell is guarded by its pol['show_*'] flag
         so non-write-off lists (every show_* False) render byte-identical."""
@@ -6965,10 +6965,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             _line_headers.append(Th(t("th.account"), cls="col-account"))
         _line_headers.extend([Th(t("th.total"), cls="cell--number col-total")])
         if pol["show_onhand"]:
-            _line_headers.append(Th(t("documents.th_on_hand"), cls="cell--number col-onhand"))
+            _line_headers.append(Th(t("documents.th_in_stock") if pol["writeoff"] else t("documents.th_on_hand"), cls="cell--number col-onhand"))
         if pol["show_counted"]:
             _line_headers.append(Th(t("documents.th_counted"), cls="cell--number col-counted"))
-        # Qty out is numeric (right-aligned over its figures); Account/Comment are text (left).
+        # Write off qty is numeric (right-aligned over its figures); Account/Comment are text (left).
         if pol["show_qtyout"]:
             _line_headers.append(Th(t("documents.th_qty_out"), cls="cell--number col-qtyout"))
         if pol["show_account"]:
@@ -8498,7 +8498,7 @@ async function celerpCsvImport(input, entityId) {{
             _thead_base.append(Th(t("th.account"), cls="col-account"))
         _thead_base.append(Th(t("th.total"), cls="cell--number col-total"))
         if pol["show_onhand"]:
-            _thead_base.append(Th(t("documents.th_on_hand"), cls="cell--number col-onhand"))
+            _thead_base.append(Th(t("documents.th_in_stock") if pol["writeoff"] else t("documents.th_on_hand"), cls="cell--number col-onhand"))
         if pol["show_counted"]:
             _thead_base.append(Th(t("documents.th_counted"), cls="cell--number col-counted"))
         if pol["show_qtyout"]:

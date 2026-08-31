@@ -2267,6 +2267,7 @@
   "documents.th_due": "Fällig",
   "documents.th_last_updated": "Zuletzt aktualisiert",
   "documents.th_on_hand": "Auf Lager",
+  "documents.th_in_stock": "Auf Lager",
   "documents.th_qty_out": "Ausgegangene Menge",
   "documents.th_who": "Wer",
   "documents.tip_catalog_search": "Geben Sie einen Suchbegriff für den Katalog ein oder geben Sie eine benutzerdefinierte Beschreibung ein",

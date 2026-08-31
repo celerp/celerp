@@ -2267,6 +2267,7 @@
   "documents.th_due": "In scadenza",
   "documents.th_last_updated": "Ultimo aggiornamento",
   "documents.th_on_hand": "Disponibile",
+  "documents.th_in_stock": "Disponibile",
   "documents.th_qty_out": "Quantità in uscita",
   "documents.th_who": "Chi",
   "documents.tip_catalog_search": "Tipo: cercare nel catalogo o inserire una descrizione personalizzata",

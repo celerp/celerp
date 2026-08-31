@@ -2369,6 +2369,7 @@
   "documents.th_due": "የሚከፈልበት",
   "documents.th_last_updated": "መጨረሻ የዘመነው",
   "documents.th_on_hand": "በእጅ ላይ",
+  "documents.th_in_stock": "በእጅ ላይ",
   "documents.th_qty_out": "የወጣ ብዛት",
   "documents.th_who": "ማን",
   "documents.tip_catalog_search": "ካታሎግ ለመፈለግ ይተይቡ ወይም ብጁ መግለጫ ያስገቡ",

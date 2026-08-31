@@ -2266,6 +2266,7 @@
   "documents.th_due": "Vencido",
   "documents.th_last_updated": "Última atualização",
   "documents.th_on_hand": "Em estoque",
+  "documents.th_in_stock": "Em estoque",
   "documents.th_qty_out": "Quantidade retirada",
   "documents.th_who": "Quem",
   "documents.tip_catalog_search": "Digite para pesquisar no catálogo ou insira uma descrição personalizada",
