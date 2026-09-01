@@ -171,6 +171,16 @@ class DocVoidBody(BaseModel):
     idempotency_key: str | None = None
 
 
+class DocCloseBody(BaseModel):
+    reason: str | None = None
+    idempotency_key: str | None = None
+
+
+class DocReopenBody(BaseModel):
+    reason: str | None = None
+    idempotency_key: str | None = None
+
+
 class DocRevertBody(BaseModel):
     reason: str | None = None
     idempotency_key: str | None = None
@@ -516,7 +526,7 @@ async def list_docs(
         if overdue_only:
             out = [x for x in out if x.get("due_date") and x["due_date"] < today and x.get("status") not in ("draft", "void")]
         if unfulfilled_only:
-            out = [x for x in out if x.get("status") not in ("draft", "void") and x.get("fulfillment_status") != "fulfilled"]
+            out = [x for x in out if x.get("status") not in ("draft", "void", "closed") and x.get("fulfillment_status") != "fulfilled"]
         if not_restocked:
             out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("return_received_items") or [])]
         if not_stocked:
@@ -1451,6 +1461,66 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     await auto_je.void_for_doc_voided(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.voided",
+        data=event_data, actor_id=user.id, location_id=None, source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+@router.post("/{entity_id}/close")
+async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Terminal Close for a resolved memo: the paper leaves the "partially
+    fulfilled" limbo once every stone has been sold, kept, or returned to stock.
+    Reversible via /reopen. Memo-only, live-status-only, and refused with a
+    product count while any line is still out at the customer (memo_out)."""
+    row = await _get_doc(session, company_id, entity_id)
+    state = row.state
+    if state.get("doc_type") != "memo":
+        raise HTTPException(status_code=422, detail="Only memos can be closed")
+    # Denylist, not an issued-only allowlist: a memo can reach "partial" from a
+    # deposit payment and stays resolvable, so only draft/void/converted/already-
+    # closed are excluded.
+    if state.get("status") in ("draft", "void", "converted", "closed"):
+        raise HTTPException(status_code=409, detail="Only a live, issued memo can be closed")
+    # Resolution is per-item memo_out, NOT fulfillment_status (a "fulfilled" memo
+    # is all-memo_out = all still at the customer = maximally unresolved). Mirror
+    # convert's per-line read.
+    pending = 0
+    for li in state.get("line_items") or []:
+        li_eid = li.get("entity_id") or li.get("item_id") or ""
+        if not li_eid:
+            continue
+        item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
+        if item_proj and item_proj.state.get("status") == "memo_out":
+            pending += 1
+    if pending:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot close: {pending} product(s) still awaiting resolution. Sell or return them first.",
+        )
+    event_data = payload.model_dump(exclude_none=True)
+    event_data["pre_close_status"] = state.get("status")
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.closed",
+        data=event_data, actor_id=user.id, location_id=None, source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+@router.post("/{entity_id}/reopen")
+async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    """Undo a Close: restore the memo to the status it held before closing."""
+    row = await _get_doc(session, company_id, entity_id)
+    if row.state.get("status") != "closed":
+        raise HTTPException(status_code=409, detail="Only a closed memo can be reopened")
+    restored = row.state.get("pre_close_status") or "final"
+    event_data = payload.model_dump(exclude_none=True)
+    event_data["restored_status"] = restored
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.reopened",
         data=event_data, actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
