@@ -16,7 +16,8 @@ from ui.i18n import t
 _COMPLETE_LOCALES = ("en", "am", "ar", "de", "es", "fr", "id", "it", "ja", "pt", "th", "vi")
 
 _NEW_KEYS = ("doc.closed", "btn.reopen", "documents.line_label_returned",
-             "documents.line_label_not_shipped", "documents.line_label_kept_sold")
+             "documents.line_label_not_shipped", "documents.status_memo_out",
+             "enum.item_status.sold")
 
 
 def test_close_button_copy_localized():

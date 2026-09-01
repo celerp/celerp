@@ -304,8 +304,17 @@ def _assert_date_order(patch: dict, current: dict | None = None) -> None:
         )
 
 
-async def _get_doc(session: AsyncSession, company_id, entity_id: str) -> Projection:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+async def _get_doc(session: AsyncSession, company_id, entity_id: str, *, for_update: bool = False) -> Projection:
+    # for_update takes the doc row under SELECT ... FOR UPDATE so the lifecycle
+    # writers that share it (close, fulfill, send) are mutually exclusive: the
+    # loser blocks until the winner commits, then populate_existing forces a fresh
+    # read of the just-committed state to validate against. Mirrors
+    # _get_list_for_update's row-lock idiom.
+    if for_update:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id},
+                                with_for_update=True, populate_existing=True)
+    else:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "doc":
         raise HTTPException(status_code=404, detail="Document not found")
     return row
@@ -726,13 +735,17 @@ async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str 
 
 async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: str, line_items: list) -> dict:
     """Map each of this memo's line-item entity ids to a shipped-state label,
-    folded last-event-wins from the append-only ledger.
+    folded last-event-wins from the append-only ledger plus the item's live status.
 
     "Returned" - the item's latest fulfillment event on this memo is a reversal.
-    "Kept/Sold" - the latest is a fulfillment, not since reversed.
+    "On Memo" - shipped and not since reversed, item still out at the customer
+    (item status memo_out).
+    "Sold" - shipped and not since reversed, item since invoiced/finalized (item
+    status sold).
     "Not shipped" - no fulfillment event for this memo (item never left stock).
 
-    The event log is the single source of truth; nothing is persisted.
+    The event log is the source of truth for the ship/reverse timeline; the item
+    projection's live status distinguishes On Memo from Sold. Nothing is persisted.
     """
     from celerp.models.ledger import LedgerEntry
 
@@ -752,14 +765,38 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
             .order_by(LedgerEntry.id.desc())
         )
     ).all()
-    labels: dict = {}
+    last_event: dict = {}
     for item_eid, event_type, data in rows:
-        if item_eid in labels:
+        if item_eid in last_event:
             continue  # id-desc order means the first row seen is the latest
         if (data or {}).get("source_doc_id") != entity_id:
             continue
-        labels[item_eid] = "Returned" if event_type == "item.fulfillment_reversed" else "Kept/Sold"
-    return {eid: labels.get(eid, "Not shipped") for eid in item_eids}
+        last_event[item_eid] = event_type
+    # One batch read of the item projections for the shipped lines: the live status
+    # separates a still-out item (memo_out -> On Memo) from one since sold (Sold).
+    item_status: dict = {}
+    fulfilled_eids = [eid for eid, ev in last_event.items() if ev != "item.fulfillment_reversed"]
+    if fulfilled_eids:
+        status_rows = (
+            await session.execute(
+                select(Projection.entity_id, Projection.state)
+                .where(
+                    Projection.company_id == company_id,
+                    Projection.entity_id.in_(fulfilled_eids),
+                )
+            )
+        ).all()
+        item_status = {eid: (st or {}).get("status") for eid, st in status_rows}
+
+    def _label(eid: str) -> str:
+        ev = last_event.get(eid)
+        if ev is None:
+            return "Not shipped"
+        if ev == "item.fulfillment_reversed":
+            return "Returned"
+        return "Sold" if item_status.get(eid) == "sold" else "On Memo"
+
+    return {eid: _label(eid) for eid in item_eids}
 
 
 @router.get("/{entity_id}")
@@ -1298,9 +1335,14 @@ def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: st
 
 @router.post("/{entity_id}/send")
 async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    # Lock the doc row so the closed-check below is race-safe against a concurrent
+    # close: without it, send and close both read a non-closed memo unlocked and
+    # both commit, letting doc.sent silently un-close the memo the close settled.
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Cannot send void document")
+    if row.state.get("status") == "closed":
+        raise HTTPException(status_code=409, detail="Cannot send a closed memo; reopen it first.")
     if not (row.state.get("line_items") or []):
         raise HTTPException(status_code=422, detail="Add at least one line item before sending this document.")
     from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
@@ -1525,7 +1567,7 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
     fulfilled" limbo once every stone has been sold, kept, or returned to stock.
     Reversible via /reopen. Memo-only, live-status-only, and refused with a
     product count while any line is still out at the customer (memo_out)."""
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("doc_type") != "memo":
         raise HTTPException(status_code=422, detail="Only memos can be closed")
@@ -2956,6 +2998,9 @@ async def create_shipment_from_docs(
         if state.get("status") in ("draft", "void"):
             raise HTTPException(status_code=409,
                                 detail="Issue every document before creating its shipping paperwork")
+        if state.get("status") == "closed":
+            raise HTTPException(status_code=409,
+                                detail="Reopen a closed memo before creating its shipping paperwork")
         states.append(state)
 
     # One consignee prefills the shipment. Several consignees is a real flow too
@@ -4399,7 +4444,7 @@ async def fulfill_lines(
 
     Inbound doc types (bill, consignment_in) must use POST /receive instead.
     """
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     doc_type = state.get("doc_type", "")
 

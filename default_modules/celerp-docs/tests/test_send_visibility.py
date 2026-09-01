@@ -116,6 +116,22 @@ def test_send_modal_has_cc_and_bcc_fields():
     assert 'name="bcc"' in html
 
 
+# ── closed memo terminal state: no Send, no Create Shipping ────────────────────
+
+def test_closed_memo_hides_send():
+    """A closed memo is settled paperwork: the detail offers no Send action, even
+    with relay connected (a re-send would silently un-close it)."""
+    html = _render_doc("memo", "closed", share_enabled=True)
+    assert "send-modal-" not in html, "closed memo must not render a Send modal"
+
+
+def test_closed_memo_hides_create_shipping():
+    """A closed memo does not offer Create Shipping Document on the detail; the
+    way to ship again is to Reopen first."""
+    html = _render_doc("memo", "closed", share_enabled=True)
+    assert "create-shipment" not in html, "closed memo must not render Create Shipping"
+
+
 def test_send_modal_has_multiple_address_hint():
     html = _render_doc("invoice", "draft", share_enabled=True)
     assert "comma" in html.lower() or "send_multiple_hint" not in html  # i18n key resolves

@@ -162,6 +162,172 @@ async def test_two_concurrent_scan_batches_both_survive(_db_engine):
         await _cleanup(factory, company_id, user_id)
 
 
+async def _seed_memo(factory, company_id, user, *, ref_id, line_items) -> str:
+    """A committed, fulfillable memo: doc.created (draft) then doc.sent (status 'sent', which is a
+    fulfillable AND closable memo status). Lines carry entity_id so both fulfill_lines and close_doc
+    resolve each line to its item projection."""
+    entity_id = f"doc:{ref_id}-{uuid.uuid4().hex[:8]}"
+    async with factory() as s:
+        await emit_event(
+            s, company_id=company_id, entity_id=entity_id, entity_type="doc",
+            event_type="doc.created",
+            data={"doc_type": "memo", "status": "draft", "ref_id": ref_id, "line_items": line_items},
+            actor_id=user.id, location_id=None, source="test",
+            idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+        await emit_event(
+            s, company_id=company_id, entity_id=entity_id, entity_type="doc",
+            event_type="doc.sent", data={},
+            actor_id=user.id, location_id=None, source="test",
+            idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+        await s.commit()
+    return entity_id
+
+
+@pytest.mark.asyncio
+async def test_close_fulfill_race_mutually_exclusive(_db_engine):
+    """close_doc and fulfill_lines race on the same one-line memo. The pair is mutually exclusive:
+    the final committed state must never be BOTH memo closed AND its item memo_out (the illegal
+    'closed a memo whose stone is still at the customer' state). Without a doc-row lock both handlers
+    read the doc unlocked and both commit: close sees the item still available (fulfill hasn't
+    committed yet) and closes; fulfill ships the item to memo_out. Final state is closed + memo_out -
+    the invariant FAILS. With the FOR UPDATE lock exactly one wins and the loser 409s."""
+    from celerp_docs.routes import close_doc, fulfill_lines, DocCloseBody, FulfillLinesRequest
+
+    factory = _factory(_db_engine)
+    company_id, user_id, user = await _seed_company(factory)
+    try:
+        item_id = await _seed_item(factory, company_id, user, sku="M1", name="Stone 1", qty=1,
+                                   barcode=_barcode())
+        memo_id = await _seed_memo(
+            factory, company_id, user, ref_id="MEMO-CF",
+            line_items=[{"entity_id": item_id, "sku": "M1", "name": "Stone 1", "quantity": 1,
+                         "unit_price": 10, "sell_by": "piece"}])
+        s1, s2 = factory(), factory()
+        outcome: dict = {}
+
+        async def _close(session):
+            try:
+                outcome["close"] = await close_doc(
+                    memo_id, DocCloseBody(), company_id=company_id, _=None, user=user, session=session)
+            except Exception as exc:  # noqa: BLE001 - a 409 (fulfill won) is an allowed outcome
+                outcome["close"] = exc
+                await session.rollback()
+
+        async def _fulfill(session):
+            try:
+                outcome["fulfill"] = await fulfill_lines(
+                    memo_id, FulfillLinesRequest(line_entity_ids=[item_id]),
+                    company_id=company_id, _=None, user=user, session=session)
+            except Exception as exc:  # noqa: BLE001 - a 409 (close won) is an allowed outcome
+                outcome["fulfill"] = exc
+                await session.rollback()
+
+        try:
+            await asyncio.wait_for(asyncio.gather(_close(s1), _fulfill(s2)), timeout=20)
+        finally:
+            await s1.close()
+            await s2.close()
+
+        memo_state = await _state(factory, company_id, memo_id)
+        item_state = await _state(factory, company_id, item_id)
+        memo_closed = memo_state.get("status") == "closed"
+        item_out = item_state.get("status") == "memo_out"
+
+        assert not (memo_closed and item_out), (
+            "illegal state: the memo is closed AND its line item is still memo_out (out at the "
+            f"customer). memo status={memo_state.get('status')!r}, item status="
+            f"{item_state.get('status')!r}; outcomes close={outcome.get('close')!r}, "
+            f"fulfill={outcome.get('fulfill')!r}")
+
+        # Exactly one side wins; the loser 409s. (Secondary to the state invariant above.)
+        n_409 = sum(
+            1 for o in (outcome.get("close"), outcome.get("fulfill"))
+            if isinstance(o, HTTPException) and o.status_code == 409)
+        assert n_409 == 1, (
+            f"exactly one of close/fulfill must 409; got {n_409}. close={outcome.get('close')!r}, "
+            f"fulfill={outcome.get('fulfill')!r}")
+    finally:
+        await _cleanup(factory, company_id, user_id)
+
+
+@pytest.mark.asyncio
+async def test_send_close_race_no_unclose(_db_engine):
+    """A Close that has committed must never be silently un-done by a Send whose read straddled it.
+    The durable invariant: once a doc.closed event is in the ledger, the memo's committed status is
+    'closed', never overwritten back to 'sent' by a racing doc.sent.
+
+    The interleaving that breaks this at merge-base: Send reads the doc (unlocked, sees a live memo),
+    Close then commits doc.closed, Send then commits doc.sent - which the projection fold overwrites
+    to 'sent', un-closing the settled memo. The test drives exactly that order: Close runs first and
+    fully commits, then a Send whose intent formed against the pre-close memo lands. At merge-base
+    Send's unlocked read lets its doc.sent overwrite the committed close (final 'sent', RED). With
+    the FOR UPDATE lock Send re-reads the committed 'closed' status under the lock and 409s, so the
+    close stays durable (final 'closed', and the loser is the 409)."""
+    from celerp_docs.routes import send_doc, close_doc, DocSendBody, DocCloseBody
+
+    factory = _factory(_db_engine)
+    company_id, user_id, user = await _seed_company(factory)
+    try:
+        # A resolved memo (no line memo_out) so close is admissible: one line whose item is left
+        # 'available', never shipped. close counts memo_out lines as pending; there are none.
+        item_id = await _seed_item(factory, company_id, user, sku="M2", name="Stone 2", qty=1,
+                                   barcode=_barcode())
+        memo_id = await _seed_memo(
+            factory, company_id, user, ref_id="MEMO-SC",
+            line_items=[{"entity_id": item_id, "sku": "M2", "name": "Stone 2", "quantity": 1,
+                         "unit_price": 10, "sell_by": "piece"}])
+        s_close, s_send = factory(), factory()
+        outcome: dict = {}
+
+        # Close commits first; Send is released only after, so its write lands on the just-closed
+        # memo - the un-close ordering. The lock (fix) is what forces Send to re-read that committed
+        # close instead of clobbering it.
+        close_done = asyncio.Event()
+
+        async def _close(session):
+            try:
+                outcome["close"] = await close_doc(
+                    memo_id, DocCloseBody(), company_id=company_id, _=None, user=user, session=session)
+            except Exception as exc:  # noqa: BLE001 - captured for the race assertion
+                outcome["close"] = exc
+                await session.rollback()
+            finally:
+                close_done.set()
+
+        async def _send(session):
+            await close_done.wait()
+            try:
+                outcome["send"] = await send_doc(
+                    memo_id, DocSendBody(), company_id=company_id, _=None, user=user, session=session)
+            except Exception as exc:  # noqa: BLE001 - a 409 (memo already closed) is the fixed outcome
+                outcome["send"] = exc
+                await session.rollback()
+
+        try:
+            await asyncio.wait_for(asyncio.gather(_close(s_close), _send(s_send)), timeout=20)
+        finally:
+            await s_close.close()
+            await s_send.close()
+
+        memo_state = await _state(factory, company_id, memo_id)
+        close_committed = not isinstance(outcome.get("close"), Exception)
+        assert close_committed, f"close should have committed first; got {outcome.get('close')!r}"
+
+        # Durable close: the committed doc.closed is never overwritten back to 'sent' by the racing
+        # send. At merge-base the unlocked send clobbers it (final 'sent'); the fix makes send 409.
+        assert memo_state.get("status") == "closed", (
+            "un-close: a committed Close was overwritten - the racing Send's doc.sent reverted the "
+            f"memo to {memo_state.get('status')!r}. outcomes close={outcome.get('close')!r}, "
+            f"send={outcome.get('send')!r}")
+        # The send that tried to un-close a settled memo is rejected, not silently applied.
+        assert isinstance(outcome.get("send"), HTTPException) and outcome["send"].status_code == 409, (
+            f"send on a closed memo must 409, not commit; got {outcome.get('send')!r}")
+    finally:
+        await _cleanup(factory, company_id, user_id)
+
+
 @pytest.mark.asyncio
 async def test_scan_versus_versioned_save_never_drops_scanned_line(_db_engine):
     """A scan (adds X) races a versioned line_items save (replaces with [Y]) on the same draft

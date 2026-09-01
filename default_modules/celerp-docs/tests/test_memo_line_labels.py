@@ -1,9 +1,11 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Per-line shipped-state labels on a memo, derived from the event log.
+"""Per-line shipped-state labels on a memo, derived from the event log plus the
+item's live status.
 
 get_doc attaches a `shipped_label` to each line: "Returned" (shipped then
-reversed), "Kept/Sold" (shipped and not since reversed), "Not shipped" (never
+reversed), "On Memo" (shipped, still out at the customer = item memo_out),
+"Sold" (shipped then invoiced/finalized = item sold), "Not shipped" (never
 fulfilled for this memo). A read error in the derivation degrades to no label
 (the raw status badge stands), never a 500.
 """
@@ -47,24 +49,45 @@ def _label_for(doc: dict, eid: str):
 
 
 @pytest.mark.asyncio
-async def test_line_labels_returned_vs_not_shipped(client):
+async def test_line_label_on_memo(client):
+    """A shipped line still out at the customer (item memo_out) reads "On Memo",
+    a reversed line "Returned", and a never-shipped line "Not shipped"."""
     token = await _register(client)
     h = _h(token)
-    shipped_kept = await _item(client, h, "LB-KEPT")
+    on_memo = await _item(client, h, "LB-ONMEMO")
     returned = await _item(client, h, "LB-RET")
     never = await _item(client, h, "LB-NONE")
-    memo = await _memo(client, h, [shipped_kept, returned, never])
+    memo = await _memo(client, h, [on_memo, returned, never])
     assert (await client.post(f"/docs/{memo}/finalize", headers=h)).status_code == 200
 
     # Ship two lines; leave the third unshipped.
-    assert (await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_entity_ids": [shipped_kept, returned]})).status_code == 200
+    assert (await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_entity_ids": [on_memo, returned]})).status_code == 200
     # Return one of the shipped lines.
     assert (await client.post(f"/docs/{memo}/revert-lines", headers=h, json={"line_entity_ids": [returned]})).status_code == 200
 
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
-    assert _label_for(doc, shipped_kept) == "Kept/Sold"
+    assert _label_for(doc, on_memo) == "On Memo"
     assert _label_for(doc, returned) == "Returned"
     assert _label_for(doc, never) == "Not shipped"
+
+
+@pytest.mark.asyncio
+async def test_line_label_sold(client):
+    """A line shipped and then sold (item status sold) reads "Sold", distinct
+    from a still-out line which reads "On Memo"."""
+    token = await _register(client)
+    h = _h(token)
+    sold = await _item(client, h, "LB-SOLD")
+    memo = await _memo(client, h, [sold])
+    assert (await client.post(f"/docs/{memo}/finalize", headers=h)).status_code == 200
+    assert (await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_entity_ids": [sold]})).status_code == 200
+
+    # The shipped item is sold (memo->invoice finalize promotes memo_out to sold).
+    r = await client.post("/items/bulk/status", headers=h, json={"entity_ids": [sold], "status": "sold"})
+    assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{memo}", headers=h)).json()
+    assert _label_for(doc, sold) == "Sold"
 
 
 @pytest.mark.asyncio

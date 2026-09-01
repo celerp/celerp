@@ -3063,6 +3063,5 @@
   "documents.reopen_memo_confirm": "Dieses Memo wieder öffnen und den vorherigen Status wiederherstellen?",
   "documents.line_label_returned": "Zurückgegeben",
   "documents.line_label_not_shipped": "Nicht versandt",
-  "documents.line_label_kept_sold": "Behalten/Verkauft",
   "documents.th_shipped": "Versand"
 }

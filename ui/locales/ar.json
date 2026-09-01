@@ -3063,6 +3063,5 @@
   "documents.reopen_memo_confirm": "إعادة فتح هذه المذكرة واستعادة حالتها السابقة؟",
   "documents.line_label_returned": "أُرجع",
   "documents.line_label_not_shipped": "لم يُشحن",
-  "documents.line_label_kept_sold": "محتفظ به/مباع",
   "documents.th_shipped": "الشحن"
 }

@@ -3063,6 +3063,5 @@
   "documents.reopen_memo_confirm": "Rouvrir ce mémo et restaurer son statut précédent ?",
   "documents.line_label_returned": "Retourné",
   "documents.line_label_not_shipped": "Non expédié",
-  "documents.line_label_kept_sold": "Conservé/Vendu",
   "documents.th_shipped": "Expédition"
 }

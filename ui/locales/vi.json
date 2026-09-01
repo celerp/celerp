@@ -3063,6 +3063,5 @@
   "documents.reopen_memo_confirm": "Mở lại bản ghi nhớ này và khôi phục trạng thái trước đó?",
   "documents.line_label_returned": "Đã trả lại",
   "documents.line_label_not_shipped": "Chưa gửi",
-  "documents.line_label_kept_sold": "Giữ lại/Đã bán",
   "documents.th_shipped": "Vận chuyển"
 }

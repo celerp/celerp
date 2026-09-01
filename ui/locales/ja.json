@@ -3063,6 +3063,5 @@
   "documents.reopen_memo_confirm": "このメモを再開して以前の状態に戻しますか？",
   "documents.line_label_returned": "返却済み",
   "documents.line_label_not_shipped": "未出荷",
-  "documents.line_label_kept_sold": "保持/販売済み",
   "documents.th_shipped": "出荷状況"
 }

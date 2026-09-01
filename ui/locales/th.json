@@ -3063,6 +3063,5 @@
   "documents.reopen_memo_confirm": "เปิดเมมโมนี้ใหม่และคืนสถานะเดิมหรือไม่?",
   "documents.line_label_returned": "คืนแล้ว",
   "documents.line_label_not_shipped": "ยังไม่จัดส่ง",
-  "documents.line_label_kept_sold": "เก็บไว้/ขายแล้ว",
   "documents.th_shipped": "การจัดส่ง"
 }

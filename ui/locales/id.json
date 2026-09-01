@@ -3063,6 +3063,5 @@
   "documents.reopen_memo_confirm": "Buka kembali memo ini dan pulihkan statusnya sebelumnya?",
   "documents.line_label_returned": "Dikembalikan",
   "documents.line_label_not_shipped": "Belum dikirim",
-  "documents.line_label_kept_sold": "Disimpan/Terjual",
   "documents.th_shipped": "Pengiriman"
 }
