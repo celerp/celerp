@@ -3052,5 +3052,17 @@
   "settings.tab_line_items": "รายการสินค้า",
   "th.factor": "ตัวคูณ",
   "th.position": "#",
-  "th.rounding": "การปัดเศษ"
+  "th.rounding": "การปัดเศษ",
+  "doc.closed": "ปิดแล้ว",
+  "btn.reopen": "เปิดใหม่",
+  "btn.close_memo": "ปิด",
+  "btn.confirm_close_memo": "ยืนยันการปิด",
+  "btn.confirm_reopen": "ยืนยันการเปิดใหม่",
+  "documents.tip_close_memo": "ปิดเมมโมนี้เมื่อทุกรายการถูกขาย เก็บไว้ หรือคืนเข้าสต็อกแล้ว",
+  "documents.tip_reopen_memo": "เปิดเมมโมนี้ใหม่เพื่อให้กลับมาใช้งานได้อีกครั้ง",
+  "documents.reopen_memo_confirm": "เปิดเมมโมนี้ใหม่และคืนสถานะเดิมหรือไม่?",
+  "documents.line_label_returned": "คืนแล้ว",
+  "documents.line_label_not_shipped": "ยังไม่จัดส่ง",
+  "documents.line_label_kept_sold": "เก็บไว้/ขายแล้ว",
+  "documents.th_shipped": "การจัดส่ง"
 }

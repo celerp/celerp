@@ -513,6 +513,10 @@ def _doc_section_label(doc_type: str) -> str:
 
 def _render_fulfillment_badge(doc: dict):
     """Fulfillment badge - shown when doc is fulfilled."""
+    if doc.get("status") == "closed":
+        # A closed memo is resolved: the terminal state supersedes any lingering
+        # partial-fulfillment reading (fulfillment_status stays orthogonal).
+        return Span(t("doc.closed"), cls="badge badge--active")
     fs = doc.get("fulfillment_status") or ""
     if fs == "fulfilled":
         return Span(t("doc.fulfilled"), cls="badge badge--active")
@@ -3023,6 +3027,11 @@ celerpUpdateBulkAlloc();
                 await api.revert_doc_to_draft(token, entity_id, reason)
             elif action == "unvoid":
                 await api.unvoid_doc(token, entity_id)
+            elif action == "close":
+                reason = str(form.get("reason", "")).strip() or None
+                await api.close_doc(token, entity_id, reason)
+            elif action == "reopen":
+                await api.reopen_doc(token, entity_id)
             elif action == "delete":
                 await api.delete_doc(token, entity_id)
                 doc_type = str(form.get("doc_type", "")).strip() or "invoice"
@@ -6003,6 +6012,36 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    hx_swap="none", cls="btn btn--secondary",
                    title=t("documents.tip_convert_memo"))
         )
+    # Terminal Close for a live memo: shown on every live status (the server
+    # returns the count error if any stone is still out, per GDR 2e - the button
+    # is never hidden to prevent the error). Reversible via Reopen when closed.
+    if doc_type == "memo" and status not in ("draft", "void", "converted", "closed") and _can_finalize and not suppress_doc_actions:
+        action_btns_left.append(
+            Details(
+                Summary(t("btn.close_memo"), cls="btn btn--secondary",
+                        title=t("documents.tip_close_memo")),
+                Form(
+                    Input(type="text", name="reason", placeholder=t("documents.reason_optional_placeholder"), cls="form-input form-input--inline",
+                          onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
+                    Button(t("btn.confirm_close_memo"), type="submit", cls="btn btn--secondary", style="margin-top:0.5rem;"),
+                    hx_post=f"{_base}/action/close", hx_swap="none", cls="inline-form",
+                ),
+                cls="void-section",
+            )
+        )
+    if doc_type == "memo" and status == "closed" and _can_finalize and not suppress_doc_actions:
+        action_btns_left.append(
+            Details(
+                Summary(t("btn.reopen"), cls="btn btn--secondary",
+                        title=t("documents.tip_reopen_memo")),
+                Form(
+                    P(t("documents.reopen_memo_confirm"), cls="text-muted"),
+                    Button(t("btn.confirm_reopen"), type="submit", cls="btn btn--secondary"),
+                    hx_post=f"{_base}/action/reopen", hx_swap="none", cls="inline-form",
+                ),
+                cls="void-section",
+            )
+        )
     # Invoices and consignment-out memos ship: one step to a prefilled shipping
     # document (Delivery Note / Commercial Invoice printouts). Issued documents
     # only - a draft's lines are still moving, so its paperwork would go stale.
@@ -8369,6 +8408,16 @@ async function celerpCsvImport(input, entityId) {{
         _fin_show_reserve = _doc_reservable or _list_reservable
         _fin_show_bulk = (_fin_labels_active or _fin_show_fulfill or _fin_show_reserve) and bool(line_items)
         _show_item_status = (doc_type in _FULFILLABLE_DOC_TYPES or _inbound_receivable or _fin_show_reserve) and bool(line_items)
+        # Memo lines carry a derived shipped-state label (Returned / Not shipped /
+        # Kept/Sold) computed by the backend get_doc from the event log; render it
+        # in a read-only cell beside the status badge. Absent the derivation (a
+        # ledger-read fault degraded it away), the column simply shows nothing.
+        _show_shipped_label = doc_type == "memo" and bool(line_items)
+        _SHIPPED_LABEL_KEYS = {
+            "Returned": "documents.line_label_returned",
+            "Not shipped": "documents.line_label_not_shipped",
+            "Kept/Sold": "documents.line_label_kept_sold",
+        }
 
         # Build account code -> "CODE – Name" lookup for finalized line display
         _acct_map: dict[str, str] = {
@@ -8412,6 +8461,13 @@ async function celerpCsvImport(input, entityId) {{
                     cells.append(_item_status_badge_cell(
                         status_val, li_eid,
                         status_doc=(item_status_doc_map or {}).get(li_eid)))
+            if _show_shipped_label:
+                _lbl = li.get("shipped_label")
+                _key = _SHIPPED_LABEL_KEYS.get(_lbl) if _lbl else None
+                cells.append(Td(
+                    Span(t(_key), cls="badge badge--inactive") if _key else "--",
+                    cls="col-shipped-label",
+                ))
             # Pieces / Weight as compact sub-lines under the description (shared with
             # the print view + PDF): source from the line, else the parcel; skip the
             # measure the quantity already is.
@@ -8480,6 +8536,8 @@ async function celerpCsvImport(input, entityId) {{
             _thead_base.append(Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"))
         if _show_item_status:
             _thead_base.append(Th(t("th.status"), cls="col-item-status"))
+        if _show_shipped_label:
+            _thead_base.append(Th(t("documents.th_shipped"), cls="col-shipped-label"))
         _thead_base += [Th(t("th.skuitem"), cls="col-sku"), Th(t("th.description"), cls="col-desc")]
         if _is_vendor_doc:
             _thead_base += [Th(t("th.type"), cls="col-type")]

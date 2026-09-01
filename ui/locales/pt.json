@@ -3052,5 +3052,17 @@
   "settings.tab_line_items": "Itens de linha",
   "th.factor": "Fator",
   "th.position": "#",
-  "th.rounding": "Arredondamento"
+  "th.rounding": "Arredondamento",
+  "doc.closed": "Fechado",
+  "btn.reopen": "Reabrir",
+  "btn.close_memo": "Fechar",
+  "btn.confirm_close_memo": "Confirmar fecho",
+  "btn.confirm_reopen": "Confirmar reabertura",
+  "documents.tip_close_memo": "Feche este memo quando cada item tiver sido vendido, mantido ou devolvido ao stock.",
+  "documents.tip_reopen_memo": "Reabra este memo para torná-lo ativo novamente.",
+  "documents.reopen_memo_confirm": "Reabrir este memo e restaurar o seu estado anterior?",
+  "documents.line_label_returned": "Devolvido",
+  "documents.line_label_not_shipped": "Não enviado",
+  "documents.line_label_kept_sold": "Mantido/Vendido",
+  "documents.th_shipped": "Envio"
 }

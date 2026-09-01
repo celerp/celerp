@@ -3052,5 +3052,17 @@
   "settings.rounding_tooltip": "Arrotonda i prezzi calcolati all’incremento più vicino, in modo da ottenere prezzi derivati arrotondati.",
   "settings.tab_line_items": "Righe",
   "th.factor": "Fattore",
-  "th.rounding": "Arrotondamento"
+  "th.rounding": "Arrotondamento",
+  "doc.closed": "Chiuso",
+  "btn.reopen": "Riapri",
+  "btn.close_memo": "Chiudi",
+  "btn.confirm_close_memo": "Conferma chiusura",
+  "btn.confirm_reopen": "Conferma riapertura",
+  "documents.tip_close_memo": "Chiudi questo memo quando ogni articolo è stato venduto, trattenuto o restituito a magazzino.",
+  "documents.tip_reopen_memo": "Riapri questo memo per renderlo di nuovo attivo.",
+  "documents.reopen_memo_confirm": "Riaprire questo memo e ripristinare il suo stato precedente?",
+  "documents.line_label_returned": "Restituito",
+  "documents.line_label_not_shipped": "Non spedito",
+  "documents.line_label_kept_sold": "Trattenuto/Venduto",
+  "documents.th_shipped": "Spedizione"
 }

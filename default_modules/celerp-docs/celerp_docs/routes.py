@@ -724,10 +724,61 @@ async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str 
     return result
 
 
+async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: str, line_items: list) -> dict:
+    """Map each of this memo's line-item entity ids to a shipped-state label,
+    folded last-event-wins from the append-only ledger.
+
+    "Returned" - the item's latest fulfillment event on this memo is a reversal.
+    "Kept/Sold" - the latest is a fulfillment, not since reversed.
+    "Not shipped" - no fulfillment event for this memo (item never left stock).
+
+    The event log is the single source of truth; nothing is persisted.
+    """
+    from celerp.models.ledger import LedgerEntry
+
+    item_eids = {li.get("entity_id") or li.get("item_id") for li in line_items or []}
+    item_eids.discard(None)
+    item_eids.discard("")
+    if not item_eids:
+        return {}
+    rows = (
+        await session.execute(
+            select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data)
+            .where(
+                LedgerEntry.company_id == company_id,
+                LedgerEntry.entity_id.in_(item_eids),
+                LedgerEntry.event_type.in_(("item.fulfilled", "item.fulfillment_reversed")),
+            )
+            .order_by(LedgerEntry.id.desc())
+        )
+    ).all()
+    labels: dict = {}
+    for item_eid, event_type, data in rows:
+        if item_eid in labels:
+            continue  # id-desc order means the first row seen is the latest
+        if (data or {}).get("source_doc_id") != entity_id:
+            continue
+        labels[item_eid] = "Returned" if event_type == "item.fulfillment_reversed" else "Kept/Sold"
+    return {eid: labels.get(eid, "Not shipped") for eid in item_eids}
+
+
 @router.get("/{entity_id}")
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    return row.state | {"id": row.entity_id}
+    doc = row.state | {"id": row.entity_id}
+    if doc.get("doc_type") == "memo":
+        try:
+            labels = await _derive_shipped_labels(session, company_id, entity_id, doc.get("line_items") or [])
+            for li in doc.get("line_items") or []:
+                eid = li.get("entity_id") or li.get("item_id")
+                if eid in labels:
+                    li["shipped_label"] = labels[eid]
+        except Exception:
+            # Degrade to the raw status badge; never 500 the whole doc payload,
+            # never fabricate a label.
+            for li in doc.get("line_items") or []:
+                li.pop("shipped_label", None)
+    return doc
 
 
 @router.get("/{entity_id}/pdf")

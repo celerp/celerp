@@ -3052,5 +3052,17 @@
   "settings.attr_overflow_more": "+{n} ተጨማሪ",
   "settings.db_backup_size_uploaded": "- {mb} ሜባ ተሰቅሏል",
   "table.daterange_from_aria": "{label} ከ",
-  "table.daterange_to_aria": "{label} ወደ"
+  "table.daterange_to_aria": "{label} ወደ",
+  "doc.closed": "ተዘግቷል",
+  "btn.reopen": "እንደገና ክፈት",
+  "btn.close_memo": "ዝጋ",
+  "btn.confirm_close_memo": "መዝጋትን አረጋግጥ",
+  "btn.confirm_reopen": "እንደገና መክፈትን አረጋግጥ",
+  "documents.tip_close_memo": "እያንዳንዱ ዕቃ ከተሸጠ፣ ከተያዘ ወይም ወደ ክምችት ከተመለሰ በኋላ ይህን ማስታወሻ ይዝጉ።",
+  "documents.tip_reopen_memo": "ይህን ማስታወሻ እንደገና ንቁ ለማድረግ እንደገና ይክፈቱት።",
+  "documents.reopen_memo_confirm": "ይህን ማስታወሻ እንደገና ከፍተው ቀድሞ የነበረውን ሁኔታ ይመልሱ?",
+  "documents.line_label_returned": "ተመልሷል",
+  "documents.line_label_not_shipped": "አልተላከም",
+  "documents.line_label_kept_sold": "ተይዞ/ተሸጧል",
+  "documents.th_shipped": "ተልኳል"
 }
