@@ -3059,9 +3059,9 @@
   "btn.close_memo": "Cerrar",
   "btn.confirm_close_memo": "Confirmar cierre",
   "btn.confirm_reopen": "Confirmar reapertura",
-  "documents.tip_close_memo": "Cierre este memo cuando cada artículo se haya vendido, conservado o devuelto al stock.",
-  "documents.tip_reopen_memo": "Reabra este memo para que vuelva a estar activo.",
-  "documents.reopen_memo_confirm": "¿Reabrir este memo y restaurar su estado anterior?",
+  "documents.tip_close_memo": "Cierre esta nota cuando cada artículo se haya vendido, conservado o devuelto al inventario.",
+  "documents.tip_reopen_memo": "Reabra esta nota para que vuelva a estar activa.",
+  "documents.reopen_memo_confirm": "¿Reabrir esta nota y restaurar su estado anterior?",
   "documents.line_label_returned": "Devuelto",
   "documents.line_label_not_shipped": "No enviado",
   "documents.th_shipped": "Envío"

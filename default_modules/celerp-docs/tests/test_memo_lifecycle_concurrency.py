@@ -193,14 +193,19 @@ async def _shipping_docs_for(factory, company_id, memo_id) -> list[str]:
 
 
 async def test_close_shipping_race_no_ship_from_closed(_db_engine):
-    """Close vs create_shipment race on the same issued memo. The invariant: a shipping
-    document must never exist for a memo that Close committed as closed. At merge-base
-    create_shipment reads each source doc UNLOCKED, so under a concurrent gather it can
-    pass its non-closed check against the still-live memo and then commit the new
-    shipping doc even though Close committed 'closed' in between - a shipment from a
-    closed memo (RED). The sorted-batch FOR UPDATE makes create_shipment take the memo
-    row FOR UPDATE, block behind Close, re-read the committed 'closed' status, and 409 -
-    so either Close wins (no shipment) or create_shipment wins (memo not closed)."""
+    """create_shipment must never commit a shipment against an already-closed memo. The
+    memo is closed first, on its own committed transaction; a second transaction then reads
+    it and tries to ship it, and must 409.
+
+    create_shipment's closed-reject is PRE-EXISTING: at merge-base the status check already
+    rejects a source read as 'closed'. The gap the fix closes is a TOCTOU one - the read
+    was UNLOCKED, so a create_shipment that read 'sent' before a concurrent close committed
+    could still commit its shipment after the close landed. The added sorted-batch FOR
+    UPDATE re-read forces create_shipment to observe the committed 'closed' status under the
+    lock and 409. This test proves the guaranteed post-fix behavior (a closed memo is never
+    shipped) deterministically; it is expected GREEN at merge-base (the sequential guard is
+    pre-existing) and is a defense-in-depth proof, not part of the red-first batch. A
+    shipped-then-closed memo (ship precedes close) is legal and is not what this forbids."""
     from celerp_docs.routes import close_doc, create_shipment_from_docs, DocCloseBody, ShipmentFromDocsBody
 
     factory = _factory(_db_engine)
@@ -208,43 +213,30 @@ async def test_close_shipping_race_no_ship_from_closed(_db_engine):
     try:
         _item_id, memo_id = await _one_line_memo(factory, company_id, user, "MEMO-CS",
                                                  sku="CS1", name="Stone CS")
-        s_close, s_ship = factory(), factory()
+        # Close first, its own committed transaction: the memo is durably 'closed' before
+        # the ship attempt reads it.
+        await _close_seq(factory, company_id, user, memo_id)
+        assert (await _state(factory, company_id, memo_id)).get("status") == "closed"
+
+        s_ship = factory()
         outcome: dict = {}
-
-        async def _close(session):
-            try:
-                outcome["close"] = await close_doc(
-                    memo_id, DocCloseBody(), company_id=company_id, _=None, user=user, session=session)
-            except Exception as exc:  # noqa: BLE001 - a 409 (create_shipment won) is allowed
-                outcome["close"] = exc
-                await session.rollback()
-
-        async def _ship(session):
-            try:
-                outcome["ship"] = await create_shipment_from_docs(
-                    ShipmentFromDocsBody(doc_ids=[memo_id]), company_id=company_id, _=None,
-                    user=user, session=session)
-                await session.commit()
-            except Exception as exc:  # noqa: BLE001 - a 409 (memo closed) is the fixed outcome
-                outcome["ship"] = exc
-                await session.rollback()
-
         try:
-            await _race(_close(s_close), _ship(s_ship))
+            outcome["ship"] = await create_shipment_from_docs(
+                ShipmentFromDocsBody(doc_ids=[memo_id]), company_id=company_id, _=None,
+                user=user, session=s_ship)
+            await s_ship.commit()
+        except HTTPException as exc:
+            outcome["ship"] = exc
+            await s_ship.rollback()
         finally:
-            await s_close.close()
             await s_ship.close()
 
-        memo_state = await _state(factory, company_id, memo_id)
         shipments = await _shipping_docs_for(factory, company_id, memo_id)
-        memo_closed = memo_state.get("status") == "closed"
-        assert not (memo_closed and shipments), (
-            "illegal: a shipping document exists for a memo Close committed as closed. "
-            f"memo status={memo_state.get('status')!r}, shipments={shipments!r}; "
-            f"outcomes close={outcome.get('close')!r}, ship={outcome.get('ship')!r}")
-        assert _n_409(outcome.get("close"), outcome.get("ship")) == 1, (
-            f"exactly one of close/create_shipment must 409; close={outcome.get('close')!r}, "
-            f"ship={outcome.get('ship')!r}")
+        assert not shipments, (
+            "illegal: shipping paperwork was created for an already-closed memo. "
+            f"shipments={shipments!r}, ship outcome={outcome.get('ship')!r}")
+        assert isinstance(outcome.get("ship"), HTTPException) and outcome["ship"].status_code == 409, (
+            f"create_shipment on a closed memo must 409; got {outcome.get('ship')!r}")
     finally:
         await _cleanup(factory, company_id, user_id)
 

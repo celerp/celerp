@@ -764,6 +764,27 @@ async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str 
     return result
 
 
+async def _memo_allocation_items(session: AsyncSession, company_id, entity_id: str) -> list[Projection]:
+    """Every item projection this memo currently owns as its status document.
+
+    A memo line whose quantity exceeds its bound lot draws cross-lot siblings from
+    other lots of the same SKU; fulfill stamps each drawn lot status_doc_id==this memo
+    but the sibling never appears in the memo's line_items. This is the true, complete
+    allocation set (bound lines plus cross-lot siblings), read from the durable stamp so
+    close-eligibility and per-line labels both see the sibling a line_items-only scan
+    misses."""
+    rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+                Projection.state["status_doc_id"].as_string() == entity_id,
+            )
+        )
+    ).scalars().all()
+    return list(rows)
+
+
 async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: str, line_items: list) -> dict:
     """Map each of this memo's line-item entity ids to a shipped-state label,
     folded last-event-wins from the append-only ledger plus the item's live status.
@@ -803,29 +824,49 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
         if (data or {}).get("source_doc_id") != entity_id:
             continue
         last_event[item_eid] = event_type
-    # One batch read of the item projections for the shipped lines: the live status
-    # separates a still-out item (memo_out -> On Memo) from one since sold (Sold).
-    item_status: dict = {}
+    # Sold is read from the durable item.status.set(sold) event in history, not the
+    # item's live projection status: an item sold then archived reads "archived" live,
+    # and reading the live status would revert a genuinely-sold line to "On Memo". The
+    # ledger event that promoted it to sold is never erased by a later archive.
     fulfilled_eids = [eid for eid, ev in last_event.items() if ev != "item.fulfillment_reversed"]
+    sold_eids: set[str] = set()
     if fulfilled_eids:
-        status_rows = (
+        sold_rows = (
             await session.execute(
-                select(Projection.entity_id, Projection.state)
+                select(LedgerEntry.entity_id, LedgerEntry.data)
                 .where(
-                    Projection.company_id == company_id,
-                    Projection.entity_id.in_(fulfilled_eids),
+                    LedgerEntry.company_id == company_id,
+                    LedgerEntry.entity_id.in_(fulfilled_eids),
+                    LedgerEntry.event_type == "item.status.set",
                 )
             )
         ).all()
-        item_status = {eid: (st or {}).get("status") for eid, st in status_rows}
+        for _eid, _data in sold_rows:
+            if (_data or {}).get("new_status") == "sold":
+                sold_eids.add(_eid)
+
+    # Per-SKU rollup over the memo's full allocation set (cross-lot siblings included):
+    # a line whose bound lot was returned still reads "On Memo" when a sibling of the
+    # same SKU that fulfill drew from another lot is still out at the customer. Without
+    # this, a returned bound lot reads "Returned" while the customer still holds a sibling.
+    skus_still_out: set[str] = set()
+    for item_proj in await _memo_allocation_items(session, company_id, entity_id):
+        if item_proj.state.get("status") == "memo_out":
+            _sku = item_proj.state.get("sku")
+            if _sku:
+                skus_still_out.add(_sku)
+    sku_by_eid = {(li.get("entity_id") or li.get("item_id")): li.get("sku")
+                  for li in line_items or []}
 
     def _label(eid: str) -> str:
+        if sku_by_eid.get(eid) in skus_still_out:
+            return "On Memo"
         ev = last_event.get(eid)
         if ev is None:
             return "Not shipped"
         if ev == "item.fulfillment_reversed":
             return "Returned"
-        return "Sold" if item_status.get(eid) == "sold" else "On Memo"
+        return "Sold" if eid in sold_eids else "On Memo"
 
     return {eid: _label(eid) for eid in item_eids}
 
@@ -1611,21 +1652,16 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
     # Resolution is per-item memo_out, NOT fulfillment_status (a "fulfilled" memo
     # is all-memo_out = all still at the customer = maximally unresolved). Mirror
     # convert's per-line read.
+    # Resolution reads the memo's true allocation set (every item stamped
+    # status_doc_id==this memo), not just line_items: a cross-lot sibling fulfill drew
+    # from another lot of the same SKU carries the stamp but never appears in line_items,
+    # and leaving it out silently closes a memo with stock still out at the customer.
     pending = 0
-    for li in state.get("line_items") or []:
-        li_eid = li.get("entity_id") or li.get("item_id") or ""
-        if not li_eid:
-            continue
-        item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
-        if not item_proj:
-            continue
+    for item_proj in await _memo_allocation_items(session, company_id, entity_id):
         item_status = item_proj.state.get("status")
         # Still out at the customer, or held reserved-from THIS memo: both are
         # unresolved allocations of this paper and must be settled before Close.
-        if item_status == "memo_out":
-            pending += 1
-        elif (item_status == "reserved"
-              and item_proj.state.get("status_doc_id") == entity_id):
+        if item_status == "memo_out" or item_status == "reserved":
             pending += 1
     if pending:
         raise HTTPException(
