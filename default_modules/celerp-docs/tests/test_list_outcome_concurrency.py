@@ -333,6 +333,103 @@ async def test_send_close_race_no_unclose(_db_engine):
         await _cleanup(factory, company_id, user_id)
 
 
+async def _set_item_sold(factory, company_id, user, item_id, doc_id):
+    """Force an item to 'sold' via item.status.set. A closed memo carrying a sold line is only
+    reachable by event-seeding (converting a memo spawns a new invoice and moves the source memo
+    to 'converted'), so the sold-line-under-a-closed-memo state this race targets cannot be built
+    through the HTTP client."""
+    async with factory() as s:
+        await emit_event(
+            s, company_id=company_id, entity_id=item_id, entity_type="item",
+            event_type="item.status.set",
+            data={"new_status": "sold", "source_doc_id": doc_id, "doc_number": ""},
+            actor_id=user.id, location_id=None, source="test",
+            idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+        await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_revert_close_race_no_unsettle(_db_engine):
+    """A Close that has committed must never be silently un-settled by a revert-lines whose intent
+    formed before the Close. The durable invariant: once a memo's committed status is 'closed', a
+    racing revert on one of its sold lines must not reverse that line's fulfillment.
+
+    The interleaving that breaks this at merge-base: revert reads the doc (unlocked, sees a live
+    memo with a sold line), Close commits doc.closed, revert then applies _reverse_whole_lines on
+    the just-closed memo - the sold line flips back to 'available', un-settling a closed memo. The
+    test drives exactly that order: Close runs first and fully commits, then a revert whose read
+    straddled it lands. At merge-base revert's unlocked read lets the reversal apply (final item
+    'available', RED). With the FOR UPDATE lock revert re-reads the committed 'closed' status under
+    the lock and 409s, so the sold line stays sold and the close stays durable."""
+    from celerp_docs.routes import revert_lines, close_doc, RevertLinesRequest, DocCloseBody
+
+    factory = _factory(_db_engine)
+    company_id, user_id, user = await _seed_company(factory)
+    try:
+        item_id = await _seed_item(factory, company_id, user, sku="M3", name="Stone 3", qty=1,
+                                   barcode=_barcode())
+        memo_id = await _seed_memo(
+            factory, company_id, user, ref_id="MEMO-RC",
+            line_items=[{"entity_id": item_id, "sku": "M3", "name": "Stone 3", "quantity": 1,
+                         "unit_price": 10, "sell_by": "piece"}])
+        # A sold line: revertible (item_status in {memo_out, sold}) and not memo_out, so close is
+        # admissible. This is the line whose reversal the guard must block on a closed memo.
+        await _set_item_sold(factory, company_id, user, item_id, memo_id)
+        s_close, s_revert = factory(), factory()
+        outcome: dict = {}
+
+        # Close commits first; revert is released only after, so its write lands on the just-closed
+        # memo - the un-settle ordering. The lock (fix) forces revert to re-read that committed close.
+        close_done = asyncio.Event()
+
+        async def _close(session):
+            try:
+                outcome["close"] = await close_doc(
+                    memo_id, DocCloseBody(), company_id=company_id, _=None, user=user, session=session)
+            except Exception as exc:  # noqa: BLE001 - captured for the race assertion
+                outcome["close"] = exc
+                await session.rollback()
+            finally:
+                close_done.set()
+
+        async def _revert(session):
+            await close_done.wait()
+            try:
+                outcome["revert"] = await revert_lines(
+                    memo_id, RevertLinesRequest(line_entity_ids=[item_id]),
+                    company_id=company_id, _=None, user=user, session=session)
+                await session.commit()
+            except Exception as exc:  # noqa: BLE001 - a 409 (memo already closed) is the fixed outcome
+                outcome["revert"] = exc
+                await session.rollback()
+
+        try:
+            await asyncio.wait_for(asyncio.gather(_close(s_close), _revert(s_revert)), timeout=20)
+        finally:
+            await s_close.close()
+            await s_revert.close()
+
+        memo_state = await _state(factory, company_id, memo_id)
+        item_state = await _state(factory, company_id, item_id)
+        close_committed = not isinstance(outcome.get("close"), Exception)
+        assert close_committed, f"close should have committed first; got {outcome.get('close')!r}"
+
+        # Durable settlement: the committed close is never un-settled by the racing revert. At
+        # merge-base the unlocked revert reverses the sold line (final 'available'); the fix 409s it.
+        assert item_state.get("status") == "sold", (
+            "un-settle: a committed Close was reversed - the racing revert un-shipped a sold line on "
+            f"a closed memo, item is now {item_state.get('status')!r}. outcomes "
+            f"close={outcome.get('close')!r}, revert={outcome.get('revert')!r}")
+        assert memo_state.get("status") == "closed", (
+            f"the memo must stay closed; got {memo_state.get('status')!r}")
+        # The revert that tried to un-settle a closed memo is rejected, not silently applied.
+        assert isinstance(outcome.get("revert"), HTTPException) and outcome["revert"].status_code == 409, (
+            f"revert on a closed memo must 409, not commit; got {outcome.get('revert')!r}")
+    finally:
+        await _cleanup(factory, company_id, user_id)
+
+
 @pytest.mark.asyncio
 async def test_scan_versus_versioned_save_never_drops_scanned_line(_db_engine):
     """A scan (adds X) races a versioned line_items save (replaces with [Y]) on the same draft

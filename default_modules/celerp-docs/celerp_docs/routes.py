@@ -4828,8 +4828,10 @@ async def revert_lines(
 
     Inbound doc types (bill, consignment_in) must use DELETE /receive instead.
     """
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
+    if state.get("status") == "closed":
+        raise HTTPException(status_code=409, detail="Cannot revert a closed memo; reopen it first.")
     doc_type = state.get("doc_type", "")
 
     if FULFILLABLE_STATUSES.get(doc_type) is None:

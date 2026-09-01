@@ -70,6 +70,29 @@ async def test_send_rejected_on_closed_memo(client):
 
 
 @pytest.mark.asyncio
+async def test_revert_lines_rejected_on_closed_memo(client):
+    """POST /docs/{id}/revert-lines on a closed memo returns 409 and reverts nothing
+    (reverting fulfillment on a settled memo must go through Reopen first). The doc
+    stays closed and the referenced item's status is unchanged."""
+    token = await _register(client)
+    h = _h(token)
+    memo = await _closed_memo(client, h)
+    doc_before = (await client.get(f"/docs/{memo}", headers=h)).json()
+    _li0 = doc_before["line_items"][0]
+    line_eid = _li0.get("entity_id") or _li0.get("item_id")
+    item_before = (await client.get(f"/items/{line_eid}", headers=h)).json()
+
+    r = await client.post(f"/docs/{memo}/revert-lines", headers=h, json={"line_entity_ids": [line_eid]})
+    assert r.status_code == 409, r.text
+    assert "closed" in r.text.lower() or "reopen" in r.text.lower()
+
+    doc_after = (await client.get(f"/docs/{memo}", headers=h)).json()
+    item_after = (await client.get(f"/items/{line_eid}", headers=h)).json()
+    assert doc_after.get("status") == "closed", f"revert must not un-close; got {doc_after.get('status')}"
+    assert item_after.get("status") == item_before.get("status"), "revert must not change item status on a closed memo"
+
+
+@pytest.mark.asyncio
 async def test_closed_memo_no_create_shipping(client):
     """POST /shipment for a closed memo returns 409, nothing is created; a live
     (non-closed) memo still ships, so the guard is specific to closed."""
