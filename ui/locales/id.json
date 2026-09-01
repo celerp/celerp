@@ -2266,6 +2266,7 @@
   "documents.th_due": "Jatuh tempo",
   "documents.th_last_updated": "Terakhir diperbarui",
   "documents.th_on_hand": "Stok Tersedia",
+  "documents.th_in_stock": "Stok Tersedia",
   "documents.th_qty_out": "Jumlah Keluar",
   "documents.th_who": "Siapa",
   "documents.tip_catalog_search": "Ketik untuk mencari di katalog atau masukkan deskripsi khusus",

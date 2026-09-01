@@ -1127,9 +1127,9 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
 
 
 # Inventory-audit stock adjustment accounts:
-#   shrinkage (count < system): Dr 5100 Cost of Goods Sold / Cr 1130-P Inventory
+#   shrinkage (count < system): Dr 6970 Inventory Shrinkage & Write-offs / Cr 1130-P Inventory
 #   overage   (count > system): Dr 1130-P Inventory          / Cr 4300 Other Income
-_AUDIT_SHRINKAGE_ACCT = "5100"
+_AUDIT_SHRINKAGE_ACCT = "6970"
 _AUDIT_OVERAGE_ACCT = "4300"
 _AUDIT_INVENTORY_ACCT = _INVENTORY_ACCT
 

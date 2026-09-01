@@ -2266,6 +2266,7 @@
   "documents.th_due": "مستحقة",
   "documents.th_last_updated": "آخر تحديث",
   "documents.th_on_hand": "متوفرة",
+  "documents.th_in_stock": "متوفرة",
   "documents.th_qty_out": "الكمية الصادرة",
   "documents.th_who": "من",
   "documents.tip_catalog_search": "اكتب للبحث في الكتالوج أو أدخل وصفًا مخصصًا",

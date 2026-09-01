@@ -2266,6 +2266,7 @@
   "documents.th_due": "ครบกำหนด",
   "documents.th_last_updated": "อัปเดตล่าสุด",
   "documents.th_on_hand": "คงเหลือ",
+  "documents.th_in_stock": "คงเหลือ",
   "documents.th_qty_out": "จำนวนที่นำออก",
   "documents.th_who": "ผู้ดำเนินการ",
   "documents.tip_catalog_search": "พิมพ์เพื่อค้นหาแคตตาล็อก หรือกรอกคำอธิบายเอง",

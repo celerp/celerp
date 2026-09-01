@@ -2909,9 +2909,11 @@ class TestWriteoffListDetail:
         header_cells = table.select_one("thead tr").find_all("th")
         data_cells = table.select_one("tbody tr").find_all("td")
         assert len(header_cells) == len(data_cells), (len(header_cells), len(data_cells))
-        # The three write-off headers are the on-page entry columns.
+        # The three write-off headers are the on-page entry columns; the write-off list relabels the
+        # entry column "Write off qty" and the stock column "In stock" (audit keeps "On hand").
         header_text = [th.get_text(strip=True) for th in header_cells]
-        assert {"Qty out", "Account", "Comment"} <= set(header_text)
+        assert {"Write off qty", "In stock", "Account", "Comment"} <= set(header_text)
+        assert "Qty out" not in header_text and "On hand" not in header_text
 
     @pytest.mark.asyncio
     async def test_finalized_writeoff_offers_terminal_button(self, ui_client):

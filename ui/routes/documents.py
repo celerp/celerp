@@ -5886,7 +5886,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     _wo_acct_options, _wo_acct_labels = _writeoff_account_choices(chart_accounts)
 
     def _writeoff_cells(li: dict) -> list:
-        """Qty out / Account / Comment cells for a write-off line, appended after On hand.
+        """Write off qty / Account / Comment cells for a write-off line, appended after In stock.
         A draft (pol['writeoff_editable']) renders click-to-edit cells saving to the writeoff-line
         routes; finalized/closed renders static text. Each cell is guarded by its pol['show_*'] flag
         so non-write-off lists (every show_* False) render byte-identical."""
@@ -6025,7 +6025,15 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # slot. Revert-to-draft is rendered by the shared doc block below (consistent placement); the
     # quotation's relay-gated Send / Mark-as-sent come from the shared _can_send block.
     if is_list:
-        if status == _LD:
+        if status == _LD and pol["writeoff"]:
+            # A draft write-off finalizes and removes stock in one step (validation runs server-side),
+            # so its draft primary is the Write off stock terminal, not the generic Issue. GDR 2b.
+            _wo_term = _list_behavior("writeoff").terminal[0]
+            action_btns_left.append(Button(_wo_term.label, hx_post=f"/lists/{entity_id}/action/{_wo_term.key}",
+                                           hx_swap="none", cls="btn btn--primary",
+                                           hx_confirm=_wo_term.confirm,
+                                           title=t("documents.tip_writeoff")))
+        elif status == _LD:
             # The single "what's next" cue for every type (mirrors the invoice's finalize). GDR 2b.
             _list_word = _list_behavior(list_type).label.lower() if list_type else t("documents.word_list")
             action_btns_left.append(Button(t("documents.issue"), hx_post=f"/lists/{entity_id}/action/finalize",
@@ -6957,10 +6965,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             _line_headers.append(Th(t("th.account"), cls="col-account"))
         _line_headers.extend([Th(t("th.total"), cls="cell--number col-total")])
         if pol["show_onhand"]:
-            _line_headers.append(Th(t("documents.th_on_hand"), cls="cell--number col-onhand"))
+            _line_headers.append(Th(t("documents.th_in_stock") if pol["writeoff"] else t("documents.th_on_hand"), cls="cell--number col-onhand"))
         if pol["show_counted"]:
             _line_headers.append(Th(t("documents.th_counted"), cls="cell--number col-counted"))
-        # Qty out is numeric (right-aligned over its figures); Account/Comment are text (left).
+        # Write off qty is numeric (right-aligned over its figures); Account/Comment are text (left).
         if pol["show_qtyout"]:
             _line_headers.append(Th(t("documents.th_qty_out"), cls="cell--number col-qtyout"))
         if pol["show_account"]:
@@ -8490,7 +8498,7 @@ async function celerpCsvImport(input, entityId) {{
             _thead_base.append(Th(t("th.account"), cls="col-account"))
         _thead_base.append(Th(t("th.total"), cls="cell--number col-total"))
         if pol["show_onhand"]:
-            _thead_base.append(Th(t("documents.th_on_hand"), cls="cell--number col-onhand"))
+            _thead_base.append(Th(t("documents.th_in_stock") if pol["writeoff"] else t("documents.th_on_hand"), cls="cell--number col-onhand"))
         if pol["show_counted"]:
             _thead_base.append(Th(t("documents.th_counted"), cls="cell--number col-counted"))
         if pol["show_qtyout"]:

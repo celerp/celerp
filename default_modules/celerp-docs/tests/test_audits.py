@@ -454,7 +454,7 @@ async def test_adjust_overwrites_to_count_posts_je_and_is_undoable(client):
     je = next(e for e in ledger if audit in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
     assert abs(sum(float(x.get("debit", 0) or 0) for x in entries) - sum(float(x.get("credit", 0) or 0) for x in entries)) < 1e-6
-    assert {"5100", "1130-P", "4300"} <= {x["account"] for x in entries}
+    assert {"6970", "1130-P", "4300"} <= {x["account"] for x in entries}
 
     # Undo: quantities restored, audit reopened to finalized, JE voided.
     assert (await client.post(f"/lists/{audit}/undo-adjust", headers=_h(t))).status_code == 200
