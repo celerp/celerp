@@ -132,9 +132,10 @@ def test_archive_qtypositive_offers_choice_no_autoledger(page, ui_server, api):
 
 
 def test_writeoff_journey_terminal_and_undo(page, ui_server, api):
-    """J1 end to end: bulk write-off -> fill qty out and account on-page -> Issue -> the Write off
-    stock terminal disposes the stock and closes the list -> Undo write-off restores it. Guards the
-    terminal's UI wiring: finalize alone must never be a dead end."""
+    """J1 end to end: bulk write-off -> fill qty out and account on-page -> the single "Write off
+    stock" terminal finalizes and disposes the stock in one step and closes the list -> Undo
+    write-off restores it. Guards the terminal's UI wiring: the draft's one button must dispose,
+    and undo must reopen to a re-runnable terminal, never a dead end."""
     api.post("/accounting/chart/seed")
     iid = api.post("/items", json={
         "sku": "WO-E2E-001", "sell_by": "piece", "name": "Writeoff E2E", "quantity": 8}).json()["id"]
@@ -163,8 +164,8 @@ def test_writeoff_journey_terminal_and_undo(page, ui_server, api):
     page.locator(".combobox-option:visible").first.click()
     page.wait_for_timeout(500)
 
-    page.get_by_role("button", name="Issue").click()
-    # Finalized view must offer the terminal - this is the regression under guard.
+    # Single step: a draft writeoff renders "Write off stock" directly (no separate Issue), and it
+    # finalizes and disposes atomically. This is the regression under guard.
     page.get_by_role("button", name="Write off stock").wait_for(state="visible", timeout=10000)
     assert api.get(f"/items/{iid}").json()["status"] == "available"  # nothing disposed yet
 

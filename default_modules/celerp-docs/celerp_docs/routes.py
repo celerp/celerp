@@ -6093,6 +6093,8 @@ async def adjust_audit(
         l["prior_qty"] = live
         l["adjusted"] = True
         adjusted += 1
+    if shrink_val > 0:
+        await _validate_writeoff_account(session, company_id, auto_je._AUDIT_SHRINKAGE_ACCT)
     await auto_je.create_for_audit_adjustment(
         session, company_id=company_id, user_id=user.id, list_id=entity_id,
         shrinkage_value=shrink_val, overage_value=over_val, cycle=cycle,
@@ -6187,7 +6189,7 @@ def _writeoff_seed_line(item: Projection) -> dict:
     st = item.state
     return {"line_id": uuid.uuid4().hex, "item_id": item.entity_id, "sku": st.get("sku"),
             "name": st.get("name"), "quantity": float(st.get("quantity") or 0),
-            "qty_out": None, "account": None, "comment": ""}
+            "qty_out": None, "account": "6970", "comment": ""}
 
 
 @lists_router.post("/writeoff")
@@ -6279,11 +6281,14 @@ async def write_off_stock(
     _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Write-off terminal (manager): remove each line's qty_out from stock and post one balanced JE (one
-    debit per destination account against a single Inventory credit). A full-quantity line disposes the
-    whole item row; a partial line carves a child lot via the shared split primitive and disposes that.
-    Every disposed portion ends as a hidden `disposed` item - the permanent disposal record. Uncounted
-    (blank qty_out) lines are skipped and reported. Reversible via undo-write-off."""
+    """Write-off terminal (manager): in one step, validate every intended line, remove each line's
+    qty_out from stock and post one balanced JE (one debit per destination account against a single
+    Inventory credit). Runs from a draft (finalized inline after validation) or a finalized list. A
+    full-quantity line disposes the whole item row; a partial line carves a child lot via the shared
+    split primitive and disposes that. Every disposed portion ends as a hidden `disposed` item - the
+    permanent disposal record. Lines with no quantity entered are skipped and reported; a line with a
+    quantity but an invalid account/item/quantity rejects the whole action. Reversible via
+    undo-write-off."""
     from celerp_inventory.routes import split_off_child
     # Row-lock the list for the whole transaction: this terminal moves ledger value, so a second
     # concurrent run must serialize (a double run would double-carve and post twice). The audit terminal
@@ -6293,36 +6298,92 @@ async def write_off_stock(
     ).with_for_update())).scalar_one_or_none()
     if row is None or row.state.get("list_type") != "writeoff":
         raise HTTPException(status_code=404, detail="Write-off not found")
-    if row.state.get("status") != FINALIZED:
-        raise HTTPException(status_code=409, detail="Finalize the write-off before removing stock")
+    status = row.state.get("status")
+    if status not in (DRAFT, FINALIZED):
+        raise HTTPException(status_code=409, detail="This write-off has already been processed")
     cycle = int(row.state.get("adjust_count") or 0)
     unit_map = await _get_unit_map(session, company_id)
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    # Pre-flight: an "intended" line is one the user entered a quantity on. Every intended line must be
+    # fully valid BEFORE anything is disposed, so a line the user meant to write off but left incomplete
+    # rejects the whole action (no silent skip, no false success). Untouched (no-qty) lines are the only
+    # legitimately skipped-and-reported lines.
+    intended = [l for l in lines if l.get("qty_out") is not None]
+    if not intended:
+        raise HTTPException(status_code=422,
+                            detail="Enter a quantity and a destination account for each item you want to write off")
+    prepared: list[tuple[dict, Projection, float]] = []  # (line, item, qty_out)
+    # Validate every intended line's account and quantity, and collect the distinct item ids to lock.
+    want_ids: set[str] = set()
+    for l in intended:
+        name = l.get("name") or l.get("sku") or l.get("item_id") or "item"
+        account = l.get("account")
+        if not account:
+            raise HTTPException(status_code=422, detail=f"{name}: choose a destination account")
+        await _validate_writeoff_account(session, company_id, account)
+        qty_out = float(l.get("qty_out"))
+        if qty_out <= 0:
+            raise HTTPException(status_code=422, detail=f"{name}: write-off quantity must be greater than 0")
+        want_ids.add(l.get("item_id"))
+    # Lock every distinct item projection FOR UPDATE in one deterministic (entity_id-sorted) batch: two
+    # concurrent runs that share items acquire them in the same order (no deadlock), and each reads the
+    # other's committed decrement. populate_existing overwrites any stale identity-map copy, closing the
+    # unlocked-read hazard the plain get left open.
+    locked: dict[str, Projection] = {
+        p.entity_id: p for p in (await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_id.in_(sorted(want_ids)),
+            ).with_for_update().execution_options(populate_existing=True)
+        )).scalars().all()
+    }
+    # From each item's LOCKED fresh state, re-check availability and capture its live quantity and
+    # unit_cost once. unit_cost is split-invariant, so capturing it pre-carve keeps every line's
+    # valuation independent of carve-order rounding on the mutated parent.
+    live_by_item: dict[str, float] = {}
+    unit_cost_by_item: dict[str, float] = {}
+    for l in intended:
+        name = l.get("name") or l.get("sku") or l.get("item_id") or "item"
+        item = locked.get(l.get("item_id"))
+        if item is None or item.entity_type != "item" or (item.state.get("status") or "available") != "available":
+            raise HTTPException(status_code=422, detail=f"{name}: item is no longer available to write off")
+        live_by_item[item.entity_id] = float(item.state.get("quantity") or 0)
+        unit_cost_by_item.setdefault(item.entity_id, _audit_unit_cost(item.state))
+        prepared.append((l, item, float(l.get("qty_out"))))
+    # Aggregate availability: the same item can appear on several lines (two destination accounts), so
+    # validate the SUM of its write-off quantities against live stock, not each line on its own.
+    agg: dict[str, float] = {}
+    for l, item, qty_out in prepared:
+        agg[item.entity_id] = round(agg.get(item.entity_id, 0.0) + qty_out, 10)
+    for item_id, total_out in agg.items():
+        live = live_by_item[item_id]
+        if total_out > live + 1e-9:
+            name = locked[item_id].state.get("sku") or item_id
+            raise HTTPException(
+                status_code=422,
+                detail=f"{name}: total write-off quantity {total_out} exceeds stock {live}",
+            )
+    skipped = len(lines) - len(intended)  # untouched (no-qty) lines, reported alongside the write-off
+    # Single step: a draft write-off is finalized inline here, after validation passes, so the manager
+    # removes stock in one click. The writeoff behaviour has no finalize milestone (pure status
+    # transition), and this runs under the same row lock/transaction as the disposal below, so the
+    # finalize and the disposal are atomic - a later failure rolls both back and the list stays a draft.
+    if status == DRAFT:
+        await _emit_list(session, company_id, entity_id, "list.finalized",
+                         {"status": FINALIZED, "finalized_at": datetime.now(timezone.utc).isoformat()}, user)
     debits: dict[str, float] = {}
     total_value = 0.0
     written_off = 0
-    skipped = 0
-    for l in lines:
-        qo = l.get("qty_out")
+    remaining: dict[str, float] = dict(live_by_item)
+    for l, item, qty_out in prepared:
         account = l.get("account")
-        if qo is None or not account:
-            skipped += 1  # report-and-skip: an unfilled line removes nothing
-            continue
-        item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
-        if item is None or item.entity_type != "item" or (item.state.get("status") or "available") != "available":
-            skipped += 1  # parent sold/changed since seeding -> skip, never dispose phantom units
-            continue
-        live = float(item.state.get("quantity") or 0)
-        qty_out = float(qo)
-        if qty_out <= 0 or qty_out > live:
-            skipped += 1  # guarded here: split_off_child floors at 0 and never validates qty
-            continue
-        unit_cost = _audit_unit_cost(item.state)
+        unit_cost = unit_cost_by_item[item.entity_id]
         value = round(unit_cost * qty_out, 2)
         sku = item.state.get("sku") or ""  # read before any rollback expires the ORM row
+        rem = remaining[item.entity_id]
         try:
-            if abs(qty_out - live) < 1e-9:
-                disposed_eid = l["item_id"]  # full row: dispose in place, no split
+            if abs(qty_out - rem) < 1e-9:
+                disposed_eid = l["item_id"]  # the line consuming the item's remainder disposes the row in place, no split
             else:
                 # A piece-unit parcel's discarded pieces equal the discarded count, so the carve is
                 # fully determined by qty_out. A weight parcel's discarded weight is not (grams are not
@@ -6353,6 +6414,7 @@ async def write_off_stock(
         l["disposed_qty"] = qty_out
         l["adjusted"] = True
         written_off += 1
+        remaining[item.entity_id] = round(rem - qty_out, 10)
     entries = [{"account": acct, "debit": val, "credit": 0.0} for acct, val in debits.items()]
     if entries:
         entries.append({"account": auto_je._INVENTORY_ACCT, "debit": 0.0, "credit": round(total_value, 2)})

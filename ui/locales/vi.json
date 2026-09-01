@@ -2266,6 +2266,7 @@
   "documents.th_due": "Đến hạn",
   "documents.th_last_updated": "Cập nhật lần cuối",
   "documents.th_on_hand": "Số lượng hiện có",
+  "documents.th_in_stock": "Số lượng hiện có",
   "documents.th_qty_out": "Số lượng xuất",
   "documents.th_who": "Ai",
   "documents.tip_catalog_search": "Loại để tìm kiếm trong danh mục hoặc nhập mô tả tùy chỉnh",

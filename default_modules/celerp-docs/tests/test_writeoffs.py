@@ -109,6 +109,46 @@ async def _je_for(client, t, wo_id) -> dict | None:
 EXP_A = "6950"
 EXP_B = "6600"
 
+# The default shrinkage/write-off account seeded on every write-off line and posted by the audit
+# terminal's shrinkage leg.
+SHRINK_ACCT = "6970"
+
+
+async def _company_id(session):
+    """The single company's id (each test registers exactly one)."""
+    from celerp_accounting.models import Account
+    from sqlalchemy import select
+    return (await session.execute(select(Account.company_id).limit(1))).scalar_one()
+
+
+async def _delete_account(session, code: str) -> None:
+    """Remove a chart account for the test's company (simulate a company whose COA lacks it)."""
+    from celerp_accounting.models import Account
+    from sqlalchemy import delete
+    cid = await _company_id(session)
+    await session.execute(delete(Account).where(Account.company_id == cid, Account.code == code))
+    await session.commit()
+
+
+async def _clear_line_account(session, wo_id: str, line_id: str) -> None:
+    """Blank a seeded line's destination account (the set-line route never sets an account to None, so a
+    'quantity entered, no account' line is built directly on the projection state)."""
+    from celerp.models.projections import Projection
+    from sqlalchemy import select
+    cid = await _company_id(session)
+    row = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_id == wo_id))).scalar_one()
+    state = dict(row.state)
+    lines = [dict(l) for l in state.get("line_items") or []]
+    for l in lines:
+        if l.get("line_id") == line_id:
+            l["account"] = None
+    state["line_items"] = lines
+    row.state = state
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(row, "state")
+    await session.commit()
+
 
 # --- full-row disposal + JE ------------------------------------------------
 
@@ -194,6 +234,58 @@ async def test_writeoff_two_lines_same_item_one_balanced_je(client):
     assert debit == {EXP_A: 20.0, EXP_B: 30.0}
     assert credit == {"1130-P": 50.0}  # one summed inventory credit
     assert abs(sum(debit.values()) - sum(credit.values())) < 1e-6
+
+
+@pytest.mark.asyncio
+async def test_writeoff_overdraw_across_lines_rejected(client):
+    """The same item on two lines whose write-off quantities SUM above live stock is rejected: the
+    aggregate-per-item check fires before any disposal, so the terminal returns 422, nothing is
+    disposed, no JE posts, and the item stays available."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-OVERDRAW", loc=loc, qty=5, cost_total=50)  # unit cost 10
+    wo = (await _writeoff(client, t, [a]))["id"]
+    # Same item on two lines (two accounts), quantities 1 + 5 = 6 > 5 on hand.
+    await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=1, account=EXP_A)
+    assert (await _set_line(client, t, wo, item_id=a, qty_out=5, account=EXP_B)).status_code == 200
+    await _finalize(client, t, wo)
+
+    r = await _terminal(client, t, wo)
+    assert r.status_code == 422, r.text
+    assert await _je_for(client, t, wo) is None
+    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "available"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first, second", [(2, 3), (3, 2)])
+async def test_writeoff_exact_exhaustion_disposes_parent_no_phantom(client, first, second):
+    """The same item on two lines whose quantities exactly exhaust live stock (2 + 3 of 5, either
+    order): the line consuming the remainder disposes the original row in place, so the item ends
+    `disposed` with no phantom zero-quantity available parent, and the Inventory credit equals the
+    item's full cost."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-EXACT", loc=loc, qty=5, cost_total=50)  # unit cost 10
+    wo = (await _writeoff(client, t, [a]))["id"]
+    await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=first, account=EXP_A)
+    assert (await _set_line(client, t, wo, item_id=a, qty_out=second, account=EXP_B)).status_code == 200
+    await _finalize(client, t, wo)
+
+    r = await _terminal(client, t, wo)
+    assert r.status_code == 200, r.text
+    assert r.json()["written_off"] == 2 and r.json()["value"] == 50.0
+
+    # The original item row ends disposed (no phantom 0-qty available parent): hidden from the default
+    # list and present under the disposed filter.
+    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "disposed"
+    assert a not in {i["id"] for i in (await client.get("/items", headers=_h(t))).json()["items"]}
+
+    # One balanced JE crediting the full item cost to Inventory.
+    je = await _je_for(client, t, wo)
+    assert je is not None
+    credit = {x["account"]: float(x.get("credit", 0) or 0) for x in je["data"]["entries"]
+              if float(x.get("credit", 0) or 0)}
+    assert credit == {"1130-P": 50.0}
 
 
 # --- validation (function level) -------------------------------------------
@@ -404,6 +496,216 @@ async def test_audit_adjustment_still_posts_after_refactor(client):
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(t))).json()["items"]
     je = next(e for e in ledger if audit in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
-    assert {"5100", "1130-P"} <= {x["account"] for x in entries}
+    assert {"6970", "1130-P"} <= {x["account"] for x in entries}
     assert abs(sum(float(x.get("debit", 0) or 0) for x in entries)
                - sum(float(x.get("credit", 0) or 0) for x in entries)) < 1e-6
+
+
+# --- honest failure: an intended (qty'd) line that cannot dispose rejects the WHOLE action ---
+
+@pytest.mark.asyncio
+async def test_writeoff_qty_no_account_rejects(client, session):
+    """A line with a quantity but no destination account rejects the whole terminal with an explanatory
+    422: nothing is disposed, no JE posts, the item stays available and the list stays pre-terminal."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-NOACCT", loc=loc, qty=4, cost_total=40)
+    wo = (await _writeoff(client, t, [a]))["id"]
+    # Quantity entered, but the seeded default account cleared so the line carries no destination.
+    lid = await _line_id(client, t, wo, a)
+    await _set_line(client, t, wo, line_id=lid, qty_out=4)
+    await _clear_line_account(session, wo, lid)
+    r = await _terminal(client, t, wo)
+    assert r.status_code == 422, r.text
+    assert "account" in r.json()["detail"].lower()
+    assert await _je_for(client, t, wo) is None
+    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "available"
+    st = await _state(client, t, wo)
+    assert st.get("result") != "written_off" and st["status"] != "closed"
+
+
+@pytest.mark.asyncio
+async def test_writeoff_all_blank_rejects(client):
+    """Every line blank (nothing to write off) rejects with the explanatory 422; no JE, nothing disposed,
+    list stays pre-terminal."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-BLANK", loc=loc, qty=4, cost_total=40)
+    wo = (await _writeoff(client, t, [a]))["id"]
+    r = await _terminal(client, t, wo)
+    assert r.status_code == 422, r.text
+    assert "Enter a quantity and a destination account" in r.json()["detail"]
+    assert await _je_for(client, t, wo) is None
+    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_writeoff_multiline_atomic_rejects(client, session):
+    """One fully-entered line plus one intended-but-incomplete line (qty, no account): the WHOLE action
+    rejects. The complete line's item is NOT disposed, no JE posts, the list stays pre-terminal."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-OK", loc=loc, qty=4, cost_total=40)
+    b = await _item(client, t, "WO-BAD", loc=loc, qty=4, cost_total=40)
+    wo = (await _writeoff(client, t, [a, b]))["id"]
+    await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=4, account=EXP_A)
+    # b: quantity entered but its account cleared -> intended but incomplete.
+    b_lid = await _line_id(client, t, wo, b)
+    await _set_line(client, t, wo, line_id=b_lid, qty_out=4)
+    await _clear_line_account(session, wo, b_lid)
+    r = await _terminal(client, t, wo)
+    assert r.status_code == 422, r.text
+    assert await _je_for(client, t, wo) is None
+    # a stays available (nothing disposed), list stays pre-terminal.
+    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "available"
+    assert (await client.get(f"/items/{b}", headers=_h(t))).json()["status"] == "available"
+    st = await _state(client, t, wo)
+    assert st.get("result") != "written_off" and st["status"] != "closed"
+
+
+# --- single step: the terminal accepts a DRAFT and finalizes+disposes atomically ---
+
+@pytest.mark.asyncio
+async def test_writeoff_single_step_finalizes_and_disposes(client):
+    """One click of the terminal on a DRAFT write-off finalizes, disposes the stock, posts the JE and
+    closes the list - no separate finalize step."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-1STEP", loc=loc, qty=4, cost_total=40)  # unit cost 10
+    wo = (await _writeoff(client, t, [a]))["id"]
+    await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=4, account=EXP_A)
+    # No finalize call: the terminal runs straight from DRAFT.
+    r = await _terminal(client, t, wo)
+    assert r.status_code == 200, r.text
+    assert r.json()["written_off"] == 1 and r.json()["value"] == 40.0
+    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "disposed"
+    st = await _state(client, t, wo)
+    assert st["status"] == "closed" and st["result"] == "written_off"
+    je = await _je_for(client, t, wo)
+    assert je is not None
+    debit = {x["account"] for x in je["data"]["entries"] if float(x.get("debit", 0) or 0)}
+    assert EXP_A in debit
+
+
+@pytest.mark.asyncio
+async def test_writeoff_default_line_account_is_6970(client):
+    """A seeded write-off line defaults its destination account to 6970; a default (unedited-account)
+    write-off debits 6970."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-DEF", loc=loc, qty=4, cost_total=40)
+    wo = (await _writeoff(client, t, [a]))["id"]
+    # The seeded line carries account 6970 without any edit.
+    lines = (await _state(client, t, wo))["line_items"]
+    assert next(l for l in lines if l["item_id"] == a)["account"] == SHRINK_ACCT
+    # Enter only the quantity (leave the default account) and run the single-step terminal.
+    await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=4)
+    r = await _terminal(client, t, wo)
+    assert r.status_code == 200, r.text
+    je = await _je_for(client, t, wo)
+    debit = {x["account"] for x in je["data"]["entries"] if float(x.get("debit", 0) or 0)}
+    assert debit == {SHRINK_ACCT}
+
+
+@pytest.mark.asyncio
+async def test_writeoff_line_account_override(client):
+    """On a DRAFT write-off, overriding the seeded 6970 to another valid expense account and clicking the
+    terminal once posts the JE to the overridden account."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-OVR", loc=loc, qty=4, cost_total=40)
+    wo = (await _writeoff(client, t, [a]))["id"]
+    await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=4, account=EXP_A)
+    r = await _terminal(client, t, wo)
+    assert r.status_code == 200, r.text
+    je = await _je_for(client, t, wo)
+    debit = {x["account"] for x in je["data"]["entries"] if float(x.get("debit", 0) or 0)}
+    assert debit == {EXP_A}  # overridden account, not the 6970 default
+
+
+@pytest.mark.asyncio
+async def test_writeoff_account_absent_rejects(client, session):
+    """A company whose COA lacks 6970: a qty'd line carrying the 6970 default reaches the terminal ->
+    422, no JE, the item stays available (never a false success posting to a missing account)."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-ABSENT", loc=loc, qty=4, cost_total=40)
+    wo = (await _writeoff(client, t, [a]))["id"]
+    lid = await _line_id(client, t, wo, a)
+    await _set_line(client, t, wo, line_id=lid, qty_out=4)  # keep the seeded 6970 default account
+    await _delete_account(session, SHRINK_ACCT)  # this company no longer has 6970
+    r = await _terminal(client, t, wo)
+    assert r.status_code == 422, r.text
+    assert await _je_for(client, t, wo) is None
+    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_writeoff_item_gone_rejects(client):
+    """A qty'd line whose item is no longer available -> the WHOLE action rejects 422, nothing disposed,
+    no JE."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-GONE", loc=loc, qty=4, cost_total=40)
+    wo = (await _writeoff(client, t, [a]))["id"]
+    await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=4, account=EXP_A)
+    # The item leaves availability before the terminal (disposed via its own write-off).
+    wo0 = (await _writeoff(client, t, [a]))["id"]
+    await _set_line(client, t, wo0, line_id=await _line_id(client, t, wo0, a), qty_out=4, account=EXP_A)
+    assert (await _terminal(client, t, wo0)).status_code == 200
+    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "disposed"
+    # Now the first list's line points at a no-longer-available item.
+    r = await _terminal(client, t, wo)
+    assert r.status_code == 422, r.text
+    assert await _je_for(client, t, wo) is None
+
+
+@pytest.mark.asyncio
+async def test_writeoff_qty_exceeds_stock_rejects(client, session):
+    """A line whose qty_out exceeds live stock -> the WHOLE action rejects 422, nothing disposed, no
+    JE. (set-line guards qty<=on_hand, so the over-qty is written straight onto the projection.)"""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-OVERQTY", loc=loc, qty=4, cost_total=40)
+    wo = (await _writeoff(client, t, [a]))["id"]
+    lid = await _line_id(client, t, wo, a)
+    await _set_line(client, t, wo, line_id=lid, qty_out=4, account=EXP_A)
+    # Force qty_out above live stock directly on the projection (set-line would reject qty > on_hand).
+    from celerp.models.projections import Projection
+    from sqlalchemy import select
+    from sqlalchemy.orm.attributes import flag_modified
+    cid = await _company_id(session)
+    row = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_id == wo))).scalar_one()
+    state = dict(row.state)
+    lines = [dict(l) for l in state.get("line_items") or []]
+    for l in lines:
+        if l.get("line_id") == lid:
+            l["qty_out"] = 99
+    state["line_items"] = lines
+    row.state = state
+    flag_modified(row, "state")
+    await session.commit()
+    r = await _terminal(client, t, wo)
+    assert r.status_code == 422, r.text
+    assert await _je_for(client, t, wo) is None
+    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "available"
+
+
+# --- audit shrinkage now posts to 6970, and guards a company lacking it ---
+
+@pytest.mark.asyncio
+async def test_audit_shrinkage_missing_account_rejects(client, session):
+    """Audit shrinkage on a company whose COA lacks 6970 -> 422, no phantom-account shrinkage JE."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "AUD-NO6970", loc=loc, qty=10, cost_total=100)
+    await _delete_account(session, SHRINK_ACCT)  # remove the shrinkage destination
+    audit = (await client.post("/lists/audit", headers=_h(t), json={"location_id": loc})).json()["id"]
+    await client.post(f"/lists/{audit}/finalize", headers=_h(t))
+    assert (await client.patch(f"/lists/{audit}/line/{a}", headers=_h(t), json={"counted_qty": 8})).status_code == 200
+    r = await client.post(f"/lists/{audit}/adjust", headers=_h(t))
+    assert r.status_code == 422, r.text
+    # No shrinkage JE posted to a missing account.
+    ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(t))).json()["items"]
+    assert not [e for e in ledger if audit in (e["data"].get("memo") or "")]

@@ -28,6 +28,8 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
+from celerp_accounting.routes import seed_chart_of_accounts
+from celerp_accounting.models import Account
 from celerp.models.company import Company, User
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -46,6 +48,8 @@ async def _seed_company(factory):
         s.add(Company(id=company_id, name="Outcome Co", slug=f"outcome-{company_id.hex[:8]}"))
         s.add(User(id=user_id, email=f"race-{user_id.hex[:8]}@outcome.test", name="Race User",
                    auth_hash="x"))
+        await s.flush()
+        await seed_chart_of_accounts(s, company_id)
         await s.commit()
     return company_id, user_id, types.SimpleNamespace(id=user_id)
 
@@ -54,6 +58,7 @@ async def _cleanup(factory, company_id, user_id):
     async with factory() as s:
         await s.execute(delete(Projection).where(Projection.company_id == company_id))
         await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
+        await s.execute(delete(Account).where(Account.company_id == company_id))
         await s.execute(delete(Company).where(Company.id == company_id))
         await s.execute(delete(User).where(User.id == user_id))
         await s.commit()
