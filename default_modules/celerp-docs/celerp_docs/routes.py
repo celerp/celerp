@@ -320,6 +320,37 @@ async def _get_doc(session: AsyncSession, company_id, entity_id: str, *, for_upd
     return row
 
 
+async def _get_docs_for_update(session: AsyncSession, company_id, entity_ids) -> dict[str, Projection]:
+    """Lock a set of doc rows FOR UPDATE in one deterministic (entity_id-sorted) batch,
+    the multi-doc analogue of _get_doc(for_update=True). A handler that reads several
+    docs (create_shipment) must take them all under the lock in sorted order so it can
+    never both pass a status check against a stale read and commit after a concurrent
+    lifecycle writer changes one - and so two such handlers sharing docs acquire them in
+    the same order (no deadlock). populate_existing overwrites any stale identity-map
+    copy. Doc rows are locked before any item rows a caller goes on to lock, the global
+    doc-before-item ordering. Missing or non-doc ids are the caller's to reject."""
+    want = sorted({e for e in entity_ids if e})
+    if not want:
+        return {}
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_id.in_(want),
+        ).with_for_update().execution_options(populate_existing=True)
+    )).scalars().all()
+    return {r.entity_id: r for r in rows if r.entity_type == "doc"}
+
+
+def _reject_if_closed(state: dict, action: str) -> None:
+    """Guard a mutation against a closed memo. A closed memo is settled paperwork:
+    payment reversals (refund / void / delete) recompute its status through their
+    reducers, so applying one to a closed memo silently un-closes it. The user must
+    Reopen it first, which is the way back the message names. Called under the doc-row
+    lock so the status read here is the committed one, not a stale pre-lock value."""
+    if state.get("status") == "closed":
+        raise HTTPException(status_code=409, detail=f"Reopen this closed memo before you {action}.")
+
+
 def _line_item_brief(line_items: list[dict], eids) -> list[dict]:
     """Brief [{item_id, sku, quantity}] for the given line entity_ids, sourced from the doc
     lines, so fulfillment/reversal events name the items (sku x qty) for the activity feed."""
@@ -1399,7 +1430,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
 
 @router.post("/{entity_id}/finalize")
 async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Cannot finalize void document")
     if not (row.state.get("line_items") or []):
@@ -1529,7 +1560,8 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
 
 @router.post("/{entity_id}/void")
 async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    _reject_if_closed(row.state, "void it")
     current_status = row.state.get("status")
     if current_status in ("paid", "partial"):
         raise HTTPException(status_code=409, detail="Cannot void a document with payments; void the payments first")
@@ -1585,7 +1617,15 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
         if not li_eid:
             continue
         item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
-        if item_proj and item_proj.state.get("status") == "memo_out":
+        if not item_proj:
+            continue
+        item_status = item_proj.state.get("status")
+        # Still out at the customer, or held reserved-from THIS memo: both are
+        # unresolved allocations of this paper and must be settled before Close.
+        if item_status == "memo_out":
+            pending += 1
+        elif (item_status == "reserved"
+              and item_proj.state.get("status_doc_id") == entity_id):
             pending += 1
     if pending:
         raise HTTPException(
@@ -1606,7 +1646,7 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
 @router.post("/{entity_id}/reopen")
 async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Undo a Close: restore the memo to the status it held before closing."""
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != "closed":
         raise HTTPException(status_code=409, detail="Only a closed memo can be reopened")
     restored = row.state.get("pre_close_status") or "final"
@@ -1623,7 +1663,7 @@ async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = D
 
 @router.post("/{entity_id}/revert-to-draft")
 async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     previous_status = state.get("status")
     # Inbound docs (bill, consignment_in) can also revert from received/fulfilled statuses.
@@ -1749,7 +1789,7 @@ async def renumber_doc(
 
 @router.post("/{entity_id}/unvoid")
 async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("status") != "void":
         raise HTTPException(status_code=409, detail="Can only unvoid documents in 'void' status")
@@ -2033,8 +2073,10 @@ async def apply_doc_payment(session, company_id, entity_id: str, doc_state: dict
 
 @router.post("/{entity_id}/payment")
 async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
-    # Snapshot before any flush() to avoid SQLAlchemy lazy-load expiry.
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    # Snapshot before any flush() to avoid SQLAlchemy lazy-load expiry. apply_doc_payment
+    # re-reads under its own per-document lock and rejects a closed memo via its status
+    # allowlist; the doc-row lock here serializes the read against a concurrent close.
     _doc_state = dict(row.state)
     entry = await apply_doc_payment(
         session, company_id, entity_id, _doc_state, payload.model_dump(exclude_none=True),
@@ -2046,7 +2088,8 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
 
 @router.post("/{entity_id}/refund")
 async def refund_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    _reject_if_closed(row.state, "refund a payment")
     paid = float(row.state.get("amount_paid", 0) or 0)
     if payload.amount > paid + 1e-9:
         raise HTTPException(status_code=409, detail="Refund exceeds amount paid")
@@ -2075,7 +2118,8 @@ class VoidPaymentBody(BaseModel):
 
 @router.post("/{entity_id}/void-payment")
 async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    _reject_if_closed(row.state, "void a payment")
     payments = row.state.get("payments", [])
     # Payments are identified by their index FIELD, not list position.
     payment = next((p for p in payments if p.get("index") == payload.payment_index), None)
@@ -2232,7 +2276,8 @@ async def delete_payment(
     """
     from celerp_accounting.models import ReconciliationSession, BankStatementLine  # noqa: PLC0415
 
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    _reject_if_closed(row.state, "delete a payment")
     payments = row.state.get("payments", [])
     # Payments are identified by their index FIELD, not list position.
     payment = next((p for p in payments if p.get("index") == payment_index), None)
@@ -2988,9 +3033,15 @@ async def create_shipment_from_docs(
     if not doc_ids:
         raise HTTPException(status_code=422, detail="Select at least one document to ship")
 
+    # Lock every source doc FOR UPDATE in one sorted batch before validating, so a
+    # concurrent close cannot slip a status change between this read and the shipment
+    # commit (TOCTOU). Validate in the caller's selection order off the locked rows.
+    locked = await _get_docs_for_update(session, company_id, doc_ids)
     states = []
     for eid in doc_ids:
-        row = await _get_doc(session, company_id, eid)
+        row = locked.get(eid)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Document not found")
         state = row.state
         if state.get("doc_type") not in ("invoice", "memo"):
             raise HTTPException(status_code=422,
@@ -3069,7 +3120,7 @@ async def create_shipment_from_docs(
 
 @router.post("/{entity_id}/convert")
 async def convert_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("doc_type") == "quotation":
         if state.get("status") in {"void", "converted"}:
@@ -5075,7 +5126,7 @@ async def reserve_lines(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set selected lines reserved/available on an invoice or memo (ledger-neutral)."""
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     doc_type = row.state.get("doc_type", "")
     allowed = RESERVABLE_DOC_STATUSES.get(doc_type)
     if allowed is None:

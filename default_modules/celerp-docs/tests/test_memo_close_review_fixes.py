@@ -103,3 +103,74 @@ async def test_closed_memo_no_create_shipping(client):
     r = await client.post("/docs/shipment", headers=h, json={"doc_ids": [memo]})
     assert r.status_code == 409, r.text
     assert "closed" in r.text.lower() or "reopen" in r.text.lower()
+
+
+async def _paid_then_closed_memo(client, h) -> str:
+    """A memo that carries a real payment and is then closed: finalize, take a cash
+    payment (status -> partial), ship a line then return it so nothing is left
+    memo_out, then close. The payment survives on the closed memo so refund / void /
+    delete have something to act on."""
+    a = await _item(client, h, f"PC-{uuid.uuid4().hex[:6]}")
+    memo = await _memo(client, h, [a])
+    assert (await client.post(f"/docs/{memo}/finalize", headers=h)).status_code == 200
+    rp = await client.post(f"/docs/{memo}/payment", headers=h,
+                           json={"amount": 4, "payment_date": "2026-06-22", "method": "cash", "bank_account": "1111"})
+    assert rp.status_code == 200, rp.text
+    assert (await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_entity_ids": [a]})).status_code == 200
+    assert (await client.post(f"/docs/{memo}/revert-lines", headers=h, json={"line_entity_ids": [a]})).status_code == 200
+    assert (await client.post(f"/docs/{memo}/close", headers=h, json={})).status_code == 200
+    doc = (await client.get(f"/docs/{memo}", headers=h)).json()
+    assert doc.get("status") == "closed", doc.get("status")
+    assert doc.get("payments"), "the closed memo must still carry its payment"
+    return memo
+
+
+@pytest.mark.asyncio
+async def test_refund_payment_rejected_on_closed_memo(client):
+    """POST /docs/{id}/refund on a closed memo returns 409 and leaves it closed;
+    refunding a payment on a settled memo must go through Reopen first, and must
+    never silently un-close the memo by recomputing its status."""
+    token = await _register(client)
+    h = _h(token)
+    memo = await _paid_then_closed_memo(client, h)
+
+    r = await client.post(f"/docs/{memo}/refund", headers=h,
+                          json={"amount": 4, "payment_date": "2026-06-23", "method": "cash", "bank_account": "1111"})
+    assert r.status_code == 409, r.text
+    assert "reopen" in r.text.lower()
+
+    doc = (await client.get(f"/docs/{memo}", headers=h)).json()
+    assert doc.get("status") == "closed", f"refund must not un-close; got {doc.get('status')}"
+
+
+@pytest.mark.asyncio
+async def test_void_payment_rejected_on_closed_memo(client):
+    """POST /docs/{id}/void-payment on a closed memo returns 409 and leaves it
+    closed (voiding a payment must not silently un-close a settled memo)."""
+    token = await _register(client)
+    h = _h(token)
+    memo = await _paid_then_closed_memo(client, h)
+
+    r = await client.post(f"/docs/{memo}/void-payment", headers=h,
+                          json={"payment_index": 0, "void_reason": "closed memo test"})
+    assert r.status_code == 409, r.text
+    assert "reopen" in r.text.lower()
+
+    doc = (await client.get(f"/docs/{memo}", headers=h)).json()
+    assert doc.get("status") == "closed", f"void-payment must not un-close; got {doc.get('status')}"
+
+
+@pytest.mark.asyncio
+async def test_delete_payment_rejected_on_closed_memo(client):
+    """DELETE /docs/{id}/payments/{index} on a closed memo returns 409 and leaves
+    it closed (deleting a payment must not silently un-close a settled memo)."""
+    token = await _register(client)
+    h = _h(token)
+    memo = await _paid_then_closed_memo(client, h)
+
+    r = await client.delete(f"/docs/{memo}/payments/0", headers=h)
+    assert r.status_code == 409, r.text
+    assert "reopen" in r.text.lower()
+
+    doc = (await client.get(f"/docs/{memo}", headers=h)).json()
+    assert doc.get("status") == "closed", f"delete-payment must not un-close; got {doc.get('status')}"
