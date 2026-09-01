@@ -236,6 +236,58 @@ async def test_writeoff_two_lines_same_item_one_balanced_je(client):
     assert abs(sum(debit.values()) - sum(credit.values())) < 1e-6
 
 
+@pytest.mark.asyncio
+async def test_writeoff_overdraw_across_lines_rejected(client):
+    """The same item on two lines whose write-off quantities SUM above live stock is rejected: the
+    aggregate-per-item check fires before any disposal, so the terminal returns 422, nothing is
+    disposed, no JE posts, and the item stays available."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-OVERDRAW", loc=loc, qty=5, cost_total=50)  # unit cost 10
+    wo = (await _writeoff(client, t, [a]))["id"]
+    # Same item on two lines (two accounts), quantities 1 + 5 = 6 > 5 on hand.
+    await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=1, account=EXP_A)
+    assert (await _set_line(client, t, wo, item_id=a, qty_out=5, account=EXP_B)).status_code == 200
+    await _finalize(client, t, wo)
+
+    r = await _terminal(client, t, wo)
+    assert r.status_code == 422, r.text
+    assert await _je_for(client, t, wo) is None
+    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "available"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first, second", [(2, 3), (3, 2)])
+async def test_writeoff_exact_exhaustion_disposes_parent_no_phantom(client, first, second):
+    """The same item on two lines whose quantities exactly exhaust live stock (2 + 3 of 5, either
+    order): the line consuming the remainder disposes the original row in place, so the item ends
+    `disposed` with no phantom zero-quantity available parent, and the Inventory credit equals the
+    item's full cost."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    a = await _item(client, t, "WO-EXACT", loc=loc, qty=5, cost_total=50)  # unit cost 10
+    wo = (await _writeoff(client, t, [a]))["id"]
+    await _set_line(client, t, wo, line_id=await _line_id(client, t, wo, a), qty_out=first, account=EXP_A)
+    assert (await _set_line(client, t, wo, item_id=a, qty_out=second, account=EXP_B)).status_code == 200
+    await _finalize(client, t, wo)
+
+    r = await _terminal(client, t, wo)
+    assert r.status_code == 200, r.text
+    assert r.json()["written_off"] == 2 and r.json()["value"] == 50.0
+
+    # The original item row ends disposed (no phantom 0-qty available parent): hidden from the default
+    # list and present under the disposed filter.
+    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["status"] == "disposed"
+    assert a not in {i["id"] for i in (await client.get("/items", headers=_h(t))).json()["items"]}
+
+    # One balanced JE crediting the full item cost to Inventory.
+    je = await _je_for(client, t, wo)
+    assert je is not None
+    credit = {x["account"]: float(x.get("credit", 0) or 0) for x in je["data"]["entries"]
+              if float(x.get("credit", 0) or 0)}
+    assert credit == {"1130-P": 50.0}
+
+
 # --- validation (function level) -------------------------------------------
 
 @pytest.mark.asyncio
