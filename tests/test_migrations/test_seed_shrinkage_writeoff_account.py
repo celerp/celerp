@@ -49,10 +49,14 @@ def test_skips_company_without_the_parent_account(acc_db):
     assert acc_db.get(cid, "6970") is None
 
 
-def test_downgrade_removes_the_seeded_row(acc_db):
+def test_downgrade_is_noop_preserves_existing_6970(acc_db):
+    """downgrade() is a no-op: a company's pre-existing 6970 (which the upgrade cannot distinguish
+    from a seeded row) survives the reversal with its user-chosen name intact."""
     cid = str(uuid.uuid4())
     acc_db.add_account(cid, "6000", "Operating Expenses")
-    acc_db.run_upgrade(MODULE)
-    acc_db.run_downgrade(MODULE)
-
-    assert acc_db.get(cid, "6970") is None
+    acc_db.add_account(cid, "6970", "My Own Shrinkage", parent_code="6000")
+    acc_db.run_upgrade(MODULE)    # skips: already present
+    acc_db.run_downgrade(MODULE)  # no-op: preserves it
+    row = acc_db.get(cid, "6970")
+    assert row is not None
+    assert row.name == "My Own Shrinkage"

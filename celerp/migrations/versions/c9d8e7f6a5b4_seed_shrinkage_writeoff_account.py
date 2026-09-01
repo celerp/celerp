@@ -59,5 +59,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    conn = op.get_bind()
-    conn.execute(sa.text("DELETE FROM accounts WHERE code = :code"), {"code": _CODE})
+    # The upgrade only inserts 6970 when absent, so a seeded row is indistinguishable from a
+    # company's own pre-existing 6970. Deleting on downgrade would destroy user data and orphan any
+    # ledger row referencing it, so the reversal intentionally leaves the account in place.
+    pass
