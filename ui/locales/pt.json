@@ -3057,7 +3057,7 @@
   "doc.closed": "Fechado",
   "btn.reopen": "Reabrir",
   "btn.close_memo": "Fechar",
-  "btn.confirm_close_memo": "Confirmar fecho",
+  "btn.confirm_close_memo": "Confirmar fechamento",
   "btn.confirm_reopen": "Confirmar reabertura",
   "documents.tip_close_memo": "Feche este memorando quando cada item tiver sido vendido, mantido ou devolvido ao estoque.",
   "documents.tip_reopen_memo": "Reabra este memorando para torná-lo ativo novamente.",

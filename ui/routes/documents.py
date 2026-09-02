@@ -3305,11 +3305,19 @@ celerpUpdateBulkAlloc();
             method = str(form.get("method", "")).strip() or None
             bank_account = str(form.get("bank_account", "")).strip() or None
             reference = str(form.get("reference", "")).strip() or None
-            await api.bulk_payment(token, doc_ids, amount, payment_date, method, bank_account, reference)
+            result = await api.bulk_payment(token, doc_ids, amount, payment_date, method, bank_account, reference)
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(str(e.detail))
+        # A doc concurrently closed, already paid, or shrunk under its row lock is skipped
+        # by the API, not paid. Report every skipped doc by name and reason so the user is
+        # never told a partial run fully succeeded; only a clean run refreshes the list.
+        skipped = result.get("skipped") or []
+        if skipped:
+            paid = len(result.get("allocations") or [])
+            reasons = "; ".join(f"{s.get('doc_id')}: {s.get('reason')}" for s in skipped)
+            return _action_error(f"Paid {paid}, skipped {len(skipped)}. {reasons}")
         # Refresh the page
         doc_type = str(form.get("doc_type", "invoice")).strip()
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs?type={doc_type}"})

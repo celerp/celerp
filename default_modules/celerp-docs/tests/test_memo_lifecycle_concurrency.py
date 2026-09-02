@@ -193,19 +193,18 @@ async def _shipping_docs_for(factory, company_id, memo_id) -> list[str]:
 
 
 async def test_close_shipping_race_no_ship_from_closed(_db_engine):
-    """create_shipment must never commit a shipment against an already-closed memo. The
-    memo is closed first, on its own committed transaction; a second transaction then reads
-    it and tries to ship it, and must 409.
+    """create_shipment must never commit a shipment against a memo whose committed status is
+    'closed'. This is a GENUINE concurrent race: both writers read the same prior 'sent'
+    state, then run concurrently on independent committed sessions, with Close ordered to
+    commit first (it is released; the ship only proceeds after Close has committed). The
+    forbidden outcome is a shipment created after the memo is durably closed - ship-from-
+    closed. (Ship-then-close, where the ship precedes the close, is legal and is a different
+    ordering; here Close leads, so the ship must observe 'closed' under the source lock.)
 
-    create_shipment's closed-reject is PRE-EXISTING: at merge-base the status check already
-    rejects a source read as 'closed'. The gap the fix closes is a TOCTOU one - the read
-    was UNLOCKED, so a create_shipment that read 'sent' before a concurrent close committed
-    could still commit its shipment after the close landed. The added sorted-batch FOR
-    UPDATE re-read forces create_shipment to observe the committed 'closed' status under the
-    lock and 409. This test proves the guaranteed post-fix behavior (a closed memo is never
-    shipped) deterministically; it is expected GREEN at merge-base (the sequential guard is
-    pre-existing) and is a defense-in-depth proof, not part of the red-first batch. A
-    shipped-then-closed memo (ship precedes close) is legal and is not what this forbids."""
+    The reject is PRE-EXISTING and the per-row FOR UPDATE (close @1643, the shipment source
+    lock via _get_docs_for_update @3075) already serializes the ship's locked re-read
+    against the committed close, so this is expected GREEN at merge-base: a defense-in-depth
+    proof, not part of the red-first batch."""
     from celerp_docs.routes import close_doc, create_shipment_from_docs, DocCloseBody, ShipmentFromDocsBody
 
     factory = _factory(_db_engine)
@@ -213,46 +212,70 @@ async def test_close_shipping_race_no_ship_from_closed(_db_engine):
     try:
         _item_id, memo_id = await _one_line_memo(factory, company_id, user, "MEMO-CS",
                                                  sku="CS1", name="Stone CS")
-        # Close first, its own committed transaction: the memo is durably 'closed' before
-        # the ship attempt reads it.
-        await _close_seq(factory, company_id, user, memo_id)
-        assert (await _state(factory, company_id, memo_id)).get("status") == "closed"
-
-        s_ship = factory()
+        # Both writers observe the same prior committed 'sent' state before racing.
+        assert (await _state(factory, company_id, memo_id)).get("status") == "sent"
+        s_close, s_ship = factory(), factory()
         outcome: dict = {}
+        close_committed = asyncio.Event()
+
+        async def _close(session):
+            try:
+                outcome["close"] = await close_doc(
+                    memo_id, DocCloseBody(), company_id=company_id, _=None, user=user, session=session)
+            except Exception as exc:  # noqa: BLE001
+                outcome["close"] = exc
+                await session.rollback()
+            finally:
+                close_committed.set()
+
+        async def _ship(session):
+            # Ship only proceeds once Close has committed 'closed', so this is the
+            # ship-from-closed ordering the shipment source lock must reject.
+            await close_committed.wait()
+            try:
+                outcome["ship"] = await create_shipment_from_docs(
+                    ShipmentFromDocsBody(doc_ids=[memo_id]), company_id=company_id, _=None,
+                    user=user, session=session)
+                await session.commit()
+            except Exception as exc:  # noqa: BLE001 - a 409 (memo closed) is the required outcome
+                outcome["ship"] = exc
+                await session.rollback()
+
         try:
-            outcome["ship"] = await create_shipment_from_docs(
-                ShipmentFromDocsBody(doc_ids=[memo_id]), company_id=company_id, _=None,
-                user=user, session=s_ship)
-            await s_ship.commit()
-        except HTTPException as exc:
-            outcome["ship"] = exc
-            await s_ship.rollback()
+            await _race(_close(s_close), _ship(s_ship))
         finally:
+            await s_close.close()
             await s_ship.close()
 
+        status = (await _state(factory, company_id, memo_id)).get("status")
         shipments = await _shipping_docs_for(factory, company_id, memo_id)
+        assert not isinstance(outcome.get("close"), Exception), (
+            f"Close leads and must commit; got {outcome.get('close')!r}")
+        assert status == "closed", f"the memo must be committed closed; got {status!r}"
         assert not shipments, (
-            "illegal: shipping paperwork was created for an already-closed memo. "
+            "illegal: shipping paperwork was created against a memo committed as closed. "
             f"shipments={shipments!r}, ship outcome={outcome.get('ship')!r}")
         assert isinstance(outcome.get("ship"), HTTPException) and outcome["ship"].status_code == 409, (
-            f"create_shipment on a closed memo must 409; got {outcome.get('ship')!r}")
+            f"create_shipment on a committed-closed memo must 409; got {outcome.get('ship')!r}")
     finally:
         await _cleanup(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
 async def test_close_record_payment_race_no_silent_unclose(_db_engine):
-    """Close vs record_payment race on the same issued memo. The invariant: a payment is
-    never recorded against a memo whose committed status is 'closed'. record_payment's
-    closed-reject is PRE-EXISTING - apply_doc_payment re-reads the row under its own
-    per-document payment lock and its status allowlist excludes 'closed' - so this race
-    has no illegal interleaving even at merge-base: either the payment commits first
-    (memo goes live, then Close settles it as paid-then-closed, legal) or Close commits
-    first and the payment's re-read rejects it. The added doc-row FOR UPDATE on
-    record_payment is defense-in-depth for the same guarantee; this test proves the lock
-    does not weaken the pre-existing safety (no un-close under contention). It is
-    therefore expected GREEN at merge-base and is not part of the red-first batch."""
+    """Close vs record_payment race on the same issued memo, with the terminal state pinned
+    deterministically by payment-before-close ordering. The payment starts first and its
+    doc-row FOR UPDATE is held until it commits; Close is released a moment later, so it
+    can only commit AFTER the payment lands. The one legal terminal state is therefore
+    paid-then-closed: the payment applied (the memo went live) and Close settled it as
+    'closed'. Never a payment recorded while the committed status is 'closed', and never a
+    Close silently flipped to partial/paid by a payment that landed after it.
+
+    record_payment's closed-reject is PRE-EXISTING (apply_doc_payment re-reads under a lock
+    and its allowlist excludes 'closed') and the added doc-row FOR UPDATE serializes the
+    two, so this is expected GREEN at merge-base: defense-in-depth, not part of the
+    red-first batch. The ordering makes the outcome a single asserted state rather than a
+    disjunction, so a regression that let the payment un-close the memo fails here."""
     from celerp_docs.routes import close_doc, record_payment, DocCloseBody, DocPaymentBody
 
     factory = _factory(_db_engine)
@@ -262,14 +285,7 @@ async def test_close_record_payment_race_no_silent_unclose(_db_engine):
                                                  sku="CP1", name="Stone CP")
         s_close, s_pay = factory(), factory()
         outcome: dict = {}
-
-        async def _close(session):
-            try:
-                outcome["close"] = await close_doc(
-                    memo_id, DocCloseBody(), company_id=company_id, _=None, user=user, session=session)
-            except Exception as exc:  # noqa: BLE001 - a 409 (payment won, memo live) is allowed
-                outcome["close"] = exc
-                await session.rollback()
+        pay_committed = asyncio.Event()
 
         async def _pay(session):
             try:
@@ -280,26 +296,38 @@ async def test_close_record_payment_race_no_silent_unclose(_db_engine):
             except Exception as exc:  # noqa: BLE001 - a 409 (memo closed) is an allowed outcome
                 outcome["pay"] = exc
                 await session.rollback()
+            finally:
+                pay_committed.set()
+
+        async def _close(session):
+            # Order the writers: Close only proceeds after the payment has committed, so
+            # the sole legal terminal state is paid-then-closed.
+            await pay_committed.wait()
+            try:
+                outcome["close"] = await close_doc(
+                    memo_id, DocCloseBody(), company_id=company_id, _=None, user=user, session=session)
+            except Exception as exc:  # noqa: BLE001
+                outcome["close"] = exc
+                await session.rollback()
 
         try:
-            await _race(_close(s_close), _pay(s_pay))
+            await _race(_pay(s_pay), _close(s_close))
         finally:
             await s_close.close()
             await s_pay.close()
 
         memo_state = await _state(factory, company_id, memo_id)
-        pay_applied = not isinstance(outcome.get("pay"), Exception)
         status = memo_state.get("status")
         payments = [p for p in (memo_state.get("payments") or []) if p.get("status") != "deleted"]
-        # A payment is never recorded while the committed status is 'closed'. If a payment
-        # landed, either the memo is live, or Close settled it afterwards as paid-then-closed
-        # (a legal terminal state, the payment predates the close). Never a payment applied
-        # by un-closing a settled memo.
-        if payments:
-            assert not (status == "closed" and not pay_applied), (
-                "a payment exists on a closed memo but the payment call was rejected - "
-                f"inconsistent. status={status!r}, pay={outcome.get('pay')!r}")
-        assert status in ("closed", "sent", "final", "partial", "paid"), f"unexpected status {status!r}"
+        # The payment landed first (memo went live), then Close settled it: paid-then-closed.
+        assert not isinstance(outcome.get("pay"), Exception), (
+            f"the payment led and must apply against the live memo; got {outcome.get('pay')!r}")
+        assert not isinstance(outcome.get("close"), Exception), (
+            f"Close follows the committed payment and must settle the memo; got {outcome.get('close')!r}")
+        assert len(payments) == 1, f"exactly one payment expected; got {payments!r}"
+        assert status == "closed", (
+            "un-close: a payment that predates the Close left the memo live instead of "
+            f"paid-then-closed; status={status!r}, close={outcome.get('close')!r}")
     finally:
         await _cleanup(factory, company_id, user_id)
 
@@ -644,5 +672,241 @@ async def test_reopen_payment_race_serialized(_db_engine):
             # The payment was rejected; the memo is either still closed (reopen lost/blocked
             # then payment saw closed) or reopened with no payment. Both are consistent.
             assert status in ("closed", "final", "sent", "partial", "paid"), f"unexpected status {status!r}"
+    finally:
+        await _cleanup(factory, company_id, user_id)
+
+
+# ---------------------------------------------------------------------------
+# Payment lock topology: single-serializer proofs (B1 / B2 / B3).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_payment_lock_order_no_abba_deadlock(_db_engine):
+    """B1: no cross-mechanism ABBA deadlock between the two payment paths' lock orders.
+
+    Two payment entry points take the doc-row lock and the payment serializer in OPPOSITE
+    orders at merge-base: record_payment takes the PG row lock first (its _get_doc) then the
+    payment serializer inside apply_doc_payment; bulk_payment takes the payment serializer
+    first then the PG row lock inside emit. On one shared doc this is a classic ABBA cycle.
+
+    The interleaving is pinned deterministically by delaying only the payment emit: the
+    bulk (B) side reaches the serializer, then parks in the payment emit BEFORE its row lock
+    while record_payment (A) takes the row lock and then waits for the serializer B holds.
+    When B's emit resumes it contends the row lock A holds. At merge-base the two in-process
+    orders form a cycle Postgres cannot break, so the 8s bound (deliberately under the
+    fixture's 10s Postgres lock_timeout, so the asyncio bound trips first) raises
+    TimeoutError -> FAIL. Post-fix there is ONE serializer (the PG row lock): both paths take
+    it first, serialize, one applies and the other 409s (already paid / fully paid); both
+    finish under the bound. The harness references only the public record_payment /
+    bulk_payment / emit_event seams, so it imports and runs on both trees.
+
+    Invariants: no TimeoutError; the memo is never double-paid (final amount paid == total)."""
+    import celerp_docs.routes as _routes
+    from celerp_docs.routes import record_payment, bulk_payment, DocPaymentBody, BulkPaymentBody
+
+    factory = _factory(_db_engine)
+    company_id, user_id, user = await _seed_company(factory)
+    _orig_emit = _routes.emit_event
+    bulk_in_emit = asyncio.Event()
+    let_a_start = asyncio.Event()
+
+    async def _pinning_emit(*args, **kwargs):
+        # The bulk side announces it is inside the payment emit (serializer held, row lock
+        # not yet taken), lets the record side take the row lock, then proceeds into the row
+        # lock itself - forming the ABBA at merge-base. Only the first payment emit is pinned.
+        if kwargs.get("event_type") == "doc.payment.received" and not bulk_in_emit.is_set():
+            bulk_in_emit.set()
+            let_a_start.set()
+            await asyncio.sleep(0.4)
+        return await _orig_emit(*args, **kwargs)
+
+    _routes.emit_event = _pinning_emit
+    try:
+        _item_id, memo_id = await _one_line_memo(factory, company_id, user, "MEMO-B1",
+                                                 sku="B11", name="Stone B1")
+        total = float((await _state(factory, company_id, memo_id)).get("total") or 0)
+        assert total > 0
+
+        sA, sB = factory(), factory()
+        outcome: dict = {}
+
+        async def _record_side(session):
+            # A: PG row lock first (record_payment._get_doc), then the serializer inside
+            # apply_doc_payment. Starts only once B is parked holding the serializer.
+            await let_a_start.wait()
+            try:
+                outcome["A"] = await record_payment(
+                    memo_id, DocPaymentBody(amount=total, payment_date="2026-07-01",
+                                            method="cash", bank_account="1111"),
+                    company_id=company_id, _=None, user=user, session=session)
+            except Exception as exc:  # noqa: BLE001 - a 409 (already/fully paid) is allowed
+                outcome["A"] = exc
+                await session.rollback()
+
+        async def _bulk_side(session):
+            # B: serializer first (at merge-base), then the row lock inside the pinned emit.
+            try:
+                outcome["B"] = await bulk_payment(
+                    BulkPaymentBody(doc_ids=[memo_id], amount=total, payment_date="2026-07-01",
+                                    method="cash", bank_account="1111"),
+                    company_id=company_id, _=None, user=user, session=session)
+            except Exception as exc:  # noqa: BLE001 - a 409 (already/fully paid) is allowed
+                outcome["B"] = exc
+                await session.rollback()
+
+        try:
+            # 8s < the fixture's 10s Postgres lock_timeout: a deadlock trips this asyncio
+            # bound first, a deterministic FAIL rather than an unbounded hang.
+            await asyncio.wait_for(asyncio.gather(_record_side(sA), _bulk_side(sB)), timeout=8)
+        finally:
+            await sA.close()
+            await sB.close()
+
+        memo_state = await _state(factory, company_id, memo_id)
+        paid = float((memo_state.get("total") or 0)) - float(
+            memo_state.get("amount_outstanding", memo_state.get("total", 0)) or 0)
+        # Exactly the memo total is paid: the two payment runs did not double-pay (the loser
+        # 409s the already-paid doc), and nothing over-applied.
+        assert abs(paid - total) < 0.01, (
+            f"memo must be paid exactly once (total {total}); paid={paid}, state={memo_state!r}")
+    finally:
+        _routes.emit_event = _orig_emit
+        await _cleanup(factory, company_id, user_id)
+
+
+@pytest.mark.asyncio
+async def test_close_bulk_payment_race_no_silent_unclose(_db_engine):
+    """B2: a concurrent bulk_payment must never silently un-close a memo Close committed.
+
+    emit_event is wrapped so ONLY a doc.payment.received emit awaits a short sleep before
+    delegating (close's doc.closed emit is not delayed). Close and bulk_payment run
+    concurrently on the same closable memo.
+
+    At merge-base bulk reads the doc UNLOCKED and never re-validates status under a lock:
+    Close commits 'closed' during bulk's sleep, then bulk emits a payment whose reducer
+    overwrites the status back to partial/paid -> a silent un-close (final status !=
+    'closed') -> FAIL. Post-fix bulk routes through apply_doc_payment, which locks the row
+    and re-checks the allowlist (excludes 'closed'): either bulk holds the row across the
+    sleep so Close blocks until bulk commits, or Close wins and bulk 409-skips. Either way
+    the memo ends 'closed' and no payment is recorded against the committed-closed memo."""
+    import celerp_docs.routes as _routes
+    from celerp_docs.routes import close_doc, bulk_payment, DocCloseBody, BulkPaymentBody
+
+    factory = _factory(_db_engine)
+    company_id, user_id, user = await _seed_company(factory)
+    _orig_emit = _routes.emit_event
+
+    async def _slow_payment_emit(*args, **kwargs):
+        # Delay ONLY the payment event, so a concurrent Close can commit 'closed' first at
+        # merge-base (exposing the unlocked-read un-close) without slowing Close itself.
+        if kwargs.get("event_type") == "doc.payment.received":
+            await asyncio.sleep(0.5)
+        return await _orig_emit(*args, **kwargs)
+
+    _routes.emit_event = _slow_payment_emit
+    try:
+        _item_id, memo_id = await _one_line_memo(factory, company_id, user, "MEMO-B2",
+                                                 sku="B21", name="Stone B2")
+        assert (await _state(factory, company_id, memo_id)).get("status") == "sent"
+        total = float((await _state(factory, company_id, memo_id)).get("total") or 0)
+        s_close, s_bulk = factory(), factory()
+        outcome: dict = {}
+
+        async def _close(session):
+            try:
+                outcome["close"] = await close_doc(
+                    memo_id, DocCloseBody(), company_id=company_id, _=None, user=user, session=session)
+            except Exception as exc:  # noqa: BLE001 - a 409 (bulk won) is allowed
+                outcome["close"] = exc
+                await session.rollback()
+
+        async def _bulk(session):
+            try:
+                outcome["bulk"] = await bulk_payment(
+                    BulkPaymentBody(doc_ids=[memo_id], amount=total, payment_date="2026-07-02",
+                                    method="cash", bank_account="1111"),
+                    company_id=company_id, _=None, user=user, session=session)
+            except Exception as exc:  # noqa: BLE001 - a 409 (memo closed) is allowed
+                outcome["bulk"] = exc
+                await session.rollback()
+
+        try:
+            await _race(_close(s_close), _bulk(s_bulk), timeout=8)
+        finally:
+            await s_close.close()
+            await s_bulk.close()
+
+        memo_state = await _state(factory, company_id, memo_id)
+        status = memo_state.get("status")
+        payments = [p for p in (memo_state.get("payments") or []) if p.get("status") != "deleted"]
+        # If Close committed, its terminal 'closed' must stand: a payment must never overwrite it.
+        close_committed = not isinstance(outcome.get("close"), Exception)
+        if close_committed:
+            assert status == "closed", (
+                "silent un-close: bulk_payment flipped a committed-closed memo to "
+                f"{status!r}. bulk={outcome.get('bulk')!r}")
+            assert not payments, (
+                "a payment was recorded against a memo committed as closed. "
+                f"payments={payments!r}, bulk={outcome.get('bulk')!r}")
+        else:
+            # Bulk won the row first: the memo is paid, and Close 409'd (cannot close mid-pay
+            # or the paid memo remains live/closable but not un-closed).
+            assert status in ("partial", "paid", "closed"), f"unexpected status {status!r}"
+    finally:
+        _routes.emit_event = _orig_emit
+        await _cleanup(factory, company_id, user_id)
+
+
+@pytest.mark.asyncio
+async def test_multi_doc_lock_is_ordered(_db_engine):
+    """B3: both multi-doc locking SELECTs compile with `ORDER BY projections.entity_id`, so
+    two handlers sharing docs acquire them in the same order (no deadlock). At merge-base
+    neither SELECT carries an ORDER BY (Postgres locks in plan order) -> the assertions fail
+    (RED); post-fix both do (GREEN).
+
+    Site 1 is _get_docs_for_update: its actual executed statement is captured by spying on
+    session.execute. Site 2 is the write-off item-lock batch, an inline SELECT inside
+    write_off_stock; its lock statement is asserted from the function source, since it is not
+    separately callable. Both must order by projections.entity_id."""
+    import inspect
+    import celerp_docs.routes as _routes
+    from celerp_docs.routes import _get_docs_for_update, write_off_stock
+
+    factory = _factory(_db_engine)
+    company_id, user_id, user = await _seed_company(factory)
+    try:
+        _item_id, memo_id = await _one_line_memo(factory, company_id, user, "MEMO-B3",
+                                                 sku="B31", name="Stone B3")
+        # Site 1: capture the compiled SQL of the statement _get_docs_for_update executes.
+        captured: dict = {}
+        async with factory() as s:
+            _orig_execute = s.execute
+
+            async def _spy(statement, *a, **k):
+                try:
+                    captured["sql"] = str(statement.compile(
+                        dialect=s.bind.dialect,
+                        compile_kwargs={"literal_binds": False}))
+                except Exception:  # noqa: BLE001 - fall back to the generic compile
+                    captured["sql"] = str(statement)
+                return await _orig_execute(statement, *a, **k)
+
+            s.execute = _spy  # type: ignore[assignment]
+            await _get_docs_for_update(s, company_id, [memo_id, _item_id])
+
+        sql = captured.get("sql", "")
+        assert "for update" in sql.lower(), f"_get_docs_for_update must lock FOR UPDATE; sql={sql!r}"
+        assert "order by projections.entity_id" in sql.lower(), (
+            "_get_docs_for_update locking SELECT must ORDER BY projections.entity_id for a "
+            f"deterministic lock order; compiled sql={sql!r}")
+
+        # Site 2: the write-off item-lock batch. Assert its locking SELECT orders by
+        # Projection.entity_id in the same block (source-level, it is inline and not callable).
+        src = inspect.getsource(write_off_stock)
+        assert ".with_for_update()" in src, "write-off batch must lock FOR UPDATE"
+        assert ".order_by(Projection.entity_id)" in src, (
+            "write-off item-lock batch must ORDER BY Projection.entity_id for a deterministic "
+            "lock order (same B3 defect as _get_docs_for_update)")
     finally:
         await _cleanup(factory, company_id, user_id)
