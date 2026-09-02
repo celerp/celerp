@@ -2205,6 +2205,7 @@
   "documents.back_to_lists": "Back to Lists",
   "documents.bank": "Bank",
   "documents.bcc": "BCC",
+  "documents.bulk_payment_result": "Paid {paid}, skipped {skipped}. {reasons}",
   "documents.bulk_payment_title": "Bulk Payment: {contact} ({n} documents)",
   "documents.cc": "CC",
   "documents.clear_scanned": "Clear scanned",

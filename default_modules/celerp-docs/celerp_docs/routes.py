@@ -808,7 +808,7 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
         return {}
     rows = (
         await session.execute(
-            select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data)
+            select(LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data)
             .where(
                 LedgerEntry.company_id == company_id,
                 LedgerEntry.entity_id.in_(item_eids),
@@ -818,12 +818,17 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
         )
     ).all()
     last_event: dict = {}
-    for item_eid, event_type, data in rows:
+    # Ledger id of the applicable item.fulfilled event for this memo, per eid: a "sold"
+    # event only promotes a line to "Sold" when it FOLLOWS this memo's fulfillment (below).
+    fulfilled_id: dict = {}
+    for ledger_id, item_eid, event_type, data in rows:
         if item_eid in last_event:
             continue  # id-desc order means the first row seen is the latest
         if (data or {}).get("source_doc_id") != entity_id:
             continue
         last_event[item_eid] = event_type
+        if event_type == "item.fulfilled":
+            fulfilled_id[item_eid] = ledger_id
     # Sold is read from the durable item.status.set(sold) event in history, not the
     # item's live projection status: an item sold then archived reads "archived" live,
     # and reading the live status would revert a genuinely-sold line to "On Memo". The
@@ -833,7 +838,7 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
     if fulfilled_eids:
         sold_rows = (
             await session.execute(
-                select(LedgerEntry.entity_id, LedgerEntry.data)
+                select(LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.data)
                 .where(
                     LedgerEntry.company_id == company_id,
                     LedgerEntry.entity_id.in_(fulfilled_eids),
@@ -841,8 +846,11 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
                 )
             )
         ).all()
-        for _eid, _data in sold_rows:
-            if (_data or {}).get("new_status") == "sold":
+        for _sold_id, _eid, _data in sold_rows:
+            # Only a sale AFTER this memo's own fulfillment marks the line Sold. A sold
+            # event that predates it belongs to an earlier cycle (sold, returned to stock,
+            # then re-consigned on this memo) and must read "On Memo", not "Sold".
+            if (_data or {}).get("new_status") == "sold" and _sold_id > fulfilled_id.get(_eid, 0):
                 sold_eids.add(_eid)
 
     # Per-SKU rollup over the memo's full allocation set (cross-lot siblings included):
@@ -1998,7 +2006,9 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                             *, source: str, actor_id, idempotency_key: str):
     """Record a payment against a doc: guard, emit doc.payment.received, post the cash
     JE, fire the payment lifecycle hook. Shared by the manual route and online payment
-    so a Stripe payment lands identically to a hand-entered one. Caller commits.
+    so a Stripe payment lands identically to a hand-entered one. Commits per success and
+    returns (event, applied_amount) - the applied amount is the value that actually
+    landed under the row lock (post-clamp), which bulk uses to report and decrement.
 
     Takes the doc row under SELECT ... FOR UPDATE and validates against that fresh,
     committed read: the doc-row lock is the single serializer across every payment
@@ -2023,7 +2033,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         raise HTTPException(status_code=409, detail="Invoice already fully paid")
     from celerp.services.money import to_decimal as _to_d
     amount = float(body["amount"])
-    if reference and _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
+    if source == "stripe" and _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
         # An online charge already happened at Stripe; if a manual payment
         # landed while the customer was checking out, apply what the invoice
         # can still absorb and keep the real charge on record - the surplus
@@ -2031,7 +2041,16 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         body["charged_amount"] = amount
         amount = float(outstanding)
         body["amount"] = amount
-    # 1-cent tolerance covers display rounding on the final payment.
+    elif not reference and _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
+        # A bulk waterfall (no reference) allocates off an unlocked pre-read; when the
+        # doc shrank before this locked apply, pay what it can still absorb and let the
+        # caller report the applied amount. No charged_amount: this is not an online
+        # overpayment on record, just a stale allocation clamped to the fresh balance.
+        amount = float(outstanding)
+        body["amount"] = amount
+    # 1-cent tolerance covers display rounding on the final payment. A referenced
+    # non-Stripe payment is a specific instrument for a specific amount, so an overshoot
+    # is a 409 (the caller skips it) rather than a silent partial.
     elif _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
         raise HTTPException(status_code=409, detail=f"Payment {amount} exceeds amount outstanding {outstanding}")
     bank_code = body.get("bank_account")
@@ -2084,7 +2103,9 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     )
     # Commit so this recorder's write is visible to the next holder of the row lock.
     await session.commit()
-    return entry
+    # Return the applied amount (post-clamp) alongside the event so callers report
+    # and decrement off what actually landed under the row lock, not a stale pre-read.
+    return entry, amount
 
 
 @router.post("/{entity_id}/payment")
@@ -2092,7 +2113,7 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
     # apply_doc_payment takes the doc row FOR UPDATE and validates against that fresh
     # read, rejecting a closed memo via its status allowlist; the row lock serializes
     # this payment against a concurrent close or a second recorder on the same doc.
-    entry = await apply_doc_payment(
+    entry, _amount = await apply_doc_payment(
         session, company_id, entity_id, payload.model_dump(exclude_none=True),
         source="api", actor_id=user.id, idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
     )
@@ -2613,14 +2634,20 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
     if not payable:
         raise HTTPException(status_code=409, detail="No documents in payable status")
 
-    # Sort by due_date asc (oldest first), then issue_date
-    payable.sort(key=lambda x: (x[1].get("due_date") or x[1].get("issue_date") or "9999", x[1].get("issue_date") or "9999"))
+    # Sort by due_date asc (oldest first), then issue_date, then doc_id. The doc_id
+    # tie-breaker gives every request one canonical acquisition order over docs that
+    # share due/issue dates, so two concurrent bulk runs over an overlapping set take
+    # the shared rows in the same order and cannot form a cross-request lock cycle.
+    payable.sort(key=lambda x: (x[1].get("due_date") or x[1].get("issue_date") or "9999", x[1].get("issue_date") or "9999", x[0]))
 
-    # Allocate amount oldest-first. The unlocked pre-read above only orders and clamps
-    # the allocation; apply_doc_payment re-reads each doc under its row lock and
-    # re-validates, so a doc concurrently closed, paid, or shrunk is skipped honestly
-    # (its 409 is caught, the doc recorded in skipped with its reason) rather than paid
-    # off a stale read. remaining decrements only on a doc that actually took a payment.
+    # Allocate amount oldest-first. The unlocked pre-read above only orders and caps the
+    # tender; apply_doc_payment re-reads each doc under its row lock and re-validates, so
+    # a doc concurrently closed, paid, or shrunk - or one whose plain reference overshoots
+    # its fresh outstanding - is skipped honestly (its 409 is caught, the lock released by
+    # rollback, the doc recorded in skipped with its reason) rather than paid off a stale
+    # read. remaining and total_allocated track the amount apply_doc_payment reports as
+    # actually applied under the lock, so a doc that shrank is reported at its real share.
+    from sqlalchemy.exc import DBAPIError
     remaining = payload.amount
     allocations = []
     skipped: list[dict] = []
@@ -2646,16 +2673,31 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
             "currency": state.get("currency", "USD"),
         }
         try:
-            await apply_doc_payment(
+            _entry, applied = await apply_doc_payment(
                 session, company_id, doc_id, body,
                 source="api", actor_id=user.id, idempotency_key=str(uuid.uuid4()))
         except HTTPException as e:
             # A doc concurrently closed/paid/shrunk under the row lock: skip it and record
-            # why, so the caller can surface which docs were paid and which were not.
+            # why, so the caller can surface which docs were paid and which were not. Roll
+            # back first so the skipped doc's FOR UPDATE lock is released at once (no write
+            # occurs before the raise; prior per-doc commits are already durable), leaving
+            # no lock held across a skip to seed a cross-request deadlock.
+            await session.rollback()
             skipped.append({"doc_id": doc_id, "reason": e.detail})
             continue
-        allocations.append({"doc_id": doc_id, "amount": alloc})
-        remaining -= alloc
+        except DBAPIError as e:
+            # A contended doc held past lock_timeout raises SQLSTATE 55P03 (asyncpg surfaces
+            # it as a DBAPIError, not an HTTPException). Treat that ONE state as an honest
+            # skip - roll back and record the doc - so a timeout surfaces as a skip reason,
+            # never a 500 for the whole bulk. Any other DB error is a real fault, re-raised
+            # so it is never dishonestly masked.
+            if getattr(getattr(e, "orig", None), "sqlstate", None) != "55P03":
+                raise
+            await session.rollback()
+            skipped.append({"doc_id": doc_id, "reason": "Document was locked by another operation; try again"})
+            continue
+        allocations.append({"doc_id": doc_id, "amount": applied})
+        remaining -= applied
 
     await session.commit()
     return {"allocations": allocations, "skipped": skipped,
@@ -3135,42 +3177,64 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         return {"event_id": entry.id, "target_doc_id": new_doc_id}
 
     if state.get("doc_type") == "memo":
-        if state.get("status") not in ("final", "sent", "received", "partially_received"):
+        # An already-converted memo falls through to the allocation-set guard below,
+        # which refuses with the clearer "nothing On Memo" 422: convert settles every
+        # backing lot, so a converted memo has an empty allocation set and can never
+        # re-bill. Only a genuinely-not-issued memo (draft/void) is rejected here.
+        if state.get("status") not in ("final", "sent", "received", "partially_received", "converted"):
             raise HTTPException(status_code=409, detail="Memo must be issued before converting to invoice")
         company = await session.get(Company, company_id)
         ref = next_doc_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
 
-        # Filter line_items: only carry over items with status=memo_out
-        original_line_items = state.get("line_items", [])
-        qualifying_line_items = []
-        for li in original_line_items:
-            li_eid = li.get("entity_id") or li.get("item_id") or ""
-            if not li_eid:
-                continue
-            item_proj = await session.get(
-                Projection, {"company_id": company_id, "entity_id": li_eid}
-            )
-            if item_proj and item_proj.state.get("status") == "memo_out":
-                # Invoice what the customer actually still holds. A part-returned line keeps
-                # its original quantity, but the lot out with them has already been reduced,
-                # so bill the remainder or the return would be charged for as well.
-                _still_out = float(item_proj.state.get("quantity") or 0)
-                _line_qty = float(li.get("quantity") or 0)
-                if _line_qty and abs(_still_out - _line_qty) > 1e-9:
-                    _kept = to_decimal(_still_out) / to_decimal(_line_qty)
-                    li = {**li, "quantity": _still_out}
-                    if li.get("line_total") is not None:
-                        # Scale rather than recompute, so any per-line discount is preserved.
-                        li["line_total"] = to_stored_float(round_money(
-                            to_decimal(li["line_total"]) * _kept, state.get("currency")))
-                qualifying_line_items.append(li)
+        # The memo's settlement unit is its allocation set (every lot stamped
+        # status_doc_id==this memo), not line_items: a memo line whose quantity exceeds
+        # its bound lot draws cross-lot siblings from other lots of the same SKU, and each
+        # sibling carries the memo stamp but never appears in line_items. Bill each line
+        # for the full still-out quantity of its SKU summed across the allocation set, at
+        # the line's own unit_price (revenue is per-SKU and identical across lots; lot cost
+        # is COGS, recognized per lot at fulfill and untouched here).
+        allocation_items = await _memo_allocation_items(session, company_id, entity_id)
+        still_out_qty_by_sku: dict[str, float] = {}
+        memo_out_backing: list[Projection] = []
+        for item_proj in allocation_items:
+            if item_proj.state.get("status") == "memo_out":
+                memo_out_backing.append(item_proj)
+                _sku = item_proj.state.get("sku")
+                if _sku:
+                    still_out_qty_by_sku[_sku] = (
+                        still_out_qty_by_sku.get(_sku, 0.0)
+                        + float(item_proj.state.get("quantity") or 0))
 
-        if not qualifying_line_items:
+        if not memo_out_backing:
             raise HTTPException(
                 status_code=422,
-                detail="Cannot convert: no line items are currently On Memo (memo_out). Fulfill at least one item before converting.",
+                detail="Cannot convert: no items are currently On Memo (memo_out). Fulfill at least one item before converting.",
             )
+
+        # Bill one invoice line per memo line whose SKU is still out. The SKU rollup is
+        # consumed once so lines sharing a SKU never double-bill it; the first line of a
+        # SKU carries its whole still-out quantity, later lines of the same SKU drop out.
+        original_line_items = state.get("line_items", [])
+        remaining_by_sku = dict(still_out_qty_by_sku)
+        qualifying_line_items = []
+        for li in original_line_items:
+            _sku = li.get("sku")
+            _billable = remaining_by_sku.get(_sku, 0.0)
+            if _billable <= 1e-9:
+                continue
+            remaining_by_sku[_sku] = 0.0
+            _line_qty = float(li.get("quantity") or 0)
+            if _line_qty and abs(_billable - _line_qty) > 1e-9:
+                # Scale rather than recompute, so any per-line discount is preserved.
+                _kept = to_decimal(_billable) / to_decimal(_line_qty)
+                li = {**li, "quantity": _billable}
+                if li.get("line_total") is not None:
+                    li["line_total"] = to_stored_float(round_money(
+                        to_decimal(li["line_total"]) * _kept, state.get("currency")))
+            else:
+                li = {**li, "quantity": _billable}
+            qualifying_line_items.append(li)
 
         filtered_state = {**state, "line_items": qualifying_line_items}
         # Strip monetary totals: invoice may have fewer items than memo, so memo totals are stale.
@@ -3187,6 +3251,21 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
             data={"target_doc_id": new_doc_id, "target_doc_type": "invoice"}, actor_id=user.id, location_id=None,
             source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        # Settle every backing lot, not just the line_items rows: a cross-lot sibling is
+        # still out at the customer and must leave memo_out here or it would keep the memo
+        # un-closeable with no settlement path. The invoice bills its SKU at the parent
+        # line; the sibling's revenue is already carried there. Invoice-finalize's own
+        # promotion loop then skips these (they are no longer memo_out), so nothing is
+        # promoted twice.
+        _memo_number = state.get("doc_number") or state.get("ref_id") or ""
+        for item_proj in memo_out_backing:
+            await emit_event(
+                session, company_id=company_id, entity_id=item_proj.entity_id, entity_type="item",
+                event_type="item.status.set",
+                data={"new_status": "sold", "source_doc_id": entity_id, "doc_number": _memo_number},
+                actor_id=user.id, location_id=None, source="memo_convert",
+                idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
+            )
         await session.commit()
         return {"event_id": entry.id, "target_doc_id": new_doc_id}
 
@@ -4339,6 +4418,32 @@ def _validate_line_entity_ids_subset(line_entity_ids: list[str], doc_state: dict
         )
 
 
+async def _validate_revert_entity_ids_subset(
+    session: AsyncSession, company_id, entity_id: str, doc_state: dict, line_entity_ids: list[str],
+) -> None:
+    """Revert-only guard: an id is owned by this doc if it is a line_items row OR, for a
+    memo, a cross-lot sibling this memo currently owns as its status document.
+
+    A memo line whose quantity exceeds its bound lot draws siblings from other lots of the
+    same SKU; fulfill stamps each drawn lot status_doc_id==this memo but the sibling is not
+    a line_items row. Revert is the memo's own settlement workflow, so it must accept those
+    siblings to return them to stock. The union arm applies ONLY to memos; every other doc
+    type keeps the line_items-only universe, so an invoice/PO revert is unchanged. The
+    shared _validate_line_entity_ids_subset (fulfill, reserve) is deliberately left as-is."""
+    doc_eids: set[str] = {
+        li.get("entity_id") or li.get("item_id") or ""
+        for li in doc_state.get("line_items", [])
+    } - {""}
+    if doc_state.get("doc_type") == "memo":
+        doc_eids |= {p.entity_id for p in await _memo_allocation_items(session, company_id, entity_id)}
+    foreign = set(line_entity_ids) - doc_eids
+    if foreign:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Item IDs not linked to this document: {', '.join(sorted(foreign))}",
+        )
+
+
 async def _plan_span_draws(session, company_id, primary_proj, needed: float, exclude: set, owner_entity_id: str = ""):
     """Plan a cross-lot draw of ``needed`` units for a splittable SKU.
 
@@ -4867,7 +4972,7 @@ async def revert_lines(
     if FULFILLABLE_STATUSES.get(doc_type) is None:
         raise HTTPException(status_code=422, detail=f"revert-lines is not supported for doc type: {doc_type}")
 
-    _validate_line_entity_ids_subset(body.line_entity_ids, state)
+    await _validate_revert_entity_ids_subset(session, company_id, entity_id, state, body.line_entity_ids)
 
     if not body.line_entity_ids:
         raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")

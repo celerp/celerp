@@ -2103,6 +2103,7 @@
   "documents.back_to_lists": "Torna agli elenchi",
   "documents.bank": "Banca",
   "documents.bcc": "BCC",
+  "documents.bulk_payment_result": "Pagati {paid}, saltati {skipped}. {reasons}",
   "documents.bulk_payment_title": "Pagamento in blocco: {contact} ({n} documenti)",
   "documents.cc": "CC",
   "documents.clear_scanned": "Cancella scansioni",

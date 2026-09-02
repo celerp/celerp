@@ -2103,6 +2103,7 @@
   "documents.back_to_lists": "Zurück zu den Listen",
   "documents.bank": "Bank",
   "documents.bcc": "BCC",
+  "documents.bulk_payment_result": "{paid} bezahlt, {skipped} übersprungen. {reasons}",
   "documents.bulk_payment_title": "Sammelzahlung: {contact} ({n} Belege)",
   "documents.cc": "CC",
   "documents.clear_scanned": "Gescannte Belege löschen",

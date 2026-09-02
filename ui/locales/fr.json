@@ -2103,6 +2103,7 @@
   "documents.back_to_lists": "Retour aux listes",
   "documents.bank": "Banque",
   "documents.bcc": "Cci",
+  "documents.bulk_payment_result": "Payés {paid}, ignorés {skipped}. {reasons}",
   "documents.bulk_payment_title": "Paiement groupé : {contact} ({n} documents)",
   "documents.cc": "CC",
   "documents.clear_scanned": "Effacer les documents numérisés",

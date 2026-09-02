@@ -2205,6 +2205,7 @@
   "documents.back_to_lists": "ወደ ዝርዝሮች ተመለስ",
   "documents.bank": "ባንክ",
   "documents.bcc": "BCC",
+  "documents.bulk_payment_result": "{paid} ተከፍሏል፣ {skipped} ተዘሏል። {reasons}",
   "documents.bulk_payment_title": "የጅምላ ክፍያ፡ {contact} ({n} ሰነዶች)",
   "documents.cc": "CC",
   "documents.clear_scanned": "አጽዳ ተቃኝቷል",

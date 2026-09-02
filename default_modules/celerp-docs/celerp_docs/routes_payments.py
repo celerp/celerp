@@ -97,7 +97,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
             "currency": currency.upper(), "bank_account": await _deposit_account(session, company_id),
             "method": "stripe", "reference": reference}
     try:
-        entry = await apply_doc_payment(
+        entry, _amount = await apply_doc_payment(
             session, company_id, entity_id, body,
             source="stripe", actor_id=await _company_owner_id(session, company_id),
             idempotency_key=reference,

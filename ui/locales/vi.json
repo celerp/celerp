@@ -2102,6 +2102,7 @@
   "documents.back_to_lists": "Quay lại Danh sách",
   "documents.bank": "Ngân hàng",
   "documents.bcc": "BCC",
+  "documents.bulk_payment_result": "Đã thanh toán {paid}, bỏ qua {skipped}. {reasons}",
   "documents.bulk_payment_title": "Thanh toán hàng loạt: {contact} ({n} tài liệu)",
   "documents.cc": "CC",
   "documents.clear_scanned": "Xóa bản quét",

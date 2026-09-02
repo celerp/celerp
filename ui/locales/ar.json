@@ -2102,6 +2102,7 @@
   "documents.back_to_lists": "العودة إلى القوائم",
   "documents.bank": "البنك",
   "documents.bcc": "نسخة مخفية (BCC)",
+  "documents.bulk_payment_result": "تم دفع {paid}، وتم تخطي {skipped}. {reasons}",
   "documents.bulk_payment_title": "الدفع الجماعي: {contact} ({n} مستند)",
   "documents.cc": "نسخة (CC)",
   "documents.clear_scanned": "مسح الممسوح ضوئيًا",

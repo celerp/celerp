@@ -3317,7 +3317,7 @@ celerpUpdateBulkAlloc();
         if skipped:
             paid = len(result.get("allocations") or [])
             reasons = "; ".join(f"{s.get('doc_id')}: {s.get('reason')}" for s in skipped)
-            return _action_error(f"Paid {paid}, skipped {len(skipped)}. {reasons}")
+            return _action_error(t("documents.bulk_payment_result", paid=paid, skipped=len(skipped), reasons=reasons))
         # Refresh the page
         doc_type = str(form.get("doc_type", "invoice")).strip()
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs?type={doc_type}"})

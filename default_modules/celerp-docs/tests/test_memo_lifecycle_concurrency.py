@@ -261,6 +261,86 @@ async def test_close_shipping_race_no_ship_from_closed(_db_engine):
         await _cleanup(factory, company_id, user_id)
 
 
+async def test_close_shipping_race_concurrent(_db_engine):
+    """Close vs create_shipment race with NO ordering barrier: no torn state under either
+    ordering. The memo's line is left available (never fulfilled), so Close is admissible
+    and ship is a valid concurrent writer; the two are NOT mutually exclusive (Close does
+    not forbid a pre-existing shipment, and ship refuses only a memo ALREADY closed at its
+    lock), so a legal run may commit both when ship wins the lock first.
+
+    The FOR UPDATE serialization on the doc row (close @close_doc, ship via
+    _get_docs_for_update) already exists, so this is GREEN on both trees - a defense-in-depth
+    hardening of the ordered proof, not a red-first behavior test. The invariant under test:
+    ship is atomic against the lock - it either commits a shipment (having held the lock
+    while the memo was open) or is turned away with the closed-409 leaving NO shipment; a
+    shipment standing after a rejected ship, or any error other than that 409, is the torn
+    state this pins out."""
+    from celerp_docs.routes import close_doc, create_shipment_from_docs, DocCloseBody, ShipmentFromDocsBody
+
+    factory = _factory(_db_engine)
+    company_id, user_id, user = await _seed_company(factory)
+    try:
+        _item_id, memo_id = await _one_line_memo(factory, company_id, user, "MEMO-CSC",
+                                                 sku="CSC1", name="Stone CSC")
+        assert (await _state(factory, company_id, memo_id)).get("status") == "sent"
+        s_close, s_ship = factory(), factory()
+        outcome: dict = {}
+
+        async def _close(session):
+            try:
+                outcome["close"] = await close_doc(
+                    memo_id, DocCloseBody(), company_id=company_id, _=None, user=user, session=session)
+            except Exception as exc:  # noqa: BLE001 - a 409 (ship won) is allowed
+                outcome["close"] = exc
+                await session.rollback()
+
+        async def _ship(session):
+            try:
+                outcome["ship"] = await create_shipment_from_docs(
+                    ShipmentFromDocsBody(doc_ids=[memo_id]), company_id=company_id, _=None,
+                    user=user, session=session)
+                await session.commit()
+            except Exception as exc:  # noqa: BLE001 - a 409 (close won) is allowed
+                outcome["ship"] = exc
+                await session.rollback()
+
+        try:
+            await _race(_close(s_close), _ship(s_ship))
+        finally:
+            await s_close.close()
+            await s_ship.close()
+
+        status = (await _state(factory, company_id, memo_id)).get("status")
+        shipments = await _shipping_docs_for(factory, company_id, memo_id)
+        ship_out = outcome.get("ship")
+        ship_committed = not isinstance(ship_out, Exception)
+        if ship_committed:
+            # Ship held the lock while the memo was open: the shipment it created stands,
+            # and it is the one it returned. Close may also have committed (it does not
+            # forbid a pre-existing shipment), which is a legal ship-then-close ordering.
+            assert shipments == [ship_out["id"]], (
+                f"ship committed but its shipment is missing or duplicated; "
+                f"returned={ship_out!r}, standing={shipments!r}")
+        else:
+            # Ship was turned away: the only legal rejection is the closed-409 guard, and
+            # it must leave NO shipment behind (an atomic refusal, not a torn half-write).
+            assert isinstance(ship_out, HTTPException) and ship_out.status_code == 409, (
+                f"ship must be rejected only by the closed-409 guard; got {ship_out!r}")
+            assert not shipments, (
+                f"torn state: ship was rejected yet a shipment stands. shipments={shipments!r}")
+            # A rejected ship means close won the lock and committed the close it observed.
+            assert status == "closed", (
+                f"ship 409'd on a closed memo but status is {status!r}")
+        # Close is admissible here (no memo_out line), so a raised close is only ever the
+        # legal 409, never an unexpected error.
+        close_out = outcome.get("close")
+        if isinstance(close_out, Exception):
+            assert isinstance(close_out, HTTPException) and close_out.status_code == 409, (
+                f"close must only ever fail with a 409, never raise; got {close_out!r}")
+    finally:
+        await _cleanup(factory, company_id, user_id)
+
+
 @pytest.mark.asyncio
 async def test_close_record_payment_race_no_silent_unclose(_db_engine):
     """Close vs record_payment race on the same issued memo, with the terminal state pinned
