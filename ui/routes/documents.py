@@ -6171,7 +6171,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                        onclick=f"event.preventDefault();(async()=>{{await _celerpPersist();htmx.ajax('POST','/docs/{entity_id}/action/finalize',{{swap:'none'}});}})();",
                        title=finalize_tip, cls="btn btn--primary")
             )
-    if status not in ("void", "draft") and _can_finalize and not suppress_doc_actions:
+    if status not in ("void", "draft", "closed") and _can_finalize and not suppress_doc_actions:
         action_btns_right.append(
             Details(
                 Summary(t("btn.void"), cls="btn btn--danger",

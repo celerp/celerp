@@ -165,17 +165,18 @@ async def test_bulk_payment_reports_applied_not_stale(_db_engine):
 
 
 @pytest.mark.asyncio
-async def test_bulk_plain_reference_overshoot_skips_not_clamps(_db_engine):
-    """A plain (non-Stripe) bulk `reference` whose amount overshoots a doc's outstanding
-    under the row lock is SKIPPED with a 409, and NO charged_amount is written.
+async def test_bulk_clamps_shrunk_doc(_db_engine):
+    """A bulk payment whose per-doc allocation overshoots the fresh outstanding under the
+    row lock CLAMPS to the fresh outstanding and applies it, even when the bulk carries a
+    `reference`. The clamp is the explicit bulk waterfall behavior, not gated on reference.
 
-    A racing partial payment shrinks the doc between bulk's unlocked pre-read and its
-    locked apply, so the helper sees the referenced amount overshoot the fresh outstanding.
-    At merge-base the clamp branch keys on `reference` truthiness alone, so the referenced
-    overshoot triggers the Stripe overpay clamp: the doc is silently paid down to its
-    outstanding and a phantom `charged_amount` is stashed for a non-Stripe payment.
-    Post-fix the clamp is gated on source=="stripe"; a referenced non-Stripe overshoot
-    falls through to the 409 exceeds-outstanding branch and is skipped honestly."""
+    A racing partial payment shrinks the doc between bulk's unlocked pre-read and its locked
+    apply, so the helper sees the tendered amount overshoot the fresh outstanding. Bulk
+    passes clamp_overshoot=True, so the helper clamps to the fresh outstanding, applies it,
+    and reports the applied amount; no charged_amount is written (this is not a Stripe
+    overpay). At merge-base the clamp branch keys on `not reference`, so a bulk WITH a
+    reference falls through to the 409 exceeds-outstanding branch and the doc is skipped
+    instead of clamped, leaving it under-paid."""
     import celerp_docs.routes as _routes
     from celerp_docs.routes import bulk_payment, BulkPaymentBody, DocPaymentBody, record_payment
 
@@ -208,23 +209,26 @@ async def test_bulk_plain_reference_overshoot_skips_not_clamps(_db_engine):
                                 method="cash", bank_account="1111", reference="CHK-9001"),
                 company_id=company_id, _=None, user=user, session=s)
 
-        # The referenced overshoot must land in skipped, not silently clamp-and-pay.
+        # The referenced overshoot must clamp to the fresh outstanding (40) and be applied,
+        # never skipped.
         skipped_ids = {s_["doc_id"] for s_ in result["skipped"]}
-        paid_ids = {a["doc_id"] for a in result["allocations"]}
-        assert inv in skipped_ids, (
-            f"a referenced non-Stripe overshoot must be skipped, not clamped; result={result!r}")
-        assert inv not in paid_ids, "the overshoot doc must not take the referenced payment"
+        applied = {a["doc_id"]: a["amount"] for a in result["allocations"]}
+        assert inv not in skipped_ids, (
+            f"a bulk overshoot must clamp-and-apply, not skip; result={result!r}")
+        assert inv in applied, f"the invoice must be paid at its clamped outstanding; result={result!r}"
+        assert abs(applied[inv] - 40.0) < 0.01, (
+            f"bulk must clamp to the fresh outstanding (40) and report it; got {applied[inv]}")
 
         st = await _state(factory, company_id, inv)
-        # Only the racing 60 is recorded; the referenced 100 is not applied, no phantom
-        # charged_amount is projected, and 40 stays outstanding.
+        # The clamped 40 is recorded under the reference; no phantom charged_amount (this is
+        # not a Stripe overpay), and the doc settles fully (60 racing + 40 clamped).
         refd = [p for p in (st.get("payments") or [])
                 if p.get("status") != "deleted" and p.get("reference") == "CHK-9001"]
-        assert not refd, f"the referenced overshoot must record no payment; got {refd!r}"
+        assert refd, f"the clamped referenced payment must be recorded; state={st!r}"
         assert st.get("charged_amount") in (None, 0, 0.0), (
-            f"no phantom charged_amount must be written; got {st.get('charged_amount')!r}")
-        assert await _outstanding(factory, company_id, inv) == pytest.approx(40.0), (
-            "only the racing partial must land; the referenced overshoot leaves 40 outstanding")
+            f"no phantom charged_amount must be written for a non-Stripe clamp; got {st.get('charged_amount')!r}")
+        assert await _outstanding(factory, company_id, inv) < 0.01, (
+            "the racing 60 plus the clamped 40 must settle the doc in full")
     finally:
         _routes.apply_doc_payment = _orig_apply
         await _cleanup(factory, company_id, user_id)
@@ -420,4 +424,79 @@ async def test_bulk_reversed_order_skip_no_deadlock(_db_engine):
                 f"run {key} must complete without deadlock; got {outcome.get(key)!r}")
     finally:
         _routes.apply_doc_payment = _orig_apply
+        await _cleanup(factory, company_id, user_id)
+
+
+@pytest.mark.asyncio
+async def test_bulk_lock_timeout_prod_config_skips(_db_engine):
+    """The per-doc lock wait is bounded by APPLICATION behavior, not connection config.
+
+    The bulk session's own lock_timeout is disabled ('0') to model the production engine
+    (celerp/db.py sets no lock_timeout), so nothing outside the bulk loop bounds the wait.
+    A concurrent session holds one doc's row lock. Post-fix the bulk loop issues
+    SET LOCAL lock_timeout before each per-doc lock, so the held doc times out (55P03),
+    is skipped, the other doc is paid, and the bulk completes well inside the test bound.
+    At merge-base no such statement runs, so with lock_timeout disabled the held doc
+    blocks past the bound and the test fails (a bounded timeout, never an unbounded hang).
+    A non-55P03 DB error would still propagate, unchanged by this fix."""
+    from celerp_docs.routes import bulk_payment, BulkPaymentBody
+
+    factory = _factory(_db_engine)
+    company_id, user_id, user = await _seed_company(factory)
+    try:
+        held = await _seed_invoice(factory, company_id, user, ref_id="BULK-PROD-H",
+                                   total=100.0, contact_id="contact:prod")
+        other = await _seed_invoice(factory, company_id, user, ref_id="BULK-PROD-O",
+                                    total=100.0, contact_id="contact:prod")
+
+        lock_taken = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _hold_lock(session):
+            await session.execute(
+                text("SELECT 1 FROM projections WHERE company_id = :c AND entity_id = :e FOR UPDATE"),
+                {"c": str(company_id), "e": held})
+            lock_taken.set()
+            # Release either when told or on a safety timer, so a merge-base hang still ends.
+            try:
+                await asyncio.wait_for(release.wait(), timeout=12)
+            except asyncio.TimeoutError:
+                pass
+            await session.rollback()
+
+        async def _bulk(session):
+            # Disable the connection's own lock_timeout: the ONLY bound is the loop's
+            # SET LOCAL (F3). Without it (merge-base) the held doc blocks indefinitely.
+            await session.execute(text("SET lock_timeout = '0'"))
+            return await bulk_payment(
+                BulkPaymentBody(doc_ids=[held, other], amount=250.0, payment_date="2026-02-08",
+                                method="cash", bank_account="1111"),
+                company_id=company_id, _=None, user=user, session=session)
+
+        s_hold, s_bulk = factory(), factory()
+        result: dict = {}
+        try:
+            async def _run_bulk():
+                await lock_taken.wait()
+                try:
+                    result["out"] = await _bulk(s_bulk)
+                finally:
+                    release.set()
+
+            # 8s bound: the F3 SET LOCAL is 3s, so a post-fix run finishes comfortably
+            # inside it; a merge-base run (no bound) blocks and trips this as a red FAIL.
+            await asyncio.wait_for(
+                asyncio.gather(_hold_lock(s_hold), _run_bulk()), timeout=8)
+        finally:
+            await s_hold.close()
+            await s_bulk.close()
+
+        out = result.get("out")
+        assert isinstance(out, dict), f"bulk must complete under the app-level bound; got {out!r}"
+        skipped_ids = {s_["doc_id"] for s_ in out["skipped"]}
+        paid_ids = {a["doc_id"] for a in out["allocations"]}
+        assert held in skipped_ids, (
+            f"the held doc must skip within the app-level lock bound; result={out!r}")
+        assert other in paid_ids, f"the unlocked doc must still be paid; result={out!r}"
+    finally:
         await _cleanup(factory, company_id, user_id)

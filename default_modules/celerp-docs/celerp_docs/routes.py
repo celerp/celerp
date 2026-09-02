@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import select, func as _func
+from sqlalchemy import select, func as _func, text
 import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +45,13 @@ from celerp.services.list_behavior import (
 from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+# Bulk payment bounds each per-doc row-lock wait so a contended doc skips rather than
+# blocking the worker. 3s sits above a normal per-doc lock hold (no false skip under
+# ordinary load) and well under typical client/proxy request timeouts. Applied
+# transaction-local before each acquisition and reapplied every iteration, since
+# apply_doc_payment commits per doc and the prior commit resets the setting.
+_BULK_DOC_LOCK_TIMEOUT_MS = 3000
 
 # Closed-set shipment fields: unknown values never reach the event log ('' clears).
 _SHIPMENT_ENUM_FIELDS: dict[str, frozenset[str]] = {
@@ -1480,6 +1487,10 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
 @router.post("/{entity_id}/finalize")
 async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    # A closed memo is terminal, settled paperwork; finalize maps closed->final in the
+    # reducer, silently stripping the terminal status and its close metadata. Refuse under
+    # the row lock, same as the other post-close mutations; the user reopens first.
+    _reject_if_closed(row.state, "finalize it")
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Cannot finalize void document")
     if not (row.state.get("line_items") or []):
@@ -1675,6 +1686,15 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
         raise HTTPException(
             status_code=409,
             detail=f"Cannot close: {pending} product(s) still awaiting resolution. Sell or return them first.",
+        )
+    # A fully paid memo has already settled: bulk payment brought it to "paid" and there is
+    # nothing left to resolve by closing. Read status from the locked fresh row above, so a
+    # payment that committed after any earlier unlocked read is seen here; refuse rather than
+    # letting Close write a doc.closed onto settled paper.
+    if state.get("status") == "paid":
+        raise HTTPException(
+            status_code=409,
+            detail="This memo is fully paid and already settled; it cannot be closed.",
         )
     event_data = payload.model_dump(exclude_none=True)
     event_data["pre_close_status"] = state.get("status")
@@ -2003,7 +2023,8 @@ async def _alloc_payment_index(session, company_id, payments: list,
 
 
 async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
-                            *, source: str, actor_id, idempotency_key: str):
+                            *, source: str, actor_id, idempotency_key: str,
+                            clamp_overshoot: bool = False):
     """Record a payment against a doc: guard, emit doc.payment.received, post the cash
     JE, fire the payment lifecycle hook. Shared by the manual route and online payment
     so a Stripe payment lands identically to a hand-entered one. Commits per success and
@@ -2041,16 +2062,19 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         body["charged_amount"] = amount
         amount = float(outstanding)
         body["amount"] = amount
-    elif not reference and _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
-        # A bulk waterfall (no reference) allocates off an unlocked pre-read; when the
-        # doc shrank before this locked apply, pay what it can still absorb and let the
-        # caller report the applied amount. No charged_amount: this is not an online
-        # overpayment on record, just a stale allocation clamped to the fresh balance.
+    elif clamp_overshoot and _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
+        # The bulk waterfall allocates off an unlocked pre-read and asks explicitly to
+        # clamp (clamp_overshoot=True); when the doc shrank before this locked apply, pay
+        # what it can still absorb and let the caller report the applied amount. No
+        # charged_amount: this is not an online overpayment on record, just a stale
+        # allocation clamped to the fresh balance. A manual single-doc payment keys the
+        # default clamp_overshoot=False, so its overshoot 409s below as it always has.
         amount = float(outstanding)
         body["amount"] = amount
-    # 1-cent tolerance covers display rounding on the final payment. A referenced
-    # non-Stripe payment is a specific instrument for a specific amount, so an overshoot
-    # is a 409 (the caller skips it) rather than a silent partial.
+    # 1-cent tolerance covers display rounding on the final payment. Without an explicit
+    # clamp request a payment is a specific instrument for a specific amount, so an
+    # overshoot is a 409 (a manual caller sees it; the bulk caller skips it) rather than
+    # a silent partial.
     elif _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
         raise HTTPException(status_code=409, detail=f"Payment {amount} exceeds amount outstanding {outstanding}")
     bank_code = body.get("bank_account")
@@ -2672,10 +2696,16 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
             "bank_account": bank_code,
             "currency": state.get("currency", "USD"),
         }
+        # Bound this doc's row-lock wait transaction-locally. apply_doc_payment commits
+        # per doc, so the prior iteration's commit reset the timeout; reapply every loop so
+        # a contended doc raises 55P03 and is skipped below rather than blocking the worker.
+        await session.execute(
+            text(f"SET LOCAL lock_timeout = '{_BULK_DOC_LOCK_TIMEOUT_MS}ms'"))
         try:
             _entry, applied = await apply_doc_payment(
                 session, company_id, doc_id, body,
-                source="api", actor_id=user.id, idempotency_key=str(uuid.uuid4()))
+                source="api", actor_id=user.id, idempotency_key=str(uuid.uuid4()),
+                clamp_overshoot=True)
         except HTTPException as e:
             # A doc concurrently closed/paid/shrunk under the row lock: skip it and record
             # why, so the caller can surface which docs were paid and which were not. Roll
@@ -3195,16 +3225,10 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         # the line's own unit_price (revenue is per-SKU and identical across lots; lot cost
         # is COGS, recognized per lot at fulfill and untouched here).
         allocation_items = await _memo_allocation_items(session, company_id, entity_id)
-        still_out_qty_by_sku: dict[str, float] = {}
-        memo_out_backing: list[Projection] = []
-        for item_proj in allocation_items:
-            if item_proj.state.get("status") == "memo_out":
-                memo_out_backing.append(item_proj)
-                _sku = item_proj.state.get("sku")
-                if _sku:
-                    still_out_qty_by_sku[_sku] = (
-                        still_out_qty_by_sku.get(_sku, 0.0)
-                        + float(item_proj.state.get("quantity") or 0))
+        memo_out_backing: list[Projection] = [
+            item_proj for item_proj in allocation_items
+            if item_proj.state.get("status") == "memo_out"
+        ]
 
         if not memo_out_backing:
             raise HTTPException(
@@ -3212,29 +3236,88 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
                 detail="Cannot convert: no items are currently On Memo (memo_out). Fulfill at least one item before converting.",
             )
 
-        # Bill one invoice line per memo line whose SKU is still out. The SKU rollup is
-        # consumed once so lines sharing a SKU never double-bill it; the first line of a
-        # SKU carries its whole still-out quantity, later lines of the same SKU drop out.
+        # Bill each still-out lot against the original memo line it is bound to, at THAT
+        # line's own price/discount/tax. A memo line binds to exactly one lot by its item
+        # key (the LineItem validator folds a frontend entity_id into item_id and clears
+        # entity_id), the same key fulfill_lines uses; a lot's only line pointer is the
+        # identity item_proj.entity_id == that key. A cross-lot sibling (drawn from another
+        # same-SKU lot to cover a line whose quantity exceeded its bound lot) carries the
+        # memo stamp but has no bound line, so it is billed once onto the first same-SKU
+        # original line at that line's unit_price - the sibling's revenue is per-SKU and
+        # its lot cost was already recognized at fulfill.
+        _currency = state.get("currency")
         original_line_items = state.get("line_items", [])
-        remaining_by_sku = dict(still_out_qty_by_sku)
-        qualifying_line_items = []
+        line_by_bound_eid: dict[str, dict] = {}
         for li in original_line_items:
-            _sku = li.get("sku")
-            _billable = remaining_by_sku.get(_sku, 0.0)
-            if _billable <= 1e-9:
+            _key = li.get("entity_id") or li.get("item_id")
+            if _key:
+                line_by_bound_eid[_key] = li
+
+        billed_by_bound_eid: dict[str, dict] = {}
+        unbound_qty_by_sku: dict[str, float] = {}
+        for item_proj in memo_out_backing:
+            _lot_eid = item_proj.entity_id
+            _still_out = float(item_proj.state.get("quantity") or 0)
+            if _still_out <= 1e-9:
                 continue
-            remaining_by_sku[_sku] = 0.0
-            _line_qty = float(li.get("quantity") or 0)
-            if _line_qty and abs(_billable - _line_qty) > 1e-9:
-                # Scale rather than recompute, so any per-line discount is preserved.
-                _kept = to_decimal(_billable) / to_decimal(_line_qty)
-                li = {**li, "quantity": _billable}
-                if li.get("line_total") is not None:
-                    li["line_total"] = to_stored_float(round_money(
-                        to_decimal(li["line_total"]) * _kept, state.get("currency")))
-            else:
-                li = {**li, "quantity": _billable}
-            qualifying_line_items.append(li)
+            _line = line_by_bound_eid.get(_lot_eid)
+            if _line is None:
+                # Genuinely unbound cross-lot sibling: fold its still-out quantity into the
+                # first same-SKU original line below, priced at that line's unit_price.
+                _sku = item_proj.state.get("sku")
+                unbound_qty_by_sku[_sku] = unbound_qty_by_sku.get(_sku, 0.0) + _still_out
+                continue
+            # Bill the bound lot's own still-out quantity to its own line. Scale line_total
+            # and each tax amount by the kept fraction so an explicit per-line discount
+            # (a line_total below quantity*unit_price) and per-line tax both survive at the
+            # billed quantity; taxes are linear in the base, so one fraction is exact.
+            _line_qty = float(_line.get("quantity") or 0)
+            billed = {**_line, "quantity": _still_out}
+            if _line_qty and abs(_still_out - _line_qty) > 1e-9:
+                _kept = to_decimal(_still_out) / to_decimal(_line_qty)
+                if _line.get("line_total") is not None:
+                    billed["line_total"] = to_stored_float(round_money(
+                        to_decimal(_line["line_total"]) * _kept, _currency))
+                if _line.get("taxes"):
+                    billed["taxes"] = [
+                        {**tx, "amount": to_stored_float(round_money(
+                            to_decimal(tx.get("amount") or 0) * _kept, _currency))}
+                        if tx.get("amount") is not None else {**tx}
+                        for tx in _line["taxes"]
+                    ]
+            billed_by_bound_eid[_lot_eid] = billed
+
+        # Fold each unbound sibling's quantity onto the first same-SKU original line, priced
+        # fresh at that line's unit_price so the added units never disturb the bound
+        # portion's discount or tax. Fail loud if a sibling SKU has no original line at all
+        # (structurally unreachable: span draws are always same-SKU) rather than invent a
+        # price and fabricate a billed amount.
+        for _sku, _sib_qty in unbound_qty_by_sku.items():
+            if _sib_qty <= 1e-9:
+                continue
+            _target_eid = next(
+                (li.get("entity_id") or li.get("item_id")
+                 for li in original_line_items if li.get("sku") == _sku),
+                None,
+            )
+            if _target_eid is None or _target_eid not in billed_by_bound_eid:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"convert: sibling SKU {_sku} has no matching original line",
+                )
+            billed = billed_by_bound_eid[_target_eid]
+            _unit = to_decimal(billed.get("unit_price") or 0)
+            billed["quantity"] = float(billed.get("quantity") or 0) + _sib_qty
+            if billed.get("line_total") is not None:
+                billed["line_total"] = to_stored_float(round_money(
+                    to_decimal(billed["line_total"]) + _unit * to_decimal(_sib_qty), _currency))
+
+        # Preserve original line order among the lines actually billed.
+        qualifying_line_items = [
+            billed_by_bound_eid[li.get("entity_id") or li.get("item_id")]
+            for li in original_line_items
+            if (li.get("entity_id") or li.get("item_id")) in billed_by_bound_eid
+        ]
 
         filtered_state = {**state, "line_items": qualifying_line_items}
         # Strip monetary totals: invoice may have fewer items than memo, so memo totals are stale.
