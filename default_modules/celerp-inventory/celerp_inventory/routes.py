@@ -1205,6 +1205,15 @@ def duplicate_barcode_detail(code: str) -> str:
     return f"Duplicate barcode '{code}' exists on multiple inventory items"
 
 
+# Statuses whose items are retained for history but are no longer a current physical
+# lot, so they must not participate in operational barcode ambiguity. A `merged`
+# source keeps its original barcode (item.source_deactivated sets status only), so an
+# unfiltered barcode index counts it as a live candidate and falsely trips
+# `duplicate_barcode`. Scope is `merged` ONLY: reserved/memo_out/sold/archived/expired
+# must still resolve by barcode. Barcode-candidate step only; SKU matching is untouched.
+_BARCODE_EXCLUDED_STATUSES = frozenset({"merged"})
+
+
 async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> ResolveResult:
     """Canonical code -> item(s) resolver. Barcode (unique) wins; SKU may be N.
 
@@ -1222,7 +1231,11 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
             Projection.entity_type == "item",
         )
     )).scalars().all()
-    barcode_matches = [r for r in rows if str((r.state or {}).get("barcode") or "") == code]
+    barcode_matches = [
+        r for r in rows
+        if str((r.state or {}).get("barcode") or "") == code
+        and str((r.state or {}).get("status") or "").lower() not in _BARCODE_EXCLUDED_STATUSES
+    ]
     if barcode_matches:
         return ResolveResult("barcode", barcode_matches)
     sku_matches = [r for r in rows if str((r.state or {}).get("sku") or "") == code]
@@ -1254,7 +1267,7 @@ async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> di
         st = r.state or {}
         bc = str(st.get("barcode") or "")
         sku = str(st.get("sku") or "")
-        if bc:
+        if bc and str(st.get("status") or "").lower() not in _BARCODE_EXCLUDED_STATUSES:
             by_barcode.setdefault(bc, []).append(r)
         if sku:
             by_sku.setdefault(sku, []).append(r)
