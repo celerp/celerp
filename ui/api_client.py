@@ -529,14 +529,32 @@ async def get_item(token: str, entity_id: str) -> dict:
         return _raise(await c.get(f"/items/{entity_id}")).json()
 
 
+# The server caps a single /items/metadata request at MAX_ITEMS_METADATA (5000)
+# ids and 422s an over-cap body. A list can hold more unique items than that, so
+# split the ids into batches within the cap and merge the per-batch maps. 1000
+# keeps each request small while staying well inside the server bound.
+ITEMS_METADATA_BATCH = 1000
+
+
 async def get_items_metadata(token: str, entity_ids: list[str]) -> dict[str, dict]:
-    """Bulk item-metadata read: entity_id -> flattened item dict, one request.
+    """Bulk item-metadata read: entity_id -> flattened item dict.
 
     Returns the same per-item shape get_item returns (minus the sold_price
-    enrichment). Unknown ids are absent from the map. Callers wrap this in their
-    own try/except so a failure degrades to stored line values."""
+    enrichment). Duplicate ids are collapsed and the request is chunked into
+    batches within the server cap, so a list with more unique items than the cap
+    still resolves fully. Unknown ids are absent from the map. Callers wrap this in
+    their own try/except so a failure degrades to stored line values."""
+    ids = list(dict.fromkeys(entity_ids))
+    if not ids:
+        return {}
+    merged: dict[str, dict] = {}
     async with _api_client(token) as c:
-        return (_raise(await c.post("/items/metadata", json={"entity_ids": entity_ids})).json()).get("items", {})
+        for start in range(0, len(ids), ITEMS_METADATA_BATCH):
+            batch = ids[start:start + ITEMS_METADATA_BATCH]
+            merged.update(
+                (_raise(await c.post("/items/metadata", json={"entity_ids": batch})).json()).get("items", {})
+            )
+    return merged
 
 
 async def get_reorder_suggestion(token: str, entity_id: str) -> dict:
