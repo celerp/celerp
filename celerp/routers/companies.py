@@ -275,6 +275,31 @@ async def me(company_id=Depends(get_current_company_id), session: AsyncSession =
     return {"id": str(company.id), "name": company.name, "slug": company.slug, "settings": company.settings}
 
 
+@router.get("/commercial-state")
+async def commercial_state(_: None = require_permission("manage_integrations")) -> dict:
+    """Return the live commercial state the API process holds from the relay WS
+    push, for the separate UI process to read over an authenticated seam.
+
+    The UI runs in its own process and cannot see these in-process globals, so it
+    reads them here. Gated at the same permission as the settings pages that
+    consume it, so tab visibility stays consistent with page access. Only
+    non-secret entitlement fields are returned; the co-resident config secrets
+    are never read by this path.
+    """
+    from celerp.gateway.state import (
+        get_commercial_context,
+        get_commercial_mode,
+        get_feature_flags,
+        get_partner_identity,
+    )
+    return {
+        "feature_flags": get_feature_flags(),
+        "commercial_context": get_commercial_context(),
+        "partner_identity": get_partner_identity(),
+        "commercial_mode": get_commercial_mode(),
+    }
+
+
 @router.patch("/me")
 async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company_id), _: None = require_permission("manage_company_settings"), session: AsyncSession = Depends(get_session)) -> dict:
     company = await session.get(Company, company_id)

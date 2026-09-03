@@ -21,11 +21,37 @@ from ui.routes.settings import (
 from ui.routes.settings_general import _section_breadcrumb
 
 
-def _has_team_features() -> bool:
-    """Check if Team-tier infrastructure features are available (in-memory, no I/O)."""
-    from celerp.gateway.state import get_feature_flags
-    flags = get_feature_flags()
+def _has_team_features(state: dict) -> bool:
+    """Whether Team-tier infrastructure features are entitled, from fetched
+    commercial state. Pure predicate: no I/O, fail-closed on a neutral state."""
+    flags = state.get("feature_flags") or {}
     return bool(flags.get("external_db") or flags.get("external_storage"))
+
+
+async def _commercial_state(request: Request) -> dict:
+    """Fetch the live commercial state from the API once per request, memoized on
+    request.state so both the tab decision and any consumer share one call.
+
+    Fails closed to a neutral empty state: a missing token or any fetch error
+    yields {} so the page renders with the neutral (no-team) tab set rather than
+    fabricating entitlement or 500-ing."""
+    cached = getattr(request.state, "commercial_state", None)
+    if cached is not None:
+        return cached
+    from ui.config import get_token
+    import ui.api_client as _api
+    token = get_token(request)
+    if not token:
+        request.state.commercial_state = {}
+        return {}
+    try:
+        state = await _api.get_commercial_state(token)
+        if not isinstance(state, dict):
+            state = {}
+    except Exception:
+        state = {}
+    request.state.commercial_state = state
+    return state
 
 
 def _cloud_tabs(active: str, has_team_features: bool = False, lang: str = "en") -> FT:
@@ -518,7 +544,7 @@ def setup_routes(app):
 
         # Connected or connecting - show tabs
         tab = request.query_params.get("tab", "status")
-        has_team = _has_team_features()
+        has_team = _has_team_features(await _commercial_state(request))
 
         if tab == "infrastructure" and has_team:
             content = _infrastructure_tab()
