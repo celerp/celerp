@@ -31,7 +31,7 @@ from .services import (
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility
-from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA, NUMERIC_SCHEMA_TYPES
 from celerp.services.permissions import (
     assert_role_permission,
     get_current_company_settings,
@@ -510,12 +510,6 @@ _SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category",
                   "sell_by", "unit", "weight_unit", "gross_weight_unit",
                   "purchase_unit", "inventory_type", "status_doc_number", "lot")
 _NUMERIC_FIELDS = ("quantity", "weight", "pieces")
-# Schema field types whose stored values are numeric and therefore range/exact
-# scope-searchable. Mirrors the merge path's numeric classification (see _numeric_keys)
-# so a custom money/rate field (e.g. an appraised_value) coerces for `field: lo-hi`
-# exactly as a number-typed one does. Cost/price columns are excluded separately by
-# _is_cost_or_price_key, so this stays a pure type list.
-_NUMERIC_FIELD_TYPES = ("number", "money", "rate")
 # The continuous per-item measures that must never become column-filter funnels: a facet
 # over quantity would list every distinct amount. A custom numeric category attribute
 # (a `number`-typed attribute like `length`) is NOT a measure and keeps its funnel.
@@ -543,7 +537,7 @@ def _is_cost_or_price_key(key: str) -> bool:
 def searchable_field_sets(schema: list[dict]) -> tuple[frozenset[str], frozenset[str]]:
     """Derive (numeric, text) scoped-search field sets from an effective field schema.
 
-    numeric = _NUMERIC_FIELDS plus every schema key of a numeric type (number/money/rate)
+    numeric = _NUMERIC_FIELDS plus every schema key of a numeric type (number/money/rate/weight)
     plus the synthetic qty_each; text = _SEARCH_FIELDS plus the remaining (non-numeric)
     schema keys. Both exclude cost/price keys so a price column never becomes
     scope-searchable. The two sets are disjoint (a schema key is numeric when its type is
@@ -557,7 +551,7 @@ def searchable_field_sets(schema: list[dict]) -> tuple[frozenset[str], frozenset
         key = f.get("key")
         if not key or _is_cost_or_price_key(key):
             continue
-        if f.get("type") in _NUMERIC_FIELD_TYPES:
+        if f.get("type") in NUMERIC_SCHEMA_TYPES:
             numeric.add(key)
         else:
             text.add(key)
@@ -3091,7 +3085,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     # Classify the merged category's fields by their SCHEMA type, not by the shape of their values.
     # A merge must NEVER sum a field or invent a value. Only genuinely numeric-typed fields
-    # (number/money/rate) drop to no-value; every other conflicting field collapses to the "Mixed"
+    # (number/money/rate/weight) drop to no-value; every other conflicting field collapses to the "Mixed"
     # system value. Keying off the value shape (as before) misclassified custom attributes whose
     # values merely look numeric (free fields, or selects with numeric options) and silently dropped
     # them instead of showing "Mixed".
@@ -3099,7 +3093,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     _merge_category = (next(iter(categories), "") or "").strip() or None
     _schema = await get_effective_field_schema(session, company_id, category=_merge_category)
     _dropdown_keys = {f["key"] for f in _schema if f.get("type") in ("select", "status")}
-    _numeric_keys = {f["key"] for f in _schema if f.get("type") in _NUMERIC_FIELD_TYPES}
+    _numeric_keys = {f["key"] for f in _schema if f.get("type") in NUMERIC_SCHEMA_TYPES}
     # A schema-defined category attribute (e.g. `type`, `grade`, `color`) may be stored TOP-LEVEL
     # rather than under `attributes` — a field edit / POST /items keeps it there (only `pieces`/cost
     # are normalized). The attributes-only scan above misses those keys, so the value is silently

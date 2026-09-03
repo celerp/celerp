@@ -350,3 +350,79 @@ def test_searchable_field_sets_classifies_money_and_rate_numeric():
     assert query_match_reasons(_item(name="Ring", sku="R2", appraised_value=500),
                                "appraised_value: 1000-2000",
                                numeric_fields=numeric, text_fields=text) is None
+
+
+# ── INV3: weight is a canonical numeric schema type ───────────────────────────
+
+def _weight_sets():
+    """The searchable field sets for a schema carrying a weight-typed custom field."""
+    schema = [
+        {"key": "net_weight", "type": "weight"},
+        {"key": "certificate_no", "type": "text"},
+        {"key": "grade", "type": "select", "options": ["1", "2", "3"]},
+    ]
+    return searchable_field_sets(schema)
+
+
+def test_searchable_field_sets_weight_numeric():
+    """AC4/AC5: a weight-typed schema key classifies numeric, not text. weight is a
+    documented ItemSchemaField.type; the canonical numeric set must include it so a
+    weight column is range/exact scope-searchable exactly as a number one is. A text
+    field stays text (regression guard against widening the set too far)."""
+    numeric, text = _weight_sets()
+    assert "net_weight" in numeric
+    assert "net_weight" not in text
+    assert "certificate_no" in text
+    assert "certificate_no" not in numeric
+
+
+def test_custom_weight_field_range_and_exact():
+    """AC4: `net_weight: 1-2` matches a weight-typed field whose value is in range, and
+    `net_weight: 2` matches it exactly, coercing to a number rather than substring."""
+    numeric, text = _weight_sets()
+    in_range = _item(name="Stone", sku="S1", net_weight=1.5)
+    assert query_match_reasons(in_range, "net_weight: 1-2",
+                               numeric_fields=numeric, text_fields=text) == [
+                                   ("net_weight", "1.5")]
+    exact = _item(name="Stone", sku="S2", net_weight=2)
+    assert query_match_reasons(exact, "net_weight: 2",
+                               numeric_fields=numeric, text_fields=text) == [
+                                   ("net_weight", "2")]
+
+
+def test_custom_weight_field_mismatch_and_outside_range():
+    """AC4 failure path: a weight-typed field must coerce numerically, so an exact query
+    never substring-matches (`net_weight: 5` does not match 50) and an out-of-range
+    value is excluded. This is what a text classification (the pre-change behavior) got
+    wrong: `5` would substring-match "50"."""
+    numeric, text = _weight_sets()
+    fifty = _item(name="Heavy", sku="H1", net_weight=50)
+    assert query_match_reasons(fifty, "net_weight: 5",
+                               numeric_fields=numeric, text_fields=text) is None
+    assert query_match_reasons(fifty, "net_weight: 1-2",
+                               numeric_fields=numeric, text_fields=text) is None
+
+
+def test_weight_scope_malformed_value():
+    """(b) A malformed weight value yields no match and never an error: numeric coercion
+    is guarded, so `net_weight: abc` fails coercion and falls through to a substring
+    check that also fails. Guards that widening the numeric set to weight keeps the
+    no-match/no-error behavior."""
+    numeric, text = _weight_sets()
+    item = _item(name="Stone", sku="S3", net_weight=1.5)
+    assert query_match_reasons(item, "net_weight: abc",
+                               numeric_fields=numeric, text_fields=text) is None
+
+
+def test_weight_does_not_coerce_text_identifier_fields():
+    """(c) Widening the numeric set to weight must not turn a canonical text identifier
+    numeric. With a schema carrying a weight field, a scoped sku still keeps leading-zero
+    identity (`sku: 001` != stored "1") and a barcode too - only the weight field coerces.
+    Guards that the wider numeric type set does not spill into text identifiers."""
+    numeric, text = _weight_sets()
+    assert query_match_reasons(_item(name="A", sku="1"), "sku: 001",
+                               numeric_fields=numeric, text_fields=text) is None
+    assert query_match_reasons(_item(name="B", sku="001"), "sku: 001",
+                               numeric_fields=numeric, text_fields=text) == [("sku", "001")]
+    assert query_match_reasons(_item(name="C", sku="X", barcode="123"), "barcode: 00123",
+                               numeric_fields=numeric, text_fields=text) is None

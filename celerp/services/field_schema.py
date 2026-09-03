@@ -166,6 +166,11 @@ def cost_columns(price_lists: list[dict]) -> list[dict]:
     return [f for f in _inject_price_columns([], price_lists) if f.get("key") in COST_SCHEMA_KEYS]
 
 
+# The schema field types whose stored values are numeric, so a field of one of these
+# types is range/exact scope-searchable and classified numeric on merge. Single source
+# for that classification, consumed by the inventory search and merge paths.
+NUMERIC_SCHEMA_TYPES: frozenset[str] = frozenset({"number", "money", "rate", "weight"})
+
 # Backward-compatible constant: base fields + default price columns
 DEFAULT_ITEM_SCHEMA: list[dict] = _inject_price_columns(_BASE_FIELDS, _DEFAULT_PRICE_LISTS)
 
