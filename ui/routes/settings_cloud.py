@@ -154,16 +154,36 @@ def _partner_offer(iid: str, lang: str = "en") -> FT:
         children.append(Div(partner_name, cls="cloud-partner-offer__partner"))
 
     amount = offer.get("retail_amount") if offer else None
-    if offer and isinstance(amount, int) and offer.get("display_name"):
+    currency = offer.get("currency") if offer else None
+    # Egress guard: render a priced card only when both amount and currency are
+    # well-formed. A stale cache from a pre-validator binary could still hold a
+    # non-string currency or a bool amount, so re-check here rather than trust
+    # the stored offer, and degrade to the contact line if it fails.
+    priced = (
+        offer
+        and isinstance(amount, int) and not isinstance(amount, bool)
+        and isinstance(currency, str)
+        and offer.get("display_name")
+    )
+    if priced:
         bullets = [b for b in (offer.get("service_bullets") or []) if isinstance(b, str)]
         children.append(_plan_card(
             offer["display_name"],
-            fmt_money(amount / 100, offer.get("currency")),
+            fmt_money(amount / 100, currency),
             offer.get("service_description") or "",
             bullets,
             partner_url,
             cta_label=t("cloud.partner_support", lang),
             lang=lang,
+        ))
+    elif partner_url:
+        # Degraded branch: no usable offer, but a valid partner destination
+        # exists, so give the user a real contact CTA rather than a dead-end
+        # text note (BLOCKER 6).
+        children.append(A(
+            t("cloud.partner_support", lang),
+            href=partner_url, target="_blank",
+            cls="btn btn--primary btn--sm cloud-partner-offer__contact",
         ))
 
     children.append(Div(t("cloud.partner_managed_note", lang), cls="cloud-partner-offer__note"))
