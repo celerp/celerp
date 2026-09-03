@@ -529,6 +529,16 @@ async def get_item(token: str, entity_id: str) -> dict:
         return _raise(await c.get(f"/items/{entity_id}")).json()
 
 
+async def get_items_metadata(token: str, entity_ids: list[str]) -> dict[str, dict]:
+    """Bulk item-metadata read: entity_id -> flattened item dict, one request.
+
+    Returns the same per-item shape get_item returns (minus the sold_price
+    enrichment). Unknown ids are absent from the map. Callers wrap this in their
+    own try/except so a failure degrades to stored line values."""
+    async with _api_client(token) as c:
+        return (_raise(await c.post("/items/metadata", json={"entity_ids": entity_ids})).json()).get("items", {})
+
+
 async def get_reorder_suggestion(token: str, entity_id: str) -> dict:
     """Velocity-based reorder suggestion: {reorder_point, reorder_qty} (sell units),
     values None when there is no outbound history. Read-only display hint."""
