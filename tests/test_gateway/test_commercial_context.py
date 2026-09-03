@@ -362,3 +362,123 @@ def test_schema_version_above_max_rejected_with_upgrade(caplog):
         assert gw_state.set_commercial_context(
             _ctx(version=1, schema_version=2, mode="partner_managed")) is False
     assert "needs updating" in caplog.text
+
+
+# -- config persistence: atomicity and 0600 mode -----------------------------
+
+def test_commercial_context_persist_preserves_0600(client, tmp_path, monkeypatch):
+    """Persisting commercial_context must leave celerp-config.json at mode 0600.
+
+    The secrets file (external_db_url, S3 keys) shares this file, so a write that
+    broadens its mode to group/world exposes them.
+    """
+    import asyncio
+    import stat
+
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    config_path = tmp_path / "celerp-config.json"
+    # An existing 0600 secrets file that a persist must not broaden.
+    config_path.write_text(json.dumps({"external_db_url": "postgresql://x"}))
+    config_path.chmod(0o600)
+
+    asyncio.run(client._persist_commercial_context(_ctx()))
+
+    mode = stat.S_IMODE(config_path.stat().st_mode)
+    assert mode == 0o600, f"config mode broadened to {oct(mode)}"
+    persisted = json.loads(config_path.read_text())
+    assert persisted["commercial_context"]["commercial_mode"] == "partner_managed"
+    assert persisted["external_db_url"] == "postgresql://x"
+
+
+def test_feature_flags_persist_survives_midwrite_failure(client, tmp_path, monkeypatch):
+    """A failure mid-write must leave the prior config intact and valid JSON.
+
+    The prior file (with its secrets) must survive an interrupted write rather
+    than being truncated to an empty or corrupt state.
+    """
+    import asyncio
+
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    config_path = tmp_path / "celerp-config.json"
+    prior = {"external_db_url": "postgresql://x", "feature_flags": {"external_db": False}}
+    config_path.write_text(json.dumps(prior))
+
+    import celerp.gateway.client as gw_client
+
+    def _boom(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(gw_client.json, "dump", _boom)
+    # Persist must swallow the write error (best-effort) and never raise.
+    asyncio.run(client._persist_feature_flags({"external_db": True}))
+
+    # The prior config is untouched and still parseable.
+    reread = json.loads(config_path.read_text())
+    assert reread == prior
+
+
+def test_commercial_context_persist_coerces_non_dict_config(client, tmp_path, monkeypatch):
+    """A valid-but-non-dict top-level config (array/string) is coerced to an
+    object before the merge instead of raising."""
+    import asyncio
+
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    config_path = tmp_path / "celerp-config.json"
+    config_path.write_text(json.dumps(["not", "a", "dict"]))
+
+    asyncio.run(client._persist_commercial_context(_ctx()))
+
+    persisted = json.loads(config_path.read_text())
+    assert isinstance(persisted, dict)
+    assert persisted["commercial_context"]["commercial_mode"] == "partner_managed"
+
+
+# -- the API->UI commercial-state endpoint -----------------------------------
+
+@pytest.mark.asyncio
+async def test_system_commercial_state_endpoint_returns_state(session):
+    """GET /companies/commercial-state returns feature_flags, commercial_context,
+    partner_identity and commercial_mode under manage_integrations."""
+    import secrets
+
+    from httpx import ASGITransport, AsyncClient
+
+    from celerp.db import get_session
+    from celerp.main import app
+    from celerp.services.session_tracker import clear as _clear_tracker
+
+    await _clear_tracker(session)
+    app.dependency_overrides[get_session] = lambda: session
+    app.state.limiter.enabled = False
+    app.state.limiter._storage.reset()
+    token = secrets.token_hex(32)
+    gw_state.set_session_token(token)
+    gw_state.set_feature_flags({"external_db": True, "external_storage": False})
+    assert gw_state.set_commercial_context(_ctx()) is True
+
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            await c.post("/auth/register", json={
+                "company_name": "SeamCo", "email": "owner@example.com",
+                "name": "Owner", "password": "pw",
+            })
+            login = await c.post(
+                "/auth/login",
+                json={"email": "owner@example.com", "password": "pw"},
+                headers={"X-Session-Token": token},
+            )
+            jwt = login.json()["access_token"]
+            r = await c.get(
+                "/companies/commercial-state",
+                headers={"Authorization": f"Bearer {jwt}", "X-Session-Token": token},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["feature_flags"] == {"external_db": True, "external_storage": False}
+        assert body["commercial_context"]["commercial_mode"] == "partner_managed"
+        assert body["commercial_mode"] == "partner_managed"
+        assert body["partner_identity"]["partner_id"] == "partner-1"
+    finally:
+        app.dependency_overrides.clear()
+        gw_state.set_session_token("")
+        gw_state.set_feature_flags({})
