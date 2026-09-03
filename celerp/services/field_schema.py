@@ -171,6 +171,13 @@ def cost_columns(price_lists: list[dict]) -> list[dict]:
 # for that classification, consumed by the inventory search and merge paths.
 NUMERIC_SCHEMA_TYPES: frozenset[str] = frozenset({"number", "money", "rate", "weight"})
 
+# Field keys a company can never hide through a visible_to_roles override. status drives
+# lifecycle membership filtering (sold/archived/draft) that runs BEFORE field visibility
+# in list_items, so a role-restricted status would be a membership oracle: probing
+# ?status=sold against the default view discloses the hidden value. Forcing an empty
+# visible_to_roles keeps that pre-visibility filter safe.
+NON_HIDEABLE_FIELD_KEYS: frozenset[str] = frozenset({"status"})
+
 # Backward-compatible constant: base fields + default price columns
 DEFAULT_ITEM_SCHEMA: list[dict] = _inject_price_columns(_BASE_FIELDS, _DEFAULT_PRICE_LISTS)
 
@@ -227,5 +234,12 @@ async def get_effective_field_schema(
             keys_in_cat = {f["key"] for f in cat_fields}
             merged = [f for f in base_schema if f["key"] not in keys_in_cat]
             merged.extend(cat_fields)
-            return _rehydrate_builtin_metadata(merged)
+            base_schema = merged
+
+    # Non-hideable fields carry an empty visible_to_roles no matter what a stored base or
+    # category override set. Applied at the single exit so both paths are covered.
+    base_schema = [
+        {**f, "visible_to_roles": []} if f["key"] in NON_HIDEABLE_FIELD_KEYS else f
+        for f in base_schema
+    ]
     return _rehydrate_builtin_metadata(base_schema)
