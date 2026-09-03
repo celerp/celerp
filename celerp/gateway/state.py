@@ -8,6 +8,7 @@ and is required for cloud-gated endpoints (/ai/*, /backup/*, /connectors/*).
 """
 from __future__ import annotations
 
+import copy
 import logging
 
 log = logging.getLogger(__name__)
@@ -110,6 +111,12 @@ def set_commercial_context(new: dict) -> bool:
             "this client needs updating. Preserving last-known-good.",
             schema_version, _SUPPORTED_SCHEMA_VERSION)
         return False
+    if schema_version < _SUPPORTED_SCHEMA_VERSION:
+        log.warning(
+            "Commercial context rejected: invalid schema_version %s (below the "
+            "supported %s).",
+            schema_version, _SUPPORTED_SCHEMA_VERSION)
+        return False
     if new.get("commercial_mode") not in _VALID_COMMERCIAL_MODES:
         log.warning("Commercial context rejected: unrecognised commercial_mode.")
         return False
@@ -118,14 +125,14 @@ def set_commercial_context(new: dict) -> bool:
         if value is not None and not isinstance(value, dict):
             log.warning("Commercial context rejected: %s is neither null nor an object.", key)
             return False
-    _commercial_context = dict(new)
+    _commercial_context = copy.deepcopy(new)
     return True
 
 
 def get_commercial_context() -> dict:
     """Return a copy of the current commercial-context model (empty when none
     has been accepted)."""
-    return dict(_commercial_context)
+    return copy.deepcopy(_commercial_context)
 
 
 def get_commercial_mode() -> str:
@@ -138,13 +145,13 @@ def get_partner_identity() -> dict | None:
     """Return a copy of the partner implementation object, or None when the
     install is not partner-managed."""
     implementation = _commercial_context.get("implementation")
-    return dict(implementation) if isinstance(implementation, dict) else None
+    return copy.deepcopy(implementation) if isinstance(implementation, dict) else None
 
 
 def get_offer() -> dict | None:
     """Return a copy of the partner offer object, or None when none is set."""
     offer = _commercial_context.get("offer")
-    return dict(offer) if isinstance(offer, dict) else None
+    return copy.deepcopy(offer) if isinstance(offer, dict) else None
 
 
 def load_commercial_context() -> None:
@@ -158,7 +165,6 @@ def load_commercial_context() -> None:
     """
     import os
     import json
-    global _commercial_context
     data_dir = os.environ.get("CELERP_DATA_DIR", "")
     if not data_dir:
         return
@@ -170,7 +176,7 @@ def load_commercial_context() -> None:
             existing = json.load(f)
         cached = existing.get("commercial_context")
         if isinstance(cached, dict):
-            _commercial_context = dict(cached)
+            set_commercial_context(cached)
     except Exception as exc:
         log.debug("Gateway: commercial-context cache unreadable; using neutral default: %s", exc)
 

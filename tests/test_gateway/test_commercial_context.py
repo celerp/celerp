@@ -222,3 +222,143 @@ async def test_commercial_write_preserves_feature_flags(client, monkeypatch, tmp
     written = json.loads(config_path.read_text())
     assert written["feature_flags"] == {"external_db": True}
     assert written["commercial_context"]["commercial_mode"] == "partner_managed"
+
+
+# -- cache validation (routes the persisted cache through the acceptance gate) --
+
+def _write_cache(tmp_path, cached):
+    """Write a celerp-config.json whose commercial_context is `cached`, so the
+    cache path can be exercised with shapes the persist-on-accept guard would
+    never write itself."""
+    (tmp_path / "celerp-config.json").write_text(
+        json.dumps({"commercial_context": cached}))
+
+
+def test_cache_rejects_unknown_schema_version(monkeypatch, tmp_path):
+    """A cached context with an unsupported schema_version is rejected at load;
+    the neutral default is preserved and no partner is shown."""
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    _write_cache(tmp_path, _ctx(version=1, schema_version=2, mode="partner_managed"))
+    gw_state.load_commercial_context()
+    assert gw_state.get_commercial_context() == {}
+    assert gw_state.get_commercial_mode() == "celerp_direct"
+    assert gw_state.get_partner_identity() is None
+
+
+def test_cache_rejects_invalid_mode(monkeypatch, tmp_path):
+    """A cached context with a commercial_mode outside the enum is rejected at
+    load; the neutral default is preserved."""
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    _write_cache(tmp_path, _ctx(version=1, mode="reseller"))
+    gw_state.load_commercial_context()
+    assert gw_state.get_commercial_context() == {}
+    assert gw_state.get_commercial_mode() == "celerp_direct"
+
+
+def test_cache_rejects_nondict_subobject(monkeypatch, tmp_path):
+    """A cached context whose implementation is neither null nor an object is
+    rejected at load; the neutral default is preserved."""
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    _write_cache(tmp_path, _ctx(version=1, mode="partner_managed", implementation=42))
+    gw_state.load_commercial_context()
+    assert gw_state.get_commercial_context() == {}
+    assert gw_state.get_commercial_mode() == "celerp_direct"
+
+
+def test_cache_rejects_bad_version(monkeypatch, tmp_path):
+    """A cached context missing an integer version is rejected at load; the
+    neutral default is preserved."""
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    cached = _ctx(version=1, mode="partner_managed")
+    del cached["version"]
+    _write_cache(tmp_path, cached)
+    gw_state.load_commercial_context()
+    assert gw_state.get_commercial_context() == {}
+    assert gw_state.get_commercial_mode() == "celerp_direct"
+
+
+def test_cache_accepts_valid_context(monkeypatch, tmp_path):
+    """A well-formed cached context still loads through the gate (positive
+    control: the tightened cache path must not over-reject a genuine cache)."""
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    _write_cache(tmp_path, _ctx(version=4, mode="partner_managed"))
+    gw_state.load_commercial_context()
+    assert gw_state.get_commercial_mode() == "partner_managed"
+    assert gw_state.get_commercial_context()["version"] == 4
+    assert gw_state.get_partner_identity()["display_name"] == "Partner Co"
+
+
+# -- immutability of the held model (deep copy at both boundaries) -----------
+
+def test_get_offer_nested_mutation_isolated():
+    """Mutating a nested list in get_offer()'s result does not change the held
+    model."""
+    assert gw_state.set_commercial_context(_ctx(version=1, mode="partner_managed")) is True
+    gw_state.get_offer()["service_bullets"].append("Injected")
+    assert "Injected" not in gw_state.get_offer()["service_bullets"]
+
+
+def test_get_context_nested_mutation_isolated():
+    """Mutating a nested subobject reached through get_commercial_context() does
+    not leak into the held model."""
+    assert gw_state.set_commercial_context(_ctx(version=1, mode="partner_managed")) is True
+    gw_state.get_commercial_context()["offer"]["service_bullets"].append("Injected")
+    assert "Injected" not in gw_state.get_commercial_context()["offer"]["service_bullets"]
+
+
+def test_get_partner_identity_mutation_isolated():
+    """Mutating a nested value in get_partner_identity()'s result does not leak
+    into the held model."""
+    implementation = {
+        "status": "active",
+        "partner_id": "partner-1",
+        "display_name": "Partner Co",
+        "support_channels": ["email", "phone"],
+    }
+    assert gw_state.set_commercial_context(
+        _ctx(version=1, mode="partner_managed", implementation=implementation)) is True
+    gw_state.get_partner_identity()["support_channels"].append("chat")
+    assert "chat" not in gw_state.get_partner_identity()["support_channels"]
+
+
+def test_store_side_deepcopy_isolated():
+    """Mutating the inbound payload after set_commercial_context accepts it does
+    not change the held model (the store keeps its own deep copy)."""
+    new = _ctx(version=1, mode="partner_managed")
+    assert gw_state.set_commercial_context(new) is True
+    new["offer"]["service_bullets"].append("Injected")
+    assert "Injected" not in gw_state.get_offer()["service_bullets"]
+
+
+# -- schema boundary (only the supported schema is accepted) -----------------
+
+def test_schema_version_zero_rejected():
+    """schema_version 0 is below the supported schema and is rejected."""
+    assert gw_state.set_commercial_context(
+        _ctx(version=1, schema_version=0, mode="partner_managed")) is False
+    assert gw_state.get_commercial_context() == {}
+
+
+def test_schema_version_negative_rejected():
+    """A negative schema_version is rejected."""
+    assert gw_state.set_commercial_context(
+        _ctx(version=1, schema_version=-1, mode="partner_managed")) is False
+    assert gw_state.get_commercial_context() == {}
+
+
+def test_schema_version_one_accepted():
+    """The supported schema_version is accepted (positive control: tightening the
+    gate must not reject the one understood schema)."""
+    assert gw_state.set_commercial_context(
+        _ctx(version=1, schema_version=1, mode="partner_managed")) is True
+    assert gw_state.get_commercial_context()["version"] == 1
+
+
+def test_schema_version_above_max_rejected_with_upgrade(caplog):
+    """A schema_version above the supported max is rejected with the distinct
+    upgrade warning, kept separate from the invalid-schema reject."""
+    import logging
+    with caplog.at_level(logging.WARNING):
+        assert gw_state.set_commercial_context(
+            _ctx(version=1, schema_version=2, mode="partner_managed")) is False
+    assert "needs updating" in caplog.text
