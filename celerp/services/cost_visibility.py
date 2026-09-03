@@ -15,6 +15,11 @@ from celerp.services.auth import ROLE_LEVELS
 
 # Item-dict keys stripped when the caller lacks view_inventory_costs.
 COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
+# Read-side cost companions: derived cost data that a cost-hidden caller must not see
+# either, or the goods cost leaks through a value computed off it. Kept separate from
+# COST_ITEM_KEYS because that set also drives write-path price classification; these are
+# stripped only, never written or validated against.
+COST_DERIVED_ITEM_KEYS: frozenset[str] = frozenset({"cost_base", "cost_landed", "landed_contributions"})
 
 
 def apply_field_visibility(
@@ -62,7 +67,7 @@ def apply_field_visibility(
         if cost_hidden and not (
             can_author_drafts and str(item.get("status") or "").lower() == "draft"
         ):
-            drop |= COST_ITEM_KEYS
+            drop |= COST_ITEM_KEYS | COST_DERIVED_ITEM_KEYS
         if derived_field_deps:
             for derived, sources in derived_field_deps.items():
                 if any(s in drop for s in sources):

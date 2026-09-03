@@ -163,11 +163,17 @@ def _recipe_standard_unit_cost(state: dict) -> float | None:
     return float(unit_cost) if unit_cost is not None else None
 
 
-# qty_each is derived from quantity and pieces, so field-level visibility must treat
-# it as those two: a role denied either source cannot be allowed to recover it from
-# the ratio. The rule lives here (one place) and is handed to apply_field_visibility
-# at every call site; the visibility service itself holds no inventory field names.
-DERIVED_FIELD_DEPS: dict[str, tuple[str, ...]] = {"qty_each": ("quantity", "pieces")}
+# Companion keys whose visibility follows a schema field they mirror, so field-level
+# visibility strips them with their source. qty_each is derived from quantity and
+# pieces (a role denied either source cannot recover it from the ratio); location_id
+# is a non-schema mirror of location_name (a denied role must not recover the location
+# through the id it would resolve via /companies/me/locations). The rule lives here
+# (one place) and is handed to apply_field_visibility at every call site; the
+# visibility service itself holds no inventory field names.
+DERIVED_FIELD_DEPS: dict[str, tuple[str, ...]] = {
+    "qty_each": ("quantity", "pieces"),
+    "location_id": ("location_name",),
+}
 
 
 def flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str, str] | None = None, unit_map: dict[str, dict] | None = None) -> dict:
