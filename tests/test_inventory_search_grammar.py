@@ -8,7 +8,11 @@ and literal SKU/text substrings) is tested here without a database.
 """
 from __future__ import annotations
 
-from celerp_inventory.routes import item_matches_query, query_match_reasons
+from celerp_inventory.routes import (
+    item_matches_query,
+    query_match_reasons,
+    searchable_field_sets,
+)
 
 
 def _item(**overrides) -> dict:
@@ -133,3 +137,292 @@ def test_inventory_search_preserves_user_facing_fields():
         assert item_matches_query(_item(**{field: value}), term), field
     # A dynamic category attribute is not a core key, so it stays searchable too.
     assert query_match_reasons(_item(color="ruby red"), "ruby") == [("color", "ruby")]
+
+
+def test_scoped_text_match_named_attribute():
+    """`field: value` restricts a text match to one named attribute. `stone_type:
+    demantoid` matches a lot whose stone_type attribute reads "Demantoid" and
+    reports that field, not whichever field happens to contain the substring."""
+    lot = _item(name="Green Garnet", sku="GG1", stone_type="Demantoid")
+    assert query_match_reasons(lot, "stone_type: demantoid") == [("stone_type", "demantoid")]
+    # An item whose stone_type does not contain the value is not a hit.
+    assert query_match_reasons(_item(name="Ruby", sku="R1", stone_type="Spinel"),
+                               "stone_type: demantoid") is None
+
+
+def test_scoped_range_on_quantity():
+    """A scoped range restricts the range match to the named field. `qty: 1-2`
+    (alias qty resolves to quantity) matches a lot whose quantity is 1.5 and
+    reports quantity, not another numeric column that also falls in range."""
+    lot = _item(name="Parcel", sku="P1", quantity=1.5, weight=100)
+    assert query_match_reasons(lot, "qty: 1-2") == [("quantity", "1.5")]
+    # A quantity outside the scoped range does not match, even if weight is in range.
+    assert query_match_reasons(_item(name="Big", sku="B1", quantity=9, weight=1.5),
+                               "qty: 1-2") is None
+
+
+def test_scoped_range_dynamic_numeric_attr():
+    """A scoped range works over ANY numeric-coercible field, including a dynamic
+    attribute the unscoped range path never scans, and coerces a numeric string."""
+    numeric = _item(name="Stone", sku="S1", length=6.5)
+    stringy = _item(name="Stone", sku="S2", length="6.5")
+    assert query_match_reasons(numeric, "length: 6-7") == [("length", "6.5")]
+    assert query_match_reasons(stringy, "length: 6-7") == [("length", "6.5")]
+    # A non-coercible stored value simply does not match; no fabricated hit.
+    assert query_match_reasons(_item(name="Stone", sku="S3", length="huge"),
+                               "length: 6-7") is None
+
+
+def test_alias_resolution():
+    """Field aliases resolve to their canonical field: ct -> quantity, pcs ->
+    pieces, ct_each -> qty_each."""
+    lot = _item(name="Parcel", sku="P1", quantity=1.5, pieces=4, qty_each=0.375)
+    assert query_match_reasons(lot, "ct: 1-2") == [("quantity", "1.5")]
+    assert query_match_reasons(lot, "pcs: 1-10") == [("pieces", "4")]
+    assert query_match_reasons(lot, "ct_each: 0-1") == [("qty_each", "0.375")]
+
+
+def test_numeric_exact_scoped_string_enum():
+    """A scoped text term matches a numeric enum attribute stored as a string or a
+    number: `grade: 3` matches a grade attribute of "3"."""
+    as_string = _item(name="Stone", sku="S1", grade="3")
+    as_number = _item(name="Stone", sku="S2", grade=3)
+    assert query_match_reasons(as_string, "grade: 3") == [("grade", "3")]
+    assert query_match_reasons(as_number, "grade: 3") == [("grade", "3")]
+
+
+def test_multiterm_and_qty_each_grade():
+    """A multi-term AND query mixing a plain text term, a scoped per-piece range,
+    and a scoped enum matches a demantoid parcel of 4 stones totalling 6 carats
+    (per-stone 1.5 ct) with grade 3."""
+    parcel = _item(name="Demantoid Parcel", sku="DP1", quantity=6, pieces=4,
+                   qty_each=1.5, stone_type="Demantoid", grade="3")
+    assert item_matches_query(parcel, "demantoid & qty_each: 1-2 & grade: 3")
+    # A parcel whose per-stone measure is out of range fails the AND.
+    dense = _item(name="Demantoid Parcel", sku="DP2", quantity=20, pieces=4,
+                  qty_each=5, stone_type="Demantoid", grade="3")
+    assert not item_matches_query(dense, "demantoid & qty_each: 1-2 & grade: 3")
+
+
+def test_scoped_core_key_excluded():
+    """Guard: a scoped term naming a core/bookkeeping key returns no match, so the
+    scoped path never reopens the #306 exclusion of internal keys from search.
+    Green at merge-base by design (the term is unparsed there and core keys are
+    already unsearchable); it fails only if the searchable-field gate is dropped."""
+    leaky = _item(name="Widget", sku="WDGT", idempotency_key="csv:item:bc:100",
+                  cost_price=1.5)
+    assert query_match_reasons(leaky, "idempotency_key: csv") is None
+    assert query_match_reasons(leaky, "cost_price: 1-2") is None
+
+
+def test_scoped_numeric_exact_no_substring():
+    """A scoped term whose value and the stored value are both numbers matches by
+    numeric EQUALITY, never substring: `qty: 1` does not match quantity 10, and
+    `grade: 3` does not match a grade of "30". The exact value still matches, and a
+    non-numeric enum keeps its substring behaviour."""
+    assert query_match_reasons(_item(name="Bolt", sku="B10", quantity=10), "qty: 1") is None
+    assert query_match_reasons(_item(name="Bolt", sku="B1", quantity=1), "qty: 1") == [("quantity", "1")]
+    assert query_match_reasons(_item(name="Stone", sku="S30", grade="30"), "grade: 3") is None
+    assert query_match_reasons(_item(name="Stone", sku="S3", grade="3"), "grade: 3") == [("grade", "3")]
+    # A non-numeric enum value keeps substring matching (nothing to coerce).
+    assert query_match_reasons(_item(name="P", sku="P1", stone_type="Demantoid"),
+                               "stone_type: deman") == [("stone_type", "deman")]
+
+
+def test_scoped_unknown_prefix_falls_through_to_literal():
+    """An unresolved prefix is not a scope: a field the term names that is neither a
+    known field, an alias, nor a dynamic attribute leaves the whole term a literal
+    text search. A description literally containing `foo:bar` is found by `foo:bar`,
+    while a resolving prefix still scopes."""
+    doc = _item(name="Config", sku="CFG", description="see foo:bar in the notes")
+    assert item_matches_query(doc, "foo:bar")
+    assert query_match_reasons(doc, "foo:bar") == [("description", "foo:bar")]
+    # A resolving prefix still scopes (regression guard).
+    stone = _item(name="Stone", sku="S1", stone_type="Demantoid", quantity=1)
+    assert item_matches_query(stone, "stone_type: demantoid")
+    assert item_matches_query(stone, "qty: 1-2")
+
+
+def test_scoped_textual_identifier_not_numeric_coerced():
+    """Textual identifier fields (sku, barcode, hs_code, batch_no...) are matched as
+    strings, never coerced to numbers, so leading zeros keep their identity. `sku: 001`
+    must not match a stored SKU "1", and `barcode: 00123` must not match "123" - a real
+    hazard for barcodes, where leading zeros are significant. Numeric fields still
+    coerce: `qty: 001` matches quantity 1."""
+    assert query_match_reasons(_item(name="A", sku="1"), "sku: 001") is None
+    assert query_match_reasons(_item(name="B", sku="001"), "sku: 001") == [("sku", "001")]
+    assert query_match_reasons(_item(name="C", sku="X", barcode="123"), "barcode: 00123") is None
+    assert query_match_reasons(_item(name="D", sku="X", barcode="00123"),
+                               "barcode: 00123") == [("barcode", "00123")]
+    # A substring of the same identifier still matches - only numeric coercion is removed.
+    assert query_match_reasons(_item(name="E", sku="SHOT001"), "sku: 001") == [("sku", "001")]
+    # Numeric fields are unaffected: a numeric-looking value still coerces (1 == 001).
+    assert query_match_reasons(_item(name="F", sku="X", quantity=1), "qty: 001") == [("quantity", "001")]
+
+
+def test_scoped_range_core_numeric_field():
+    """A scoped range resolves over a CORE numeric field (schema type `number`),
+    not only the three unscoped range columns. `gross_weight: 1-2` and
+    `reorder_point: 5-10` match by number and tag the named field, because the
+    module-level numeric set folds in every `number`-typed default-schema key.
+    An out-of-range value returns None (failure path)."""
+    gw = _item(name="Bar", sku="BAR1", gross_weight=1.5)
+    assert query_match_reasons(gw, "gross_weight: 1-2") == [("gross_weight", "1.5")]
+    rp = _item(name="Bar", sku="BAR2", reorder_point=7)
+    assert query_match_reasons(rp, "reorder_point: 5-10") == [("reorder_point", "7")]
+    # Out of range: no match, no fabricated hit.
+    assert query_match_reasons(_item(name="Bar", sku="BAR3", gross_weight=9),
+                               "gross_weight: 1-2") is None
+
+
+def test_scoped_qty_each_numeric():
+    """`qty_each` is a synthetic numeric field pinned into the numeric set. A scoped
+    range coerces it as a number. The numeric set is passed explicitly via the new
+    `numeric_fields` parameter; a same-named field placed in `text_fields` instead
+    would NOT coerce (control), proving coercion follows the passed sets, not the
+    field name."""
+    lot = _item(name="Parcel", sku="P1", qty_each=1.5)
+    assert query_match_reasons(lot, "qty_each: 1-2",
+                               numeric_fields={"qty_each"}) == [("qty_each", "1.5")]
+    # Same field, but declared textual: a range does not coerce, so no numeric hit.
+    assert query_match_reasons(_item(name="Parcel", sku="P2", qty_each="1.5"),
+                               "qty_each: 1-2", text_fields={"qty_each"}) is None
+
+
+def test_scoped_textual_category_field_not_coerced():
+    """A text-typed category field must not be numeric-coerced: leading zeros keep
+    their identity. With `certificate_no` declared textual, `certificate_no: 00123`
+    does NOT match a stored "123" but DOES match a stored "00123". A control field
+    left numeric still coerces (001 == 1)."""
+    text = {"certificate_no"}
+    assert query_match_reasons(_item(name="A", sku="A1", certificate_no="123"),
+                               "certificate_no: 00123", text_fields=text) is None
+    assert query_match_reasons(_item(name="B", sku="B1", certificate_no="00123"),
+                               "certificate_no: 00123", text_fields=text) == [("certificate_no", "00123")]
+    # Control: a numeric field still coerces (001 == 1).
+    assert query_match_reasons(_item(name="C", sku="C1", quantity=1),
+                               "qty: 001", numeric_fields={"quantity"}) == [("quantity", "001")]
+
+
+def test_scoped_search_field_identifier_preserved():
+    """Preserve-behavior guard (green at merge-base): the two hardcoded constants
+    still resolve after folding them into the derived sets. `status_doc_number`,
+    `lot`, `unit` (all in `_SEARCH_FIELDS`) resolve and match as text; `weight`
+    (in `_NUMERIC_FIELDS`) still resolves numeric. Fails only if a constant is
+    dropped from the resolve gate."""
+    assert query_match_reasons(_item(name="X", sku="X1", status_doc_number="SO-1042"),
+                               "status_doc_number: so-1042") == [("status_doc_number", "so-1042")]
+    assert query_match_reasons(_item(name="Y", sku="Y1", lot="LOT-77A"),
+                               "lot: lot-77a") == [("lot", "lot-77a")]
+    assert query_match_reasons(_item(name="Z", sku="Z1", unit="kilogram"),
+                               "unit: kilogram") == [("unit", "kilogram")]
+    assert query_match_reasons(_item(name="W", sku="W1", weight=1.5),
+                               "weight: 1-2") == [("weight", "1.5")]
+
+
+def test_searchable_field_sets_classifies_money_and_rate_numeric():
+    """searchable_field_sets treats every numeric-valued schema type as numeric, not
+    only `number`: a custom money field (an appraised_value) and a rate field are
+    range/exact scope-searchable exactly as a number field is. Text stays text, and a
+    price column is scope-searchable in neither set (cost/price keys are excluded)."""
+    schema = [
+        {"key": "appraised_value", "type": "money"},
+        {"key": "markup", "type": "rate"},
+        {"key": "carat_weight", "type": "number"},
+        {"key": "certificate_no", "type": "text"},
+        {"key": "retail_price", "type": "money"},
+    ]
+    numeric, text = searchable_field_sets(schema)
+    # money, rate, and number all classify numeric.
+    assert {"appraised_value", "markup", "carat_weight"} <= numeric
+    # a text field stays text and is not numeric.
+    assert "certificate_no" in text
+    assert "certificate_no" not in numeric
+    # a price column is excluded from both, so it never becomes scope-searchable.
+    assert "retail_price" not in numeric
+    assert "retail_price" not in text
+    # A scoped range over the money field coerces and matches by value...
+    in_money = _item(name="Ring", sku="R1", appraised_value=1500)
+    assert query_match_reasons(in_money, "appraised_value: 1000-2000",
+                               numeric_fields=numeric, text_fields=text) == [
+                                   ("appraised_value", "1500")]
+    # ...and an out-of-range value does not match (failure path, no fabricated hit).
+    assert query_match_reasons(_item(name="Ring", sku="R2", appraised_value=500),
+                               "appraised_value: 1000-2000",
+                               numeric_fields=numeric, text_fields=text) is None
+
+
+# ── INV3: weight is a canonical numeric schema type ───────────────────────────
+
+def _weight_sets():
+    """The searchable field sets for a schema carrying a weight-typed custom field."""
+    schema = [
+        {"key": "net_weight", "type": "weight"},
+        {"key": "certificate_no", "type": "text"},
+        {"key": "grade", "type": "select", "options": ["1", "2", "3"]},
+    ]
+    return searchable_field_sets(schema)
+
+
+def test_searchable_field_sets_weight_numeric():
+    """AC4/AC5: a weight-typed schema key classifies numeric, not text. weight is a
+    documented ItemSchemaField.type; the canonical numeric set must include it so a
+    weight column is range/exact scope-searchable exactly as a number one is. A text
+    field stays text (regression guard against widening the set too far)."""
+    numeric, text = _weight_sets()
+    assert "net_weight" in numeric
+    assert "net_weight" not in text
+    assert "certificate_no" in text
+    assert "certificate_no" not in numeric
+
+
+def test_custom_weight_field_range_and_exact():
+    """AC4: `net_weight: 1-2` matches a weight-typed field whose value is in range, and
+    `net_weight: 2` matches it exactly, coercing to a number rather than substring."""
+    numeric, text = _weight_sets()
+    in_range = _item(name="Stone", sku="S1", net_weight=1.5)
+    assert query_match_reasons(in_range, "net_weight: 1-2",
+                               numeric_fields=numeric, text_fields=text) == [
+                                   ("net_weight", "1.5")]
+    exact = _item(name="Stone", sku="S2", net_weight=2)
+    assert query_match_reasons(exact, "net_weight: 2",
+                               numeric_fields=numeric, text_fields=text) == [
+                                   ("net_weight", "2")]
+
+
+def test_custom_weight_field_mismatch_and_outside_range():
+    """AC4 failure path: a weight-typed field must coerce numerically, so an exact query
+    never substring-matches (`net_weight: 5` does not match 50) and an out-of-range
+    value is excluded. This is what a text classification (the pre-change behavior) got
+    wrong: `5` would substring-match "50"."""
+    numeric, text = _weight_sets()
+    fifty = _item(name="Heavy", sku="H1", net_weight=50)
+    assert query_match_reasons(fifty, "net_weight: 5",
+                               numeric_fields=numeric, text_fields=text) is None
+    assert query_match_reasons(fifty, "net_weight: 1-2",
+                               numeric_fields=numeric, text_fields=text) is None
+
+
+def test_weight_scope_malformed_value():
+    """(b) A malformed weight value yields no match and never an error: numeric coercion
+    is guarded, so `net_weight: abc` fails coercion and falls through to a substring
+    check that also fails. Guards that widening the numeric set to weight keeps the
+    no-match/no-error behavior."""
+    numeric, text = _weight_sets()
+    item = _item(name="Stone", sku="S3", net_weight=1.5)
+    assert query_match_reasons(item, "net_weight: abc",
+                               numeric_fields=numeric, text_fields=text) is None
+
+
+def test_weight_does_not_coerce_text_identifier_fields():
+    """(c) Widening the numeric set to weight must not turn a canonical text identifier
+    numeric. With a schema carrying a weight field, a scoped sku still keeps leading-zero
+    identity (`sku: 001` != stored "1") and a barcode too - only the weight field coerces.
+    Guards that the wider numeric type set does not spill into text identifiers."""
+    numeric, text = _weight_sets()
+    assert query_match_reasons(_item(name="A", sku="1"), "sku: 001",
+                               numeric_fields=numeric, text_fields=text) is None
+    assert query_match_reasons(_item(name="B", sku="001"), "sku: 001",
+                               numeric_fields=numeric, text_fields=text) == [("sku", "001")]
+    assert query_match_reasons(_item(name="C", sku="X", barcode="123"), "barcode: 00123",
+                               numeric_fields=numeric, text_fields=text) is None

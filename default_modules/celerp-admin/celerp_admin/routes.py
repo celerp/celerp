@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.db import get_session
+from celerp.db import get_lifecycle_session_ctx
 from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -846,41 +846,46 @@ async def run_doctor(
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     _: None = require_permission("manage_company_settings"),
-    session: AsyncSession = Depends(get_session),
 ) -> dict:
     check_names = [c.strip() for c in checks.split(",")] if checks else ALL_CHECKS
     invalid = [c for c in check_names if c not in _CHECK_FNS]
     if invalid:
         raise HTTPException(status_code=422, detail=f"Unknown checks: {invalid}")
 
-    results = []
-    for name in check_names:
-        result = await _CHECK_FNS[name](session, company_id, user.id, fix=fix)
-        results.append(result)
+    # Doctor is an admin maintenance operation. On a mature database the integrity
+    # scans, their repairs, and the full projection rebuild routinely exceed the
+    # request-scoped lock and statement timeouts, which would sever the operation
+    # mid-repair. Run the whole thing on the unbounded lifecycle session instead,
+    # the same engine /ledger/rebuild uses.
+    async with get_lifecycle_session_ctx() as session:
+        results = []
+        for name in check_names:
+            result = await _CHECK_FNS[name](session, company_id, user.id, fix=fix)
+            results.append(result)
 
-    if fix:
-        await session.commit()
+        if fix:
+            await session.commit()
 
-    if rebuild and fix:
-        await ProjectionEngine.rebuild(session, company_id=company_id)
-        await session.commit()
+        if rebuild and fix:
+            await ProjectionEngine.rebuild(session, company_id=company_id)
+            await session.commit()
 
-    total_found = sum(r["found"] for r in results)
-    total_fixed = sum(r["fixed"] for r in results)
+        total_found = sum(r["found"] for r in results)
+        total_fixed = sum(r["fixed"] for r in results)
 
-    response: dict = {
-        "mode": "fix" if fix else "dry-run",
-        "checks_run": check_names,
-        "total_found": total_found,
-        "total_fixed": total_fixed,
-        "rebuilt": rebuild and fix,
-        "results": results,
-    }
+        response: dict = {
+            "mode": "fix" if fix else "dry-run",
+            "checks_run": check_names,
+            "total_found": total_found,
+            "total_fixed": total_fixed,
+            "rebuilt": rebuild and fix,
+            "results": results,
+        }
 
-    # Write upgrade report when from_version is provided with fix=true
-    if fix and from_version:
-        report_path = await _write_upgrade_report(results, company_id, from_version, session)
-        response["upgrade_report"] = report_path
+        # Write upgrade report when from_version is provided with fix=true
+        if fix and from_version:
+            report_path = await _write_upgrade_report(results, company_id, from_version, session)
+            response["upgrade_report"] = report_path
 
     return response
 

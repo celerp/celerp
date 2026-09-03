@@ -25,6 +25,20 @@ from test_helpers import (  # noqa: E402
     register_admin as _register_admin,
 )
 
+
+async def _restrict_item_fields(client, admin_h, keys: set[str]) -> None:
+    """Set visible_to_roles on the named item-schema fields so only admin and manager
+    see them, through the same company-settings endpoint an admin uses. Everything
+    else in the schema is written back unchanged."""
+    r = await client.get("/companies/me/item-schema", headers=admin_h)
+    assert r.status_code == 200, r.text
+    fields = r.json()
+    for f in fields:
+        if f["key"] in keys:
+            f["visible_to_roles"] = ["admin", "manager"]
+    pr = await client.patch("/companies/me/item-schema", json={"fields": fields}, headers=admin_h)
+    assert pr.status_code == 200, pr.text
+
 class TestManagerRequiredDocOps:
 
     async def _create_draft_doc(self, client, headers: dict) -> str:
@@ -405,6 +419,339 @@ class TestFieldVisibility:
         r = await client.get(f"/items/{ctx['item_id']}", headers=ctx["manager_h"])
         assert r.status_code == 200
         assert "cost_price" in r.json()
+
+    # ── Derived field: qty_each follows its sources (quantity, pieces) ────────
+
+    async def test_qty_each_hidden_when_quantity_restricted_list(self, client, session):
+        """qty_each is derived from quantity, so a role that cannot see quantity must
+        not see qty_each either - otherwise the hidden quantity is recoverable from the
+        per-piece figure. GET /items strips both for the denied role."""
+        ctx = await _setup(client, session)
+        await _restrict_item_fields(client, ctx["admin_h"], {"quantity"})
+        r = await client.get("/items", headers=ctx["operator_h"])
+        assert r.status_code == 200
+        item = r.json()["items"][0]
+        assert "quantity" not in item
+        assert "qty_each" not in item
+        # The manager, who may see quantity, still sees the derived figure.
+        mr = await client.get("/items", headers=ctx["manager_h"])
+        assert "qty_each" in mr.json()["items"][0]
+
+    async def test_qty_each_hidden_when_quantity_restricted_detail(self, client, session):
+        """The same rule holds on GET /items/{id}: no qty_each for the denied role."""
+        ctx = await _setup(client, session)
+        await _restrict_item_fields(client, ctx["admin_h"], {"quantity"})
+        r = await client.get(f"/items/{ctx['item_id']}", headers=ctx["operator_h"])
+        assert r.status_code == 200
+        body = r.json()
+        assert "quantity" not in body
+        assert "qty_each" not in body
+
+    async def test_qty_each_hidden_when_pieces_restricted(self, client, session):
+        """pieces is the other source. Restricting only pieces still hides qty_each,
+        because the per-piece figure would otherwise leak the hidden piece count;
+        quantity, unrestricted here, stays visible."""
+        ctx = await _setup(client, session)
+        await _restrict_item_fields(client, ctx["admin_h"], {"pieces"})
+        r = await client.get("/items", headers=ctx["operator_h"])
+        assert r.status_code == 200
+        item = r.json()["items"][0]
+        assert "pieces" not in item
+        assert "qty_each" not in item
+        assert "quantity" in item
+
+    async def test_qty_each_visible_when_both_sources_visible(self, client, session):
+        """Regression guard against over-stripping: when neither source is restricted,
+        the operator sees qty_each. Green at merge-base; it fails only if the derived
+        drop is applied unconditionally."""
+        ctx = await _setup(client, session)
+        r = await client.get("/items", headers=ctx["operator_h"])
+        assert r.status_code == 200
+        item = r.json()["items"][0]
+        assert "quantity" in item
+        assert "qty_each" in item
+
+    async def test_hidden_field_not_searchable_no_oracle(self, client, session):
+        """A hidden field must not be searchable: search runs only over fields the role
+        may see, so result membership cannot disclose a hidden value. The item has
+        quantity 5; a denied-quantity operator gets it back for NO quantity query -
+        the true value `qty: 5`, a bare `5`, and a range `qty: 1-10` all return nothing,
+        exactly as a wrong value would, so the operator learns nothing (no oracle). A
+        role that may see quantity still finds and tags it."""
+        ctx = await _setup(client, session)
+        await _restrict_item_fields(client, ctx["admin_h"], {"quantity", "pieces"})
+        for query in ("qty: 5", "5", "qty: 1-10"):
+            r = await client.get("/items", params={"q": query}, headers=ctx["operator_h"])
+            assert r.status_code == 200
+            assert r.json()["items"] == [], f"hidden quantity leaked via {query!r}"
+        # A wrong value returns nothing too - the true value is indistinguishable.
+        wrong = await client.get("/items", params={"q": "qty: 6"}, headers=ctx["operator_h"])
+        assert wrong.json()["items"] == []
+        # The operator can still list the item (without quantity) and search a visible field.
+        by_sku = await client.get("/items", params={"q": "sku-perm"}, headers=ctx["operator_h"])
+        assert len(by_sku.json()["items"]) == 1
+        assert "quantity" not in by_sku.json()["items"][0]
+        # The manager may see quantity, so the search matches and tags it.
+        mr = await client.get("/items", params={"q": "qty: 5"}, headers=ctx["manager_h"])
+        mitems = mr.json()["items"]
+        assert len(mitems) == 1
+        assert "quantity" in {m["field"] for m in mitems[0].get("q_match", [])}
+
+    async def test_hidden_category_attribute_no_oracle(self, client, session):
+        """A category attribute a role may not see must leak through no side channel:
+        not the attribute funnel facets, not an attr.* filter, not a scoped q-search.
+        An operator denied the `origin` attribute (visible_to_roles set on the category
+        schema) gets it absent from attribute_facets, `attr.origin=Kashmir` returns [],
+        and `q=origin: Kashmir` returns []; a manager sees all three."""
+        ctx = await _setup(client, session)
+        # An item in category Gem carrying an origin attribute the operator will be denied.
+        cr = await client.post(
+            "/items",
+            json={"sku": "GEM-1", "name": "Sapphire", "quantity": 2,
+                  "location_id": ctx["location_id"], "sell_by": "piece",
+                  "status": "available", "category": "Gem", "origin": "Kashmir"},
+            headers=ctx["admin_h"],
+        )
+        assert cr.status_code == 200, cr.text
+        # Hide origin from operator via the category schema (admin+manager only).
+        pr = await client.patch(
+            "/companies/me/category-schema/Gem",
+            json={"fields": [{"key": "origin", "label": "Origin", "type": "text",
+                              "visible_to_roles": ["admin", "manager"]}]},
+            headers=ctx["admin_h"],
+        )
+        assert pr.status_code == 200, pr.text
+
+        # Operator: no facet, no attr.* membership, no q-search membership.
+        of = await client.get("/items", headers=ctx["operator_h"])
+        assert of.status_code == 200
+        assert "origin" not in of.json()["attribute_facets"]
+        oa = await client.get("/items", params={"attr.origin": "Kashmir"}, headers=ctx["operator_h"])
+        assert oa.json()["items"] == [], "hidden attribute leaked via attr.* filter"
+        oq = await client.get("/items", params={"q": "origin: Kashmir"}, headers=ctx["operator_h"])
+        assert oq.json()["items"] == [], "hidden attribute leaked via q-search"
+
+        # Manager: sees the facet, the attr.* match, and the q-search match.
+        mf = await client.get("/items", headers=ctx["manager_h"])
+        assert "Kashmir" in mf.json()["attribute_facets"].get("origin", [])
+        ma = await client.get("/items", params={"attr.origin": "Kashmir"}, headers=ctx["manager_h"])
+        assert len(ma.json()["items"]) == 1
+        mq = await client.get("/items", params={"q": "origin: Kashmir"}, headers=ctx["manager_h"])
+        assert len(mq.json()["items"]) == 1
+
+    async def test_low_stock_filter_no_reorder_oracle(self, client, session):
+        """The low_stock filter must not become an oracle over a hidden quantity. An
+        operator denied `quantity` requesting ?filter=low_stock gets hidden-quantity
+        items excluded, identical whatever the true quantity is (no membership oracle);
+        a manager sees the true low-stock set."""
+        ctx = await _setup(client, session)
+        # An item below its reorder point: quantity 1 <= reorder_point 5.
+        cr = await client.post(
+            "/items",
+            json={"sku": "LOW-1", "name": "Low Item", "quantity": 1,
+                  "location_id": ctx["location_id"], "sell_by": "piece",
+                  "status": "available", "reorder_point": 5},
+            headers=ctx["admin_h"],
+        )
+        assert cr.status_code == 200, cr.text
+        await _restrict_item_fields(client, ctx["admin_h"], {"quantity"})
+
+        # Operator cannot see quantity, so a hidden-quantity item is excluded from the
+        # low_stock membership - it cannot be probed for being at/below reorder.
+        ol = await client.get("/items", params={"filter": "low_stock"}, headers=ctx["operator_h"])
+        assert ol.status_code == 200
+        assert all(i.get("sku") != "LOW-1" for i in ol.json()["items"]), \
+            "low_stock leaked membership of a hidden-quantity item"
+        for i in ol.json()["items"]:
+            assert "quantity" not in i
+        # Manager sees quantity, so the true low-stock item is present.
+        ml = await client.get("/items", params={"filter": "low_stock"}, headers=ctx["manager_h"])
+        assert any(i.get("sku") == "LOW-1" for i in ml.json()["items"]), \
+            "manager should see the true low-stock item"
+
+    async def test_hidden_category_inventory_type_filter_no_oracle(self, client, session):
+        """The category and inventory_type column filters must not become oracles over a
+        hidden field. Both are schema fields a role may be denied (visible_to_roles), so the
+        filters run over the visibility-stripped records: a denied operator sees the field
+        absent, the filter never matches its true value, and a query for the true value is
+        indistinguishable from a wrong one (no membership oracle) - the same closure applied
+        to q, attr.*, and low_stock. A role that may see the field filters normally."""
+        ctx = await _setup(client, session)
+        cr = await client.post(
+            "/items",
+            json={"sku": "SECRET-1", "name": "Classified", "quantity": 3,
+                  "location_id": ctx["location_id"], "sell_by": "piece",
+                  "status": "available", "category": "Gem", "inventory_type": "service"},
+            headers=ctx["admin_h"],
+        )
+        assert cr.status_code == 200, cr.text
+        await _restrict_item_fields(client, ctx["admin_h"], {"category", "inventory_type"})
+
+        # Operator: the true value and a wrong value both return nothing - indistinguishable.
+        for param in ({"category": "Gem"}, {"category": "Metal"},
+                      {"inventory_type": "service"}, {"inventory_type": "consumable"}):
+            r = await client.get("/items", params=param, headers=ctx["operator_h"])
+            assert r.status_code == 200
+            assert all(i.get("sku") != "SECRET-1" for i in r.json()["items"]), \
+                f"hidden field leaked membership via {param}"
+        # The operator can still list the item, but sees neither hidden field on it.
+        ol = await client.get("/items", params={"q": "classified"}, headers=ctx["operator_h"])
+        assert len(ol.json()["items"]) == 1
+        assert "category" not in ol.json()["items"][0]
+        assert "inventory_type" not in ol.json()["items"][0]
+        # The manager may see both, so each true-value filter returns the item.
+        mc = await client.get("/items", params={"category": "Gem"}, headers=ctx["manager_h"])
+        assert any(i.get("sku") == "SECRET-1" for i in mc.json()["items"])
+        mi = await client.get("/items", params={"inventory_type": "service"}, headers=ctx["manager_h"])
+        assert any(i.get("sku") == "SECRET-1" for i in mi.json()["items"])
+
+    async def test_visible_numeric_attribute_keeps_facet(self, client, session):
+        """A visible numeric category attribute must keep its column-filter funnel. `length`
+        is a `number`-typed category attribute, so it folds into the per-item numeric set -
+        but it is a category attribute, not a continuous per-item measure (quantity, weight,
+        pieces, qty_each), so it must still appear in attribute_facets. A role that may see it
+        gets `length` faceted with its value; excluding it (as the numeric set once did)
+        would strip a real funnel."""
+        ctx = await _setup(client, session)
+        pr = await client.patch(
+            "/companies/me/category-schema/Gem",
+            json={"fields": [{"key": "length", "label": "Length", "type": "number",
+                              "visible_to_roles": []}]},
+            headers=ctx["admin_h"],
+        )
+        assert pr.status_code == 200, pr.text
+        cr = await client.post(
+            "/items",
+            json={"sku": "LEN-1", "name": "Rod", "quantity": 2,
+                  "location_id": ctx["location_id"], "sell_by": "piece",
+                  "status": "available", "category": "Gem", "length": 6.5},
+            headers=ctx["admin_h"],
+        )
+        assert cr.status_code == 200, cr.text
+        for h in (ctx["operator_h"], ctx["manager_h"]):
+            r = await client.get("/items", headers=h)
+            assert r.status_code == 200
+            facets = r.json()["attribute_facets"]
+            assert "length" in facets, "visible numeric category attribute lost its facet"
+            assert "6.5" in facets["length"]
+
+    # ── INV1: location_id follows its schema field location_name ──────────────
+
+    async def test_location_denied_no_companion_oracle(self, client, session):
+        """A role denied location_name must not recover the location through the
+        synthetic location_id companion key. The denied operator still gets the item
+        (no membership oracle) but with both location_name and location_id absent, so a
+        ?location_id=<id> probe returns nothing - indistinguishable from a wrong id. A
+        role that may see location keeps both and filters normally."""
+        ctx = await _setup(client, session)
+        loc_id = ctx["location_id"]
+        await _restrict_item_fields(client, ctx["admin_h"], {"location_name"})
+
+        op = await client.get("/items", headers=ctx["operator_h"])
+        assert op.status_code == 200
+        items = op.json()["items"]
+        assert len(items) >= 1
+        for it in items:
+            assert "location_name" not in it
+            assert "location_id" not in it
+        # The location_id filter cannot confirm the hidden location: true id and a wrong
+        # id both return nothing for the denied role.
+        for probe in (loc_id, "does-not-exist"):
+            r = await client.get("/items", params={"location_id": probe}, headers=ctx["operator_h"])
+            assert r.status_code == 200
+            assert r.json()["items"] == [], f"location leaked via location_id probe {probe!r}"
+
+        # The manager keeps location_name and location_id and filters normally.
+        mg = await client.get("/items", headers=ctx["manager_h"])
+        mitem = mg.json()["items"][0]
+        assert mitem["location_id"] == loc_id
+        mf = await client.get("/items", params={"location_id": loc_id}, headers=ctx["manager_h"])
+        assert len(mf.json()["items"]) >= 1
+
+    # ── INV2: inventory_type is not re-defaulted after the visibility strip ───
+
+    async def test_inventory_type_hidden_not_defaulted(self, client, session):
+        """A hidden `service` item must not be reconstructed as the `stocked` default
+        after its key is stripped. The denied operator sees the item (no membership
+        oracle) with inventory_type absent, so ?inventory_type=stocked does NOT return
+        it - the pre-change filter's `or "stocked"` reconstruction is exactly the leak
+        this closes. A role that may see inventory_type filters normally."""
+        ctx = await _setup(client, session)
+        cr = await client.post(
+            "/items",
+            json={"sku": "SVC-1", "name": "Service Item", "quantity": 1,
+                  "location_id": ctx["location_id"], "sell_by": "piece",
+                  "status": "available", "inventory_type": "service"},
+            headers=ctx["admin_h"],
+        )
+        assert cr.status_code == 200, cr.text
+        await _restrict_item_fields(client, ctx["admin_h"], {"inventory_type"})
+
+        # Operator sees the item listed but with inventory_type absent...
+        listed = await client.get("/items", params={"q": "service item"}, headers=ctx["operator_h"])
+        assert listed.status_code == 200
+        assert len(listed.json()["items"]) == 1
+        assert "inventory_type" not in listed.json()["items"][0]
+        # ...and it is not reconstructed as stocked: the stocked filter excludes it.
+        st = await client.get("/items", params={"inventory_type": "stocked"}, headers=ctx["operator_h"])
+        assert st.status_code == 200
+        assert all(i.get("sku") != "SVC-1" for i in st.json()["items"]), \
+            "hidden service item leaked into the stocked filter via the default"
+        # A probe for its true type is equally empty (no oracle).
+        sv = await client.get("/items", params={"inventory_type": "service"}, headers=ctx["operator_h"])
+        assert all(i.get("sku") != "SVC-1" for i in sv.json()["items"])
+
+        # The manager filters service normally.
+        msv = await client.get("/items", params={"inventory_type": "service"}, headers=ctx["manager_h"])
+        assert any(i.get("sku") == "SVC-1" for i in msv.json()["items"])
+
+    async def test_inventory_type_visible_filters_normally(self, client, session):
+        """Regression guard: with inventory_type visible, a `service` item is returned
+        by ?inventory_type=service and excluded by ?inventory_type=stocked, and a
+        `stocked` item by the reverse - the membership guard must not over-exclude
+        visible items."""
+        ctx = await _setup(client, session)
+        cr = await client.post(
+            "/items",
+            json={"sku": "SVC-2", "name": "Visible Service", "quantity": 1,
+                  "location_id": ctx["location_id"], "sell_by": "piece",
+                  "status": "available", "inventory_type": "service"},
+            headers=ctx["admin_h"],
+        )
+        assert cr.status_code == 200, cr.text
+        svc = await client.get("/items", params={"inventory_type": "service"}, headers=ctx["admin_h"])
+        assert any(i.get("sku") == "SVC-2" for i in svc.json()["items"])
+        stk = await client.get("/items", params={"inventory_type": "stocked"}, headers=ctx["admin_h"])
+        assert all(i.get("sku") != "SVC-2" for i in stk.json()["items"])
+        # The default-typed setup item (created without inventory_type) is stocked.
+        assert any(i.get("sku") == "SKU-PERM" for i in stk.json()["items"])
+
+    async def test_inventory_type_missing_key_visible_role_still_matches(self, client, session):
+        """Regression teeth for the read-side default (INV2 step 1): a LEGACY projection
+        materialized before the projection-time inventory_type default genuinely lacks
+        the key. A role that may see inventory_type must still match it under
+        ?inventory_type=stocked - the read-side default applied before the strip supplies
+        the allowed-side value. A bare membership guard without the read-side default
+        would silently drop this visible legacy item."""
+        from celerp.models.projections import Projection
+        from sqlalchemy import select as _select
+
+        ctx = await _setup(client, session)
+        # Simulate a legacy projection: strip inventory_type from the setup item's state.
+        row = (await session.execute(
+            _select(Projection).where(Projection.entity_id == ctx["item_id"])
+        )).scalar_one()
+        new_state = dict(row.state)
+        new_state.pop("inventory_type", None)
+        row.state = new_state
+        await session.flush()
+        assert "inventory_type" not in row.state
+
+        # A visible role still matches the legacy item under the stocked filter.
+        r = await client.get("/items", params={"inventory_type": "stocked"}, headers=ctx["admin_h"])
+        assert r.status_code == 200
+        assert any(i.get("sku") == "SKU-PERM" for i in r.json()["items"]), \
+            "legacy item lacking inventory_type dropped from the stocked filter"
 
 
 # ── Write-path: cost_price field write guard ──────────────────────────────────
