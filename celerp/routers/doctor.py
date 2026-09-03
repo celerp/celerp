@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.db import get_session
+from celerp.db import get_lifecycle_session_ctx, get_session
 from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -848,8 +848,13 @@ async def run_doctor(
         await session.commit()
 
     if rebuild and fix:
-        await ProjectionEngine.rebuild(session, company_id=company_id)
-        await session.commit()
+        # The fixes above are already committed, so a fresh lifecycle session
+        # sees them. Run the rebuild there: replaying the whole ledger can
+        # exceed the request statement_timeout on a mature database, and a
+        # cancelled rebuild would leave projections half-built.
+        async with get_lifecycle_session_ctx() as _rebuild_sess:
+            await ProjectionEngine.rebuild(_rebuild_sess, company_id=company_id)
+            await _rebuild_sess.commit()
 
     total_found = sum(r["found"] for r in results)
     total_fixed = sum(r["fixed"] for r in results)

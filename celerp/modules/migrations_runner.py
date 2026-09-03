@@ -29,7 +29,7 @@ import sqlalchemy as sa
 from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
 
-from celerp.db import _MIGRATION_LOCK_KEY, mask_db_credentials
+from celerp.db import _MIGRATION_LOCK_KEY, lifecycle_timeouts_disabled, mask_db_credentials
 from celerp.modules import loader
 
 # A prefix is well-formed when it is a non-empty string of at least this length
@@ -197,36 +197,40 @@ async def run_migration_phase(engine, enabled):
     lock_conn = await engine.connect()
     lock_conn = await lock_conn.execution_options(isolation_level="AUTOCOMMIT")
     try:
-        await lock_conn.execute(
-            sa.text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY}
-        )
-        try:
-            for name in sorted(enabled):
-                module_path = loader.resolve_module_path(name)
-                if module_path is None:
-                    continue
-                manifest = loader.read_manifest(module_path)
-                migrations_pkg = manifest.get("migrations")
-                if not migrations_pkg:
-                    continue
-                table_prefix = manifest.get("table_prefix") or ""
-                try:
-                    async with engine.begin() as conn:
-                        await conn.run_sync(
-                            run_module_migrations, name, module_path,
-                            migrations_pkg, table_prefix,
-                        )
-                except Exception as exc:
-                    if loader.is_first_party(module_path):
-                        raise
-                    held_errors[name] = mask_db_credentials(
-                        f"Migration failed: {type(exc).__name__}: {exc}"
-                    )
-                    surviving.discard(name)
-        finally:
+        # The advisory-lock wait blocks until any other worker's phase finishes;
+        # the request statement_timeout would cancel that wait and abort the boot,
+        # so clear it on this connection for the whole locked section.
+        async with lifecycle_timeouts_disabled(lock_conn):
             await lock_conn.execute(
-                sa.text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
+                sa.text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY}
             )
+            try:
+                for name in sorted(enabled):
+                    module_path = loader.resolve_module_path(name)
+                    if module_path is None:
+                        continue
+                    manifest = loader.read_manifest(module_path)
+                    migrations_pkg = manifest.get("migrations")
+                    if not migrations_pkg:
+                        continue
+                    table_prefix = manifest.get("table_prefix") or ""
+                    try:
+                        async with engine.begin() as conn:
+                            await conn.run_sync(
+                                run_module_migrations, name, module_path,
+                                migrations_pkg, table_prefix,
+                            )
+                    except Exception as exc:
+                        if loader.is_first_party(module_path):
+                            raise
+                        held_errors[name] = mask_db_credentials(
+                            f"Migration failed: {type(exc).__name__}: {exc}"
+                        )
+                        surviving.discard(name)
+            finally:
+                await lock_conn.execute(
+                    sa.text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
+                )
     finally:
         await lock_conn.close()
     return surviving, held_errors
