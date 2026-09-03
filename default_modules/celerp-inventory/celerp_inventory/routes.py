@@ -1206,12 +1206,14 @@ def duplicate_barcode_detail(code: str) -> str:
 
 
 # Statuses whose items are retained for history but are no longer a current physical
-# lot, so they must not participate in operational barcode ambiguity. A `merged`
-# source keeps its original barcode (item.source_deactivated sets status only), so an
-# unfiltered barcode index counts it as a live candidate and falsely trips
-# `duplicate_barcode`. Scope is `merged` ONLY: reserved/memo_out/sold/archived/expired
-# must still resolve by barcode. Barcode-candidate step only; SKU matching is untouched.
-_BARCODE_EXCLUDED_STATUSES = frozenset({"merged"})
+# lot, so they must not participate in operational resolution. A `merged` source keeps
+# its original barcode AND sku (item.source_deactivated sets status only), so an
+# unfiltered candidate set counts it as live: by barcode it falsely trips
+# `duplicate_barcode`, and by sku (a numeric sku may equal a barcode) it re-enters
+# resolution through the fallback. Scope is `merged` ONLY: reserved/memo_out/sold/
+# archived/expired must still resolve. Applied to BOTH the barcode and sku candidate
+# sets, in both resolvers.
+_RESOLVE_EXCLUDED_STATUSES = frozenset({"merged"})
 
 
 async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> ResolveResult:
@@ -1234,11 +1236,15 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
     barcode_matches = [
         r for r in rows
         if str((r.state or {}).get("barcode") or "") == code
-        and str((r.state or {}).get("status") or "").lower() not in _BARCODE_EXCLUDED_STATUSES
+        and str((r.state or {}).get("status") or "").lower() not in _RESOLVE_EXCLUDED_STATUSES
     ]
     if barcode_matches:
         return ResolveResult("barcode", barcode_matches)
-    sku_matches = [r for r in rows if str((r.state or {}).get("sku") or "") == code]
+    sku_matches = [
+        r for r in rows
+        if str((r.state or {}).get("sku") or "") == code
+        and str((r.state or {}).get("status") or "").lower() not in _RESOLVE_EXCLUDED_STATUSES
+    ]
     if sku_matches:
         return ResolveResult("sku", sku_matches)
     return ResolveResult("none", [])
@@ -1265,9 +1271,11 @@ async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> di
     by_sku: dict[str, list] = {}
     for r in rows:
         st = r.state or {}
+        if str(st.get("status") or "").lower() in _RESOLVE_EXCLUDED_STATUSES:
+            continue
         bc = str(st.get("barcode") or "")
         sku = str(st.get("sku") or "")
-        if bc and str(st.get("status") or "").lower() not in _BARCODE_EXCLUDED_STATUSES:
+        if bc:
             by_barcode.setdefault(bc, []).append(r)
         if sku:
             by_sku.setdefault(sku, []).append(r)

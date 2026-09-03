@@ -167,3 +167,91 @@ async def test_resolve_two_live_barcodes_still_duplicate(session):
     assert res.kind == "barcode"
     assert res.duplicate_barcode is True
     assert res.one is None                     # never silently picks one live lot
+
+
+@pytest.mark.asyncio
+async def test_resolve_sku_excludes_merged_source_when_code_equals_barcode(session):
+    """A `merged` source whose sku equals its barcode (a numeric sku is legal) must not re-enter
+    resolution through the sku fallback: excluded from the barcode candidate set, it is also
+    excluded from the sku candidate set, so the code resolves to nothing. The merged source is the
+    sole owner of the barcode, so no legacy duplicate-barcode state is needed."""
+    cid = await _seed(session, "MergedSkuEqBarcodeCo")
+    await _emit(session, cid, "item:src", {"sku": "700700", "name": "Src", "quantity": 0, "barcode": "700700"})
+    await _deactivate(session, cid, "item:src", "item:gone")
+    await ProjectionEngine.rebuild(session)
+
+    res = await resolve_item_by_code(session, cid, "700700")
+    assert res.kind == "none"
+    assert res.one is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_sku_merged_and_live_share_sku_selects_live(session):
+    """A `merged` source whose barcode equals a sku shared with a LIVE lot must not create a false
+    sku ambiguity: the merged row is excluded from sku matching, so the scan resolves to the single
+    live lot. Live and merged own different barcodes, so no legacy duplicate-barcode state is
+    needed."""
+    cid = await _seed(session, "MergedLiveShareSkuCo")
+    await _emit(session, cid, "item:live", {"sku": "700701", "name": "Live", "quantity": 5, "barcode": "700801"})
+    await _emit(session, cid, "item:src", {"sku": "700701", "name": "Src", "quantity": 0, "barcode": "700701"})
+    await _deactivate(session, cid, "item:src", "item:live")
+    await ProjectionEngine.rebuild(session)
+
+    res = await resolve_item_by_code(session, cid, "700701")
+    assert res.kind == "sku"
+    assert not res.ambiguous
+    assert res.one is not None and res.one.entity_id == "item:live"
+
+
+@pytest.mark.asyncio
+async def test_resolve_batch_sku_excludes_merged_source_when_code_equals_barcode(session):
+    """Batch form of the sku==barcode merged-exclusion: the merged source resolves to nothing."""
+    from celerp_inventory.routes import resolve_items_by_codes
+
+    cid = await _seed(session, "BatchMergedSkuEqBarcodeCo")
+    await _emit(session, cid, "item:src", {"sku": "700702", "name": "Src", "quantity": 0, "barcode": "700702"})
+    await _deactivate(session, cid, "item:src", "item:gone")
+    await ProjectionEngine.rebuild(session)
+
+    out = await resolve_items_by_codes(session, cid, ["700702"])
+    res = out["700702"]
+    assert res.kind == "none"
+    assert res.one is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_batch_sku_merged_and_live_share_sku_selects_live(session):
+    """Batch form of the merged+live shared-sku case: resolves to the single live lot, no false
+    ambiguity."""
+    from celerp_inventory.routes import resolve_items_by_codes
+
+    cid = await _seed(session, "BatchMergedLiveShareSkuCo")
+    await _emit(session, cid, "item:live", {"sku": "700703", "name": "Live", "quantity": 5, "barcode": "700803"})
+    await _emit(session, cid, "item:src", {"sku": "700703", "name": "Src", "quantity": 0, "barcode": "700703"})
+    await _deactivate(session, cid, "item:src", "item:live")
+    await ProjectionEngine.rebuild(session)
+
+    out = await resolve_items_by_codes(session, cid, ["700703"])
+    res = out["700703"]
+    assert res.kind == "sku"
+    assert not res.ambiguous
+    assert res.one is not None and res.one.entity_id == "item:live"
+
+
+@pytest.mark.asyncio
+async def test_resolve_sku_two_live_plus_merged_excludes_only_merged(session):
+    """The merged exclusion removes ONLY merged rows: two LIVE lots plus a merged source all sharing
+    a sku still resolve to a genuine ambiguity over exactly the two live lots (guarding against
+    over-filtering the live candidates). Each lot owns a distinct barcode, so no legacy
+    duplicate-barcode state is needed."""
+    cid = await _seed(session, "TwoLivePlusMergedCo")
+    await _emit(session, cid, "item:a", {"sku": "SHARED", "name": "A", "quantity": 1, "barcode": "700901"})
+    await _emit(session, cid, "item:b", {"sku": "SHARED", "name": "B", "quantity": 1, "barcode": "700902"})
+    await _emit(session, cid, "item:src", {"sku": "SHARED", "name": "Src", "quantity": 0, "barcode": "700903"})
+    await _deactivate(session, cid, "item:src", "item:a")
+    await ProjectionEngine.rebuild(session)
+
+    res = await resolve_item_by_code(session, cid, "SHARED")
+    assert res.kind == "sku"
+    assert res.ambiguous
+    assert {r.entity_id for r in res.matches} == {"item:a", "item:b"}

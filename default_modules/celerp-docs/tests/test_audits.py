@@ -776,3 +776,40 @@ async def test_scan_list_never_two_lines_same_item_id(client):
     ids = [l["item_id"] for l in (await _state(client, t, q))["line_items"]]
     assert len(ids) == len(set(ids))               # no duplicate item_id
     assert len(ids) == 2                           # exactly the two distinct lots
+
+
+@pytest.mark.asyncio
+async def test_scan_list_excludes_merged_sku_fallback(client, session):
+    """Defect (sku fallback) end to end: a historical `merged` source whose sku equals its barcode
+    must not re-enter resolution through the sku candidate set on the batch list surface. The merged
+    source is the SOLE owner of the barcode, so the partial unique index is satisfied and no index
+    drop is needed; the legacy shape is reproduced by injecting the source's events directly. Scanning
+    the code adds nothing and reports it as unknown - the merged lot is not resurrected."""
+    import uuid as _uuid
+    from sqlalchemy import select
+    from celerp.events.engine import emit_event
+    from celerp.models.company import Company
+    from celerp.projections.engine import ProjectionEngine
+
+    t = await _register(client)
+    cid = (await session.execute(select(Company))).scalars().first().id
+    await emit_event(
+        session, company_id=cid, entity_id="item:merged-src", entity_type="item",
+        event_type="item.created",
+        data={"sku": "700700", "name": "Src lot", "quantity": 0, "barcode": "700700", "sell_by": "piece"},
+        actor_id=None, location_id=None, source="test", idempotency_key=str(_uuid.uuid4()), metadata_={},
+    )
+    await emit_event(
+        session, company_id=cid, entity_id="item:merged-src", entity_type="item",
+        event_type="item.source_deactivated", data={"merged_into": "item:gone"},
+        actor_id=None, location_id=None, source="test", idempotency_key=str(_uuid.uuid4()), metadata_={},
+    )
+    await ProjectionEngine.rebuild(session)
+
+    q = await _quotation(client, t)
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": "700700"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["scanned"] == 0                       # the merged source is not resolved via sku
+    assert [f["reason"] for f in body["failed"]] == ["unknown_code"]
+    assert (await _state(client, t, q)).get("line_items") in (None, [])
