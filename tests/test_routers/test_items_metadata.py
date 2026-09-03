@@ -183,3 +183,49 @@ async def test_items_metadata_requires_auth(client):
     """An unauthenticated request is rejected by the router-level auth dependency."""
     r = await client.post("/items/metadata", json={"entity_ids": ["item:x"]})
     assert r.status_code == 401, r.text
+
+
+@pytest.mark.asyncio
+async def test_items_metadata_returns_only_item_projections(client, session):
+    """The endpoint returns item projections only. Journal-entry, document, and
+    contact projections share the (company_id, entity_id) table and carry
+    predictable ids (e.g. je:auto:{doc}:fin), so a caller lacking financial
+    permissions could otherwise name one and read accounting state. The query is
+    scoped to entity_type == 'item', so a non-item id is simply absent."""
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from celerp.models.company import Company
+    from celerp.models.projections import Projection
+
+    h, loc = await _admin_ctx(client)
+    item_id = await create_item(client, h, loc, sku="SEC-1")
+
+    company_id = (await session.execute(select(Company))).scalars().first().id
+    now = datetime.now(timezone.utc)
+    je_id = "je:auto:doc-abc:fin:5000|rcv"
+    doc_id = "doc:secret-invoice"
+    contact_id = "contact:supplier-1"
+    for eid, etype, state in [
+        (je_id, "je", {"debit_account": "1200", "credit_account": "4000", "amount_cents": 5000}),
+        (doc_id, "doc", {"doc_type": "invoice", "status": "issued", "total": 999.0}),
+        (contact_id, "contact", {"name": "Confidential Supplier"}),
+    ]:
+        session.add(Projection(company_id=company_id, entity_id=eid, entity_type=etype,
+                               state=state, version=1, updated_at=now))
+    await session.commit()
+
+    r = await client.post("/items/metadata",
+                          json={"entity_ids": [item_id, je_id, doc_id, contact_id]}, headers=h)
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    leaked = set(items) - {item_id}
+    assert leaked == set(), f"non-item projections leaked through /items/metadata: {leaked}"
+
+    # The pre-existing single-item GET must refuse a non-item id the same way,
+    # never flattening a journal entry or document into an item response.
+    assert (await client.get(f"/items/{je_id}", headers=h)).status_code == 404
+    assert (await client.get(f"/items/{doc_id}", headers=h)).status_code == 404
+    assert (await client.get(f"/items/{item_id}", headers=h)).status_code == 200
+    # The sibling item-only read (reorder suggestion) refuses a non-item id too.
+    assert (await client.get(f"/items/{je_id}/reorder-suggestion", headers=h)).status_code == 404
+    assert (await client.get(f"/items/{item_id}/reorder-suggestion", headers=h)).status_code == 200

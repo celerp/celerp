@@ -1150,6 +1150,7 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
+            Projection.entity_type == "item",
             Projection.entity_id.in_(ids),
         )
     )).scalars().all()
@@ -1208,7 +1209,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     from celerp.models.company import Location
     from celerp.services.field_schema import get_effective_field_schema
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
+    if row is None or row.entity_type != "item":
         raise HTTPException(status_code=404, detail="Not found")
     loc_name: str | None = None
     if row.location_id:
@@ -1247,7 +1248,7 @@ async def get_reorder_suggestion(entity_id: str, company_id=Depends(get_current_
     """
     from celerp.services.reorder import suggest_reorder
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
+    if row is None or row.entity_type != "item":
         raise HTTPException(status_code=404, detail="Not found")
     return await suggest_reorder(session, company_id, entity_id)
 
