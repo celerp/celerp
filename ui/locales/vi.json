@@ -1786,6 +1786,8 @@
   "shell.search_help_and": "là \"VÀ\":",
   "shell.search_help_and_result": "tìm các hàng khớp với cả hai.",
   "shell.search_help_range": "là khoảng số: khớp với số lượng, trọng lượng hoặc số chiếc nằm trong khoảng từ 5 đến 10.\nVí dụ về",
+  "shell.search_help_scoped": "giới hạn một từ khóa vào một trường: chỉ khớp với trường đó. Các tên tắt qty, ct và carat nghĩa là số lượng, pcs nghĩa là số chiếc, còn ct_each hoặc per_pc nghĩa là số đo trên mỗi viên.",
+  "shell.search_help_scoped_range": "giới hạn một khoảng vào một trường: khớp khi trường đó nằm giữa hai con số, trên bất kỳ trường hoặc thuộc tính số nào.",
   "shell.search_help_example_label": "Ví dụ:",
   "shell.search_help_example_result": "tìm các bu-lông có giá trị số lượng, trọng lượng hoặc số mảnh nằm trong khoảng từ 5 đến 10.",
   "dashboard.stock_value": "Giá trị hàng tồn kho",

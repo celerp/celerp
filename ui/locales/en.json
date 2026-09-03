@@ -1889,6 +1889,8 @@
   "shell.search_help_and": "is AND:",
   "shell.search_help_and_result": "finds rows matching both.",
   "shell.search_help_range": "is a numeric range: matches any of quantity, weight or pieces between 5 and 10.",
+  "shell.search_help_scoped": "scopes a term to one field: matches only that field. Aliases qty, ct and carat mean quantity, pcs means pieces, and ct_each or per_pc mean the per piece measure.",
+  "shell.search_help_scoped_range": "scopes a range to one field: matches when that field falls between the two numbers, over any numeric field or attribute.",
   "shell.search_help_example_label": "Example:",
   "shell.search_help_example_result": "finds bolts whose quantity, weight or pieces value is from 5 to 10.",
   "dashboard.stock_value": "Stock Value",

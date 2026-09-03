@@ -33,6 +33,24 @@ def test_global_search_tooltip_present(page, ui_server, seeded_user):
     panel.wait_for(state="hidden", timeout=3000)
 
 
+def test_inventory_page_search_scoped_example(page, ui_server, seeded_user):
+    """The rendered help panel documents the field-scoped syntax with a per-piece
+    worked example (the ct_each alias), so a first-time user sees how to scope a
+    field before typing.
+
+    Red at merge-base: the panel shows only the plain, OR, AND, and range rows,
+    with no scoped example, so the ct_each text never appears.
+    """
+    page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
+
+    help_btn = page.wait_for_selector(".page-search-wrap .global-search-help", timeout=5000)
+    panel = page.locator("#page-search-help-panel")
+
+    help_btn.click()
+    panel.wait_for(state="visible", timeout=3000)
+    assert "ct_each" in panel.inner_text()
+
+
 def test_inventory_page_search_tooltip_present(page, ui_server, seeded_user):
     """The in-page inventory search box carries its own (?) affordance with the
     same syntax panel, alongside the global bar's instance.

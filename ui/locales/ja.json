@@ -1786,6 +1786,8 @@
   "shell.search_help_and": "「AND」は：",
   "shell.search_help_and_result": "両方に一致する行を検索します。",
   "shell.search_help_range": "は数値範囲です：数量、重量、または個数が 5 から 10 のいずれかに一致します。",
+  "shell.search_help_scoped": "検索語を一つの項目に絞り込みます：その項目のみに一致します。別名 qty、ct、carat は数量を、pcs は個数を、ct_each または per_pc は一個あたりの値を意味します。",
+  "shell.search_help_scoped_range": "範囲を一つの項目に絞り込みます：その項目が二つの数値の間にあるときに一致し、任意の数値項目または属性に対して機能します。",
   "shell.search_help_example_label": "例：",
   "shell.search_help_example_result": "は、数量、重量、または個数の値が 5 から 10 のボルトを検索します。",
   "dashboard.stock_value": "在庫評価額",

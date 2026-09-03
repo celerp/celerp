@@ -1787,6 +1787,8 @@
   "shell.search_help_and": "ist „UND“:",
   "shell.search_help_and_result": "findet Zeilen, die beiden Kriterien entsprechen.",
   "shell.search_help_range": "ist ein Zahlenbereich: findet alle Werte für Menge, Gewicht oder Stückzahl zwischen 5 und 10.\nBeispiel für",
+  "shell.search_help_scoped": "grenzt einen Begriff auf ein Feld ein: findet nur dieses Feld. Die Kürzel qty, ct und carat bedeuten Menge, pcs bedeutet Stückzahl, und ct_each oder per_pc bedeuten das Maß je Stück.",
+  "shell.search_help_scoped_range": "grenzt einen Bereich auf ein Feld ein: findet Treffer, wenn dieses Feld zwischen den beiden Zahlen liegt, über jedes numerische Feld oder Attribut.",
   "shell.search_help_example_label": "Beispiel:",
   "shell.search_help_example_result": "findet Schrauben, deren Wert für Menge, Gewicht oder Stückzahl zwischen 5 und 10 liegt.",
   "dashboard.stock_value": "Bestandswert",

@@ -1786,6 +1786,8 @@
   "shell.search_help_and": "es «Y»:",
   "shell.search_help_and_result": "busca filas que coincidan con ambos.",
   "shell.search_help_range": "es un rango numérico: coincide con cualquier valor de cantidad, peso o unidades comprendido entre 5 y 10.\nEjemplo de",
+  "shell.search_help_scoped": "limita un término a un campo: solo coincide con ese campo. Los alias qty, ct y carat significan cantidad, pcs significa unidades, y ct_each o per_pc significan la medida por pieza.",
+  "shell.search_help_scoped_range": "limita un rango a un campo: coincide cuando ese campo queda entre los dos números, sobre cualquier campo o atributo numérico.",
   "shell.search_help_example_label": "Ejemplo:",
   "shell.search_help_example_result": "busca pernos cuyo valor de cantidad, peso o unidades esté comprendido entre 5 y 10.",
   "dashboard.stock_value": "Valor de existencias",

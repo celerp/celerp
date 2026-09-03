@@ -1787,6 +1787,8 @@
   "shell.search_help_and": "è AND:",
   "shell.search_help_and_result": "trova le righe che corrispondono a entrambi.",
   "shell.search_help_range": "è un intervallo numerico: trova qualsiasi valore di quantità, peso o pezzi compreso tra 5 e 10.",
+  "shell.search_help_scoped": "limita un termine a un solo campo: trova solo quel campo. Gli alias qty, ct e carat indicano la quantità, pcs indica i pezzi, e ct_each o per_pc indicano la misura per pezzo.",
+  "shell.search_help_scoped_range": "limita un intervallo a un solo campo: trova quando quel campo rientra tra i due numeri, su qualsiasi campo o attributo numerico.",
   "shell.search_help_example_label": "Esempio:",
   "shell.search_help_example_result": "trova bulloni il cui valore di quantità, peso o pezzi è compreso tra 5 e 10.",
   "dashboard.stock_value": "Valore delle scorte",

@@ -33,6 +33,8 @@ _XX = {
     "nav.settings": "XX_SETTINGS",
     "shell.backup_in_progress": "XX_BACKUP_IN_PROGRESS",
     "shell.search_help_plain_text": "XX_PLAIN_TEXT",
+    "shell.search_help_scoped": "XX_SCOPED",
+    "shell.search_help_scoped_range": "XX_SCOPED_RANGE",
     "shell.copied": "XX_COPIED",
     "shell.star_on_github": "XX_STAR_ON_GITHUB",
 }
@@ -69,6 +71,17 @@ def test_backup_banner_translates():
 def test_search_help_panel_translates():
     xml = to_xml(search_help(lang="xx"))
     assert "XX_PLAIN_TEXT" in xml
+
+
+def test_search_help_panel_shows_scoped_syntax():
+    """The help panel documents field-scoped terms and scoped ranges, resolving
+    the new keys through t() at render time, and shows a per-piece worked example
+    naming the qty_each alias."""
+    xml = to_xml(search_help(lang="xx"))
+    assert "XX_SCOPED" in xml
+    assert "XX_SCOPED_RANGE" in xml
+    # The per-piece worked example is a literal in the template, not a catalog key.
+    assert "ct_each" in xml
 
 
 def test_shell_js_config_translates():
