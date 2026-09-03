@@ -78,6 +78,92 @@ def _valid_int(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+# A support_url is a relay-controlled string that reaches an href. urlparse
+# silently strips leading/embedded whitespace and control characters and admits
+# userinfo, so a boolean "looks like a URL" check is not enough: an attacker who
+# controls the partner record could smuggle a javascript:/data: payload or a
+# credentials-bearing host past a naive check. The validator below rejects any
+# non-canonical value outright rather than trying to sanitise it.
+MAX_SUPPORT_URL_LEN = 2048
+
+# The maximum retail_amount an offer may carry, in minor units. A value at or
+# above this (or negative, or a bool) is treated as malformed and drops the offer.
+_MAX_RETAIL_AMOUNT = 10 ** 12
+
+
+def _safe_support_url(value) -> str:
+    """Return a partner support URL only if it is a canonical, safe https URL;
+    otherwise the empty string.
+
+    Rejects: non-strings, anything longer than MAX_SUPPORT_URL_LEN, any value
+    urlparse would silently alter (leading/embedded whitespace or C0 control
+    characters), embedded userinfo (user:pass@host), any scheme other than
+    https, and an empty host. A clean value is returned unchanged.
+    """
+    from urllib.parse import urlparse
+
+    if not isinstance(value, str):
+        return ""
+    if len(value) > MAX_SUPPORT_URL_LEN:
+        return ""
+    # urlparse strips these silently, so a downstream re-parse would disagree
+    # with the value we validated. Reject rather than canonicalise.
+    if value != value.strip():
+        return ""
+    if any(ch.isspace() or ord(ch) < 0x20 for ch in value):
+        return ""
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return ""
+    if parsed.scheme != "https":
+        return ""
+    if not parsed.hostname:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+    return value
+
+
+def _validated_offer(offer):
+    """Return the offer dict when every field it carries is well-formed, else
+    None. Degrades honestly: a malformed offer is dropped whole rather than
+    partially trusted, so no fabricated price or currency can reach a surface.
+    """
+    if not isinstance(offer, dict):
+        return None
+    amount = offer.get("retail_amount")
+    if amount is not None:
+        if isinstance(amount, bool) or not isinstance(amount, int):
+            return None
+        if amount < 0 or amount >= _MAX_RETAIL_AMOUNT:
+            return None
+    currency = offer.get("currency")
+    if currency is not None and not isinstance(currency, str):
+        return None
+    bullets = offer.get("service_bullets")
+    if bullets is not None and not isinstance(bullets, list):
+        return None
+    return offer
+
+
+def _normalized_implementation(implementation):
+    """Return the implementation dict with a validated support_url, or None when
+    the block is unusable. A present-but-invalid support_url drops the whole
+    block (fail closed) so no partner identity carrying a hostile URL survives.
+    """
+    if not isinstance(implementation, dict):
+        return None
+    raw = implementation.get("support_url")
+    if raw is not None:
+        safe = _safe_support_url(raw)
+        if not safe:
+            return None
+        implementation = dict(implementation)
+        implementation["support_url"] = safe
+    return implementation
+
+
 def set_commercial_context(new: dict) -> bool:
     """Validate a relay-pushed commercial context and, if it is a strictly-newer
     well-formed update, replace the held model. Returns whether it was accepted.
@@ -125,7 +211,19 @@ def set_commercial_context(new: dict) -> bool:
         if value is not None and not isinstance(value, dict):
             log.warning("Commercial context rejected: %s is neither null nor an object.", key)
             return False
-    _commercial_context = copy.deepcopy(new)
+    accepted = copy.deepcopy(new)
+    # Normalize the relay-controlled sub-objects at ingress: a malformed
+    # support_url or offer drops that block whole (fail closed) while the
+    # envelope is still accepted so the version advances. A later egress guard
+    # backstops caches written by an older, pre-validation binary.
+    normalized_impl = _normalized_implementation(accepted.get("implementation"))
+    if normalized_impl is None:
+        accepted.pop("implementation", None)
+    else:
+        accepted["implementation"] = normalized_impl
+    if _validated_offer(accepted.get("offer")) is None:
+        accepted.pop("offer", None)
+    _commercial_context = accepted
     return True
 
 
@@ -312,18 +410,32 @@ def build_commercial_handoff(instance_id: str, intent: str, sku: str = "") -> st
         has always produced for that plan (behavior-preserving).
       - celerp_direct with an empty or unknown sku: the generic subscribe URL.
 
-    ``intent`` is the acquisition intent every commercial CTA shares
-    ("subscribe"); it keeps the call sites uniform and names what the resolver
-    answers. The returned URL is always non-empty, so callers need no per-site
+    ``intent`` is the acquisition intent the CTA carries: "subscribe" for an
+    upgrade/subscribe CTA, "topup" for a credit top-up. It selects the direct
+    variant only on the celerp_direct path; a partner-managed or unknown mode
+    never reaches a direct checkout regardless of intent.
+
+    Fails closed: only the explicit ``celerp_direct`` mode reaches a direct
+    subscribe URL. partner_managed routes to the partner support URL (re-validated
+    at egress) or the Enterprise route; any other or unknown mode routes to
+    Enterprise. The returned URL is always non-empty, so callers need no per-site
     empty-href guard.
     """
-    if get_commercial_mode() == "partner_managed":
-        support_url = (get_partner_identity() or {}).get("support_url") or ""
+    mode = get_commercial_mode()
+    if mode == "partner_managed":
+        # Egress re-validation: an auto-updated binary may read an on-disk cache
+        # written by a prior binary that predates the ingress guard, so trust the
+        # stored support_url only after re-checking it here too.
+        support_url = _safe_support_url((get_partner_identity() or {}).get("support_url"))
         if support_url:
             return support_url
         return _enterprise_handoff(instance_id)
+    if mode != "celerp_direct":
+        return _enterprise_handoff(instance_id)
     if sku == "team":
         return _enterprise_handoff(instance_id)
+    if intent == "topup":
+        return build_subscribe_url(instance_id, topup=True)
     if sku in ("cloud", "ai"):
         return build_subscribe_url(instance_id, extra=f"plan={sku}")
     return build_subscribe_url(instance_id)
