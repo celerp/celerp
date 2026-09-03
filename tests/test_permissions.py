@@ -569,6 +569,72 @@ class TestFieldVisibility:
         assert any(i.get("sku") == "LOW-1" for i in ml.json()["items"]), \
             "manager should see the true low-stock item"
 
+    async def test_hidden_category_inventory_type_filter_no_oracle(self, client, session):
+        """The category and inventory_type column filters must not become oracles over a
+        hidden field. Both are schema fields a role may be denied (visible_to_roles), so the
+        filters run over the visibility-stripped records: a denied operator sees the field
+        absent, the filter never matches its true value, and a query for the true value is
+        indistinguishable from a wrong one (no membership oracle) - the same closure applied
+        to q, attr.*, and low_stock. A role that may see the field filters normally."""
+        ctx = await _setup(client, session)
+        cr = await client.post(
+            "/items",
+            json={"sku": "SECRET-1", "name": "Classified", "quantity": 3,
+                  "location_id": ctx["location_id"], "sell_by": "piece",
+                  "status": "available", "category": "Gem", "inventory_type": "service"},
+            headers=ctx["admin_h"],
+        )
+        assert cr.status_code == 200, cr.text
+        await _restrict_item_fields(client, ctx["admin_h"], {"category", "inventory_type"})
+
+        # Operator: the true value and a wrong value both return nothing - indistinguishable.
+        for param in ({"category": "Gem"}, {"category": "Metal"},
+                      {"inventory_type": "service"}, {"inventory_type": "consumable"}):
+            r = await client.get("/items", params=param, headers=ctx["operator_h"])
+            assert r.status_code == 200
+            assert all(i.get("sku") != "SECRET-1" for i in r.json()["items"]), \
+                f"hidden field leaked membership via {param}"
+        # The operator can still list the item, but sees neither hidden field on it.
+        ol = await client.get("/items", params={"q": "classified"}, headers=ctx["operator_h"])
+        assert len(ol.json()["items"]) == 1
+        assert "category" not in ol.json()["items"][0]
+        assert "inventory_type" not in ol.json()["items"][0]
+        # The manager may see both, so each true-value filter returns the item.
+        mc = await client.get("/items", params={"category": "Gem"}, headers=ctx["manager_h"])
+        assert any(i.get("sku") == "SECRET-1" for i in mc.json()["items"])
+        mi = await client.get("/items", params={"inventory_type": "service"}, headers=ctx["manager_h"])
+        assert any(i.get("sku") == "SECRET-1" for i in mi.json()["items"])
+
+    async def test_visible_numeric_attribute_keeps_facet(self, client, session):
+        """A visible numeric category attribute must keep its column-filter funnel. `length`
+        is a `number`-typed category attribute, so it folds into the per-item numeric set -
+        but it is a category attribute, not a continuous per-item measure (quantity, weight,
+        pieces, qty_each), so it must still appear in attribute_facets. A role that may see it
+        gets `length` faceted with its value; excluding it (as the numeric set once did)
+        would strip a real funnel."""
+        ctx = await _setup(client, session)
+        pr = await client.patch(
+            "/companies/me/category-schema/Gem",
+            json={"fields": [{"key": "length", "label": "Length", "type": "number",
+                              "visible_to_roles": []}]},
+            headers=ctx["admin_h"],
+        )
+        assert pr.status_code == 200, pr.text
+        cr = await client.post(
+            "/items",
+            json={"sku": "LEN-1", "name": "Rod", "quantity": 2,
+                  "location_id": ctx["location_id"], "sell_by": "piece",
+                  "status": "available", "category": "Gem", "length": 6.5},
+            headers=ctx["admin_h"],
+        )
+        assert cr.status_code == 200, cr.text
+        for h in (ctx["operator_h"], ctx["manager_h"]):
+            r = await client.get("/items", headers=h)
+            assert r.status_code == 200
+            facets = r.json()["attribute_facets"]
+            assert "length" in facets, "visible numeric category attribute lost its facet"
+            assert "6.5" in facets["length"]
+
 
 # ── Write-path: cost_price field write guard ──────────────────────────────────
 

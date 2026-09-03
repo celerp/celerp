@@ -8,7 +8,11 @@ and literal SKU/text substrings) is tested here without a database.
 """
 from __future__ import annotations
 
-from celerp_inventory.routes import item_matches_query, query_match_reasons
+from celerp_inventory.routes import (
+    item_matches_query,
+    query_match_reasons,
+    searchable_field_sets,
+)
 
 
 def _item(**overrides) -> dict:
@@ -314,3 +318,35 @@ def test_scoped_search_field_identifier_preserved():
                                "unit: kilogram") == [("unit", "kilogram")]
     assert query_match_reasons(_item(name="W", sku="W1", weight=1.5),
                                "weight: 1-2") == [("weight", "1.5")]
+
+
+def test_searchable_field_sets_classifies_money_and_rate_numeric():
+    """searchable_field_sets treats every numeric-valued schema type as numeric, not
+    only `number`: a custom money field (an appraised_value) and a rate field are
+    range/exact scope-searchable exactly as a number field is. Text stays text, and a
+    price column is scope-searchable in neither set (cost/price keys are excluded)."""
+    schema = [
+        {"key": "appraised_value", "type": "money"},
+        {"key": "markup", "type": "rate"},
+        {"key": "carat_weight", "type": "number"},
+        {"key": "certificate_no", "type": "text"},
+        {"key": "retail_price", "type": "money"},
+    ]
+    numeric, text = searchable_field_sets(schema)
+    # money, rate, and number all classify numeric.
+    assert {"appraised_value", "markup", "carat_weight"} <= numeric
+    # a text field stays text and is not numeric.
+    assert "certificate_no" in text
+    assert "certificate_no" not in numeric
+    # a price column is excluded from both, so it never becomes scope-searchable.
+    assert "retail_price" not in numeric
+    assert "retail_price" not in text
+    # A scoped range over the money field coerces and matches by value...
+    in_money = _item(name="Ring", sku="R1", appraised_value=1500)
+    assert query_match_reasons(in_money, "appraised_value: 1000-2000",
+                               numeric_fields=numeric, text_fields=text) == [
+                                   ("appraised_value", "1500")]
+    # ...and an out-of-range value does not match (failure path, no fabricated hit).
+    assert query_match_reasons(_item(name="Ring", sku="R2", appraised_value=500),
+                               "appraised_value: 1000-2000",
+                               numeric_fields=numeric, text_fields=text) is None
