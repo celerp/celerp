@@ -136,6 +136,57 @@ async def test_items_metadata_per_category_schema(client, session):
 
 
 @pytest.mark.asyncio
+async def test_items_metadata_strips_derived_companions(client, session):
+    """A derived key must be stripped for a role denied its SOURCE field, exactly as
+    GET /items/{id} does. location_id mirrors the schema field location_name (a denied
+    role could otherwise resolve the hidden location via its id), and qty_each is
+    derived from quantity + pieces. Both dependencies live in the inventory router's
+    DERIVED_FIELD_DEPS, which the bulk endpoint must hand to apply_field_visibility just
+    like the per-item route; without it the bulk read leaks location_id and qty_each to
+    a role that cannot see location_name or quantity."""
+    h, loc = await _admin_ctx(client)
+
+    # Restrict location_name and quantity to managers+ under one category. Their derived
+    # companions (location_id, qty_each) must fall with them.
+    def _floor(key, label):
+        return {"key": key, "label": label, "type": "text" if key == "location_name" else "number",
+                "editable": key != "location_name", "required": False, "options": [],
+                "visible_to_roles": ["admin", "manager"], "position": 5, "show_in_table": True}
+    await _set_company_settings(session, {
+        "category_schemas": {"Locked": [_floor("location_name", "Location"), _floor("quantity", "Qty")]}
+    })
+
+    item_id = await create_item(client, h, loc, sku="DERIV-1")
+    assert (await client.patch(f"/items/{item_id}",
+        json={"fields_changed": {"category": {"old": None, "new": "Locked"}}},
+        headers=h)).status_code == 200
+
+    mgr_tok = await invite_user(client, session, h, "mgr@acme.example", "manager")
+    mgr_h = {"Authorization": f"Bearer {mgr_tok}"}
+    op_tok = await invite_user(client, session, h, "op3@acme.example", "operator")
+    op_h = {"Authorization": f"Bearer {op_tok}"}
+
+    # Manager is at/above the floor: source fields and their derived companions survive.
+    mgr_bulk = (await client.post("/items/metadata",
+        json={"entity_ids": [item_id]}, headers=mgr_h)).json()["items"][item_id]
+    assert mgr_bulk.get("location_id") == loc
+    assert "qty_each" in mgr_bulk
+
+    # Operator is below the floor: source fields AND derived companions are stripped.
+    op_bulk = (await client.post("/items/metadata",
+        json={"entity_ids": [item_id]}, headers=op_h)).json()["items"][item_id]
+    assert "location_name" not in op_bulk and "location_id" not in op_bulk, (
+        "location_id must be stripped when location_name is hidden")
+    assert "quantity" not in op_bulk and "qty_each" not in op_bulk, (
+        "qty_each must be stripped when quantity is hidden")
+
+    # Parity: the bulk entry matches GET /items/{id} for the same role (minus sold_price).
+    op_single = (await client.get(f"/items/{item_id}", headers=op_h)).json()
+    op_single.pop("sold_price", None)
+    assert op_bulk == op_single
+
+
+@pytest.mark.asyncio
 async def test_items_metadata_dedup(client):
     """Duplicate entity_ids collapse to one result each (map keyed by id)."""
     h, loc = await _admin_ctx(client)
