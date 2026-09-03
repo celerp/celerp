@@ -133,3 +133,79 @@ def test_inventory_search_preserves_user_facing_fields():
         assert item_matches_query(_item(**{field: value}), term), field
     # A dynamic category attribute is not a core key, so it stays searchable too.
     assert query_match_reasons(_item(color="ruby red"), "ruby") == [("color", "ruby")]
+
+
+def test_scoped_text_match_named_attribute():
+    """`field: value` restricts a text match to one named attribute. `stone_type:
+    demantoid` matches a lot whose stone_type attribute reads "Demantoid" and
+    reports that field, not whichever field happens to contain the substring."""
+    lot = _item(name="Green Garnet", sku="GG1", stone_type="Demantoid")
+    assert query_match_reasons(lot, "stone_type: demantoid") == [("stone_type", "demantoid")]
+    # An item whose stone_type does not contain the value is not a hit.
+    assert query_match_reasons(_item(name="Ruby", sku="R1", stone_type="Spinel"),
+                               "stone_type: demantoid") is None
+
+
+def test_scoped_range_on_quantity():
+    """A scoped range restricts the range match to the named field. `qty: 1-2`
+    (alias qty resolves to quantity) matches a lot whose quantity is 1.5 and
+    reports quantity, not another numeric column that also falls in range."""
+    lot = _item(name="Parcel", sku="P1", quantity=1.5, weight=100)
+    assert query_match_reasons(lot, "qty: 1-2") == [("quantity", "1.5")]
+    # A quantity outside the scoped range does not match, even if weight is in range.
+    assert query_match_reasons(_item(name="Big", sku="B1", quantity=9, weight=1.5),
+                               "qty: 1-2") is None
+
+
+def test_scoped_range_dynamic_numeric_attr():
+    """A scoped range works over ANY numeric-coercible field, including a dynamic
+    attribute the unscoped range path never scans, and coerces a numeric string."""
+    numeric = _item(name="Stone", sku="S1", length=6.5)
+    stringy = _item(name="Stone", sku="S2", length="6.5")
+    assert query_match_reasons(numeric, "length: 6-7") == [("length", "6.5")]
+    assert query_match_reasons(stringy, "length: 6-7") == [("length", "6.5")]
+    # A non-coercible stored value simply does not match; no fabricated hit.
+    assert query_match_reasons(_item(name="Stone", sku="S3", length="huge"),
+                               "length: 6-7") is None
+
+
+def test_alias_resolution():
+    """Field aliases resolve to their canonical field: ct -> quantity, pcs ->
+    pieces, ct_each -> qty_each."""
+    lot = _item(name="Parcel", sku="P1", quantity=1.5, pieces=4, qty_each=0.375)
+    assert query_match_reasons(lot, "ct: 1-2") == [("quantity", "1.5")]
+    assert query_match_reasons(lot, "pcs: 1-10") == [("pieces", "4")]
+    assert query_match_reasons(lot, "ct_each: 0-1") == [("qty_each", "0.375")]
+
+
+def test_numeric_exact_scoped_string_enum():
+    """A scoped text term matches a numeric enum attribute stored as a string or a
+    number: `grade: 3` matches a grade attribute of "3"."""
+    as_string = _item(name="Stone", sku="S1", grade="3")
+    as_number = _item(name="Stone", sku="S2", grade=3)
+    assert query_match_reasons(as_string, "grade: 3") == [("grade", "3")]
+    assert query_match_reasons(as_number, "grade: 3") == [("grade", "3")]
+
+
+def test_multiterm_and_qty_each_grade():
+    """A multi-term AND query mixing a plain text term, a scoped per-piece range,
+    and a scoped enum matches a demantoid parcel of 4 stones totalling 6 carats
+    (per-stone 1.5 ct) with grade 3."""
+    parcel = _item(name="Demantoid Parcel", sku="DP1", quantity=6, pieces=4,
+                   qty_each=1.5, stone_type="Demantoid", grade="3")
+    assert item_matches_query(parcel, "demantoid & qty_each: 1-2 & grade: 3")
+    # A parcel whose per-stone measure is out of range fails the AND.
+    dense = _item(name="Demantoid Parcel", sku="DP2", quantity=20, pieces=4,
+                  qty_each=5, stone_type="Demantoid", grade="3")
+    assert not item_matches_query(dense, "demantoid & qty_each: 1-2 & grade: 3")
+
+
+def test_scoped_core_key_excluded():
+    """Guard: a scoped term naming a core/bookkeeping key returns no match, so the
+    scoped path never reopens the #306 exclusion of internal keys from search.
+    Green at merge-base by design (the term is unparsed there and core keys are
+    already unsearchable); it fails only if the searchable-field gate is dropped."""
+    leaky = _item(name="Widget", sku="WDGT", idempotency_key="csv:item:bc:100",
+                  cost_price=1.5)
+    assert query_match_reasons(leaky, "idempotency_key: csv") is None
+    assert query_match_reasons(leaky, "cost_price: 1-2") is None

@@ -186,6 +186,12 @@ def flatten_item(state: dict, entity_id: str, location_id: str | None = None, lo
     if updated_at is not None:
         flat["updated_at"] = updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
     qty = float(flat.get("quantity") or 0)
+    # Per-piece measure: quantity spread over the stones in the lot (a 6 ct box of 4
+    # is 1.5 ct each). pieces is read from its single source; a 1-piece or
+    # pieces-missing lot falls back to the full quantity, so there is no divide-by-zero
+    # (guarded like the cost roll-up below).
+    pieces = _read_pieces(flat) or 0
+    flat["qty_each"] = round(qty / pieces, 10) if pieces > 1 else qty
     _recipe_unit = _recipe_standard_unit_cost(flat)
     if _recipe_unit is not None:
         # Recipe-backed item: derive cost from the rolled standard (single source of truth); never
@@ -488,6 +494,17 @@ _SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category",
 _NUMERIC_FIELDS = ("quantity", "weight", "pieces")
 # A range is PURE number-dash-number only, so a hyphenated SKU (SHOT274-005) stays literal.
 _RANGE_RE = re.compile(r"^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$")
+# A field-scoped term starts with an identifier and a colon: `stone_type: demantoid`,
+# `qty: 1-2`. A digit-led token (12:30) or a hyphenated SKU has no leading identifier,
+# so scoping never captures it and the unscoped path stays unchanged.
+_SCOPE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$")
+# Friendly names for the fields a user is likely to type. Every alias is documented in
+# the search help panel; the canonical per-piece field name is qty_each.
+_FIELD_ALIASES = {
+    "qty": "quantity", "ct": "quantity", "carat": "quantity",
+    "pcs": "pieces",
+    "ct_each": "qty_each", "per_pc": "qty_each",
+}
 
 
 def _numeric_values(record: dict) -> list[tuple[str, float]]:
@@ -528,7 +545,35 @@ def _text_match(record: dict, term: str) -> str | None:
 def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
     """One AND-term: the (field, matched text) behind the hit, or None. The matched
     text is the term itself for substring hits and the whole number for numeric
-    range/exact hits, so the UI can embolden exactly what matched."""
+    range/exact hits, so the UI can embolden exactly what matched.
+
+    A term of the form `field: value` scopes the match to one named field (an alias
+    resolves to its canonical field). Resolution is gated to user-facing fields - a
+    core/bookkeeping key stays unsearchable (#306) even when named explicitly - and a
+    scoped value may be a range (over that one field) or a substring. A term with no
+    leading `identifier:` falls through to the unscoped behavior unchanged."""
+    scope = _SCOPE_RE.match(term)
+    if scope:
+        field = _FIELD_ALIASES.get(scope.group(1), scope.group(1))
+        value = scope.group(2).strip()
+        if not value:
+            return None
+        if field in _SEARCH_FIELDS or field in _NUMERIC_FIELDS or not _is_core_key(field):
+            rng = _RANGE_RE.match(value)
+            if rng:
+                lo, hi = float(rng.group(1)), float(rng.group(2))
+                if lo <= hi:
+                    try:
+                        n = float(record.get(field))
+                    except (TypeError, ValueError):
+                        return None
+                    if lo <= n <= hi:
+                        return field, format(n, "g")
+                    return None
+                # lo > hi is not a usable range; fall through to a literal text match.
+            if value in str(record.get(field, "")).lower():
+                return field, value
+        return None
     m = _RANGE_RE.match(term)
     if m:
         lo, hi = float(m.group(1)), float(m.group(2))
