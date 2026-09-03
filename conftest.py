@@ -663,9 +663,23 @@ async def client(session: AsyncSession):
     async def _shared_session_ctx():
         yield session
 
+    # get_lifecycle_session_ctx() runs maintenance work (the projection rebuild,
+    # the Doctor) on the unbounded lifecycle_engine in production, because a full
+    # rebuild can exceed the request statement_timeout. In tests that would open a
+    # SEPARATE connection that cannot see this transaction's uncommitted seed data,
+    # so fix-mode counts come back empty. LifecycleSessionLocal is resolved from
+    # celerp.db at call time, so binding a savepoint-joined sessionmaker to the one
+    # shared connection routes every lifecycle session (each a fresh session that
+    # closes on exit) into this transaction: it sees the seeded data and its commits
+    # stay inside the rolled-back outer transaction.
+    lifecycle_factory = async_sessionmaker(
+        bind=await session.connection(), class_=AsyncSession,
+        expire_on_commit=False, join_transaction_mode="create_savepoint")
+
     with patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
-         patch("celerp.middleware.get_session_ctx", _shared_session_ctx):
+         patch("celerp.middleware.get_session_ctx", _shared_session_ctx), \
+         patch("celerp.db.LifecycleSessionLocal", lifecycle_factory):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
     app.dependency_overrides.clear()
