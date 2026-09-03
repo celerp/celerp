@@ -98,3 +98,99 @@ def test_commercial_handoff_never_direct_checkout_for_partner_managed():
     for sku in ("cloud", "ai", "team", ""):
         url = build_commercial_handoff(_IID, "subscribe", sku)
         assert "/subscribe" not in url, f"sku={sku!r} leaked a direct checkout: {url}"
+
+
+# -- support_url trust boundary at the resolver egress (BLOCKER 1) ------------
+
+_UNSAFE_SUPPORT_URLS = [
+    "javascript:alert(1)",
+    "data:text/html,<script>alert(1)</script>",
+    "file:///etc/passwd",
+    "vbscript:msgbox(1)",
+    "blob:https://evil.example.com/x",
+    "http://partner.example.com/support",   # not https
+    "//partner.example.com/support",        # protocol-relative, no scheme
+    "https:evil.example.com",               # no netloc
+    "/relative/path",                       # relative
+    "partner.example.com/support",          # bare, no scheme
+]
+
+
+@pytest.mark.parametrize("bad", _UNSAFE_SUPPORT_URLS)
+def test_handoff_partner_rejects_schemes(bad):
+    """A partner-managed install whose support_url is a non-https or
+    non-canonical scheme never emits that URL; it falls to the Enterprise
+    route instead."""
+    _partner(support_url=bad)
+    url = build_commercial_handoff(_IID, "subscribe", "cloud")
+    assert url != bad
+    assert "/enterprise" in url
+    assert "javascript:" not in url
+    assert "data:" not in url
+
+
+def test_handoff_partner_valid_https():
+    """A valid https support_url is returned unchanged (regression guard against
+    over-rejection)."""
+    _partner(support_url="https://partner.example.com/support")
+    assert build_commercial_handoff(_IID, "subscribe", "cloud") == \
+        "https://partner.example.com/support"
+
+
+def test_safe_support_url_rejects_whitespace_and_creds():
+    """Non-canonical values urlparse silently strips (leading/embedded
+    whitespace, control chars, embedded userinfo) and protocol-relative or
+    oversized URLs are rejected; a clean https URL is returned canonical."""
+    from celerp.gateway.state import _safe_support_url
+    assert _safe_support_url(" https://partner.example.com/x") == ""
+    assert _safe_support_url("https://partner.example.com/x\n") == ""
+    assert _safe_support_url("https://part\tner.example.com/x") == ""
+    assert _safe_support_url("https://user:pass@partner.example.com/x") == ""
+    assert _safe_support_url("//partner.example.com/x") == ""
+    assert _safe_support_url("https://" + "a" * 4000 + ".example.com") == ""
+    assert _safe_support_url(None) == ""
+    assert _safe_support_url(42) == ""
+    clean = "https://partner.example.com/support"
+    assert _safe_support_url(clean) == clean
+
+
+def test_handoff_partner_rejects_whitespace_credentials_at_egress():
+    """A whitespace- or credentials-bearing support_url stored in the context
+    never reaches the resolver's returned href."""
+    _partner(support_url="https://user:pass@partner.example.com/support")
+    url = build_commercial_handoff(_IID, "subscribe", "cloud")
+    assert "user:pass@" not in url
+    assert "/enterprise" in url
+
+
+# -- unknown/unhandled mode fails closed (E1, BLOCKER) -----------------------
+
+def test_handoff_unknown_mode_fails_closed():
+    """A commercial_mode the resolver does not special-case must not fall into
+    the direct subscribe branch; it routes to Enterprise, never a direct
+    checkout."""
+    import celerp.gateway.state as gw_state
+    gw_state._commercial_context = {"commercial_mode": "reseller"}
+    for sku in ("cloud", "ai", "", "zzz"):
+        url = build_commercial_handoff(_IID, "subscribe", sku)
+        assert "/subscribe" not in url, f"unknown mode leaked direct checkout for sku={sku!r}: {url}"
+        assert "/enterprise" in url
+
+
+# -- intent routing (topup) --------------------------------------------------
+
+def test_handoff_direct_topup_returns_topup_url():
+    """celerp_direct + intent=topup routes to the /subscribe/topup URL."""
+    url = build_commercial_handoff(_IID, "topup", "ai")
+    assert url == build_subscribe_url(_IID, topup=True)
+    assert "/subscribe/topup" in url
+
+
+def test_handoff_partner_topup_not_direct():
+    """partner_managed + intent=topup routes through partner support/Enterprise,
+    never a direct /subscribe/topup URL."""
+    _partner(support_url="")
+    url = build_commercial_handoff(_IID, "topup", "ai")
+    assert "/subscribe/topup" not in url
+    assert "/subscribe" not in url
+    assert "/enterprise" in url
