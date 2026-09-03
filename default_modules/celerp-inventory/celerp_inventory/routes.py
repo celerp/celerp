@@ -917,6 +917,12 @@ async def list_items(
         cat = r.get("category")
         fs, num, txt = await _category_ctx(cat)
         item_field_sets[r.get("id")] = (num, txt)
+        # Fill the inventory_type default on the ALLOWED side of the visibility boundary,
+        # mirroring the projection-time default so a legacy projection that predates it
+        # (never re-snapshotted, genuinely missing the key) still carries the real-or-default
+        # value for a role that may see it. A restricted role has the key removed by the strip
+        # below, so the default never lands on the denied side.
+        r.setdefault("inventory_type", "stocked")
         stripped.append(apply_field_visibility(
             [r], role, fs, can_see_costs,
             can_author_drafts=can_author_drafts,
@@ -933,7 +939,7 @@ async def list_items(
         result = [r for r in result if str(r.get("category") or "") in cats]
     if inventory_type:
         types = {it.strip() for it in inventory_type.split(",") if it.strip()}
-        result = [r for r in result if (r.get("inventory_type") or "stocked") in types]
+        result = [r for r in result if "inventory_type" in r and r.get("inventory_type") in types]
     if location_id:
         locs = {loc.strip() for loc in location_id.split(",") if loc.strip()}
         result = [r for r in result if str(r.get("location_id") or "") in locs]

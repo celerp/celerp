@@ -635,6 +635,124 @@ class TestFieldVisibility:
             assert "length" in facets, "visible numeric category attribute lost its facet"
             assert "6.5" in facets["length"]
 
+    # ── INV1: location_id follows its schema field location_name ──────────────
+
+    async def test_location_denied_no_companion_oracle(self, client, session):
+        """A role denied location_name must not recover the location through the
+        synthetic location_id companion key. The denied operator still gets the item
+        (no membership oracle) but with both location_name and location_id absent, so a
+        ?location_id=<id> probe returns nothing - indistinguishable from a wrong id. A
+        role that may see location keeps both and filters normally."""
+        ctx = await _setup(client, session)
+        loc_id = ctx["location_id"]
+        await _restrict_item_fields(client, ctx["admin_h"], {"location_name"})
+
+        op = await client.get("/items", headers=ctx["operator_h"])
+        assert op.status_code == 200
+        items = op.json()["items"]
+        assert len(items) >= 1
+        for it in items:
+            assert "location_name" not in it
+            assert "location_id" not in it
+        # The location_id filter cannot confirm the hidden location: true id and a wrong
+        # id both return nothing for the denied role.
+        for probe in (loc_id, "does-not-exist"):
+            r = await client.get("/items", params={"location_id": probe}, headers=ctx["operator_h"])
+            assert r.status_code == 200
+            assert r.json()["items"] == [], f"location leaked via location_id probe {probe!r}"
+
+        # The manager keeps location_name and location_id and filters normally.
+        mg = await client.get("/items", headers=ctx["manager_h"])
+        mitem = mg.json()["items"][0]
+        assert mitem["location_id"] == loc_id
+        mf = await client.get("/items", params={"location_id": loc_id}, headers=ctx["manager_h"])
+        assert len(mf.json()["items"]) >= 1
+
+    # ── INV2: inventory_type is not re-defaulted after the visibility strip ───
+
+    async def test_inventory_type_hidden_not_defaulted(self, client, session):
+        """A hidden `service` item must not be reconstructed as the `stocked` default
+        after its key is stripped. The denied operator sees the item (no membership
+        oracle) with inventory_type absent, so ?inventory_type=stocked does NOT return
+        it - the pre-change filter's `or "stocked"` reconstruction is exactly the leak
+        this closes. A role that may see inventory_type filters normally."""
+        ctx = await _setup(client, session)
+        cr = await client.post(
+            "/items",
+            json={"sku": "SVC-1", "name": "Service Item", "quantity": 1,
+                  "location_id": ctx["location_id"], "sell_by": "piece",
+                  "status": "available", "inventory_type": "service"},
+            headers=ctx["admin_h"],
+        )
+        assert cr.status_code == 200, cr.text
+        await _restrict_item_fields(client, ctx["admin_h"], {"inventory_type"})
+
+        # Operator sees the item listed but with inventory_type absent...
+        listed = await client.get("/items", params={"q": "service item"}, headers=ctx["operator_h"])
+        assert listed.status_code == 200
+        assert len(listed.json()["items"]) == 1
+        assert "inventory_type" not in listed.json()["items"][0]
+        # ...and it is not reconstructed as stocked: the stocked filter excludes it.
+        st = await client.get("/items", params={"inventory_type": "stocked"}, headers=ctx["operator_h"])
+        assert st.status_code == 200
+        assert all(i.get("sku") != "SVC-1" for i in st.json()["items"]), \
+            "hidden service item leaked into the stocked filter via the default"
+        # A probe for its true type is equally empty (no oracle).
+        sv = await client.get("/items", params={"inventory_type": "service"}, headers=ctx["operator_h"])
+        assert all(i.get("sku") != "SVC-1" for i in sv.json()["items"])
+
+        # The manager filters service normally.
+        msv = await client.get("/items", params={"inventory_type": "service"}, headers=ctx["manager_h"])
+        assert any(i.get("sku") == "SVC-1" for i in msv.json()["items"])
+
+    async def test_inventory_type_visible_filters_normally(self, client, session):
+        """Regression guard: with inventory_type visible, a `service` item is returned
+        by ?inventory_type=service and excluded by ?inventory_type=stocked, and a
+        `stocked` item by the reverse - the membership guard must not over-exclude
+        visible items."""
+        ctx = await _setup(client, session)
+        cr = await client.post(
+            "/items",
+            json={"sku": "SVC-2", "name": "Visible Service", "quantity": 1,
+                  "location_id": ctx["location_id"], "sell_by": "piece",
+                  "status": "available", "inventory_type": "service"},
+            headers=ctx["admin_h"],
+        )
+        assert cr.status_code == 200, cr.text
+        svc = await client.get("/items", params={"inventory_type": "service"}, headers=ctx["admin_h"])
+        assert any(i.get("sku") == "SVC-2" for i in svc.json()["items"])
+        stk = await client.get("/items", params={"inventory_type": "stocked"}, headers=ctx["admin_h"])
+        assert all(i.get("sku") != "SVC-2" for i in stk.json()["items"])
+        # The default-typed setup item (created without inventory_type) is stocked.
+        assert any(i.get("sku") == "SKU-PERM" for i in stk.json()["items"])
+
+    async def test_inventory_type_missing_key_visible_role_still_matches(self, client, session):
+        """Regression teeth for the read-side default (INV2 step 1): a LEGACY projection
+        materialized before the projection-time inventory_type default genuinely lacks
+        the key. A role that may see inventory_type must still match it under
+        ?inventory_type=stocked - the read-side default applied before the strip supplies
+        the allowed-side value. A bare membership guard without the read-side default
+        would silently drop this visible legacy item."""
+        from celerp.models.projections import Projection
+        from sqlalchemy import select as _select
+
+        ctx = await _setup(client, session)
+        # Simulate a legacy projection: strip inventory_type from the setup item's state.
+        row = (await session.execute(
+            _select(Projection).where(Projection.entity_id == ctx["item_id"])
+        )).scalar_one()
+        new_state = dict(row.state)
+        new_state.pop("inventory_type", None)
+        row.state = new_state
+        await session.flush()
+        assert "inventory_type" not in row.state
+
+        # A visible role still matches the legacy item under the stocked filter.
+        r = await client.get("/items", params={"inventory_type": "stocked"}, headers=ctx["admin_h"])
+        assert r.status_code == 200
+        assert any(i.get("sku") == "SKU-PERM" for i in r.json()["items"]), \
+            "legacy item lacking inventory_type dropped from the stocked filter"
+
 
 # ── Write-path: cost_price field write guard ──────────────────────────────────
 
