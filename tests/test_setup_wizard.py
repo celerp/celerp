@@ -794,8 +794,9 @@ class TestSettingsSectionTabs:
         reach the server."""
         from ui.routes.settings_cloud import _value_prop_page
         html = self._xml(_value_prop_page("test-instance"))
-        for plan in ("cloud", "ai", "team"):
+        for plan in ("cloud", "ai"):
             assert f"plan={plan}" in html, f"plan={plan} CTA missing"
+        assert "plan=team" not in html, "Team is not self-service sold"
         for frag in ("#cloud", "#ai", "#team"):
             assert frag + '"' not in html, f"stale {frag} fragment in CTA"
 

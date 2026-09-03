@@ -277,7 +277,7 @@ def test_value_prop_messaging():
     # Plan cards present
     assert "$29" in html
     assert "$49" in html
-    assert "$99" in html
+    assert "$99" not in html          # Team card is not self-service sold
 
 
 def test_value_prop_no_cloud_service_language():

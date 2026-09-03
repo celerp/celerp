@@ -173,18 +173,6 @@ def _plans_ad(iid: str, lang: str = "en") -> FT:
                 featured=True,
                 lang=lang,
             ),
-            _plan_card(
-                t("cloud.plan_team_name", lang), "USD $99",
-                t("cloud.plan_team_desc", lang),
-                [
-                    t("cloud.plan_team_b1", lang),
-                    t("cloud.plan_team_b2", lang),
-                    t("cloud.plan_team_b3", lang),
-                    t("cloud.plan_team_b4", lang),
-                ],
-                build_subscribe_url(iid, extra="plan=team"),
-                lang=lang,
-            ),
             cls="cloud-plans",
         ),
     )

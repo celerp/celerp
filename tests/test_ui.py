@@ -10823,6 +10823,7 @@ class TestWebAccessPlansAd:
         assert "settings-tabs" in r.text          # free keeps its tab bar
         assert "cloud-plans" in r.text            # the plan cards render
         assert "plan=ai" in r.text                # subscribe links present
+        assert "plan=team" not in r.text          # Team is not self-service sold
 
     @pytest.mark.asyncio
     async def test_paid_tier_sees_no_plans_ad(self, ui_client):
