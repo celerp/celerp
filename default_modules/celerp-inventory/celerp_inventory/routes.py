@@ -31,7 +31,7 @@ from .services import (
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility
-from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA, NUMERIC_SCHEMA_TYPES
 from celerp.services.permissions import (
     assert_role_permission,
     get_current_company_settings,
@@ -163,7 +163,20 @@ def _recipe_standard_unit_cost(state: dict) -> float | None:
     return float(unit_cost) if unit_cost is not None else None
 
 
-def flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str, str] | None = None) -> dict:
+# Companion keys whose visibility follows a schema field they mirror, so field-level
+# visibility strips them with their source. qty_each is derived from quantity and
+# pieces (a role denied either source cannot recover it from the ratio); location_id
+# is a non-schema mirror of location_name (a denied role must not recover the location
+# through the id it would resolve via /companies/me/locations). The rule lives here
+# (one place) and is handed to apply_field_visibility at every call site; the
+# visibility service itself holds no inventory field names.
+DERIVED_FIELD_DEPS: dict[str, tuple[str, ...]] = {
+    "qty_each": ("quantity", "pieces"),
+    "location_id": ("location_name",),
+}
+
+
+def flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str, str] | None = None, unit_map: dict[str, dict] | None = None) -> dict:
     """Flatten attributes dict to top-level so schema-driven UI sees all fields.
 
     When ``price_config`` (``(price_lists, base_price_list, currency)`` from
@@ -186,6 +199,17 @@ def flatten_item(state: dict, entity_id: str, location_id: str | None = None, lo
     if updated_at is not None:
         flat["updated_at"] = updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
     qty = float(flat.get("quantity") or 0)
+    # Per-piece measure. For a piece-denominated lot the quantity IS the piece count
+    # (celerp syncs pieces to quantity for pieces units), so each piece is 1; the
+    # value is 0 for an empty lot (guarded, no divide-by-zero). For a weight/carat lot
+    # the per-piece measure is quantity spread over the stones (a 6 ct box of 4 is 1.5
+    # ct each); a 1-piece or pieces-missing lot falls back to the full quantity. unit_map
+    # is only supplied by the callers that surface qty_each to the client.
+    if unit_map is not None and is_pieces_unit(flat.get("sell_by"), unit_map):
+        flat["qty_each"] = 1 if qty else 0
+    else:
+        pieces = _read_pieces(flat) or 0
+        flat["qty_each"] = round(qty / pieces, 10) if pieces > 1 else qty
     _recipe_unit = _recipe_standard_unit_cost(flat)
     if _recipe_unit is not None:
         # Recipe-backed item: derive cost from the rolled standard (single source of truth); never
@@ -486,8 +510,62 @@ _SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category",
                   "sell_by", "unit", "weight_unit", "gross_weight_unit",
                   "purchase_unit", "inventory_type", "status_doc_number", "lot")
 _NUMERIC_FIELDS = ("quantity", "weight", "pieces")
+# The continuous per-item measures that must never become column-filter funnels: a facet
+# over quantity would list every distinct amount. A custom numeric category attribute
+# (a `number`-typed attribute like `length`) is NOT a measure and keeps its funnel.
+_NUMERIC_MEASURE_KEYS = frozenset(_NUMERIC_FIELDS) | {"qty_each"}
 # A range is PURE number-dash-number only, so a hyphenated SKU (SHOT274-005) stays literal.
 _RANGE_RE = re.compile(r"^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$")
+# A field-scoped term starts with an identifier and a colon: `stone_type: demantoid`,
+# `qty: 1-2`. A digit-led token (12:30) or a hyphenated SKU has no leading identifier,
+# so scoping never captures it and the unscoped path stays unchanged.
+_SCOPE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$")
+# Friendly names for the fields a user is likely to type. Every alias is documented in
+# the search help panel; the canonical per-piece field name is qty_each.
+_FIELD_ALIASES = {
+    "qty": "quantity", "ct": "quantity", "carat": "quantity",
+    "pcs": "pieces",
+    "ct_each": "qty_each", "per_pc": "qty_each",
+}
+
+
+def _is_cost_or_price_key(key: str) -> bool:
+    """True for a cost/price column, which must never become scope-searchable."""
+    return key in COST_ITEM_KEYS or key.endswith("_price") or key.endswith("_price_total")
+
+
+def searchable_field_sets(schema: list[dict]) -> tuple[frozenset[str], frozenset[str]]:
+    """Derive (numeric, text) scoped-search field sets from an effective field schema.
+
+    numeric = _NUMERIC_FIELDS plus every schema key of a numeric type (number/money/rate/weight)
+    plus the synthetic qty_each; text = _SEARCH_FIELDS plus the remaining (non-numeric)
+    schema keys. Both exclude cost/price keys so a price column never becomes
+    scope-searchable. The two sets are disjoint (a schema key is numeric when its type is
+    numeric, else text, and the two folded-in constants share no member), so the coercion
+    test is unambiguous.
+    """
+    numeric = set(_NUMERIC_FIELDS)
+    numeric.add("qty_each")
+    text = set(_SEARCH_FIELDS)
+    for f in schema:
+        key = f.get("key")
+        if not key or _is_cost_or_price_key(key):
+            continue
+        if f.get("type") in NUMERIC_SCHEMA_TYPES:
+            numeric.add(key)
+        else:
+            text.add(key)
+    numeric -= {k for k in numeric if _is_cost_or_price_key(k)}
+    text -= numeric
+    text -= {k for k in text if _is_cost_or_price_key(k)}
+    return frozenset(numeric), frozenset(text)
+
+
+# Module-level defaults keep the pure-dict grammar callable with no DB: derived once
+# from the default item schema unioned with the two hardcoded constants. list_items
+# passes per-category sets that override these; every other caller (and the pure-dict
+# grammar tests) uses these base sets.
+_DEFAULT_NUMERIC_FIELDS, _DEFAULT_TEXT_FIELDS = searchable_field_sets(DEFAULT_ITEM_SCHEMA)
 
 
 def _numeric_values(record: dict) -> list[tuple[str, float]]:
@@ -525,10 +603,82 @@ def _text_match(record: dict, term: str) -> str | None:
     return None
 
 
-def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
+def _as_number(v: object) -> float | None:
+    """Coerce a value to float, or None if it is not numeric. Shared by the scoped
+    numeric-equality check so a query and a stored value compare as numbers."""
+    try:
+        return float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _term_match_reason(
+    record: dict, term: str,
+    numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
+    text_fields: frozenset[str] = _DEFAULT_TEXT_FIELDS,
+) -> tuple[str, str] | None:
     """One AND-term: the (field, matched text) behind the hit, or None. The matched
     text is the term itself for substring hits and the whole number for numeric
-    range/exact hits, so the UI can embolden exactly what matched."""
+    range/exact hits, so the UI can embolden exactly what matched.
+
+    A term of the form `field: value` scopes the match to one named field (an alias
+    resolves to its canonical field). Resolution is gated to user-facing fields - a
+    core/bookkeeping key stays unsearchable (#306) even when named explicitly - and a
+    scoped value may be a range (over that one field) or a substring. A term with no
+    leading `identifier:` falls through to the unscoped behavior unchanged.
+
+    numeric_fields / text_fields are the effective per-category searchable field sets
+    (searchable_field_sets); they drive both resolution and whether a scoped value is
+    coerced to a number. They default to the module-level sets so the grammar stays
+    callable with no DB."""
+    scope = _SCOPE_RE.match(term)
+    if scope:
+        raw = scope.group(1)
+        field = _FIELD_ALIASES.get(raw, raw)
+        value = scope.group(2).strip()
+        # Scope only when the prefix RESOLVES to a real user-facing field: a known
+        # alias, a searchable or numeric field, or a dynamic attribute present on this
+        # record that is not a core/bookkeeping key (#306). An unresolved prefix (or an
+        # empty value) is not a scope - fall through so a literal `foo:bar` in the text
+        # is still found instead of dropping the search.
+        resolved = bool(value) and (
+            raw in _FIELD_ALIASES
+            or field in numeric_fields
+            or field in text_fields
+            or (field in record and not _is_core_key(field))
+        )
+        if resolved:
+            # Textual identifier fields (sku, barcode, hs_code, batch_no, lot...) are
+            # matched as strings only - never coerced to numbers - so leading zeros and
+            # other identity survive: `sku: 001` must not match a stored "1", and a
+            # barcode `00123` must not match "123". Numeric coercion (range and exact
+            # equality) applies to every field that is not a known text field: genuine
+            # numeric columns, number-typed category fields, and dynamic attributes with
+            # no schema entry (which are in neither set).
+            numeric_ok = field not in text_fields
+            rng = _RANGE_RE.match(value)
+            if numeric_ok and rng:
+                lo, hi = float(rng.group(1)), float(rng.group(2))
+                if lo <= hi:
+                    try:
+                        n = float(record.get(field))
+                    except (TypeError, ValueError):
+                        return None
+                    if lo <= n <= hi:
+                        return field, format(n, "g")
+                    return None
+                # lo > hi is not a usable range; fall through to a scoped value match.
+            stored = record.get(field)
+            if numeric_ok:
+                qnum, snum = _as_number(value), _as_number(stored)
+                if qnum is not None and snum is not None:
+                    # Numeric-coercible on both sides: exact equality, never substring, so
+                    # `qty: 1` does not match 10 and `grade: 3` does not match 30.
+                    return (field, value) if qnum == snum else None
+            if value.lower() in str(stored if stored is not None else "").lower():
+                return field, value
+            return None
+        # Unresolved prefix or empty scoped value: fall through to the unscoped path.
     m = _RANGE_RE.match(term)
     if m:
         lo, hi = float(m.group(1)), float(m.group(2))
@@ -551,16 +701,23 @@ def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
     return None
 
 
-def query_match_reasons(record: dict, q: str) -> list[tuple[str, str]] | None:
+def query_match_reasons(
+    record: dict, q: str,
+    numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
+    text_fields: frozenset[str] = _DEFAULT_TEXT_FIELDS,
+) -> list[tuple[str, str]] | None:
     """Match a flattened item dict against the search grammar. `,` ORs groups, `&`
     ANDs the terms within a group; empty terms and empty groups are dropped.
     Returns the first matching group's (field, matched text) pairs - one per
-    AND-term, deduped, order preserved - or None when no group matches."""
+    AND-term, deduped, order preserved - or None when no group matches.
+
+    numeric_fields / text_fields are the effective per-category searchable field sets
+    threaded to _term_match_reason; they default to the module-level sets."""
     for group in q.split(","):
         terms = [t.strip().lower() for t in group.split("&") if t.strip()]
         if not terms:
             continue
-        reasons = [_term_match_reason(record, term) for term in terms]
+        reasons = [_term_match_reason(record, term, numeric_fields, text_fields) for term in terms]
         if all(r is not None for r in reasons):
             deduped: list[tuple[str, str]] = []
             for r in reasons:
@@ -623,13 +780,16 @@ async def list_items(
     loc_map = {str(r.id): r.name for r in loc_rows}
 
     price_config = await get_price_config(session, company_id)
+    units = await _get_company_units(session, company_id)
+    unit_map = {u["name"]: u for u in units}
     result = [
         flatten_item(r.state, r.entity_id,
                       location_id=str(r.location_id) if r.location_id else None,
                       location_name=loc_map.get(str(r.location_id)) if r.location_id else None,
                       created_at=r.created_at,
                       updated_at=r.updated_at,
-                      price_config=price_config)
+                      price_config=price_config,
+                      unit_map=unit_map)
         for r in rows
     ]
 
@@ -707,32 +867,88 @@ async def list_items(
                 [(d.entity_id, d.state) for d in sold_docs],
             )
 
-    if category:
-        cats = {c.strip() for c in category.split(",") if c.strip()}
-        result = [r for r in result if str(r.get("category") or "") in cats]
-
     # Connector source: items linked to a platform encode it in the idempotency key
     # (e.g. "shopify:123:456"). Powers the connector detail "View N synced products" link.
+    # idempotency_key is never a schema field, so it carries no visible_to_roles floor and
+    # is safe to filter here; category/inventory_type/location_id ARE schema fields a role
+    # may be denied, so their filters run after apply_field_visibility (below) to avoid a
+    # membership oracle.
     if source:
         _prefix = f"{source.strip().lower()}:"
         result = [r for r in result if str(r.get("idempotency_key") or "").lower().startswith(_prefix)]
 
+    # Apply visible_to_roles filtering from the effective field schema BEFORE any
+    # membership-affecting step (category/inventory_type/location filters, facets, attr.*
+    # filter, sku/barcode, low_stock, and search matching). Were a hidden field allowed to
+    # steer membership, an item's mere
+    # presence in the result set would disclose that field's value - searching `qty: 5`
+    # and getting the row back reveals the hidden quantity, and a low_stock or attr.*
+    # hit is the same oracle. apply_field_visibility drops stripped keys from the dict,
+    # so every step below operates only over fields the requesting role may see. The
+    # effective schema is resolved PER the item's category, mirroring the detail
+    # endpoint, so a category-scoped restriction is honored and a null/unresolved
+    # category falls back to the base item schema (identical disclosure to detail).
+    company = await session.get(Company, company_id)
+    settings = (company.settings if company else {}) or {}
+    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+    can_author_drafts = role_has_permission(settings, role, "edit_inventory")
+    # Per-category schema cache: N items across M categories cost M schema resolves.
+    _schema_cache: dict[str | None, tuple[list[dict], frozenset[str], frozenset[str]]] = {}
+
+    async def _category_ctx(cat: str | None):
+        if cat not in _schema_cache:
+            fs = await get_effective_field_schema(session, company_id, category=cat)
+            num, txt = searchable_field_sets(fs)
+            _schema_cache[cat] = (fs, num, txt)
+        return _schema_cache[cat]
+
+    # Read each item's category before stripping (the grouping key may itself be hidden),
+    # then strip per its category schema. numeric/text sets are stashed for the q-search
+    # loop below, keyed by the item id.
+    item_field_sets: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
+    stripped: list[dict] = []
+    for r in result:
+        cat = r.get("category")
+        fs, num, txt = await _category_ctx(cat)
+        item_field_sets[r.get("id")] = (num, txt)
+        # Fill the inventory_type default on the ALLOWED side of the visibility boundary,
+        # mirroring the projection-time default so a legacy projection that predates it
+        # (never re-snapshotted, genuinely missing the key) still carries the real-or-default
+        # value for a role that may see it. A restricted role has the key removed by the strip
+        # below, so the default never lands on the denied side.
+        r.setdefault("inventory_type", "stocked")
+        stripped.append(apply_field_visibility(
+            [r], role, fs, can_see_costs,
+            can_author_drafts=can_author_drafts,
+            derived_field_deps=DERIVED_FIELD_DEPS,
+        )[0])
+    result = stripped
+
+    # category / inventory_type / location_id are schema fields a role may be denied, so
+    # they filter over the visibility-stripped dicts: a denied role sees the key absent
+    # (None), the value never matches, and membership cannot disclose the hidden value -
+    # the same oracle closure applied to q, attr.*, and low_stock above.
+    if category:
+        cats = {c.strip() for c in category.split(",") if c.strip()}
+        result = [r for r in result if str(r.get("category") or "") in cats]
     if inventory_type:
         types = {it.strip() for it in inventory_type.split(",") if it.strip()}
-        result = [r for r in result if (r.get("inventory_type") or "stocked") in types]
-
+        result = [r for r in result if "inventory_type" in r and r.get("inventory_type") in types]
     if location_id:
         locs = {loc.strip() for loc in location_id.split(",") if loc.strip()}
         result = [r for r in result if str(r.get("location_id") or "") in locs]
 
     # Distinct attribute values for the column-filter funnels, over the status/category/type/location
     # scope and BEFORE attribute filters are applied (so every available value stays selectable).
+    # Built from the visibility-stripped dicts: an attribute is a non-core, non-measure key on the
+    # flattened item, so a role-hidden attribute (stripped above) never appears in a facet value.
+    # A custom numeric attribute (a `number`-typed `length`) IS facetable; only the continuous
+    # per-item measures (_NUMERIC_MEASURE_KEYS) are excluded.
     _FACET_MAX = 500
-    attrs_by_id = {r.entity_id: (r.state.get("attributes") or {}) for r in rows}
     facet_sets: dict[str, set] = {}
     for r in result:
-        for akey, aval in attrs_by_id.get(r.get("id"), {}).items():
-            if aval in (None, ""):
+        for akey, aval in r.items():
+            if _is_core_key(akey) or akey in _NUMERIC_MEASURE_KEYS or aval in (None, ""):
                 continue
             s = facet_sets.setdefault(akey, set())
             if len(s) < _FACET_MAX:
@@ -763,35 +979,30 @@ async def list_items(
     # cards' /inventory?filter=low_stock link and the reorder alert action_url).
     if filter == "low_stock":
         # Drafts are not stock: an unfinished item must not raise a reorder alarm.
+        # Guarded on a visible quantity: is_below_reorder reads quantity defaulting a
+        # missing value to 0, so a stripped (role-hidden) quantity would falsely include
+        # the item - excluding it keeps low_stock from being an oracle over the hidden
+        # quantity / reorder point.
         result = [r for r in result
-                  if is_below_reorder(r) and str(r.get("status") or "").lower() != "draft"]
+                  if "quantity" in r and is_below_reorder(r)
+                  and str(r.get("status") or "").lower() != "draft"]
 
-    q_reasons: dict = {}
     if q:
         # Grammar: comma = OR groups, & = AND terms, lo-hi = numeric range, bare
         # number = numeric-exact OR text, else text substring (query_match_reasons).
+        # Each item is matched against its own category's numeric/text field sets, so a
+        # number-typed category field resolves and a text-typed one is not coerced.
+        q_reasons: dict = {}
         matched = []
         for r in result:
-            reasons = query_match_reasons(r, q)
+            num, txt = item_field_sets.get(r.get("id"), (_DEFAULT_NUMERIC_FIELDS, _DEFAULT_TEXT_FIELDS))
+            reasons = query_match_reasons(r, q, num, txt)
             if reasons is not None:
                 q_reasons[r.get("id")] = reasons
                 matched.append(r)
         result = matched
-
-    # Apply visible_to_roles filtering from company field schema
-    field_schema = await get_effective_field_schema(session, company_id, category=None)
-    company = await session.get(Company, company_id)
-    settings = (company.settings if company else {}) or {}
-    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
-    result = apply_field_visibility(
-        result, role, field_schema, can_see_costs,
-        can_author_drafts=role_has_permission(settings, role, "edit_inventory"),
-    )
-
-    # Attach search-match reasons AFTER visibility (so they survive the dict
-    # rebuild). The UI reads each reason's value from the visibility-filtered
-    # record itself, so a role-hidden field never leaks its value through a tag.
-    if q:
+        # Reasons are computed over the visibility-filtered dict, so every cited
+        # field is one the role may see; no post-filter is needed.
         for r in result:
             r["q_match"] = [{"field": f, "match": m} for f, m in q_reasons.get(r.get("id"), [])]
 
@@ -1128,17 +1339,21 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     if row.location_id:
         loc = await session.get(Location, row.location_id)
         loc_name = loc.name if loc else None
+    units = await _get_company_units(session, company_id)
+    unit_map = {u["name"]: u for u in units}
     flat = flatten_item(row.state, row.entity_id,
                          location_id=str(row.location_id) if row.location_id else None,
                          location_name=loc_name,
                          created_at=row.created_at,
                          updated_at=row.updated_at,
-                         price_config=await get_price_config(session, company_id))
+                         price_config=await get_price_config(session, company_id),
+                         unit_map=unit_map)
     field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
     filtered = apply_field_visibility(
         [flat], role, field_schema, can_see_costs,
         can_author_drafts=role_has_permission(settings, role, "edit_inventory"),
+        derived_field_deps=DERIVED_FIELD_DEPS,
     )
     result = filtered[0]
     if str(row.state.get("status") or "").lower() == "sold" and row.state.get("status_doc_id"):
@@ -2870,7 +3085,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     # Classify the merged category's fields by their SCHEMA type, not by the shape of their values.
     # A merge must NEVER sum a field or invent a value. Only genuinely numeric-typed fields
-    # (number/money/rate) drop to no-value; every other conflicting field collapses to the "Mixed"
+    # (number/money/rate/weight) drop to no-value; every other conflicting field collapses to the "Mixed"
     # system value. Keying off the value shape (as before) misclassified custom attributes whose
     # values merely look numeric (free fields, or selects with numeric options) and silently dropped
     # them instead of showing "Mixed".
@@ -2878,7 +3093,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     _merge_category = (next(iter(categories), "") or "").strip() or None
     _schema = await get_effective_field_schema(session, company_id, category=_merge_category)
     _dropdown_keys = {f["key"] for f in _schema if f.get("type") in ("select", "status")}
-    _numeric_keys = {f["key"] for f in _schema if f.get("type") in ("number", "money", "rate")}
+    _numeric_keys = {f["key"] for f in _schema if f.get("type") in NUMERIC_SCHEMA_TYPES}
     # A schema-defined category attribute (e.g. `type`, `grade`, `color`) may be stored TOP-LEVEL
     # rather than under `attributes` — a field edit / POST /items keeps it there (only `pieces`/cost
     # are normalized). The attributes-only scan above misses those keys, so the value is silently

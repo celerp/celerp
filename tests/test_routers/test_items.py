@@ -152,6 +152,36 @@ async def test_list_items_default_excludes_sold_and_archived(client):
 
 
 @pytest.mark.asyncio
+async def test_list_items_scoped_range_returns_box(client):
+    """GET /items?q=qty_each: 1-2 returns a carat box lot whose per-stone measure
+    (quantity 6 over 4 pieces = 1.5) falls in the scoped range, and excludes a
+    denser lot whose per-stone measure is out of range."""
+    token = await _token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    box = await client.post(
+        "/items",
+        json={"status": "available", "sku": "BOX-6CT", "name": "Demantoid Parcel",
+              "quantity": 6, "sell_by": "carat", "attributes": {"pieces": 4}},
+        headers=headers,
+    )
+    dense = await client.post(
+        "/items",
+        json={"status": "available", "sku": "BOX-20CT", "name": "Dense Parcel",
+              "quantity": 20, "sell_by": "carat", "attributes": {"pieces": 4}},
+        headers=headers,
+    )
+    assert box.status_code == 200
+    assert dense.status_code == 200
+
+    r = await client.get("/items", params={"q": "qty_each: 1-2"}, headers=headers)
+    assert r.status_code == 200
+    skus = {i["sku"] for i in r.json()["items"]}
+    assert "BOX-6CT" in skus
+    assert "BOX-20CT" not in skus
+
+
+@pytest.mark.asyncio
 async def test_list_items_status_filter_sold(client):
     """GET /items?status=sold returns only sold items."""
     token = await _token(client)
