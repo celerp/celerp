@@ -407,9 +407,14 @@ def test_migrate_to_head_takes_and_frees_a_real_advisory_lock():
 
     engine = sa.create_engine(_sync_url(db_url))
     with engine.connect() as conn:
+        # pg_locks is cluster-wide, so a concurrent xdist worker on another
+        # database of the shared test server can hold this same advisory key
+        # legitimately. Scope the count to this test's own database so a
+        # neighbour's lock is not miscounted as a leak here.
         held = conn.execute(sa.text(
             "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND "
-            "((classid::bigint << 32) | objid::bigint) = :key"
+            "((classid::bigint << 32) | objid::bigint) = :key "
+            "AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
         ), {"key": _MIGRATION_LOCK_KEY}).scalar()
     engine.dispose()
     assert held == 0

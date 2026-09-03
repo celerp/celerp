@@ -41,7 +41,9 @@ class _FakeSession:
 
 
 def _mock_db():
-    """Make celerp.main.engine.begin() a no-op (no real DDL at boot)."""
+    """Make celerp.main.lifecycle_engine.begin() a no-op (no real DDL at boot).
+
+    Boot's create_all runs on the lifecycle engine, so that is the one to stub."""
     mock_conn = AsyncMock()
     mock_conn.run_sync = AsyncMock()
     mock_begin = MagicMock()
@@ -49,7 +51,7 @@ def _mock_db():
     mock_begin.__aexit__ = AsyncMock(return_value=False)
     mock_engine = MagicMock()
     mock_engine.begin = MagicMock(return_value=mock_begin)
-    return patch("celerp.main.engine", mock_engine)
+    return patch("celerp.main.lifecycle_engine", mock_engine)
 
 
 @pytest.mark.asyncio
@@ -74,7 +76,7 @@ async def test_modules_ready_commit_guarded(monkeypatch):
     monkeypatch.setattr("celerp.modules.loader.register_api_routes", lambda *a, **k: None)
     monkeypatch.setattr("celerp.modules.loader.record_load_error", lambda *a, **k: None)
     monkeypatch.setattr("celerp.modules.loader.demoted_first_party", lambda *a, **k: [])
-    monkeypatch.setattr("celerp.db.SessionLocal", lambda: _FakeSession(rollback_spy))
+    monkeypatch.setattr("celerp.db.LifecycleSessionLocal", lambda: _FakeSession(rollback_spy))
 
     # Keep the relay tunnel down (no public url, no live share).
     monkeypatch.setattr("celerp.gateway.has_active_share", AsyncMock(return_value=False))
