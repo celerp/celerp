@@ -31,7 +31,7 @@ from .services import (
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility
-from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS
+from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA
 from celerp.services.permissions import (
     assert_role_permission,
     get_current_company_settings,
@@ -519,6 +519,44 @@ _FIELD_ALIASES = {
 }
 
 
+def _is_cost_or_price_key(key: str) -> bool:
+    """True for a cost/price column, which must never become scope-searchable."""
+    return key in COST_ITEM_KEYS or key.endswith("_price") or key.endswith("_price_total")
+
+
+def searchable_field_sets(schema: list[dict]) -> tuple[frozenset[str], frozenset[str]]:
+    """Derive (numeric, text) scoped-search field sets from an effective field schema.
+
+    numeric = _NUMERIC_FIELDS plus every schema key typed "number" plus the synthetic
+    qty_each; text = _SEARCH_FIELDS plus the remaining (non-number) schema keys. Both
+    exclude cost/price keys so a price column never becomes scope-searchable. The two
+    sets are disjoint (a schema key is numeric when its type is number, else text, and
+    the two folded-in constants share no member), so the coercion test is unambiguous.
+    """
+    numeric = set(_NUMERIC_FIELDS)
+    numeric.add("qty_each")
+    text = set(_SEARCH_FIELDS)
+    for f in schema:
+        key = f.get("key")
+        if not key or _is_cost_or_price_key(key):
+            continue
+        if f.get("type") == "number":
+            numeric.add(key)
+        else:
+            text.add(key)
+    numeric -= {k for k in numeric if _is_cost_or_price_key(k)}
+    text -= numeric
+    text -= {k for k in text if _is_cost_or_price_key(k)}
+    return frozenset(numeric), frozenset(text)
+
+
+# Module-level defaults keep the pure-dict grammar callable with no DB: derived once
+# from the default item schema unioned with the two hardcoded constants. list_items
+# passes per-category sets that override these; every other caller (and the pure-dict
+# grammar tests) uses these base sets.
+_DEFAULT_NUMERIC_FIELDS, _DEFAULT_TEXT_FIELDS = searchable_field_sets(DEFAULT_ITEM_SCHEMA)
+
+
 def _numeric_values(record: dict) -> list[tuple[str, float]]:
     """The item's numeric column (field, value) pairs, skipping missing/unparseable ones."""
     vals: list[tuple[str, float]] = []
@@ -563,7 +601,11 @@ def _as_number(v: object) -> float | None:
         return None
 
 
-def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
+def _term_match_reason(
+    record: dict, term: str,
+    numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
+    text_fields: frozenset[str] = _DEFAULT_TEXT_FIELDS,
+) -> tuple[str, str] | None:
     """One AND-term: the (field, matched text) behind the hit, or None. The matched
     text is the term itself for substring hits and the whole number for numeric
     range/exact hits, so the UI can embolden exactly what matched.
@@ -572,7 +614,12 @@ def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
     resolves to its canonical field). Resolution is gated to user-facing fields - a
     core/bookkeeping key stays unsearchable (#306) even when named explicitly - and a
     scoped value may be a range (over that one field) or a substring. A term with no
-    leading `identifier:` falls through to the unscoped behavior unchanged."""
+    leading `identifier:` falls through to the unscoped behavior unchanged.
+
+    numeric_fields / text_fields are the effective per-category searchable field sets
+    (searchable_field_sets); they drive both resolution and whether a scoped value is
+    coerced to a number. They default to the module-level sets so the grammar stays
+    callable with no DB."""
     scope = _SCOPE_RE.match(term)
     if scope:
         raw = scope.group(1)
@@ -585,8 +632,8 @@ def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
         # is still found instead of dropping the search.
         resolved = bool(value) and (
             raw in _FIELD_ALIASES
-            or field in _SEARCH_FIELDS
-            or field in _NUMERIC_FIELDS
+            or field in numeric_fields
+            or field in text_fields
             or (field in record and not _is_core_key(field))
         )
         if resolved:
@@ -594,9 +641,10 @@ def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
             # matched as strings only - never coerced to numbers - so leading zeros and
             # other identity survive: `sku: 001` must not match a stored "1", and a
             # barcode `00123` must not match "123". Numeric coercion (range and exact
-            # equality) applies to genuine numeric fields and dynamic numeric attributes,
-            # which are not in _SEARCH_FIELDS.
-            numeric_ok = field not in _SEARCH_FIELDS
+            # equality) applies to every field that is not a known text field: genuine
+            # numeric columns, number-typed category fields, and dynamic attributes with
+            # no schema entry (which are in neither set).
+            numeric_ok = field not in text_fields
             rng = _RANGE_RE.match(value)
             if numeric_ok and rng:
                 lo, hi = float(rng.group(1)), float(rng.group(2))
@@ -642,16 +690,23 @@ def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
     return None
 
 
-def query_match_reasons(record: dict, q: str) -> list[tuple[str, str]] | None:
+def query_match_reasons(
+    record: dict, q: str,
+    numeric_fields: frozenset[str] = _DEFAULT_NUMERIC_FIELDS,
+    text_fields: frozenset[str] = _DEFAULT_TEXT_FIELDS,
+) -> list[tuple[str, str]] | None:
     """Match a flattened item dict against the search grammar. `,` ORs groups, `&`
     ANDs the terms within a group; empty terms and empty groups are dropped.
     Returns the first matching group's (field, matched text) pairs - one per
-    AND-term, deduped, order preserved - or None when no group matches."""
+    AND-term, deduped, order preserved - or None when no group matches.
+
+    numeric_fields / text_fields are the effective per-category searchable field sets
+    threaded to _term_match_reason; they default to the module-level sets."""
     for group in q.split(","):
         terms = [t.strip().lower() for t in group.split("&") if t.strip()]
         if not terms:
             continue
-        reasons = [_term_match_reason(record, term) for term in terms]
+        reasons = [_term_match_reason(record, term, numeric_fields, text_fields) for term in terms]
         if all(r is not None for r in reasons):
             deduped: list[tuple[str, str]] = []
             for r in reasons:

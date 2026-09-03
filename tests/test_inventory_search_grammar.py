@@ -254,3 +254,63 @@ def test_scoped_textual_identifier_not_numeric_coerced():
     assert query_match_reasons(_item(name="E", sku="SHOT001"), "sku: 001") == [("sku", "001")]
     # Numeric fields are unaffected: a numeric-looking value still coerces (1 == 001).
     assert query_match_reasons(_item(name="F", sku="X", quantity=1), "qty: 001") == [("quantity", "001")]
+
+
+def test_scoped_range_core_numeric_field():
+    """A scoped range resolves over a CORE numeric field (schema type `number`),
+    not only the three unscoped range columns. `gross_weight: 1-2` and
+    `reorder_point: 5-10` match by number and tag the named field, because the
+    module-level numeric set folds in every `number`-typed default-schema key.
+    An out-of-range value returns None (failure path)."""
+    gw = _item(name="Bar", sku="BAR1", gross_weight=1.5)
+    assert query_match_reasons(gw, "gross_weight: 1-2") == [("gross_weight", "1.5")]
+    rp = _item(name="Bar", sku="BAR2", reorder_point=7)
+    assert query_match_reasons(rp, "reorder_point: 5-10") == [("reorder_point", "7")]
+    # Out of range: no match, no fabricated hit.
+    assert query_match_reasons(_item(name="Bar", sku="BAR3", gross_weight=9),
+                               "gross_weight: 1-2") is None
+
+
+def test_scoped_qty_each_numeric():
+    """`qty_each` is a synthetic numeric field pinned into the numeric set. A scoped
+    range coerces it as a number. The numeric set is passed explicitly via the new
+    `numeric_fields` parameter; a same-named field placed in `text_fields` instead
+    would NOT coerce (control), proving coercion follows the passed sets, not the
+    field name."""
+    lot = _item(name="Parcel", sku="P1", qty_each=1.5)
+    assert query_match_reasons(lot, "qty_each: 1-2",
+                               numeric_fields={"qty_each"}) == [("qty_each", "1.5")]
+    # Same field, but declared textual: a range does not coerce, so no numeric hit.
+    assert query_match_reasons(_item(name="Parcel", sku="P2", qty_each="1.5"),
+                               "qty_each: 1-2", text_fields={"qty_each"}) is None
+
+
+def test_scoped_textual_category_field_not_coerced():
+    """A text-typed category field must not be numeric-coerced: leading zeros keep
+    their identity. With `certificate_no` declared textual, `certificate_no: 00123`
+    does NOT match a stored "123" but DOES match a stored "00123". A control field
+    left numeric still coerces (001 == 1)."""
+    text = {"certificate_no"}
+    assert query_match_reasons(_item(name="A", sku="A1", certificate_no="123"),
+                               "certificate_no: 00123", text_fields=text) is None
+    assert query_match_reasons(_item(name="B", sku="B1", certificate_no="00123"),
+                               "certificate_no: 00123", text_fields=text) == [("certificate_no", "00123")]
+    # Control: a numeric field still coerces (001 == 1).
+    assert query_match_reasons(_item(name="C", sku="C1", quantity=1),
+                               "qty: 001", numeric_fields={"quantity"}) == [("quantity", "001")]
+
+
+def test_scoped_search_field_identifier_preserved():
+    """Preserve-behavior guard (green at merge-base): the two hardcoded constants
+    still resolve after folding them into the derived sets. `status_doc_number`,
+    `lot`, `unit` (all in `_SEARCH_FIELDS`) resolve and match as text; `weight`
+    (in `_NUMERIC_FIELDS`) still resolves numeric. Fails only if a constant is
+    dropped from the resolve gate."""
+    assert query_match_reasons(_item(name="X", sku="X1", status_doc_number="SO-1042"),
+                               "status_doc_number: so-1042") == [("status_doc_number", "so-1042")]
+    assert query_match_reasons(_item(name="Y", sku="Y1", lot="LOT-77A"),
+                               "lot: lot-77a") == [("lot", "lot-77a")]
+    assert query_match_reasons(_item(name="Z", sku="Z1", unit="kilogram"),
+                               "unit: kilogram") == [("unit", "kilogram")]
+    assert query_match_reasons(_item(name="W", sku="W1", weight=1.5),
+                               "weight: 1-2") == [("weight", "1.5")]
