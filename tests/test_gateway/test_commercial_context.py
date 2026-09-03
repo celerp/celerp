@@ -458,3 +458,90 @@ async def test_system_commercial_state_endpoint_returns_state(client):
     assert body["commercial_context"]["commercial_mode"] == "partner_managed"
     assert body["commercial_mode"] == "partner_managed"
     assert body["partner_identity"]["partner_id"] == "partner-1"
+
+
+# -- support_url trust boundary at ingress (BLOCKER 1) -----------------------
+
+def test_set_context_bad_support_url_drops_implementation():
+    """A present-but-invalid support_url causes the whole implementation block to
+    be dropped (fail closed): the context is still accepted (version advances)
+    but no partner identity survives to reach an href."""
+    impl = {"display_name": "Partner Co", "support_url": "javascript:alert(1)"}
+    assert gw_state.set_commercial_context(
+        _ctx(version=1, mode="partner_managed", implementation=impl)) is True
+    assert gw_state.get_partner_identity() is None
+    # The malformed URL never survives anywhere in the held model.
+    assert "javascript:" not in json.dumps(gw_state.get_commercial_context())
+
+
+def test_set_context_valid_support_url_kept():
+    """A valid https support_url keeps the implementation block (positive
+    control: the ingress guard must not drop a genuine partner)."""
+    impl = {"display_name": "Partner Co",
+            "support_url": "https://partner.example.com/support"}
+    assert gw_state.set_commercial_context(
+        _ctx(version=1, mode="partner_managed", implementation=impl)) is True
+    identity = gw_state.get_partner_identity()
+    assert identity is not None
+    assert identity["support_url"] == "https://partner.example.com/support"
+
+
+# -- nested-offer strict validation at ingress (BLOCKER 4) -------------------
+
+def test_set_context_offer_retail_amount_rejected():
+    """A retail_amount that is a bool, negative, or oversized normalizes the offer
+    to None while keeping partner identity."""
+    for bad_amount in (True, False, -100, 10 ** 12):
+        gw_state._commercial_context = {}
+        offer = {"display_name": "Managed Plan", "retail_amount": bad_amount,
+                 "currency": "USD"}
+        assert gw_state.set_commercial_context(
+            _ctx(version=1, mode="partner_managed", offer=offer)) is True
+        assert gw_state.get_offer() is None, f"amount={bad_amount!r} was not rejected"
+        assert gw_state.get_partner_identity() is not None
+
+
+def test_set_context_offer_service_bullets_nonlist():
+    """A non-list service_bullets normalizes the offer to None (no raise), keeping
+    partner identity."""
+    offer = {"display_name": "Managed Plan", "retail_amount": 4900,
+             "currency": "USD", "service_bullets": 42}
+    assert gw_state.set_commercial_context(
+        _ctx(version=1, mode="partner_managed", offer=offer)) is True
+    assert gw_state.get_offer() is None
+    assert gw_state.get_partner_identity() is not None
+
+
+def test_set_context_offer_currency_nonstring():
+    """A non-string currency normalizes the offer to None, keeping partner
+    identity."""
+    offer = {"display_name": "Managed Plan", "retail_amount": 4900,
+             "currency": 840}
+    assert gw_state.set_commercial_context(
+        _ctx(version=1, mode="partner_managed", offer=offer)) is True
+    assert gw_state.get_offer() is None
+    assert gw_state.get_partner_identity() is not None
+
+
+def test_set_context_valid_offer_kept():
+    """A well-formed offer survives ingress (positive control)."""
+    assert gw_state.set_commercial_context(
+        _ctx(version=1, mode="partner_managed")) is True
+    offer = gw_state.get_offer()
+    assert offer is not None
+    assert offer["retail_amount"] == 4900
+
+
+# -- cache routes through the gate (STEP-1 rebase regression guard) ----------
+
+def test_load_commercial_context_routes_through_gate(monkeypatch, tmp_path):
+    """A cached context carrying a malformed support_url is not applied
+    unvalidated at startup: the implementation block is dropped so no partner
+    identity with a hostile URL survives."""
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    cached = _ctx(version=1, mode="partner_managed")
+    cached["implementation"]["support_url"] = "javascript:alert(1)"
+    _write_cache(tmp_path, cached)
+    gw_state.load_commercial_context()
+    assert gw_state.get_partner_identity() is None
+    assert "javascript:" not in json.dumps(gw_state.get_commercial_context())
