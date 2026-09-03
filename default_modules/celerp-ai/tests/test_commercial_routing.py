@@ -20,12 +20,10 @@ import pytest
 import pytest_asyncio
 from fasthtml.common import to_xml
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 from unittest.mock import AsyncMock, patch
 
 import celerp.gateway.state as gw_state
-from celerp.db import get_session
-from celerp.main import app
+from test_helpers import authed_cookies
 
 
 @pytest.fixture(autouse=True)
@@ -96,7 +94,9 @@ def test_ai_403_upgrade_routes_through_policy():
     url = _batch_upgrade_url()
     assert "/subscribe" not in url
     assert "plan=ai" not in url
-    assert "/enterprise" in url
+    # partner_managed routes to the partner support destination, never direct
+    # Celerp checkout.
+    assert url == "https://partner.example.com/support"
 
 
 def test_ai_403_upgrade_direct_unchanged():
@@ -131,38 +131,28 @@ def test_ai_showcase_direct_keeps_price():
 # ── quota-status proxy topup_url injection ──────────────────────────────────
 
 @pytest_asyncio.fixture
-async def auth_client(session: AsyncSession):
-    from celerp.services.session_tracker import clear as _clear_tracker
-    await _clear_tracker(session)
-    app.dependency_overrides[get_session] = lambda: session
-    if hasattr(app.state, "limiter"):
-        app.state.limiter.enabled = False
-    token = secrets.token_hex(32)
-    gw_state.set_session_token(token)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        await c.post("/auth/register", json={
-            "company_name": "AiCommCo", "email": "aicomm@example.com",
-            "name": "Admin", "password": "pw",
-        })
-        r = await c.post("/auth/login", json={"email": "aicomm@example.com", "password": "pw"})
-        jwt = r.json()["access_token"]
-        headers = {"Authorization": f"Bearer {jwt}", "X-Session-Token": token}
-        yield c, headers
-    app.dependency_overrides.clear()
-    gw_state.set_session_token("")
+async def auth_client():
+    """UI-app client with the celerp-ai module routes registered; the
+    quota-status route lives on the FastHTML UI app and reads its token from the
+    auth cookie."""
+    from ui.app import app as ui_app
+    from celerp_ai.ui_routes import setup_ui_routes
+    setup_ui_routes(ui_app)
+    async with AsyncClient(transport=ASGITransport(app=ui_app),
+                           base_url="http://ui", follow_redirects=False) as c:
+        yield c
 
 
 @pytest.mark.asyncio
 async def test_ai_quota_status_topup_url_policy(auth_client):
     """The UI quota-status proxy injects a resolver-computed topup_url; under
     partner_managed it is not a direct /subscribe/topup URL."""
-    c, h = auth_client
     _set_partner()
     mock_status = {"used": 15, "limit": 200, "topup_credits": 0,
                    "resets_at": "", "tier": "ai"}
     with patch("celerp_ai.ui_routes.api.ai_quota_status",
                AsyncMock(return_value=mock_status | {"instance_id": "inst-1"})):
-        r = await c.get("/ai/quota-status", headers=h)
+        r = await auth_client.get("/ai/quota-status", cookies=authed_cookies())
     data = r.json()
     assert "topup_url" in data
     assert "/subscribe/topup" not in data["topup_url"]
@@ -172,12 +162,11 @@ async def test_ai_quota_status_topup_url_policy(auth_client):
 async def test_ai_quota_status_topup_url_direct(auth_client):
     """celerp_direct: the injected topup_url is the direct topup URL (positive
     control)."""
-    c, h = auth_client
     mock_status = {"used": 15, "limit": 200, "topup_credits": 0,
                    "resets_at": "", "tier": "ai"}
     with patch("celerp_ai.ui_routes.api.ai_quota_status",
                AsyncMock(return_value=mock_status | {"instance_id": "inst-1"})):
-        r = await c.get("/ai/quota-status", headers=h)
+        r = await auth_client.get("/ai/quota-status", cookies=authed_cookies())
     data = r.json()
     assert "/subscribe/topup" in data["topup_url"]
 
