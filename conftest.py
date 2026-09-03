@@ -441,9 +441,17 @@ def _reset_gateway_state():
     """
     from celerp.gateway import state as _gw
     _iid, _tok = _gw.get_instance_id(), _gw.get_session_token()
+    # Relay-pushed commercial state (feature flags + commercial context) also
+    # lives in gateway-state module globals. A test that pushes flags or a
+    # commercial context leaks them into later tests on the same worker. The
+    # setter for commercial context rejects a non-newer version, so restore its
+    # global directly rather than through set_commercial_context.
+    _flags, _ctx = _gw.get_feature_flags(), _gw.get_commercial_context()
     yield
     _gw.set_instance_id(_iid)
     _gw.set_session_token(_tok)
+    _gw.set_feature_flags(_flags)
+    _gw._commercial_context = _ctx
     # Gateway-lifecycle globals: a test that patches asyncio.create_task while the
     # real ensure_running() runs leaves celerp.gateway._run_task a MagicMock (and
     # can leave a stray client). A later test's gateway shutdown() would then await
