@@ -497,6 +497,78 @@ class TestFieldVisibility:
         assert len(mitems) == 1
         assert "quantity" in {m["field"] for m in mitems[0].get("q_match", [])}
 
+    async def test_hidden_category_attribute_no_oracle(self, client, session):
+        """A category attribute a role may not see must leak through no side channel:
+        not the attribute funnel facets, not an attr.* filter, not a scoped q-search.
+        An operator denied the `origin` attribute (visible_to_roles set on the category
+        schema) gets it absent from attribute_facets, `attr.origin=Kashmir` returns [],
+        and `q=origin: Kashmir` returns []; a manager sees all three."""
+        ctx = await _setup(client, session)
+        # An item in category Gem carrying an origin attribute the operator will be denied.
+        cr = await client.post(
+            "/items",
+            json={"sku": "GEM-1", "name": "Sapphire", "quantity": 2,
+                  "location_id": ctx["location_id"], "sell_by": "piece",
+                  "status": "available", "category": "Gem", "origin": "Kashmir"},
+            headers=ctx["admin_h"],
+        )
+        assert cr.status_code == 200, cr.text
+        # Hide origin from operator via the category schema (admin+manager only).
+        pr = await client.patch(
+            "/companies/me/category-schema/Gem",
+            json={"fields": [{"key": "origin", "label": "Origin", "type": "text",
+                              "visible_to_roles": ["admin", "manager"]}]},
+            headers=ctx["admin_h"],
+        )
+        assert pr.status_code == 200, pr.text
+
+        # Operator: no facet, no attr.* membership, no q-search membership.
+        of = await client.get("/items", headers=ctx["operator_h"])
+        assert of.status_code == 200
+        assert "origin" not in of.json()["attribute_facets"]
+        oa = await client.get("/items", params={"attr.origin": "Kashmir"}, headers=ctx["operator_h"])
+        assert oa.json()["items"] == [], "hidden attribute leaked via attr.* filter"
+        oq = await client.get("/items", params={"q": "origin: Kashmir"}, headers=ctx["operator_h"])
+        assert oq.json()["items"] == [], "hidden attribute leaked via q-search"
+
+        # Manager: sees the facet, the attr.* match, and the q-search match.
+        mf = await client.get("/items", headers=ctx["manager_h"])
+        assert "Kashmir" in mf.json()["attribute_facets"].get("origin", [])
+        ma = await client.get("/items", params={"attr.origin": "Kashmir"}, headers=ctx["manager_h"])
+        assert len(ma.json()["items"]) == 1
+        mq = await client.get("/items", params={"q": "origin: Kashmir"}, headers=ctx["manager_h"])
+        assert len(mq.json()["items"]) == 1
+
+    async def test_low_stock_filter_no_reorder_oracle(self, client, session):
+        """The low_stock filter must not become an oracle over a hidden quantity. An
+        operator denied `quantity` requesting ?filter=low_stock gets hidden-quantity
+        items excluded, identical whatever the true quantity is (no membership oracle);
+        a manager sees the true low-stock set."""
+        ctx = await _setup(client, session)
+        # An item below its reorder point: quantity 1 <= reorder_point 5.
+        cr = await client.post(
+            "/items",
+            json={"sku": "LOW-1", "name": "Low Item", "quantity": 1,
+                  "location_id": ctx["location_id"], "sell_by": "piece",
+                  "status": "available", "reorder_point": 5},
+            headers=ctx["admin_h"],
+        )
+        assert cr.status_code == 200, cr.text
+        await _restrict_item_fields(client, ctx["admin_h"], {"quantity"})
+
+        # Operator cannot see quantity, so a hidden-quantity item is excluded from the
+        # low_stock membership - it cannot be probed for being at/below reorder.
+        ol = await client.get("/items", params={"filter": "low_stock"}, headers=ctx["operator_h"])
+        assert ol.status_code == 200
+        assert all(i.get("sku") != "LOW-1" for i in ol.json()["items"]), \
+            "low_stock leaked membership of a hidden-quantity item"
+        for i in ol.json()["items"]:
+            assert "quantity" not in i
+        # Manager sees quantity, so the true low-stock item is present.
+        ml = await client.get("/items", params={"filter": "low_stock"}, headers=ctx["manager_h"])
+        assert any(i.get("sku") == "LOW-1" for i in ml.json()["items"]), \
+            "manager should see the true low-stock item"
+
 
 # ── Write-path: cost_price field write guard ──────────────────────────────────
 

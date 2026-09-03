@@ -874,14 +874,56 @@ async def list_items(
         locs = {loc.strip() for loc in location_id.split(",") if loc.strip()}
         result = [r for r in result if str(r.get("location_id") or "") in locs]
 
+    # Apply visible_to_roles filtering from the effective field schema BEFORE any
+    # membership-affecting step (facets, attr.* filter, sku/barcode, low_stock, and
+    # search matching). Were a hidden field allowed to steer membership, an item's mere
+    # presence in the result set would disclose that field's value - searching `qty: 5`
+    # and getting the row back reveals the hidden quantity, and a low_stock or attr.*
+    # hit is the same oracle. apply_field_visibility drops stripped keys from the dict,
+    # so every step below operates only over fields the requesting role may see. The
+    # effective schema is resolved PER the item's category, mirroring the detail
+    # endpoint, so a category-scoped restriction is honored and a null/unresolved
+    # category falls back to the base item schema (identical disclosure to detail).
+    company = await session.get(Company, company_id)
+    settings = (company.settings if company else {}) or {}
+    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+    can_author_drafts = role_has_permission(settings, role, "edit_inventory")
+    # Per-category schema cache: N items across M categories cost M schema resolves.
+    _schema_cache: dict[str | None, tuple[list[dict], frozenset[str], frozenset[str]]] = {}
+
+    async def _category_ctx(cat: str | None):
+        if cat not in _schema_cache:
+            fs = await get_effective_field_schema(session, company_id, category=cat)
+            num, txt = searchable_field_sets(fs)
+            _schema_cache[cat] = (fs, num, txt)
+        return _schema_cache[cat]
+
+    # Read each item's category before stripping (the grouping key may itself be hidden),
+    # then strip per its category schema. numeric/text sets are stashed for the q-search
+    # loop below, keyed by the item id.
+    item_field_sets: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
+    stripped: list[dict] = []
+    for r in result:
+        cat = r.get("category")
+        fs, num, txt = await _category_ctx(cat)
+        item_field_sets[r.get("id")] = (num, txt)
+        stripped.append(apply_field_visibility(
+            [r], role, fs, can_see_costs,
+            can_author_drafts=can_author_drafts,
+            derived_field_deps=DERIVED_FIELD_DEPS,
+        )[0])
+    result = stripped
+
     # Distinct attribute values for the column-filter funnels, over the status/category/type/location
     # scope and BEFORE attribute filters are applied (so every available value stays selectable).
+    # Built from the visibility-stripped dicts: an attribute is a non-core, non-numeric key on the
+    # flattened item, so a role-hidden attribute (stripped above) never appears in a facet value.
     _FACET_MAX = 500
-    attrs_by_id = {r.entity_id: (r.state.get("attributes") or {}) for r in rows}
     facet_sets: dict[str, set] = {}
     for r in result:
-        for akey, aval in attrs_by_id.get(r.get("id"), {}).items():
-            if aval in (None, ""):
+        num, _ = item_field_sets.get(r.get("id"), (_DEFAULT_NUMERIC_FIELDS, _DEFAULT_TEXT_FIELDS))
+        for akey, aval in r.items():
+            if _is_core_key(akey) or akey in num or aval in (None, ""):
                 continue
             s = facet_sets.setdefault(akey, set())
             if len(s) < _FACET_MAX:
@@ -912,33 +954,24 @@ async def list_items(
     # cards' /inventory?filter=low_stock link and the reorder alert action_url).
     if filter == "low_stock":
         # Drafts are not stock: an unfinished item must not raise a reorder alarm.
+        # Guarded on a visible quantity: is_below_reorder reads quantity defaulting a
+        # missing value to 0, so a stripped (role-hidden) quantity would falsely include
+        # the item - excluding it keeps low_stock from being an oracle over the hidden
+        # quantity / reorder point.
         result = [r for r in result
-                  if is_below_reorder(r) and str(r.get("status") or "").lower() != "draft"]
-
-    # Apply visible_to_roles filtering from the company field schema BEFORE search
-    # matching. Matching must operate only over fields the requesting role may see:
-    # were a hidden field allowed to match, the item's mere presence in the result
-    # set would disclose that field's value - searching `qty: 5` and getting the row
-    # back reveals the hidden quantity is 5, a search oracle around the body-level
-    # strip. apply_field_visibility drops stripped keys from the dict, so matching the
-    # filtered dict can never cite a field the role cannot see, scoped or free-text.
-    field_schema = await get_effective_field_schema(session, company_id, category=None)
-    company = await session.get(Company, company_id)
-    settings = (company.settings if company else {}) or {}
-    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
-    result = apply_field_visibility(
-        result, role, field_schema, can_see_costs,
-        can_author_drafts=role_has_permission(settings, role, "edit_inventory"),
-        derived_field_deps=DERIVED_FIELD_DEPS,
-    )
+                  if "quantity" in r and is_below_reorder(r)
+                  and str(r.get("status") or "").lower() != "draft"]
 
     if q:
         # Grammar: comma = OR groups, & = AND terms, lo-hi = numeric range, bare
         # number = numeric-exact OR text, else text substring (query_match_reasons).
+        # Each item is matched against its own category's numeric/text field sets, so a
+        # number-typed category field resolves and a text-typed one is not coerced.
         q_reasons: dict = {}
         matched = []
         for r in result:
-            reasons = query_match_reasons(r, q)
+            num, txt = item_field_sets.get(r.get("id"), (_DEFAULT_NUMERIC_FIELDS, _DEFAULT_TEXT_FIELDS))
+            reasons = query_match_reasons(r, q, num, txt)
             if reasons is not None:
                 q_reasons[r.get("id")] = reasons
                 matched.append(r)
