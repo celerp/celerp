@@ -1,0 +1,185 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
+
+"""POST /items/metadata: bulk item-metadata read for list/doc/audit renderers.
+
+The endpoint returns, per requested entity_id, the same visibility-filtered flat
+item dict that GET /items/{entity_id} returns (minus the sold_price enrichment
+lists never consume). It is a read gated by the router-level authentication only,
+with company_id derived server-side from the JWT, and it must reproduce the exact
+per-category, role-based field/cost visibility of the per-item route.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+import pytest
+
+from test_helpers import (
+    register_admin,
+    invite_user,
+    create_item,
+    default_location_id,
+    create_location,
+)
+
+
+async def _admin_ctx(client):
+    tok = await register_admin(client)
+    h = {"Authorization": f"Bearer {tok}"}
+    loc = await default_location_id(client, h)
+    return h, loc
+
+
+async def _set_company_settings(session, patch: dict) -> None:
+    """Merge *patch* into the (single) company's settings via the session.
+
+    Reassigns the whole settings dict so the JSON column is marked dirty.
+    """
+    from sqlalchemy import select
+    from celerp.models.company import Company
+
+    co = (await session.execute(select(Company))).scalars().first()
+    merged = dict(co.settings or {})
+    merged.update(patch)
+    co.settings = merged
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_items_metadata_single_query(client):
+    """A single POST returns one entry per requested id; the flat shape matches
+    GET /items/{id} for the same item (minus sold_price)."""
+    h, loc = await _admin_ctx(client)
+    id1 = await create_item(client, h, loc, sku="META-1")
+    id2 = await create_item(client, h, loc, sku="META-2")
+
+    r = await client.post("/items/metadata", json={"entity_ids": [id1, id2]}, headers=h)
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    assert set(items.keys()) == {id1, id2}
+
+    single = (await client.get(f"/items/{id1}", headers=h)).json()
+    single.pop("sold_price", None)
+    assert items[id1] == single
+
+
+@pytest.mark.asyncio
+async def test_items_metadata_preserves_visibility(client, session):
+    """For a restricted role, the bulk result carries the SAME field/cost set as
+    GET /items/{id} for the same item. An operator lacks view_inventory_costs by
+    default, so cost keys are stripped identically on both paths."""
+    h, loc = await _admin_ctx(client)
+    item_id = await create_item(client, h, loc, sku="VIS-1")
+
+    op_tok = await invite_user(client, session, h, "operator@acme.example", "operator")
+    op_h = {"Authorization": f"Bearer {op_tok}"}
+
+    single = (await client.get(f"/items/{item_id}", headers=op_h)).json()
+    single.pop("sold_price", None)
+
+    r = await client.post("/items/metadata", json={"entity_ids": [item_id]}, headers=op_h)
+    assert r.status_code == 200, r.text
+    bulk = r.json()["items"][item_id]
+
+    assert "cost_price" not in bulk and "cost_total" not in bulk
+    assert bulk == single
+
+
+@pytest.mark.asyncio
+async def test_items_metadata_per_category_schema(client, session):
+    """Two items in DIFFERENT categories share a custom field key that is restricted
+    (visible_to_roles) in one category and unrestricted in the other. For a low role
+    the key must be PRESENT for the unrestricted-category item and ABSENT for the
+    restricted-category item, proving each item's OWN category schema is applied and
+    never one shared schema or category=None (which would leak or over-strip)."""
+    h, loc = await _admin_ctx(client)
+
+    # secret_note is visible to managers+ under category "Restricted"; open to all
+    # under category "Open". An operator (below manager) must see it only in "Open".
+    field_restricted = {
+        "key": "secret_note", "label": "Secret", "type": "text",
+        "editable": True, "required": False, "options": [],
+        "visible_to_roles": ["manager"], "position": 50, "show_in_table": True,
+    }
+    field_open = {**field_restricted, "visible_to_roles": []}
+    await _set_company_settings(session, {
+        "category_schemas": {
+            "Restricted": [field_restricted],
+            "Open": [field_open],
+        }
+    })
+
+    id_restricted = await create_item(client, h, loc, sku="CAT-R")
+    id_open = await create_item(client, h, loc, sku="CAT-O")
+    assert (await client.patch(f"/items/{id_restricted}",
+        json={"fields_changed": {"category": {"old": None, "new": "Restricted"},
+                                 "secret_note": {"old": None, "new": "hush"}}},
+        headers=h)).status_code == 200
+    assert (await client.patch(f"/items/{id_open}",
+        json={"fields_changed": {"category": {"old": None, "new": "Open"},
+                                 "secret_note": {"old": None, "new": "shown"}}},
+        headers=h)).status_code == 200
+
+    op_tok = await invite_user(client, session, h, "op2@acme.example", "operator")
+    op_h = {"Authorization": f"Bearer {op_tok}"}
+
+    r = await client.post("/items/metadata",
+                          json={"entity_ids": [id_restricted, id_open]}, headers=op_h)
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    assert "secret_note" not in items[id_restricted], (
+        "restricted-category field must be stripped for the low role")
+    assert items[id_open].get("secret_note") == "shown", (
+        "unrestricted-category field must survive for the low role")
+
+
+@pytest.mark.asyncio
+async def test_items_metadata_dedup(client):
+    """Duplicate entity_ids collapse to one result each (map keyed by id)."""
+    h, loc = await _admin_ctx(client)
+    item_id = await create_item(client, h, loc, sku="DUP-1")
+
+    r = await client.post("/items/metadata",
+                          json={"entity_ids": [item_id, item_id, item_id]}, headers=h)
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    assert list(items.keys()) == [item_id]
+
+
+@pytest.mark.asyncio
+async def test_items_metadata_unknown_ids_absent(client):
+    """Unknown ids are simply absent from the result map: no error, no fabricated
+    entry."""
+    h, loc = await _admin_ctx(client)
+    known = await create_item(client, h, loc, sku="KNOWN-1")
+    missing = "item:does-not-exist"
+
+    r = await client.post("/items/metadata",
+                          json={"entity_ids": [known, missing]}, headers=h)
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    assert known in items
+    assert missing not in items
+
+
+@pytest.mark.asyncio
+async def test_items_metadata_validation(client):
+    """Empty list and an over-max list are rejected function-level with 422."""
+    h, _ = await _admin_ctx(client)
+
+    r_empty = await client.post("/items/metadata", json={"entity_ids": []}, headers=h)
+    assert r_empty.status_code == 422, r_empty.text
+
+    from celerp_inventory.routes import MAX_ITEMS_METADATA
+    over = [f"item:{i}" for i in range(MAX_ITEMS_METADATA + 1)]
+    r_over = await client.post("/items/metadata", json={"entity_ids": over}, headers=h)
+    assert r_over.status_code == 422, r_over.text
+
+
+@pytest.mark.asyncio
+async def test_items_metadata_requires_auth(client):
+    """An unauthenticated request is rejected by the router-level auth dependency."""
+    r = await client.post("/items/metadata", json={"entity_ids": ["item:x"]})
+    assert r.status_code == 401, r.text

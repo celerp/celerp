@@ -1117,6 +1117,92 @@ async def list_item_categories(
     return sorted(schema_cats | item_cats)
 
 
+# Upper bound on a single bulk-metadata request. A detail list can carry a few
+# thousand lines; 5000 covers the largest real lists with margin while keeping one
+# request bounded (mirrors the bounded-list precedent on ImportRecord).
+MAX_ITEMS_METADATA = 5000
+
+
+class ItemsMetadataBody(BaseModel):
+    entity_ids: list[str] = Field(..., min_length=1, max_length=MAX_ITEMS_METADATA)
+
+
+@router.post("/metadata")
+async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    """Bulk item-metadata read: one entry per requested id, keyed by entity_id.
+
+    Returns the same visibility-filtered flat dict GET /items/{entity_id} returns
+    per item, minus the sold_price enrichment (list/doc/audit renderers never read
+    it). This is a read gated by the router-level authentication; company_id is
+    derived server-side from the JWT, never from the body, and the query is scoped
+    to that company so it cannot read another company's items. Field/cost
+    visibility is applied per the item's OWN category, exactly as the per-item
+    route does, so restricted fields never leak. Unknown ids are simply absent from
+    the result (no error, no fabricated entry).
+    """
+    from celerp.models.company import Location
+    from celerp.services.field_schema import get_effective_field_schema
+
+    # pydantic rejects an empty or over-max list with 422 before this runs; dedup
+    # so a repeated id resolves once.
+    ids = list(dict.fromkeys(payload.entity_ids))
+
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_id.in_(ids),
+        )
+    )).scalars().all()
+    if not rows:
+        return {"items": {}}
+
+    loc_ids = {r.location_id for r in rows if r.location_id}
+    loc_names: dict = {}
+    if loc_ids:
+        locs = (await session.execute(
+            select(Location).where(Location.id.in_(loc_ids))
+        )).scalars().all()
+        loc_names = {loc.id: loc.name for loc in locs}
+
+    price_config = await get_price_config(session, company_id)
+    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+    can_author_drafts = role_has_permission(settings, role, "edit_inventory")
+
+    flats: list[dict] = []
+    flat_by_eid: dict = {}
+    for row in rows:
+        flat = flatten_item(
+            row.state, row.entity_id,
+            location_id=str(row.location_id) if row.location_id else None,
+            location_name=loc_names.get(row.location_id) if row.location_id else None,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            price_config=price_config,
+        )
+        flats.append(flat)
+        flat_by_eid[row.entity_id] = flat
+
+    # Group by the item's own category and apply the per-category effective schema
+    # once per distinct category, exactly as GET /items/{id} does with a single
+    # item. A single shared schema (or category=None) would leak a field restricted
+    # in one category but visible in another.
+    by_category: dict = {}
+    for flat in flats:
+        by_category.setdefault(flat.get("category"), []).append(flat)
+
+    result: dict = {}
+    for category, group in by_category.items():
+        field_schema = await get_effective_field_schema(session, company_id, category=category)
+        filtered = apply_field_visibility(
+            group, role, field_schema, can_see_costs,
+            can_author_drafts=can_author_drafts,
+        )
+        for flat in filtered:
+            result[flat["id"]] = flat
+
+    return {"items": result}
+
+
 @router.get("/{entity_id}")
 async def get_item(entity_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.models.company import Location
