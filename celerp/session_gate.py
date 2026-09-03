@@ -19,7 +19,11 @@ from __future__ import annotations
 
 from fastapi import HTTPException, Request, status
 
-from celerp.gateway.state import get_session_token, relay_subscribe_url
+from celerp.gateway.state import (
+    build_commercial_handoff,
+    get_instance_id,
+    get_session_token,
+)
 
 
 def require_session_token(request: Request) -> None:
@@ -61,8 +65,12 @@ def require_session_token(request: Request) -> None:
     if current:
         return  # Gateway is connected, allow through
 
-    # No session anywhere
-    url = relay_subscribe_url()
+    # No session anywhere. Route the acquisition URL through the commercial
+    # policy so a partner-managed install is sent to its partner, never a direct
+    # Celerp checkout.
+    from celerp.config import settings
+    url = build_commercial_handoff(
+        get_instance_id() or settings.gateway_instance_id, "subscribe", "cloud")
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=(

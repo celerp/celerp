@@ -433,7 +433,7 @@ def _reset_hot_path_caches():
 def _reset_gateway_state():
     """Restore the gateway-state module globals around each test.
 
-    relay_subscribe_url() reads `_instance_id` (set by the gateway client on
+    The commercial resolver reads `_instance_id` (set by the gateway client on
     connect) which OVERRIDES settings.gateway_instance_id. A test that connects
     the client leaks `_instance_id` into later tests in other modules — e.g. the
     AI subscribe-URL tests, which patch settings.gateway_instance_id and would
