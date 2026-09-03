@@ -6172,6 +6172,16 @@ async def scan_list(
                     lines.insert(0, _scan_line_from_item(item, lt, None))
                     result_state = "added"
             else:
+                # A list holds one line per physical lot: the same item scanned again (already
+                # added earlier in this batch, or already on the list from a prior submit) is
+                # reported and skipped, not duplicated. `idx` is recomputed each iteration
+                # against the live `lines`, so this dedups both within-batch and against
+                # persisted lines - matching the audit branch's set semantics above.
+                if idx is not None:
+                    detail = f"{item.state.get('sku') or code}: already on the list"
+                    failed.append({"code": code, "reason": "duplicate_scan", "label": detail})
+                    results.append({"code": code, "state": "error", "reason": "duplicate_scan", "label": detail})
+                    continue
                 if price_config is None:
                     price_config = await get_price_config(session, company_id)
                 lines.append(_scan_line_from_item(item, lt, payload.price_list, price_config=price_config))

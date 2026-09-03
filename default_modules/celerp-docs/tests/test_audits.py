@@ -286,6 +286,7 @@ async def test_scan_retry_with_same_run_key_does_not_duplicate(client):
     loc = await _location(client, t)
     await _item(client, t, "R1", loc=loc, qty=5, barcode="710001")
     await _item(client, t, "R2", loc=loc, qty=5, barcode="710002")
+    await _item(client, t, "R3", loc=loc, qty=5, barcode="710003")
     q = await _quotation(client, t)
 
     body = {"barcode": "710001,710002", "run_key": "run-abc"}
@@ -300,9 +301,11 @@ async def test_scan_retry_with_same_run_key_does_not_duplicate(client):
     assert r2.json()["scanned"] == 2
     assert len((await _state(client, t, q))["line_items"]) == 2
 
-    # A genuinely new run (different key) still appends normally.
+    # A genuinely new run (different key) still appends normally. A lot not yet on the list is
+    # scanned so the append is the new run's own work, not a re-scan of one already present (which
+    # is deduped on its own merit, independent of the run_key).
     r3 = await client.post(f"/lists/{q}/scan", headers=_h(t),
-                           json={"barcode": "710001", "run_key": "run-xyz"})
+                           json={"barcode": "710003", "run_key": "run-xyz"})
     assert r3.status_code == 200 and r3.json()["scanned"] == 1
     assert len((await _state(client, t, q))["line_items"]) == 3
 
@@ -666,3 +669,147 @@ async def test_list_patch_line_items_replacement_requires_version(client):
                                     "expected_version": v0})
     assert r_ok.status_code == 200, r_ok.text
     assert [li.get("sku") for li in (await _state(client, t, q)).get("line_items") or []] == ["ZZ"]
+
+
+@pytest.mark.asyncio
+async def test_scan_list_barcode_ignores_merged_source(client, session):
+    """Defect A end to end: a live lot and a historical `merged` source share a barcode. On a current
+    database that pair is unreachable - create and merge both mint or refuse a barcode, and the partial
+    unique index forbids it - so it is reproduced as legacy data by dropping that index (for this
+    rolled-back transaction only) and injecting the merged source's events directly. Scanning the
+    barcode adds the live lot and never trips the duplicate-barcode error."""
+    import uuid as _uuid
+    from sqlalchemy import select, text
+    from celerp.events.engine import emit_event
+    from celerp.inventory_codes import BARCODE_UNIQUE_INDEX
+    from celerp.models.company import Company
+    from celerp.projections.engine import ProjectionEngine
+
+    t = await _register(client)
+    await session.execute(text(f"DROP INDEX IF EXISTS {BARCODE_UNIQUE_INDEX}"))
+    loc = await _location(client, t)
+    live = await _item(client, t, "LIVE", loc=loc, qty=5, barcode="790900")
+
+    cid = (await session.execute(select(Company))).scalars().first().id
+    await emit_event(
+        session, company_id=cid, entity_id="item:merged-src", entity_type="item",
+        event_type="item.created",
+        data={"sku": "SRC", "name": "Src lot", "quantity": 0, "barcode": "790900", "sell_by": "piece"},
+        actor_id=None, location_id=None, source="test", idempotency_key=str(_uuid.uuid4()), metadata_={},
+    )
+    await emit_event(
+        session, company_id=cid, entity_id="item:merged-src", entity_type="item",
+        event_type="item.source_deactivated", data={"merged_into": live},
+        actor_id=None, location_id=None, source="test", idempotency_key=str(_uuid.uuid4()), metadata_={},
+    )
+    await ProjectionEngine.rebuild(session)
+
+    q = await _quotation(client, t)
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": "790900"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["scanned"] == 1
+    assert body["failed"] == []           # the merged source no longer forces a duplicate error
+    lines = (await _state(client, t, q))["line_items"]
+    assert [l["item_id"] for l in lines] == [live]
+
+
+@pytest.mark.asyncio
+async def test_scan_list_dedups_same_barcode_in_one_batch(client):
+    """Defect B: the same barcode scanned twice within one batch adds a single line; the second
+    occurrence is reported as a `duplicate_scan` error, and other distinct items still add."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "D1", loc=loc, qty=5, barcode="810001")
+    await _item(client, t, "D2", loc=loc, qty=5, barcode="810002")
+    q = await _quotation(client, t)
+
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t),
+                          json={"barcode": "810001,810001,810002"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["scanned"] == 2                    # D1 once, D2 once; the repeat is not counted
+    fail = [f for f in body["failed"] if f["reason"] == "duplicate_scan"]
+    assert len(fail) == 1
+    assert fail[0]["code"] == "810001"
+    assert fail[0]["label"] == "D1: already on the list"
+    skus = [l["sku"] for l in (await _state(client, t, q))["line_items"]]
+    assert sorted(skus) == ["D1", "D2"]
+
+
+@pytest.mark.asyncio
+async def test_scan_list_dedups_against_existing_line(client):
+    """Defect B: an item already on the list from a prior submit is not appended a second time when
+    scanned again; it is reported as `duplicate_scan` and the line count is unchanged."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "E1", loc=loc, qty=5, barcode="820001")
+    q = await _quotation(client, t)
+
+    r1 = await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": "820001"})
+    assert r1.status_code == 200 and r1.json()["scanned"] == 1
+    assert len((await _state(client, t, q))["line_items"]) == 1
+
+    r2 = await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": "820001"})
+    assert r2.status_code == 200, r2.text
+    body = r2.json()
+    assert body["scanned"] == 0
+    fail = body["failed"][0]
+    assert fail["reason"] == "duplicate_scan"
+    assert fail["label"] == "E1: already on the list"
+    assert len((await _state(client, t, q))["line_items"]) == 1   # still one line
+
+
+@pytest.mark.asyncio
+async def test_scan_list_never_two_lines_same_item_id(client):
+    """Defect B invariant: however a lot is scanned - repeated in a batch and again across submits -
+    the persisted lines never hold two entries for one item_id."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "F1", loc=loc, qty=5, barcode="830001")
+    await _item(client, t, "F2", loc=loc, qty=5, barcode="830002")
+    q = await _quotation(client, t)
+
+    await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": "830001,830001,830002"})
+    await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": "830001,830002"})
+
+    ids = [l["item_id"] for l in (await _state(client, t, q))["line_items"]]
+    assert len(ids) == len(set(ids))               # no duplicate item_id
+    assert len(ids) == 2                           # exactly the two distinct lots
+
+
+@pytest.mark.asyncio
+async def test_scan_list_excludes_merged_sku_fallback(client, session):
+    """Defect (sku fallback) end to end: a historical `merged` source whose sku equals its barcode
+    must not re-enter resolution through the sku candidate set on the batch list surface. The merged
+    source is the SOLE owner of the barcode, so the partial unique index is satisfied and no index
+    drop is needed; the legacy shape is reproduced by injecting the source's events directly. Scanning
+    the code adds nothing and reports it as unknown - the merged lot is not resurrected."""
+    import uuid as _uuid
+    from sqlalchemy import select
+    from celerp.events.engine import emit_event
+    from celerp.models.company import Company
+    from celerp.projections.engine import ProjectionEngine
+
+    t = await _register(client)
+    cid = (await session.execute(select(Company))).scalars().first().id
+    await emit_event(
+        session, company_id=cid, entity_id="item:merged-src", entity_type="item",
+        event_type="item.created",
+        data={"sku": "700700", "name": "Src lot", "quantity": 0, "barcode": "700700", "sell_by": "piece"},
+        actor_id=None, location_id=None, source="test", idempotency_key=str(_uuid.uuid4()), metadata_={},
+    )
+    await emit_event(
+        session, company_id=cid, entity_id="item:merged-src", entity_type="item",
+        event_type="item.source_deactivated", data={"merged_into": "item:gone"},
+        actor_id=None, location_id=None, source="test", idempotency_key=str(_uuid.uuid4()), metadata_={},
+    )
+    await ProjectionEngine.rebuild(session)
+
+    q = await _quotation(client, t)
+    r = await client.post(f"/lists/{q}/scan", headers=_h(t), json={"barcode": "700700"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["scanned"] == 0                       # the merged source is not resolved via sku
+    assert [f["reason"] for f in body["failed"]] == ["unknown_code"]
+    assert (await _state(client, t, q)).get("line_items") in (None, [])
