@@ -45,6 +45,28 @@ def production_engine():
         importlib.reload(dbmod)
 
 
+@pytest.fixture
+def production_db():
+    """The reloaded celerp.db module built by the production (pooled) branch.
+
+    Same reload dance as production_engine, but yields the whole module so a test
+    can inspect both the bounded request engine and the unbounded lifecycle engine
+    built alongside it.
+    """
+    saved = os.environ.get("CELERP_TEST_NULLPOOL")
+    os.environ.pop("CELERP_TEST_NULLPOOL", None)
+    import celerp.db as dbmod
+    try:
+        importlib.reload(dbmod)
+        yield dbmod
+    finally:
+        if saved is not None:
+            os.environ["CELERP_TEST_NULLPOOL"] = saved
+        else:
+            os.environ.pop("CELERP_TEST_NULLPOOL", None)
+        importlib.reload(dbmod)
+
+
 def test_api_engine_bounded_timeouts(production_engine):
     """The production async engine is built with lock_timeout and
     statement_timeout server_settings in connect_args."""
@@ -111,6 +133,69 @@ async def test_migration_advisory_lock_wait_survives_statement_timeout():
         await hconn.close()
         await engine.dispose()
         await holder.dispose()
+
+
+def test_lifecycle_engine_carries_no_timeout(production_db):
+    """The lifecycle engine has NO statement or lock timeout, while the request
+    engine has both.
+
+    Startup reconciliation (create_all, module seed hooks, the develop->release
+    projection rebuild, the status-doc and COGS backfills) and the /ledger/rebuild
+    recovery route run whole-table DELETEs and full-ledger replays that can
+    legitimately exceed the request statement_timeout on a mature database.
+    They run on lifecycle_engine, which must not carry the request bound, or boot's
+    upgrade guard and the recovery route would be cancelled at 30s.
+    """
+    request_ss = _server_settings(production_db.engine)
+    assert request_ss is not None, "request engine lost its server_settings"
+    assert request_ss.get("statement_timeout"), "request engine must stay bounded"
+
+    lifecycle_ss = _server_settings(production_db.lifecycle_engine) or {}
+    assert not lifecycle_ss.get("statement_timeout"), \
+        "lifecycle_engine must not carry a statement_timeout"
+    assert not lifecycle_ss.get("lock_timeout"), \
+        "lifecycle_engine must not carry a lock_timeout"
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_session_exceeds_request_statement_timeout():
+    """A LifecycleSessionLocal statement runs past a deliberately tiny request
+    statement_timeout that cancels the equivalent request session.
+
+    Analogous to the advisory-lock test: a request-style engine built with the
+    production connect_args pattern but a tiny 500ms statement_timeout stands in
+    for the bounded request pool. A 1.5s statement on a session bound to it is
+    cancelled; the same statement on the real LifecycleSessionLocal (no timeout)
+    completes. This is what keeps a full projection rebuild or startup backfill
+    from being cancelled mid-run.
+    """
+    import sqlalchemy as sa
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from celerp.config import settings
+    from celerp.db import LifecycleSessionLocal
+
+    if not settings.database_url.startswith("postgresql"):
+        pytest.skip("statement_timeout behavior is postgres-only")
+
+    bounded = create_async_engine(
+        settings.database_url, future=True, poolclass=NullPool,
+        connect_args={"server_settings": {"statement_timeout": "500"}},
+    )
+    BoundedSession = async_sessionmaker(bounded, class_=AsyncSession, expire_on_commit=False)
+    try:
+        # The request-style session is cancelled once the statement runs past 500ms.
+        with pytest.raises(sa.exc.DBAPIError):
+            async with BoundedSession() as s:
+                await s.execute(sa.text("SELECT pg_sleep(1.5)"))
+
+        # The real lifecycle session carries no timeout, so the same 1.5s
+        # statement completes without being cancelled.
+        async with LifecycleSessionLocal() as s:
+            await s.execute(sa.text("SELECT pg_sleep(1.5)"))
+    finally:
+        await bounded.dispose()
 
 
 def _server_settings(engine):

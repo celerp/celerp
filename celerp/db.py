@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from sqlalchemy import text as _sql_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from celerp.config import settings
 
@@ -42,8 +43,6 @@ if os.environ.get("CELERP_TEST_NULLPOOL"):
     # test can't leave a poisoned/locked connection lingering in a pooled
     # connection and block the next test's TRUNCATE. Only ever set by the test
     # harness; no effect in production.
-    from sqlalchemy.pool import NullPool
-
     engine = create_async_engine(settings.database_url, future=True, poolclass=NullPool)
 else:
     engine = create_async_engine(
@@ -55,11 +54,12 @@ else:
         # Bound how long any query may wait on a lock or run, so a stuck query is
         # cancelled instead of pinning one of the few pooled connections for the
         # full request lifetime (lock_timeout 3s, statement_timeout 30s, in ms).
-        # This is a per-connection default and so also applies to the lifecycle
-        # connections that acquire the migration advisory lock and run
-        # create_all; those must not inherit it (a second worker's advisory-lock
-        # wait can legitimately exceed 30s), so run_migration_phase and the
-        # create_all blocks wrap themselves in lifecycle_timeouts_disabled below.
+        # This is a per-connection default, so it applies to every request AND
+        # every pooled background job (connector syncs, the gateway, the daily
+        # scheduler) - all of which must stay bounded. Startup reconciliation and
+        # the projection rebuild are the only work that legitimately runs longer;
+        # they use lifecycle_engine below instead of this pool, and the migration
+        # advisory-lock wait self-exempts via lifecycle_timeouts_disabled.
         connect_args={
             "server_settings": {
                 "lock_timeout": _REQUEST_LOCK_TIMEOUT_MS,
@@ -69,19 +69,35 @@ else:
     )
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
+# Lifecycle/maintenance engine: a separate NullPool engine carrying NO statement
+# or lock timeout. Startup reconciliation (create_all, module on_modules_ready
+# seed hooks, the develop->release projection rebuild, the one-time status-doc and
+# COGS backfills) and the on-demand projection rebuild routes run whole-table
+# DELETEs and full-ledger replays that can legitimately exceed the request
+# statement_timeout on a mature database. Running them on the bounded request pool
+# would cancel them at 30s - permanently blocking boot's upgrade guard and the
+# /ledger/rebuild recovery route. They run on this engine instead. NullPool: these
+# operations are rare and brief, so no pooled slot is reserved and the request pool
+# budget above is unaffected (at most one transient connection per concurrent
+# lifecycle op).
+lifecycle_engine = create_async_engine(settings.database_url, future=True, poolclass=NullPool)
+LifecycleSessionLocal = async_sessionmaker(
+    lifecycle_engine, class_=AsyncSession, expire_on_commit=False
+)
+
 
 @asynccontextmanager
 async def lifecycle_timeouts_disabled(conn):
-    """Clear the request statement/lock timeouts on a lifecycle connection.
+    """Clear the request statement/lock timeouts on the migration lock connection.
 
-    The pooled engine bounds ordinary request queries so a stuck query cannot pin
-    a pooled connection. Startup work must not inherit that bound: a second
-    worker's migration advisory-lock wait and create_all can each legitimately
-    run past the 30s statement_timeout while the first worker migrates, and a
-    cancelled advisory-lock wait aborts the boot. This sets both timeouts to 0
-    (unbounded) for the block and restores the request defaults on exit, so a
-    connection returned to the pool still carries them. Postgres only; a no-op on
-    other dialects, which have no such settings.
+    The migration advisory-lock wait runs on a connection drawn from the bounded
+    request engine (so a single engine serialises boots), but a second worker's
+    wait can legitimately exceed the 30s statement_timeout while the first worker
+    migrates, and a cancelled wait aborts the boot. This sets both timeouts to 0
+    (unbounded) for the block and restores the request defaults on exit, so the
+    connection returned to the pool still carries them. Other long-running startup
+    work uses lifecycle_engine (no timeout) rather than this in-place exemption.
+    Postgres only; a no-op on other dialects, which have no such settings.
     """
     if conn.dialect.name != "postgresql":
         yield
@@ -104,4 +120,17 @@ async def get_session() -> AsyncSession:
 async def get_session_ctx():
     """Standalone async context manager for use outside FastAPI request handlers."""
     async with SessionLocal() as session:
+        yield session
+
+
+@asynccontextmanager
+async def get_lifecycle_session_ctx():
+    """Session on the unbounded lifecycle_engine, for known long-running work.
+
+    Use for the projection rebuild and startup backfills: a full rebuild's
+    whole-table DELETE and full-ledger replay can exceed the request
+    statement_timeout on a mature database, and must not be cancelled. Ordinary
+    request and background work uses get_session/get_session_ctx (bounded).
+    """
+    async with LifecycleSessionLocal() as session:
         yield session

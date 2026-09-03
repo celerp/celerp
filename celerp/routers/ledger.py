@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.db import get_session
+from celerp.db import get_lifecycle_session_ctx, get_session
 from celerp.models.ledger import LedgerEntry
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.activity_redaction import redact_entries_for_role, redact_event_costs
@@ -105,7 +105,12 @@ async def get_entry(entry_id: int, company_id: str = Depends(get_current_company
 
 
 @router.post("/rebuild")
-async def rebuild(company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    await ProjectionEngine.rebuild(session, company_id=company_id)
-    await session.commit()
+async def rebuild(company_id: str = Depends(get_current_company_id)) -> dict:
+    # A full rebuild deletes every projection for the company and replays the
+    # whole ledger, which can exceed the request statement_timeout on a mature
+    # database. Run it on the unbounded lifecycle session so recovery is never
+    # cancelled mid-replay, leaving projections half-rebuilt.
+    async with get_lifecycle_session_ctx() as session:
+        await ProjectionEngine.rebuild(session, company_id=company_id)
+        await session.commit()
     return {"ok": True}

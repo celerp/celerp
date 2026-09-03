@@ -1170,7 +1170,6 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     can_author_drafts = role_has_permission(settings, role, "edit_inventory")
 
     flats: list[dict] = []
-    flat_by_eid: dict = {}
     for row in rows:
         flat = flatten_item(
             row.state, row.entity_id,
@@ -1181,7 +1180,6 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
             price_config=price_config,
         )
         flats.append(flat)
-        flat_by_eid[row.entity_id] = flat
 
     # Group by the item's own category and apply the per-category effective schema
     # once per distinct category, exactly as GET /items/{id} does with a single

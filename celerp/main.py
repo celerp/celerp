@@ -12,7 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from celerp.db import engine, lifecycle_timeouts_disabled, mask_db_credentials
+from celerp.db import engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import BarcodeConflictError
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 load_cloud_config()
@@ -164,9 +164,8 @@ async def _try_auto_activate() -> None:
 async def lifespan(_app: FastAPI):
     (settings.data_dir / "static" / "attachments").mkdir(parents=True, exist_ok=True)
     try:
-        async with engine.begin() as conn:
-            async with lifecycle_timeouts_disabled(conn):
-                await conn.run_sync(Base.metadata.create_all)
+        async with lifecycle_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     except Exception as exc:
         masked_url = mask_db_credentials(settings.database_url)
         print(
@@ -206,20 +205,20 @@ async def lifespan(_app: FastAPI):
             register_api_routes(_app, _loaded_modules)
             # Module models register on Base.metadata at import time.
             # Run create_all again so module tables are created (idempotent).
-            async with engine.begin() as conn:
-                async with lifecycle_timeouts_disabled(conn):
-                    await conn.run_sync(Base.metadata.create_all)
+            async with lifecycle_engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
             # Allow modules to backfill data for existing companies (e.g. seed
             # chart of accounts when accounting module is first enabled on an
             # instance that already has companies).
             from celerp.modules.slots import fire_lifecycle as _fire
-            from celerp.db import SessionLocal as _SessionLocal
+            from celerp.db import LifecycleSessionLocal as _LifecycleSession
             # Best-effort, like the two sibling blocks below: a hook that fails
             # during flush poisons the shared session, so the commit raises.
             # Roll back and log at ERROR rather than let that crash boot - the
             # manufacturing seed hook, for one, must never be able to take the
-            # app down.
-            async with _SessionLocal() as _sess:
+            # app down. Seed hooks can replay large ledgers, so they run on the
+            # unbounded lifecycle engine, not the timeout-bounded request pool.
+            async with _LifecycleSession() as _sess:
                 try:
                     await _fire("on_modules_ready", session=_sess)
                     await _sess.commit()
@@ -238,7 +237,7 @@ async def lifespan(_app: FastAPI):
                 _demoted = demoted_first_party(_enabled)
                 if _demoted:
                     from celerp.modules.demotion import notify_demoted_modules
-                    async with _SessionLocal() as _dsess:
+                    async with _LifecycleSession() as _dsess:
                         await notify_demoted_modules(_dsess, _demoted)
                         await _dsess.commit()
             except Exception:
@@ -258,7 +257,7 @@ async def lifespan(_app: FastAPI):
     # marker so it runs once per version. Non-fatal: a failure must not block
     # boot — the marker stays unset and a later boot retries.
     try:
-        from celerp.db import SessionLocal as _GuardSession
+        from celerp.db import LifecycleSessionLocal as _GuardSession
         from celerp.services.dev_release_guard import run_upgrade_guard
         async with _GuardSession() as _guard_sess:
             await run_upgrade_guard(_guard_sess)
@@ -273,7 +272,7 @@ async def lifespan(_app: FastAPI):
     # or consigned in before that field shipped, so their inventory status links
     # to its document. Marker-gated (runs once); non-fatal like the guard above.
     try:
-        from celerp.db import SessionLocal as _BackfillSession
+        from celerp.db import LifecycleSessionLocal as _BackfillSession
         from celerp.services.status_doc_backfill import run_status_doc_backfill
         async with _BackfillSession() as _bf_sess:
             await run_status_doc_backfill(_bf_sess)
@@ -289,7 +288,7 @@ async def lifespan(_app: FastAPI):
     # (runs once; retries stragglers while any doc is locked or errored);
     # non-fatal like the backfill above.
     try:
-        from celerp.db import SessionLocal as _CogsSession
+        from celerp.db import LifecycleSessionLocal as _CogsSession
         from celerp.services.cogs_backfill import run_cogs_backfill
         async with _CogsSession() as _cogs_sess:
             await run_cogs_backfill(_cogs_sess)
