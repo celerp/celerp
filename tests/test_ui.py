@@ -17297,7 +17297,8 @@ class TestDraftStatusColumn:
                 "quantity": 1}
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
-            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_items_metadata",
+                  new=AsyncMock(return_value={"item:q1": item})),
         ):
             r = await ui_client.get("/lists/list:q1", cookies=_authed())
         assert r.status_code == 200
