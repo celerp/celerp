@@ -45,6 +45,17 @@ else:
         pool_pre_ping=True,
         pool_size=10,
         max_overflow=5,
+        # Bound how long any query may wait on a lock or run, so a stuck query is
+        # cancelled instead of pinning one of the few pooled connections for the
+        # full request lifetime. lock_timeout 3s, statement_timeout 30s (in ms).
+        # Migrations run under a separate sync runner with their own SET LOCAL
+        # timeouts, so this global bound never aborts a migration.
+        connect_args={
+            "server_settings": {
+                "lock_timeout": "3000",
+                "statement_timeout": "30000",
+            }
+        },
     )
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
