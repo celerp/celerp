@@ -12,7 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from celerp.db import engine, mask_db_credentials
+from celerp.db import engine, lifecycle_timeouts_disabled, mask_db_credentials
 from celerp.inventory_codes import BarcodeConflictError
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 load_cloud_config()
@@ -165,7 +165,8 @@ async def lifespan(_app: FastAPI):
     (settings.data_dir / "static" / "attachments").mkdir(parents=True, exist_ok=True)
     try:
         async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
+            async with lifecycle_timeouts_disabled(conn):
+                await conn.run_sync(Base.metadata.create_all)
     except Exception as exc:
         masked_url = mask_db_credentials(settings.database_url)
         print(
@@ -206,7 +207,8 @@ async def lifespan(_app: FastAPI):
             # Module models register on Base.metadata at import time.
             # Run create_all again so module tables are created (idempotent).
             async with engine.begin() as conn:
-                await conn.run_sync(Base.metadata.create_all)
+                async with lifecycle_timeouts_disabled(conn):
+                    await conn.run_sync(Base.metadata.create_all)
             # Allow modules to backfill data for existing companies (e.g. seed
             # chart of accounts when accounting module is first enabled on an
             # instance that already has companies).

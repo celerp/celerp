@@ -5,6 +5,7 @@ import os
 import re
 from contextlib import asynccontextmanager
 
+from sqlalchemy import text as _sql_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from celerp.config import settings
@@ -24,6 +25,12 @@ _DB_CREDENTIALS_RE = re.compile(r"(://[^:]+:)[^@]+(@)")
 def mask_db_credentials(text: str) -> str:
     """Return text with any database URL password replaced by ``***``."""
     return _DB_CREDENTIALS_RE.sub(r"\1***\2", text)
+
+# Request-connection timeouts (ms). One source of truth: the engine sets them in
+# server_settings, and lifecycle_timeouts_disabled restores exactly these values
+# after clearing them for startup work.
+_REQUEST_LOCK_TIMEOUT_MS = "3000"
+_REQUEST_STATEMENT_TIMEOUT_MS = "30000"
 
 # Pool budget: total_possible = (api_workers * (pool_size + max_overflow))
 #                              + (gui_workers * (gui_pool_size + gui_max_overflow))
@@ -47,17 +54,45 @@ else:
         max_overflow=5,
         # Bound how long any query may wait on a lock or run, so a stuck query is
         # cancelled instead of pinning one of the few pooled connections for the
-        # full request lifetime. lock_timeout 3s, statement_timeout 30s (in ms).
-        # Migrations run under a separate sync runner with their own SET LOCAL
-        # timeouts, so this global bound never aborts a migration.
+        # full request lifetime (lock_timeout 3s, statement_timeout 30s, in ms).
+        # This is a per-connection default and so also applies to the lifecycle
+        # connections that acquire the migration advisory lock and run
+        # create_all; those must not inherit it (a second worker's advisory-lock
+        # wait can legitimately exceed 30s), so run_migration_phase and the
+        # create_all blocks wrap themselves in lifecycle_timeouts_disabled below.
         connect_args={
             "server_settings": {
-                "lock_timeout": "3000",
-                "statement_timeout": "30000",
+                "lock_timeout": _REQUEST_LOCK_TIMEOUT_MS,
+                "statement_timeout": _REQUEST_STATEMENT_TIMEOUT_MS,
             }
         },
     )
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+@asynccontextmanager
+async def lifecycle_timeouts_disabled(conn):
+    """Clear the request statement/lock timeouts on a lifecycle connection.
+
+    The pooled engine bounds ordinary request queries so a stuck query cannot pin
+    a pooled connection. Startup work must not inherit that bound: a second
+    worker's migration advisory-lock wait and create_all can each legitimately
+    run past the 30s statement_timeout while the first worker migrates, and a
+    cancelled advisory-lock wait aborts the boot. This sets both timeouts to 0
+    (unbounded) for the block and restores the request defaults on exit, so a
+    connection returned to the pool still carries them. Postgres only; a no-op on
+    other dialects, which have no such settings.
+    """
+    if conn.dialect.name != "postgresql":
+        yield
+        return
+    await conn.execute(_sql_text("SET statement_timeout = 0"))
+    await conn.execute(_sql_text("SET lock_timeout = 0"))
+    try:
+        yield
+    finally:
+        await conn.execute(_sql_text(f"SET statement_timeout = {_REQUEST_STATEMENT_TIMEOUT_MS}"))
+        await conn.execute(_sql_text(f"SET lock_timeout = {_REQUEST_LOCK_TIMEOUT_MS}"))
 
 
 async def get_session() -> AsyncSession:
