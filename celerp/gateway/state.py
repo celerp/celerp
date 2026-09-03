@@ -438,3 +438,8 @@ def _enterprise_handoff(instance_id: str) -> str:
     """The Enterprise/partner acquisition route, attributed to the instance."""
     lead = f"instance_id={instance_id}" if instance_id else ""
     return build_handoff_url("/enterprise", medium="inapp", lead=lead)
+
+
+def enterprise_url(instance_id: str = "") -> str:
+    """Public entry point for the Enterprise/partner acquisition route."""
+    return _enterprise_handoff(instance_id)
