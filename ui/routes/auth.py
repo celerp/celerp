@@ -756,7 +756,7 @@ def _direct_connection_gate(email: str, password: str) -> FT:
     """Shown when a second user tries to log in without relay connected."""
     from celerp.config import ensure_instance_id
     from celerp.gateway.state import (
-        build_commercial_handoff, get_instance_id, _enterprise_handoff,
+        build_commercial_handoff, get_instance_id, enterprise_url,
     )
     from ui.components.cloud_gate import direct_price
     try:
@@ -769,7 +769,7 @@ def _direct_connection_gate(email: str, password: str) -> FT:
     try:
         handoff_url = build_commercial_handoff(iid, "subscribe", "cloud")
     except Exception:
-        handoff_url = _enterprise_handoff(iid)
+        handoff_url = enterprise_url(iid)
     cta_label = direct_price(t("auth.get_celerp_cloud_usd_29mo")) \
         or t("btn.get_connect")
 
