@@ -49,6 +49,46 @@ def _shop_key(handle: str | None) -> str:
     return s.rstrip("/").removesuffix(".myshopify.com")
 
 
+def _merge_config_key(key: str, value) -> None:
+    """Merge a single top-level key into Electron's celerp-config.json, writing
+    atomically and forcing mode 0600 so the co-resident secrets (external_db_url,
+    S3 keys) are never broadened.
+
+    Best-effort: a no-op in dev/server mode where CELERP_DATA_DIR is unset. A
+    missing or non-dict existing config degrades to an empty object before the
+    merge. The write goes to a unique temp created 0600, then os.replace swaps it
+    in: os.replace adopts the temp inode, so the target's mode becomes 0600
+    regardless of the prior mode or the process umask (0600 has no group/other
+    bits for umask to strip). Any failure logs the key and exception (never the
+    contents), removes the temp, and leaves the prior config intact.
+    """
+    data_dir = os.environ.get("CELERP_DATA_DIR", "")
+    if not data_dir:
+        return
+    config_path = os.path.join(data_dir, "celerp-config.json")
+    tmp_path = f"{config_path}.{uuid.uuid4().hex}.tmp"
+    try:
+        existing: dict = {}
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                existing = loaded
+        existing[key] = value
+        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(existing, f, indent=2)
+        os.replace(tmp_path, config_path)
+        log.debug("Gateway: %s persisted to config.", key)
+    except Exception as exc:
+        log.warning("Gateway: failed to persist %s: %s", key, exc)
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+
+
 class GatewayClient:
     """Persistent outbound WS connection to the Celerp gateway.
 
@@ -446,58 +486,21 @@ class GatewayClient:
     async def _persist_feature_flags(self, feature_flags: dict) -> None:
         """Write feature_flags into Electron's celerp-config.json.
 
-        This is a best-effort operation — it only works when running inside Electron
-        where DATA_DIR is set. In dev/server mode this is a no-op.
+        Best-effort: only works inside Electron where CELERP_DATA_DIR is set; a
+        no-op in dev/server mode. Delegates to the shared atomic, 0600-forcing
+        writer so the co-resident secrets are never broadened.
         """
-        import os
-        import json
-        data_dir = os.environ.get("CELERP_DATA_DIR", "")
-        if not data_dir:
-            return
-        config_path = os.path.join(data_dir, "celerp-config.json")
-        try:
-            existing: dict = {}
-            if os.path.exists(config_path):
-                with open(config_path) as f:
-                    existing = json.load(f)
-            existing["feature_flags"] = feature_flags
-            with open(config_path, "w") as f:
-                json.dump(existing, f, indent=2)
-            log.debug("Gateway: feature_flags persisted to config.")
-        except Exception as exc:
-            log.warning("Gateway: failed to persist feature_flags: %s", exc)
+        _merge_config_key("feature_flags", feature_flags)
 
     async def _persist_commercial_context(self, ctx: dict) -> None:
         """Write commercial_context into Electron's celerp-config.json.
 
         Best-effort: only works inside Electron where CELERP_DATA_DIR is set; a
-        no-op in dev/server mode. Read-merges the single key so the existing
-        feature_flags entry is preserved, and writes atomically (a temp file on
-        the same directory then os.replace) so a crash mid-write never leaves a
-        torn config for the next startup read.
+        no-op in dev/server mode. Delegates to the shared atomic, 0600-forcing
+        writer so the existing feature_flags entry is preserved and a crash
+        mid-write never leaves a torn config for the next startup read.
         """
-        data_dir = os.environ.get("CELERP_DATA_DIR", "")
-        if not data_dir:
-            return
-        config_path = os.path.join(data_dir, "celerp-config.json")
-        tmp_path = f"{config_path}.{uuid.uuid4().hex}.tmp"
-        try:
-            existing: dict = {}
-            if os.path.exists(config_path):
-                with open(config_path) as f:
-                    existing = json.load(f)
-            existing["commercial_context"] = ctx
-            with open(tmp_path, "w") as f:
-                json.dump(existing, f, indent=2)
-            os.replace(tmp_path, config_path)
-            log.debug("Gateway: commercial_context persisted to config.")
-        except Exception as exc:
-            log.warning("Gateway: failed to persist commercial_context: %s", exc)
-            try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except OSError:
-                pass
+        _merge_config_key("commercial_context", ctx)
 
     async def _handle_shopify_webhook(self, payload: dict) -> None:
         """A Shopify webhook the relay forwarded. Trigger a targeted incremental
