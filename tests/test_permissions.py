@@ -471,25 +471,31 @@ class TestFieldVisibility:
         assert "quantity" in item
         assert "qty_each" in item
 
-    async def test_qmatch_omits_hidden_field_value(self, client, session):
-        """The search-match tag echoes the matched field's stored value, so a tag for a
-        hidden field would leak it past the body strip. A denied-quantity role that
-        searches a term matching quantity gets no quantity/pieces/qty_each tag and no
-        such key in the body; a role that may see quantity does get the tag."""
+    async def test_hidden_field_not_searchable_no_oracle(self, client, session):
+        """A hidden field must not be searchable: search runs only over fields the role
+        may see, so result membership cannot disclose a hidden value. The item has
+        quantity 5; a denied-quantity operator gets it back for NO quantity query -
+        the true value `qty: 5`, a bare `5`, and a range `qty: 1-10` all return nothing,
+        exactly as a wrong value would, so the operator learns nothing (no oracle). A
+        role that may see quantity still finds and tags it."""
         ctx = await _setup(client, session)
         await _restrict_item_fields(client, ctx["admin_h"], {"quantity", "pieces"})
-        r = await client.get("/items", params={"q": "qty: 5"}, headers=ctx["operator_h"])
-        assert r.status_code == 200
-        items = r.json()["items"]
-        assert len(items) == 1  # the quantity-5 item still matches (match runs pre-strip)
-        item = items[0]
-        assert "quantity" not in item and "pieces" not in item and "qty_each" not in item
-        leaked = {m["field"] for m in item.get("q_match", [])}
-        assert leaked & {"quantity", "pieces", "qty_each"} == set()
-        # The manager may see quantity, so the tag survives for that role.
+        for query in ("qty: 5", "5", "qty: 1-10"):
+            r = await client.get("/items", params={"q": query}, headers=ctx["operator_h"])
+            assert r.status_code == 200
+            assert r.json()["items"] == [], f"hidden quantity leaked via {query!r}"
+        # A wrong value returns nothing too - the true value is indistinguishable.
+        wrong = await client.get("/items", params={"q": "qty: 6"}, headers=ctx["operator_h"])
+        assert wrong.json()["items"] == []
+        # The operator can still list the item (without quantity) and search a visible field.
+        by_sku = await client.get("/items", params={"q": "sku-perm"}, headers=ctx["operator_h"])
+        assert len(by_sku.json()["items"]) == 1
+        assert "quantity" not in by_sku.json()["items"][0]
+        # The manager may see quantity, so the search matches and tags it.
         mr = await client.get("/items", params={"q": "qty: 5"}, headers=ctx["manager_h"])
-        mfields = {m["field"] for m in mr.json()["items"][0].get("q_match", [])}
-        assert "quantity" in mfields
+        mitems = mr.json()["items"]
+        assert len(mitems) == 1
+        assert "quantity" in {m["field"] for m in mitems[0].get("q_match", [])}
 
 
 # ── Write-path: cost_price field write guard ──────────────────────────────────

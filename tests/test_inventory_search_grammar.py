@@ -237,3 +237,20 @@ def test_scoped_unknown_prefix_falls_through_to_literal():
     stone = _item(name="Stone", sku="S1", stone_type="Demantoid", quantity=1)
     assert item_matches_query(stone, "stone_type: demantoid")
     assert item_matches_query(stone, "qty: 1-2")
+
+
+def test_scoped_textual_identifier_not_numeric_coerced():
+    """Textual identifier fields (sku, barcode, hs_code, batch_no...) are matched as
+    strings, never coerced to numbers, so leading zeros keep their identity. `sku: 001`
+    must not match a stored SKU "1", and `barcode: 00123` must not match "123" - a real
+    hazard for barcodes, where leading zeros are significant. Numeric fields still
+    coerce: `qty: 001` matches quantity 1."""
+    assert query_match_reasons(_item(name="A", sku="1"), "sku: 001") is None
+    assert query_match_reasons(_item(name="B", sku="001"), "sku: 001") == [("sku", "001")]
+    assert query_match_reasons(_item(name="C", sku="X", barcode="123"), "barcode: 00123") is None
+    assert query_match_reasons(_item(name="D", sku="X", barcode="00123"),
+                               "barcode: 00123") == [("barcode", "00123")]
+    # A substring of the same identifier still matches - only numeric coercion is removed.
+    assert query_match_reasons(_item(name="E", sku="SHOT001"), "sku: 001") == [("sku", "001")]
+    # Numeric fields are unaffected: a numeric-looking value still coerces (1 == 001).
+    assert query_match_reasons(_item(name="F", sku="X", quantity=1), "qty: 001") == [("quantity", "001")]

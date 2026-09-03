@@ -590,8 +590,15 @@ def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
             or (field in record and not _is_core_key(field))
         )
         if resolved:
+            # Textual identifier fields (sku, barcode, hs_code, batch_no, lot...) are
+            # matched as strings only - never coerced to numbers - so leading zeros and
+            # other identity survive: `sku: 001` must not match a stored "1", and a
+            # barcode `00123` must not match "123". Numeric coercion (range and exact
+            # equality) applies to genuine numeric fields and dynamic numeric attributes,
+            # which are not in _SEARCH_FIELDS.
+            numeric_ok = field not in _SEARCH_FIELDS
             rng = _RANGE_RE.match(value)
-            if rng:
+            if numeric_ok and rng:
                 lo, hi = float(rng.group(1)), float(rng.group(2))
                 if lo <= hi:
                     try:
@@ -603,11 +610,12 @@ def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
                     return None
                 # lo > hi is not a usable range; fall through to a scoped value match.
             stored = record.get(field)
-            qnum, snum = _as_number(value), _as_number(stored)
-            if qnum is not None and snum is not None:
-                # Numeric-coercible on both sides: exact equality, never substring, so
-                # `qty: 1` does not match 10 and `grade: 3` does not match 30.
-                return (field, value) if qnum == snum else None
+            if numeric_ok:
+                qnum, snum = _as_number(value), _as_number(stored)
+                if qnum is not None and snum is not None:
+                    # Numeric-coercible on both sides: exact equality, never substring, so
+                    # `qty: 1` does not match 10 and `grade: 3` does not match 30.
+                    return (field, value) if qnum == snum else None
             if value.lower() in str(stored if stored is not None else "").lower():
                 return field, value
             return None
@@ -852,19 +860,13 @@ async def list_items(
         result = [r for r in result
                   if is_below_reorder(r) and str(r.get("status") or "").lower() != "draft"]
 
-    q_reasons: dict = {}
-    if q:
-        # Grammar: comma = OR groups, & = AND terms, lo-hi = numeric range, bare
-        # number = numeric-exact OR text, else text substring (query_match_reasons).
-        matched = []
-        for r in result:
-            reasons = query_match_reasons(r, q)
-            if reasons is not None:
-                q_reasons[r.get("id")] = reasons
-                matched.append(r)
-        result = matched
-
-    # Apply visible_to_roles filtering from company field schema
+    # Apply visible_to_roles filtering from the company field schema BEFORE search
+    # matching. Matching must operate only over fields the requesting role may see:
+    # were a hidden field allowed to match, the item's mere presence in the result
+    # set would disclose that field's value - searching `qty: 5` and getting the row
+    # back reveals the hidden quantity is 5, a search oracle around the body-level
+    # strip. apply_field_visibility drops stripped keys from the dict, so matching the
+    # filtered dict can never cite a field the role cannot see, scoped or free-text.
     field_schema = await get_effective_field_schema(session, company_id, category=None)
     company = await session.get(Company, company_id)
     settings = (company.settings if company else {}) or {}
@@ -875,14 +877,21 @@ async def list_items(
         derived_field_deps=DERIVED_FIELD_DEPS,
     )
 
-    # Attach search-match reasons AFTER visibility. The reason value echoes the
-    # matched field's stored value, so a reason for a field the role cannot see would
-    # leak it through the tag even though the body was stripped. Keep only reasons
-    # whose field survived visibility filtering: apply_field_visibility drops stripped
-    # keys from the dict, so `f in r` is exactly "the role may see field f".
     if q:
+        # Grammar: comma = OR groups, & = AND terms, lo-hi = numeric range, bare
+        # number = numeric-exact OR text, else text substring (query_match_reasons).
+        q_reasons: dict = {}
+        matched = []
         for r in result:
-            r["q_match"] = [{"field": f, "match": m} for f, m in q_reasons.get(r.get("id"), []) if f in r]
+            reasons = query_match_reasons(r, q)
+            if reasons is not None:
+                q_reasons[r.get("id")] = reasons
+                matched.append(r)
+        result = matched
+        # Reasons are computed over the visibility-filtered dict, so every cited
+        # field is one the role may see; no post-filter is needed.
+        for r in result:
+            r["q_match"] = [{"field": f, "match": m} for f, m in q_reasons.get(r.get("id"), [])]
 
     # Attach the per-item scope value AFTER visibility (so it survives any dict rebuild).
     # The consignment value is cost, so it is gated by view_inventory_costs exactly like
