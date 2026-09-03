@@ -163,7 +163,14 @@ def _recipe_standard_unit_cost(state: dict) -> float | None:
     return float(unit_cost) if unit_cost is not None else None
 
 
-def flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str, str] | None = None) -> dict:
+# qty_each is derived from quantity and pieces, so field-level visibility must treat
+# it as those two: a role denied either source cannot be allowed to recover it from
+# the ratio. The rule lives here (one place) and is handed to apply_field_visibility
+# at every call site; the visibility service itself holds no inventory field names.
+DERIVED_FIELD_DEPS: dict[str, tuple[str, ...]] = {"qty_each": ("quantity", "pieces")}
+
+
+def flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str, str] | None = None, unit_map: dict[str, dict] | None = None) -> dict:
     """Flatten attributes dict to top-level so schema-driven UI sees all fields.
 
     When ``price_config`` (``(price_lists, base_price_list, currency)`` from
@@ -186,12 +193,17 @@ def flatten_item(state: dict, entity_id: str, location_id: str | None = None, lo
     if updated_at is not None:
         flat["updated_at"] = updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
     qty = float(flat.get("quantity") or 0)
-    # Per-piece measure: quantity spread over the stones in the lot (a 6 ct box of 4
-    # is 1.5 ct each). pieces is read from its single source; a 1-piece or
-    # pieces-missing lot falls back to the full quantity, so there is no divide-by-zero
-    # (guarded like the cost roll-up below).
-    pieces = _read_pieces(flat) or 0
-    flat["qty_each"] = round(qty / pieces, 10) if pieces > 1 else qty
+    # Per-piece measure. For a piece-denominated lot the quantity IS the piece count
+    # (celerp syncs pieces to quantity for pieces units), so each piece is 1; the
+    # value is 0 for an empty lot (guarded, no divide-by-zero). For a weight/carat lot
+    # the per-piece measure is quantity spread over the stones (a 6 ct box of 4 is 1.5
+    # ct each); a 1-piece or pieces-missing lot falls back to the full quantity. unit_map
+    # is only supplied by the callers that surface qty_each to the client.
+    if unit_map is not None and is_pieces_unit(flat.get("sell_by"), unit_map):
+        flat["qty_each"] = 1 if qty else 0
+    else:
+        pieces = _read_pieces(flat) or 0
+        flat["qty_each"] = round(qty / pieces, 10) if pieces > 1 else qty
     _recipe_unit = _recipe_standard_unit_cost(flat)
     if _recipe_unit is not None:
         # Recipe-backed item: derive cost from the rolled standard (single source of truth); never
@@ -542,6 +554,15 @@ def _text_match(record: dict, term: str) -> str | None:
     return None
 
 
+def _as_number(v: object) -> float | None:
+    """Coerce a value to float, or None if it is not numeric. Shared by the scoped
+    numeric-equality check so a query and a stored value compare as numbers."""
+    try:
+        return float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
 def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
     """One AND-term: the (field, matched text) behind the hit, or None. The matched
     text is the term itself for substring hits and the whole number for numeric
@@ -554,11 +575,21 @@ def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
     leading `identifier:` falls through to the unscoped behavior unchanged."""
     scope = _SCOPE_RE.match(term)
     if scope:
-        field = _FIELD_ALIASES.get(scope.group(1), scope.group(1))
+        raw = scope.group(1)
+        field = _FIELD_ALIASES.get(raw, raw)
         value = scope.group(2).strip()
-        if not value:
-            return None
-        if field in _SEARCH_FIELDS or field in _NUMERIC_FIELDS or not _is_core_key(field):
+        # Scope only when the prefix RESOLVES to a real user-facing field: a known
+        # alias, a searchable or numeric field, or a dynamic attribute present on this
+        # record that is not a core/bookkeeping key (#306). An unresolved prefix (or an
+        # empty value) is not a scope - fall through so a literal `foo:bar` in the text
+        # is still found instead of dropping the search.
+        resolved = bool(value) and (
+            raw in _FIELD_ALIASES
+            or field in _SEARCH_FIELDS
+            or field in _NUMERIC_FIELDS
+            or (field in record and not _is_core_key(field))
+        )
+        if resolved:
             rng = _RANGE_RE.match(value)
             if rng:
                 lo, hi = float(rng.group(1)), float(rng.group(2))
@@ -570,10 +601,17 @@ def _term_match_reason(record: dict, term: str) -> tuple[str, str] | None:
                     if lo <= n <= hi:
                         return field, format(n, "g")
                     return None
-                # lo > hi is not a usable range; fall through to a literal text match.
-            if value in str(record.get(field, "")).lower():
+                # lo > hi is not a usable range; fall through to a scoped value match.
+            stored = record.get(field)
+            qnum, snum = _as_number(value), _as_number(stored)
+            if qnum is not None and snum is not None:
+                # Numeric-coercible on both sides: exact equality, never substring, so
+                # `qty: 1` does not match 10 and `grade: 3` does not match 30.
+                return (field, value) if qnum == snum else None
+            if value.lower() in str(stored if stored is not None else "").lower():
                 return field, value
-        return None
+            return None
+        # Unresolved prefix or empty scoped value: fall through to the unscoped path.
     m = _RANGE_RE.match(term)
     if m:
         lo, hi = float(m.group(1)), float(m.group(2))
@@ -668,13 +706,16 @@ async def list_items(
     loc_map = {str(r.id): r.name for r in loc_rows}
 
     price_config = await get_price_config(session, company_id)
+    units = await _get_company_units(session, company_id)
+    unit_map = {u["name"]: u for u in units}
     result = [
         flatten_item(r.state, r.entity_id,
                       location_id=str(r.location_id) if r.location_id else None,
                       location_name=loc_map.get(str(r.location_id)) if r.location_id else None,
                       created_at=r.created_at,
                       updated_at=r.updated_at,
-                      price_config=price_config)
+                      price_config=price_config,
+                      unit_map=unit_map)
         for r in rows
     ]
 
@@ -831,14 +872,17 @@ async def list_items(
     result = apply_field_visibility(
         result, role, field_schema, can_see_costs,
         can_author_drafts=role_has_permission(settings, role, "edit_inventory"),
+        derived_field_deps=DERIVED_FIELD_DEPS,
     )
 
-    # Attach search-match reasons AFTER visibility (so they survive the dict
-    # rebuild). The UI reads each reason's value from the visibility-filtered
-    # record itself, so a role-hidden field never leaks its value through a tag.
+    # Attach search-match reasons AFTER visibility. The reason value echoes the
+    # matched field's stored value, so a reason for a field the role cannot see would
+    # leak it through the tag even though the body was stripped. Keep only reasons
+    # whose field survived visibility filtering: apply_field_visibility drops stripped
+    # keys from the dict, so `f in r` is exactly "the role may see field f".
     if q:
         for r in result:
-            r["q_match"] = [{"field": f, "match": m} for f, m in q_reasons.get(r.get("id"), [])]
+            r["q_match"] = [{"field": f, "match": m} for f, m in q_reasons.get(r.get("id"), []) if f in r]
 
     # Attach the per-item scope value AFTER visibility (so it survives any dict rebuild).
     # The consignment value is cost, so it is gated by view_inventory_costs exactly like
@@ -1173,17 +1217,21 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     if row.location_id:
         loc = await session.get(Location, row.location_id)
         loc_name = loc.name if loc else None
+    units = await _get_company_units(session, company_id)
+    unit_map = {u["name"]: u for u in units}
     flat = flatten_item(row.state, row.entity_id,
                          location_id=str(row.location_id) if row.location_id else None,
                          location_name=loc_name,
                          created_at=row.created_at,
                          updated_at=row.updated_at,
-                         price_config=await get_price_config(session, company_id))
+                         price_config=await get_price_config(session, company_id),
+                         unit_map=unit_map)
     field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
     filtered = apply_field_visibility(
         [flat], role, field_schema, can_see_costs,
         can_author_drafts=role_has_permission(settings, role, "edit_inventory"),
+        derived_field_deps=DERIVED_FIELD_DEPS,
     )
     result = filtered[0]
     if str(row.state.get("status") or "").lower() == "sold" and row.state.get("status_doc_id"):

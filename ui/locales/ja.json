@@ -1790,6 +1790,7 @@
   "shell.search_help_scoped_range": "範囲を一つの項目に絞り込みます：その項目が二つの数値の間にあるときに一致し、任意の数値項目または属性に対して機能します。",
   "shell.search_help_example_label": "例：",
   "shell.search_help_example_result": "は、数量、重量、または個数の値が 5 から 10 のボルトを検索します。",
+  "shell.search_help_example_scoped_result": "は、1個あたりの測定値が 1 から 2 で、グレードが 3 のデマントイド石を検索します。",
   "dashboard.stock_value": "在庫評価額",
   "dashboard.cost_basis": "取得原価",
   "dashboard.ar_outstanding": "未回収売掛金",

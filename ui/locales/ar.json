@@ -1790,6 +1790,7 @@
   "shell.search_help_scoped_range": "يقصر النطاق على حقل واحد: يطابق عندما يقع ذلك الحقل بين الرقمين، فوق أي حقل رقمي أو سمة.",
   "shell.search_help_example_label": "مثال:",
   "shell.search_help_example_result": "يبحث عن البراغي التي تتراوح قيمة الكمية أو الوزن أو عدد القطع فيها من 5 إلى 10.",
+  "shell.search_help_example_scoped_result": "يبحث عن أحجار الديمانتويد التي يتراوح قياسها لكل قطعة من 1 إلى 2 ودرجتها 3.",
   "dashboard.stock_value": "قيمة المخزون",
   "dashboard.cost_basis": "التكلفة الأساسية",
   "dashboard.ar_outstanding": "الذمم المدينة المستحقة",

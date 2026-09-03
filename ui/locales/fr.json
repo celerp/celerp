@@ -1791,6 +1791,7 @@
   "shell.search_help_scoped_range": "limite une plage à un seul champ : correspond lorsque ce champ se situe entre les deux nombres, sur tout champ ou attribut numérique.",
   "shell.search_help_example_label": "Exemple :",
   "shell.search_help_example_result": "recherche les boulons dont la quantité, le poids ou le nombre de pièces est compris entre 5 et 10.",
+  "shell.search_help_example_scoped_result": "recherche les pierres de demantoïde dont la mesure par pièce est comprise entre 1 et 2 et dont le grade est 3.",
   "dashboard.stock_value": "Valeur des stocks",
   "dashboard.cost_basis": "Coût d'acquisition",
   "dashboard.ar_outstanding": "Créances en cours",

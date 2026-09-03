@@ -1790,6 +1790,7 @@
   "shell.search_help_scoped_range": "จำกัดช่วงให้อยู่ในฟิลด์เดียว: ตรงกันเมื่อฟิลด์นั้นอยู่ระหว่างตัวเลขสองจำนวน ใช้ได้กับฟิลด์หรือคุณสมบัติที่เป็นตัวเลขใดก็ได้",
   "shell.search_help_example_label": "ตัวอย่าง:",
   "shell.search_help_example_result": "ค้นหาน็อตที่มีค่าจำนวน น้ำหนัก หรือชิ้น อยู่ระหว่าง 5 ถึง 10",
+  "shell.search_help_example_scoped_result": "ค้นหาหินเดมันทอยด์ที่มีค่าต่อชิ้นอยู่ระหว่าง 1 ถึง 2 และมีเกรด 3",
   "dashboard.stock_value": "มูลค่าสต็อก",
   "dashboard.cost_basis": "ฐานต้นทุน",
   "dashboard.ar_outstanding": "ยอดลูกหนี้การค้าคงค้าง",

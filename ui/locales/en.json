@@ -1893,6 +1893,7 @@
   "shell.search_help_scoped_range": "scopes a range to one field: matches when that field falls between the two numbers, over any numeric field or attribute.",
   "shell.search_help_example_label": "Example:",
   "shell.search_help_example_result": "finds bolts whose quantity, weight or pieces value is from 5 to 10.",
+  "shell.search_help_example_scoped_result": "finds demantoid stones whose per-piece measure is from 1 to 2 and whose grade is 3.",
   "dashboard.stock_value": "Stock Value",
   "dashboard.cost_basis": "Cost Basis",
   "dashboard.ar_outstanding": "AR Outstanding",

@@ -20,6 +20,7 @@ COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
 def apply_field_visibility(
     items: list[dict], role: str, field_schema: list[dict], can_see_costs: bool,
     can_author_drafts: bool = False,
+    derived_field_deps: dict[str, tuple[str, ...]] | None = None,
 ) -> list[dict]:
     """Strip fields from item dicts that the caller is not allowed to see.
 
@@ -36,6 +37,12 @@ def apply_field_visibility(
     available, not at creation. When ``can_author_drafts`` (the caller holds
     edit_inventory), a DRAFT item keeps its cost keys so its creator can finish
     authoring it; every non-draft item is stripped as before.
+
+    Derived fields: ``derived_field_deps`` maps a computed key to the source keys
+    it is derived from (e.g. qty_each from quantity and pieces). A derived key is
+    stripped whenever ANY of its sources is stripped, so a caller cannot recover a
+    hidden source from a value computed off it. The rule is stated once by the
+    caller; this service stays generic and holds no field names of its own.
     """
     caller_level = ROLE_LEVELS.get(role, 0)
     restricted = {
@@ -56,5 +63,9 @@ def apply_field_visibility(
             can_author_drafts and str(item.get("status") or "").lower() == "draft"
         ):
             drop |= COST_ITEM_KEYS
+        if derived_field_deps:
+            for derived, sources in derived_field_deps.items():
+                if any(s in drop for s in sources):
+                    drop.add(derived)
         out.append({k: v for k, v in item.items() if k not in drop} if drop else item)
     return out

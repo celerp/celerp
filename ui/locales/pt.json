@@ -1790,6 +1790,7 @@
   "shell.search_help_scoped_range": "restringe um intervalo a um campo: corresponde quando esse campo fica entre os dois números, sobre qualquer campo ou atributo numérico.",
   "shell.search_help_example_label": "Exemplo:",
   "shell.search_help_example_result": "encontra parafusos cujo valor de quantidade, peso ou unidades esteja entre 5 e 10.",
+  "shell.search_help_example_scoped_result": "encontra pedras de demantoide cuja medida por peça esteja entre 1 e 2 e cujo grau seja 3.",
   "dashboard.stock_value": "Valor do estoque",
   "dashboard.cost_basis": "Custo de aquisição",
   "dashboard.ar_outstanding": "Contas a receber pendentes",

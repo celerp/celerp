@@ -1791,6 +1791,7 @@
   "shell.search_help_scoped_range": "limita un intervallo a un solo campo: trova quando quel campo rientra tra i due numeri, su qualsiasi campo o attributo numerico.",
   "shell.search_help_example_label": "Esempio:",
   "shell.search_help_example_result": "trova bulloni il cui valore di quantità, peso o pezzi è compreso tra 5 e 10.",
+  "shell.search_help_example_scoped_result": "trova pietre di demantoide la cui misura per pezzo è compresa tra 1 e 2 e il cui grado è 3.",
   "dashboard.stock_value": "Valore delle scorte",
   "dashboard.cost_basis": "Costo di acquisto",
   "dashboard.ar_outstanding": "Crediti in sospeso",

@@ -209,3 +209,31 @@ def test_scoped_core_key_excluded():
                   cost_price=1.5)
     assert query_match_reasons(leaky, "idempotency_key: csv") is None
     assert query_match_reasons(leaky, "cost_price: 1-2") is None
+
+
+def test_scoped_numeric_exact_no_substring():
+    """A scoped term whose value and the stored value are both numbers matches by
+    numeric EQUALITY, never substring: `qty: 1` does not match quantity 10, and
+    `grade: 3` does not match a grade of "30". The exact value still matches, and a
+    non-numeric enum keeps its substring behaviour."""
+    assert query_match_reasons(_item(name="Bolt", sku="B10", quantity=10), "qty: 1") is None
+    assert query_match_reasons(_item(name="Bolt", sku="B1", quantity=1), "qty: 1") == [("quantity", "1")]
+    assert query_match_reasons(_item(name="Stone", sku="S30", grade="30"), "grade: 3") is None
+    assert query_match_reasons(_item(name="Stone", sku="S3", grade="3"), "grade: 3") == [("grade", "3")]
+    # A non-numeric enum value keeps substring matching (nothing to coerce).
+    assert query_match_reasons(_item(name="P", sku="P1", stone_type="Demantoid"),
+                               "stone_type: deman") == [("stone_type", "deman")]
+
+
+def test_scoped_unknown_prefix_falls_through_to_literal():
+    """An unresolved prefix is not a scope: a field the term names that is neither a
+    known field, an alias, nor a dynamic attribute leaves the whole term a literal
+    text search. A description literally containing `foo:bar` is found by `foo:bar`,
+    while a resolving prefix still scopes."""
+    doc = _item(name="Config", sku="CFG", description="see foo:bar in the notes")
+    assert item_matches_query(doc, "foo:bar")
+    assert query_match_reasons(doc, "foo:bar") == [("description", "foo:bar")]
+    # A resolving prefix still scopes (regression guard).
+    stone = _item(name="Stone", sku="S1", stone_type="Demantoid", quantity=1)
+    assert item_matches_query(stone, "stone_type: demantoid")
+    assert item_matches_query(stone, "qty: 1-2")

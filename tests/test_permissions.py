@@ -25,6 +25,20 @@ from test_helpers import (  # noqa: E402
     register_admin as _register_admin,
 )
 
+
+async def _restrict_item_fields(client, admin_h, keys: set[str]) -> None:
+    """Set visible_to_roles on the named item-schema fields so only admin and manager
+    see them, through the same company-settings endpoint an admin uses. Everything
+    else in the schema is written back unchanged."""
+    r = await client.get("/companies/me/item-schema", headers=admin_h)
+    assert r.status_code == 200, r.text
+    fields = r.json()
+    for f in fields:
+        if f["key"] in keys:
+            f["visible_to_roles"] = ["admin", "manager"]
+    pr = await client.patch("/companies/me/item-schema", json={"fields": fields}, headers=admin_h)
+    assert pr.status_code == 200, pr.text
+
 class TestManagerRequiredDocOps:
 
     async def _create_draft_doc(self, client, headers: dict) -> str:
@@ -405,6 +419,77 @@ class TestFieldVisibility:
         r = await client.get(f"/items/{ctx['item_id']}", headers=ctx["manager_h"])
         assert r.status_code == 200
         assert "cost_price" in r.json()
+
+    # ── Derived field: qty_each follows its sources (quantity, pieces) ────────
+
+    async def test_qty_each_hidden_when_quantity_restricted_list(self, client, session):
+        """qty_each is derived from quantity, so a role that cannot see quantity must
+        not see qty_each either - otherwise the hidden quantity is recoverable from the
+        per-piece figure. GET /items strips both for the denied role."""
+        ctx = await _setup(client, session)
+        await _restrict_item_fields(client, ctx["admin_h"], {"quantity"})
+        r = await client.get("/items", headers=ctx["operator_h"])
+        assert r.status_code == 200
+        item = r.json()["items"][0]
+        assert "quantity" not in item
+        assert "qty_each" not in item
+        # The manager, who may see quantity, still sees the derived figure.
+        mr = await client.get("/items", headers=ctx["manager_h"])
+        assert "qty_each" in mr.json()["items"][0]
+
+    async def test_qty_each_hidden_when_quantity_restricted_detail(self, client, session):
+        """The same rule holds on GET /items/{id}: no qty_each for the denied role."""
+        ctx = await _setup(client, session)
+        await _restrict_item_fields(client, ctx["admin_h"], {"quantity"})
+        r = await client.get(f"/items/{ctx['item_id']}", headers=ctx["operator_h"])
+        assert r.status_code == 200
+        body = r.json()
+        assert "quantity" not in body
+        assert "qty_each" not in body
+
+    async def test_qty_each_hidden_when_pieces_restricted(self, client, session):
+        """pieces is the other source. Restricting only pieces still hides qty_each,
+        because the per-piece figure would otherwise leak the hidden piece count;
+        quantity, unrestricted here, stays visible."""
+        ctx = await _setup(client, session)
+        await _restrict_item_fields(client, ctx["admin_h"], {"pieces"})
+        r = await client.get("/items", headers=ctx["operator_h"])
+        assert r.status_code == 200
+        item = r.json()["items"][0]
+        assert "pieces" not in item
+        assert "qty_each" not in item
+        assert "quantity" in item
+
+    async def test_qty_each_visible_when_both_sources_visible(self, client, session):
+        """Regression guard against over-stripping: when neither source is restricted,
+        the operator sees qty_each. Green at merge-base; it fails only if the derived
+        drop is applied unconditionally."""
+        ctx = await _setup(client, session)
+        r = await client.get("/items", headers=ctx["operator_h"])
+        assert r.status_code == 200
+        item = r.json()["items"][0]
+        assert "quantity" in item
+        assert "qty_each" in item
+
+    async def test_qmatch_omits_hidden_field_value(self, client, session):
+        """The search-match tag echoes the matched field's stored value, so a tag for a
+        hidden field would leak it past the body strip. A denied-quantity role that
+        searches a term matching quantity gets no quantity/pieces/qty_each tag and no
+        such key in the body; a role that may see quantity does get the tag."""
+        ctx = await _setup(client, session)
+        await _restrict_item_fields(client, ctx["admin_h"], {"quantity", "pieces"})
+        r = await client.get("/items", params={"q": "qty: 5"}, headers=ctx["operator_h"])
+        assert r.status_code == 200
+        items = r.json()["items"]
+        assert len(items) == 1  # the quantity-5 item still matches (match runs pre-strip)
+        item = items[0]
+        assert "quantity" not in item and "pieces" not in item and "qty_each" not in item
+        leaked = {m["field"] for m in item.get("q_match", [])}
+        assert leaked & {"quantity", "pieces", "qty_each"} == set()
+        # The manager may see quantity, so the tag survives for that role.
+        mr = await client.get("/items", params={"q": "qty: 5"}, headers=ctx["manager_h"])
+        mfields = {m["field"] for m in mr.json()["items"][0].get("q_match", [])}
+        assert "quantity" in mfields
 
 
 # ── Write-path: cost_price field write guard ──────────────────────────────────

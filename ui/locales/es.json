@@ -1790,6 +1790,7 @@
   "shell.search_help_scoped_range": "limita un rango a un campo: coincide cuando ese campo queda entre los dos números, sobre cualquier campo o atributo numérico.",
   "shell.search_help_example_label": "Ejemplo:",
   "shell.search_help_example_result": "busca pernos cuyo valor de cantidad, peso o unidades esté comprendido entre 5 y 10.",
+  "shell.search_help_example_scoped_result": "busca piedras de demantoide cuya medida por pieza esté entre 1 y 2 y cuyo grado sea 3.",
   "dashboard.stock_value": "Valor de existencias",
   "dashboard.cost_basis": "Coste de adquisición",
   "dashboard.ar_outstanding": "Cuentas por cobrar pendientes",

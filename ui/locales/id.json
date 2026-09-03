@@ -1790,6 +1790,7 @@
   "shell.search_help_scoped_range": "membatasi rentang ke satu bidang: cocok ketika bidang itu berada di antara kedua angka, pada bidang atau atribut numerik apa pun.",
   "shell.search_help_example_label": "Contoh:",
   "shell.search_help_example_result": "menemukan baut yang nilai jumlah, berat, atau buahnya berkisar antara 5 hingga 10.",
+  "shell.search_help_example_scoped_result": "menemukan batu demantoid yang ukuran per buahnya antara 1 hingga 2 dan gradenya 3.",
   "dashboard.stock_value": "Nilai Stok",
   "dashboard.cost_basis": "Dasar Biaya",
   "dashboard.ar_outstanding": "Piutang Usaha yang Belum Terbayar",
