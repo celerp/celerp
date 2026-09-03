@@ -2176,46 +2176,39 @@ celerpUpdateBulkAlloc();
         # Showing barcodes also needs the items (legacy lines predate barcode stamping).
         if _need_status or doc_type in _INVOICE_LAYOUT_DOC_TYPES or _ident_mode != "sku":
             try:
-                _line_eids = [
+                _line_eids = list(dict.fromkeys(
                     li.get("entity_id") or li.get("item_id") or ""
                     for li in doc.get("line_items", [])
                     if li.get("entity_id") or li.get("item_id")
-                ]
-                # Classify each item's sell_by unit (weight/pieces) so the row can tell
-                # whether quantity already IS the pieces/weight measure (then it's locked).
-                from celerp.services.units import build_unit_map
-                try:
-                    _unit_map = build_unit_map(await api.get_units(token))
-                except Exception:
-                    _unit_map = {}
-                # Fetch each item individually - doc line counts are always small (10s),
-                # so per-item calls are cheaper and always correct vs. a limit=1000 page scan.
-                import asyncio as _asyncio
-                async def _fetch_item(eid: str) -> tuple[str, dict | None]:
+                ))
+                if _line_eids:
+                    # Classify each item's sell_by unit (weight/pieces) so the row can tell
+                    # whether quantity already IS the pieces/weight measure (then it's locked).
+                    from celerp.services.units import build_unit_map
                     try:
-                        return eid, await api.get_item(token, eid)
+                        _unit_map = build_unit_map(await api.get_units(token))
                     except Exception:
-                        return eid, None
-                results = await _asyncio.gather(*(_fetch_item(e) for e in _line_eids))
-                for eid, item in results:
-                    if not item:
-                        continue
-                    if item.get("status"):
-                        item_status_map[eid] = item["status"]
-                        _sdoc = str(item.get("status_doc_id") or "")
-                        if _sdoc:
-                            item_status_doc_map[eid] = (
-                                _sdoc,
-                                str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
-                            )
-                    item_meta_map[eid] = item_measure_meta(item, _unit_map)
-                if _ident_mode != "sku":
-                    # Lines saved before barcodes were stamped: fill from the catalog item.
-                    _items_by_eid = {eid: item for eid, item in results if item}
-                    for _li in doc.get("line_items", []):
-                        _it = _items_by_eid.get(_li.get("entity_id") or _li.get("item_id") or "")
-                        if _it:
-                            identifier_backfill(_li, _it)
+                        _unit_map = {}
+                    # ONE bulk metadata call for every line, replacing the former per-line fan-out.
+                    _items_by_eid = await api.get_items_metadata(token, _line_eids)
+                    for eid, item in _items_by_eid.items():
+                        if not item:
+                            continue
+                        if item.get("status"):
+                            item_status_map[eid] = item["status"]
+                            _sdoc = str(item.get("status_doc_id") or "")
+                            if _sdoc:
+                                item_status_doc_map[eid] = (
+                                    _sdoc,
+                                    str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
+                                )
+                        item_meta_map[eid] = item_measure_meta(item, _unit_map)
+                    if _ident_mode != "sku":
+                        # Lines saved before barcodes were stamped: fill from the catalog item.
+                        for _li in doc.get("line_items", []):
+                            _it = _items_by_eid.get(_li.get("entity_id") or _li.get("item_id") or "")
+                            if _it:
+                                identifier_backfill(_li, _it)
             except Exception:
                 pass
         # Draft PO: grey qty placeholder per blank line = velocity suggestion in purchase units.
@@ -4309,50 +4302,45 @@ celerpUpdateBulkAlloc();
         except Exception:
             pass
 
-        # Build item_meta_map for On-hand quantities (needed for audit list_type) and
-        # item_status_map for the Status column on reservable lists.
-        # Mirrors the /docs/{id} gather block so _doc_detail gets the same data.
+        # Item metadata for the list lines: On-hand (audit/write-off), the Status
+        # column (reservable lists) and PCS/WEIGHT measure editability (a list is an
+        # invoice-layout doc type, so every line renders its measures from item meta).
+        # ONE bulk call feeds all three maps; on failure they stay empty and the lines
+        # render from their stored values. Mirrors the /docs/{id} block.
         item_meta_map: dict[str, dict] = {}
         item_status_map: dict[str, str] = {}
         item_status_doc_map: dict[str, tuple[str, str]] = {}
-        if (lst.get("list_type") or "") in ("audit",) or True:
+        _line_eids = list(dict.fromkeys(
+            li.get("item_id") or li.get("entity_id") or ""
+            for li in lst.get("line_items", [])
+            if li.get("item_id") or li.get("entity_id")
+        ))
+        if _line_eids:
             try:
-                _line_eids = [
-                    li.get("item_id") or li.get("entity_id") or ""
-                    for li in lst.get("line_items", [])
-                    if li.get("item_id") or li.get("entity_id")
-                ]
-                if _line_eids:
-                    from celerp.services.units import build_unit_map
-                    try:
-                        _unit_map = build_unit_map(await api.get_units(token))
-                    except Exception:
-                        _unit_map = {}
-                    import asyncio as _asyncio
-                    async def _fetch_item_l(eid: str) -> tuple[str, dict | None]:
-                        try:
-                            return eid, await api.get_item(token, eid)
-                        except Exception:
-                            return eid, None
-                    _results = await _asyncio.gather(*(_fetch_item_l(e) for e in _line_eids))
-                    for eid, item in _results:
-                        if item:
-                            item_meta_map[eid] = item_measure_meta(item, _unit_map)
-                            if item.get("status"):
-                                item_status_map[eid] = item["status"]
-                                _sdoc = str(item.get("status_doc_id") or "")
-                                if _sdoc:
-                                    item_status_doc_map[eid] = (
-                                        _sdoc,
-                                        str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
-                                    )
-                    if _ident_mode != "sku":
-                        # Lines saved before barcodes were stamped: fill from the catalog item.
-                        _items_by_eid = {eid: item for eid, item in _results if item}
-                        for _li in lst.get("line_items", []):
-                            _it = _items_by_eid.get(_li.get("item_id") or _li.get("entity_id") or "")
-                            if _it:
-                                identifier_backfill(_li, _it)
+                from celerp.services.units import build_unit_map
+                try:
+                    _unit_map = build_unit_map(await api.get_units(token))
+                except Exception:
+                    _unit_map = {}
+                _items_by_eid = await api.get_items_metadata(token, _line_eids)
+                for eid, item in _items_by_eid.items():
+                    if not item:
+                        continue
+                    item_meta_map[eid] = item_measure_meta(item, _unit_map)
+                    if item.get("status"):
+                        item_status_map[eid] = item["status"]
+                        _sdoc = str(item.get("status_doc_id") or "")
+                        if _sdoc:
+                            item_status_doc_map[eid] = (
+                                _sdoc,
+                                str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
+                            )
+                if _ident_mode != "sku":
+                    # Lines saved before barcodes were stamped: fill from the catalog item.
+                    for _li in lst.get("line_items", []):
+                        _it = _items_by_eid.get(_li.get("item_id") or _li.get("entity_id") or "")
+                        if _it:
+                            identifier_backfill(_li, _it)
             except Exception:
                 pass
 
@@ -4592,23 +4580,20 @@ celerpUpdateBulkAlloc();
         from ui.components.table import EMPTY as _EMPTY
         lst = await api.get_list(token, entity_id)
         line_items = lst.get("line_items") or []
-        # Build item_meta_map for On-hand column
+        # Build item_meta_map for On-hand column via ONE bulk metadata call.
         item_meta_map: dict[str, dict] = {}
         try:
-            _eids = [li.get("item_id") or li.get("entity_id") or "" for li in line_items if li.get("item_id") or li.get("entity_id")]
+            _eids = list(dict.fromkeys(
+                li.get("item_id") or li.get("entity_id") or ""
+                for li in line_items if li.get("item_id") or li.get("entity_id")
+            ))
             if _eids:
                 from celerp.services.units import build_unit_map
                 try:
                     _unit_map = build_unit_map(await api.get_units(token))
                 except Exception:
                     _unit_map = {}
-                import asyncio as _asyncio
-                async def _fi(eid: str) -> tuple[str, dict | None]:
-                    try:
-                        return eid, await api.get_item(token, eid)
-                    except Exception:
-                        return eid, None
-                for eid, item in await _asyncio.gather(*(_fi(e) for e in _eids)):
+                for eid, item in (await api.get_items_metadata(token, _eids)).items():
                     if item:
                         item_meta_map[eid] = item_measure_meta(item, _unit_map)
         except Exception:
