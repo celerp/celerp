@@ -2102,6 +2102,7 @@
   "documents.back_to_lists": "Volver a Listas",
   "documents.bank": "Banco",
   "documents.bcc": "CCO",
+  "documents.bulk_payment_result": "Pagados {paid}, omitidos {skipped}. {reasons}",
   "documents.bulk_payment_title": "Pago masivo: {contact} ({n} documentos)",
   "documents.cc": "CC",
   "documents.clear_scanned": "Borrar escaneados",
@@ -3053,5 +3054,16 @@
   "settings.tab_line_items": "Líneas",
   "th.factor": "Factor",
   "th.position": "#",
-  "th.rounding": "Redondeo"
+  "th.rounding": "Redondeo",
+  "doc.closed": "Cerrado",
+  "btn.reopen": "Reabrir",
+  "btn.close_memo": "Cerrar",
+  "btn.confirm_close_memo": "Confirmar cierre",
+  "btn.confirm_reopen": "Confirmar reapertura",
+  "documents.tip_close_memo": "Cierre esta nota cuando cada artículo se haya vendido, conservado o devuelto al inventario.",
+  "documents.tip_reopen_memo": "Reabra esta nota para que vuelva a estar activa.",
+  "documents.reopen_memo_confirm": "¿Reabrir esta nota y restaurar su estado anterior?",
+  "documents.line_label_returned": "Devuelto",
+  "documents.line_label_not_shipped": "No enviado",
+  "documents.th_shipped": "Envío"
 }

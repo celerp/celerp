@@ -4161,7 +4161,7 @@ class TestSprint4DocActions:
     async def test_action_unknown_returns_400(self, ui_client):
         """Unknown action returns 400."""
         r = await ui_client.post(
-            "/docs/doc:INV-2026-0001/action/reopen",
+            "/docs/doc:INV-2026-0001/action/bogus-action",
             cookies=_authed(),
         )
         assert r.status_code == 400

@@ -146,6 +146,17 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["status"] = restored
         current.pop("void_reason", None)
         current.pop("pre_void_status", None)
+    elif event_type == "doc.closed":
+        # Terminal-but-reversible close for a resolved memo. fulfillment_status is
+        # orthogonal and left untouched, keeping the fulfilled_items audit trail.
+        current["status"] = "closed"
+        current["pre_close_status"] = data.get("pre_close_status")
+        if data.get("reason"):
+            current["close_reason"] = data["reason"]
+    elif event_type == "doc.reopened":
+        current["status"] = data.get("restored_status") or "final"
+        current.pop("pre_close_status", None)
+        current.pop("close_reason", None)
     elif event_type == "doc.payment.received":
         paid = to_decimal(current.get("amount_paid", 0)) + to_decimal(data["amount"])
         total = to_decimal(current.get("total", 0))

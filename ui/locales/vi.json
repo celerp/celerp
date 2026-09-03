@@ -2102,6 +2102,7 @@
   "documents.back_to_lists": "Quay lại Danh sách",
   "documents.bank": "Ngân hàng",
   "documents.bcc": "BCC",
+  "documents.bulk_payment_result": "Đã thanh toán {paid}, bỏ qua {skipped}. {reasons}",
   "documents.bulk_payment_title": "Thanh toán hàng loạt: {contact} ({n} tài liệu)",
   "documents.cc": "CC",
   "documents.clear_scanned": "Xóa bản quét",
@@ -3053,5 +3054,16 @@
   "settings.tab_line_items": "Dòng chi tiết",
   "th.factor": "Hệ số",
   "th.position": "#",
-  "th.rounding": "Làm tròn"
+  "th.rounding": "Làm tròn",
+  "doc.closed": "Đã đóng",
+  "btn.reopen": "Mở lại",
+  "btn.close_memo": "Đóng",
+  "btn.confirm_close_memo": "Xác nhận đóng",
+  "btn.confirm_reopen": "Xác nhận mở lại",
+  "documents.tip_close_memo": "Đóng bản ghi nhớ này khi mọi mặt hàng đã được bán, giữ lại hoặc trả về kho.",
+  "documents.tip_reopen_memo": "Mở lại bản ghi nhớ này để kích hoạt lại.",
+  "documents.reopen_memo_confirm": "Mở lại bản ghi nhớ này và khôi phục trạng thái trước đó?",
+  "documents.line_label_returned": "Đã trả lại",
+  "documents.line_label_not_shipped": "Chưa gửi",
+  "documents.th_shipped": "Vận chuyển"
 }

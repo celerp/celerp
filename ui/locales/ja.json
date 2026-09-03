@@ -2102,6 +2102,7 @@
   "documents.back_to_lists": "リストに戻る",
   "documents.bank": "銀行",
   "documents.bcc": "BCC",
+  "documents.bulk_payment_result": "{paid} 件を支払い、{skipped} 件をスキップしました。{reasons}",
   "documents.bulk_payment_title": "一括支払い：{contact}（{n} 件の書類）",
   "documents.cc": "CC",
   "documents.clear_scanned": "スキャン済みデータをクリア",
@@ -3053,5 +3054,16 @@
   "settings.tab_line_items": "明細行",
   "th.factor": "係数",
   "th.position": "#",
-  "th.rounding": "丸め"
+  "th.rounding": "丸め",
+  "doc.closed": "クローズ済み",
+  "btn.reopen": "再開",
+  "btn.close_memo": "クローズ",
+  "btn.confirm_close_memo": "クローズを確定",
+  "btn.confirm_reopen": "再開を確定",
+  "documents.tip_close_memo": "各商品が販売・保持・在庫へ返却されたら、このメモをクローズします。",
+  "documents.tip_reopen_memo": "このメモを再開して、再び有効にします。",
+  "documents.reopen_memo_confirm": "このメモを再開して以前の状態に戻しますか？",
+  "documents.line_label_returned": "返却済み",
+  "documents.line_label_not_shipped": "未出荷",
+  "documents.th_shipped": "出荷状況"
 }

@@ -2103,6 +2103,7 @@
   "documents.back_to_lists": "Zurück zu den Listen",
   "documents.bank": "Bank",
   "documents.bcc": "BCC",
+  "documents.bulk_payment_result": "{paid} bezahlt, {skipped} übersprungen. {reasons}",
   "documents.bulk_payment_title": "Sammelzahlung: {contact} ({n} Belege)",
   "documents.cc": "CC",
   "documents.clear_scanned": "Gescannte Belege löschen",
@@ -3053,5 +3054,16 @@
   "settings.rounding_tooltip": "Rundet berechnete Preise auf das nächste Intervall, damit abgeleitete Preise glatte Beträge ergeben.",
   "settings.tab_line_items": "Positionen",
   "th.factor": "Faktor",
-  "th.rounding": "Rundung"
+  "th.rounding": "Rundung",
+  "doc.closed": "Abgeschlossen",
+  "btn.reopen": "Wieder öffnen",
+  "btn.close_memo": "Abschließen",
+  "btn.confirm_close_memo": "Abschluss bestätigen",
+  "btn.confirm_reopen": "Wiedereröffnung bestätigen",
+  "documents.tip_close_memo": "Schließen Sie dieses Memo ab, sobald jeder Artikel verkauft, behalten oder in den Bestand zurückgeführt wurde.",
+  "documents.tip_reopen_memo": "Öffnen Sie dieses Memo erneut, um es wieder aktiv zu machen.",
+  "documents.reopen_memo_confirm": "Dieses Memo wieder öffnen und den vorherigen Status wiederherstellen?",
+  "documents.line_label_returned": "Zurückgegeben",
+  "documents.line_label_not_shipped": "Nicht versandt",
+  "documents.th_shipped": "Versand"
 }

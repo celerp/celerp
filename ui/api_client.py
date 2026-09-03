@@ -760,6 +760,16 @@ async def unvoid_doc(token: str, entity_id: str) -> dict:
         return _raise(await c.post(f"/docs/{entity_id}/unvoid", json={})).json()
 
 
+async def close_doc(token: str, entity_id: str, reason: str | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/close", json={"reason": reason})).json()
+
+
+async def reopen_doc(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/reopen", json={})).json()
+
+
 async def fulfill_lines(token: str, entity_id: str, line_entity_ids: list[str]) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/fulfill-lines", json={"line_entity_ids": line_entity_ids})).json()

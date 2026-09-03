@@ -2102,6 +2102,7 @@
   "documents.back_to_lists": "Kembali ke Daftar",
   "documents.bank": "Bank",
   "documents.bcc": "BCC",
+  "documents.bulk_payment_result": "Dibayar {paid}, dilewati {skipped}. {reasons}",
   "documents.bulk_payment_title": "Pembayaran Massal: {contact} ({n} dokumen)",
   "documents.cc": "CC",
   "documents.clear_scanned": "Hapus yang telah dipindai",
@@ -3053,5 +3054,16 @@
   "settings.tab_line_items": "Item Baris",
   "th.factor": "Faktor",
   "th.position": "#",
-  "th.rounding": "Pembulatan"
+  "th.rounding": "Pembulatan",
+  "doc.closed": "Ditutup",
+  "btn.reopen": "Buka Kembali",
+  "btn.close_memo": "Tutup",
+  "btn.confirm_close_memo": "Konfirmasi Tutup",
+  "btn.confirm_reopen": "Konfirmasi Buka Kembali",
+  "documents.tip_close_memo": "Tutup memo ini setelah setiap barang terjual, disimpan, atau dikembalikan ke stok.",
+  "documents.tip_reopen_memo": "Buka kembali memo ini agar aktif lagi.",
+  "documents.reopen_memo_confirm": "Buka kembali memo ini dan pulihkan statusnya sebelumnya?",
+  "documents.line_label_returned": "Dikembalikan",
+  "documents.line_label_not_shipped": "Belum dikirim",
+  "documents.th_shipped": "Pengiriman"
 }

@@ -2205,6 +2205,7 @@
   "documents.back_to_lists": "Back to Lists",
   "documents.bank": "Bank",
   "documents.bcc": "BCC",
+  "documents.bulk_payment_result": "Paid {paid}, skipped {skipped}. {reasons}",
   "documents.bulk_payment_title": "Bulk Payment: {contact} ({n} documents)",
   "documents.cc": "CC",
   "documents.clear_scanned": "Clear scanned",
@@ -3053,5 +3054,16 @@
   "settings.attr_overflow_more": "+{n} more",
   "settings.db_backup_size_uploaded": " - {mb} MB uploaded",
   "table.daterange_from_aria": "{label} from",
-  "table.daterange_to_aria": "{label} to"
+  "table.daterange_to_aria": "{label} to",
+  "doc.closed": "Closed",
+  "btn.reopen": "Reopen",
+  "btn.close_memo": "Close",
+  "btn.confirm_close_memo": "Confirm Close",
+  "btn.confirm_reopen": "Confirm Reopen",
+  "documents.tip_close_memo": "Close this memo once every item has been sold, kept, or returned to stock.",
+  "documents.tip_reopen_memo": "Reopen this memo to make it live again.",
+  "documents.reopen_memo_confirm": "Reopen this memo and restore its previous status?",
+  "documents.line_label_returned": "Returned",
+  "documents.line_label_not_shipped": "Not shipped",
+  "documents.th_shipped": "Shipped"
 }

@@ -579,6 +579,30 @@ def test_paid_invoice_is_still_shareable():
     assert "share-modal-doc-x1" in _detail_xml(_invoice(status="paid"), share_enabled=True)
 
 
+def _memo(status: str) -> dict:
+    return {
+        "entity_id": "doc:m1", "id": "doc:m1", "doc_type": "memo", "status": status,
+        "currency": "USD", "total": 100.0,
+        "line_items": [{"description": "W", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
+    }
+
+
+def test_closed_memo_hides_void():
+    """A closed memo's action bar offers Reopen and hides the Void control, whose API
+    always rejects a closed memo. A live memo still shows Void, so the guard is specific
+    to the closed terminal state, not a blanket removal."""
+    closed = _detail_xml(_memo("closed"))
+    assert "/action/reopen" in closed, "a closed memo must still offer Reopen"
+    assert "/action/void" not in closed, (
+        "a closed memo must not show a Void control the API always rejects")
+    # The other terminal-inappropriate actions are already hidden on a closed memo.
+    for gone in ("/action/send", "/action/finalize", "/action/revert"):
+        assert gone not in closed, f"a closed memo must not offer {gone}"
+
+    # A live (sent) memo still shows Void: the hide is specific to 'closed'.
+    assert "/action/void" in _detail_xml(_memo("sent")), "a live memo must still show Void"
+
+
 def test_print_view_escapes_injected_html():
     """Document strings must be HTML-escaped by the shared renderer (it serves
     both the Print button and the public share view), so an imported doc can't

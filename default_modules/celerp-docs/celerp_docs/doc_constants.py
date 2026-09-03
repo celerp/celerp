@@ -43,5 +43,6 @@ NO_SEND_DOC_TYPES: frozenset[str] = frozenset({"bill", "consignment_in", "purcha
 # A production order is "invoice-to-self" demand that feeds the manufacturing queue.
 NON_FINANCIAL_DOC_TYPES: frozenset[str] = frozenset({"production_order"})
 
-# Statuses where Send is suppressed even for sendable doc types.
-NO_SEND_STATUSES: frozenset[str] = frozenset({"paid", "void"})
+# Statuses where Send is suppressed even for sendable doc types. A closed memo is
+# settled paperwork: re-sending it would silently un-close it, so Send is hidden.
+NO_SEND_STATUSES: frozenset[str] = frozenset({"paid", "void", "closed"})

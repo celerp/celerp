@@ -2102,6 +2102,7 @@
   "documents.back_to_lists": "العودة إلى القوائم",
   "documents.bank": "البنك",
   "documents.bcc": "نسخة مخفية (BCC)",
+  "documents.bulk_payment_result": "تم دفع {paid}، وتم تخطي {skipped}. {reasons}",
   "documents.bulk_payment_title": "الدفع الجماعي: {contact} ({n} مستند)",
   "documents.cc": "نسخة (CC)",
   "documents.clear_scanned": "مسح الممسوح ضوئيًا",
@@ -3053,5 +3054,16 @@
   "settings.tab_line_items": "البنود",
   "th.factor": "عامل",
   "th.position": "#",
-  "th.rounding": "التقريب"
+  "th.rounding": "التقريب",
+  "doc.closed": "مغلق",
+  "btn.reopen": "إعادة فتح",
+  "btn.close_memo": "إغلاق",
+  "btn.confirm_close_memo": "تأكيد الإغلاق",
+  "btn.confirm_reopen": "تأكيد إعادة الفتح",
+  "documents.tip_close_memo": "أغلق هذه المذكرة بعد بيع كل صنف أو الاحتفاظ به أو إعادته إلى المخزون.",
+  "documents.tip_reopen_memo": "أعد فتح هذه المذكرة لتصبح نشطة مرة أخرى.",
+  "documents.reopen_memo_confirm": "إعادة فتح هذه المذكرة واستعادة حالتها السابقة؟",
+  "documents.line_label_returned": "أُرجع",
+  "documents.line_label_not_shipped": "لم يُشحن",
+  "documents.th_shipped": "الشحن"
 }

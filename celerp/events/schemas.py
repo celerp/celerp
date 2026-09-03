@@ -546,6 +546,15 @@ class DocUnvoided(BaseModel):
     restored_status: str
 
 
+class DocClosed(BaseModel):
+    reason: str | None = None
+    pre_close_status: str | None = None
+
+
+class DocReopened(BaseModel):
+    restored_status: str
+
+
 class DocSent(BaseModel):
     sent_via: str | None = None
     sent_to: str | None = None
@@ -1162,6 +1171,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.voided": DocVoided,
     "doc.reverted_to_draft": DocRevertedToDraft,
     "doc.unvoided": DocUnvoided,
+    "doc.closed": DocClosed,
+    "doc.reopened": DocReopened,
     "doc.converted_to_bill": DocConvertedToBill,
     "doc.sent": DocSent,
     "doc.payment.received": DocPaymentReceived,

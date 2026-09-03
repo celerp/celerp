@@ -2103,6 +2103,7 @@
   "documents.back_to_lists": "Retour aux listes",
   "documents.bank": "Banque",
   "documents.bcc": "Cci",
+  "documents.bulk_payment_result": "Payés {paid}, ignorés {skipped}. {reasons}",
   "documents.bulk_payment_title": "Paiement groupé : {contact} ({n} documents)",
   "documents.cc": "CC",
   "documents.clear_scanned": "Effacer les documents numérisés",
@@ -3053,5 +3054,16 @@
   "settings.rounding_tooltip": "Arrondit les prix calculés à l’incrément le plus proche afin d’obtenir des prix dérivés arrondis.",
   "settings.tab_line_items": "Lignes",
   "th.factor": "Facteur",
-  "th.rounding": "Arrondi"
+  "th.rounding": "Arrondi",
+  "doc.closed": "Clôturé",
+  "btn.reopen": "Rouvrir",
+  "btn.close_memo": "Clôturer",
+  "btn.confirm_close_memo": "Confirmer la clôture",
+  "btn.confirm_reopen": "Confirmer la réouverture",
+  "documents.tip_close_memo": "Clôturez ce mémo une fois chaque article vendu, conservé ou retourné en stock.",
+  "documents.tip_reopen_memo": "Rouvrez ce mémo pour le réactiver.",
+  "documents.reopen_memo_confirm": "Rouvrir ce mémo et restaurer son statut précédent ?",
+  "documents.line_label_returned": "Retourné",
+  "documents.line_label_not_shipped": "Non expédié",
+  "documents.th_shipped": "Expédition"
 }

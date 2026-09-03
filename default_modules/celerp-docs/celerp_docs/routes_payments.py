@@ -83,9 +83,9 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     (Stripe payment_intent). Shared by the customer-return and the gateway-push paths.
 
     Passes the raw charged amount: apply_doc_payment re-reads the document
-    inside the per-document lock and clamps against the FRESH outstanding, so
-    a manual payment racing the checkout can't reject or double-book the
-    charge. Replays (same reference) come back as a quiet None."""
+    under its row lock and clamps against the FRESH outstanding, so a manual
+    payment racing the checkout can't reject or double-book the charge.
+    Replays (same reference) come back as a quiet None."""
     if not reference:
         return None
     if any(p.get("reference") == reference and p.get("status") != "deleted"
@@ -97,8 +97,8 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
             "currency": currency.upper(), "bank_account": await _deposit_account(session, company_id),
             "method": "stripe", "reference": reference}
     try:
-        entry = await apply_doc_payment(
-            session, company_id, entity_id, doc_state, body,
+        entry, _amount = await apply_doc_payment(
+            session, company_id, entity_id, body,
             source="stripe", actor_id=await _company_owner_id(session, company_id),
             idempotency_key=reference,
         )
