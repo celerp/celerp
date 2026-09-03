@@ -20105,7 +20105,10 @@ class TestCommercialPartnerManagedInvariant:
             "commercial_mode": "partner_managed",
             "implementation": {"display_name": "Partner Co",
                                "support_url": "https://partner.example.com/support"},
-            "offer": {"display_name": "Managed Plan", "retail_amount": 4900,
+            # A partner price that deliberately does not equal any direct Celerp
+            # sentinel ($29/$49/$99): the invariant sweeps for DIRECT price
+            # leakage, and the partner's own arbitrary price is legitimate.
+            "offer": {"display_name": "Managed Plan", "retail_amount": 7700,
                       "currency": "USD", "service_bullets": ["Setup", "Support"]},
         }
         yield
@@ -20119,6 +20122,26 @@ class TestCommercialPartnerManagedInvariant:
         from fasthtml.common import to_xml
         from ui.routes.settings_cloud import _plans_ad
         self._assert_clean(to_xml(_plans_ad("inst-1", lang="en")), "settings/cloud _plans_ad")
+
+    def test_settings_cloud_partner_degraded_cta(self):
+        """An unpriced/malformed partner offer degrades to a real partner-support
+        contact CTA, never a dead-end note (BLOCKER 6). The pre-change surface
+        rendered only the bare note for this case, giving the partner-managed
+        user no actionable way to reach their partner."""
+        import celerp.gateway.state as gw_state
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        # Partner mode with no usable offer: partner identity + support_url only.
+        gw_state._commercial_context = {
+            "commercial_mode": "partner_managed",
+            "implementation": {"display_name": "Partner Co",
+                               "support_url": "https://partner.example.com/support"},
+        }
+        html = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "cloud-partner-offer__contact" in html, (
+            f"unpriced partner offer did not render a contact CTA: {html[:400]}")
+        assert "https://partner.example.com/support" in html
+        self._assert_clean(html, "settings/cloud degraded partner CTA")
 
     def test_setup_wizard_partner_clean(self):
         from fasthtml.common import to_xml

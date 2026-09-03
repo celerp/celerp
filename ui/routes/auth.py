@@ -754,13 +754,24 @@ def _onboarding_view() -> FT:
 
 def _direct_connection_gate(email: str, password: str) -> FT:
     """Shown when a second user tries to log in without relay connected."""
-    subscribe_url = "https://celerp.com/subscribe"
+    from celerp.config import ensure_instance_id
+    from celerp.gateway.state import (
+        build_commercial_handoff, get_instance_id, _enterprise_handoff,
+    )
+    from ui.components.cloud_gate import direct_price
     try:
-        from celerp.config import ensure_instance_id
-        from celerp.gateway.state import build_commercial_handoff
-        subscribe_url = build_commercial_handoff(ensure_instance_id(), "subscribe", "cloud")
+        iid = ensure_instance_id()
     except Exception:
-        pass
+        iid = get_instance_id()
+    # Fail closed: resolve through the commercial policy, and on any resolver
+    # failure fall back to the Enterprise contact route, never a hardcoded direct
+    # checkout. A partner-managed install can never be sent to self-serve billing.
+    try:
+        handoff_url = build_commercial_handoff(iid, "subscribe", "cloud")
+    except Exception:
+        handoff_url = _enterprise_handoff(iid)
+    cta_label = direct_price(t("auth.get_celerp_cloud_usd_29mo")) \
+        or t("btn.get_connect")
 
     return Div(
         Div(
@@ -773,8 +784,8 @@ def _direct_connection_gate(email: str, password: str) -> FT:
                 style="text-align:left;",
             ),
             Div(
-                A(t("auth.get_celerp_cloud_usd_29mo"),
-                  href=subscribe_url, target="_blank",
+                A(cta_label,
+                  href=handoff_url, target="_blank",
                   cls="btn btn--primary"),
                 Form(
                     Input(type="hidden", name="email", value=email),
