@@ -389,13 +389,6 @@ def build_subscribe_url(instance_id: str = "", *, topup: bool = False, extra: st
     return build_handoff_url(path, medium="inapp", lead=lead, extra=extra)
 
 
-def relay_subscribe_url(plan: str = "") -> str:
-    """Subscribe URL pre-filled with the connected gateway instance id."""
-    from celerp.config import settings
-    return build_subscribe_url(_instance_id or settings.gateway_instance_id,
-                               extra=f"plan={plan}" if plan else "")
-
-
 def build_commercial_handoff(instance_id: str, intent: str, sku: str = "") -> str:
     """Single policy point resolving every core-app commercial CTA to its correct
     destination, layered above the URL builders (never changing their signatures).
