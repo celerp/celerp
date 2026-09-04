@@ -3927,34 +3927,50 @@ async def get_list_summary(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    rows = (await session.execute(
-        select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "list")
-    )).scalars().all()
+    base_where = _list_base_where(company_id)
+    status_expr = _func.coalesce(Projection.state["status"].as_string(), "")
+    # One grouped pass over the projection: a bounded histogram (one row per status), with the
+    # value sum carried per group so total_value is derived without a second scan. total is text
+    # in the json state, so cast the ->> output to numeric - never a jsonb cast.
+    total_num = _sa.cast(
+        _func.nullif(Projection.state["total"].as_string(), ""), _sa.Numeric)
+    grouped = (await session.execute(
+        select(status_expr,
+               _func.count(),
+               _func.coalesce(_func.sum(total_num), 0))
+        .where(*base_where)
+        .group_by(status_expr)
+    )).all()
     count_by_status: dict[str, int] = {}
+    total_count = 0
     total_value = 0.0
-    converted_to_memo_count = 0
-    converted_to_invoice_count = 0
-    for row in rows:
-        st = row.state.get("status", "")
-        count_by_status[st] = count_by_status.get(st, 0) + 1
+    for st, n, value_sum in grouped:
+        count_by_status[st] = n
+        total_count += n
         if st != VOID:
-            total_value += float(row.state.get("total", 0) or 0)
-        if st == CLOSED and row.state.get("result") == "converted":
-            ctt = row.state.get("converted_to_type") or ""
-            if ctt == "memo":
-                converted_to_memo_count += 1
-            elif ctt == "invoice":
-                converted_to_invoice_count += 1
+            total_value += float(value_sum or 0)
     draft_count = count_by_status.get(DRAFT, 0)
-    void_count = count_by_status.get(VOID, 0)
     all_issued_count = sum(v for k, v in count_by_status.items() if k not in (DRAFT, VOID))
+
+    # Converted outcomes: closed lists whose result is a conversion, split by target type.
+    converted_where = base_where + [
+        status_expr == CLOSED,
+        Projection.state["result"].as_string() == "converted",
+    ]
+    ctt_expr = Projection.state["converted_to_type"].as_string()
+    converted_rows = (await session.execute(
+        select(ctt_expr, _func.count())
+        .where(*converted_where)
+        .group_by(ctt_expr)
+    )).all()
+    converted_by_type = {ctt: n for ctt, n in converted_rows}
     return {
-        "total_count": len(rows),
+        "total_count": total_count,
         "draft_count": draft_count,
         "all_issued_count": all_issued_count,
         "total_value": total_value,
-        "converted_to_memo_count": converted_to_memo_count,
-        "converted_to_invoice_count": converted_to_invoice_count,
+        "converted_to_memo_count": converted_by_type.get("memo", 0),
+        "converted_to_invoice_count": converted_by_type.get("invoice", 0),
         "count_by_status": count_by_status,
     }
 
