@@ -19,23 +19,71 @@ class APIError(Exception):
         super().__init__(f"API {status}: {detail}")
 
 
+# One shared bounded connection pool for every UI-to-API request. Each call still
+# gets its own cheap AsyncClient wrapper (a per-token Authorization header cannot be
+# shared across tokens), but they all drive requests through this single transport,
+# whose Limits cap how many connections the UI process can open into the API. Before
+# this, every _client()/_anon_client() call built a fresh AsyncClient with its own
+# pool, so a burst of requests opened an unbounded number of pools - a contributor to
+# the connection-pool exhaustion in the incident. A shared transport (not one shared
+# client) is the right shape here because auth differs per request; alt (d) in the
+# plan rejected a single global client for exactly that reason.
+_shared_transport: httpx.AsyncHTTPTransport | None = None
+
+# Lightweight observability for the UI client path: how many requests were driven
+# through the shared pool, logged on shutdown so pool pressure is visible.
+_ui_request_count = 0
+
+
+def _get_transport() -> httpx.AsyncHTTPTransport:
+    """Return the shared bounded transport, building it lazily on first use."""
+    global _shared_transport
+    if _shared_transport is None:
+        _shared_transport = httpx.AsyncHTTPTransport(
+            limits=httpx.Limits(max_connections=32, max_keepalive_connections=8),
+        )
+    return _shared_transport
+
+
+async def close_shared_client() -> None:
+    """Close the shared transport if one was built. Called from the UI app shutdown.
+
+    Safe to call when none was built. Logs the total request count as observability
+    for how much traffic the bounded pool carried this process lifetime."""
+    global _shared_transport
+    transport = _shared_transport
+    _shared_transport = None
+    logger.info("UI API client shutdown: %d requests served via shared pool", _ui_request_count)
+    if transport is not None:
+        try:
+            await transport.aclose()
+        except Exception:
+            pass
+
+
 def _client(token: str, timeout: float = 10.0) -> httpx.AsyncClient:
+    global _ui_request_count
+    _ui_request_count += 1
     from ui.config import API_BASE
     return httpx.AsyncClient(
         base_url=API_BASE,
         headers={"Authorization": f"Bearer {token}"},
         timeout=timeout,
         follow_redirects=True,
+        transport=_get_transport(),
     )
 
 
 def _anon_client(timeout: float = 10.0) -> httpx.AsyncClient:
     """Unauthenticated client (no Authorization header)."""
+    global _ui_request_count
+    _ui_request_count += 1
     from ui.config import API_BASE
     return httpx.AsyncClient(
         base_url=API_BASE,
         timeout=timeout,
         follow_redirects=True,
+        transport=_get_transport(),
     )
 
 
@@ -73,6 +121,8 @@ async def _anon_api_client(timeout: float = 10.0):
 @asynccontextmanager
 async def _ai_api_client(token: str, session_token: str, timeout: float = 10.0):
     """Authenticated client with X-Session-Token header for AI endpoints."""
+    global _ui_request_count
+    _ui_request_count += 1
     from ui.config import API_BASE
     try:
         async with httpx.AsyncClient(
@@ -80,6 +130,7 @@ async def _ai_api_client(token: str, session_token: str, timeout: float = 10.0):
             headers={"Authorization": f"Bearer {token}", "X-Session-Token": session_token},
             timeout=timeout,
             follow_redirects=True,
+            transport=_get_transport(),
         ) as c:
             yield c
     except httpx.TimeoutException as exc:

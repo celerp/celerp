@@ -224,9 +224,17 @@ class TokenRefreshMiddleware:
             await self._app(scope, receive, send)
 
 
+async def _close_ui_api_client() -> None:
+    """Close the shared bounded httpx pool the UI uses to reach the API, so its
+    connections are released cleanly on shutdown rather than left to the event loop."""
+    from ui.api_client import close_shared_client
+    await close_shared_client()
+
+
 app = FastHTML(
     before=Beforeware(_auth_guard, skip=[r"/login", r"/login-force", r"/setup.*", r"/logout", r"/static/.*", r"/health"]),
     secret_key=os.environ.get("JWT_SECRET", "dev-secret"),
+    on_shutdown=[_close_ui_api_client],
 )
 
 app.add_middleware(TokenRefreshMiddleware)
