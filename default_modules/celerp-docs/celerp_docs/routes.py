@@ -3839,6 +3839,35 @@ async def _emit_list(session, company_id, entity_id, event_type, data, user, ide
     )
 
 
+def _list_base_where(company_id) -> list:
+    """The company-scoped list projection selector shared by every list read."""
+    return [Projection.company_id == company_id, Projection.entity_type == "list"]
+
+
+def _list_sort_date():
+    """The list's effective sort/window date, matching the Python order issue_date > created_at
+    column > date with the historic [:10] truncation. A list's state carries no date of its own,
+    so the projection's created_at column is the fallback. Written once and reused by the index
+    ORDER BY, the index date_from/date_to bounds, and the page/export ordering."""
+    issue = _func.nullif(_func.substr(Projection.state["issue_date"].as_string(), 1, 10), "")
+    created = _func.substr(_sa.cast(Projection.created_at, _sa.Text), 1, 10)
+    date = _func.nullif(_func.substr(Projection.state["date"].as_string(), 1, 10), "")
+    return _func.coalesce(issue, created, date)
+
+
+def _list_search_where(q: str, *, include_customer_id: bool):
+    """SQL predicate for the free-text list search over ref_id / customer_name (and customer_id for
+    the index, matching its wider Python match; export deliberately omits customer_id)."""
+    ql = f"%{q.lower()}%"
+    clauses = [
+        _func.lower(Projection.state["ref_id"].as_string()).like(ql),
+        _func.lower(Projection.state["customer_name"].as_string()).like(ql),
+    ]
+    if include_customer_id:
+        clauses.append(_func.lower(Projection.state["customer_id"].as_string()).like(ql))
+    return _sa.or_(*clauses)
+
+
 @lists_router.get("")
 async def list_lists(
     list_type: str | None = None,
@@ -3854,42 +3883,42 @@ async def list_lists(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    rows = (await session.execute(
-        select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "list")
-    )).scalars().all()
-    # Surface the projection's created_at column: a list's state has no date of its own, so without
-    # this the date-window filter/sort below (default last 12 months) silently drops every list while
-    # the count/summary — which ignores dates — still shows them. (Bug: "All issued (3)" but 0 rows.)
+    base_where = _list_base_where(company_id)
+    if list_type:
+        base_where.append(Projection.state["list_type"].as_string() == list_type)
+    if all_issued:
+        base_where.append(Projection.state["status"].as_string().notin_((DRAFT, VOID)))
+    elif status:
+        base_where.append(Projection.state["status"].as_string() == status)
+    if exclude_status:
+        base_where.append(Projection.state["status"].as_string() != exclude_status)
+    if converted_to_type:
+        base_where.append(Projection.state["converted_to_type"].as_string() == converted_to_type)
+    sort_date = _list_sort_date()
+    if date_from:
+        base_where.append(sort_date >= date_from)
+    if date_to:
+        base_where.append(sort_date <= date_to)
+    if q:
+        base_where.append(_list_search_where(q, include_customer_id=True))
+
+    total = (await session.execute(
+        select(_func.count()).select_from(Projection).where(*base_where))).scalar_one()
+    list_q = (
+        select(Projection)
+        .where(*base_where)
+        # Descending newest-first with the unique entity_id tiebreak so equal-date rows have a
+        # total order and OFFSET pagination never skips or duplicates a boundary row.
+        .order_by(sort_date.desc(), Projection.entity_id.desc())
+        .offset(offset)
+    )
+    if limit is not None:
+        list_q = list_q.limit(limit)
+    rows = (await session.execute(list_q)).scalars().all()
     out = [r.state | {"id": r.entity_id,
                       "created_at": (r.created_at.isoformat() if r.created_at is not None
                                      else r.state.get("created_at") or "")}
            for r in rows]
-    if list_type:
-        out = [x for x in out if x.get("list_type") == list_type]
-    if all_issued:
-        out = [x for x in out if x.get("status") not in ("draft", "void")]
-    elif status:
-        out = [x for x in out if x.get("status") == status]
-    if exclude_status:
-        out = [x for x in out if x.get("status") != exclude_status]
-    if converted_to_type:
-        out = [x for x in out if x.get("converted_to_type") == converted_to_type]
-    if date_from:
-        out = [x for x in out if (x.get("issue_date") or x.get("created_at") or x.get("date") or "")[:10] >= date_from]
-    if date_to:
-        out = [x for x in out if (x.get("issue_date") or x.get("created_at") or x.get("date") or "")[:10] <= date_to]
-    if q:
-        ql = q.lower()
-        out = [x for x in out if ql in str(x.get("ref_id") or "").lower()
-               or ql in str(x.get("customer_name") or x.get("customer_id") or "").lower()]
-    # Tiebreak on the unique id so equal-date rows have a deterministic order (else OFFSET
-    # pagination can skip/duplicate a boundary row — same fix as list_docs).
-    out.sort(key=lambda x: (x.get("issue_date") or x.get("created_at") or x.get("date") or "", x.get("id") or ""), reverse=True)
-    total = len(out)
-    if offset:
-        out = out[offset:]
-    if limit is not None:
-        out = out[:limit]
     return {"items": out, "total": total}
 
 
