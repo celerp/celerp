@@ -2,17 +2,26 @@
 # SPDX-License-Identifier: MIT
 """WP1 list-query pushdown and paged read/write (post-#318 stability).
 
-A single large-list request used to load, filter, sort, count, and slice the whole
-list in Python and buffer the whole CSV before streaming. These tests pin the
-bounded contract: the index, summary, and export push filter/sort/count/pagination
-into SQL (asserted with a statement spy on the executed SQL), and two new endpoints
-read one bounded page (`GET /lists/{id}/page`) and write one page under the existing
-optimistic-version lock without touching off-page rows (`PATCH /lists/{id}/line-page`).
+A single large-list request used to load, count, weigh, and slice the whole list in
+Python and buffer the whole CSV before streaming. These tests pin the bounded contract
+behaviourally: the index and export never drag each list's whole `state` document back
+into Python (the count and per-line weight are computed in SQL and only the header
+columns are read), the index response carries counts rather than the raw line array,
+and two endpoints read one bounded page (`GET /lists/{id}/page`) and write one page
+under the existing optimistic-version lock without touching off-page rows
+(`PATCH /lists/{id}/line-page`).
+
+The materialisation proof is DB traffic, not SQL spelling: a `before_cursor_execute`
+listener captures every executed statement and we assert that no full-`state`
+projection read runs on the hot path. Asserting a keyword like `LIMIT` appears in the
+SQL proves nothing (the pre-pushdown code already used `LIMIT`); asserting the whole
+`state` column is never selected proves the array is never loaded.
 """
 
 from __future__ import annotations
 
 import contextlib
+import re
 import uuid
 
 import pytest
@@ -82,35 +91,56 @@ def _lines(n: int, *, start: int = 0) -> list[dict]:
 
 @contextlib.contextmanager
 def _sql_spy():
-    """Capture every SQL statement executed on any engine for the duration of the block.
+    """Capture (statement, parameters) for every SQL statement executed on any engine during
+    the block via a `before_cursor_execute` listener - an honest DB-traffic probe, never a
+    monkeypatch of an application function. Attaches to the Engine class so it catches the sync
+    engine backing the async one (SQLAlchemy fires cursor events on that underlying engine)."""
+    captured: list[tuple[str, object]] = []
 
-    Attaches to the Engine class so it catches the sync engine backing the async one
-    (SQLAlchemy fires cursor events on that underlying engine)."""
-    stmts: list[str] = []
+    def _before(conn, cursor, statement, parameters, context, executemany):
+        captured.append((statement, parameters))
 
-    def _after(conn, cursor, statement, parameters, context, executemany):
-        stmts.append(statement)
-
-    event.listen(Engine, "after_cursor_execute", _after)
+    event.listen(Engine, "before_cursor_execute", _before)
     try:
-        yield stmts
+        yield captured
     finally:
-        event.remove(Engine, "after_cursor_execute", _after)
+        event.remove(Engine, "before_cursor_execute", _before)
 
 
-def _proj_selects(stmts: list[str]) -> list[str]:
-    """The SELECTs that read the list projection (company + entity_type='list' scope)."""
-    return [s for s in stmts
-            if "from projections" in s.lower() and "entity_type" in s.lower()
-            and s.lower().lstrip().startswith("select")]
+# A `select(Projection)` puts every ORM column - the bare `projections.state` among them - in
+# its select-list, dragging each row's whole document into Python. The pushed-down index/export
+# selects place only labelled sub-fields (`state ->> 'x'`) and aggregates
+# (`json_array_length(state -> ...)`, a `json_array_elements` weight sum) there, never the bare
+# column. So "a SELECT over projections whose select-list carries the bare `projections.state`
+# column" is exactly the full-document read the pushdown removes. The negative lookahead keeps a
+# `state ->` / `state ::` / `state[` subscript from counting as the bare column.
+_BARE_STATE_COL = re.compile(r"\bprojections\.state\b(?!\s*(?:->|::|\[))")
 
 
-# ── index / summary / export: pushed into SQL (statement-spy red lever) ────────
+def _full_state_reads(captured) -> list[str]:
+    """The captured statements that read the whole projection `state` document: a SELECT over the
+    projections table whose select-list (the text before its FROM clause) contains the bare
+    `projections.state` column."""
+    hits: list[str] = []
+    for statement, _parameters in captured:
+        low = statement.lower()
+        if not low.lstrip().startswith("select"):
+            continue
+        i = low.find("from projections")
+        if i < 0:
+            continue
+        if _BARE_STATE_COL.search(statement[:i]):
+            hits.append(statement)
+    return hits
+
+
+# ── index / summary / export: no whole-document read on the hot path ───────────
 
 @pytest.mark.asyncio
 async def test_list_index_pushdown_paginates_in_sql(client):
-    """GET /lists returns one bounded page + correct total; pagination is a SQL LIMIT,
-    not a full Python load then slice."""
+    """GET /lists returns one bounded page + the full-set total without loading each list's whole
+    document: the response carries no raw line_items array and the request issues no full-`state`
+    projection read (the pre-pushdown code did both)."""
     t = await _register(client)
     for i in range(7):
         await _quotation(client, t, ref_id=f"IDX-{i:03d}")
@@ -121,17 +151,19 @@ async def test_list_index_pushdown_paginates_in_sql(client):
     body = r.json()
     assert len(body["items"]) <= 3
     assert body["total"] == 7                       # count reflects the whole set, not the page
-    sel = _proj_selects(sql)
-    assert sel, "the index must query the list projection"
-    assert any("limit" in s.lower() for s in sel), (
-        "pagination must be a SQL LIMIT (no full-array Python load then slice); "
-        f"projection selects were: {sel}")
+    # Behavioural: an index row is a header plus counts, never the whole line array.
+    assert all("line_items" not in it for it in body["items"]), (
+        "the index must not carry each list's whole line_items array back to the client")
+    full = _full_state_reads(sql)
+    assert not full, (
+        "the index hot path must not read each list's whole projection state row "
+        "(the pre-pushdown full-array load). Offending statements:\n" + "\n".join(full))
 
 
 @pytest.mark.asyncio
 async def test_list_index_sql_order_matches_python(client):
-    """The SQL ORDER BY reproduces the newest-first Python sort (issue_date > created_at
-    > date, entity_id tiebreak)."""
+    """The index returns rows newest-first (issue_date > created_at > date, entity_id tiebreak),
+    the same order the Python sort produced, and does so without a full-document read."""
     t = await _register(client)
     ids = [await _quotation(client, t, ref_id=f"ORD-{i:03d}") for i in range(5)]
 
@@ -142,15 +174,13 @@ async def test_list_index_sql_order_matches_python(client):
     # Same-day rows: deterministic newest-first is the entity_id tiebreak (descending).
     expected = sorted(ids, reverse=True)
     assert returned == expected, f"order {returned} != expected {expected}"
-    sel = _proj_selects(sql)
-    assert any("order by" in s.lower() for s in sel), (
-        f"ordering must be a SQL ORDER BY, not a Python sort; selects: {sel}")
+    assert _full_state_reads(sql) == [], "ordering must not require loading each whole document"
 
 
 @pytest.mark.asyncio
 async def test_list_index_filters_equivalence(client):
-    """q / all_issued / exclude_status / converted_to_type are SQL predicates over the
-    JSON state, returning the identical id set the Python filters returned."""
+    """q / all_issued / exclude_status / converted_to_type return the identical id set the Python
+    filters returned, computed without loading each list's whole document."""
     t = await _register(client)
     keep = await _quotation(client, t, ref_id="MATCH-ONE")
     other = await _quotation(client, t, ref_id="NOPE-TWO")
@@ -161,14 +191,14 @@ async def test_list_index_filters_equivalence(client):
     got = {it["id"] for it in r.json()["items"]}
     assert got == {keep}, f"q filter returned {got}"
     assert other not in got
-    sel = _proj_selects(sql)
-    assert any("->>" in s for s in sel), (
-        f"filters must be SQL predicates over state (JSON ->> access); selects: {sel}")
+    assert _full_state_reads(sql) == [], "filtering must not require loading each whole document"
 
 
 @pytest.mark.asyncio
 async def test_list_summary_sql_aggregates(client):
-    """The 7 summary keys are computed by SQL aggregates, not a Python row loop."""
+    """The 7 summary keys are correct and computed without loading each list's whole document
+    (the aggregation is a grouped SQL pass, pre-existing at the baseline - this pins it against
+    regressing back to a Python row loop)."""
     t = await _register(client)
     for i in range(4):
         await _quotation(client, t, ref_id=f"SUM-{i:03d}")
@@ -181,16 +211,42 @@ async def test_list_summary_sql_aggregates(client):
               "converted_to_memo_count", "converted_to_invoice_count", "count_by_status"):
         assert k in body, f"summary missing {k}"
     assert body["total_count"] == 4 and body["draft_count"] == 4  # all drafts here
-    sel = _proj_selects(sql)
-    assert any(("count(" in s.lower() or "sum(" in s.lower() or "group by" in s.lower())
-               for s in sel), (
-        f"summary must aggregate in SQL; projection selects: {sel}")
+    assert _full_state_reads(sql) == [], (
+        "summary must aggregate in SQL, never load each list's whole state row")
+
+
+@pytest.mark.asyncio
+async def test_list_index_counts_and_weights_utf8(client):
+    """The index carries item_count (a json_array_length) and total_weight (a json_array_elements
+    sum) computed in SQL, equal to the Python-side truth even when line descriptions carry
+    multibyte UTF-8 - the encoding-sensitive weight path reads the same JSON the app round-trips,
+    and never loads the whole array to do it."""
+    t = await _register(client)
+    q = await _quotation(client, t, ref_id="WT-001")
+    lines = [
+        {"item_id": "item:1", "sku": "S1", "description": "Rubĩes \U0001F48E ê",
+         "quantity": 1, "unit_price": 1.0, "weight_ct": "2.5"},
+        {"item_id": "item:2", "sku": "S2", "description": "钻石 gems",
+         "quantity": 1, "unit_price": 1.0, "weight_ct": "3.5"},
+        {"description": "Free 문자열", "quantity": 1, "unit_price": 1.0, "weight": "4"},
+    ]
+    await _set_lines(client, t, q, lines)
+
+    with _sql_spy() as sql:
+        r = await client.get("/lists?q=WT-001", headers=_h(t))
+    assert r.status_code == 200, r.text
+    row = next(it for it in r.json()["items"] if it["id"] == q)
+    assert row["item_count"] == 3, "item_count is json_array_length of the stored array"
+    assert row["total_weight"] == pytest.approx(10.0), (
+        "total_weight sums weight_ct (falling back to weight) across the UTF-8 rows")
+    assert _full_state_reads(sql) == [], (
+        "count and weight must come from SQL, never a full-array load")
 
 
 @pytest.mark.asyncio
 async def test_list_export_csv_streams(client):
-    """CSV export fetches rows in bounded SQL batches and streams them, never buffering
-    the whole projection in one unbounded query."""
+    """CSV export reads only the emitted columns in bounded SQL batches and streams them, never
+    loading each list's whole document to write its header row."""
     t = await _register(client)
     for i in range(6):
         await _quotation(client, t, ref_id=f"CSV-{i:03d}")
@@ -201,9 +257,10 @@ async def test_list_export_csv_streams(client):
     text = r.text
     assert text.splitlines()[0].startswith("id,ref_id"), text.splitlines()[:1]
     assert "CSV-000" in text
-    sel = _proj_selects(sql)
-    assert any("limit" in s.lower() for s in sel), (
-        f"export must read the projection in bounded SQL batches (LIMIT); selects: {sel}")
+    full = _full_state_reads(sql)
+    assert not full, (
+        "export must read only its CSV columns from SQL, never each list's whole state row. "
+        "Offending statements:\n" + "\n".join(full))
 
 
 # ── GET /lists/{id}/page : new bounded paged read ──────────────────────────────
@@ -231,22 +288,19 @@ async def test_list_page_endpoint_bounded(client):
 
 @pytest.mark.asyncio
 async def test_list_page_slice_no_full_expansion(client):
-    """The page read slices in SQL (json_array_length for total, positional subscript
-    over generate_series for the window) rather than loading the whole array in Python."""
+    """The page read returns exactly the requested window (positions 100..119 of a 120-line list)
+    and the full total, proving the slice is positional and bounded. That it reads that window
+    without loading the whole document is pinned behaviourally in test_list_page_no_full_state."""
     t = await _register(client)
     q = await _quotation(client, t)
     await _set_lines(client, t, q, _lines(120))
 
-    with _sql_spy() as sql:
-        r = await client.get(f"/lists/{q}/page?offset=100&limit=50", headers=_h(t))
+    r = await client.get(f"/lists/{q}/page?offset=100&limit=50", headers=_h(t))
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["total"] == 120
     assert len(body["items"]) == 20           # positions 100..119 only
     assert body["items"][0]["description"] == "Item 100"
-    joined = " ".join(sql).lower()
-    assert "json_array_length" in joined, (
-        f"total must come from json_array_length in SQL; SQL was: {sql}")
 
 
 # ── PATCH /lists/{id}/line-page : new version-guarded slice write ───────────────
