@@ -557,6 +557,72 @@ def _compact_pages(page: int, total_pages: int) -> list[int | None]:
     return out
 
 
+def _list_line_pager(entity_id: str, offset: int, limit: int, total: int, editable: bool = False) -> FT | None:
+    """Pager for the list-detail line table, reusing the compact-page layout and the
+    HTMX outerHTML-swap shape used by the document history pager. Each control swaps
+    the lines container in place, so paging never reloads the page. Returns None when
+    the whole list fits in one page (nothing to page through).
+
+    On an editable (draft) list, paging must not silently drop unsaved row edits, so
+    each control routes through `celerpPageNav`, which saves the current page first
+    (slice-PATCH under optimistic-concurrency check) and only then swaps. A clean page
+    navigates straight through. On a finalized list there is nothing to save, so the
+    controls swap directly via HTMX."""
+    if total <= limit:
+        return None
+    limit = max(1, limit)
+    total_pages = max(1, (total + limit - 1) // limit)
+    page = (offset // limit) + 1
+    safe_id = entity_id.replace(":", "-").replace("/", "-")
+    target = f"#list-line-section-{safe_id}"
+
+    def _btn(p: int, active: bool = False):
+        target_offset = (p - 1) * limit
+        if editable:
+            return Button(
+                str(p),
+                type="button",
+                cls=f"btn btn--ghost btn--xs{'  btn--active' if active else ''}",
+                onclick=f"celerpPageNav({target_offset}, {limit})",
+            )
+        return Button(
+            str(p),
+            cls=f"btn btn--ghost btn--xs{'  btn--active' if active else ''}",
+            hx_get=f"/lists/{entity_id}?offset={target_offset}&limit={limit}",
+            hx_target=target,
+            hx_select=target,
+            hx_swap="outerHTML",
+        )
+
+    page_btns = [
+        Span("...", cls="text-muted") if p is None else _btn(p, active=(p == page))
+        for p in _compact_pages(page, total_pages)
+    ]
+    if editable:
+        per_page_select = Select(
+            *[Option(str(n), value=str(n), selected=(limit == n)) for n in (25, 50, 100)],
+            cls="per-page-select",
+            onchange="celerpPageNav(0, parseInt(this.value, 10))",
+            name="limit",
+        )
+    else:
+        per_page_select = Select(
+            *[Option(str(n), value=str(n), selected=(limit == n)) for n in (25, 50, 100)],
+            cls="per-page-select",
+            hx_get=f"/lists/{entity_id}?offset=0",
+            hx_target=target,
+            hx_select=target,
+            hx_swap="outerHTML",
+            hx_include="this",
+            name="limit",
+        )
+    return Div(
+        Div(*page_btns, cls="history-page-btns"),
+        Div(Span(t("documents.show_label"), cls="text-muted"), per_page_select, cls="history-per-page"),
+        cls="history-footer list-line-pager",
+    )
+
+
 def _render_receive_return_section(doc: dict):
     """Receive Returns button - shown on credit notes when celerp-inventory is installed.
 
@@ -4256,6 +4322,24 @@ celerpUpdateBulkAlloc();
                 return _HR(f"<h2>{t('documents.list_not_found')}</h2><p><a href='/lists'>{t('documents.back_to_lists')}</a></p>", status_code=404)
             lst = {}
 
+        # One bounded page of lines. A large list rendered every stored line in one
+        # pass; instead read the requested window (limit hard-capped at 100) and render
+        # only that page, with a pager to reach the rest. Off-page lines stay in place -
+        # this only bounds what is rendered per request.
+        _PAGE_CAP = 100
+        try:
+            _line_offset = max(0, int(request.query_params.get("offset", 0)))
+        except (TypeError, ValueError):
+            _line_offset = 0
+        try:
+            _line_limit = int(request.query_params.get("limit", _PAGE_CAP))
+        except (TypeError, ValueError):
+            _line_limit = _PAGE_CAP
+        _line_limit = max(1, min(_line_limit, _PAGE_CAP))
+        _all_lines = lst.get("line_items", []) or []
+        _line_total = len(_all_lines)
+        lst["line_items"] = _all_lines[_line_offset:_line_offset + _line_limit]
+
         # Inject doc_type so _doc_detail() treats it as a list
         lst.setdefault("doc_type", "list")
 
@@ -4381,14 +4465,16 @@ celerpUpdateBulkAlloc();
                 _chart_accounts = (await api.get_chart(token)).get("items", [])
             except Exception:
                 _chart_accounts = []
-        return await base_shell(
-            breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.lists"), "/lists"), (f"{status_label} {ref}", None)]),
-            page_header(f"{list_type_label} - {status_label} {ref}"),
-            _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), settings=_co_settings,
+        _detail = _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), settings=_co_settings,
                         notes=list_notes, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, locations=_list_locations,
                         email_used=_ls_used, email_quota=_ls_quota, email_resets_on=_ls_resets_on, share_enabled=_list_share, share_active=_list_share_active,
                         chart_accounts=_chart_accounts,
-                        line_identifier_mode=_ident_mode, relay_error=_ls_error),
+                        line_identifier_mode=_ident_mode, relay_error=_ls_error,
+                        line_offset=_line_offset, line_total=_line_total, line_limit=_line_limit)
+        return await base_shell(
+            breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.lists"), "/lists"), (f"{status_label} {ref}", None)]),
+            page_header(f"{list_type_label} - {status_label} {ref}"),
+            _detail,
             title=f"{t('documents.doc_list')} {ref} - Celerp",
             nav_active="lists",
             request=request,
@@ -4495,15 +4581,17 @@ celerpUpdateBulkAlloc();
             body = await request.json()
         except Exception:
             return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-        patch_data = {
-            "line_items": body.get("line_items", []),
-            "subtotal": body.get("subtotal", 0),
-            "tax": body.get("tax", 0),
-            "total": body.get("total", 0),
-        }
+        page = body.get("line_items", [])
+        try:
+            offset = max(0, int(body.get("offset", 0)))
+        except (TypeError, ValueError):
+            offset = 0
         expected_version = body.get("expected_version")
         try:
-            result = await api.patch_list(token, entity_id, patch_data, expected_version=expected_version)
+            # Save only the submitted page slice: the server overwrites the stored positions
+            # [offset, offset+len(page)) under a row lock and recomputes totals from the full
+            # merged array, so off-page rows are never disturbed by a page save.
+            result = await api.patch_list_line_page(token, entity_id, page, offset, expected_version)
         except APIError as e:
             # A stale expected_version means someone else saved this list first; surface it
             # structurally (code, not English text) so the page can prompt a reload.
@@ -5862,7 +5950,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -7118,6 +7206,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 ),
                 cls="table-scroll-wrap",
             ),
+            (_list_line_pager(entity_id, line_offset, line_limit,
+                              line_total if line_total is not None else len(line_items),
+                              editable=True) if is_list else None),
             Div(
                 # Hidden only on a locked (counting) audit manifest. A draft audit is editable like any
                 # other building list, so it keeps the "Add item" affordance alongside scan-to-add.
@@ -7135,6 +7226,10 @@ let _celerpHadLines = {'true' if line_items else 'false'};
 // Optimistic-concurrency token for lists (null for docs). Sent with every line save and
 // refreshed from the save response, so a tab never false-conflicts against its own last write.
 let _celerpListVersion = {_json.dumps(doc.get("version")) if is_list else 'null'};
+/* Stored-array position of the first rendered row. A list renders one bounded page
+   of lines, so a save overwrites exactly the positions this page occupies and leaves
+   every off-page row untouched. Docs are never paged (offset 0). */
+const _CELERP_LINE_OFFSET = {int(line_offset)};
 const _CELERP_TAXES = {_json.dumps(_taxes_list)};
 const _CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
 /* Currency precision: amounts use _CELERP_CDP decimals, unit prices may use up to _CELERP_RDP. */
@@ -7182,6 +7277,7 @@ const _L = {_json.dumps({
     "net_subtotal": t("documents.net_subtotal"),
     "double_click_rename": t("documents.double_click_rename"),
     "save_failed": t("documents.save_failed"),
+    "save_reload_action": t("documents.save_reload_action"),
     "reprice_failed": t("documents.reprice_failed"),
     "import_failed": t("documents.import_failed"),
     "allow_split_warn": t("documents.allow_split_warn"),
@@ -8090,7 +8186,10 @@ async function _celerpPersist() {{
     const lines = _celerpCollectLines();
     // Persist even when empty if the doc had lines - deleting the last line must stick.
     // Skip only a blank doc that never had any lines (avoids a spurious empty save).
-    if (!lines.length && !_celerpHadLines) return;
+    // Return value: true when nothing needed saving or the save succeeded, false when a
+    // save was attempted and failed, so callers that gate on a clean save (page navigation)
+    // can hold position instead of discarding unsaved rows.
+    if (!lines.length && !_celerpHadLines) return true;
     const subtotal = lines.reduce((s, l) => s + l.line_total, 0);
     const grossTax = lines.reduce((s, l) => s + l.line_total * (l.tax_rate / 100), 0);
     // Apply the header discount to the taxable base; tax scales by the same ratio (see
@@ -8099,9 +8198,13 @@ async function _celerpPersist() {{
     const tax = grossTax * hd.ratio;
     const total = hd.taxable + tax;
     const statusEl = document.getElementById('save-status');
+    // Send only the current page's rows plus the stored offset they occupy. The server
+    // overwrites positions [offset, offset+len) and recomputes totals from the full
+    // merged array, so off-page rows are never touched by a page save.
     const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/lines', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{line_items: lines, subtotal, tax, total,
+        body: JSON.stringify({{line_items: lines, offset: _CELERP_LINE_OFFSET,
+            subtotal, tax, total,
             discount: hd.value, discount_type: hd.type, discount_amount: hd.amount,
             expected_version: _celerpListVersion}})
     }});
@@ -8115,24 +8218,61 @@ async function _celerpPersist() {{
         statusEl.textContent = '✓';
         statusEl.style.color = '';
         setTimeout(() => {{ statusEl.textContent = ''; }}, 1500);
+        return true;
     }} else {{
         // A stale-version 409 carries {{code: 'stale_version', error: <reload prompt>}}; every
         // other failure carries {{error}}. Both surface the server's message (no client-side
         // English matching), so the same display path handles them.
         let msg = _L.save_failed;
         let conflicts = null;
+        let stale = false;
         try {{
             const e = await resp.json();
             if (e && e.error) msg = e.error;
             if (e && e.reserved_conflicts) conflicts = e.reserved_conflicts;
+            if (e && e.code === 'stale_version') stale = true;
         }} catch (_e) {{}}
         if (conflicts && conflicts.length) {{
             statusEl.textContent = '';
             _celerpShowReservedConflicts(conflicts);
+        }} else if (stale) {{
+            // Another save landed first, so this tab's rows are stale. Offer the only safe
+            // way back to a consistent state - reload the latest before editing again - rather
+            // than a dead-end error. Nothing was written.
+            statusEl.textContent = '';
+            statusEl.style.color = 'red';
+            const label = document.createElement('span');
+            label.textContent = '\\u2717 ' + msg + ' ';
+            const reload = document.createElement('button');
+            reload.type = 'button';
+            reload.className = 'btn btn--ghost btn--xs';
+            reload.textContent = _L.save_reload_action;
+            reload.onclick = function() {{ window.location.reload(); }};
+            statusEl.append(label, reload);
         }} else {{
             statusEl.textContent = '✗ ' + msg;
             statusEl.style.color = 'red';
         }}
+        return false;
+    }}
+}}
+/* Save the current page, then swap to another page of the same list. Paging a draft must
+   never silently drop unsaved edits, so a failed save (including a stale-version conflict)
+   holds the current page in place with its message showing. A clean page saves nothing and
+   swaps straight through. */
+async function celerpPageNav(offset, limit) {{
+    const ok = await _celerpPersist();
+    if (!ok) return;
+    const url = _CELERP_BASE + _CELERP_EID + '?offset=' + offset + '&limit=' + limit;
+    const safeId = _CELERP_EID.replace(/[:/]/g, '-');
+    const sel = '#list-line-section-' + safeId;
+    const target = document.getElementById('list-line-section-' + safeId);
+    if (target) {{
+        // The list route returns the whole page, so extract just the lines section from it
+        // (hx select) before swapping it in place.
+        htmx.ajax('GET', url, {{target: target, select: sel, swap: 'outerHTML'}});
+    }} else {{
+        window.location.assign(url);
     }}
 }}
 /* Foreign-reserved save rejection: resolution dialog instead of the inline error.
@@ -8371,6 +8511,11 @@ async function celerpCsvImport(input, entityId) {{
 """),
             cls="lines-section",
         )
+        if is_list:
+            # Wrap the editable list lines in the pager's swap target so a page control can
+            # replace the whole section (rows + pager) in place after saving the current page.
+            _draft_safe_id = entity_id.replace(":", "-").replace("/", "-")
+            lines_section = Div(lines_section, id=f"list-line-section-{_draft_safe_id}")
     else:
         # Show checkboxes + bulk toolbar on finalized docs when celerp-labels is installed
         # or when doc type supports per-line fulfill/revert
@@ -8562,11 +8707,14 @@ async function celerpCsvImport(input, entityId) {{
             _thead_base.append(Th(t("documents.th_comment"), cls="col-comment"))
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
+        _fin_total = line_total if line_total is not None else len(line_items)
+        _fin_safe_id = entity_id.replace(":", "-").replace("/", "-")
+        _fin_pager = _list_line_pager(entity_id, line_offset, line_limit, _fin_total) if is_list else None
         lines_section = Div(
             _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, show_reserve=_fin_show_reserve, is_inbound=_is_vendor_doc, inbound_line_items=line_items if _is_vendor_doc else None, locations=locations) if _fin_show_bulk else None,
             Table(
                 Thead(Tr(*_thead_base)),
-                Tbody(*([_li_row(li, i) for i, li in enumerate(line_items)] if line_items else [
+                Tbody(*([_li_row(li, line_offset + i) for i, li in enumerate(line_items)] if line_items else [
                     Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
                 ]), id=_fin_bulk_id),
                 cls="data-table doc-lines" + (" doc-lines--fin-invoice" if doc_type in _INVOICE_LAYOUT_DOC_TYPES else "")
@@ -8738,7 +8886,10 @@ async function celerpCsvImport(input, entityId) {{
   }};
 }})();
 """) if _fin_show_bulk else None,
+            _fin_pager,
         )
+        if is_list:
+            lines_section = Div(lines_section, id=f"list-line-section-{_fin_safe_id}")
 
     # --- Totals ---
     # Compute gross (pre-discount) and net (post-discount) subtotals. Every per-line amount is

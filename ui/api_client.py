@@ -1444,6 +1444,34 @@ async def patch_list(token: str, entity_id: str, data: dict, expected_version: i
         return _raise(await c.patch(f"/lists/{entity_id}", json=body)).json()
 
 
+async def get_list_page(token: str, entity_id: str, offset: int = 0, limit: int = 100) -> dict:
+    """One bounded page of a list's stored lines.
+
+    Returns {"items": [...], "total": int, "version": int} where items is the raw
+    stored slice of positions [offset:offset+limit); the server hard-caps limit at
+    100 and applies the effective value. Enrichment over the page ids is the
+    caller's job.
+    """
+    async with _api_client(token) as c:
+        return _raise(await c.get(
+            f"/lists/{entity_id}/page",
+            params={"offset": offset, "limit": limit},
+        )).json()
+
+
+async def patch_list_line_page(token: str, entity_id: str, page: list[dict], offset: int, expected_version: int | None) -> dict:
+    """Save one page slice of a list's lines by position.
+
+    Overwrites stored positions [offset:offset+len(page)); off-page rows are
+    untouched. Calls the slice endpoint directly rather than through
+    _wrap_fields_changed, so it does not trigger the extra full-list GET that the
+    bare-field patch wrapper performs.
+    """
+    body: dict = {"line_items": page, "offset": offset, "expected_version": expected_version}
+    async with _api_client(token) as c:
+        return _raise(await c.patch(f"/lists/{entity_id}/line-page", json=body)).json()
+
+
 # ── Inventory audits (a list_type=audit on the unified /lists lifecycle) ──────
 async def create_audit(token: str, location_id: str) -> dict:
     async with _api_client(token) as c:
