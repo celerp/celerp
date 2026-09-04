@@ -622,6 +622,13 @@
   "flash.no_status_selected": "No se seleccionó ningún estado.",
   "flash.saved": "Guardado.",
   "flash.undone": "Deshecho.",
+  "grace.deadline": "Tu suscripción Team ha caducado. Tu base de datos externa permanece conectada hasta el {deadline}.",
+  "grace.divergence_warning": "Volver a seleccionar la base de datos externa puede dejarla desincronizada con los datos guardados en la base de datos local desde que terminó el periodo de gracia.",
+  "grace.external_available": "Tu base de datos externa sigue configurada y puede volver a seleccionarse.",
+  "grace.external_owned": "Tu base de datos externa y sus datos siguen siendo tuyos.",
+  "grace.local_now": "La aplicación ahora funciona con la base de datos local.",
+  "grace.partner_support": "Ponte en contacto con {partner} para renovar u obtener ayuda.",
+  "grace.renew": "Renueva tu suscripción Team para seguir usando la base de datos externa.",
   "inv._select_a_preset": "— Seleccione un preajuste —",
   "inv.action": "Acción...",
   "inv.active_batch": "Lote activo:",
@@ -3054,5 +3061,10 @@
   "settings.tab_line_items": "Líneas",
   "th.factor": "Factor",
   "th.position": "#",
-  "th.rounding": "Redondeo"
+  "th.rounding": "Redondeo",
+  "settings_cloud.config_write_failed": "no se pudo escribir la configuración",
+  "settings_cloud.saved_restart_to_apply": "✓ Guardado. Reinicie Celerp para aplicar el cambio.",
+  "settings_cloud.restored_restart_to_apply": "↩ Configuración anterior de la base de datos restaurada. Reinicie Celerp para aplicar.",
+  "settings_cloud.s3_support_unavailable": "El soporte de S3 no está disponible en esta versión",
+  "settings_cloud.s3_connection_failed": "Error de conexión"
 }

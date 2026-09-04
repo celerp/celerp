@@ -622,6 +622,13 @@
   "flash.no_status_selected": "Không có trạng thái nào được chọn.",
   "flash.saved": "Đã lưu.",
   "flash.undone": "Hoàn tác.",
+  "grace.deadline": "Gói đăng ký Team của bạn đã hết hạn. Cơ sở dữ liệu ngoài của bạn vẫn kết nối đến {deadline}.",
+  "grace.divergence_warning": "Việc chọn lại cơ sở dữ liệu ngoài có thể khiến nó không đồng bộ với dữ liệu đã lưu vào cơ sở dữ liệu cục bộ kể từ khi thời gian gia hạn kết thúc.",
+  "grace.external_available": "Cơ sở dữ liệu ngoài của bạn vẫn được cấu hình và có thể được chọn lại.",
+  "grace.external_owned": "Cơ sở dữ liệu ngoài và dữ liệu của bạn vẫn thuộc về bạn.",
+  "grace.local_now": "Ứng dụng hiện đang chạy trên cơ sở dữ liệu cục bộ.",
+  "grace.partner_support": "Liên hệ {partner} để gia hạn hoặc được trợ giúp.",
+  "grace.renew": "Gia hạn gói đăng ký Team của bạn để tiếp tục sử dụng cơ sở dữ liệu ngoài.",
   "inv._select_a_preset": "— Chọn cài đặt trước —",
   "inv.action": "Hoạt động...",
   "inv.active_batch": "Lô hoạt động:",
@@ -3054,5 +3061,10 @@
   "settings.tab_line_items": "Dòng chi tiết",
   "th.factor": "Hệ số",
   "th.position": "#",
-  "th.rounding": "Làm tròn"
+  "th.rounding": "Làm tròn",
+  "settings_cloud.config_write_failed": "không thể ghi cấu hình",
+  "settings_cloud.saved_restart_to_apply": "✓ Đã lưu. Khởi động lại Celerp để áp dụng thay đổi.",
+  "settings_cloud.restored_restart_to_apply": "↩ Đã khôi phục cài đặt cơ sở dữ liệu trước đó. Khởi động lại Celerp để áp dụng.",
+  "settings_cloud.s3_support_unavailable": "Bản dựng này không hỗ trợ S3",
+  "settings_cloud.s3_connection_failed": "Kết nối thất bại"
 }

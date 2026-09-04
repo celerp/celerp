@@ -622,6 +622,13 @@
   "flash.no_status_selected": "Nenhum status selecionado.",
   "flash.saved": "Salvo.",
   "flash.undone": "Desfeito.",
+  "grace.deadline": "Sua assinatura Team expirou. Seu banco de dados externo permanece conectado até {deadline}.",
+  "grace.divergence_warning": "Reselecionar o banco de dados externo pode deixá-lo fora de sincronia com os dados salvos no banco de dados local desde o fim do período de carência.",
+  "grace.external_available": "Seu banco de dados externo ainda está configurado e pode ser reselecionado.",
+  "grace.external_owned": "Seu banco de dados externo e seus dados continuam sendo seus.",
+  "grace.local_now": "O aplicativo agora está sendo executado no banco de dados local.",
+  "grace.partner_support": "Entre em contato com {partner} para renovar ou obter ajuda.",
+  "grace.renew": "Renove sua assinatura Team para continuar usando o banco de dados externo.",
   "inv._select_a_preset": "— Selecione uma predefinição —",
   "inv.action": "Ação...",
   "inv.active_batch": "Lote ativo:",
@@ -3054,5 +3061,10 @@
   "settings.tab_line_items": "Itens de linha",
   "th.factor": "Fator",
   "th.position": "#",
-  "th.rounding": "Arredondamento"
+  "th.rounding": "Arredondamento",
+  "settings_cloud.config_write_failed": "não foi possível gravar a configuração",
+  "settings_cloud.saved_restart_to_apply": "✓ Salvo. Reinicie o Celerp para aplicar a alteração.",
+  "settings_cloud.restored_restart_to_apply": "↩ Configurações anteriores do banco de dados restauradas. Reinicie o Celerp para aplicar.",
+  "settings_cloud.s3_support_unavailable": "O suporte a S3 não está disponível nesta versão",
+  "settings_cloud.s3_connection_failed": "Falha na conexão"
 }

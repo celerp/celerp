@@ -622,6 +622,13 @@
   "flash.no_status_selected": "ไม่ได้เลือกสถานะ",
   "flash.saved": "บันทึกแล้ว",
   "flash.undone": "เลิกทำ",
+  "grace.deadline": "การสมัครสมาชิก Team ของคุณหมดอายุแล้ว ฐานข้อมูลภายนอกของคุณจะยังเชื่อมต่ออยู่จนถึง {deadline}",
+  "grace.divergence_warning": "การเลือกฐานข้อมูลภายนอกอีกครั้งอาจทำให้ข้อมูลไม่ตรงกับข้อมูลที่บันทึกไว้ในฐานข้อมูลในเครื่องหลังจากสิ้นสุดระยะผ่อนผัน",
+  "grace.external_available": "ฐานข้อมูลภายนอกของคุณยังตั้งค่าไว้และสามารถเลือกใหม่ได้",
+  "grace.external_owned": "ฐานข้อมูลภายนอกและข้อมูลของคุณยังเป็นของคุณ",
+  "grace.local_now": "ขณะนี้แอปกำลังทำงานบนฐานข้อมูลในเครื่อง",
+  "grace.partner_support": "ติดต่อ {partner} เพื่อต่ออายุหรือขอความช่วยเหลือ",
+  "grace.renew": "ต่ออายุการสมัครสมาชิก Team ของคุณเพื่อใช้ฐานข้อมูลภายนอกต่อไป",
   "inv._select_a_preset": "— เลือกการตั้งค่าล่วงหน้า —",
   "inv.action": "การกระทำ...",
   "inv.active_batch": "ชุดที่ใช้งานอยู่:",
@@ -3054,5 +3061,10 @@
   "settings.tab_line_items": "รายการสินค้า",
   "th.factor": "ตัวคูณ",
   "th.position": "#",
-  "th.rounding": "การปัดเศษ"
+  "th.rounding": "การปัดเศษ",
+  "settings_cloud.config_write_failed": "ไม่สามารถเขียนการตั้งค่าได้",
+  "settings_cloud.saved_restart_to_apply": "✓ บันทึกแล้ว รีสตาร์ท Celerp เพื่อใช้การเปลี่ยนแปลง",
+  "settings_cloud.restored_restart_to_apply": "↩ กู้คืนการตั้งค่าฐานข้อมูลก่อนหน้าแล้ว รีสตาร์ท Celerp เพื่อใช้งาน",
+  "settings_cloud.s3_support_unavailable": "บิลด์นี้ไม่รองรับ S3",
+  "settings_cloud.s3_connection_failed": "การเชื่อมต่อล้มเหลว"
 }

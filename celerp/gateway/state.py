@@ -279,6 +279,85 @@ def load_commercial_context() -> None:
         log.debug("Gateway: commercial-context cache unreadable; using neutral default: %s", exc)
 
 
+def _grace_ends_in_future(value) -> bool:
+    """True when an ISO-8601 grace_period_ends timestamp is still in the future.
+
+    A missing or unparseable value is treated as expired (False), so a corrupt
+    flag can never keep a lapsed install in grace.
+    """
+    if not value:
+        return False
+    from datetime import datetime, timezone
+    try:
+        ends = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return False
+    if ends.tzinfo is None:
+        ends = ends.replace(tzinfo=timezone.utc)
+    return ends > datetime.now(timezone.utc)
+
+
+def get_packaged_db_state() -> dict:
+    """Read the packaged app's database mode straight from celerp-config.json on
+    disk, mirroring load_commercial_context's read pattern.
+
+    This deliberately does NOT use the in-memory get_feature_flags(): those are
+    empty until the relay pushes flags, which is exactly wrong for the cold-boot,
+    after-grace, and relay-disconnected cases this state must serve. Only a
+    has_external_url boolean is exposed, never the URL string, which holds the
+    database password.
+
+    Returns {db_mode, has_external_url, external_db_entitled, in_grace,
+    grace_period_ends, storage_mode, has_external_storage,
+    external_storage_entitled, storage_in_grace}. A missing data dir, missing
+    file, or corrupt JSON degrades to the neutral local state, never an
+    exception. Only booleans are exposed for the external targets, never the URL
+    or the S3 secret, both of which hold credentials.
+    """
+    import os
+    import json
+    db_mode = "local"
+    external_db_url = ""
+    storage_mode = "local"
+    has_external_storage = False
+    flags: dict = {}
+    data_dir = os.environ.get("CELERP_DATA_DIR", "")
+    if data_dir:
+        config_path = os.path.join(data_dir, "celerp-config.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path) as f:
+                    existing = json.load(f)
+                db_mode = existing.get("db_mode", "local") or "local"
+                external_db_url = existing.get("external_db_url", "") or ""
+                storage_mode = existing.get("storage_mode", "local") or "local"
+                has_external_storage = storage_mode == "s3" or any(
+                    existing.get(k)
+                    for k in ("storage_s3_endpoint", "storage_s3_bucket", "storage_s3_access_key")
+                )
+                raw_flags = existing.get("feature_flags")
+                if isinstance(raw_flags, dict):
+                    flags = raw_flags
+            except Exception as exc:
+                log.debug("Gateway: packaged db-state unreadable; using neutral default: %s", exc)
+    external_db_entitled = bool(flags.get("external_db"))
+    external_storage_entitled = bool(flags.get("external_storage"))
+    grace_period_ends = flags.get("grace_period_ends")
+    in_grace = _grace_ends_in_future(grace_period_ends) and not external_db_entitled
+    storage_in_grace = _grace_ends_in_future(grace_period_ends) and not external_storage_entitled
+    return {
+        "db_mode": db_mode,
+        "has_external_url": bool(external_db_url),
+        "external_db_entitled": external_db_entitled,
+        "in_grace": in_grace,
+        "grace_period_ends": grace_period_ends,
+        "storage_mode": storage_mode,
+        "has_external_storage": bool(has_external_storage),
+        "external_storage_entitled": external_storage_entitled,
+        "storage_in_grace": storage_in_grace,
+    }
+
+
 # ── Relay connection helpers (single source of truth) ────────────────────────
 # All relay HTTP calls use these. Never inline these values elsewhere.
 

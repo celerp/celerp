@@ -622,6 +622,13 @@
   "flash.no_status_selected": "Kein Status ausgewählt.",
   "flash.saved": "Gespeichert.",
   "flash.undone": "Rückgängig gemacht.",
+  "grace.deadline": "Ihr Team-Abonnement ist abgelaufen. Ihre externe Datenbank bleibt bis {deadline} verbunden.",
+  "grace.divergence_warning": "Wenn Sie die externe Datenbank erneut auswählen, kann sie von den Daten abweichen, die seit dem Ende der Kulanzfrist in der lokalen Datenbank gespeichert wurden.",
+  "grace.external_available": "Ihre externe Datenbank ist weiterhin konfiguriert und kann erneut ausgewählt werden.",
+  "grace.external_owned": "Ihre externe Datenbank und deren Daten bleiben Ihr Eigentum.",
+  "grace.local_now": "Die App läuft jetzt auf der lokalen Datenbank.",
+  "grace.partner_support": "Wenden Sie sich an {partner}, um zu verlängern oder Hilfe zu erhalten.",
+  "grace.renew": "Verlängern Sie Ihr Team-Abonnement, um die externe Datenbank weiterhin zu nutzen.",
   "inv._select_a_preset": "— Vorlage auswählen —",
   "inv.action": "Aktion...",
   "inv.active_batch": "Aktive Charge: ",
@@ -3054,5 +3061,10 @@
   "settings.rounding_tooltip": "Rundet berechnete Preise auf das nächste Intervall, damit abgeleitete Preise glatte Beträge ergeben.",
   "settings.tab_line_items": "Positionen",
   "th.factor": "Faktor",
-  "th.rounding": "Rundung"
+  "th.rounding": "Rundung",
+  "settings_cloud.config_write_failed": "Konfiguration konnte nicht geschrieben werden",
+  "settings_cloud.saved_restart_to_apply": "✓ Gespeichert. Starten Sie Celerp neu, um die Änderung anzuwenden.",
+  "settings_cloud.restored_restart_to_apply": "↩ Vorherige Datenbankeinstellungen wiederhergestellt. Starten Sie Celerp neu, um sie anzuwenden.",
+  "settings_cloud.s3_support_unavailable": "S3-Unterstützung ist in diesem Build nicht verfügbar",
+  "settings_cloud.s3_connection_failed": "Verbindung fehlgeschlagen"
 }

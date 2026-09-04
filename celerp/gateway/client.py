@@ -49,12 +49,13 @@ def _shop_key(handle: str | None) -> str:
     return s.rstrip("/").removesuffix(".myshopify.com")
 
 
-def _merge_config_key(key: str, value) -> None:
+def _merge_config_key(key: str, value) -> bool:
     """Merge a single top-level key into Electron's celerp-config.json, writing
     atomically and forcing mode 0600 so the co-resident secrets (external_db_url,
-    S3 keys) are never broadened.
+    S3 keys) are never broadened. Returns True when the key was persisted, False
+    when it could not be (no packaged data dir, or a write error).
 
-    Best-effort: a no-op in dev/server mode where CELERP_DATA_DIR is unset. A
+    A no-op returning False in dev/server mode where CELERP_DATA_DIR is unset. A
     missing or non-dict existing config degrades to an empty object before the
     merge. The write goes to a unique temp created 0600, then os.replace swaps it
     in: os.replace adopts the temp inode, so the target's mode becomes 0600
@@ -64,7 +65,7 @@ def _merge_config_key(key: str, value) -> None:
     """
     data_dir = os.environ.get("CELERP_DATA_DIR", "")
     if not data_dir:
-        return
+        return False
     config_path = os.path.join(data_dir, "celerp-config.json")
     tmp_path = f"{config_path}.{uuid.uuid4().hex}.tmp"
     try:
@@ -80,6 +81,7 @@ def _merge_config_key(key: str, value) -> None:
             json.dump(existing, f, indent=2)
         os.replace(tmp_path, config_path)
         log.debug("Gateway: %s persisted to config.", key)
+        return True
     except Exception as exc:
         log.warning("Gateway: failed to persist %s: %s", key, exc)
         try:
@@ -87,6 +89,7 @@ def _merge_config_key(key: str, value) -> None:
                 os.remove(tmp_path)
         except OSError:
             pass
+        return False
 
 
 class GatewayClient:
