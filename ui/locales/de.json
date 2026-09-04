@@ -2220,6 +2220,7 @@
   "documents.revert_return_tooltip": "Eingegangene Rücksendung stornieren. Die zurückgesendeten Lagerartikel werden entsorgt und die Journalbuchung für die Herstellungskosten storniert.",
   "documents.rows_selected": "Ausgewählte Zeilen: {n}",
   "documents.save_failed": "Speichern fehlgeschlagen",
+  "documents.save_reload_action": "Neu laden",
   "documents.scan_add_btn": "Hinzufügen",
   "documents.scan_add_count": "Artikel scannen und dann „Hinzufügen“ auswählen, um sie in die Zählung aufzunehmen",
   "documents.scan_added_prefix": "Hinzugefügt",

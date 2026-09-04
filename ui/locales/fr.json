@@ -2220,6 +2220,7 @@
   "documents.revert_return_tooltip": "Annuler le retour reçu. Élimine les articles retournés et annule l'écriture comptable du coût des ventes.",
   "documents.rows_selected": "Lignes sélectionnées : {n}",
   "documents.save_failed": "Échec de l'enregistrement",
+  "documents.save_reload_action": "Recharger",
   "documents.scan_add_btn": "Ajouter",
   "documents.scan_add_count": "Scannez les articles, puis sélectionnez « Ajouter » pour les inclure dans le comptage",
   "documents.scan_added_prefix": "Ajouté",

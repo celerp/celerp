@@ -2322,6 +2322,7 @@
   "documents.revert_return_tooltip": "የተቀበለውን መመለስ ይመልሱ። የተመለሱትን ክምችት እቃዎች ያስወግዳል እና COGS የጆርናል ግቤትን ይቀለብሳል።",
   "documents.rows_selected": "ረድፎች ተመርጠዋል፡{n}",
   "documents.save_failed": "ማስቀመጥ አልተሳካም",
+  "documents.save_reload_action": "እንደገና ይጫኑ",
   "documents.scan_add_btn": "ያክሉ",
   "documents.scan_add_count": "እቃዎችን ይቃኙ፣ ከዚያ ለመቁጠር ያክሉ",
   "documents.scan_added_prefix": "ታክሏል",

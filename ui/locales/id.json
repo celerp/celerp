@@ -2219,6 +2219,7 @@
   "documents.revert_return_tooltip": "Membatalkan pengembalian yang telah diterima. Membuang item persediaan yang dikembalikan dan membalikkan entri jurnal COGS.",
   "documents.rows_selected": "Baris yang dipilih: {n}",
   "documents.save_failed": "Gagal menyimpan",
+  "documents.save_reload_action": "Muat ulang",
   "documents.scan_add_btn": "Tambah",
   "documents.scan_add_count": "Pindai barang, lalu Tambah untuk menghitungnya",
   "documents.scan_added_prefix": "Ditambahkan",

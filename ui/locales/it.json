@@ -2220,6 +2220,7 @@
   "documents.revert_return_tooltip": "Annullare il reso ricevuto. Elimina gli articoli di magazzino restituiti e storna la registrazione contabile del costo del venduto.",
   "documents.rows_selected": "Righe selezionate: {n}",
   "documents.save_failed": "Salvataggio non riuscito",
+  "documents.save_reload_action": "Ricarica",
   "documents.scan_add_btn": "Aggiungi",
   "documents.scan_add_count": "Scansiona gli articoli, poi Aggiungi per contarli",
   "documents.scan_added_prefix": "Aggiunto",
