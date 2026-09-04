@@ -4271,9 +4271,12 @@ async def patch_list_line_page(
 ) -> dict:
     """Save one page of a list's lines without scraping or re-sending the whole array. Under the same
     row lock and optimistic-version guard as a full save, the submitted page REPLACES the stored
-    window [offset:offset+original_count] the client originally loaded: a shorter page truncates
-    (deletes) tail rows, a longer one inserts, off-window rows are left byte-identical and totals are
-    recomputed from the full merged array."""
+    window [offset:offset+original_count] the client originally loaded. Relative to that window a
+    shorter page truncates (deletes) tail rows and a longer one inserts; off-window rows are left
+    byte-identical and totals are recomputed from the full merged array. Omitting original_count means
+    the window is exactly the submitted page's own length (a pure in-place replace that never drops
+    off-window rows), so a delete or insert must carry the loaded window length, which the editor
+    always sends."""
     row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
@@ -4291,12 +4294,13 @@ async def patch_list_line_page(
     if offset < 0:
         raise HTTPException(status_code=400, detail="offset must be zero or greater")
     # The window the client loaded is [offset:offset+original_count]; the page replaces exactly it.
-    # Omitting original_count means the page covers the whole stored tail from offset onward, so a
-    # bare {page, offset} save that carries fewer rows still truncates instead of inserting a
-    # duplicate copy ahead of the untouched original.
+    # When original_count is omitted the window is the submitted page's own length, so a bare
+    # {page, offset} save is a pure in-place replace that leaves every off-window row intact. A
+    # delete or insert changes the window size and so must send original_count (the editor does); the
+    # UI proxy applies the same len(page) default, keeping the two layers in lockstep.
     original_count = payload.original_count
     if original_count is None:
-        original_count = max(0, len(stored) - offset)
+        original_count = len(page)
     elif original_count < 0:
         raise HTTPException(status_code=400, detail="original_count must be zero or greater")
     # A submitted row carrying an id must land on the position holding that same id: this catches a

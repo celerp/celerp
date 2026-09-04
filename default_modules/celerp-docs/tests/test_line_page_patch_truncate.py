@@ -75,11 +75,13 @@ async def test_line_page_patch_truncates_on_shorter_page(client):
     before = (await _state(client, t, q))["line_items"]
     assert len(before) == 3
 
-    # The whole list is one page; the user deletes item:2 (the tail). The autosave
-    # resubmits the page as the surviving rows only: [item:0, item:1].
+    # The whole list is one page; the user deletes item:2 (the tail). The autosave resubmits the
+    # surviving rows [item:0, item:1] and, as the real editor does, the length of the window it
+    # loaded (original_count == 3) so the server knows the page shrank by one and truncates the tail.
     page = [dict(before[0]), dict(before[1])]
     r = await client.patch(f"/lists/{q}/line-page", headers=_h(t),
-                           json={"line_items": page, "offset": 0, "expected_version": v})
+                           json={"line_items": page, "offset": 0,
+                                 "original_count": len(before), "expected_version": v})
     assert r.status_code == 200, r.text
 
     after = (await _state(client, t, q))["line_items"]
