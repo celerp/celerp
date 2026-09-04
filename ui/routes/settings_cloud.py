@@ -86,14 +86,14 @@ def _feature_card(icon: str, title: str, desc: str, lang: str = "en") -> FT:
     )
 
 
-def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_url: str, featured: bool = False, lang: str = "en") -> FT:
+def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_url: str, featured: bool = False, lang: str = "en", cta_label: str | None = None) -> FT:
     card_cls = "cloud-plan-card cloud-plan-card--featured" if featured else "cloud-plan-card"
     return Div(
         Div(name, cls="cloud-plan-card__name"),
         Div(price, Span(t("settings_cloud.per_mo", lang)), cls="cloud-plan-card__price"),
         Div(desc, cls="cloud-plan-card__desc"),
         Ul(*[Li(b) for b in bullets]),
-        A(t("cloud.start_trial", lang), href=subscribe_url, target="_blank", cls="btn btn--primary btn--sm"),
+        A(cta_label or t("cloud.start_trial", lang), href=subscribe_url, target="_blank", cls="btn btn--primary btn--sm"),
         cls=card_cls,
     )
 
@@ -124,10 +124,78 @@ def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False) -> 
 
 
 def _plans_ad(iid: str, lang: str = "en") -> FT:
-    """The paid-plan advertisement: feature cards, trial banner, plan cards.
-    Shown on the not-connected landing page and, below the status tab, to
-    connected free-tier accounts (the plans are what they are missing)."""
-    from celerp.gateway.state import build_subscribe_url
+    """Dispatch the plan area by commercial mode: a partner-managed install sees
+    its partner's offer (no direct Celerp price), every other install sees the
+    standard direct grid. Signature unchanged, so both call sites (value-prop
+    page, status tab) are untouched."""
+    from celerp.gateway.state import get_commercial_mode
+    if get_commercial_mode() == "partner_managed":
+        return _partner_offer(iid, lang=lang)
+    return _direct_plans(iid, lang=lang)
+
+
+def _partner_offer(iid: str, lang: str = "en") -> FT:
+    """Partner-managed plan area: the partner's offer rendered from the relay-
+    pushed commercial context, with no direct Celerp price, plus a contact line
+    pointing at the implementation partner. A missing or malformed offer degrades
+    to the contact line alone rather than a broken or fabricated price card."""
+    from celerp.gateway.state import (
+        build_commercial_handoff, get_offer, get_partner_identity,
+    )
+    from ui.components.table import fmt_money
+
+    identity = get_partner_identity() or {}
+    partner_name = identity.get("display_name") or ""
+    partner_url = build_commercial_handoff(iid, "subscribe", "")
+    offer = get_offer()
+
+    children: list = []
+    if partner_name:
+        children.append(Div(partner_name, cls="cloud-partner-offer__partner"))
+
+    amount = offer.get("retail_amount") if offer else None
+    currency = offer.get("currency") if offer else None
+    # Egress guard: render a priced card only when both amount and currency are
+    # well-formed. A stale cache from a pre-validator binary could still hold a
+    # non-string currency or a bool amount, so re-check here rather than trust
+    # the stored offer, and degrade to the contact line if it fails.
+    priced = (
+        offer
+        and isinstance(amount, int) and not isinstance(amount, bool)
+        and isinstance(currency, str)
+        and offer.get("display_name")
+    )
+    if priced:
+        bullets = [b for b in (offer.get("service_bullets") or []) if isinstance(b, str)]
+        children.append(_plan_card(
+            offer["display_name"],
+            fmt_money(amount / 100, currency),
+            offer.get("service_description") or "",
+            bullets,
+            partner_url,
+            cta_label=t("cloud.partner_support", lang),
+            lang=lang,
+        ))
+    elif partner_url:
+        # Degraded branch: no usable offer, but a valid partner destination
+        # exists, so give the user a real contact CTA rather than a dead-end
+        # text note (BLOCKER 6).
+        children.append(A(
+            t("cloud.partner_support", lang),
+            href=partner_url, target="_blank",
+            cls="btn btn--primary btn--sm cloud-partner-offer__contact",
+        ))
+
+    children.append(Div(t("cloud.partner_managed_note", lang), cls="cloud-partner-offer__note"))
+    return Div(*children, cls="cloud-partner-offer")
+
+
+def _direct_plans(iid: str, lang: str = "en") -> FT:
+    """The direct paid-plan advertisement: feature cards, trial banner, plan
+    cards. Shown on the not-connected landing page and, below the status tab, to
+    connected free-tier accounts (the plans are what they are missing). Every
+    plan CTA resolves through the central handoff policy."""
+    from celerp.gateway.state import build_commercial_handoff
 
     return Div(
         # Feature cards - three platform features on top...
@@ -184,7 +252,7 @@ def _plans_ad(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_cloud_b3", lang),
                     t("cloud.plan_cloud_b4", lang),
                 ],
-                build_subscribe_url(iid, extra="plan=cloud"),
+                build_commercial_handoff(iid, "subscribe", "cloud"),
                 lang=lang,
             ),
             _plan_card(
@@ -195,7 +263,7 @@ def _plans_ad(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_ai_b2", lang),
                     t("cloud.plan_ai_b3", lang),
                 ],
-                build_subscribe_url(iid, extra="plan=ai"),
+                build_commercial_handoff(iid, "subscribe", "ai"),
                 featured=True,
                 lang=lang,
             ),
@@ -208,7 +276,7 @@ def _plans_ad(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_team_b3", lang),
                     t("cloud.plan_team_b4", lang),
                 ],
-                build_subscribe_url(iid, extra="plan=team"),
+                build_commercial_handoff(iid, "subscribe", "team"),
                 lang=lang,
             ),
             cls="cloud-plans",

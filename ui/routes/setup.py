@@ -598,11 +598,11 @@ def _activating_form(lang: str = "en") -> FT:
 
 def _cloud_form() -> FT:
     from celerp.config import settings
-    from celerp.gateway.state import build_subscribe_url
+    from celerp.gateway.state import build_commercial_handoff
+    from ui.components.cloud_gate import is_partner_managed, direct_price
     iid = settings.gateway_instance_id
-    subscribe_url = build_subscribe_url(iid, extra="plan=cloud")
-
-    pricing_url = "https://celerp.com/pricing"
+    subscribe_url = build_commercial_handoff(iid, "subscribe", "cloud")
+    partner = is_partner_managed()
 
     _features = [
         ("🔗", t("setup.feature_connectors_title"), t("setup.feature_connectors_desc")),
@@ -624,10 +624,12 @@ def _cloud_form() -> FT:
             Div(
                 Div(
                     Span(t("setup.cloud"), cls="cloud-upsell-plan-name"),
-                    Div(
+                    # Partner-managed: the partner sets its own price, so the
+                    # setup card shows no direct Celerp figure.
+                    (Div(
                         Span("$29", cls="cloud-upsell-price"),
                         Span(t("setup._month"), cls="cloud-upsell-price-unit"),
-                    ),
+                    ) if not partner else None),
                     cls="cloud-upsell-plan-header",
                 ),
                 Ul(
@@ -649,7 +651,7 @@ def _cloud_form() -> FT:
             cls="cloud-upsell-wrap",
         ),
         Div(
-            A(t("setup.subscribe_29mo"),
+            A(direct_price(t("setup.subscribe_29mo")) or t("btn.get_connect"),
                 href=subscribe_url,
                 target="_blank",
                 cls="btn btn--primary btn--full",
@@ -659,11 +661,13 @@ def _cloud_form() -> FT:
                 href="/settings?setup=done",
                 cls="cloud-upsell-skip",
             ),
-            Div(
-                A(t("setup.see_all_plans"), href=pricing_url, target="_blank",
+            # The see-all-plans link points at direct Celerp pricing, so it is
+            # shown only on a direct install; a partner-managed setup omits it.
+            (Div(
+                A(t("setup.see_all_plans"), href="https://celerp.com/pricing", target="_blank",
                   cls="cloud-upsell-compare"),
                 cls="cloud-upsell-compare-wrap",
-            ),
+            ) if not partner else None),
             cls="cloud-upsell-actions",
         ),
         cls="auth-card",
