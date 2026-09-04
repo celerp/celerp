@@ -6,9 +6,9 @@
 POST /settings/partner-claim/resolve previews the partner identity behind a
 claim token (no binding). POST /settings/partner-claim/accept triggers the relay
 bind. Both are owner/admin only, validate the claim token at the function
-boundary before any relay call, and degrade honestly when the relay is
-unreachable or parked (the app stores no relay-authoritative state and stays
-celerp_direct). All relay HTTP calls are mocked so tests run offline.
+boundary before any relay call, exchange the instance credential for a relay
+bearer before the claim POST, and degrade honestly when the relay is unreachable
+or refuses the token. All relay HTTP calls are mocked so tests run offline.
 """
 
 from __future__ import annotations
@@ -41,14 +41,35 @@ def _relay_resp(status_code: int, body: dict) -> MagicMock:
     return resp
 
 
-_IDENTITY = {
-    "partner_name": "Acme Partners",
+_BEARER = _relay_resp(200, {"access_token": "relay-jwt-xyz"})
+
+_RESOLVE_OK = {
     "partner_id": "prt_123",
-    "effect": "This install will be managed by Acme Partners.",
+    "display_name": "Acme Partners",
+    "support_email": "help@acme.example.com",
+    "support_url": "https://acme.example.com/support",
 }
 
+_ACCEPT_OK = {"partner_id": "prt_123"}
 
-# ── authorization (adversarial #10) ────────────────────────────────────────────
+
+def _relay_post_mock(*results):
+    """Build an AsyncMock for the shared relay client's .post that returns the
+    bearer exchange first, then each supplied claim response in order.
+
+    Every claim call is preceded by an /auth/token exchange on the same client,
+    so the first result feeds that exchange and the rest feed the claim POSTs.
+    """
+    return AsyncMock(side_effect=[_BEARER, *results])
+
+
+def _patch_identity():
+    """Patch the pieces that let the routes reach the relay with a real identity:
+    a present gateway_token (so the no-identity guard passes)."""
+    return patch("celerp.config.settings.gateway_token", "api-key-abc")
+
+
+# -- authorization -----------------------------------------------------------
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["viewer", "operator", "manager"])
@@ -63,60 +84,116 @@ async def test_partner_claim_requires_owner_admin(client, role, path):
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock()
         r = await client.post(path, headers=_h(_role_token(role)), json={"claim_token": "tok-abc"})
     assert r.status_code == 403
-    # No relay call was made for a rejected role.
     assert mock_httpx.return_value.__aenter__.return_value.post.await_count == 0
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("role", ["owner", "admin"])
-async def test_partner_claim_resolve_allows_owner_admin(client, role):
-    """Owner and admin reach the resolve path (relay mocked to a valid identity)."""
-    with (
-        patch("httpx.AsyncClient") as mock_httpx,
-        patch("celerp.config.ensure_instance_id", return_value="iid-1"),
-    ):
-        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
-            return_value=_relay_resp(200, _IDENTITY))
-        r = await client.post(
-            "/settings/partner-claim/resolve",
-            headers=_h(_role_token(role)), json={"claim_token": "tok-abc"})
-    assert r.status_code == 200
-    assert "error" not in r.json()
-
-
-# ── resolve: success + honest degradation ──────────────────────────────────────
+# -- resolve: contract identity ----------------------------------------------
 
 @pytest.mark.asyncio
-async def test_partner_claim_resolve_shows_partner_identity(client):
-    """A successful resolve previews the exact partner identity and effect, and
-    binds nothing."""
+async def test_partner_claim_resolve_maps_contract_identity(client):
+    """A resolve 200 maps the relay contract shape to a display identity carrying
+    display_name and support fields; nothing is bound."""
     with (
         patch("httpx.AsyncClient") as mock_httpx,
-        patch("celerp.config.ensure_instance_id", return_value="iid-1"),
+        _patch_identity(),
     ):
-        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
-            return_value=_relay_resp(200, _IDENTITY))
+        mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
+            _relay_resp(200, _RESOLVE_OK))
         r = await client.post(
             "/settings/partner-claim/resolve",
             headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
     assert r.status_code == 200
     data = r.json()
-    assert data["partner_name"] == "Acme Partners"
+    assert data["display_name"] == "Acme Partners"
     assert data["partner_id"] == "prt_123"
-    # Nothing is bound by a resolve: the local commercial mode is untouched.
+    assert data["support_email"] == "help@acme.example.com"
+    assert data["support_url"] == "https://acme.example.com/support"
+    # A resolve binds nothing: the local commercial mode is untouched.
     from celerp.gateway.state import get_commercial_mode
     assert get_commercial_mode() == "celerp_direct"
 
 
 @pytest.mark.asyncio
+async def test_partner_claim_resolve_body_is_token_only_with_bearer(client):
+    """The relay resolve call sends body {"token": ...} (no instance_id/claim_token),
+    an Authorization: Bearer header from the credential exchange, and hits the
+    /partners/claims/resolve path."""
+    post_mock = _relay_post_mock(_relay_resp(200, _RESOLVE_OK))
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        _patch_identity(),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = post_mock
+        r = await client.post(
+            "/settings/partner-claim/resolve",
+            headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
+    assert r.status_code == 200
+    # First call is the /auth/token exchange, second is the claim POST.
+    assert post_mock.await_count == 2
+    exchange_args, claim_args = post_mock.await_args_list
+    exchange_url = exchange_args.args[0]
+    assert exchange_url.endswith("/auth/token")
+    claim_url = claim_args.args[0]
+    assert claim_url.endswith("/partners/claims/resolve")
+    sent = claim_args.kwargs.get("json", {})
+    assert sent == {"token": "tok-abc"}
+    assert "instance_id" not in sent
+    assert "claim_token" not in sent
+    headers = claim_args.kwargs.get("headers", {})
+    assert headers.get("Authorization") == "Bearer relay-jwt-xyz"
+
+
+@pytest.mark.asyncio
+async def test_partner_claim_drops_unsafe_support_url(client):
+    """A hostile/non-https support_url is dropped, never carried through to a link."""
+    hostile = dict(_RESOLVE_OK, support_url="javascript:alert(1)")
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        _patch_identity(),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
+            _relay_resp(200, hostile))
+        r = await client.post(
+            "/settings/partner-claim/resolve",
+            headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["display_name"] == "Acme Partners"
+    # The unsafe URL is sanitised to empty, never surfaced as an href value.
+    assert data.get("support_url", "") == ""
+    assert "javascript" not in str(data)
+
+
+@pytest.mark.asyncio
+async def test_partner_claim_resolve_rejects_malformed_identity_payload(client):
+    """A resolve 200 missing/wrong-typed display_name is could-not-verify, never
+    partially rendered or fabricated."""
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        _patch_identity(),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
+            _relay_resp(200, {"partner_id": "prt_123", "display_name": 123}))
+        r = await client.post(
+            "/settings/partner-claim/resolve",
+            headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
+    assert r.status_code == 200
+    data = r.json()
+    assert "error" in data
+    assert "display_name" not in data
+
+
+# -- resolve: honest degradation ---------------------------------------------
+
+@pytest.mark.asyncio
 async def test_partner_claim_resolve_degrades_when_relay_unreachable(client):
-    """A relay connection error yields a neutral could-not-verify message; the
-    install stays celerp_direct and nothing is bound."""
+    """A relay connection error yields a neutral could-not-reach message; nothing
+    is bound."""
     import httpx
 
     with (
         patch("httpx.AsyncClient") as mock_httpx,
-        patch("celerp.config.ensure_instance_id", return_value="iid-1"),
+        _patch_identity(),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
             side_effect=httpx.ConnectError("no route"))
@@ -126,37 +203,40 @@ async def test_partner_claim_resolve_degrades_when_relay_unreachable(client):
     assert r.status_code == 200
     data = r.json()
     assert "error" in data
-    assert "partner_name" not in data
+    assert "display_name" not in data
     from celerp.gateway.state import get_commercial_mode
     assert get_commercial_mode() == "celerp_direct"
 
 
 @pytest.mark.asyncio
-async def test_partner_claim_resolve_degrades_on_non_200(client):
-    """A non-200 relay response (invalid/expired/used token, or parked endpoint)
-    degrades to a neutral message, never a partial render."""
+async def test_partner_claim_resolve_degrades_on_timeout(client):
+    """A relay timeout during the exchange or claim degrades to a neutral error."""
+    import httpx
+
     with (
         patch("httpx.AsyncClient") as mock_httpx,
-        patch("celerp.config.ensure_instance_id", return_value="iid-1"),
+        _patch_identity(),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
-            return_value=_relay_resp(404, {"detail": "unknown claim"}))
+            side_effect=httpx.TimeoutException("slow"))
         r = await client.post(
             "/settings/partner-claim/resolve",
             headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
     assert r.status_code == 200
     assert "error" in r.json()
-    assert "partner_name" not in r.json()
 
 
-# ── input validation ───────────────────────────────────────────────────────────
+# -- input validation --------------------------------------------------------
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad_token", ["", "   ", None])
 async def test_partner_claim_resolve_rejects_empty_token(client, bad_token):
     """An empty/whitespace/missing claim token is rejected before any relay call."""
     body = {} if bad_token is None else {"claim_token": bad_token}
-    with patch("httpx.AsyncClient") as mock_httpx:
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        _patch_identity(),
+    ):
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock()
         r = await client.post(
             "/settings/partner-claim/resolve", headers=_h(_role_token("owner")), json=body)
@@ -168,9 +248,12 @@ async def test_partner_claim_resolve_rejects_empty_token(client, bad_token):
 @pytest.mark.asyncio
 async def test_partner_claim_resolve_rejects_oversized_token(client):
     """A claim token over the 512-char bound is rejected at the API function
-    boundary, before any relay call (bounds the payload sent to the relay)."""
+    boundary, before any relay call."""
     oversized = "x" * 513
-    with patch("httpx.AsyncClient") as mock_httpx:
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        _patch_identity(),
+    ):
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock()
         r = await client.post(
             "/settings/partner-claim/resolve",
@@ -180,76 +263,102 @@ async def test_partner_claim_resolve_rejects_oversized_token(client):
     assert mock_httpx.return_value.__aenter__.return_value.post.await_count == 0
 
 
+# -- no cloud identity -------------------------------------------------------
+
 @pytest.mark.asyncio
-async def test_partner_claim_resolve_rejects_malformed_identity_payload(client):
-    """A relay 200 with missing/wrong-typed identity fields is treated as
-    could-not-verify, never partially rendered or fabricated."""
+@pytest.mark.parametrize("path", [
+    "/settings/partner-claim/resolve",
+    "/settings/partner-claim/accept",
+])
+async def test_partner_claim_requires_cloud_identity(client, path):
+    """With no gateway_token, both routes return a neutral error and make zero
+    relay calls (no instance credential to exchange for a bearer)."""
+    post_mock = AsyncMock()
     with (
         patch("httpx.AsyncClient") as mock_httpx,
-        patch("celerp.config.ensure_instance_id", return_value="iid-1"),
+        patch("celerp.config.settings.gateway_token", ""),
     ):
-        # Missing partner_name / partner_id, and identity is not an object shape.
-        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
-            return_value=_relay_resp(200, {"partner_name": 123}))
+        mock_httpx.return_value.__aenter__.return_value.post = post_mock
+        r = await client.post(
+            path, headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
+    assert r.status_code == 200
+    assert "error" in r.json()
+    assert post_mock.await_count == 0
+
+
+# -- bearer exchange failure -------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_partner_claim_bearer_exchange_failure_degrades(client):
+    """A non-200 /auth/token exchange degrades to a neutral error, and the claim
+    endpoint is never called."""
+    post_mock = AsyncMock(side_effect=[_relay_resp(401, {"detail": "bad key"})])
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        _patch_identity(),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = post_mock
         r = await client.post(
             "/settings/partner-claim/resolve",
             headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
     assert r.status_code == 200
-    data = r.json()
-    assert "error" in data
-    assert "partner_name" not in data
+    assert "error" in r.json()
+    # Only the exchange was attempted; no claim POST followed.
+    assert post_mock.await_count == 1
+    only_url = post_mock.await_args_list[0].args[0]
+    assert only_url.endswith("/auth/token")
 
 
-# ── accept + decline ───────────────────────────────────────────────────────────
+# -- accept: contract shape --------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_partner_claim_accept_calls_relay(client):
-    """Accept posts the claim token and instance id to the relay accept endpoint
-    and returns success; it never touches gateway_token."""
+async def test_partner_claim_accept_returns_partner_id(client):
+    """Accept posts {"token": ...} with a bearer, reads partner_id from the 200,
+    and surfaces neither accepted nor already_owned. gateway_token is untouched."""
     from celerp.config import settings as _s
-    before = _s.gateway_token
-
-    post_mock = AsyncMock(return_value=_relay_resp(200, {"accepted": True}))
+    post_mock = _relay_post_mock(_relay_resp(200, _ACCEPT_OK))
     with (
         patch("httpx.AsyncClient") as mock_httpx,
-        patch("celerp.config.ensure_instance_id", return_value="iid-accept"),
+        patch("celerp.config.settings.gateway_token", "api-key-abc"),
     ):
+        before = _s.gateway_token
         mock_httpx.return_value.__aenter__.return_value.post = post_mock
         r = await client.post(
             "/settings/partner-claim/accept",
             headers=_h(_role_token("owner")), json={"claim_token": "tok-accept"})
+        assert _s.gateway_token == before
     assert r.status_code == 200
-    assert "error" not in r.json()
-    # The relay accept was called with the claim token and instance id.
-    assert post_mock.await_count == 1
-    _, kwargs = post_mock.await_args
-    sent = kwargs.get("json", {})
-    assert sent.get("claim_token") == "tok-accept"
-    assert sent.get("instance_id") == "iid-accept"
-    # gateway_token (live session credential) is untouched.
-    assert _s.gateway_token == before
+    data = r.json()
+    assert data["partner_id"] == "prt_123"
+    assert "accepted" not in data
+    assert "already_owned" not in data
+    # exchange then accept; the accept body carries only the token, plus bearer.
+    assert post_mock.await_count == 2
+    _, claim_args = post_mock.await_args_list
+    assert claim_args.args[0].endswith("/partners/claims/accept")
+    assert claim_args.kwargs.get("json", {}) == {"token": "tok-accept"}
+    assert claim_args.kwargs.get("headers", {}).get("Authorization") == "Bearer relay-jwt-xyz"
 
 
 @pytest.mark.asyncio
-async def test_partner_claim_accept_double_submit_is_idempotent(client):
-    """A second accept for an already-partner_managed install is a neutral no-op,
-    never a raw error (the relay reports already-owned; the app surfaces it
-    cleanly and stays consistent)."""
-    resp = _relay_resp(200, {"accepted": True, "already_owned": True})
+async def test_partner_claim_accept_reused_token_not_acceptable(client):
+    """A relay 409 (used/unacceptable token) becomes a neutral not-acceptable
+    error, distinct from the generic could-not-verify message, never a success."""
     with (
         patch("httpx.AsyncClient") as mock_httpx,
-        patch("celerp.config.ensure_instance_id", return_value="iid-dup"),
+        patch("celerp.config.settings.gateway_token", "api-key-abc"),
     ):
-        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=resp)
-        r1 = await client.post(
+        mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
+            _relay_resp(409, {"detail": "claim not acceptable"}))
+        r = await client.post(
             "/settings/partner-claim/accept",
             headers=_h(_role_token("owner")), json={"claim_token": "tok-dup"})
-        r2 = await client.post(
-            "/settings/partner-claim/accept",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-dup"})
-    assert r1.status_code == 200
-    assert r2.status_code == 200
-    assert "error" not in r2.json()
+    assert r.status_code == 200
+    data = r.json()
+    assert "error" in data
+    assert "partner_id" not in data
+    # The already-claimed copy is specific, not the generic verify-failure text.
+    assert "no longer available" in data["error"].lower()
 
 
 @pytest.mark.asyncio
@@ -260,7 +369,7 @@ async def test_partner_claim_accept_degrades_when_relay_unreachable(client):
 
     with (
         patch("httpx.AsyncClient") as mock_httpx,
-        patch("celerp.config.ensure_instance_id", return_value="iid-1"),
+        patch("celerp.config.settings.gateway_token", "api-key-abc"),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
             side_effect=httpx.ConnectError("no route"))
@@ -273,19 +382,17 @@ async def test_partner_claim_accept_degrades_when_relay_unreachable(client):
     assert get_commercial_mode() == "celerp_direct"
 
 
+# -- decline: binds nothing --------------------------------------------------
+
 @pytest.mark.asyncio
 async def test_partner_claim_decline_binds_nothing():
     """Declining a claim through the UI decline route makes no relay call and
-    leaves the install celerp_direct (adversarial #10: nothing binds without an
-    explicit accept). The route restores the neutral claim card."""
+    leaves the install celerp_direct. The route restores the neutral claim card."""
     from httpx import ASGITransport, AsyncClient
-    from unittest.mock import patch as _patch, AsyncMock as _AsyncMock
     from ui.app import app as ui_app
     from test_helpers import make_test_token
 
-    with _patch("ui.api_client._api_client") as mock_api_client:
-        # Any relay call would go through the API client; assert it is never entered.
-        r = None
+    with patch("ui.api_client._api_client") as mock_api_client:
         async with AsyncClient(
             transport=ASGITransport(app=ui_app), base_url="http://ui",
             follow_redirects=False,
@@ -294,8 +401,52 @@ async def test_partner_claim_decline_binds_nothing():
                 "/settings/partner-claim/decline",
                 cookies={"celerp_token": make_test_token(role="owner")})
         assert r.status_code == 200
-        # Decline is a pure client-side dismissal: no relay/API client call.
         assert mock_api_client.call_count == 0
 
     from celerp.gateway.state import get_commercial_mode
     assert get_commercial_mode() == "celerp_direct"
+
+
+# -- render gate: hidden on partner_managed ----------------------------------
+
+@pytest.mark.asyncio
+async def test_partner_claim_hidden_on_partner_managed():
+    """Rendering /settings/cloud for an owner on a partner_managed install omits
+    the claim-entry control (the claim-token input is absent) and shows the
+    neutral managed note, on the same commercial-mode predicate at both render
+    sites. Exercised in-process so the in-memory commercial context is visible.
+    """
+    import celerp.gateway.state as gw_state
+    from httpx import ASGITransport, AsyncClient
+    from ui.app import app as ui_app
+    from test_helpers import make_test_token
+
+    gw_state._commercial_context = {
+        "commercial_mode": "partner_managed",
+        "implementation": {"display_name": "Partner Co",
+                           "support_url": "https://partner.example.com/support"},
+    }
+    try:
+        with (
+            patch("ui.api_client.get_relay_status", new=AsyncMock(return_value={
+                "connected": True, "relay_status": "active",
+                "public_url": "https://abc.celerp.com", "tier": "cloud"})),
+            patch("ui.api_client.get_backup_status", new=AsyncMock(return_value={
+                "db": {}, "next_db_utc": None, "public_url": "https://abc.celerp.com"})),
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=ui_app), base_url="http://ui",
+                follow_redirects=False,
+            ) as c:
+                r = await c.get(
+                    "/settings/cloud",
+                    cookies={"celerp_token": make_test_token(role="owner")})
+        assert r.status_code == 200
+        # The claim-entry control is withheld: no claim-token input renders.
+        assert 'name="claim_token"' not in r.text
+        assert 'id="partner-claim-card"' not in r.text
+        # A neutral managed note stands in its place.
+        assert "managed by your implementation partner" in r.text
+        assert 'id="partner-managed-note"' in r.text
+    finally:
+        gw_state._commercial_context = {}
