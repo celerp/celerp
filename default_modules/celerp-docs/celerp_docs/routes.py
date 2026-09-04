@@ -3904,8 +3904,31 @@ async def list_lists(
 
     total = (await session.execute(
         select(_func.count()).select_from(Projection).where(*base_where))).scalar_one()
+    # The index table needs only the header fields plus a line count and total weight; it never shows
+    # individual lines. Push the count and weight sum into SQL and select the header columns alone, so
+    # a list with thousands of lines never drags its whole line_items array back into Python here.
+    item_count = _func.coalesce(_func.json_array_length(Projection.state["line_items"]), 0)
+    weight_sum = _sa.literal_column(
+        "(SELECT COALESCE(SUM(COALESCE("
+        "NULLIF(elem ->> 'weight_ct', '')::numeric, NULLIF(elem ->> 'weight', '')::numeric, 0)), 0) "
+        "FROM json_array_elements(projections.state -> 'line_items') AS elem)"
+    )
     list_q = (
-        select(Projection)
+        select(
+            Projection.entity_id,
+            Projection.created_at,
+            Projection.state["ref_id"].as_string().label("ref_id"),
+            Projection.state["list_type"].as_string().label("list_type"),
+            Projection.state["customer_name"].as_string().label("customer_name"),
+            Projection.state["receiver"].as_string().label("receiver"),
+            Projection.state["customer_id"].as_string().label("customer_id"),
+            Projection.state["date"].as_string().label("date"),
+            Projection.state["total"].as_string().label("total"),
+            Projection.state["status"].as_string().label("status"),
+            Projection.state["created_at"].as_string().label("state_created_at"),
+            item_count.label("item_count"),
+            weight_sum.label("total_weight"),
+        )
         .where(*base_where)
         # Descending newest-first with the unique entity_id tiebreak so equal-date rows have a
         # total order and OFFSET pagination never skips or duplicates a boundary row.
@@ -3914,11 +3937,22 @@ async def list_lists(
     )
     if limit is not None:
         list_q = list_q.limit(limit)
-    rows = (await session.execute(list_q)).scalars().all()
-    out = [r.state | {"id": r.entity_id,
-                      "created_at": (r.created_at.isoformat() if r.created_at is not None
-                                     else r.state.get("created_at") or "")}
-           for r in rows]
+    rows = (await session.execute(list_q)).all()
+    out = [{
+        "id": r.entity_id,
+        "created_at": (r.created_at.isoformat() if r.created_at is not None
+                       else r.state_created_at or ""),
+        "ref_id": r.ref_id,
+        "list_type": r.list_type,
+        "customer_name": r.customer_name,
+        "receiver": r.receiver,
+        "customer_id": r.customer_id,
+        "date": r.date,
+        "total": r.total,
+        "status": r.status,
+        "item_count": r.item_count,
+        "total_weight": float(r.total_weight or 0),
+    } for r in rows]
     return {"items": out, "total": total}
 
 
@@ -4002,21 +4036,25 @@ async def export_lists_csv(
         yield header.getvalue()
         batch = 500
         offset = 0
+        # Select only the seven columns the CSV emits, straight from the json state, so a list's whole
+        # line_items array is never deserialized just to write its header row.
+        col_exprs = [Projection.entity_id.label("id")] + [
+            Projection.state[c].as_string().label(c) for c in _COLS if c != "id"
+        ]
         while True:
             rows = (await session.execute(
-                select(Projection)
+                select(*col_exprs)
                 .where(*base_where)
                 .order_by(Projection.entity_id.desc())
                 .offset(offset)
                 .limit(batch)
-            )).scalars().all()
+            )).all()
             if not rows:
                 break
             buf = io.StringIO()
             w = csv.DictWriter(buf, fieldnames=_COLS, extrasaction="ignore")
             for r in rows:
-                d = r.state | {"id": r.entity_id}
-                w.writerow({c: d.get(c, "") for c in _COLS})
+                w.writerow({c: (getattr(r, c) or "") for c in _COLS})
             yield buf.getvalue()
             if len(rows) < batch:
                 break
@@ -4068,18 +4106,25 @@ async def get_list_page(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """The list header (stored state without line_items) plus one bounded page of line_items and the
-    total. The page is read in SQL: json_array_length for the total and a positional json subscript
-    over generate_series for the window, so a large list is never expanded into Python. The header
-    lets the detail view render from this one call; metadata enrichment stays in the UI layer, over
-    the returned page slice."""
+    """The list header (stored state without line_items), one bounded page of line_items, the total,
+    and enriched item metadata for exactly the page's ids. Everything is read in bounded SQL: the
+    header is `state - line_items` (never the whole document row), the total is json_array_length, the
+    window is a positional json subscript over generate_series, and item_meta joins the page's catalog
+    items only. The detail view renders the page and enriches it from this one call, so a large list
+    is never expanded into Python and no follow-up metadata round-trip is needed."""
     off, lim = _page_bounds(offset, limit)
-    row = await _get_list(session, company_id, entity_id)
-    total = (await session.execute(
-        text("SELECT COALESCE(json_array_length(state -> 'line_items'), 0) AS total "
-             "FROM projections WHERE company_id = :cid AND entity_id = :eid"),
+    # Header, version and total in ONE bounded read: the header is the stored state with line_items
+    # stripped in SQL, so the whole line array is never dragged back into Python on a page request.
+    head = (await session.execute(
+        text("SELECT state::jsonb - 'line_items' AS header, version, "
+             "COALESCE(json_array_length(state -> 'line_items'), 0) AS total "
+             "FROM projections "
+             "WHERE company_id = :cid AND entity_id = :eid AND entity_type = 'list'"),
         {"cid": str(company_id), "eid": entity_id},
-    )).scalar_one()
+    )).first()
+    if head is None:
+        raise HTTPException(status_code=404, detail="List not found")
+    total = head.total
     window = (await session.execute(
         text("""
             SELECT (state -> 'line_items') -> gs AS item
@@ -4090,10 +4135,42 @@ async def get_list_page(
         {"lo": off, "hi": off + lim - 1, "cid": str(company_id), "eid": entity_id},
     )).all()
     items = [r.item for r in window if r.item is not None]
-    header = {k: v for k, v in row.state.items() if k != "line_items"}
-    header["id"] = row.entity_id
-    header["version"] = row.version
-    return {"list": header, "items": items, "total": total, "version": row.version}
+    header = dict(head.header or {})
+    header["id"] = entity_id
+    header["version"] = head.version
+    item_meta = await _page_item_meta(session, company_id, items)
+    return {"list": header, "items": items, "total": total, "version": head.version,
+            "item_meta": item_meta}
+
+
+async def _page_item_meta(session: AsyncSession, company_id, page_items: list[dict]) -> dict:
+    """Catalog metadata for exactly the ids on this page, keyed by entity_id: the flattened item state
+    (attributes lifted to the top level, matching the bulk item-metadata shape) the detail view enriches
+    each line with (measures, on-hand, item status). Off-page lines are never touched. A page with no
+    catalog-backed lines returns an empty map, and the UI degrades to each line's stored values."""
+    ids = list(dict.fromkeys(
+        (li.get("item_id") or li.get("entity_id"))
+        for li in page_items
+        if (li.get("item_id") or li.get("entity_id"))
+    ))
+    if not ids:
+        return {}
+    rows = (await session.execute(
+        select(Projection.entity_id, Projection.state)
+        .where(Projection.company_id == company_id,
+               Projection.entity_type == "item",
+               Projection.entity_id.in_(ids))
+    )).all()
+    meta: dict = {}
+    for eid, state in rows:
+        flat = dict(state or {})
+        # Lift attributes.* to the top level so item_measure_meta reads pieces and friends directly,
+        # exactly as the bulk item-metadata read does; never overwrite a core field.
+        for k, v in (flat.pop("attributes", None) or {}).items():
+            flat.setdefault(k, v)
+        flat["id"] = eid
+        meta[eid] = flat
+    return meta
 
 
 @lists_router.post("")
@@ -4174,6 +4251,7 @@ async def patch_list(
 class ListLinePagePatch(BaseModel):
     line_items: list[dict] = Field(default_factory=list)
     offset: int = 0
+    original_count: int | None = None
     expected_version: int | None = None
 
 
@@ -4192,9 +4270,10 @@ async def patch_list_line_page(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Save one page of a list's lines without scraping or re-sending the whole array. Under the same
-    row lock and optimistic-version guard as a full save, the submitted page overwrites stored
-    positions [offset:offset+len(page)] by position; off-page rows are left byte-identical and totals
-    are recomputed from the full merged array."""
+    row lock and optimistic-version guard as a full save, the submitted page REPLACES the stored
+    window [offset:offset+original_count] the client originally loaded: a shorter page truncates
+    (deletes) tail rows, a longer one inserts, off-window rows are left byte-identical and totals are
+    recomputed from the full merged array."""
     row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
@@ -4204,11 +4283,22 @@ async def patch_list_line_page(
         raise HTTPException(status_code=409, detail="This list was changed by someone else; reload to get the latest before saving")
 
     page = payload.line_items
+    if len(page) > _PAGE_LIMIT_MAX:
+        raise HTTPException(status_code=400, detail=f"A saved page cannot exceed {_PAGE_LIMIT_MAX} lines")
     _normalize_line_item_ids(page)
     stored = list(row.state.get("line_items") or [])
     offset = payload.offset
     if offset < 0:
         raise HTTPException(status_code=400, detail="offset must be zero or greater")
+    # The window the client loaded is [offset:offset+original_count]; the page replaces exactly it.
+    # Omitting original_count means the page covers the whole stored tail from offset onward, so a
+    # bare {page, offset} save that carries fewer rows still truncates instead of inserting a
+    # duplicate copy ahead of the untouched original.
+    original_count = payload.original_count
+    if original_count is None:
+        original_count = max(0, len(stored) - offset)
+    elif original_count < 0:
+        raise HTTPException(status_code=400, detail="original_count must be zero or greater")
     # A submitted row carrying an id must land on the position holding that same id: this catches a
     # page saved against a shifted array. Free-text rows carry no id and overwrite by position.
     for i, incoming in enumerate(page):
@@ -4221,13 +4311,16 @@ async def patch_list_line_page(
                     status_code=409,
                     detail="This list was changed by someone else; reload to get the latest before saving")
 
-    merged = stored[:]
-    for i, incoming in enumerate(page):
-        pos = offset + i
-        if pos < len(merged):
-            merged[pos] = incoming
-        else:
-            merged.append(incoming)
+    # A draft item is not stock and must never reach a list, on this path as on the full save.
+    _existing = {_line_identity(li) for li in stored}
+    await _assert_no_draft_items(
+        session, company_id,
+        {_line_identity(li) for li in page} - _existing,
+    )
+
+    # Slice-splice: replace exactly the originally-loaded window. A shorter page truncates, a longer
+    # one inserts; positional overwrite/append could never delete a tail row.
+    merged = stored[:offset] + list(page) + stored[offset + original_count:]
 
     entry = await _emit_list(
         session, company_id, entity_id, "list.updated",
