@@ -325,49 +325,61 @@ class GatewayClient:
             import ssl as _ssl
             _ssl_ctx = _ssl.create_default_context()
             _ssl_ctx.set_alpn_protocols(["http/1.1"])
-        async with websockets.connect(
-            self._url, ssl=_ssl_ctx, ping_interval=20, ping_timeout=20, max_size=160 * 1024 * 1024
-        ) as ws:
-            self._ws = ws
-            # Read current TOS version from config
-            from celerp.config import read_config
-            cfg = read_config() or {}
-            tos_version = cfg.get("cloud", {}).get("tos_version", "")
-            # App version: the Electron wrapper passes the release version via
-            # CELERP_APP_VERSION; fall back to the package version. Sent on every
-            # connect so the handshake reflects the build that is actually running.
-            from celerp import __version__ as _pkg_version
-            app_version = os.environ.get("CELERP_APP_VERSION") or _pkg_version
-            # Send hello handshake
-            await self._send(ws, {
-                "type": "hello",
-                "id": str(uuid.uuid4()),
-                "payload": {
-                    "gateway_token": self._token,
-                    "instance_id": self._instance_id,
-                    "tos_version": tos_version,
-                    "version": app_version,
-                },
-            })
-            # Message dispatch loop
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
-                    log.warning("Gateway sent non-JSON frame: %r", raw)
-                    continue
-                await self._dispatch(msg)
-        self._ws = None
-        # A new generation for the next connection: any proxy response still in flight
-        # from this socket is now stale and must not be sent on the rebuilt one.
-        self._generation += 1
-        log.debug(
-            "Gateway proxy activity this connection: proxied=%d cancelled=%d "
-            "timed_out=%d stale_dropped=%d",
-            self._proxied_count, self._cancelled_count,
-            self._timeout_count, self._stale_dropped_count,
-        )
-        self._set_status("inactive")
+        try:
+            async with websockets.connect(
+                self._url, ssl=_ssl_ctx, ping_interval=20, ping_timeout=20, max_size=160 * 1024 * 1024
+            ) as ws:
+                self._ws = ws
+                # Read current TOS version from config
+                from celerp.config import read_config
+                cfg = read_config() or {}
+                tos_version = cfg.get("cloud", {}).get("tos_version", "")
+                # App version: the Electron wrapper passes the release version via
+                # CELERP_APP_VERSION; fall back to the package version. Sent on every
+                # connect so the handshake reflects the build that is actually running.
+                from celerp import __version__ as _pkg_version
+                app_version = os.environ.get("CELERP_APP_VERSION") or _pkg_version
+                # Send hello handshake
+                await self._send(ws, {
+                    "type": "hello",
+                    "id": str(uuid.uuid4()),
+                    "payload": {
+                        "gateway_token": self._token,
+                        "instance_id": self._instance_id,
+                        "tos_version": tos_version,
+                        "version": app_version,
+                    },
+                })
+                # Message dispatch loop
+                async for raw in ws:
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        log.warning("Gateway sent non-JSON frame: %r", raw)
+                        continue
+                    await self._dispatch(msg)
+        finally:
+            # Teardown runs on every exit - clean end of the message stream OR an
+            # abnormal disconnect raised mid-serve. Kept in a finally so an exception
+            # from the async-for can't leave a dangling socket, an unfenced generation,
+            # and a stuck status behind.
+            self._ws = None
+            # A new generation for the next connection: any proxy response still in
+            # flight from this socket is now stale and must not be sent on the rebuilt
+            # one. Cancel the in-flight proxy tasks that belong to the dead connection -
+            # their responses can never be delivered on a socket that no longer exists.
+            self._generation += 1
+            for task in list(self._inflight.values()):
+                if not task.done():
+                    task.cancel()
+            self._inflight.clear()
+            log.debug(
+                "Gateway proxy activity this connection: proxied=%d cancelled=%d "
+                "timed_out=%d stale_dropped=%d",
+                self._proxied_count, self._cancelled_count,
+                self._timeout_count, self._stale_dropped_count,
+            )
+            self._set_status("inactive")
 
     async def _dispatch(self, msg: dict) -> None:
         msg_type = msg.get("type", "")
