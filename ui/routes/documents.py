@@ -4312,20 +4312,11 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        try:
-            lst = await api.get_list(token, entity_id)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            if e.status == 404:
-                from starlette.responses import HTMLResponse as _HR
-                return _HR(f"<h2>{t('documents.list_not_found')}</h2><p><a href='/lists'>{t('documents.back_to_lists')}</a></p>", status_code=404)
-            lst = {}
 
         # One bounded page of lines. A large list rendered every stored line in one
         # pass; instead read the requested window (limit hard-capped at 100) and render
         # only that page, with a pager to reach the rest. Off-page lines stay in place -
-        # this only bounds what is rendered per request.
+        # this only bounds what is fetched and rendered per request.
         _PAGE_CAP = 100
         try:
             _line_offset = max(0, int(request.query_params.get("offset", 0)))
@@ -4336,9 +4327,18 @@ celerpUpdateBulkAlloc();
         except (TypeError, ValueError):
             _line_limit = _PAGE_CAP
         _line_limit = max(1, min(_line_limit, _PAGE_CAP))
-        _all_lines = lst.get("line_items", []) or []
-        _line_total = len(_all_lines)
-        lst["line_items"] = _all_lines[_line_offset:_line_offset + _line_limit]
+        try:
+            resp = await api.get_list_page(token, entity_id, offset=_line_offset, limit=_line_limit)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            if e.status == 404:
+                from starlette.responses import HTMLResponse as _HR
+                return _HR(f"<h2>{t('documents.list_not_found')}</h2><p><a href='/lists'>{t('documents.back_to_lists')}</a></p>", status_code=404)
+            resp = {}
+        lst = resp.get("list", {}) or {}
+        lst["line_items"] = resp.get("items", []) or []
+        _line_total = resp.get("total", len(lst["line_items"]))
 
         # Inject doc_type so _doc_detail() treats it as a list
         lst.setdefault("doc_type", "list")

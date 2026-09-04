@@ -45,11 +45,30 @@ def _audit_list(n_lines: int) -> dict:
     }
 
 
+def _page_side_effect(list_payload: dict):
+    """Serve one bounded page from the stored array, mirroring the /page endpoint:
+    the list header (stored state without line_items) plus the requested slice."""
+    lines = list_payload.get("line_items", [])
+    header = {k: v for k, v in list_payload.items() if k != "line_items"}
+
+    async def _page(token, entity_id, offset: int = 0, limit: int = 100):
+        off = max(0, int(offset))
+        lim = max(1, min(int(limit), 100))
+        return {
+            "list": header,
+            "items": lines[off:off + lim],
+            "total": len(lines),
+            "version": list_payload.get("version", 1),
+        }
+
+    return _page
+
+
 def _base_stubs(list_payload: dict) -> dict:
     """The api.* stubs list_detail touches, all safe defaults so the render reaches
     (and completes) the metadata block without external calls."""
     return {
-        "ui.api_client.get_list": AsyncMock(return_value=list_payload),
+        "ui.api_client.get_list_page": AsyncMock(side_effect=_page_side_effect(list_payload)),
         "ui.api_client.get_company": AsyncMock(return_value={"name": "Co", "settings": {}}),
         "ui.api_client.get_price_lists": AsyncMock(return_value=[]),
         "ui.api_client.get_taxes": AsyncMock(return_value=[]),

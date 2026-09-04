@@ -4,9 +4,9 @@
 """list_detail must render one bounded page of lines, not the whole array.
 
 A large list rendered every stored line in one pass, so a 2000-line list built
-2000 editable rows in the response. The renderer must instead render at most one
-page of rows with a pager, and a finalized-row field edit on a later page must
-address the page-absolute stored index (offset + in-page position), not the
+2000 editable rows in the response. The renderer must instead fetch and render at
+most one page of rows with a pager, and a finalized-row field edit on a later page
+must address the page-absolute stored index (offset + in-page position), not the
 in-page position alone, so the correct stored line is edited.
 """
 
@@ -54,10 +54,32 @@ def _finalized_list(n_lines: int) -> dict:
     }
 
 
-def _base_stubs(list_payload: dict) -> dict:
+def _page_side_effect(list_payload: dict):
+    """Serve one bounded page from the stored array, mirroring the /page endpoint:
+    the list header (stored state without line_items) plus the requested slice."""
+    lines = list_payload.get("line_items", [])
+    header = {k: v for k, v in list_payload.items() if k != "line_items"}
+
+    async def _page(token, entity_id, offset: int = 0, limit: int = 100):
+        off = max(0, int(offset))
+        lim = max(1, min(int(limit), _PAGE_LIMIT))
+        return {
+            "list": header,
+            "items": lines[off:off + lim],
+            "total": len(lines),
+            "version": list_payload.get("version", 3),
+        }
+
+    return _page
+
+
+def _base_stubs(list_payload: dict, page_mock: AsyncMock) -> dict:
     """The api.* calls list_detail makes, stubbed to safe defaults so the render
-    reaches (and completes) the line-table block without external calls."""
+    reaches (and completes) the line-table block without external calls. get_list is
+    kept stubbed so no real network call happens and the unchanged pre-fix code (which
+    reads the full array from it) renders without error."""
     return {
+        "ui.api_client.get_list_page": page_mock,
         "ui.api_client.get_list": AsyncMock(return_value=list_payload),
         "ui.api_client.get_company": AsyncMock(return_value={"name": "Co", "settings": {}}),
         "ui.api_client.get_price_lists": AsyncMock(return_value=[]),
@@ -75,7 +97,8 @@ def _base_stubs(list_payload: dict) -> dict:
 
 class _Patches:
     def __init__(self, mocks: dict):
-        self._patches = [patch(k, new=v) for k, v in mocks.items()]
+        # create=True because get_list_page does not exist at merge-base; the fix adds it.
+        self._patches = [patch(k, create=True, new=v) for k, v in mocks.items()]
 
     def __enter__(self):
         for p in self._patches:
@@ -87,13 +110,15 @@ class _Patches:
             p.stop()
 
 
-async def _get_list_detail(ui_app, path: str) -> str:
-    with _Patches(_base_stubs(_finalized_list(250))):
+async def _get_list_detail(ui_app, path: str) -> tuple[str, AsyncMock]:
+    payload = _finalized_list(250)
+    page_mock = AsyncMock(side_effect=_page_side_effect(payload))
+    with _Patches(_base_stubs(payload, page_mock)):
         async with AsyncClient(transport=ASGITransport(app=ui_app),
                                base_url="http://ui", follow_redirects=False) as c:
             r = await c.get(path, cookies=_cookies())
     assert r.status_code == 200, r.text
-    return r.text
+    return r.text, page_mock
 
 
 def _line_edit_indices(html: str) -> list[int]:
@@ -110,21 +135,24 @@ def _row_count(html: str) -> int:
 @pytest.mark.asyncio
 async def test_list_detail_renders_one_page(ui_app):
     """A 250-line finalized list renders at most one page of line rows and a pager,
-    not the full array."""
-    html = await _get_list_detail(ui_app, "/lists/list:big")
+    not the full array, and fetches that page through the bounded endpoint."""
+    html, page_mock = await _get_list_detail(ui_app, "/lists/list:big")
     rendered = _row_count(html)
     assert 0 < rendered <= _PAGE_LIMIT, (
         f"the render must be bounded to one page (<= {_PAGE_LIMIT} rows), "
         f"got {rendered} distinct line rows")
     assert "line-pager" in html or "list-line-pager" in html, (
         "a large list must render a pager to reach off-page lines")
+    assert page_mock.await_count >= 1, (
+        "the detail view must fetch its page through the bounded endpoint, "
+        "not load the whole list")
 
 
 @pytest.mark.asyncio
 async def test_list_detail_field_edit_page_absolute_idx(ui_app):
     """A finalized-row field edit on page 2 addresses the page-absolute offset+i
     stored index, so the correct stored line is edited."""
-    html = await _get_list_detail(ui_app, "/lists/list:big?offset=100&limit=100")
+    html, _ = await _get_list_detail(ui_app, "/lists/list:big?offset=100&limit=100")
     indices = _line_edit_indices(html)
     assert indices, "page 2 must render finalized-row edit cells"
     assert min(indices) >= 100, (

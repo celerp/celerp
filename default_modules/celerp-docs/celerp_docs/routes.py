@@ -4068,9 +4068,11 @@ async def get_list_page(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """One bounded page of a list's line_items read in SQL: json_array_length for the total and a
-    positional json subscript over generate_series for the window, so a large list is never expanded
-    into Python. Metadata enrichment stays in the UI layer; this returns the raw stored page slice."""
+    """The list header (stored state without line_items) plus one bounded page of line_items and the
+    total. The page is read in SQL: json_array_length for the total and a positional json subscript
+    over generate_series for the window, so a large list is never expanded into Python. The header
+    lets the detail view render from this one call; metadata enrichment stays in the UI layer, over
+    the returned page slice."""
     off, lim = _page_bounds(offset, limit)
     row = await _get_list(session, company_id, entity_id)
     total = (await session.execute(
@@ -4088,7 +4090,10 @@ async def get_list_page(
         {"lo": off, "hi": off + lim - 1, "cid": str(company_id), "eid": entity_id},
     )).all()
     items = [r.item for r in window if r.item is not None]
-    return {"items": items, "total": total, "version": row.version}
+    header = {k: v for k, v in row.state.items() if k != "line_items"}
+    header["id"] = row.entity_id
+    header["version"] = row.version
+    return {"list": header, "items": items, "total": total, "version": row.version}
 
 
 @lists_router.post("")

@@ -1445,11 +1445,12 @@ async def patch_list(token: str, entity_id: str, data: dict, expected_version: i
 
 
 async def get_list_page(token: str, entity_id: str, offset: int = 0, limit: int = 100) -> dict:
-    """One bounded page of a list's stored lines.
+    """One bounded page of a list's stored lines, with the list header.
 
-    Returns {"items": [...], "total": int, "version": int} where items is the raw
-    stored slice of positions [offset:offset+limit); the server hard-caps limit at
-    100 and applies the effective value. Enrichment over the page ids is the
+    Returns {"list": {...stored header without line_items, plus id and version...},
+    "items": [...raw stored slice...], "total": int, "version": int} where items is
+    the raw stored slice of positions [offset:offset+limit); the server hard-caps
+    limit at 100 and applies the effective value. Enrichment over the page ids is the
     caller's job.
     """
     async with _api_client(token) as c:
