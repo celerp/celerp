@@ -55,6 +55,26 @@ def _authed(token: str | None = None, role: str = "owner") -> dict:
     return {"celerp_token": token or make_test_token(role=role)}
 
 
+def _list_page_stub(payload: dict) -> AsyncMock:
+    """Stub for api.get_list_page, the sole list read used by list_detail. It serves one
+    bounded page from the same stored payload the test already builds: the list header
+    (stored state minus line_items) plus the requested slice, with the total and version."""
+    lines = payload.get("line_items", [])
+    header = {k: v for k, v in payload.items() if k != "line_items"}
+
+    async def _page(token, entity_id, offset=0, limit=100):
+        off = max(0, int(offset))
+        lim = max(1, min(int(limit), 100))
+        return {
+            "list": header,
+            "items": lines[off:off + lim],
+            "total": len(lines),
+            "version": payload.get("version", 1),
+        }
+
+    return AsyncMock(side_effect=_page)
+
+
 async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes):
     """Post CSV to preview, then apply default column mapping and return response."""
     r = await ui_client.post(
@@ -2789,6 +2809,7 @@ class TestDocumentPolish:
         }
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=quotation)),
+            patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(quotation)),
             patch("ui.api_client.get_relay_status", new=AsyncMock(
                 return_value={"connected": False, "relay_status": "error",
                               "gateway_token_set": True,
@@ -2886,8 +2907,10 @@ class TestWriteoffListDetail:
     @pytest.mark.asyncio
     async def test_draft_writeoff_renders_entry_cells_filtered_and_aligned(self, ui_client):
         from bs4 import BeautifulSoup
+        lst = self._wo_list()
         with (
-            patch("ui.api_client.get_list", new=AsyncMock(return_value=self._wo_list())),
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+            patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(lst)),
             patch("ui.api_client.get_chart",
                   new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
         ):
@@ -2922,6 +2945,7 @@ class TestWriteoffListDetail:
         lst = {**self._wo_list(), "status": "finalized"}
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+            patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(lst)),
             patch("ui.api_client.get_chart",
                   new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
         ):
@@ -2937,6 +2961,7 @@ class TestWriteoffListDetail:
         lst = {**self._wo_list(), "status": "closed", "result": "written_off"}
         with (
             patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+            patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(lst)),
             patch("ui.api_client.get_chart",
                   new=AsyncMock(return_value={"items": self._WO_CHART, "total": len(self._WO_CHART)})),
         ):
@@ -4073,11 +4098,12 @@ class TestListsCreateBlank:
 
     @pytest.mark.asyncio
     async def test_save_list_lines_forwards_expected_version_and_returns_new(self, ui_client):
-        """POST /lists/{id}/lines forwards expected_version to api.patch_list and returns the
-        new version from the save, so the page can advance its cached token (optimistic
-        concurrency). Without the plumbing the route neither forwards the token nor returns it."""
+        """POST /lists/{id}/lines saves only the submitted page slice via
+        api.patch_list_line_page(token, entity_id, page, offset, expected_version) and returns
+        the new version from the save, so the page can advance its cached token (optimistic
+        concurrency). The expected_version travels as the 5th positional argument."""
         mock = AsyncMock(return_value={"event_id": 42, "version": 42})
-        with patch("ui.api_client.patch_list", new=mock):
+        with patch("ui.api_client.patch_list_line_page", create=True, new=mock):
             r = await ui_client.post(
                 "/lists/list:WO-1/lines",
                 json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0, "expected_version": 7},
@@ -4086,15 +4112,16 @@ class TestListsCreateBlank:
         assert r.status_code == 200
         assert r.json()["ok"] is True
         assert r.json()["version"] == 42
-        assert mock.await_args.kwargs.get("expected_version") == 7
+        assert mock.await_args.args[4] == 7
 
     @pytest.mark.asyncio
     async def test_save_list_lines_stale_version_returns_structured_409(self, ui_client):
-        """A stale expected_version (backend 409) surfaces as a structured {code: stale_version}
-        body with status 409, so the page branches on the code, never on English message text."""
+        """A stale expected_version (backend 409 from the slice PATCH) surfaces as a structured
+        {code: stale_version} body with status 409, so the page branches on the code, never on
+        English message text."""
         from ui.api_client import APIError
         mock = AsyncMock(side_effect=APIError(409, "This list was changed by someone else; reload to get the latest before saving"))
-        with patch("ui.api_client.patch_list", new=mock):
+        with patch("ui.api_client.patch_list_line_page", create=True, new=mock):
             r = await ui_client.post(
                 "/lists/list:WO-1/lines",
                 json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0, "expected_version": 1},
@@ -10536,7 +10563,11 @@ class TestAuditHighlightScoping:
 
     @pytest.mark.asyncio
     async def test_audit_renders_scanned_highlight(self, ui_client):
-        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._list("audit"))):
+        lst = self._list("audit")
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+            patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(lst)),
+        ):
             r = await ui_client.get("/lists/list:1", cookies=_authed())
         assert r.status_code == 200
         assert "data-row--audited" in r.text
@@ -10656,9 +10687,16 @@ class TestAuditColumnAlignment:
     async def test_draft_audit_shows_add_item_but_counting_hides_it(self, ui_client):
         # A draft audit is editable, so it keeps the Add item affordance; a finalized (counting) audit
         # locks the manifest and hides it.
-        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._AUDIT)):
+        counting_list = {**self._AUDIT, "status": "finalized"}
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=self._AUDIT)),
+            patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(self._AUDIT)),
+        ):
             draft = await ui_client.get("/lists/list:1", cookies=_authed())
-        with patch("ui.api_client.get_list", new=AsyncMock(return_value={**self._AUDIT, "status": "finalized"})):
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=counting_list)),
+            patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(counting_list)),
+        ):
             counting = await ui_client.get("/lists/list:1", cookies=_authed())
         assert draft.status_code == 200 and counting.status_code == 200
         # Match the button's onclick (the celerpAddLine() helper is always defined in the page script).
