@@ -3087,5 +3087,10 @@
   "settings_cloud.partner_claim_token_placeholder": "Dán mã yêu cầu",
   "settings_cloud.partner_claim_review": "Xem lại yêu cầu",
   "settings_cloud.partner_claim_managed_by": "Bản cài đặt này sẽ được quản lý bởi:",
-  "settings_cloud.partner_claim_error": "Không thể xác minh yêu cầu này. Yêu cầu có thể không hợp lệ, đã hết hạn hoặc đã được sử dụng."
+  "settings_cloud.partner_claim_error": "Không thể xác minh yêu cầu này. Yêu cầu có thể không hợp lệ, đã hết hạn hoặc đã được sử dụng.",
+  "settings_cloud.config_write_failed": "không thể ghi cấu hình",
+  "settings_cloud.saved_restart_to_apply": "✓ Đã lưu. Khởi động lại Celerp để áp dụng thay đổi.",
+  "settings_cloud.restored_restart_to_apply": "↩ Đã khôi phục cài đặt cơ sở dữ liệu trước đó. Khởi động lại Celerp để áp dụng.",
+  "settings_cloud.s3_support_unavailable": "Bản dựng này không hỗ trợ S3",
+  "settings_cloud.s3_connection_failed": "Kết nối thất bại"
 }

@@ -3087,5 +3087,10 @@
   "settings_cloud.partner_claim_token_placeholder": "Anspruchscode einfügen",
   "settings_cloud.partner_claim_review": "Anspruch prüfen",
   "settings_cloud.partner_claim_managed_by": "Diese Installation wird verwaltet von:",
-  "settings_cloud.partner_claim_error": "Dieser Anspruch konnte nicht überprüft werden. Er ist möglicherweise ungültig, abgelaufen oder bereits verwendet."
+  "settings_cloud.partner_claim_error": "Dieser Anspruch konnte nicht überprüft werden. Er ist möglicherweise ungültig, abgelaufen oder bereits verwendet.",
+  "settings_cloud.config_write_failed": "Konfiguration konnte nicht geschrieben werden",
+  "settings_cloud.saved_restart_to_apply": "✓ Gespeichert. Starten Sie Celerp neu, um die Änderung anzuwenden.",
+  "settings_cloud.restored_restart_to_apply": "↩ Vorherige Datenbankeinstellungen wiederhergestellt. Starten Sie Celerp neu, um sie anzuwenden.",
+  "settings_cloud.s3_support_unavailable": "S3-Unterstützung ist in diesem Build nicht verfügbar",
+  "settings_cloud.s3_connection_failed": "Verbindung fehlgeschlagen"
 }

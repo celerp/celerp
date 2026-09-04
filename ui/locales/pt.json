@@ -3087,5 +3087,10 @@
   "settings_cloud.partner_claim_token_placeholder": "Colar código de reivindicação",
   "settings_cloud.partner_claim_review": "Rever reivindicação",
   "settings_cloud.partner_claim_managed_by": "Esta instalação será gerida por:",
-  "settings_cloud.partner_claim_error": "Não foi possível verificar esta reivindicação. Pode ser inválida, ter expirado ou já ter sido usada."
+  "settings_cloud.partner_claim_error": "Não foi possível verificar esta reivindicação. Pode ser inválida, ter expirado ou já ter sido usada.",
+  "settings_cloud.config_write_failed": "não foi possível gravar a configuração",
+  "settings_cloud.saved_restart_to_apply": "✓ Salvo. Reinicie o Celerp para aplicar a alteração.",
+  "settings_cloud.restored_restart_to_apply": "↩ Configurações anteriores do banco de dados restauradas. Reinicie o Celerp para aplicar.",
+  "settings_cloud.s3_support_unavailable": "O suporte a S3 não está disponível nesta versão",
+  "settings_cloud.s3_connection_failed": "Falha na conexão"
 }

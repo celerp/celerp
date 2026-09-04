@@ -3087,5 +3087,10 @@
   "settings_cloud.partner_claim_token_placeholder": "申請コードを貼り付け",
   "settings_cloud.partner_claim_review": "申請を確認",
   "settings_cloud.partner_claim_managed_by": "このインストールの管理者:",
-  "settings_cloud.partner_claim_error": "この申請を確認できませんでした。無効、期限切れ、またはすでに使用されている可能性があります。"
+  "settings_cloud.partner_claim_error": "この申請を確認できませんでした。無効、期限切れ、またはすでに使用されている可能性があります。",
+  "settings_cloud.config_write_failed": "設定を書き込めませんでした",
+  "settings_cloud.saved_restart_to_apply": "✓ 保存しました。変更を適用するには Celerp を再起動してください。",
+  "settings_cloud.restored_restart_to_apply": "↩ 以前のデータベース設定を復元しました。適用するには Celerp を再起動してください。",
+  "settings_cloud.s3_support_unavailable": "このビルドでは S3 はサポートされていません",
+  "settings_cloud.s3_connection_failed": "接続に失敗しました"
 }

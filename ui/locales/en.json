@@ -3087,5 +3087,10 @@
   "documents.reopen_memo_confirm": "Reopen this memo and restore its previous status?",
   "documents.line_label_returned": "Returned",
   "documents.line_label_not_shipped": "Not shipped",
-  "documents.th_shipped": "Shipped"
+  "documents.th_shipped": "Shipped",
+  "settings_cloud.config_write_failed": "could not write configuration",
+  "settings_cloud.saved_restart_to_apply": "✓ Saved. Restart Celerp to apply the change.",
+  "settings_cloud.restored_restart_to_apply": "↩ Previous database settings restored. Restart Celerp to apply.",
+  "settings_cloud.s3_support_unavailable": "S3 support is not available in this build",
+  "settings_cloud.s3_connection_failed": "Connection failed"
 }

@@ -3087,5 +3087,10 @@
   "settings_cloud.partner_claim_token_placeholder": "วางรหัสอ้างสิทธิ์",
   "settings_cloud.partner_claim_review": "ตรวจสอบการอ้างสิทธิ์",
   "settings_cloud.partner_claim_managed_by": "การติดตั้งนี้จะถูกจัดการโดย:",
-  "settings_cloud.partner_claim_error": "ไม่สามารถยืนยันการอ้างสิทธิ์นี้ได้ อาจไม่ถูกต้อง หมดอายุ หรือถูกใช้ไปแล้ว"
+  "settings_cloud.partner_claim_error": "ไม่สามารถยืนยันการอ้างสิทธิ์นี้ได้ อาจไม่ถูกต้อง หมดอายุ หรือถูกใช้ไปแล้ว",
+  "settings_cloud.config_write_failed": "ไม่สามารถเขียนการตั้งค่าได้",
+  "settings_cloud.saved_restart_to_apply": "✓ บันทึกแล้ว รีสตาร์ท Celerp เพื่อใช้การเปลี่ยนแปลง",
+  "settings_cloud.restored_restart_to_apply": "↩ กู้คืนการตั้งค่าฐานข้อมูลก่อนหน้าแล้ว รีสตาร์ท Celerp เพื่อใช้งาน",
+  "settings_cloud.s3_support_unavailable": "บิลด์นี้ไม่รองรับ S3",
+  "settings_cloud.s3_connection_failed": "การเชื่อมต่อล้มเหลว"
 }

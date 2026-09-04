@@ -3087,5 +3087,10 @@
   "settings_cloud.partner_claim_token_placeholder": "Tempel kode klaim",
   "settings_cloud.partner_claim_review": "Tinjau klaim",
   "settings_cloud.partner_claim_managed_by": "Pemasangan ini akan dikelola oleh:",
-  "settings_cloud.partner_claim_error": "Klaim ini tidak dapat diverifikasi. Klaim mungkin tidak valid, kedaluwarsa, atau sudah digunakan."
+  "settings_cloud.partner_claim_error": "Klaim ini tidak dapat diverifikasi. Klaim mungkin tidak valid, kedaluwarsa, atau sudah digunakan.",
+  "settings_cloud.config_write_failed": "tidak dapat menulis konfigurasi",
+  "settings_cloud.saved_restart_to_apply": "✓ Tersimpan. Mulai ulang Celerp untuk menerapkan perubahan.",
+  "settings_cloud.restored_restart_to_apply": "↩ Pengaturan basis data sebelumnya dipulihkan. Mulai ulang Celerp untuk menerapkan.",
+  "settings_cloud.s3_support_unavailable": "Dukungan S3 tidak tersedia di build ini",
+  "settings_cloud.s3_connection_failed": "Koneksi gagal"
 }
