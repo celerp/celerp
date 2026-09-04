@@ -3983,26 +3983,47 @@ async def export_lists_csv(
     list_type: str | None = None,
     status: str | None = None,
 ) -> StreamingResponse:
-    rows = (await session.execute(
-        select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "list")
-    )).scalars().all()
-    items = [r.state | {"id": r.entity_id} for r in rows]
+    base_where = _list_base_where(company_id)
     if q:
-        ql = q.lower()
-        items = [d for d in items if ql in str(d.get("ref_id", "")).lower() or ql in str(d.get("customer_name", "")).lower()]
+        # Export matches ref_id / customer_name only (never customer_id), matching its own historic
+        # behaviour rather than the wider index search.
+        base_where.append(_list_search_where(q, include_customer_id=False))
     if list_type:
-        items = [d for d in items if d.get("list_type") == list_type]
+        base_where.append(Projection.state["list_type"].as_string() == list_type)
     if status:
-        items = [d for d in items if d.get("status") == status]
+        base_where.append(Projection.state["status"].as_string() == status)
     _COLS = ["id", "ref_id", "list_type", "customer_name", "date", "total", "status"]
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=_COLS, extrasaction="ignore")
-    writer.writeheader()
-    for d in items:
-        writer.writerow({c: d.get(c, "") for c in _COLS})
-    output.seek(0)
+
+    async def _rows():
+        # Read the projection in bounded SQL batches so the whole set is never buffered in Python.
+        header = io.StringIO()
+        writer = csv.DictWriter(header, fieldnames=_COLS, extrasaction="ignore")
+        writer.writeheader()
+        yield header.getvalue()
+        batch = 500
+        offset = 0
+        while True:
+            rows = (await session.execute(
+                select(Projection)
+                .where(*base_where)
+                .order_by(Projection.entity_id.desc())
+                .offset(offset)
+                .limit(batch)
+            )).scalars().all()
+            if not rows:
+                break
+            buf = io.StringIO()
+            w = csv.DictWriter(buf, fieldnames=_COLS, extrasaction="ignore")
+            for r in rows:
+                d = r.state | {"id": r.entity_id}
+                w.writerow({c: d.get(c, "") for c in _COLS})
+            yield buf.getvalue()
+            if len(rows) < batch:
+                break
+            offset += batch
+
     return StreamingResponse(
-        iter([output.getvalue()]),
+        _rows(),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=lists.csv"},
     )
