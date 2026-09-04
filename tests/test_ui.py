@@ -4099,9 +4099,10 @@ class TestListsCreateBlank:
     @pytest.mark.asyncio
     async def test_save_list_lines_forwards_expected_version_and_returns_new(self, ui_client):
         """POST /lists/{id}/lines saves only the submitted page slice via
-        api.patch_list_line_page(token, entity_id, page, offset, expected_version) and returns
-        the new version from the save, so the page can advance its cached token (optimistic
-        concurrency). The expected_version travels as the 5th positional argument."""
+        api.patch_list_line_page(token, entity_id, page, offset, original_count, expected_version)
+        and returns the new version from the save, so the page can advance its cached token
+        (optimistic concurrency). original_count is the 5th positional argument (defaulting to the
+        submitted page's length when the body omits it) and expected_version the 6th."""
         mock = AsyncMock(return_value={"event_id": 42, "version": 42})
         with patch("ui.api_client.patch_list_line_page", create=True, new=mock):
             r = await ui_client.post(
@@ -4112,7 +4113,8 @@ class TestListsCreateBlank:
         assert r.status_code == 200
         assert r.json()["ok"] is True
         assert r.json()["version"] == 42
-        assert mock.await_args.args[4] == 7
+        assert mock.await_args.args[4] == 0  # original_count defaults to the empty page's length
+        assert mock.await_args.args[5] == 7
 
     @pytest.mark.asyncio
     async def test_save_list_lines_stale_version_returns_structured_409(self, ui_client):
@@ -10602,7 +10604,8 @@ class TestListScanInPlace:
         # the client refetches the editable tbody itself), never a full-page refresh.
         _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}], "failed": []}
         with patch("ui.api_client.scan_list", new=AsyncMock(return_value=_res)), \
-             patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
+             patch("ui.api_client.get_list_page",
+                   new=AsyncMock(return_value={"list": self._DRAFT, "version": 1})):
             r = await ui_client.post("/lists/list:1/scan", data={"barcode": "A1"}, cookies=_authed())
         assert r.status_code == 200
         assert "HX-Refresh" not in r.headers
@@ -10640,7 +10643,8 @@ class TestListScanInPlace:
         _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}],
                 "failed": [{"code": _bad, "reason": "unknown_code", "label": f"Unknown barcode or SKU: {_bad}"}]}
         with patch("ui.api_client.scan_list", new=AsyncMock(return_value=_res)), \
-             patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
+             patch("ui.api_client.get_list_page",
+                   new=AsyncMock(return_value={"list": self._DRAFT, "version": 1})):
             r = await ui_client.post("/lists/list:1/scan", data={"barcode": f"A1, {_bad}"}, cookies=_authed())
         assert r.status_code == 200
         assert "X-Scan-Failed-Codes" not in r.headers
@@ -19880,8 +19884,9 @@ async def test_list_scan_proxy_returns_fresh_version(ui_client):
     version, so the client's optimistic-lock token tracks the scan's write and a
     later line save does not 409 on a stale version."""
     scan = AsyncMock(return_value={"scanned": 1, "failed": []})
-    get = AsyncMock(return_value={"list_type": "quotation", "status": "draft", "version": 4242})
-    with patch("ui.api_client.scan_list", new=scan), patch("ui.api_client.get_list", new=get):
+    get = AsyncMock(return_value={"list": {"list_type": "quotation", "status": "draft"},
+                                  "version": 4242})
+    with patch("ui.api_client.scan_list", new=scan), patch("ui.api_client.get_list_page", new=get):
         r = await ui_client.post(
             "/lists/list:L1/scan",
             data={"barcode": "ABC123", "run_key": "run-1"},
