@@ -19,6 +19,29 @@ class APIError(Exception):
         super().__init__(f"API {status}: {detail}")
 
 
+class _SharedTransport(httpx.AsyncHTTPTransport):
+    """A shared bounded transport reused by every per-token AsyncClient.
+
+    httpx.AsyncClient.aclose() (and __aexit__) unconditionally closes its
+    transport, including one injected and shared across clients. With per-token
+    clients driving this one transport concurrently (asyncio.gather), the first
+    client to leave its `async with` block would close the connection pool out
+    from under a sibling request still reading its response, surfacing as a
+    ReadError. The per-client close is therefore a no-op here: the pool outlives
+    every client and is torn down only by shutdown_pool(), called once from the
+    UI app shutdown.
+    """
+
+    async def aclose(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc_info) -> None:
+        return None
+
+    async def shutdown_pool(self) -> None:
+        await super().aclose()
+
+
 # One shared bounded connection pool for every UI-to-API request. Each call still
 # gets its own cheap AsyncClient wrapper (a per-token Authorization header cannot be
 # shared across tokens), but they all drive requests through this single transport,
@@ -28,18 +51,18 @@ class APIError(Exception):
 # the connection-pool exhaustion in the incident. A shared transport (not one shared
 # client) is the right shape here because auth differs per request; alt (d) in the
 # plan rejected a single global client for exactly that reason.
-_shared_transport: httpx.AsyncHTTPTransport | None = None
+_shared_transport: _SharedTransport | None = None
 
 # Lightweight observability for the UI client path: how many requests were driven
 # through the shared pool, logged on shutdown so pool pressure is visible.
 _ui_request_count = 0
 
 
-def _get_transport() -> httpx.AsyncHTTPTransport:
+def _get_transport() -> _SharedTransport:
     """Return the shared bounded transport, building it lazily on first use."""
     global _shared_transport
     if _shared_transport is None:
-        _shared_transport = httpx.AsyncHTTPTransport(
+        _shared_transport = _SharedTransport(
             limits=httpx.Limits(max_connections=32, max_keepalive_connections=8),
         )
     return _shared_transport
@@ -56,7 +79,7 @@ async def close_shared_client() -> None:
     logger.info("UI API client shutdown: %d requests served via shared pool", _ui_request_count)
     if transport is not None:
         try:
-            await transport.aclose()
+            await transport.shutdown_pool()
         except Exception:
             pass
 
