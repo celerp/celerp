@@ -26,7 +26,6 @@ from websockets.exceptions import ConnectionClosed
 
 log = logging.getLogger(__name__)
 
-_PING_INTERVAL = 30   # seconds
 _BACKOFF_MAX = 60     # seconds
 # Consecutive auth rejections before the client stops retrying: a rejected
 # credential never heals on its own, so beyond a small allowance for a
@@ -85,6 +84,22 @@ class GatewayClient:
         # Hold strong refs to fire-and-forget tasks so the loop can't GC them mid-run
         # (a dropped task = a lost proxy response or webhook sync).
         self._bg_tasks: set = set()
+        # In-flight proxy tasks keyed by relay request id so an http.cancel frame can
+        # abort exactly the one request it names, and no other.
+        self._inflight: dict[str, asyncio.Task] = {}
+        # Connection generation: bumped on every teardown so a response produced by a
+        # request that outlived its socket can be recognised as stale and dropped
+        # rather than sent on the freshly rebuilt connection.
+        self._generation: int = 0
+        # One shared httpx client for all proxied requests, built lazily with bounded
+        # connection limits. A fresh client per request opened an unbounded number of
+        # pools under load; one bounded client caps the concurrency into the local app.
+        self._http_client: Any = None
+        # Observability counters for the proxy path, surfaced when the connection ends.
+        self._proxied_count = 0
+        self._cancelled_count = 0
+        self._timeout_count = 0
+        self._stale_dropped_count = 0
         # Resolve local server ports for proxy routing.
         # In Electron builds the ports are dynamic; Electron passes them via
         # CELERP_API_PORT / CELERP_UI_PORT env vars so we don't rely on the
@@ -121,6 +136,22 @@ class GatewayClient:
         task = asyncio.create_task(coro)
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
+
+    def _spawn_proxy(self, payload: dict) -> None:
+        """Run a proxied request fire-and-forget, keyed by its relay request id so an
+        http.cancel frame can abort exactly that task. The key is cleared when the task
+        finishes (a cancel arriving after completion is then a harmless no-op)."""
+        request_id = payload.get("id", "")
+        task = asyncio.create_task(self._handle_proxy_request(payload))
+        self._bg_tasks.add(task)
+        self._inflight[request_id] = task
+
+        def _done(t: asyncio.Task) -> None:
+            self._bg_tasks.discard(t)
+            if self._inflight.get(request_id) is t:
+                del self._inflight[request_id]
+
+        task.add_done_callback(_done)
 
     # ── Public API ─────────────────────────────────────────────────────
 
@@ -198,6 +229,7 @@ class GatewayClient:
                 await ws.close()
             except Exception:
                 pass
+        await self._close_http_client()
 
     async def _should_reap(self) -> bool:
         """A free instance with no live share and no recent proxied request should
@@ -326,6 +358,15 @@ class GatewayClient:
                     continue
                 await self._dispatch(msg)
         self._ws = None
+        # A new generation for the next connection: any proxy response still in flight
+        # from this socket is now stale and must not be sent on the rebuilt one.
+        self._generation += 1
+        log.debug(
+            "Gateway proxy activity this connection: proxied=%d cancelled=%d "
+            "timed_out=%d stale_dropped=%d",
+            self._proxied_count, self._cancelled_count,
+            self._timeout_count, self._stale_dropped_count,
+        )
         self._set_status("inactive")
 
     async def _dispatch(self, msg: dict) -> None:
@@ -414,7 +455,13 @@ class GatewayClient:
             set_subscription_state(tier, status)
 
         elif msg_type == "http.request":
-            self._spawn(self._handle_proxy_request(payload))
+            self._spawn_proxy(payload)
+
+        elif msg_type == "http.cancel":
+            request_id = payload.get("id", "")
+            task = self._inflight.get(request_id)
+            if task is not None and not task.done():
+                task.cancel()
 
         elif msg_type == "shopify.webhook":
             self._spawn(self._handle_shopify_webhook(payload))
@@ -533,6 +580,31 @@ class GatewayClient:
         except Exception as exc:
             log.warning("invoice.payment handling failed (entity=%s): %s", entity_id, exc)
 
+    def _get_http_client(self):
+        """Return the one shared httpx client used for every proxied request, building
+        it lazily on first use. A bounded connection pool caps how many concurrent
+        requests this client can drive into the local app, so a burst of relayed
+        requests can no longer open an unbounded number of pools. The default timeout
+        is the fixed cap; a per-request timeout_ms tightens it further."""
+        import httpx
+
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(
+                timeout=180.0,
+                limits=httpx.Limits(max_connections=32, max_keepalive_connections=8),
+            )
+        return self._http_client
+
+    async def _close_http_client(self) -> None:
+        """Close the shared httpx client if one was built. Safe to call when none was."""
+        client = self._http_client
+        self._http_client = None
+        if client is not None:
+            try:
+                await client.aclose()
+            except Exception:
+                pass
+
     async def _handle_proxy_request(self, payload: dict) -> None:
         """Handle a proxied HTTP request from the relay.
 
@@ -545,10 +617,14 @@ class GatewayClient:
         local access.
         """
         import base64
-        import httpx
 
         # Activity stamp for the reaper's grace window: any proxied request counts.
         self._last_request_monotonic = time.monotonic()
+        self._proxied_count += 1
+        # The generation this request belongs to: if the socket is rebuilt before the
+        # response is ready, self._generation advances past this and the response is
+        # dropped rather than sent on a connection that never issued the request.
+        generation = self._generation
 
         request_id = payload.get("id", "")
         method = payload.get("method", "GET")
@@ -557,6 +633,13 @@ class GatewayClient:
         headers = payload.get("headers", {})
         body_b64 = payload.get("body_b64", "")
         body = base64.b64decode(body_b64) if body_b64 else None
+        # Additive per-request deadline: a numeric timeout_ms bounds this request below
+        # the fixed cap so a single slow local handler can't pin a relay slot for 180s.
+        # Absent or non-numeric leaves the default cap in force.
+        timeout_ms = payload.get("timeout_ms")
+        deadline_s: float | None = None
+        if isinstance(timeout_ms, (int, float)) and not isinstance(timeout_ms, bool) and timeout_ms > 0:
+            deadline_s = timeout_ms / 1000.0
 
         # SSE / long-poll paths cannot be proxied over the WS request/response
         # protocol. Return an empty stream so the browser doesn't 500.
@@ -599,47 +682,92 @@ class GatewayClient:
         if query:
             url = f"{url}?{query}"
 
+        client = self._get_http_client()
         try:
-            async with httpx.AsyncClient(timeout=180.0) as client:
+            if deadline_s is not None:
+                async with asyncio.timeout(deadline_s):
+                    resp = await client.request(
+                        method=method,
+                        url=url,
+                        headers=headers,
+                        content=body,
+                    )
+            else:
                 resp = await client.request(
                     method=method,
                     url=url,
                     headers=headers,
                     content=body,
                 )
-            resp_body_b64 = base64.b64encode(resp.content).decode() if resp.content else ""
-            # Serialize as an ORDERED LIST of pairs (not a dict): a response can carry several
-            # Set-Cookie headers (login/refresh emit access_token + refresh_token), and a dict would
-            # collapse them into one comma-joined value the browser can't parse — so the refresh
-            # cookie never reaches the browser and the session dies at the access token's hard cap.
-            # multi_items() keeps each header separate. Drop content-length; the relay recomputes it.
-            _skip = {"transfer-encoding", "connection", "keep-alive", "content-length"}
-            resp_headers = [
-                [k, v] for k, v in resp.headers.multi_items()
-                if k.lower() not in _skip
-            ]
-            await self._send(self._ws, {
-                "type": "http.response",
-                "payload": {
-                    "id": request_id,
-                    "status": resp.status_code,
-                    "headers": resp_headers,
-                    "body_b64": resp_body_b64,
-                },
-            })
+        except asyncio.CancelledError:
+            # http.cancel aborted this request: emit nothing and let the cancellation
+            # propagate so the task is recorded cancelled.
+            self._cancelled_count += 1
+            raise
+        except TimeoutError:
+            # The per-request deadline elapsed before the local handler answered. Surface
+            # it as an error response instead of hanging to the fixed cap.
+            self._timeout_count += 1
+            log.warning("Proxy request timed out after %sms for %s %s", timeout_ms, method, path)
+            if generation == self._generation:
+                await self._send(self._ws, {
+                    "type": "http.response",
+                    "payload": {
+                        "id": request_id,
+                        "status": 504,
+                        "headers": [["content-type", "text/plain"]],
+                        "body_b64": base64.b64encode(b"Local app timed out").decode(),
+                    },
+                })
+            else:
+                self._stale_dropped_count += 1
+            return
         except Exception as exc:
             log.warning("Proxy request failed for %s %s: %s", method, path, exc)
-            await self._send(self._ws, {
-                "type": "http.response",
-                "payload": {
-                    "id": request_id,
-                    "status": 502,
-                    "headers": [["content-type", "text/plain"]],
-                    "body_b64": base64.b64encode(
-                        f"Local app error: {type(exc).__name__}: {exc}".encode()
-                    ).decode(),
-                },
-            })
+            if generation == self._generation:
+                await self._send(self._ws, {
+                    "type": "http.response",
+                    "payload": {
+                        "id": request_id,
+                        "status": 502,
+                        "headers": [["content-type", "text/plain"]],
+                        "body_b64": base64.b64encode(
+                            f"Local app error: {type(exc).__name__}: {exc}".encode()
+                        ).decode(),
+                    },
+                })
+            else:
+                self._stale_dropped_count += 1
+            return
+
+        # The socket that carried this request may have been rebuilt while it was in
+        # flight. A response from a superseded generation belongs to a connection the
+        # relay no longer has; sending it on the new socket would answer the wrong
+        # request, so it is dropped.
+        if generation != self._generation:
+            self._stale_dropped_count += 1
+            return
+
+        resp_body_b64 = base64.b64encode(resp.content).decode() if resp.content else ""
+        # Serialize as an ORDERED LIST of pairs (not a dict): a response can carry several
+        # Set-Cookie headers (login/refresh emit access_token + refresh_token), and a dict would
+        # collapse them into one comma-joined value the browser can't parse, so the refresh
+        # cookie never reaches the browser and the session dies at the access token's hard cap.
+        # multi_items() keeps each header separate. Drop content-length; the relay recomputes it.
+        _skip = {"transfer-encoding", "connection", "keep-alive", "content-length"}
+        resp_headers = [
+            [k, v] for k, v in resp.headers.multi_items()
+            if k.lower() not in _skip
+        ]
+        await self._send(self._ws, {
+            "type": "http.response",
+            "payload": {
+                "id": request_id,
+                "status": resp.status_code,
+                "headers": resp_headers,
+                "body_b64": resp_body_b64,
+            },
+        })
 
     async def send_message(self, msg_type: str, **payload) -> None:
         """Send a JSON message over the active WS connection.
