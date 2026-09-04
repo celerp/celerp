@@ -4039,6 +4039,58 @@ async def get_list(
     return row.state | {"id": row.entity_id, "version": row.version}
 
 
+_PAGE_LIMIT_MAX = 100
+
+
+def _page_bounds(offset: str, limit: str) -> tuple[int, int]:
+    """Validate the page window at the function level (never by hiding controls): offset must be a
+    non-negative integer, limit a positive integer hard-capped at 100. Returns the effective values."""
+    try:
+        off = int(offset)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="offset must be an integer")
+    if off < 0:
+        raise HTTPException(status_code=400, detail="offset must be zero or greater")
+    try:
+        lim = int(limit)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="limit must be an integer")
+    if lim <= 0:
+        raise HTTPException(status_code=400, detail="limit must be greater than zero")
+    return off, min(lim, _PAGE_LIMIT_MAX)
+
+
+@lists_router.get("/{entity_id}/page")
+async def get_list_page(
+    entity_id: str,
+    offset: str = "0",
+    limit: str = str(_PAGE_LIMIT_MAX),
+    company_id: str = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """One bounded page of a list's line_items read in SQL: json_array_length for the total and a
+    positional json subscript over generate_series for the window, so a large list is never expanded
+    into Python. Metadata enrichment stays in the UI layer; this returns the raw stored page slice."""
+    off, lim = _page_bounds(offset, limit)
+    row = await _get_list(session, company_id, entity_id)
+    total = (await session.execute(
+        text("SELECT COALESCE(json_array_length(state -> 'line_items'), 0) AS total "
+             "FROM projections WHERE company_id = :cid AND entity_id = :eid"),
+        {"cid": str(company_id), "eid": entity_id},
+    )).scalar_one()
+    window = (await session.execute(
+        text("""
+            SELECT (state -> 'line_items') -> gs AS item
+            FROM projections, generate_series(CAST(:lo AS integer), CAST(:hi AS integer)) AS gs
+            WHERE company_id = :cid AND entity_id = :eid
+            ORDER BY gs
+        """),
+        {"lo": off, "hi": off + lim - 1, "cid": str(company_id), "eid": entity_id},
+    )).all()
+    items = [r.item for r in window if r.item is not None]
+    return {"items": items, "total": total, "version": row.version}
+
+
 @lists_router.post("")
 async def create_list(
     payload: ListCreatePayload,
