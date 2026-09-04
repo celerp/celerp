@@ -593,18 +593,39 @@ def _partner_claim_card(lang: str = "en", error: str | None = None) -> FT:
     return Div(*children, id="partner-claim-card", cls="settings-card")
 
 
+def _partner_managed_note(lang: str = "en") -> FT:
+    """Neutral note shown in place of the claim-entry control on a partner_managed
+    install: the claim control is intentionally withheld, and its absence is stated
+    with the generic managed-by note rather than left silent. No partner name is
+    interpolated (no fabricated identity)."""
+    return Div(
+        P(t("cloud.partner_managed_note", lang), cls="settings-hint"),
+        id="partner-managed-note", cls="settings-card",
+    )
+
+
 def _partner_claim_preview(identity: dict, claim_token: str, lang: str = "en") -> FT:
     """Preview of the partner behind a resolved claim, with Accept and Decline.
 
     Accept is the one deliberate commit; the disable-on-submit posture stops a
     double-click from double-submitting. Decline binds nothing and restores the
     neutral card."""
+    support_email = identity.get("support_email") or ""
+    support_url = identity.get("support_url") or ""
+    support_children: list = []
+    if support_email:
+        support_children.append(Div(support_email, cls="settings-value", style="margin:4px 0;"))
+    if support_url:
+        support_children.append(A(
+            t("cloud.partner_support", lang),
+            href=support_url, target="_blank",
+            cls="btn btn--outline btn--sm", style="margin-top:4px;"))
     return Div(
         H3(t("settings_cloud.partner_claim_title", lang), cls="settings-section-title"),
         P(t("settings_cloud.partner_claim_managed_by", lang), cls="settings-hint"),
-        Div(identity.get("partner_name") or "--", cls="settings-value",
+        Div(identity.get("display_name") or "--", cls="settings-value",
             style="font-weight:600;margin:6px 0;"),
-        P(identity.get("effect") or "", style="margin:8px 0;"),
+        *([Div(*support_children, style="margin:8px 0;")] if support_children else []),
         Div(
             Button(t("btn.accept", lang),
                    cls="btn btn--primary",
@@ -666,6 +687,13 @@ def setup_routes(app):
         # keeps its preserved credential, so the connect section withholds its
         # auto-connect (a page visit must not silently undo the disconnect) while
         # the Connect button still reconnects in one click.
+        # The claim-entry control is offered only to an owner/admin on an install
+        # that is not already partner_managed - a managed install already shows the
+        # partner offer and managed note (via _partner_offer), so the same gate at
+        # both render sites (value-prop landing and status tab) mirrors _plans_ad.
+        from celerp.gateway.state import get_commercial_mode
+        can_claim = is_owner_admin and get_commercial_mode() != "partner_managed"
+
         if not gw_ok:
             from celerp.config import ensure_instance_id
             iid = ensure_instance_id()
@@ -673,7 +701,7 @@ def setup_routes(app):
                 _section_breadcrumb(t("settings_cloud.web_access", lang)),
                 page_header(t("settings_cloud.web_access", lang)),
                 _value_prop_page(iid, lang=lang, disconnected=disconnected,
-                                 show_partner_claim=is_owner_admin),
+                                 show_partner_claim=can_claim),
                 title=page_title("settings_cloud.web_access"),
                 nav_active="web-access",
                 lang=lang,
@@ -710,7 +738,8 @@ def setup_routes(app):
                 from celerp.config import ensure_instance_id
                 parts.append(_plans_ad(ensure_instance_id(), lang=lang))
             if is_owner_admin:
-                parts.append(_partner_claim_card(lang=lang))
+                parts.append(_partner_claim_card(lang=lang) if can_claim
+                             else _partner_managed_note(lang=lang))
             content = Div(*parts)
             tab = "status"
 
