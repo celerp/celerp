@@ -174,6 +174,43 @@ async def _line_identifier_mode(token: str) -> str:
         return "sku"
 
 
+def _enrich_line_meta(line_items: list[dict], item_meta: dict | None,
+                      company_settings: dict, ident_mode: str = "sku"):
+    """Build the three per-line enrichment maps (measures, item status, status-doc) from the
+    item_meta the page response already carries, and backfill identifiers in place when needed.
+
+    item_meta is {entity_id: flattened item dict} for exactly the page's catalog ids, enriched
+    server-side in the page call. When it is absent (an older server that omits the field) every
+    map stays empty and the lines render from their own stored values ("--" / 0). The unit map is
+    built from the company settings already in hand, so no extra round-trip is made."""
+    from celerp.services.units import DEFAULT_UNITS, build_unit_map
+    item_meta_map: dict[str, dict] = {}
+    item_status_map: dict[str, str] = {}
+    item_status_doc_map: dict[str, tuple[str, str]] = {}
+    if not item_meta:
+        return item_meta_map, item_status_map, item_status_doc_map
+    unit_map = build_unit_map((company_settings or {}).get("units") or DEFAULT_UNITS)
+    for eid, item in item_meta.items():
+        if not item:
+            continue
+        item_meta_map[eid] = item_measure_meta(item, unit_map)
+        if item.get("status"):
+            item_status_map[eid] = item["status"]
+            _sdoc = str(item.get("status_doc_id") or "")
+            if _sdoc:
+                item_status_doc_map[eid] = (
+                    _sdoc,
+                    str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
+                )
+    if ident_mode != "sku":
+        # Lines saved before barcodes were stamped: fill from the catalog item.
+        for _li in line_items:
+            _it = item_meta.get(_li.get("item_id") or _li.get("entity_id") or "")
+            if _it:
+                identifier_backfill(_li, _it)
+    return item_meta_map, item_status_map, item_status_doc_map
+
+
 def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
     """Inventory item -> line-item picker payload, shared by both catalog
     autocomplete endpoints (lookup-by-SKU and typeahead search)."""
@@ -4389,44 +4426,11 @@ celerpUpdateBulkAlloc();
         # Item metadata for the list lines: On-hand (audit/write-off), the Status
         # column (reservable lists) and PCS/WEIGHT measure editability (a list is an
         # invoice-layout doc type, so every line renders its measures from item meta).
-        # ONE bulk call feeds all three maps; on failure they stay empty and the lines
-        # render from their stored values. Mirrors the /docs/{id} block.
-        item_meta_map: dict[str, dict] = {}
-        item_status_map: dict[str, str] = {}
-        item_status_doc_map: dict[str, tuple[str, str]] = {}
-        _line_eids = list(dict.fromkeys(
-            li.get("item_id") or li.get("entity_id") or ""
-            for li in lst.get("line_items", [])
-            if li.get("item_id") or li.get("entity_id")
-        ))
-        if _line_eids:
-            try:
-                from celerp.services.units import build_unit_map
-                try:
-                    _unit_map = build_unit_map(await api.get_units(token))
-                except Exception:
-                    _unit_map = {}
-                _items_by_eid = await api.get_items_metadata(token, _line_eids)
-                for eid, item in _items_by_eid.items():
-                    if not item:
-                        continue
-                    item_meta_map[eid] = item_measure_meta(item, _unit_map)
-                    if item.get("status"):
-                        item_status_map[eid] = item["status"]
-                        _sdoc = str(item.get("status_doc_id") or "")
-                        if _sdoc:
-                            item_status_doc_map[eid] = (
-                                _sdoc,
-                                str(item.get("status_doc_number") or "") or _sdoc.removeprefix("doc:"),
-                            )
-                if _ident_mode != "sku":
-                    # Lines saved before barcodes were stamped: fill from the catalog item.
-                    for _li in lst.get("line_items", []):
-                        _it = _items_by_eid.get(_li.get("item_id") or _li.get("entity_id") or "")
-                        if _it:
-                            identifier_backfill(_li, _it)
-            except Exception:
-                pass
+        # The page response enriches the page's ids in the same call, so no follow-up
+        # metadata round-trip is made; if the server omits item_meta (older server) the
+        # maps stay empty and the lines render from their stored values.
+        item_meta_map, item_status_map, item_status_doc_map = _enrich_line_meta(
+            lst.get("line_items", []), resp.get("item_meta"), _co_settings, _ident_mode)
 
         ref = lst.get("ref_id") or entity_id
         status_label = _list_status_label(lst)
@@ -4586,12 +4590,16 @@ celerpUpdateBulkAlloc();
             offset = max(0, int(body.get("offset", 0)))
         except (TypeError, ValueError):
             offset = 0
+        try:
+            original_count = max(0, int(body.get("original_count", len(page))))
+        except (TypeError, ValueError):
+            original_count = len(page)
         expected_version = body.get("expected_version")
         try:
-            # Save only the submitted page slice: the server overwrites the stored positions
-            # [offset, offset+len(page)) under a row lock and recomputes totals from the full
-            # merged array, so off-page rows are never disturbed by a page save.
-            result = await api.patch_list_line_page(token, entity_id, page, offset, expected_version)
+            # Save only the submitted page slice: the server replaces the stored window
+            # [offset, offset+original_count) under a row lock and recomputes totals from the full
+            # merged array, so off-page rows are never disturbed and a shorter page truncates.
+            result = await api.patch_list_line_page(token, entity_id, page, offset, original_count, expected_version)
         except APIError as e:
             # A stale expected_version means someone else saved this list first; surface it
             # structurally (code, not English text) so the page can prompt a reload.
@@ -4661,31 +4669,18 @@ celerpUpdateBulkAlloc();
     async def _audit_line_tbody(token: str, entity_id: str) -> FT:
         """Render the editable audit tbody for #line-body swap.
 
-        Re-fetches the list (so backend top-insert ordering is preserved per GDR 2.n),
-        rebuilds item_meta_map for On-hand, and emits the shared editable row set.
+        Reads one bounded page (so backend top-insert ordering is preserved per GDR 2.n) and
+        enriches the On-hand column from the item_meta that page carries, never pulling the whole
+        list through the unbounded read. It emits the shared editable row set.
         """
-        from fasthtml.common import to_xml
-        from ui.components.table import EMPTY as _EMPTY
-        lst = await api.get_list(token, entity_id)
-        line_items = lst.get("line_items") or []
-        # Build item_meta_map for On-hand column via ONE bulk metadata call.
-        item_meta_map: dict[str, dict] = {}
-        try:
-            _eids = list(dict.fromkeys(
-                li.get("item_id") or li.get("entity_id") or ""
-                for li in line_items if li.get("item_id") or li.get("entity_id")
-            ))
-            if _eids:
-                from celerp.services.units import build_unit_map
-                try:
-                    _unit_map = build_unit_map(await api.get_units(token))
-                except Exception:
-                    _unit_map = {}
-                for eid, item in (await api.get_items_metadata(token, _eids)).items():
-                    if item:
-                        item_meta_map[eid] = item_measure_meta(item, _unit_map)
-        except Exception:
-            pass
+        _PAGE_CAP = 100
+        resp = await api.get_list_page(token, entity_id, offset=0, limit=_PAGE_CAP)
+        lst = resp.get("list", {}) or {}
+        line_items = resp.get("items", []) or []
+        # On-hand comes from the page's own item_meta (quantity), so no extra metadata round-trip is
+        # made; if the server omits item_meta the map stays empty and On-hand shows "--".
+        item_meta_map, _status_map, _status_doc_map = _enrich_line_meta(
+            line_items, resp.get("item_meta"), {})
 
         # This fast tbody swap only runs for a finalized audit (the locked counting manifest); a draft
         # audit reloads instead. Counts are editable only while finalized.
@@ -4786,14 +4781,17 @@ celerpUpdateBulkAlloc();
             if body.get("code") == "scan_run_conflict":
                 # The conflicting run already committed its batch, so the list projection has advanced.
                 # Hand back the current version so the client can resync its optimistic-lock token after
-                # it reloads the visible lines. If this read fails, the client keeps Add locked and asks
-                # for a page reload rather than submit against stale rows.
+                # it reloads the visible lines. Read the header only (bounded page), never the whole
+                # list. If this read fails, the client keeps Add locked and asks for a page reload
+                # rather than submit against stale rows.
                 try:
-                    body = {**body, "version": (await api.get_list(token, entity_id)).get("version")}
+                    body = {**body, "version": (await api.get_list_page(token, entity_id, limit=1)).get("version")}
                 except APIError:
                     pass
             return _JSON(body, status_code=e.status or 400)
-        lst = await api.get_list(token, entity_id)
+        # Read the header only (bounded page) to decide the swap; the whole list array is never pulled.
+        _page = await api.get_list_page(token, entity_id, limit=1)
+        lst = _page.get("list", {}) or {}
         # Only a finalized audit (the locked counting manifest) gets the fast static tbody swap; a draft
         # audit is editable, so it reloads like every other building list to keep its inputs.
         html = ""
@@ -4803,7 +4801,7 @@ celerpUpdateBulkAlloc();
         # client's optimistic-lock token tracks it (a later line save must not 409 on a stale version).
         return _JSON({"scanned": (res or {}).get("scanned", 0),
                       "failed": (res or {}).get("failed") or [], "html": html,
-                      "version": lst.get("version")})
+                      "version": _page.get("version")})
 
     @app.post("/lists/{entity_id}/set-scanned")
     async def list_set_scanned(request: Request, entity_id: str):
@@ -7218,23 +7216,31 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="line-actions gap-sm",
             ),
             Script(f"""
-const _CELERP_EID = {repr(entity_id)};
-const _CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
+/* HTMX outerHTML-swaps this section (list-line-section-*) and re-evaluates this whole
+   script, so every top-level binding is a window property (idempotent on re-eval); bare
+   `const`/`let` here would throw a redeclaration SyntaxError on the second page and kill
+   the pager. Bare reads elsewhere resolve against these same global properties. */
+window._CELERP_EID = {repr(entity_id)};
+window._CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
 // Did this document render with any line items? Drives whether emptying the table
 // persists (deleting the last line must stick) vs. a blank never-used doc (skip).
-let _celerpHadLines = {'true' if line_items else 'false'};
+window._celerpHadLines = {'true' if line_items else 'false'};
 // Optimistic-concurrency token for lists (null for docs). Sent with every line save and
 // refreshed from the save response, so a tab never false-conflicts against its own last write.
-let _celerpListVersion = {_json.dumps(doc.get("version")) if is_list else 'null'};
+window._celerpListVersion = {_json.dumps(doc.get("version")) if is_list else 'null'};
 /* Stored-array position of the first rendered row. A list renders one bounded page
    of lines, so a save overwrites exactly the positions this page occupies and leaves
    every off-page row untouched. Docs are never paged (offset 0). */
-const _CELERP_LINE_OFFSET = {int(line_offset)};
-const _CELERP_TAXES = {_json.dumps(_taxes_list)};
-const _CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
+window._CELERP_LINE_OFFSET = {int(line_offset)};
+/* Length of the stored window this page loaded. A save REPLACES exactly
+   [offset, offset+original_count) so a shorter submitted page truncates deleted rows and
+   a longer one inserts; after each save it becomes the count just written. */
+window._CELERP_ORIGINAL_COUNT = {len(line_items)};
+window._CELERP_TAXES = {_json.dumps(_taxes_list)};
+window._CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
 /* Currency precision: amounts use _CELERP_CDP decimals, unit prices may use up to _CELERP_RDP. */
-const _CELERP_CDP = {currency_dp(currency)};
-const _CELERP_RDP = {rate_dp(currency)};
+window._CELERP_CDP = {currency_dp(currency)};
+window._CELERP_RDP = {rate_dp(currency)};
 /* Derive a unit price from a target line amount at the FEWEST decimals that still reconciles
    (round(unit * qty) === target). Mirrors the backend money.unit_price_from_total so the stored
    unit price keeps its real precision instead of being truncated to 2 dp (which made qty*price
@@ -7253,11 +7259,11 @@ function _celerpUnitFromTotal(total, qty) {{
     return Math.round(exact * hf) / hf;
 }}
 /* ── Price list / doc-type helpers ── */
-const _CELERP_DOC_TYPE = {repr(doc_type)};
-const _CELERP_IS_LIST = {repr("true" if is_list else "false")};
+window._CELERP_DOC_TYPE = {repr(doc_type)};
+window._CELERP_IS_LIST = {repr("true" if is_list else "false")};
 /* Translated UI strings resolved in Python at render time (R2: never splice
    translated text into JS source; hand it over as one config object). */
-const _L = {_json.dumps({
+window._L = {_json.dumps({
     "scanning": t("documents.scanning"),
     "scan_error": t("documents.scan_error"),
     "scan_add_btn": _scan_btn,
@@ -7299,7 +7305,7 @@ const _L = {_json.dumps({
 """ + (f"""
 /* Item-status badges, serialized from the Python _STATUS_BADGE dict (the
    authoritative source) so the JS-rendered cell can never drift from it. */
-const _CELERP_STATUS_BADGE = {_json.dumps({k: {"label": t(v[0]), "cls": v[1]} for k, v in _STATUS_BADGE.items()})};""" if _draft_show_item_status else "") + f"""
+window._CELERP_STATUS_BADGE = {_json.dumps({k: {"label": t(v[0]), "cls": v[1]} for k, v in _STATUS_BADGE.items()})};""" if _draft_show_item_status else "") + f"""
 function _celerpPriceListParam() {{
     const plSelect = document.getElementById('doc-price-list');
     return plSelect ? '&price_list=' + encodeURIComponent(plSelect.value) : '';
@@ -7659,7 +7665,7 @@ function celerpFillRow(row, data) {{
     }
 """ if _draft_show_item_status else "") + f"""}}
 /* ── Catalog autocomplete ── */
-let _celerpAcTimer = null;
+window._celerpAcTimer = null;
 async function celerpAcSearch(input, field) {{
     const q = input.value.trim();
     const wrap = input.parentElement;
@@ -8198,12 +8204,14 @@ async function _celerpPersist() {{
     const tax = grossTax * hd.ratio;
     const total = hd.taxable + tax;
     const statusEl = document.getElementById('save-status');
-    // Send only the current page's rows plus the stored offset they occupy. The server
-    // overwrites positions [offset, offset+len) and recomputes totals from the full
-    // merged array, so off-page rows are never touched by a page save.
+    // Send the current page's rows, the stored offset they occupy, and the length of the
+    // stored window this page loaded. The server REPLACES positions [offset, offset+original_count)
+    // with the submitted rows (a shorter page truncates deleted rows, a longer one inserts) and
+    // recomputes totals from the full merged array, so off-page rows are never touched by a page save.
     const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/lines', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify({{line_items: lines, offset: _CELERP_LINE_OFFSET,
+            original_count: _CELERP_ORIGINAL_COUNT,
             subtotal, tax, total,
             discount: hd.value, discount_type: hd.type, discount_amount: hd.amount,
             expected_version: _celerpListVersion}})
@@ -8215,6 +8223,9 @@ async function _celerpPersist() {{
             const data = await resp.json();
             if (data && data.version != null) _celerpListVersion = data.version;
         }} catch (_e) {{}}
+        // The rows just written become this page's stored window, so a follow-up save
+        // in the same view replaces the new window length, not the original one.
+        _CELERP_ORIGINAL_COUNT = lines.length;
         statusEl.textContent = '✓';
         statusEl.style.color = '';
         setTimeout(() => {{ statusEl.textContent = ''; }}, 1500);
@@ -8345,7 +8356,7 @@ function _celerpShowReservedConflicts(conflicts) {{
     dlg.showModal();
 }}
 /* Auto-save on blur away from any row cell */
-let _celerpSaveTimer = null;
+window._celerpSaveTimer = null;
 function celerpAutoSave() {{
     clearTimeout(_celerpSaveTimer);
     _celerpSaveTimer = setTimeout(_celerpPersist, 400);
@@ -9589,14 +9600,19 @@ def _list_table(lists: list[dict], lang: str = "en") -> FT:
     def _row(d: dict) -> FT:
         eid = d.get("entity_id") or d.get("id", "")
         ref = d.get("ref_id") or eid
-        items = d.get("line_items", [])
-        weight = sum(float(li.get("weight_ct") or li.get("weight") or 0) for li in items)
+        # The listing endpoint carries the per-row rollups (item_count, total_weight)
+        # computed in SQL, so the table never materializes the line array. If a row
+        # omits them, degrade honestly to a dash / empty weight rather than a wrong 0.
+        raw_count = d.get("item_count")
+        count_cell = str(int(raw_count)) if raw_count is not None else EMPTY
+        raw_weight = d.get("total_weight")
+        weight = float(raw_weight or 0) if raw_weight is not None else 0.0
         return Tr(
             Td(A(ref, href=f"/lists/{eid}", cls="table-link")),
             Td(format_value(d.get("list_type"), "badge")),
             Td(format_value(d.get("customer_name") or d.get("receiver") or d.get("customer_id"))),
             Td(format_value(d.get("created_at") or d.get("date"), "date")),
-            Td(str(len(items)), cls="cell--number"),
+            Td(count_cell, cls="cell--number"),
             Td(f"{weight:.2f}" if weight else EMPTY, cls="cell--number"),
             Td(format_value(d.get("total"), "money"), cls="cell--number"),
             Td(format_value(d.get("status"), "badge")),

@@ -1519,13 +1519,16 @@ async def patch_list(token: str, entity_id: str, data: dict, expected_version: i
 
 
 async def get_list_page(token: str, entity_id: str, offset: int = 0, limit: int = 100) -> dict:
-    """One bounded page of a list's stored lines, with the list header.
+    """One bounded page of a list's stored lines, with the list header and page metadata.
 
     Returns {"list": {...stored header without line_items, plus id and version...},
-    "items": [...raw stored slice...], "total": int, "version": int} where items is
-    the raw stored slice of positions [offset:offset+limit); the server hard-caps
-    limit at 100 and applies the effective value. Enrichment over the page ids is the
-    caller's job.
+    "items": [...raw stored slice...], "total": int, "version": int,
+    "item_meta": {entity_id: flattened item dict}} where items is the raw stored slice
+    of positions [offset:offset+limit) and item_meta is the catalog metadata for exactly
+    the page's ids (the server enriches it in the same call, so the detail view needs no
+    follow-up metadata read). The server hard-caps limit at 100 and applies the effective
+    value. An older server that omits item_meta leaves it absent and the caller degrades
+    to each line's stored values.
     """
     async with _api_client(token) as c:
         return _raise(await c.get(
@@ -1534,15 +1537,17 @@ async def get_list_page(token: str, entity_id: str, offset: int = 0, limit: int 
         )).json()
 
 
-async def patch_list_line_page(token: str, entity_id: str, page: list[dict], offset: int, expected_version: int | None) -> dict:
+async def patch_list_line_page(token: str, entity_id: str, page: list[dict], offset: int,
+                               original_count: int, expected_version: int | None) -> dict:
     """Save one page slice of a list's lines by position.
 
-    Overwrites stored positions [offset:offset+len(page)); off-page rows are
-    untouched. Calls the slice endpoint directly rather than through
-    _wrap_fields_changed, so it does not trigger the extra full-list GET that the
-    bare-field patch wrapper performs.
+    Replaces the stored window [offset:offset+original_count) the client loaded with the
+    submitted page: a shorter page deletes tail rows, a longer one inserts. off-window rows
+    are untouched. Calls the slice endpoint directly rather than through _wrap_fields_changed,
+    so it does not trigger the extra full-list GET that the bare-field patch wrapper performs.
     """
-    body: dict = {"line_items": page, "offset": offset, "expected_version": expected_version}
+    body: dict = {"line_items": page, "offset": offset, "original_count": original_count,
+                  "expected_version": expected_version}
     async with _api_client(token) as c:
         return _raise(await c.patch(f"/lists/{entity_id}/line-page", json=body)).json()
 
