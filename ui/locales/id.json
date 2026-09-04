@@ -3061,5 +3061,10 @@
   "settings.tab_line_items": "Item Baris",
   "th.factor": "Faktor",
   "th.position": "#",
-  "th.rounding": "Pembulatan"
+  "th.rounding": "Pembulatan",
+  "settings_cloud.config_write_failed": "tidak dapat menulis konfigurasi",
+  "settings_cloud.saved_restart_to_apply": "✓ Tersimpan. Mulai ulang Celerp untuk menerapkan perubahan.",
+  "settings_cloud.restored_restart_to_apply": "↩ Pengaturan basis data sebelumnya dipulihkan. Mulai ulang Celerp untuk menerapkan.",
+  "settings_cloud.s3_support_unavailable": "Dukungan S3 tidak tersedia di build ini",
+  "settings_cloud.s3_connection_failed": "Koneksi gagal"
 }

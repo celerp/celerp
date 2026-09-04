@@ -3061,5 +3061,10 @@
   "settings.tab_line_items": "รายการสินค้า",
   "th.factor": "ตัวคูณ",
   "th.position": "#",
-  "th.rounding": "การปัดเศษ"
+  "th.rounding": "การปัดเศษ",
+  "settings_cloud.config_write_failed": "ไม่สามารถเขียนการตั้งค่าได้",
+  "settings_cloud.saved_restart_to_apply": "✓ บันทึกแล้ว รีสตาร์ท Celerp เพื่อใช้การเปลี่ยนแปลง",
+  "settings_cloud.restored_restart_to_apply": "↩ กู้คืนการตั้งค่าฐานข้อมูลก่อนหน้าแล้ว รีสตาร์ท Celerp เพื่อใช้งาน",
+  "settings_cloud.s3_support_unavailable": "บิลด์นี้ไม่รองรับ S3",
+  "settings_cloud.s3_connection_failed": "การเชื่อมต่อล้มเหลว"
 }

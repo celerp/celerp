@@ -3061,5 +3061,10 @@
   "settings.rounding_tooltip": "Arrondit les prix calculés à l’incrément le plus proche afin d’obtenir des prix dérivés arrondis.",
   "settings.tab_line_items": "Lignes",
   "th.factor": "Facteur",
-  "th.rounding": "Arrondi"
+  "th.rounding": "Arrondi",
+  "settings_cloud.config_write_failed": "impossible d'écrire la configuration",
+  "settings_cloud.saved_restart_to_apply": "✓ Enregistré. Redémarrez Celerp pour appliquer la modification.",
+  "settings_cloud.restored_restart_to_apply": "↩ Paramètres de base de données précédents restaurés. Redémarrez Celerp pour appliquer.",
+  "settings_cloud.s3_support_unavailable": "La prise en charge de S3 n'est pas disponible dans cette version",
+  "settings_cloud.s3_connection_failed": "Échec de la connexion"
 }

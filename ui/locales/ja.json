@@ -3061,5 +3061,10 @@
   "settings.tab_line_items": "明細行",
   "th.factor": "係数",
   "th.position": "#",
-  "th.rounding": "丸め"
+  "th.rounding": "丸め",
+  "settings_cloud.config_write_failed": "設定を書き込めませんでした",
+  "settings_cloud.saved_restart_to_apply": "✓ 保存しました。変更を適用するには Celerp を再起動してください。",
+  "settings_cloud.restored_restart_to_apply": "↩ 以前のデータベース設定を復元しました。適用するには Celerp を再起動してください。",
+  "settings_cloud.s3_support_unavailable": "このビルドでは S3 はサポートされていません",
+  "settings_cloud.s3_connection_failed": "接続に失敗しました"
 }

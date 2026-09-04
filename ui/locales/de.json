@@ -3061,5 +3061,10 @@
   "settings.rounding_tooltip": "Rundet berechnete Preise auf das nächste Intervall, damit abgeleitete Preise glatte Beträge ergeben.",
   "settings.tab_line_items": "Positionen",
   "th.factor": "Faktor",
-  "th.rounding": "Rundung"
+  "th.rounding": "Rundung",
+  "settings_cloud.config_write_failed": "Konfiguration konnte nicht geschrieben werden",
+  "settings_cloud.saved_restart_to_apply": "✓ Gespeichert. Starten Sie Celerp neu, um die Änderung anzuwenden.",
+  "settings_cloud.restored_restart_to_apply": "↩ Vorherige Datenbankeinstellungen wiederhergestellt. Starten Sie Celerp neu, um sie anzuwenden.",
+  "settings_cloud.s3_support_unavailable": "S3-Unterstützung ist in diesem Build nicht verfügbar",
+  "settings_cloud.s3_connection_failed": "Verbindung fehlgeschlagen"
 }

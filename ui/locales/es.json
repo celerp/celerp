@@ -3061,5 +3061,10 @@
   "settings.tab_line_items": "Líneas",
   "th.factor": "Factor",
   "th.position": "#",
-  "th.rounding": "Redondeo"
+  "th.rounding": "Redondeo",
+  "settings_cloud.config_write_failed": "no se pudo escribir la configuración",
+  "settings_cloud.saved_restart_to_apply": "✓ Guardado. Reinicie Celerp para aplicar el cambio.",
+  "settings_cloud.restored_restart_to_apply": "↩ Configuración anterior de la base de datos restaurada. Reinicie Celerp para aplicar.",
+  "settings_cloud.s3_support_unavailable": "El soporte de S3 no está disponible en esta versión",
+  "settings_cloud.s3_connection_failed": "Error de conexión"
 }

@@ -3061,5 +3061,10 @@
   "settings.attr_overflow_more": "+{n} ተጨማሪ",
   "settings.db_backup_size_uploaded": "- {mb} ሜባ ተሰቅሏል",
   "table.daterange_from_aria": "{label} ከ",
-  "table.daterange_to_aria": "{label} ወደ"
+  "table.daterange_to_aria": "{label} ወደ",
+  "settings_cloud.config_write_failed": "ውቅረቱን መጻፍ አልተቻለም",
+  "settings_cloud.saved_restart_to_apply": "✓ ተቀምጧል። ለውጡን ለመተግበር Celerp እንደገና ያስጀምሩ።",
+  "settings_cloud.restored_restart_to_apply": "↩ የቀድሞ የውሂብ ጎታ ቅንብሮች ተመልሰዋል። ለመተግበር Celerp እንደገና ያስጀምሩ።",
+  "settings_cloud.s3_support_unavailable": "በዚህ ግንባታ ውስጥ የS3 ድጋፍ የለም",
+  "settings_cloud.s3_connection_failed": "ግንኙነት አልተሳካም"
 }

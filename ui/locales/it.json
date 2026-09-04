@@ -3061,5 +3061,10 @@
   "settings.rounding_tooltip": "Arrotonda i prezzi calcolati all’incremento più vicino, in modo da ottenere prezzi derivati arrotondati.",
   "settings.tab_line_items": "Righe",
   "th.factor": "Fattore",
-  "th.rounding": "Arrotondamento"
+  "th.rounding": "Arrotondamento",
+  "settings_cloud.config_write_failed": "impossibile scrivere la configurazione",
+  "settings_cloud.saved_restart_to_apply": "✓ Salvato. Riavvia Celerp per applicare la modifica.",
+  "settings_cloud.restored_restart_to_apply": "↩ Impostazioni database precedenti ripristinate. Riavvia Celerp per applicare.",
+  "settings_cloud.s3_support_unavailable": "Il supporto S3 non è disponibile in questa build",
+  "settings_cloud.s3_connection_failed": "Connessione non riuscita"
 }

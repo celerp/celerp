@@ -308,13 +308,18 @@ def get_packaged_db_state() -> dict:
     database password.
 
     Returns {db_mode, has_external_url, external_db_entitled, in_grace,
-    grace_period_ends}. A missing data dir, missing file, or corrupt JSON
-    degrades to the neutral local state, never an exception.
+    grace_period_ends, storage_mode, has_external_storage,
+    external_storage_entitled, storage_in_grace}. A missing data dir, missing
+    file, or corrupt JSON degrades to the neutral local state, never an
+    exception. Only booleans are exposed for the external targets, never the URL
+    or the S3 secret, both of which hold credentials.
     """
     import os
     import json
     db_mode = "local"
     external_db_url = ""
+    storage_mode = "local"
+    has_external_storage = False
     flags: dict = {}
     data_dir = os.environ.get("CELERP_DATA_DIR", "")
     if data_dir:
@@ -325,20 +330,31 @@ def get_packaged_db_state() -> dict:
                     existing = json.load(f)
                 db_mode = existing.get("db_mode", "local") or "local"
                 external_db_url = existing.get("external_db_url", "") or ""
+                storage_mode = existing.get("storage_mode", "local") or "local"
+                has_external_storage = storage_mode == "s3" or any(
+                    existing.get(k)
+                    for k in ("storage_s3_endpoint", "storage_s3_bucket", "storage_s3_access_key")
+                )
                 raw_flags = existing.get("feature_flags")
                 if isinstance(raw_flags, dict):
                     flags = raw_flags
             except Exception as exc:
                 log.debug("Gateway: packaged db-state unreadable; using neutral default: %s", exc)
     external_db_entitled = bool(flags.get("external_db"))
+    external_storage_entitled = bool(flags.get("external_storage"))
     grace_period_ends = flags.get("grace_period_ends")
     in_grace = _grace_ends_in_future(grace_period_ends) and not external_db_entitled
+    storage_in_grace = _grace_ends_in_future(grace_period_ends) and not external_storage_entitled
     return {
         "db_mode": db_mode,
         "has_external_url": bool(external_db_url),
         "external_db_entitled": external_db_entitled,
         "in_grace": in_grace,
         "grace_period_ends": grace_period_ends,
+        "storage_mode": storage_mode,
+        "has_external_storage": bool(has_external_storage),
+        "external_storage_entitled": external_storage_entitled,
+        "storage_in_grace": storage_in_grace,
     }
 
 
