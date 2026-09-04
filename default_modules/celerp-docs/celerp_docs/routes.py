@@ -4166,6 +4166,71 @@ async def patch_list(
     return {"event_id": entry.id, "version": entry.id}
 
 
+class ListLinePagePatch(BaseModel):
+    line_items: list[dict] = Field(default_factory=list)
+    offset: int = 0
+    expected_version: int | None = None
+
+
+def _line_identity(li: dict) -> str | None:
+    """The stable identity of a catalog-backed line, or None for a free-text line that carries none."""
+    return li.get("item_id") or li.get("entity_id")
+
+
+@lists_router.patch("/{entity_id}/line-page")
+async def patch_list_line_page(
+    entity_id: str,
+    payload: ListLinePagePatch,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Save one page of a list's lines without scraping or re-sending the whole array. Under the same
+    row lock and optimistic-version guard as a full save, the submitted page overwrites stored
+    positions [offset:offset+len(page)] by position; off-page rows are left byte-identical and totals
+    are recomputed from the full merged array."""
+    row = await _get_list_for_update(session, company_id, entity_id)
+    if row.state.get("status") != "draft":
+        raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
+    if payload.expected_version is None:
+        raise HTTPException(status_code=409, detail="Reload the list to get its latest version before saving line changes")
+    if row.version != payload.expected_version:
+        raise HTTPException(status_code=409, detail="This list was changed by someone else; reload to get the latest before saving")
+
+    page = payload.line_items
+    _normalize_line_item_ids(page)
+    stored = list(row.state.get("line_items") or [])
+    offset = payload.offset
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be zero or greater")
+    # A submitted row carrying an id must land on the position holding that same id: this catches a
+    # page saved against a shifted array. Free-text rows carry no id and overwrite by position.
+    for i, incoming in enumerate(page):
+        pos = offset + i
+        if pos < len(stored):
+            incoming_id = _line_identity(incoming)
+            stored_id = _line_identity(stored[pos])
+            if incoming_id is not None and stored_id is not None and incoming_id != stored_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This list was changed by someone else; reload to get the latest before saving")
+
+    merged = stored[:]
+    for i, incoming in enumerate(page):
+        pos = offset + i
+        if pos < len(merged):
+            merged[pos] = incoming
+        else:
+            merged.append(incoming)
+
+    entry = await _emit_list(
+        session, company_id, entity_id, "list.updated",
+        {"fields_changed": {"line_items": {"new": merged}}}, user)
+    await session.commit()
+    return {"event_id": entry.id, "version": entry.id}
+
+
 @lists_router.post("/{entity_id}/finalize")
 async def finalize_list(
     entity_id: str,

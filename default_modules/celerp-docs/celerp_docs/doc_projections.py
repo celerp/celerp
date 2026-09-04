@@ -17,7 +17,16 @@ def _recalc_list_totals(state: dict) -> dict:
     """
     currency = state.get("currency")
     items = state.get("line_items", [])
-    subtotal = round_money(sum((to_decimal(i.get("line_total", 0) or 0) for i in items), to_decimal(0)), currency)
+
+    def _li_amount(i: dict):
+        # An explicit line_total wins (it may be a per-line discount below quantity*unit_price);
+        # otherwise fall back to quantity*unit_price so a priced line still contributes.
+        lt = i.get("line_total")
+        if lt not in (None, ""):
+            return to_decimal(lt or 0)
+        return to_decimal(i.get("quantity", 0) or 0) * to_decimal(i.get("unit_price", 0) or 0)
+
+    subtotal = round_money(sum((_li_amount(i) for i in items), to_decimal(0)), currency)
     state["subtotal"] = to_stored_float(subtotal)
 
     discount = to_decimal(state.get("discount", 0) or 0)
@@ -28,7 +37,7 @@ def _recalc_list_totals(state: dict) -> dict:
     taxable = subtotal - discount_amount
     # Use per-line tax rates if present; fall back to header tax rate.
     per_line_tax = sum(
-        (to_decimal(i.get("line_total", 0) or 0) * to_decimal(i.get("tax_rate", 0) or 0) / 100 for i in items),
+        (_li_amount(i) * to_decimal(i.get("tax_rate", 0) or 0) / 100 for i in items),
         to_decimal(0),
     )
     if per_line_tax:
