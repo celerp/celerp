@@ -40,7 +40,7 @@ async def test_backup_active_reports_error_state(ui_app):
                                base_url="http://ui", follow_redirects=False) as c:
             r = await c.get("/backup/active", cookies=_cookies())
 
-    assert r.status_code == 200, r.text
+    assert r.status_code == 503, r.text
     body = r.json()
     assert body != {"active": False}, (
         "an upstream failure must not masquerade as a healthy idle backend")

@@ -207,3 +207,117 @@ async def test_gateway_shared_client_bounded(client, monkeypatch):
         f"the gateway must reuse one shared httpx client, constructed {len(constructed)}")
     assert any(isinstance(lim, httpx.Limits) for lim in seen_limits), (
         "the shared client must be built with explicit httpx.Limits")
+
+
+class _AbnormalWS:
+    """A fake gateway websocket whose message iteration raises a disconnect-style
+    exception mid-stream, exactly as a silently-dropped socket does at runtime.
+
+    `async with websockets.connect(...)` yields this object; `async for raw in ws`
+    then enters __anext__ and raises ConnectionClosedError before any frame is read.
+    """
+
+    def __init__(self, exc):
+        self._exc = exc
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise self._exc
+
+
+def _drive_abnormal_disconnect(client, monkeypatch):
+    """Patch out the network so _connect_and_serve runs the real async-with / async-for
+    path against a socket that drops abnormally on the first iteration. The teardown
+    statements (line 360/363/370) are siblings of the async-with, not in a finally, so
+    at HEAD the raised ConnectionClosedError skips them."""
+    import websockets
+    from websockets.exceptions import ConnectionClosedError
+
+    def _fake_connect(*a, **k):
+        return _AbnormalWS(ConnectionClosedError(None, None))
+
+    monkeypatch.setattr(websockets, "connect", _fake_connect)
+
+    # The hello handshake sends before the async-for; make it a no-op so the drive
+    # reaches the iteration that raises.
+    async def _noop_send(ws, msg):
+        pass
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(_noop_send))
+
+    from celerp import config as _cfg
+    monkeypatch.setattr(_cfg, "read_config", lambda: {})
+
+
+@pytest.mark.asyncio
+async def test_gateway_teardown_runs_on_abnormal_disconnect(client, monkeypatch):
+    """When the message stream raises a disconnect-style exception mid-serve, the
+    connection teardown must still run: the generation is fenced (bumped), `_ws` is
+    cleared, and status returns to inactive. At HEAD these are siblings of the
+    async-with rather than in a finally, so the exception skips them and the state
+    is left dangling."""
+    from websockets.exceptions import ConnectionClosedError
+
+    _drive_abnormal_disconnect(client, monkeypatch)
+
+    gen_before = client._generation
+
+    # The abnormal disconnect propagates out of _connect_and_serve at HEAD (no finally
+    # swallows it); run()'s backoff loop is what catches it in production. Either way
+    # the observable post-disconnect state must be the fenced/torn-down one.
+    with pytest.raises(ConnectionClosedError):
+        await client._connect_and_serve()
+
+    assert client._generation == gen_before + 1, (
+        "an abnormal disconnect must bump the connection generation so in-flight "
+        f"handlers keyed to the old generation are fenced (was {gen_before}, "
+        f"now {client._generation})")
+    assert client._ws is None, (
+        "an abnormal disconnect must clear _ws; a dangling dead socket must not survive")
+    assert client._relay_status == "inactive", (
+        f"an abnormal disconnect must return status to inactive, got {client._relay_status!r}")
+
+
+@pytest.mark.asyncio
+async def test_gateway_cancels_inflight_tasks_on_abnormal_disconnect(client, monkeypatch):
+    """An in-flight proxy task keyed to the pre-disconnect generation must be cancelled
+    by teardown when the socket drops abnormally: once the socket that carried it is
+    dead, its response can never be delivered, so leaving it running leaks a task and
+    an unfenced handler. At HEAD teardown is skipped, so the task keeps running."""
+    from websockets.exceptions import ConnectionClosedError
+
+    _drive_abnormal_disconnect(client, monkeypatch)
+
+    started = asyncio.Event()
+
+    async def _never_finishes():
+        started.set()
+        await asyncio.sleep(3600)
+
+    inflight = asyncio.create_task(_never_finishes())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    client._inflight["req-inflight"] = inflight
+
+    try:
+        with pytest.raises(ConnectionClosedError):
+            await client._connect_and_serve()
+
+        # Give any teardown-scheduled cancellation a turn to take effect.
+        await asyncio.sleep(0)
+        assert inflight.cancelled() or (inflight.done() and inflight.exception() is not None), (
+            "an in-flight proxy task keyed to the dead connection must be cancelled on "
+            "abnormal disconnect; at HEAD teardown is skipped so it is still running")
+    finally:
+        if not inflight.done():
+            inflight.cancel()
+            try:
+                await inflight
+            except (asyncio.CancelledError, Exception):
+                pass
