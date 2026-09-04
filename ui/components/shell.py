@@ -623,7 +623,13 @@ window.celerpPoll = window.celerpPoll || function(name, url, onData, opts) {
   function fire() {
     inFlight = true;
     fetch(url, { cache: 'no-store' })
-      .then(function(r) { return r.json(); })
+      .then(function(r) {
+        // A non-ok response (e.g. the server's 503 when its backend read fails) is an
+        // error, not healthy data: reject so it flows through the same error/backoff
+        // branch below and the counters are not reset.
+        if (!r.ok) { throw new Error('poll response not ok: ' + r.status); }
+        return r.json();
+      })
       .then(function(d) {
         inFlight = false;
         errorCount = 0;

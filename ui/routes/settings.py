@@ -2384,7 +2384,7 @@ def setup_routes(app):
             status = await _api.get_backup_status(token)
             return JSONResponse({"active": bool(status.get("active"))})
         except Exception:
-            return JSONResponse({"state": "error"})
+            return JSONResponse({"state": "error"}, status_code=503)
 
     @app.get("/backup/list")
     async def backup_list(request: Request):
