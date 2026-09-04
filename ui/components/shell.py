@@ -602,21 +602,78 @@ _HEALTH_BANNER_HTML = Div(
     style="display:none;align-items:center;justify-content:space-between;padding:0.5rem 1rem;font-weight:500;",
 )
 
-_BACKUP_BANNER_JS = """
-(function() {
-  function poll() {
-    fetch('/backup/active')
+_POLL_CONTROLLER_JS = """
+// One shared single-flight adaptive poller for every raw-JS fetch-poll surface.
+// A plain setInterval fires a new fetch every tick even while the previous one is
+// still open, so a slow endpoint stacks overlapping requests and can exhaust the
+// connection pool. celerpPoll collapses that to one in-flight request: a tick that
+// arrives while a request is outstanding is skipped, never started as a second
+// fetch. On success it polls at the normal interval; on repeated errors it backs
+// off (doubling up to a cap) so a failing endpoint is not hammered. onData is
+// called with the parsed body on success and with null on error, letting the caller
+// hold its last known state on failure rather than clearing it.
+window.celerpPoll = window.celerpPoll || function(name, url, onData, opts) {
+  opts = opts || {};
+  var interval = opts.interval || 8000;
+  var maxErrorSkips = opts.maxErrorSkips || 8;
+  var inFlight = false;
+  var errorCount = 0;   // consecutive errors, drives the backoff
+  var skipTicks = 0;    // ticks to skip before the next attempt (backoff)
+
+  function fire() {
+    inFlight = true;
+    fetch(url, { cache: 'no-store' })
       .then(function(r) { return r.json(); })
       .then(function(d) {
-        var b = document.getElementById('backup-progress-banner');
-        if (!b) return;
-        b.style.display = d.active ? 'flex' : 'none';
+        inFlight = false;
+        errorCount = 0;
+        skipTicks = 0;
+        try { onData(d); } catch (e) {}
       })
-      .catch(function() {});
+      .catch(function() {
+        inFlight = false;
+        try { onData(null); } catch (e) {}
+        // Adaptive backoff: after each error wait an extra tick, capped, so a
+        // failing endpoint is polled less often rather than every tick.
+        errorCount = errorCount + 1;
+        skipTicks = Math.min(errorCount, maxErrorSkips);
+      });
   }
+
+  function tick() {
+    // Single-flight: a tick arriving while a request is still open is skipped,
+    // never started as a second overlapping fetch.
+    if (inFlight) { return; }
+    if (skipTicks > 0) { skipTicks = skipTicks - 1; return; }
+    fire();
+  }
+
+  return {
+    start: function() {
+      fire();               // one immediate poll on start
+      setInterval(tick, interval);
+    }
+  };
+};
+"""
+
+_BACKUP_BANNER_JS = """
+(function() {
   document.addEventListener('DOMContentLoaded', function() {
-    poll();
-    setInterval(poll, 8000);
+    var poller = window.celerpPoll('backup', '/backup/active', function(d) {
+      var b = document.getElementById('backup-progress-banner');
+      if (!b) return;
+      // On an error/unknown state (or a request failure, d === null) hold the
+      // banner's last known state and mark it as stale; never flip to inactive on
+      // a failed poll, which would read as a false "no backup running".
+      if (!d || d.state === 'error' || d.state === 'unknown') {
+        b.setAttribute('data-poll-stale', '1');
+        return;
+      }
+      b.removeAttribute('data-poll-stale');
+      b.style.display = d.active ? 'flex' : 'none';
+    }, { interval: 8000 });
+    poller.start();
   });
 })();
 """
@@ -1398,6 +1455,7 @@ async def base_shell(*content, title: str = "Celerp", nav_active: str = "", comp
         Script(_CLIENT_JS),
         Script(_IDLE_LOGOUT_JS),
         Script(_HEALTH_BANNER_JS),
+        Script(_POLL_CONTROLLER_JS),
         Script(_BACKUP_BANNER_JS),
         Script(_NOTIFICATION_JS),
         Script(_USER_MENU_JS),
