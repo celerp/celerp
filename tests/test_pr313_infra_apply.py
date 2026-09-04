@@ -395,3 +395,66 @@ def test_infra_db_section_single_test_result_id(tmp_path, monkeypatch):
     html = to_xml(sc._infra_db_section())
     assert html.count('id="db-test-result"') == 1
     assert html.count('id="restore-db-result"') == 1
+
+
+# ── manage_integrations denial gates every infra handler ─────────────────────
+#
+# _check_permission returns a truthy RedirectResponse when the caller lacks
+# the permission and None when it holds it (ui/routes/settings.py:29-46). All
+# four infra handlers check `if await _check_permission(...): return Div()`
+# before touching the form, the packaged config.json, or subprocess.Popen -
+# this is a pre-existing gate the change does not modify. These tests force
+# a denial and assert the handler stops there: an empty Div (no leaked
+# unauthorized detail, matching what the redirect path already renders) and
+# no write or process side effect, proving the gate runs before any of them.
+
+@pytest.mark.parametrize("path,form", [
+    ("/settings/cloud/test-db", {
+        "db_host": "db.example.com", "db_port": "5432",
+        "db_name": "celerp", "db_user": "celerp", "db_pass": "pw",
+    }),
+    ("/settings/cloud/test-storage", {
+        "storage_backend": "s3", "s3_endpoint": "https://s3.x",
+        "s3_bucket": "bkt", "s3_access_key": "AK", "s3_secret_key": "SK",
+    }),
+    ("/settings/cloud/save-infra", {
+        "db_host": "db.example.com", "db_port": "5432",
+        "db_name": "celerp", "db_user": "celerp", "db_pass": "pw",
+    }),
+    ("/settings/cloud/restore-db", {}),
+])
+async def test_infra_handler_rejects_without_manage_integrations(
+        client, tmp_path, monkeypatch, path, form):
+    import subprocess
+    from starlette.responses import RedirectResponse
+
+    popen = MagicMock()
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    merge_key = MagicMock(return_value=True)
+    monkeypatch.setattr(gwclient, "_merge_config_key", merge_key, raising=False)
+
+    # Deny: override the client fixture's grant with a truthy redirect, the
+    # same shape _check_permission itself returns on denial.
+    monkeypatch.setattr(sc, "_check_permission",
+                        AsyncMock(return_value=RedirectResponse("/dashboard", status_code=302)),
+                        raising=False)
+
+    # Packaged branch would run (and write config.json / relaunch) if the
+    # gate did not stop the request first - CELERP_DATA_DIR is set so a
+    # missing side effect proves the gate, not an untaken code path.
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    (tmp_path / "celerp-config.json").write_text(json.dumps({
+        "db_mode": "external", "external_db_url": "OLD",
+        "external_db_url_backup": "OLDER", "storage_mode": "local",
+    }))
+
+    r = await client.post(path, data=form, headers={"HX-Request": "true"})
+
+    assert r.status_code == 200
+    assert r.text.strip() == "<div></div>"
+    assert t("error.unauthorized") not in r.text
+    merge_key.assert_not_called()
+    popen.assert_not_called()
+    cfg = json.loads((tmp_path / "celerp-config.json").read_text())
+    assert cfg["external_db_url"] == "OLD"
+    assert cfg["external_db_url_backup"] == "OLDER"
