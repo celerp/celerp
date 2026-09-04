@@ -59,4 +59,54 @@ function applyDbModePersist(cfg, decision, writeConfigFn) {
   }
 }
 
-module.exports = { isInGrace, dbModeDecision, applyDbModePersist };
+/**
+ * Pure external-storage decision from config + feature flags, mirroring
+ * dbModeDecision. storageAllowed is the single storage-entitlement rule
+ * (entitled or in grace, with S3 chosen); resolveStorageEnv consumes this so the
+ * rule lives in one place.
+ *
+ * @param {object} cfg - { storage_mode, storage_s3_*, feature_flags }
+ * @returns {{ startS3: boolean, persistLocal: boolean, inGrace: boolean, gracePeriod: boolean }}
+ */
+function storageModeDecision(cfg) {
+  const flags = cfg.feature_flags || {};
+  const inGrace = isInGrace(flags);
+  const storageAllowed =
+    (flags.external_storage || inGrace) && cfg.storage_mode === "s3";
+  const startS3 = storageAllowed;
+  const gracePeriod = startS3 && inGrace && !flags.external_storage;
+  const persistLocal = cfg.storage_mode === "s3" && !storageAllowed;
+  return { startS3, persistLocal, inGrace, gracePeriod };
+}
+
+/**
+ * Persist storage_mode=local at grace expiry through the injected writeConfigFn.
+ * Patches only storage_mode; the storage_s3_* settings are never in the patch so
+ * the customer's endpoint/bucket/keys survive the fallback and can be reselected.
+ * A write failure is contained to a false return so a failed persist never aborts
+ * boot.
+ *
+ * @param {object} cfg
+ * @param {{ persistLocal: boolean }} decision
+ * @param {(patch: object) => void} writeConfigFn - injected for testability
+ * @returns {boolean} whether storage_mode=local was persisted
+ */
+function applyStoragePersist(cfg, decision, writeConfigFn) {
+  if (!decision.persistLocal) {
+    return false;
+  }
+  try {
+    writeConfigFn({ storage_mode: "local" });
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+module.exports = {
+  isInGrace,
+  dbModeDecision,
+  applyDbModePersist,
+  storageModeDecision,
+  applyStoragePersist,
+};

@@ -118,4 +118,19 @@ function classifyNavigation(url, uiPort, formerUiPorts = new Set()) {
   return "deny";
 }
 
-module.exports = { restartSentinelPath, watchForRestart, classifyNavigation };
+/**
+ * Full application relaunch: queue a fresh instance, then quit the current one.
+ * This is the only apply path for a DB-mode/url change, because a cold start
+ * re-runs resolveDatabaseConfig(readConfig()) and opens the newly-saved database;
+ * the sentinel-recycle path reuses the boot-bound dbUrl and would not apply it.
+ * Kept as a pure exported primitive (app injected) so it is unit-testable without
+ * an Electron runtime.
+ *
+ * @param {{ relaunch: () => void, quit: () => void }} appRef
+ */
+function fullRelaunch(appRef) {
+  appRef.relaunch();
+  appRef.quit();
+}
+
+module.exports = { restartSentinelPath, watchForRestart, classifyNavigation, fullRelaunch };

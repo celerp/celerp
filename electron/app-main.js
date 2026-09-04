@@ -169,8 +169,13 @@ let uiPort = null;
 // still pointing at an old port are stale self-references, not external links.
 const formerUiPorts = new Set();
 
-const { watchForRestart, classifyNavigation } = require("./restart");
-const { isInGrace, dbModeDecision, applyDbModePersist } = require("./db-mode");
+const { watchForRestart, classifyNavigation, fullRelaunch } = require("./restart");
+const {
+  dbModeDecision,
+  applyDbModePersist,
+  storageModeDecision,
+  applyStoragePersist,
+} = require("./db-mode");
 const { migrateArgs } = require("./migrate_cmd");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
@@ -636,12 +641,13 @@ function resolveDatabaseConfig(dbPort, cfg) {
   };
 }
 
-/** Build storage-related env vars for API and UI processes. */
+/** Build storage-related env vars for API and UI processes. The storage-allowed
+ * rule lives once in storageModeDecision (shared with applyStoragePersist), so
+ * this only maps the decision onto the boot env. */
 function resolveStorageEnv(cfg) {
-  const flags = cfg.feature_flags || {};
-  const storageAllowed = (flags.external_storage || isInGrace(flags)) && cfg.storage_mode === "s3";
+  const decision = storageModeDecision(cfg);
 
-  if (storageAllowed) {
+  if (decision.startS3) {
     return {
       STORAGE_BACKEND: "s3",
       STORAGE_S3_ENDPOINT: cfg.storage_s3_endpoint || "",
@@ -1060,6 +1066,13 @@ ipcMain.on("install-update", async () => {
   }, 500);
 });
 
+// restart-app: renderer triggers a full relaunch via window.celerp.restartApp()
+// to apply a saved infrastructure change (DB/storage mode). A cold start re-runs
+// resolveDatabaseConfig(readConfig()) against the newly-saved celerp-config.json,
+// which is the only path that opens the new database - the sentinel-recycle path
+// reuses the boot-bound dbUrl and would not apply it.
+ipcMain.on("restart-app", () => fullRelaunch(app));
+
 // get-version: renderer fetches the current app version
 ipcMain.handle("get-version", () => app.getVersion());
 
@@ -1213,6 +1226,11 @@ app.whenReady().then(async () => {
     // the next boot opens the local database and this write cannot race the
     // gateway feature-flag persister. external_db_url is preserved untouched.
     applyDbModePersist(cfg, dbConfig, writeConfig);
+
+    // Same fallback for external storage: when grace has expired, persist
+    // storage_mode=local so the next boot uses local storage. The storage_s3_*
+    // settings are preserved so the customer can reselect S3 after renewing.
+    applyStoragePersist(cfg, storageModeDecision(cfg), writeConfig);
 
     // Create the main window immediately so user sees the loading page (no white frame).
     createWindow();
