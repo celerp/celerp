@@ -3945,14 +3945,41 @@ async def undo_import_batch(
 async def export_items_csv(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     q: str | None = None,
     category: str | None = None,
     status: str | None = None,
 ) -> StreamingResponse:
+    from celerp.services.field_schema import get_effective_field_schema
+
     stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
     rows = (await session.execute(stmt)).scalars().all()
     price_config = await get_price_config(session, company_id)
     items = [flatten_item(r.state, r.entity_id, created_at=r.created_at, updated_at=r.updated_at, price_config=price_config) for r in rows]
+
+    # Strip fields the requesting role may not see, per the item's category schema, exactly
+    # as the list and detail endpoints do. Without this the export is a cost-visibility
+    # bypass: cost_price/cost_total and any visible_to_roles-restricted column leak verbatim
+    # to a role denied them in every other surface.
+    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+    can_author_drafts = role_has_permission(settings, role, "edit_inventory")
+    _schema_cache: dict[str | None, list[dict]] = {}
+
+    async def _category_schema(cat: str | None) -> list[dict]:
+        if cat not in _schema_cache:
+            _schema_cache[cat] = await get_effective_field_schema(session, company_id, category=cat)
+        return _schema_cache[cat]
+
+    _stripped: list[dict] = []
+    for it in items:
+        fs = await _category_schema(it.get("category"))
+        _stripped.append(apply_field_visibility(
+            [it], role, fs, can_see_costs,
+            can_author_drafts=can_author_drafts,
+            derived_field_deps=DERIVED_FIELD_DEPS,
+        )[0])
+    items = _stripped
     if q:
         ql = q.lower()
         def _csv_matches(it: dict) -> bool:
@@ -3976,8 +4003,16 @@ async def export_items_csv(
     if status:
         items = [it for it in items if it.get("status") == status]
 
-    # Build price columns dynamically from the price config fetched above
-    price_cols = [price_key(pl["name"]) for pl in price_config[0] if pl.get("name")]
+    # Build price columns dynamically from the price config fetched above. Cost-list
+    # columns (cost, landed, ...) are dropped entirely for a role without view_inventory_costs:
+    # apply_field_visibility strips cost_price/cost_total from the row dicts, but a landed
+    # cost list serialises under landed_price, which is not a stripped key, so the column
+    # itself must be excluded here or landed cost leaks through the header.
+    price_cols = [
+        price_key(pl["name"])
+        for pl in price_config[0]
+        if pl.get("name") and (can_see_costs or not is_cost_list_name(pl["name"]))
+    ]
 
     _COLS = ["id", "sku", "name", "category", "quantity", "status"] + price_cols + ["weight", "weight_unit", "pieces", "sell_by", "barcode", "hs_code", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor", "created_at", "updated_at"]
 

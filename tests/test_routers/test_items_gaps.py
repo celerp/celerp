@@ -203,6 +203,94 @@ async def test_items_export_csv_derives_sell_by_measure(client):
 # Phase 1: Search scope tests
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Export CSV — cost-visibility parity with the list/detail endpoints
+# ---------------------------------------------------------------------------
+
+async def _user_with_role(client, session, admin_token: str, role: str) -> str:
+    addr = f"{role}-{uuid.uuid4().hex[:8]}@gaps.test"
+    r = await client.post(
+        "/companies/me/users",
+        json={"name": role.title(), "email": addr, "password": "testpass123", "role": role},
+        headers=_h(admin_token),
+    )
+    assert r.status_code == 200, r.text
+    from celerp.services.session_tracker import clear as _clear_tracker
+    await _clear_tracker(session)
+    r2 = await client.post("/auth/login", json={"email": addr, "password": "testpass123"})
+    assert r2.status_code == 200, r2.text
+    return r2.json()["access_token"]
+
+
+def _csv_reader(text):
+    import csv, io
+    return csv.DictReader(io.StringIO(text))
+
+
+@pytest.mark.asyncio
+async def test_export_csv_strips_cost_price_for_role_without_permission(client, session):
+    """A role lacking view_inventory_costs must not see cost via the CSV export, exactly
+    as the list and detail endpoints strip it. The default 'Cost' price list serialises
+    the goods cost under cost_price (plus cost_total), so both must be absent for a viewer
+    while present for the admin who set them."""
+    admin = await _reg(client)
+    viewer = await _user_with_role(client, session, admin, "viewer")
+    await _item(client, admin, name="CostWidget", sku="CW-1",
+                cost_price=50.0, wholesale_price=75.0, quantity=4)
+
+    r_admin = await client.get("/items/export/csv", headers=_h(admin))
+    assert r_admin.status_code == 200
+    admin_reader = _csv_reader(r_admin.text)
+    assert "cost_price" in admin_reader.fieldnames
+    admin_rows = {row["sku"]: row for row in admin_reader}
+    assert float(admin_rows["CW-1"]["cost_price"]) == 50.0
+
+    r_viewer = await client.get("/items/export/csv", headers=_h(viewer))
+    assert r_viewer.status_code == 200
+    viewer_fields = _csv_reader(r_viewer.text).fieldnames or []
+    assert "cost_price" not in viewer_fields
+    assert "cost_total" not in viewer_fields
+    # The value itself must not leak through any other column either.
+    assert "50.0" not in r_viewer.text
+
+
+@pytest.mark.asyncio
+async def test_export_csv_strips_landed_cost_column_for_role_without_permission(client, session):
+    """A cost-named price list other than 'Cost' (here 'Landed') serialises under
+    landed_price, which apply_field_visibility does not strip (it is not cost_price /
+    cost_total). The export must drop the whole cost-list column for a role without
+    view_inventory_costs, or landed goods cost leaks through the header."""
+    from sqlalchemy import select as _select
+    from celerp.models.company import Company
+
+    admin = await _reg(client)
+    # Configure a 'Landed' cost price list on the company (stored, non-derived: its value
+    # comes from the item, not a multiplier).
+    co = (await session.execute(_select(Company))).scalars().first()
+    s = dict(co.settings or {})
+    s["price_lists"] = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}, {"name": "Landed"}]
+    co.settings = s
+    await session.commit()
+
+    viewer = await _user_with_role(client, session, admin, "viewer")
+    await _item(client, admin, name="LandedWidget", sku="LW-1",
+                cost_price=50.0, landed_price=62.0, quantity=4)
+
+    r_admin = await client.get("/items/export/csv", headers=_h(admin))
+    assert r_admin.status_code == 200
+    admin_reader = _csv_reader(r_admin.text)
+    assert "landed_price" in admin_reader.fieldnames
+    admin_rows = {row["sku"]: row for row in admin_reader}
+    assert float(admin_rows["LW-1"]["landed_price"]) == 62.0
+
+    r_viewer = await client.get("/items/export/csv", headers=_h(viewer))
+    assert r_viewer.status_code == 200
+    viewer_fields = _csv_reader(r_viewer.text).fieldnames or []
+    assert "landed_price" not in viewer_fields
+    assert "cost_price" not in viewer_fields
+    assert "62.0" not in r_viewer.text
+
+
 @pytest.mark.asyncio
 async def test_list_items_search_by_name(client):
     """Search by name (q param) returns matching item."""
