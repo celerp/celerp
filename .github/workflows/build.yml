@@ -759,9 +759,10 @@ jobs:
           if-no-files-found: warn
 
       - name: Release (dev build)
-        # bugfix builds stay as downloadable workflow artifacts only (above) — don't
-        # publish them to the shared dev-latest release, which tracks develop.
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.ref_name != 'bugfix' }}
+        # Only develop publishes to the shared dev-latest release. Bugfix and
+        # manually dispatched feature branches stay as downloadable workflow
+        # artifacts only (above), so they never overwrite the dev channel.
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.ref_name == 'develop' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: dev-latest
