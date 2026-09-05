@@ -1316,18 +1316,21 @@ def setup_routes(app):
             params["doc_type"] = doc_type
         if status:
             params["status"] = status
+        from starlette.responses import Response, StreamingResponse
         try:
-            data = await api.export_docs_csv(token, params)
+            stream, headers = await api.export_docs_csv(token, params)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            data = b"error\n"
-        from starlette.responses import Response
-        return Response(
-            content=data,
-            media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=documents.csv"},
-        )
+            return Response(
+                content=b"error\n",
+                media_type="text/csv",
+                headers={"Content-Disposition": "attachment; filename=documents.csv"},
+            )
+        out_headers = {"Content-Disposition": "attachment; filename=documents.csv"}
+        if "content-length" in headers:
+            out_headers["Content-Length"] = headers["content-length"]
+        return StreamingResponse(stream, media_type="text/csv", headers=out_headers)
 
     @app.post("/docs/create-blank")
     async def create_blank_doc(request: Request):
@@ -4183,14 +4186,17 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        from starlette.responses import Response, StreamingResponse
         try:
-            data = await api.export_lists_csv(token)
+            stream, headers = await api.export_lists_csv(token)
         except APIError as e:
             logger.warning("API error on lists_export_csv: %s", e.detail)
-            data = b"error\n"
-        from starlette.responses import Response
-        return Response(content=data, media_type="text/csv",
-                        headers={"Content-Disposition": "attachment; filename=lists.csv"})
+            return Response(content=b"error\n", media_type="text/csv",
+                            headers={"Content-Disposition": "attachment; filename=lists.csv"})
+        out_headers = {"Content-Disposition": "attachment; filename=lists.csv"}
+        if "content-length" in headers:
+            out_headers["Content-Length"] = headers["content-length"]
+        return StreamingResponse(stream, media_type="text/csv", headers=out_headers)
 
     @app.post("/lists/create-blank")
     async def create_blank_list(request: Request):

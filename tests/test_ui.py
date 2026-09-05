@@ -3782,10 +3782,27 @@ class TestCSVExport:
 
     @pytest.mark.asyncio
     async def test_docs_export_csv_returns_csv(self, ui_client):
-        csv_bytes = b"entity_id,doc_number,status\ndoc:1,INV-1,paid\n"
-        with patch("ui.api_client.export_docs_csv", new=AsyncMock(return_value=csv_bytes)):
+        """#319: the documents CSV export streams a chunked body straight through to the
+        browser instead of buffering it into UI memory, and forwards Content-Length so the
+        download shows real progress. A buffered route cannot pipe a lazily-yielded
+        generator through, so this is red until the route streams."""
+        chunks = [b"entity_id,doc_number,status\n", b"doc:1,INV-1,paid\n" * 300]
+        total = sum(len(c) for c in chunks)
+
+        async def _fake_stream():
+            for ch in chunks:
+                yield ch
+
+        async def _fake_export(token, params=None):
+            return _fake_stream(), {"content-length": str(total), "content-type": "text/csv"}
+
+        with patch("ui.api_client.export_docs_csv", _fake_export):
             r = await ui_client.get("/docs/export/csv", cookies=_authed())
         assert r.status_code == 200
+        assert r.content == b"".join(chunks)                    # streamed through intact
+        assert r.headers["content-length"] == str(total)        # browser progress bar
+        assert "attachment" in r.headers.get("content-disposition", "")
+        assert r.headers["content-disposition"].endswith("documents.csv")
 
     @pytest.mark.asyncio
     async def test_crm_export_csv_returns_csv(self, ui_client):
@@ -17454,6 +17471,31 @@ async def test_backup_export_streams_with_progress_headers(ui_client):
     assert r.headers["content-length"] == str(total)  # browser progress bar
     assert r.headers["content-disposition"] == "attachment; filename=backup.celerp-backup"
     assert r.headers["content-type"].startswith("application/gzip")
+
+
+@pytest.mark.asyncio
+async def test_lists_export_csv_streams_with_progress_header(ui_client):
+    """#319: the lists CSV export streams the chunked body straight through to the browser
+    rather than buffering it in UI memory, and forwards Content-Length for a real progress
+    bar. A large lists export is exactly the payload the buffered path pinned a pooled
+    connection on; red until the route streams."""
+    chunks = [b"entity_id,ref,customer\n", b"list:1,Q-1,Acme\n" * 400]
+    total = sum(len(c) for c in chunks)
+
+    async def _fake_stream():
+        for ch in chunks:
+            yield ch
+
+    async def _fake_export(token, params=None):
+        return _fake_stream(), {"content-length": str(total), "content-type": "text/csv"}
+
+    with patch("ui.api_client.export_lists_csv", _fake_export):
+        r = await ui_client.get("/lists/export/csv", cookies=_authed())
+    assert r.status_code == 200
+    assert r.content == b"".join(chunks)                    # streamed through intact
+    assert r.headers["content-length"] == str(total)        # browser progress bar
+    assert "attachment" in r.headers.get("content-disposition", "")
+    assert r.headers["content-disposition"].endswith("lists.csv")
 
 
 def test_compact_pages_shows_full_count_and_last():

@@ -1467,16 +1467,62 @@ async def update_mfg_settings(token: str, mfg: dict) -> dict:
 # CSV export
 # ---------------------------------------------------------------------------
 
+async def _stream_csv(token: str, path: str, params: dict | None = None):
+    """GET a CSV export endpoint with the body streamed, never buffered. Returns
+    (chunk_iterator, headers).
+
+    The backend already streams these exports row by row; the UI must not re-read the
+    whole body into memory (a large export would then sit in UI RAM and defeat the
+    backend's streaming, pinning a pooled connection for the whole read). The caller
+    pipes the iterator straight into a StreamingResponse, and the httpx client + response
+    stay open until the iterator is exhausted. Content-Length is forwarded so the browser
+    can show a real download progress bar. Mirrors export_backup's streaming shape."""
+    from ui.config import API_BASE
+    client = _client(token, timeout=httpx.Timeout(300.0, connect=10.0))
+    try:
+        resp = await client.send(client.build_request("GET", path, params=params or {}), stream=True)
+    except httpx.TimeoutException as exc:
+        await client.aclose()
+        raise APIError(504, "The export timed out.") from exc
+    except httpx.ConnectError as exc:
+        await client.aclose()
+        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
+    if resp.status_code >= 400:
+        body = await resp.aread()
+        await resp.aclose()
+        await client.aclose()
+        try:
+            import json as _json
+            detail = _json.loads(body).get("detail", body.decode("utf-8", "replace"))
+        except Exception:
+            detail = body.decode("utf-8", "replace")
+        raise APIError(resp.status_code, detail)
+    headers = {
+        k: resp.headers[k]
+        for k in ("content-length", "content-disposition", "content-type")
+        if k in resp.headers
+    }
+
+    async def _iter():
+        try:
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return _iter(), headers
+
+
 async def export_items_csv(token: str, params: dict | None = None) -> bytes:
     async with _api_client(token) as c:
         r = _raise(await c.get("/items/export/csv", params=params or {}))
         return r.content
 
 
-async def export_docs_csv(token: str, params: dict | None = None) -> bytes:
-    async with _api_client(token) as c:
-        r = _raise(await c.get("/docs/export/csv", params=params or {}))
-        return r.content
+async def export_docs_csv(token: str, params: dict | None = None):
+    """GET /docs/export/csv, streamed. Returns (chunk_iterator, headers)."""
+    return await _stream_csv(token, "/docs/export/csv", params)
 
 
 async def export_contacts_csv(token: str, params: dict | None = None) -> bytes:
@@ -1695,10 +1741,9 @@ async def delete_list_note(token: str, entity_id: str, note_id: str) -> dict:
         return _raise(await c.delete(f"/lists/{entity_id}/notes/{note_id}")).json()
 
 
-async def export_lists_csv(token: str, params: dict | None = None) -> bytes:
-    async with _api_client(token) as c:
-        r = _raise(await c.get("/lists/export/csv", params=params or {}))
-        return r.content
+async def export_lists_csv(token: str, params: dict | None = None):
+    """GET /lists/export/csv, streamed. Returns (chunk_iterator, headers)."""
+    return await _stream_csv(token, "/lists/export/csv", params)
 
 
 # ---------------------------------------------------------------------------
