@@ -366,13 +366,63 @@ jobs:
           "$PY" electron/scripts/collect_licenses.py --check --out licenses \
             --node-modules electron/node_modules "${ARGS[@]}"
 
+      # Own the signing keychain ourselves instead of letting electron-builder
+      # create a throwaway one. The keychain password and the .p12 password are
+      # two different secrets; the newer hosted macOS image rejects the combined
+      # shortcut electron-builder was using, so signing failed at unlock time.
+      # Runs for every signed build (release tag and develop dev), never for the
+      # unsigned bugfix/PR path where the secrets are unavailable.
+      - name: Prepare macOS signing keychain
+        if: matrix.os == 'macos-latest' && github.ref_name != 'bugfix' && github.event_name != 'pull_request'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/celerp-signing.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/celerp-signing-cert.p12"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import with the .p12 password, then authorize the Apple codesigning
+          # tools to use the private key without an interactive prompt.
+          security import "$CERT_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple: -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+
+          echo "CSC_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          rm -f "$CERT_PATH"
+
+      - name: Verify macOS signing identity
+        if: matrix.os == 'macos-latest' && github.ref_name != 'bugfix' && github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Fail in seconds if the certificate did not import, not after a build.
+          security find-identity -v -p codesigning "$CSC_KEYCHAIN"
+          security find-identity -v -p codesigning "$CSC_KEYCHAIN" \
+            | grep -q "Developer ID Application"
+
       - name: Build macOS (production - signed + notarized)
         if: matrix.os == 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 130
         working-directory: electron
         env:
-          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
-          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          CSC_KEYCHAIN: ${{ env.CSC_KEYCHAIN }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -384,8 +434,7 @@ jobs:
         timeout-minutes: 60
         working-directory: electron
         env:
-          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
-          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          CSC_KEYCHAIN: ${{ env.CSC_KEYCHAIN }}
         run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
 
       - name: Build macOS (bugfix dev - UNSIGNED, fast)
@@ -401,6 +450,14 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
+
+      - name: Clean up macOS signing keychain
+        if: always() && matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          if [ -n "${CSC_KEYCHAIN:-}" ] && [ -f "$CSC_KEYCHAIN" ]; then
+            security delete-keychain "$CSC_KEYCHAIN" || true
+          fi
 
       - name: Build (Windows / Linux - release tag)
         if: matrix.os != 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
@@ -702,9 +759,10 @@ jobs:
           if-no-files-found: warn
 
       - name: Release (dev build)
-        # bugfix builds stay as downloadable workflow artifacts only (above) — don't
-        # publish them to the shared dev-latest release, which tracks develop.
-        if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.ref_name != 'bugfix' }}
+        # Only develop publishes to the shared dev-latest release. Bugfix and
+        # manually dispatched feature branches stay as downloadable workflow
+        # artifacts only (above), so they never overwrite the dev channel.
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.ref_name == 'develop' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: dev-latest
