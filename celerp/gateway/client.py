@@ -701,13 +701,19 @@ class GatewayClient:
         client = self._get_http_client()
         try:
             if deadline_s is not None:
-                async with asyncio.timeout(deadline_s):
-                    resp = await client.request(
+                # asyncio.wait_for, not asyncio.timeout: the latter is 3.11+, and this package
+                # supports Python >=3.10 where it does not exist. wait_for cancels the request and
+                # raises TimeoutError on the deadline, which the handler below turns into an error
+                # response.
+                resp = await asyncio.wait_for(
+                    client.request(
                         method=method,
                         url=url,
                         headers=headers,
                         content=body,
-                    )
+                    ),
+                    deadline_s,
+                )
             else:
                 resp = await client.request(
                     method=method,
@@ -799,9 +805,9 @@ class GatewayClient:
         # Bound the send: a websocket send awaits until the frame is handed to the transport, and a
         # stalled or backpressured peer would otherwise block it forever, pinning the proxy task and
         # its relay slot. On the deadline the send is cancelled and TimeoutError surfaces to the
-        # caller, which lets the wedged socket be torn down and rebuilt.
-        async with asyncio.timeout(_SEND_DEADLINE):
-            await ws.send(json.dumps(message))
+        # caller, which lets the wedged socket be torn down and rebuilt. asyncio.wait_for, not
+        # asyncio.timeout: the latter is 3.11+ and this package supports Python >=3.10.
+        await asyncio.wait_for(ws.send(json.dumps(message)), _SEND_DEADLINE)
 
 
 # Module-level singleton — set by main.py lifespan
