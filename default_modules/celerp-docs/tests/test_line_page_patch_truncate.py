@@ -132,3 +132,75 @@ async def test_line_page_patch_rejects_draft_item(client):
         assert 400 <= r.status_code < 500, r.text
         assert after == before, "a rejected draft save must write nothing"
         assert draft_item not in _ids(after)
+
+
+@pytest.mark.asyncio
+async def test_line_page_patch_deletes_middle_row(client):
+    """Delete a row in the MIDDLE of the covered window. After the delete the surviving
+    tail rows shift up one position, so the incoming page no longer sits id-for-id over
+    the stored rows: incoming[1] carries item:2 while stored[1] still holds item:2's
+    old neighbour item:1. A positional id comparison reads that legitimate shift as a
+    concurrent edit and rejects the save 409; the slice-splice must accept it, because
+    the window it replaces is the whole loaded slice, not a row-by-row overwrite.
+
+    Observable: the save succeeds and the persisted array is exactly the post-delete
+    set, read back through the real API - never a status-code-only assertion."""
+    t = await _register(client)
+    q = await _quotation(client, t)
+    lines = [{"item_id": f"item:{i}", "sku": f"SKU{i}", "description": f"Item {i}",
+              "quantity": 1, "unit_price": 1.0} for i in range(3)]
+    v = await _set_lines(client, t, q, lines)
+    before = (await _state(client, t, q))["line_items"]
+    assert len(before) == 3
+
+    # The user deletes item:1 (the middle row). The editor resubmits the surviving rows
+    # [item:0, item:2] and the loaded window length (original_count == 3).
+    page = [dict(before[0]), dict(before[2])]
+    r = await client.patch(f"/lists/{q}/line-page", headers=_h(t),
+                           json={"line_items": page, "offset": 0,
+                                 "original_count": len(before), "expected_version": v})
+    assert r.status_code == 200, (
+        f"deleting a middle row is a legitimate edit within the loaded window, not a "
+        f"concurrent-edit conflict; got {r.status_code}: {r.text}")
+
+    after = (await _state(client, t, q))["line_items"]
+    assert _ids(after) == ["item:0", "item:2"], (
+        f"the persisted array must be exactly the post-delete set; got {_ids(after)}")
+    assert "item:1" not in _ids(after), "the deleted middle row's identity must be gone"
+
+
+@pytest.mark.asyncio
+async def test_line_page_patch_window_cannot_exceed_loaded_array(client):
+    """original_count is the length of the window the client loaded, so it can never
+    reach past the end of the stored array. A page that claims a window running beyond
+    len(stored) would splice away rows the client never loaded and cannot have edited.
+
+    Prod hazard: offset 0 + a large original_count + a one-row page collapses the whole
+    list to that single row. The write must be rejected, or at worst leave the
+    off-window rows intact - it must NEVER silently drop rows past the loaded window.
+
+    Observable: the rows beyond the claimed window survive, read back through the real
+    API."""
+    t = await _register(client)
+    q = await _quotation(client, t)
+    lines = [{"item_id": f"item:{i}", "sku": f"SKU{i}", "description": f"Item {i}",
+              "quantity": 1, "unit_price": 1.0} for i in range(3)]
+    v = await _set_lines(client, t, q, lines)
+    before = (await _state(client, t, q))["line_items"]
+    assert len(before) == 3
+
+    # A window that claims to cover 999 rows starting at 0, replaced by a single row.
+    page = [dict(before[0])]
+    r = await client.patch(f"/lists/{q}/line-page", headers=_h(t),
+                           json={"line_items": page, "offset": 0,
+                                 "original_count": 999, "expected_version": v})
+
+    after = (await _state(client, t, q))["line_items"]
+    if r.status_code == 200:
+        assert _ids(after) == ["item:0", "item:1", "item:2"], (
+            f"a window past the loaded array must not drop rows the client never "
+            f"loaded; persisted identities were {_ids(after)}")
+    else:
+        assert 400 <= r.status_code < 500, r.text
+        assert after == before, (
+            f"a rejected over-wide window must write nothing; got {_ids(after)}")

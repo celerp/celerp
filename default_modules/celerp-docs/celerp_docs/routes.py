@@ -4303,17 +4303,20 @@ async def patch_list_line_page(
         original_count = len(page)
     elif original_count < 0:
         raise HTTPException(status_code=400, detail="original_count must be zero or greater")
-    # A submitted row carrying an id must land on the position holding that same id: this catches a
-    # page saved against a shifted array. Free-text rows carry no id and overwrite by position.
-    for i, incoming in enumerate(page):
-        pos = offset + i
-        if pos < len(stored):
-            incoming_id = _line_identity(incoming)
-            stored_id = _line_identity(stored[pos])
-            if incoming_id is not None and stored_id is not None and incoming_id != stored_id:
-                raise HTTPException(
-                    status_code=409,
-                    detail="This list was changed by someone else; reload to get the latest before saving")
+    # The loaded window [offset:offset+original_count] must lie within the stored array: it is the
+    # exact slice the client read, so it can neither start past the end nor run beyond it. A larger
+    # claimed window would splice away tail rows the client never loaded and cannot have edited
+    # (offset 0 + a huge original_count + a one-row page would collapse the whole list to that row).
+    # The optimistic version guard above already pins `stored` to exactly what the client loaded, so
+    # any window outside it means the client's view is stale: reject and reload rather than mutate.
+    if offset > len(stored) or offset + original_count > len(stored):
+        raise HTTPException(
+            status_code=409,
+            detail="This list was changed by someone else; reload to get the latest before saving")
+    # No positional id comparison: the page replaces the WHOLE window [offset:offset+original_count],
+    # so a delete or insert legitimately shifts the surviving rows out of id-for-id alignment with
+    # `stored`. Concurrency is guarded by the version pin (every save bumps the list version), not by
+    # matching incoming rows to stored positions, which would falsely reject a mid-window delete.
 
     # A draft item is not stock and must never reach a list, on this path as on the full save.
     _existing = {_line_identity(li) for li in stored}
