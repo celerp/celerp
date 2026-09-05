@@ -321,3 +321,41 @@ async def test_gateway_cancels_inflight_tasks_on_abnormal_disconnect(client, mon
                 await inflight
             except (asyncio.CancelledError, Exception):
                 pass
+
+
+@pytest.mark.asyncio
+async def test_gateway_send_self_terminates_on_wedged_socket(client, monkeypatch):
+    """A websocket send that never drains must not hang forever. The send is bounded by a
+    deadline: on a wedged socket it raises TimeoutError so the proxy task is freed and the
+    socket can be rebuilt, rather than pinning a relay slot indefinitely.
+
+    Observable: send_message returns control (raises) on its own deadline, well before the
+    outer guard. At head there is no deadline, so send_message never returns and only the
+    outer wait_for trips - which the elapsed-time assertion catches."""
+    import time
+    import celerp.gateway.client as gw
+
+    # Shrink the deadline so the test is fast; the behaviour under test is that a deadline
+    # fires, not its production seconds value. raising=False so that without a deadline the
+    # send still hangs and the elapsed assertion below is what fails - the red is the hang,
+    # never a missing symbol.
+    monkeypatch.setattr(gw, "_SEND_DEADLINE", 0.1, raising=False)
+
+    entered = asyncio.Event()
+
+    class _WedgedWS:
+        async def send(self, _data):
+            entered.set()
+            await asyncio.Event().wait()  # the frame never drains
+
+    client._ws = _WedgedWS()
+
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(client.send_message("hello_ack"), timeout=5)
+    elapsed = time.monotonic() - t0
+
+    assert entered.is_set(), "the send must have been attempted"
+    assert elapsed < 2.0, (
+        f"a wedged send must self-terminate on its own ~0.1s deadline, not hang to the "
+        f"outer 5s guard; took {elapsed:.2f}s")

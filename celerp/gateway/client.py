@@ -36,6 +36,10 @@ _AUTH_FAILED_MAX = 3
 # a revoke-then-reshare so it does not flap connect/disconnect).
 _REAP_INTERVAL = 15 * 60   # seconds
 _REAP_GRACE = 5 * 60       # seconds
+# A single websocket send that cannot be handed to the transport within this long means the
+# socket is wedged (a stalled or backpressured peer). Bound every send so it surfaces as an
+# error instead of pinning the proxy task holding a relay slot forever.
+_SEND_DEADLINE = 30        # seconds
 
 
 def _shop_key(handle: str | None) -> str:
@@ -792,7 +796,12 @@ class GatewayClient:
 
     @staticmethod
     async def _send(ws, message: dict) -> None:
-        await ws.send(json.dumps(message))
+        # Bound the send: a websocket send awaits until the frame is handed to the transport, and a
+        # stalled or backpressured peer would otherwise block it forever, pinning the proxy task and
+        # its relay slot. On the deadline the send is cancelled and TimeoutError surfaces to the
+        # caller, which lets the wedged socket be torn down and rebuilt.
+        async with asyncio.timeout(_SEND_DEADLINE):
+            await ws.send(json.dumps(message))
 
 
 # Module-level singleton — set by main.py lifespan
