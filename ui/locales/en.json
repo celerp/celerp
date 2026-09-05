@@ -2322,6 +2322,7 @@
   "documents.revert_return_tooltip": "Revert the received return. Disposes the returned inventory items and reverses the COGS journal entry.",
   "documents.rows_selected": "Rows selected: {n}",
   "documents.save_failed": "Save failed",
+  "documents.save_reload_action": "Reload",
   "documents.scan_add_btn": "Add",
   "documents.scan_add_count": "Scan items, then Add to count them",
   "documents.scan_added_prefix": "Added",

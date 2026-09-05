@@ -19,23 +19,94 @@ class APIError(Exception):
         super().__init__(f"API {status}: {detail}")
 
 
+class _SharedTransport(httpx.AsyncHTTPTransport):
+    """A shared bounded transport reused by every per-token AsyncClient.
+
+    httpx.AsyncClient.aclose() (and __aexit__) unconditionally closes its
+    transport, including one injected and shared across clients. With per-token
+    clients driving this one transport concurrently (asyncio.gather), the first
+    client to leave its `async with` block would close the connection pool out
+    from under a sibling request still reading its response, surfacing as a
+    ReadError. The per-client close is therefore a no-op here: the pool outlives
+    every client and is torn down only by shutdown_pool(), called once from the
+    UI app shutdown.
+    """
+
+    async def aclose(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc_info) -> None:
+        return None
+
+    async def shutdown_pool(self) -> None:
+        await super().aclose()
+
+
+# One shared bounded connection pool for every UI-to-API request. Each call still
+# gets its own cheap AsyncClient wrapper (a per-token Authorization header cannot be
+# shared across tokens), but they all drive requests through this single transport,
+# whose Limits cap how many connections the UI process can open into the API. Before
+# this, every _client()/_anon_client() call built a fresh AsyncClient with its own
+# pool, so a burst of requests opened an unbounded number of pools - a contributor to
+# the connection-pool exhaustion in the incident. A shared transport (not one shared
+# client) is the right shape here because auth differs per request; alt (d) in the
+# plan rejected a single global client for exactly that reason.
+_shared_transport: _SharedTransport | None = None
+
+# Lightweight observability for the UI client path: how many requests were driven
+# through the shared pool, logged on shutdown so pool pressure is visible.
+_ui_request_count = 0
+
+
+def _get_transport() -> _SharedTransport:
+    """Return the shared bounded transport, building it lazily on first use."""
+    global _shared_transport
+    if _shared_transport is None:
+        _shared_transport = _SharedTransport(
+            limits=httpx.Limits(max_connections=32, max_keepalive_connections=8),
+        )
+    return _shared_transport
+
+
+async def close_shared_client() -> None:
+    """Close the shared transport if one was built. Called from the UI app shutdown.
+
+    Safe to call when none was built. Logs the total request count as observability
+    for how much traffic the bounded pool carried this process lifetime."""
+    global _shared_transport
+    transport = _shared_transport
+    _shared_transport = None
+    logger.info("UI API client shutdown: %d requests served via shared pool", _ui_request_count)
+    if transport is not None:
+        try:
+            await transport.shutdown_pool()
+        except Exception:
+            pass
+
+
 def _client(token: str, timeout: float = 10.0) -> httpx.AsyncClient:
+    global _ui_request_count
+    _ui_request_count += 1
     from ui.config import API_BASE
     return httpx.AsyncClient(
         base_url=API_BASE,
         headers={"Authorization": f"Bearer {token}"},
         timeout=timeout,
         follow_redirects=True,
+        transport=_get_transport(),
     )
 
 
 def _anon_client(timeout: float = 10.0) -> httpx.AsyncClient:
     """Unauthenticated client (no Authorization header)."""
+    global _ui_request_count
+    _ui_request_count += 1
     from ui.config import API_BASE
     return httpx.AsyncClient(
         base_url=API_BASE,
         timeout=timeout,
         follow_redirects=True,
+        transport=_get_transport(),
     )
 
 
@@ -73,6 +144,8 @@ async def _anon_api_client(timeout: float = 10.0):
 @asynccontextmanager
 async def _ai_api_client(token: str, session_token: str, timeout: float = 10.0):
     """Authenticated client with X-Session-Token header for AI endpoints."""
+    global _ui_request_count
+    _ui_request_count += 1
     from ui.config import API_BASE
     try:
         async with httpx.AsyncClient(
@@ -80,6 +153,7 @@ async def _ai_api_client(token: str, session_token: str, timeout: float = 10.0):
             headers={"Authorization": f"Bearer {token}", "X-Session-Token": session_token},
             timeout=timeout,
             follow_redirects=True,
+            transport=_get_transport(),
         ) as c:
             yield c
     except httpx.TimeoutException as exc:
@@ -1393,16 +1467,62 @@ async def update_mfg_settings(token: str, mfg: dict) -> dict:
 # CSV export
 # ---------------------------------------------------------------------------
 
+async def _stream_csv(token: str, path: str, params: dict | None = None):
+    """GET a CSV export endpoint with the body streamed, never buffered. Returns
+    (chunk_iterator, headers).
+
+    The backend already streams these exports row by row; the UI must not re-read the
+    whole body into memory (a large export would then sit in UI RAM and defeat the
+    backend's streaming, pinning a pooled connection for the whole read). The caller
+    pipes the iterator straight into a StreamingResponse, and the httpx client + response
+    stay open until the iterator is exhausted. Content-Length is forwarded so the browser
+    can show a real download progress bar. Mirrors export_backup's streaming shape."""
+    from ui.config import API_BASE
+    client = _client(token, timeout=httpx.Timeout(300.0, connect=10.0))
+    try:
+        resp = await client.send(client.build_request("GET", path, params=params or {}), stream=True)
+    except httpx.TimeoutException as exc:
+        await client.aclose()
+        raise APIError(504, "The export timed out.") from exc
+    except httpx.ConnectError as exc:
+        await client.aclose()
+        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
+    if resp.status_code >= 400:
+        body = await resp.aread()
+        await resp.aclose()
+        await client.aclose()
+        try:
+            import json as _json
+            detail = _json.loads(body).get("detail", body.decode("utf-8", "replace"))
+        except Exception:
+            detail = body.decode("utf-8", "replace")
+        raise APIError(resp.status_code, detail)
+    headers = {
+        k: resp.headers[k]
+        for k in ("content-length", "content-disposition", "content-type")
+        if k in resp.headers
+    }
+
+    async def _iter():
+        try:
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return _iter(), headers
+
+
 async def export_items_csv(token: str, params: dict | None = None) -> bytes:
     async with _api_client(token) as c:
         r = _raise(await c.get("/items/export/csv", params=params or {}))
         return r.content
 
 
-async def export_docs_csv(token: str, params: dict | None = None) -> bytes:
-    async with _api_client(token) as c:
-        r = _raise(await c.get("/docs/export/csv", params=params or {}))
-        return r.content
+async def export_docs_csv(token: str, params: dict | None = None):
+    """GET /docs/export/csv, streamed. Returns (chunk_iterator, headers)."""
+    return await _stream_csv(token, "/docs/export/csv", params)
 
 
 async def export_contacts_csv(token: str, params: dict | None = None) -> bytes:
@@ -1442,6 +1562,40 @@ async def patch_list(token: str, entity_id: str, data: dict, expected_version: i
         if expected_version is not None:
             body["expected_version"] = expected_version
         return _raise(await c.patch(f"/lists/{entity_id}", json=body)).json()
+
+
+async def get_list_page(token: str, entity_id: str, offset: int = 0, limit: int = 100) -> dict:
+    """One bounded page of a list's stored lines, with the list header and page metadata.
+
+    Returns {"list": {...stored header without line_items, plus id and version...},
+    "items": [...raw stored slice...], "total": int, "version": int,
+    "item_meta": {entity_id: flattened item dict}} where items is the raw stored slice
+    of positions [offset:offset+limit) and item_meta is the catalog metadata for exactly
+    the page's ids (the server enriches it in the same call, so the detail view needs no
+    follow-up metadata read). The server hard-caps limit at 100 and applies the effective
+    value. An older server that omits item_meta leaves it absent and the caller degrades
+    to each line's stored values.
+    """
+    async with _api_client(token) as c:
+        return _raise(await c.get(
+            f"/lists/{entity_id}/page",
+            params={"offset": offset, "limit": limit},
+        )).json()
+
+
+async def patch_list_line_page(token: str, entity_id: str, page: list[dict], offset: int,
+                               original_count: int, expected_version: int | None) -> dict:
+    """Save one page slice of a list's lines by position.
+
+    Replaces the stored window [offset:offset+original_count) the client loaded with the
+    submitted page: a shorter page deletes tail rows, a longer one inserts. off-window rows
+    are untouched. Calls the slice endpoint directly rather than through _wrap_fields_changed,
+    so it does not trigger the extra full-list GET that the bare-field patch wrapper performs.
+    """
+    body: dict = {"line_items": page, "offset": offset, "original_count": original_count,
+                  "expected_version": expected_version}
+    async with _api_client(token) as c:
+        return _raise(await c.patch(f"/lists/{entity_id}/line-page", json=body)).json()
 
 
 # ── Inventory audits (a list_type=audit on the unified /lists lifecycle) ──────
@@ -1587,10 +1741,9 @@ async def delete_list_note(token: str, entity_id: str, note_id: str) -> dict:
         return _raise(await c.delete(f"/lists/{entity_id}/notes/{note_id}")).json()
 
 
-async def export_lists_csv(token: str, params: dict | None = None) -> bytes:
-    async with _api_client(token) as c:
-        r = _raise(await c.get("/lists/export/csv", params=params or {}))
-        return r.content
+async def export_lists_csv(token: str, params: dict | None = None):
+    """GET /lists/export/csv, streamed. Returns (chunk_iterator, headers)."""
+    return await _stream_csv(token, "/lists/export/csv", params)
 
 
 # ---------------------------------------------------------------------------

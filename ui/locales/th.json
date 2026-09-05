@@ -2219,6 +2219,7 @@
   "documents.revert_return_tooltip": "ย้อนกลับการรับคืนสินค้า นำรายการสินค้าคงคลังที่คืนมาออกและย้อนกลับรายการบัญชีต้นทุนขาย (COGS)",
   "documents.rows_selected": "เลือกแล้ว {n} แถว",
   "documents.save_failed": "บันทึกไม่สำเร็จ",
+  "documents.save_reload_action": "โหลดใหม่",
   "documents.scan_add_btn": "เพิ่ม",
   "documents.scan_add_count": "สแกนสินค้า แล้วกดเพิ่มเพื่อนับ",
   "documents.scan_added_prefix": "เพิ่มแล้ว",

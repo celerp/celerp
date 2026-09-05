@@ -1,14 +1,14 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""list_detail item-metadata must be bounded: ONE bulk call, never one per line.
+"""list_detail item-metadata must be bounded: enriched server-side, never fetched per line.
 
 A large list rendered the item-metadata map by fanning out one internal item
 fetch per line, so a 2000-line list issued ~2000 authenticated requests and
-exhausted the API DB pool. The renderer must instead issue a single bulk
-metadata call whose count is constant regardless of line count, and when that
-bulk call fails it must degrade to the stored line values (empty meta map), never
-fabricate metadata and never crash the page.
+exhausted the API DB pool. The page endpoint now enriches the visible slice and
+returns it as item_meta in the same body, so the renderer issues ZERO UI-side
+metadata calls regardless of line count; when the body carries no item_meta it
+degrades to the stored line values, never fabricating metadata and never crashing.
 """
 
 from __future__ import annotations
@@ -45,11 +45,37 @@ def _audit_list(n_lines: int) -> dict:
     }
 
 
-def _base_stubs(list_payload: dict) -> dict:
+def _page_side_effect(list_payload: dict, include_meta: bool = True):
+    """Serve one bounded page from the stored array, mirroring the /page endpoint:
+    the list header (stored state without line_items), the requested slice, and (as the
+    real server now does) an item_meta map for the slice unless include_meta is False."""
+    lines = list_payload.get("line_items", [])
+    header = {k: v for k, v in list_payload.items() if k != "line_items"}
+
+    async def _page(token, entity_id, offset: int = 0, limit: int = 100):
+        off = max(0, int(offset))
+        lim = max(1, min(int(limit), 100))
+        page_items = lines[off:off + lim]
+        body = {
+            "list": header,
+            "items": page_items,
+            "total": len(lines),
+            "version": list_payload.get("version", 1),
+        }
+        if include_meta:
+            body["item_meta"] = {li["item_id"]: _item_meta(li["item_id"])
+                                 for li in page_items if li.get("item_id")}
+        return body
+
+    return _page
+
+
+def _base_stubs(list_payload: dict, include_meta: bool = True) -> dict:
     """The api.* stubs list_detail touches, all safe defaults so the render reaches
     (and completes) the metadata block without external calls."""
     return {
-        "ui.api_client.get_list": AsyncMock(return_value=list_payload),
+        "ui.api_client.get_list_page": AsyncMock(
+            side_effect=_page_side_effect(list_payload, include_meta)),
         "ui.api_client.get_company": AsyncMock(return_value={"name": "Co", "settings": {}}),
         "ui.api_client.get_price_lists": AsyncMock(return_value=[]),
         "ui.api_client.get_taxes": AsyncMock(return_value=[]),
@@ -83,8 +109,9 @@ def _item_meta(eid: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_list_detail_bounded_metadata_calls(ui_app):
-    """A 2000-line list issues EXACTLY ONE bulk metadata call and never calls the
-    per-item get_item; the call count is constant, not proportional to line count."""
+    """A 2000-line list issues ZERO UI-side metadata calls: the enrichment arrives in the
+    page body's item_meta, so neither the per-item get_item nor a bulk get_items_metadata
+    runs, whatever the line count."""
     n = 2000
     get_item_spy = AsyncMock(side_effect=lambda token, eid: _item_meta(eid))
     bulk_spy = AsyncMock(side_effect=lambda token, eids: {e: _item_meta(e) for e in eids})
@@ -101,18 +128,20 @@ async def test_list_detail_bounded_metadata_calls(ui_app):
     assert r.status_code == 200, r.text
     assert get_item_spy.call_count == 0, (
         f"per-line fan-out must be gone; get_item called {get_item_spy.call_count} times")
-    assert bulk_spy.call_count == 1, (
-        f"exactly one bulk metadata call expected, got {bulk_spy.call_count}")
+    assert bulk_spy.call_count == 0, (
+        f"UI-side metadata fetching must be gone (the server enriches the page body); "
+        f"get_items_metadata called {bulk_spy.call_count} times")
 
 
 @pytest.mark.asyncio
-async def test_list_detail_bulk_failure_degrades_to_stored_values(ui_app):
-    """When the bulk metadata call raises, the page still renders (200) from stored
-    line values with an empty meta map; no fabricated metadata, no crash."""
-    bulk_spy = AsyncMock(side_effect=RuntimeError("bulk metadata unavailable"))
+async def test_list_detail_missing_item_meta_degrades_to_stored_values(ui_app):
+    """When the page body carries no item_meta (server enrichment unavailable), the page
+    still renders (200) from the stored line values; no fabricated metadata, no per-line
+    or bulk fallback fetch, no crash."""
+    bulk_spy = AsyncMock(side_effect=lambda token, eids: {e: _item_meta(e) for e in eids})
     get_item_spy = AsyncMock(side_effect=lambda token, eid: _item_meta(eid))
 
-    stubs = _base_stubs(_audit_list(5))
+    stubs = _base_stubs(_audit_list(5), include_meta=False)
     stubs["ui.api_client.get_item"] = get_item_spy
     stubs["ui.api_client.get_items_metadata"] = bulk_spy
 
@@ -122,7 +151,6 @@ async def test_list_detail_bulk_failure_degrades_to_stored_values(ui_app):
             r = await c.get("/lists/list:big", cookies=_cookies())
 
     assert r.status_code == 200, r.text
-    assert bulk_spy.call_count == 1, (
-        f"the single bulk call must be attempted, got {bulk_spy.call_count}")
-    assert get_item_spy.call_count == 0, (
-        "the failed bulk call must not fall back to per-line fan-out")
+    assert "Item 0" in r.text, "stored line description must still render when item_meta is absent"
+    assert get_item_spy.call_count == 0 and bulk_spy.call_count == 0, (
+        "an absent item_meta must degrade to stored values, never fall back to a UI-side fetch")

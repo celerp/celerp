@@ -2219,6 +2219,7 @@
   "documents.revert_return_tooltip": "受領済みの返品を取り消します。返品された在庫品を廃棄し、売上原価の仕訳を取り消します。",
   "documents.rows_selected": "選択された行：{n}",
   "documents.save_failed": "保存に失敗しました",
+  "documents.save_reload_action": "再読み込み",
   "documents.scan_add_btn": "追加",
   "documents.scan_add_count": "商品をスキャンし、追加して数えます",
   "documents.scan_added_prefix": "追加しました",

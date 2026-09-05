@@ -2219,6 +2219,7 @@
   "documents.revert_return_tooltip": "التراجع عن الإرجاع المستلم. يؤدي ذلك إلى التخلص من بنود المخزون المرتجعة وإلغاء القيد اليومي لتكلفة البضائع المباعة.",
   "documents.rows_selected": "الصفوف المحددة: {n}",
   "documents.save_failed": "فشل الحفظ",
+  "documents.save_reload_action": "إعادة التحميل",
   "documents.scan_add_btn": "إضافة",
   "documents.scan_add_count": "امسح العناصر، ثم اضغط على «إضافة» لإدراجها في الجرد",
   "documents.scan_added_prefix": "تمت الإضافة",

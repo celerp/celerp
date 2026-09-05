@@ -2219,6 +2219,7 @@
   "documents.revert_return_tooltip": "Revertir la devolución recibida. Elimina los artículos devueltos y revierte el asiento contable de costes de ventas.",
   "documents.rows_selected": "Filas seleccionadas: {n}",
   "documents.save_failed": "Error al guardar",
+  "documents.save_reload_action": "Recargar",
   "documents.scan_add_btn": "Añadir",
   "documents.scan_add_count": "Escanee los artículos y seleccione «Añadir» para incluirlos en el recuento",
   "documents.scan_added_prefix": "Añadido",

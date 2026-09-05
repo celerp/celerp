@@ -2219,6 +2219,7 @@
   "documents.revert_return_tooltip": "Reverter a devolução recebida. Descarte os itens de estoque devolvidos e reverta o lançamento contábil de custo dos produtos vendidos.",
   "documents.rows_selected": "Linhas selecionadas: {n}",
   "documents.save_failed": "Falha ao salvar",
+  "documents.save_reload_action": "Recarregar",
   "documents.scan_add_btn": "Adicionar",
   "documents.scan_add_count": "Digitalize os itens e selecione «Adicionar» para incluí-los na contagem",
   "documents.scan_added_prefix": "Adicionado",
