@@ -204,3 +204,42 @@ async def test_line_page_patch_window_cannot_exceed_loaded_array(client):
         assert 400 <= r.status_code < 500, r.text
         assert after == before, (
             f"a rejected over-wide window must write nothing; got {_ids(after)}")
+
+
+@pytest.mark.asyncio
+async def test_line_page_patch_window_cannot_exceed_page_limit(client):
+    """A page fetch returns at most the page cap (100 rows), so the client can never have
+    loaded a window wider than that. A claimed original_count above the cap - even one that
+    still fits INSIDE the stored array - is a forged window that would splice away rows
+    beyond the page the client actually read.
+
+    Prod hazard the end-of-array bounds check misses: 150 stored rows, offset 0,
+    original_count 149, a one-row page. The window fits the array (149 <= 150) so a pure
+    bounds check lets it through, and the splice collapses 148 rows the client could never
+    have loaded. The write must be rejected and every off-page row must survive.
+
+    Observable: all 150 rows survive, read back through the real API."""
+    t = await _register(client)
+    q = await _quotation(client, t)
+    lines = [{"item_id": f"item:{i}", "sku": f"SKU{i}", "description": f"Item {i}",
+              "quantity": 1, "unit_price": 1.0} for i in range(150)]
+    v = await _set_lines(client, t, q, lines)
+    before = (await _state(client, t, q))["line_items"]
+    assert len(before) == 150
+
+    # A window claiming 149 loaded rows - well past the 100-row page cap - replaced by one row.
+    # 149 <= 150, so the end-of-array bounds check alone would accept this and drop 148 rows.
+    page = [dict(before[0])]
+    r = await client.patch(f"/lists/{q}/line-page", headers=_h(t),
+                           json={"line_items": page, "offset": 0,
+                                 "original_count": 149, "expected_version": v})
+
+    after = (await _state(client, t, q))["line_items"]
+    if r.status_code == 200:
+        assert len(after) == 150, (
+            f"a window wider than the 100-row page cap must not drop rows the client never "
+            f"loaded; persisted {len(after)} rows, identities {_ids(after)}")
+    else:
+        assert 400 <= r.status_code < 500, r.text
+        assert _ids(after) == _ids(before), (
+            f"a rejected over-wide window must write nothing; persisted {len(after)} rows")

@@ -4303,6 +4303,15 @@ async def patch_list_line_page(
         original_count = len(page)
     elif original_count < 0:
         raise HTTPException(status_code=400, detail="original_count must be zero or greater")
+    elif original_count > _PAGE_LIMIT_MAX:
+        # A page fetch returns at most _PAGE_LIMIT_MAX rows, so the client can never have loaded a
+        # window wider than that. A claimed original_count above the cap - even one that still fits
+        # inside the stored array - is a forged window that would splice away rows beyond the page the
+        # client actually read (150 stored, offset 0, original_count 149, a one-row page fits the
+        # array yet collapses 148 unseen rows). Reject rather than mutate rows the client never loaded.
+        raise HTTPException(
+            status_code=400,
+            detail=f"original_count cannot exceed the {_PAGE_LIMIT_MAX}-line page limit")
     # The loaded window [offset:offset+original_count] must lie within the stored array: it is the
     # exact slice the client read, so it can neither start past the end nor run beyond it. A larger
     # claimed window would splice away tail rows the client never loaded and cannot have edited
