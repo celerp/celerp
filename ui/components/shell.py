@@ -616,13 +616,23 @@ window.celerpPoll = window.celerpPoll || function(name, url, onData, opts) {
   opts = opts || {};
   var interval = opts.interval || 8000;
   var maxErrorSkips = opts.maxErrorSkips || 8;
+  // Bound every fetch: a socket that wedges and never settles would otherwise leave
+  // inFlight true forever, and the single-flight guard would then skip every future
+  // tick, silently killing the poller until a page reload. Abort a fetch that has not
+  // settled within the deadline so it flows through the error/backoff branch and the
+  // next tick can start a fresh request. Default to just under one interval.
+  var fetchDeadline = opts.fetchDeadline || Math.max(interval - 1000, 4000);
   var inFlight = false;
   var errorCount = 0;   // consecutive errors, drives the backoff
   var skipTicks = 0;    // ticks to skip before the next attempt (backoff)
 
   function fire() {
     inFlight = true;
-    fetch(url, { cache: 'no-store' })
+    var controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    var deadline = setTimeout(function() {
+      if (controller) { try { controller.abort(); } catch (e) {} }
+    }, fetchDeadline);
+    fetch(url, { cache: 'no-store', signal: controller ? controller.signal : undefined })
       .then(function(r) {
         // A non-ok response (e.g. the server's 503 when its backend read fails) is an
         // error, not healthy data: reject so it flows through the same error/backoff
@@ -631,12 +641,14 @@ window.celerpPoll = window.celerpPoll || function(name, url, onData, opts) {
         return r.json();
       })
       .then(function(d) {
+        clearTimeout(deadline);
         inFlight = false;
         errorCount = 0;
         skipTicks = 0;
         try { onData(d); } catch (e) {}
       })
       .catch(function() {
+        clearTimeout(deadline);
         inFlight = false;
         try { onData(null); } catch (e) {}
         // Adaptive backoff: after each error wait an extra tick, capped, so a
