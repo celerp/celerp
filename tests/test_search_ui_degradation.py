@@ -249,6 +249,63 @@ async def test_third_party_scheme_relative_href_row_skipped(ui_client, monkeypat
     assert "evil.example" not in body
 
 
+def test_is_app_local_path_rejects_backslash_and_control():
+    # DEFECT B: the shared predicate must reject a backslash (browsers normalise
+    # "\" to "/", turning "/\evil.example" into an off-site redirect) and any
+    # ASCII control char, while still accepting a legitimate app-local path.
+    from ui.security import is_app_local_path
+    assert is_app_local_path("/inventory?x=1") is True
+    assert is_app_local_path("/\\evil.example") is False
+    assert is_app_local_path("//evil.example") is False
+    assert is_app_local_path("/inv\x01entory") is False
+    assert is_app_local_path("/tab\tpath") is False
+    assert is_app_local_path("/del\x7fpath") is False
+    assert is_app_local_path("https://evil.example") is False
+    assert is_app_local_path("") is False
+
+
+@pytest.mark.asyncio
+async def test_third_party_backslash_href_row_skipped(ui_client, monkeypatch):
+    # A backslash-bearing href resolves off-site in the browser, so the UI must
+    # skip it exactly like an explicit off-site scheme.
+    answer = {
+        "results": {
+            "acme-crm": {"items": [
+                {"id": "s1", "label": "Safe One", "href": "/acme/1"},
+                {"id": "e1", "label": "Evil One", "href": "/\\evil.example"},
+            ]},
+        },
+        "degraded_modules": [],
+    }
+    r, calls = await _search(ui_client, monkeypatch, answer)
+    assert r.status_code == 200
+    body = r.text
+    assert "Safe One" in body
+    assert "/acme/1" in body
+    assert "Evil One" not in body
+    assert "evil.example" not in body
+
+
+@pytest.mark.asyncio
+async def test_third_party_control_char_href_row_skipped(ui_client, monkeypatch):
+    # An href carrying an ASCII control char is unsafe in a link and is skipped.
+    answer = {
+        "results": {
+            "acme-crm": {"items": [
+                {"id": "s1", "label": "Safe One", "href": "/acme/1"},
+                {"id": "e1", "label": "Evil One", "href": "/inv\x01entory"},
+            ]},
+        },
+        "degraded_modules": [],
+    }
+    r, calls = await _search(ui_client, monkeypatch, answer)
+    assert r.status_code == 200
+    body = r.text
+    assert "Safe One" in body
+    assert "/acme/1" in body
+    assert "Evil One" not in body
+
+
 @pytest.mark.asyncio
 async def test_third_party_label_is_escaped(ui_client, monkeypatch):
     # A generic label is rendered as escaped text, never raw markup.

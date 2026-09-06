@@ -141,6 +141,28 @@ async def nonserializable_first_party_provider(session, company_id, role, q, lim
     return {"items": [{"id": "p-1", "name": object()}]}
 
 
+async def slow_counting_provider(session, company_id, role, q, limit):
+    # Hangs past the (test-shortened) provider timeout and records that it ran,
+    # so a test can assert how many slow providers the aggregate budget let run
+    # before it stopped waking the rest.
+    import asyncio
+    _invocation_calls.append("slow-counting")
+    await asyncio.sleep(2.0)
+    return {"items": [{"id": "slow-1"}]}
+
+
+async def backslash_href_provider(session, company_id, role, q, limit):
+    # A backslash-bearing href: browsers normalise "\" to "/", so "/\evil.example"
+    # resolves off-site (open redirect). It must be rejected like an off-site scheme.
+    return {"items": [{"id": "t-1", "label": "Evil", "href": "/\\evil.example"}]}
+
+
+async def control_char_href_provider(session, company_id, role, q, limit):
+    # An href carrying an ASCII control char: unsafe to place in a link, rejected
+    # like any other non-app-local value.
+    return {"items": [{"id": "t-1", "label": "Evil", "href": "/inv\x01entory"}]}
+
+
 @pytest.fixture(autouse=True)
 def _clear_invocation_log():
     _invocation_calls.clear()
@@ -461,6 +483,90 @@ async def test_timeout_then_rollback_failure_degrades_rest(client, session, regi
     assert "test-omega" in body["degraded_modules"]
     assert body["results"] == {}
     assert "never" not in _invocation_calls
+
+
+# ── Aggregate deadline ────────────────────────────────────────────────────────
+
+
+async def test_aggregate_deadline_keeps_completed_and_degrades_unrun(client, register_provider, monkeypatch):
+    # DEFECT A: search_provider is a public slot, so the provider count is
+    # unbounded. With only a per-provider timeout, N slow providers cost N x the
+    # per-provider budget in wall-clock, which overruns the UI's 10s client
+    # timeout and 504s the whole search, discarding the buckets that succeeded.
+    # A fixed aggregate deadline must stop waking providers once the budget is
+    # spent, return what completed, and degrade the rest.
+    import time
+    monkeypatch.setattr(_search_router, "_PROVIDER_TIMEOUT_SECONDS", 0.25, raising=False)
+    monkeypatch.setattr(_search_router, "_AGGREGATE_DEADLINE_SECONDS", 0.5, raising=False)
+
+    # One fast, good provider first: its bucket must survive, never be discarded.
+    register_provider("test-fast", f"{_THIS}:ok_items_provider", "items", "view_inventory")
+    # Six slow providers: the naive per-provider sum (6 x 0.25 = 1.5s) exceeds the
+    # aggregate deadline, so the budget must stop the later ones from running.
+    slow = [f"test-slow-{i}" for i in range(6)]
+    for m in slow:
+        register_provider(m, f"{_THIS}:slow_counting_provider", "items", "view_inventory")
+    headers = await _owner_headers(client)
+
+    start = time.monotonic()
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    elapsed = time.monotonic() - start
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # The completed bucket is returned, not discarded.
+    assert body["results"]["test-fast"] == {"items": [{"id": "prov-a-1", "name": "hit-widget"}]}
+    # Every slow provider is reported degraded (timed out, or never run once the
+    # budget was spent), so the partial answer stays honest.
+    for m in slow:
+        assert m in body["degraded_modules"], m
+    # The budget stopped later providers instead of waking all six.
+    assert _invocation_calls.count("slow-counting") < len(slow)
+    # The whole request finished near the aggregate deadline, well under the naive
+    # per-provider sum that would otherwise time the UI's client out.
+    assert elapsed < 1.0, elapsed
+
+
+# ── App-local href rejects backslash / control chars (open-redirect guard) ─────
+
+
+async def test_local_href_rejects_backslash_and_control():
+    # DEFECT B: a leading "/" that is not "//" is not sufficient. A backslash is
+    # normalised to "/" by browsers (open redirect), and control chars are unsafe
+    # in a link; both must be rejected. A legitimate app-local path is accepted.
+    from celerp.routers.search import _local_href
+    assert _local_href("/inventory?x=1") is True
+    assert _local_href("/\\evil.example") is False
+    assert _local_href("//evil.example") is False
+    assert _local_href("/inv\x01entory") is False
+    assert _local_href("/tab\tpath") is False
+    assert _local_href("/del\x7fpath") is False
+    assert _local_href("https://evil.example") is False
+    assert _local_href("") is False
+
+
+async def test_third_party_backslash_href_degrades(client, register_provider):
+    register_provider("acme", f"{_THIS}:backslash_href_provider", "items", "view_inventory",
+                      first_party=False)
+    headers = await _owner_headers(client)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "acme" in body["degraded_modules"]
+    assert "acme" not in body["results"]
+
+
+async def test_third_party_control_char_href_degrades(client, register_provider):
+    register_provider("acme", f"{_THIS}:control_char_href_provider", "items", "view_inventory",
+                      first_party=False)
+    headers = await _owner_headers(client)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "acme" in body["degraded_modules"]
+    assert "acme" not in body["results"]
 
 
 # ── Per-company module enablement ─────────────────────────────────────────────
