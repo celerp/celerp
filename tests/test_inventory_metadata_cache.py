@@ -142,7 +142,7 @@ async def test_returned_snapshot_is_defensively_copied(monkeypatch):
     _install_counting_getters(monkeypatch)
     first = await api.get_inventory_metadata("tok")
     first.units.append({"name": "poisoned"})
-    first.company["currency"] = "XXX"
+    first.company["currency"] = "ZZZ"
     second = await api.get_inventory_metadata("tok")
     # A caller mutating what it read cannot corrupt the stored snapshot.
     assert second.units == [{"name": "each"}]
