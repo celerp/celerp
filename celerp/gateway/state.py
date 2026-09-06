@@ -148,12 +148,22 @@ def _validated_offer(offer):
 
 
 def _normalized_implementation(implementation):
-    """Return the implementation dict with a validated support_url, or None when
-    the block is unusable. A present-but-invalid support_url drops the whole
-    block (fail closed) so no partner identity carrying a hostile URL survives.
+    """Return the implementation dict with validated fields, or None when the
+    block is unusable. partner_id is required and must be a non-empty string;
+    display_name, support_email, and status are optional but must be strings
+    when present. A present-but-invalid support_url, or any field of the wrong
+    shape, drops the whole block (fail closed) so no malformed partner
+    identity survives.
     """
     if not isinstance(implementation, dict):
         return None
+    partner_id = implementation.get("partner_id")
+    if not isinstance(partner_id, str) or not partner_id:
+        return None
+    for key in ("display_name", "support_email", "status"):
+        value = implementation.get(key)
+        if value is not None and not isinstance(value, str):
+            return None
     raw = implementation.get("support_url")
     if raw is not None:
         safe = _safe_support_url(raw)

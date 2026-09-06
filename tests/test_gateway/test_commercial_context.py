@@ -477,13 +477,55 @@ def test_set_context_bad_support_url_drops_implementation():
 def test_set_context_valid_support_url_kept():
     """A valid https support_url keeps the implementation block (positive
     control: the ingress guard must not drop a genuine partner)."""
-    impl = {"display_name": "Partner Co",
+    impl = {"partner_id": "partner-1", "display_name": "Partner Co",
             "support_url": "https://partner.example.com/support"}
     assert gw_state.set_commercial_context(
         _ctx(version=1, mode="partner_managed", implementation=impl)) is True
     identity = gw_state.get_partner_identity()
     assert identity is not None
     assert identity["support_url"] == "https://partner.example.com/support"
+
+
+def test_set_context_missing_partner_id_drops_implementation():
+    """An implementation block with no partner_id is dropped (fail closed): a
+    relay-managed identity without an id is not a usable identity."""
+    impl = {"display_name": "Partner Co",
+            "support_url": "https://partner.example.com/support"}
+    assert gw_state.set_commercial_context(
+        _ctx(version=1, mode="partner_managed", implementation=impl)) is True
+    assert gw_state.get_partner_identity() is None
+
+
+def test_set_context_nonstring_partner_id_drops_implementation():
+    """A non-string, or empty-string, partner_id drops the block."""
+    for bad_id in (42, "", None):
+        gw_state._commercial_context = {}
+        impl = {"partner_id": bad_id, "display_name": "Partner Co"}
+        assert gw_state.set_commercial_context(
+            _ctx(version=1, mode="partner_managed", implementation=impl)) is True
+        assert gw_state.get_partner_identity() is None, f"partner_id={bad_id!r} was not rejected"
+
+
+def test_set_context_nonstring_display_name_drops_implementation():
+    """A non-string display_name, support_email, or status drops the block."""
+    for key in ("display_name", "support_email", "status"):
+        gw_state._commercial_context = {}
+        impl = {"partner_id": "partner-1", key: 42}
+        assert gw_state.set_commercial_context(
+            _ctx(version=1, mode="partner_managed", implementation=impl)) is True
+        assert gw_state.get_partner_identity() is None, f"{key}=42 was not rejected"
+
+
+def test_set_context_well_typed_implementation_kept():
+    """A well-typed implementation with every optional field present survives
+    ingress (positive control)."""
+    impl = {"partner_id": "partner-1", "display_name": "Partner Co",
+            "support_email": "support@partner.example.com", "status": "active"}
+    assert gw_state.set_commercial_context(
+        _ctx(version=1, mode="partner_managed", implementation=impl)) is True
+    identity = gw_state.get_partner_identity()
+    assert identity is not None
+    assert identity["partner_id"] == "partner-1"
 
 
 # -- nested-offer strict validation at ingress (BLOCKER 4) -------------------
