@@ -346,8 +346,8 @@ _static_dir = os.path.join(os.path.dirname(__file__), "static")
 async def proxy_attachment(request: Request, path: str) -> Response:
     if not request.cookies.get(COOKIE_NAME):
         return RedirectResponse("/login", status_code=302)
-    from ui.config import API_BASE, get_company_id
-    import httpx
+    from ui.config import get_company_id
+    import ui.api_client as api
     company_id = get_company_id(request)
     if not company_id:
         # Cookie present but no readable company claim: the session is unusable.
@@ -359,9 +359,10 @@ async def proxy_attachment(request: Request, path: str) -> Response:
     segments = [s for s in path.split("/") if s not in ("", ".")]
     if ".." in segments or not segments or segments[0] != company_id:
         return Response(status_code=404)
-    url = f"{API_BASE}/static/attachments/{'/'.join(segments)}"
-    async with httpx.AsyncClient() as c:
-        r = await c.get(url)
+    # Attachments can be large binaries, so they ride the small bulk transport and
+    # never contend with interactive page traffic for a connection.
+    async with api._local_client(timeout=30.0, follow_redirects=False, bulk=True) as c:
+        r = await c.get(f"/static/attachments/{'/'.join(segments)}")
     return Response(content=r.content, media_type=r.headers.get("content-type", "application/octet-stream"), status_code=r.status_code)
 
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
@@ -457,8 +458,7 @@ if __name__ == "__main__":
 # Visit http://localhost:8080/debug/pool, /debug/sse, /debug/caches in the browser.
 if os.environ.get("CELERP_DEBUG") == "1":
     from starlette.responses import JSONResponse as _JSONResponse
-    from ui.config import API_BASE as _DEBUG_API_BASE
-    import httpx as _httpx
+    import ui.api_client as _api
     import time as _time
     import uuid as _uuid
 
@@ -493,8 +493,8 @@ if os.environ.get("CELERP_DEBUG") == "1":
             if not token:
                 return _JSONResponse({"error": "not authenticated"}, status_code=401)
             try:
-                async with _httpx.AsyncClient(base_url=_DEBUG_API_BASE, timeout=10.0) as c:
-                    r = await c.get(path, headers={"Authorization": f"Bearer {token}"})
+                async with _api._local_client(token, timeout=10.0, follow_redirects=False) as c:
+                    r = await c.get(path)
                     return _JSONResponse(r.json(), status_code=r.status_code)
             except Exception as exc:
                 return _JSONResponse({"error": str(exc)}, status_code=503)

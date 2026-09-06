@@ -15,6 +15,7 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
+import ui.api_client as api
 from ui.config import get_token as _token
 from ui.i18n import t
 
@@ -41,40 +42,37 @@ def setup_routes(app):
 
     @app.get("/stars/cta")
     async def proxy_star_cta(request: Request) -> Response:
-        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return Response("{}", media_type="application/json")
         params = {"medium": request.query_params.get("medium", "footer")}
-        async with httpx.AsyncClient(base_url=API_BASE, timeout=10.0) as c:
+        async with api._local_client(token, timeout=10.0, follow_redirects=False) as c:
             try:
-                r = await c.get("/stars/cta", params=params, headers={"Authorization": f"Bearer {token}"})
+                r = await c.get("/stars/cta", params=params)
                 return Response(r.content, media_type="application/json", status_code=r.status_code)
             except (httpx.ConnectError, httpx.TimeoutException):
                 return Response("{}", media_type="application/json")
 
     @app.get("/stars/badge")
     async def proxy_star_badge(request: Request) -> Response:
-        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return Response('{"badge":null}', media_type="application/json")
-        async with httpx.AsyncClient(base_url=API_BASE, timeout=10.0) as c:
+        async with api._local_client(token, timeout=10.0, follow_redirects=False) as c:
             try:
-                r = await c.get("/stars/badge", headers={"Authorization": f"Bearer {token}"})
+                r = await c.get("/stars/badge")
                 return Response(r.content, media_type="application/json", status_code=r.status_code)
             except (httpx.ConnectError, httpx.TimeoutException):
                 return Response('{"badge":null}', media_type="application/json")
 
     @app.post("/stars/dismiss")
     async def proxy_star_dismiss(request: Request) -> Response:
-        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return Response(status_code=401)
-        async with httpx.AsyncClient(base_url=API_BASE, timeout=10.0) as c:
+        async with api._local_client(token, timeout=10.0, follow_redirects=False) as c:
             try:
-                r = await c.post("/stars/dismiss", headers={"Authorization": f"Bearer {token}"})
+                r = await c.post("/stars/dismiss")
                 return Response(r.content, status_code=r.status_code)
             except (httpx.ConnectError, httpx.TimeoutException):
                 return Response(status_code=503)
@@ -83,17 +81,15 @@ def setup_routes(app):
     async def stars_claim(request: Request):
         """Badge-claim handshake. No cred -> bounce to the relay verify flow with this
         page as the return URL. With cred -> store the badge and confirm."""
-        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
 
         cred = request.query_params.get("cred")
         if cred:
-            async with httpx.AsyncClient(base_url=API_BASE, timeout=10.0) as c:
+            async with api._local_client(token, timeout=10.0, follow_redirects=False) as c:
                 try:
-                    r = await c.post("/stars/badge", json={"cred": cred},
-                                     headers={"Authorization": f"Bearer {token}"})
+                    r = await c.post("/stars/badge", json={"cred": cred})
                     data = r.json()
                 except Exception:
                     return HTMLResponse(_claim_result_page(
@@ -107,10 +103,9 @@ def setup_routes(app):
 
         # No cred yet: ask the API for the relay verify-start URL, return here after.
         return_url = str(request.base_url).rstrip("/") + "/stars/claim"
-        async with httpx.AsyncClient(base_url=API_BASE, timeout=10.0) as c:
+        async with api._local_client(token, timeout=10.0, follow_redirects=False) as c:
             try:
-                r = await c.get("/stars/badge/verify-url", params={"return_url": return_url},
-                                headers={"Authorization": f"Bearer {token}"})
+                r = await c.get("/stars/badge/verify-url", params={"return_url": return_url})
                 url = r.json().get("url")
             except Exception:
                 url = None

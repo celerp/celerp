@@ -1985,17 +1985,12 @@ def setup_routes(app):
     @app.get("/api/items/{entity_id}/label-templates")
     async def item_label_templates(request: Request, entity_id: str):
         """Return label template dropdown options for the print button."""
-        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         try:
-            import httpx
-            async with httpx.AsyncClient(timeout=5) as c:
-                r = await c.get(
-                    f"{API_BASE}/api/labels/templates",
-                    headers={"Authorization": f"Bearer {token}"},
-                )
+            async with api._local_client(token, timeout=5.0, follow_redirects=False) as c:
+                r = await c.get("/api/labels/templates")
                 templates = r.json().get("items", []) if r.status_code == 200 else []
         except Exception:
             templates = []

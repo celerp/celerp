@@ -1629,14 +1629,11 @@ def setup_routes(app):
     @app.get("/settings/cloud-status")
     async def cloud_status_fragment(request: Request):
         """HTMX fragment: render cloud connection status card."""
-        import httpx
         from celerp.config import ensure_instance_id
-        from ui.config import API_BASE
         token = _token(request)
         try:
-            headers = {"Authorization": f"Bearer {token}"} if token else {}
-            async with httpx.AsyncClient(base_url=API_BASE, timeout=3.0) as c:
-                r = await c.get("/settings/cloud-status", headers=headers)
+            async with api._local_client(token, timeout=3.0, follow_redirects=False) as c:
+                r = await c.get("/settings/cloud-status")
                 data = r.json() if r.status_code == 200 else {}
         except Exception:
             data = {}
@@ -1749,17 +1746,14 @@ def setup_routes(app):
     @app.get("/topbar-relay-status")
     async def topbar_relay_status(request: Request):
         """HTMX fragment: return the relay dot span for the topbar user menu."""
-        import httpx
         from fasthtml.common import to_xml
-        from ui.config import API_BASE
         from ui.i18n import get_lang
         token = _token(request)
         lang = get_lang(request)
         data: dict = {}
         try:
-            headers = {"Authorization": f"Bearer {token}"} if token else {}
-            async with httpx.AsyncClient(base_url=API_BASE, timeout=2.0) as c:
-                r = await c.get("/settings/cloud-status", headers=headers)
+            async with api._local_client(token, timeout=2.0, follow_redirects=False) as c:
+                r = await c.get("/settings/cloud-status")
                 if r.status_code == 200:
                     data = r.json()
         except Exception:
@@ -2286,17 +2280,15 @@ def setup_routes(app):
     @app.post("/settings/factory-reset")
     async def factory_reset_ui(request: Request):
         """Proxy factory-reset to the API. Owner only."""
-        import httpx
         role = _get_role(request)
         from celerp.services.permissions import role_has_permission
         if not role_has_permission({}, role, "manage_company_lifecycle"):
             return Div(t("settings.owner_role_required"), cls="flash flash--error")
-        from ui.config import API_BASE, COOKIE_NAME, REFRESH_COOKIE_NAME
+        from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME
         token = _token(request)
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
         try:
-            async with httpx.AsyncClient(base_url=API_BASE, timeout=30.0) as c:
-                r = await c.post("/system/factory-reset", headers=headers)
+            async with api._local_client(token, timeout=30.0, follow_redirects=False) as c:
+                r = await c.post("/system/factory-reset")
             if r.status_code != 200:
                 detail = r.json().get("detail", t("settings.reset_failed")) if r.headers.get("content-type", "").startswith("application/json") else t("settings.reset_failed")
                 return Div(detail, cls="flash flash--error")
@@ -2314,17 +2306,14 @@ def setup_routes(app):
     @app.delete("/settings/company/deactivate")
     async def deactivate_company_ui(request: Request):
         """Deactivate the current company and redirect to login. Owner only."""
-        import httpx
         role = _get_role(request)
         from celerp.services.permissions import role_has_permission
         if not role_has_permission({}, role, "manage_company_lifecycle"):
             return Div(t("settings.only_owner_can_deactivate"), cls="flash flash--error")
-        from ui.config import API_BASE
         token = _token(request)
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
         try:
-            async with httpx.AsyncClient(base_url=API_BASE, timeout=5.0) as c:
-                r = await c.delete("/companies/me", headers=headers)
+            async with api._local_client(token, timeout=5.0, follow_redirects=False) as c:
+                r = await c.delete("/companies/me")
             if r.status_code != 200:
                 return Div(r.json().get("detail", t("settings.deactivation_failed")), cls="flash flash--error")
         except Exception as exc:
@@ -2332,8 +2321,8 @@ def setup_routes(app):
         from starlette.responses import RedirectResponse
         # Check if the user has other active companies
         try:
-            async with httpx.AsyncClient(base_url=API_BASE, timeout=5.0) as c:
-                r2 = await c.get("/auth/my-companies", headers=headers)
+            async with api._local_client(token, timeout=5.0, follow_redirects=False) as c:
+                r2 = await c.get("/auth/my-companies")
             remaining = r2.json().get("total", 0) if r2.status_code == 200 else 0
         except Exception:
             remaining = 0
@@ -2546,10 +2535,8 @@ def setup_routes(app):
     async def backup_import(request: Request):
         """Import a .celerp-backup archive. Multipart upload forwarded to API."""
 
-        import ui.api_client as _api
         import httpx
         from fasthtml.common import Div, to_xml
-        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -2572,7 +2559,7 @@ def setup_routes(app):
             await asyncio.to_thread(shutil.copyfileobj, file_field.file, tmp)
             tmp.close()
             try:
-                async with httpx.AsyncClient(base_url=API_BASE, headers={"Authorization": f"Bearer {token}"}, timeout=300) as c:
+                async with api._local_client(token, timeout=300.0, follow_redirects=False, bulk=True) as c:
                     with open(tmp.name, "rb") as fh:
                         r = await c.post("/backup/import", files={"file": (file_field.filename, fh, file_field.content_type or "application/octet-stream")})
             finally:

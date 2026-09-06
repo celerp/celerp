@@ -9,6 +9,7 @@ from sqlalchemy import text as _sql_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from celerp.capacity import REQUEST_DB_MAX_OVERFLOW, REQUEST_DB_POOL_SIZE
 from celerp.config import settings
 
 # Shared advisory-lock key that serialises schema migrations across every process
@@ -33,11 +34,13 @@ def mask_db_credentials(text: str) -> str:
 _REQUEST_LOCK_TIMEOUT_MS = "3000"
 _REQUEST_STATEMENT_TIMEOUT_MS = "30000"
 
-# Pool budget: total_possible = (api_workers * (pool_size + max_overflow))
-#                              + (gui_workers * (gui_pool_size + gui_max_overflow))
-# Default workers 2 API + 1 GUI → 2*(10+5) + 1*(5+5) = 40 connections max.
-# Postgres default max_connections=100 leaves 60 for migrations, admin tools, etc.
-# If you increase worker counts, recalculate this budget before deploying.
+# Pool budget: the app runs one API worker (both `celerp start` and the Electron
+# shell launch uvicorn without --workers), so this single process owns one request
+# pool of REQUEST_DB_POOL_SIZE base connections plus REQUEST_DB_MAX_OVERFLOW under
+# burst. The base size is also the web UI's interactive connection ceiling, kept in
+# lockstep through celerp.capacity so the two never drift. Postgres default
+# max_connections=100 leaves ample headroom for migrations, admin tools, and
+# background jobs beyond this pool.
 if os.environ.get("CELERP_TEST_NULLPOOL"):
     # Test mode: a fresh connection per use that closes on return, so a failed
     # test can't leave a poisoned/locked connection lingering in a pooled
@@ -49,8 +52,8 @@ else:
         settings.database_url,
         future=True,
         pool_pre_ping=True,
-        pool_size=10,
-        max_overflow=5,
+        pool_size=REQUEST_DB_POOL_SIZE,
+        max_overflow=REQUEST_DB_MAX_OVERFLOW,
         # Bound how long any query may wait on a lock or run, so a stuck query is
         # cancelled instead of pinning one of the few pooled connections for the
         # full request lifetime (lock_timeout 3s, statement_timeout 30s, in ms).

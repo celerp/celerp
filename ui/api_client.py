@@ -8,7 +8,19 @@ from contextlib import asynccontextmanager
 
 import httpx
 
+from celerp.capacity import REQUEST_DB_POOL_SIZE
+
 logger = logging.getLogger(__name__)
+
+# The bulk transport carries the handful of long, finite local operations (backup
+# bootstrap/import, large attachment transfer) so they never hold an interactive
+# connection slot. Two is enough for the concurrent long operations the UI can
+# start, and keeping it small guarantees a page fan-out cannot be starved by them.
+_BULK_MAX_CONNECTIONS = 2
+# How long a request waits for a free pooled connection before failing fast rather
+# than hanging: a saturated pool should surface a temporary error, not an
+# indefinite stall.
+_POOL_ACQUIRE_TIMEOUT = 2.0
 
 
 class APIError(Exception):
@@ -52,6 +64,7 @@ class _SharedTransport(httpx.AsyncHTTPTransport):
 # client) is the right shape here because auth differs per request; alt (d) in the
 # plan rejected a single global client for exactly that reason.
 _shared_transport: _SharedTransport | None = None
+_bulk_transport: _SharedTransport | None = None
 
 # Lightweight observability for the UI client path: how many requests were driven
 # through the shared pool, logged on shutdown so pool pressure is visible.
@@ -59,13 +72,76 @@ _ui_request_count = 0
 
 
 def _get_transport() -> _SharedTransport:
-    """Return the shared bounded transport, building it lazily on first use."""
+    """Return the shared interactive transport, building it lazily on first use.
+
+    Its connection ceiling is the API's own request pool size, so an interactive
+    page fan-out can never ask the pool for more connections than it holds for
+    interactive work.
+    """
     global _shared_transport
     if _shared_transport is None:
         _shared_transport = _SharedTransport(
-            limits=httpx.Limits(max_connections=32, max_keepalive_connections=8),
+            limits=httpx.Limits(
+                max_connections=REQUEST_DB_POOL_SIZE, max_keepalive_connections=8
+            ),
         )
     return _shared_transport
+
+
+def _get_bulk_transport() -> _SharedTransport:
+    """Return the shared bulk transport for long, finite local operations.
+
+    Separate and small (two connections) so backup import and large attachment
+    transfers cannot consume the interactive pool's slots.
+    """
+    global _bulk_transport
+    if _bulk_transport is None:
+        _bulk_transport = _SharedTransport(
+            limits=httpx.Limits(
+                max_connections=_BULK_MAX_CONNECTIONS, max_keepalive_connections=1
+            ),
+        )
+    return _bulk_transport
+
+
+def _local_client(
+    token: str | None = None,
+    *,
+    timeout: float | httpx.Timeout = 10.0,
+    follow_redirects: bool = True,
+    bulk: bool = False,
+    headers: dict | None = None,
+) -> httpx.AsyncClient:
+    """Build an AsyncClient sharing one of the two bounded local transports.
+
+    This is the single place UI code creates a client into the local API, so no
+    call site opens its own private pool. Each site keeps control of the behavior
+    that differs between them: an optional bearer token, its timeout, whether
+    redirects are followed (proxy routes that inspect a raw redirect pass
+    follow_redirects=False), and interactive versus bulk transport selection. A
+    finite pool-acquire timeout is applied so a saturated pool fails fast instead
+    of hanging.
+    """
+    global _ui_request_count
+    _ui_request_count += 1
+    from ui.config import API_BASE
+
+    merged_headers = dict(headers or {})
+    if token is not None:
+        merged_headers["Authorization"] = f"Bearer {token}"
+
+    if isinstance(timeout, httpx.Timeout):
+        effective_timeout = timeout
+    else:
+        effective_timeout = httpx.Timeout(timeout, pool=_POOL_ACQUIRE_TIMEOUT)
+
+    return httpx.AsyncClient(
+        base_url=API_BASE,
+        headers=merged_headers or None,
+        timeout=effective_timeout,
+        follow_redirects=follow_redirects,
+        transport=_get_bulk_transport() if bulk else _get_transport(),
+    )
 
 
 async def close_shared_client() -> None:
@@ -75,7 +151,7 @@ async def close_shared_client() -> None:
     tasks and clears the coordinator's state so nothing is left awaiting a pool
     that is going away. Logs the total request count as observability for how much
     traffic the bounded pool carried this process lifetime."""
-    global _shared_transport
+    global _shared_transport, _bulk_transport
     inflight = list(_refresh_inflight.values())
     _refresh_inflight.clear()
     _refresh_success.clear()
@@ -86,10 +162,11 @@ async def close_shared_client() -> None:
             await task
         except BaseException:
             pass
-    transport = _shared_transport
+    transports = [t for t in (_shared_transport, _bulk_transport) if t is not None]
     _shared_transport = None
+    _bulk_transport = None
     logger.info("UI API client shutdown: %d requests served via shared pool", _ui_request_count)
-    if transport is not None:
+    for transport in transports:
         try:
             await transport.shutdown_pool()
         except Exception:
