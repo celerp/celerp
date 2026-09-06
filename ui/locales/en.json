@@ -3085,5 +3085,11 @@
   "settings_cloud.saved_restart_to_apply": "✓ Saved. Restart Celerp to apply the change.",
   "settings_cloud.restored_restart_to_apply": "↩ Previous database settings restored. Restart Celerp to apply.",
   "settings_cloud.s3_support_unavailable": "S3 support is not available in this build",
-  "settings_cloud.s3_connection_failed": "Connection failed"
+  "settings_cloud.s3_connection_failed": "Connection failed",
+  "settings_cloud.password_unchanged_placeholder": "Unchanged",
+  "settings_cloud.clear_password_label": "Clear the saved password",
+  "settings_cloud.invalid_port": "Enter a valid port number (1-65535)",
+  "settings_cloud.db_connection_failed": "Connection failed. Check the host, port, and credentials.",
+  "settings_cloud.invalid_storage_backend": "Select a valid storage backend",
+  "settings_cloud.invalid_s3_endpoint": "Enter a valid https:// endpoint"
 }
