@@ -211,6 +211,46 @@ async def test_company_read_failure_does_not_substitute_empty_settings(ui_client
 
 
 @pytest.mark.asyncio
+async def test_company_read_failure_reads_company_exactly_once(ui_client, monkeypatch):
+    # The failed company read is the page's only company read: the error shell it
+    # renders must not perform a hidden SECOND read. A second read on the error
+    # path both doubles load during an outage and (below) fabricates a default
+    # sidebar from the settings that read cannot return.
+    calls = _install_inventory_getters(monkeypatch, company_error=APIError(503, "saturated"))
+    r = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
+    assert r.status_code == 200
+    assert "flash--error" in r.text
+    assert calls["company"] == 1, "no hidden second company read on the error path"
+
+
+@pytest.mark.asyncio
+async def test_error_page_omits_default_granted_revoked_nav(ui_client, monkeypatch):
+    # When the company read fails there is no authorization context, so the error
+    # page must render a minimal shell with NO permission-filtered sidebar. Building
+    # that sidebar from registry DEFAULT grants would present, as available, an entry
+    # the company had revoked. "Company Details" is gated by manage_company_settings,
+    # which the registry grants owner by default, so it is exactly such an entry.
+    from ui.i18n import t
+    company_details = t("nav.company_details", "en")
+
+    # Positive control: on a healthy page the owner does see the default-granted
+    # nav entry, so its absence below is a real omission and not a missing label.
+    _install_inventory_getters(monkeypatch)
+    ok = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
+    assert ok.status_code == 200
+    assert company_details in ok.text
+
+    # Company read fails: the error page must show neither that default-granted
+    # entry nor any permission-filtered sidebar link.
+    _install_inventory_getters(monkeypatch, company_error=APIError(503, "saturated"))
+    err = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
+    assert err.status_code == 200
+    assert "flash--error" in err.text
+    assert company_details not in err.text
+    assert "nav-link" not in err.text, "no permission-filtered sidebar on the no-auth error page"
+
+
+@pytest.mark.asyncio
 async def test_revoked_view_inventory_denied_even_when_metadata_fails(ui_client, monkeypatch):
     # Item 2: a dynamically revoked view_inventory user is redirected away even
     # when the static metadata read fails, because company (and its live

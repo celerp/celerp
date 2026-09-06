@@ -1443,23 +1443,15 @@ def _shell_js_i18n(lang: str = "en") -> dict:
     }
 
 
-async def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None, company_settings: dict | None = None) -> FT:
-    """Outer chrome: sidebar nav + top header + content area."""
-    from ui.config import get_user_email, get_relay_info, get_token
-    role = get_role(request) if request is not None else "owner"
+def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
+    """The outer HTML document shared by every full-chrome page: head assets, the
+    supplied nav, top bar, banners, main content, and footer.
+
+    The nav is passed in, never built here: `base_shell` supplies the
+    permission-filtered sidebar, `minimal_shell` a nav-less one for pages rendered
+    without an authorization context. `lang` is already resolved by the caller."""
+    from ui.config import get_user_email
     user_email = get_user_email(request) if request is not None else None
-    if company_settings is None:
-        company_settings = {}
-        if request is not None and (_tok := get_token(request)):
-            try:
-                import ui.api_client as _api
-                _co = await _api.get_company(_tok)
-                company_settings = (_co.get("settings") if isinstance(_co, dict) else {}) or {}
-            except Exception:
-                company_settings = {}
-    relay_info: dict = {}
-    if request is not None:
-        lang = get_lang(request)
     head_items = [
         Meta(charset="utf-8"),
         Meta(name="viewport", content="width=device-width, initial-scale=1"),
@@ -1487,9 +1479,9 @@ async def base_shell(*content, title: str = "Celerp", nav_active: str = "", comp
         Head(*head_items),
         Body(
             Div(
-                _sidebar(nav_active, lang=lang, role=role, request=request, settings=company_settings),
+                nav,
                 Div(
-                    _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info),
+                    _topbar(companies or [], lang=lang, user_email=user_email, relay_info={}),
                     _HEALTH_BANNER_HTML,
                     _backup_banner_html(lang),
                     _GLOBAL_UI_ERROR_HTML,
@@ -1510,6 +1502,58 @@ async def base_shell(*content, title: str = "Celerp", nav_active: str = "", comp
             ),
             cls="app-body",
         ),
+    )
+
+
+def _minimal_sidebar() -> FT:
+    """Sidebar chrome with no navigation - the logo only.
+
+    Used by `minimal_shell` for pages rendered with no authorization context, so no
+    permission-dependent nav is ever computed or shown."""
+    return Nav(
+        Div(
+            A(Img(src="/static/logo.png", alt="Celerp", cls="sidebar-logo"), href="/dashboard"),
+            cls="sidebar-logo-wrap",
+        ),
+        cls="sidebar",
+    )
+
+
+async def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None, company_settings: dict | None = None) -> FT:
+    """Outer chrome: permission-filtered sidebar nav + top header + content area."""
+    from ui.config import get_token
+    role = get_role(request) if request is not None else "owner"
+    if company_settings is None:
+        company_settings = {}
+        if request is not None and (_tok := get_token(request)):
+            try:
+                import ui.api_client as _api
+                _co = await _api.get_company(_tok)
+                company_settings = (_co.get("settings") if isinstance(_co, dict) else {}) or {}
+            except Exception:
+                company_settings = {}
+    if request is not None:
+        lang = get_lang(request)
+    sidebar = _sidebar(nav_active, lang=lang, role=role, request=request, settings=company_settings)
+    return _shell_document(
+        *content, nav=sidebar, title=title, companies=companies,
+        extra_head=extra_head, lang=lang, request=request,
+    )
+
+
+def minimal_shell(*content, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
+    """Outer chrome with NO permission-dependent navigation.
+
+    For pages rendered when the company authorization state is unavailable - e.g.
+    the fresh company read that authorizes a page has itself failed. It shows the
+    header/top-bar chrome and the content, never a sidebar built from registry
+    DEFAULT grants (which would present a company-revoked capability as available)
+    and never a second company read to try to rebuild one."""
+    if request is not None:
+        lang = get_lang(request)
+    return _shell_document(
+        *content, nav=_minimal_sidebar(), title=title, companies=companies,
+        extra_head=extra_head, lang=lang, request=request,
     )
 
 
