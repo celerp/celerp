@@ -53,11 +53,19 @@ _MIN_Q_LEN = 2
 # before any provider runs.
 _MAX_Q_LEN = 200
 
-# The most wall-clock time one provider may take before it is degraded. Providers
-# run sequentially, so the worst-case provider budget is this times the number of
-# providers; at six providers that is 7.5 seconds, inside the 10 second local API
-# request timeout, so one hung source can never blank the whole search.
+# The most wall-clock time one provider may take before it is degraded.
 _PROVIDER_TIMEOUT_SECONDS = 1.25
+
+# The total wall-clock budget the aggregator spends across ALL providers.
+# search_provider is a public slot, so the provider count is unbounded: a
+# per-provider timeout alone lets the serial total grow with the number of slow
+# providers, overrunning the 10 second local API request timeout, 504-ing the
+# whole search and discarding the buckets that already succeeded. This fixed
+# deadline caps the total: each provider gets min(_PROVIDER_TIMEOUT_SECONDS,
+# remaining budget), and once the budget is spent the remaining eligible
+# providers are degraded without running. 7.5 seconds leaves headroom under the
+# 10 second client timeout for response encoding and transport.
+_AGGREGATE_DEADLINE_SECONDS = 7.5
 
 # Bounds on a third-party canonical row. A first-party provider is trusted to
 # return rich domain rows the bundled UI renders directly; a third-party provider
@@ -72,15 +80,24 @@ _HREF_MAX = 2048
 def _local_href(href) -> bool:
     """True only for a non-empty, bounded, app-local path.
 
-    Rejects any scheme, protocol-relative "//host", and anything that does not
-    start with a single leading slash, so a third-party provider can only link
-    within this app, never off-site.
+    Rejects any scheme, protocol-relative "//host", a backslash (browsers
+    normalise "\\" to "/", so "/\\evil.example" resolves off-site), any ASCII
+    control char, and anything that does not start with a single leading slash,
+    so a third-party provider can only link within this app, never off-site.
+
+    The app-local rule mirrors ui.security.is_app_local_path, which is the
+    single source of truth for app-local path safety. The API layer cannot
+    import the UI layer, so the rule is duplicated here and the two must change
+    together; this function additionally bounds the length for the third-party
+    row contract.
     """
     return (
         isinstance(href, str)
         and 0 < len(href) <= _HREF_MAX
         and href.startswith("/")
         and not href.startswith("//")
+        and "\\" not in href
+        and not any(ord(c) < 0x20 or ord(c) == 0x7F for c in href)
     )
 
 
@@ -176,6 +193,10 @@ async def global_search(
     degraded_modules: list[str] = []
     rollback_failed = False
 
+    # Shared wall-clock budget across every provider (see _AGGREGATE_DEADLINE_SECONDS).
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _AGGREGATE_DEADLINE_SECONDS
+
     for contribution in slots.get("search_provider"):
         module = contribution.get("_module") or "?"
 
@@ -209,6 +230,14 @@ async def global_search(
         if await request.is_disconnected():
             break
 
+        # The shared budget is spent: the caller is still waiting, so this is an
+        # honest partial answer, not a disconnect. Degrade every remaining
+        # eligible provider without running it and return what completed.
+        remaining_budget = deadline - loop.time()
+        if remaining_budget <= 0:
+            degraded_modules.append(module)
+            continue
+
         handler_path = contribution.get("handler")
         result_key = contribution.get("result_key")
 
@@ -235,7 +264,7 @@ async def global_search(
             # BaseException and is not caught here, so it propagates as it should.
             payload = await asyncio.wait_for(
                 handler(session, company_id, role, stripped, _PER_PROVIDER_LIMIT),
-                timeout=_PROVIDER_TIMEOUT_SECONDS,
+                timeout=min(_PROVIDER_TIMEOUT_SECONDS, remaining_budget),
             )
             hits = payload[result_key]
             if not isinstance(hits, list):
