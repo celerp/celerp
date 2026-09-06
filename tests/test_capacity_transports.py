@@ -247,6 +247,26 @@ def test_file_body_wrapper_uses_bulk_transport(name):
     assert "async with _api_client(" not in src, f"{name} must not use the interactive transport"
 
 
+@pytest.mark.asyncio
+async def test_ai_client_can_select_bulk_transport_and_keeps_session():
+    # The AI client normally rides the interactive transport, but an AI file
+    # upload transfers a finite body and must be able to take the bulk pool while
+    # still carrying the session token and the local pool-acquire bound.
+    async with api._ai_api_client("tok", "sess", bulk=True) as c:
+        assert c._transport is api._get_bulk_transport()
+        assert c.headers.get("X-Session-Token") == "sess"
+        assert c.timeout.pool == 2.0
+
+
+def test_ai_file_upload_uses_bulk_transport():
+    # ai_upload posts a user-supplied file body to the local API; it must select
+    # the bulk pool so a large upload never holds an interactive connection slot.
+    import inspect
+
+    src = inspect.getsource(api.ai_upload)
+    assert "bulk=True" in src, "ai_upload must transfer its file body on the bulk pool"
+
+
 def test_metadata_only_file_wrappers_stay_interactive():
     # A file's tag/description/delete carry no body: they belong on the interactive
     # transport. This pins the boundary so a future edit cannot quietly push small

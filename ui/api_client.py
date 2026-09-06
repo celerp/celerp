@@ -256,14 +256,20 @@ async def _anon_api_client(timeout: float | httpx.Timeout = 10.0):
 
 
 @asynccontextmanager
-async def _ai_api_client(token: str, session_token: str, timeout: float | httpx.Timeout = 10.0):
-    """Authenticated client with X-Session-Token header for AI endpoints."""
+async def _ai_api_client(token: str, session_token: str, timeout: float | httpx.Timeout = 10.0,
+                         bulk: bool = False):
+    """Authenticated client with X-Session-Token header for AI endpoints.
+
+    AI traffic rides the interactive transport by default; a file upload sets
+    ``bulk`` so its finite body drives the small bulk pool instead of holding an
+    interactive connection slot, while still carrying the session token.
+    """
     async with _local_error_mapping():
         async with _local_client(
             token,
             timeout=timeout,
             follow_redirects=True,
-            bulk=False,
+            bulk=bulk,
             headers={"X-Session-Token": session_token},
         ) as c:
             yield c
@@ -2719,7 +2725,7 @@ async def ai_upload(token: str, session_token: str, files: list[tuple[str, bytes
     Returns {"file_ids": [...]}.
     """
     multipart = [("files", (name, data, ct)) for name, data, ct in files]
-    async with _ai_api_client(token, session_token, timeout=60.0) as c:
+    async with _ai_api_client(token, session_token, timeout=60.0, bulk=True) as c:
         return _raise(await c.post("/ai/upload", files=multipart)).json()
 
 
