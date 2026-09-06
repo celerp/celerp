@@ -677,7 +677,7 @@ def _partner_claim_preview(identity: dict, claim_token: str, lang: str = "en") -
     if support_url:
         support_children.append(A(
             t("cloud.partner_support", lang),
-            href=support_url, target="_blank",
+            href=support_url, target="_blank", rel="noopener",
             cls="btn btn--outline btn--sm", style="margin-top:4px;"))
     return Div(
         H3(t("settings_cloud.partner_claim_title", lang), cls="settings-section-title"),
