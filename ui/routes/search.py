@@ -15,6 +15,7 @@ from ui.api_client import APIError
 from ui.components.table import display_enum
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
+from ui.security import is_app_local_path
 
 logger = logging.getLogger(__name__)
 
@@ -49,18 +50,15 @@ def _match_tags(record: dict, visible: tuple[str, ...]) -> list:
 def _safe_local_search_href(href) -> str | None:
     """Return href only if it is a non-empty, app-local path, else None.
 
-    Accepts a single leading slash only: rejects any scheme (`https:`,
-    `javascript:`), protocol-relative `//host`, and the empty string. The API
-    already holds third-party rows to this shape, but the UI re-checks before
-    rendering a link it did not build, so an untrusted module can never place an
-    off-site or script URL in the results dropdown.
+    The API already holds third-party rows to this shape (`is_app_local_path`),
+    but the UI re-checks before rendering a link it did not build, so an
+    untrusted module can never place an off-site or script URL in the results
+    dropdown.
     """
     if not isinstance(href, str):
         return None
     href = href.strip()
-    if not href.startswith("/") or href.startswith("//"):
-        return None
-    return href
+    return href if is_app_local_path(href) else None
 
 
 def _status_tag(status: str, domain: str | None):

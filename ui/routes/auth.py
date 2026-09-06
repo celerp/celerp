@@ -28,6 +28,7 @@ from ui.api_client import get_company as api_get_company
 from ui.components.shell import auth_shell, flash, page_title, star_supporter_card, toast_header
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies
 from ui.i18n import t, get_lang
+from ui.security import is_app_local_path
 from celerp.config import settings as _settings
 
 
@@ -70,7 +71,7 @@ def setup_routes(app):
         """Same-app absolute paths only - ?next= must never become an open
         redirect or bounce back into the auth pages."""
         raw = str(raw or "")
-        if raw.startswith("/") and not raw.startswith("//") and not raw.startswith(("/login", "/logout")):
+        if is_app_local_path(raw) and not raw.startswith(("/login", "/logout")):
             return raw
         return "/"
 
