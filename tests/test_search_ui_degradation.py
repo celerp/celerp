@@ -156,3 +156,77 @@ async def test_clean_zero_match_uses_no_results(ui_client, monkeypatch):
     r, calls = await _search(ui_client, monkeypatch, answer)
     assert r.status_code == 200
     assert "No results" in r.text
+
+
+# ── Generic third-party module rendering ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_third_party_module_renders_canonical_row(ui_client, monkeypatch):
+    # A module the first-party descriptors do not know is rendered generically
+    # from its canonical rows: a labelled link with the generic search icon.
+    answer = {
+        "results": {
+            "acme-crm": {"items": [
+                {"id": "t1", "label": "Acme Result", "href": "/acme/1", "subtitle": "widget"},
+            ]},
+        },
+        "degraded_modules": [],
+    }
+    r, calls = await _search(ui_client, monkeypatch, answer)
+    assert r.status_code == 200
+    body = r.text
+    assert "Acme Result" in body
+    assert "/acme/1" in body
+    assert "🔎" in body
+    assert "widget" in body
+
+
+@pytest.mark.asyncio
+async def test_third_party_unsafe_href_row_skipped(ui_client, monkeypatch):
+    # Two canonical rows from an unknown module: the app-local one renders, the
+    # off-site one is skipped (the UI never links a URL it did not build).
+    answer = {
+        "results": {
+            "acme-crm": {"items": [
+                {"id": "s1", "label": "Safe One", "href": "/acme/1"},
+                {"id": "e1", "label": "Evil One", "href": "https://evil.example/x"},
+            ]},
+        },
+        "degraded_modules": [],
+    }
+    r, calls = await _search(ui_client, monkeypatch, answer)
+    assert r.status_code == 200
+    body = r.text
+    assert "Safe One" in body
+    assert "/acme/1" in body
+    assert "Evil One" not in body
+    assert "evil.example" not in body
+
+
+@pytest.mark.asyncio
+async def test_third_party_label_is_escaped(ui_client, monkeypatch):
+    # A generic label is rendered as escaped text, never raw markup.
+    answer = {
+        "results": {
+            "acme-crm": {"items": [
+                {"id": "x1", "label": "<script>alert(1)</script>", "href": "/acme/1"},
+            ]},
+        },
+        "degraded_modules": [],
+    }
+    r, calls = await _search(ui_client, monkeypatch, answer)
+    assert r.status_code == 200
+    body = r.text
+    assert "&lt;script&gt;" in body
+    assert "<script>alert(1)</script>" not in body
+
+
+@pytest.mark.asyncio
+async def test_over_long_query_shows_error_not_no_results(ui_client, monkeypatch):
+    # The API answers an over-long query with 422; the UI shows the retry-able
+    # error, never the no-results state.
+    r, calls = await _search(ui_client, monkeypatch, APIError(422, "too long"))
+    assert r.status_code == 200
+    body = r.text
+    assert "No results" not in body
+    assert "unavailable" in body.lower()

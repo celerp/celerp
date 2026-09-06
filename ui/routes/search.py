@@ -46,6 +46,23 @@ def _match_tags(record: dict, visible: tuple[str, ...]) -> list:
     return tags
 
 
+def _safe_local_search_href(href) -> str | None:
+    """Return href only if it is a non-empty, app-local path, else None.
+
+    Accepts a single leading slash only: rejects any scheme (`https:`,
+    `javascript:`), protocol-relative `//host`, and the empty string. The API
+    already holds third-party rows to this shape, but the UI re-checks before
+    rendering a link it did not build, so an untrusted module can never place an
+    off-site or script URL in the results dropdown.
+    """
+    if not isinstance(href, str):
+        return None
+    href = href.strip()
+    if not href.startswith("/") or href.startswith("//"):
+        return None
+    return href
+
+
 def _status_tag(status: str, domain: str | None):
     """Trailing ` - {status}` chip for a result row. The status is shown via its
     display label (resolved in the request language through display_enum); the raw
@@ -161,6 +178,29 @@ def setup_routes(app):
                     href=href_fn(record),
                     cls="search-result-item search-result-item--inactive" if inactive else "search-result-item",
                 )))
+        # Generic third-party modules: any module the aggregator returned that the
+        # first-party descriptors above do not render. Its provider rows are
+        # canonical ({id, label, href, subtitle}); render each as a plain labelled
+        # link, escaping every field (FastHTML escapes str children) and re-checking
+        # the href is app-local before trusting a link this app did not build.
+        known = {module for module, *_rest in descriptors}
+        for module, buckets in results_by_module.items():
+            if module in known:
+                continue
+            for _key, rows in (buckets or {}).items():
+                for record in (rows or [])[:5]:
+                    label = record.get("label") or ""
+                    href = _safe_local_search_href(record.get("href"))
+                    if not label or not href:
+                        continue
+                    subtitle = record.get("subtitle") or ""
+                    rendered.append((False, A(
+                        f"🔎 {label}",
+                        Small(f" ({subtitle})") if subtitle else "",
+                        href=href,
+                        cls="search-result-item",
+                    )))
+
         rendered.sort(key=lambda pair: pair[0])
         results: list[FT] = [ft for _inactive, ft in rendered]
 
