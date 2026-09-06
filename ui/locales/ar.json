@@ -616,6 +616,13 @@
   "flash.no_status_selected": "لم يتم تحديد أي حالة.",
   "flash.saved": "أنقذ.",
   "flash.undone": "تم التراجع عنه.",
+  "grace.deadline": "انتهى اشتراك Team الخاص بك. تظل قاعدة بياناتك الخارجية متصلة حتى {deadline}.",
+  "grace.divergence_warning": "قد تؤدي إعادة اختيار قاعدة البيانات الخارجية إلى عدم توافقها مع البيانات المحفوظة في قاعدة البيانات المحلية منذ انتهاء فترة السماح.",
+  "grace.external_available": "لا تزال قاعدة بياناتك الخارجية مُهيّأة ويمكن إعادة اختيارها.",
+  "grace.external_owned": "تظل قاعدة بياناتك الخارجية وبياناتها ملكًا لك.",
+  "grace.local_now": "يعمل التطبيق الآن على قاعدة البيانات المحلية.",
+  "grace.partner_support": "تواصل مع {partner} للتجديد أو للحصول على المساعدة.",
+  "grace.renew": "جدّد اشتراك Team للاستمرار في استخدام قاعدة البيانات الخارجية.",
   "inv._select_a_preset": "— اختر إعدادًا مسبقًا —",
   "inv.action": "فعل...",
   "inv.active_batch": "الدفعة النشطة:",
@@ -3072,5 +3079,10 @@
   "settings_cloud.partner_claim_token_placeholder": "الصق رمز المطالبة",
   "settings_cloud.partner_claim_review": "مراجعة المطالبة",
   "settings_cloud.partner_claim_managed_by": "ستتم إدارة هذا التثبيت بواسطة:",
-  "settings_cloud.partner_claim_error": "تعذّر التحقق من هذه المطالبة. قد تكون غير صالحة أو منتهية الصلاحية أو مستخدمة بالفعل."
+  "settings_cloud.partner_claim_error": "تعذّر التحقق من هذه المطالبة. قد تكون غير صالحة أو منتهية الصلاحية أو مستخدمة بالفعل.",
+  "settings_cloud.config_write_failed": "تعذّرت كتابة الإعدادات",
+  "settings_cloud.saved_restart_to_apply": "✓ تم الحفظ. أعد تشغيل Celerp لتطبيق التغيير.",
+  "settings_cloud.restored_restart_to_apply": "↩ تمت استعادة إعدادات قاعدة البيانات السابقة. أعد تشغيل Celerp للتطبيق.",
+  "settings_cloud.s3_support_unavailable": "دعم S3 غير متوفر في هذه النسخة",
+  "settings_cloud.s3_connection_failed": "فشل الاتصال"
 }

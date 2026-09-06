@@ -668,6 +668,13 @@
   "flash.no_status_selected": "ምንም ሁኔታ አልተመረጠም።",
   "flash.saved": "ተቀምጧል።",
   "flash.undone": "ተመልሷል።",
+  "grace.deadline": "የእርስዎ Team ምዝገባ ጊዜው አልፎበታል። የውጫዊ የመረጃ ቋትዎ እስከ {deadline} ድረስ ተገናኝቶ ይቆያል።",
+  "grace.divergence_warning": "ውጫዊ የመረጃ ቋቱን እንደገና መምረጥ ከማቆያ ጊዜው ማብቂያ በኋላ በአካባቢያዊ የመረጃ ቋት ውስጥ ከተቀመጠው መረጃ ጋር እንዳይጣጣም ሊያደርገው ይችላል።",
+  "grace.external_available": "የውጫዊ የመረጃ ቋትዎ አሁንም ተዋቅሯል እና እንደገና ሊመረጥ ይችላል።",
+  "grace.external_owned": "የውጫዊ የመረጃ ቋትዎ እና መረጃው የእርስዎ ሆነው ይቀጥላሉ።",
+  "grace.local_now": "መተግበሪያው አሁን በአካባቢያዊ የመረጃ ቋት ላይ እየሠራ ነው።",
+  "grace.partner_support": "ለማደስ ወይም ለእገዛ {partner}ን ያግኙ።",
+  "grace.renew": "ውጫዊ የመረጃ ቋቱን መጠቀም ለመቀጠል የ Team ምዝገባዎን ያድሱ።",
   "inv._select_a_preset": "- ቅድመ-ዝግጅት ይምረጡ -",
   "inv.action": "እርምጃ...",
   "inv.active_batch": "ንቁ ስብስብ፦ ",
@@ -3072,5 +3079,10 @@
   "settings_cloud.partner_claim_token_placeholder": "የጥያቄ ኮድ ይለጥፉ",
   "settings_cloud.partner_claim_review": "ጥያቄውን ይገምግሙ",
   "settings_cloud.partner_claim_managed_by": "ይህ ጭነት የሚተዳደረው በ፦",
-  "settings_cloud.partner_claim_error": "ይህ ጥያቄ ማረጋገጥ አልተቻለም። ልክ ያልሆነ፣ ጊዜው ያለፈበት ወይም አስቀድሞ ጥቅም ላይ የዋለ ሊሆን ይችላል።"
+  "settings_cloud.partner_claim_error": "ይህ ጥያቄ ማረጋገጥ አልተቻለም። ልክ ያልሆነ፣ ጊዜው ያለፈበት ወይም አስቀድሞ ጥቅም ላይ የዋለ ሊሆን ይችላል።",
+  "settings_cloud.config_write_failed": "ውቅረቱን መጻፍ አልተቻለም",
+  "settings_cloud.saved_restart_to_apply": "✓ ተቀምጧል። ለውጡን ለመተግበር Celerp እንደገና ያስጀምሩ።",
+  "settings_cloud.restored_restart_to_apply": "↩ የቀድሞ የውሂብ ጎታ ቅንብሮች ተመልሰዋል። ለመተግበር Celerp እንደገና ያስጀምሩ።",
+  "settings_cloud.s3_support_unavailable": "በዚህ ግንባታ ውስጥ የS3 ድጋፍ የለም",
+  "settings_cloud.s3_connection_failed": "ግንኙነት አልተሳካም"
 }

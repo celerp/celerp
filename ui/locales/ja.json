@@ -616,6 +616,13 @@
   "flash.no_status_selected": "ステータスが選択されていません。",
   "flash.saved": "保存されました。",
   "flash.undone": "元に戻されました。",
+  "grace.deadline": "Teamサブスクリプションの有効期限が切れました。外部データベースは{deadline}まで接続されたままになります。",
+  "grace.divergence_warning": "外部データベースを再選択すると、猶予期間の終了後にローカルデータベースへ保存されたデータと同期がずれる場合があります。",
+  "grace.external_available": "外部データベースは引き続き設定されており、再選択できます。",
+  "grace.external_owned": "外部データベースとそのデータはお客様のものです。",
+  "grace.local_now": "アプリは現在ローカルデータベースで動作しています。",
+  "grace.partner_support": "更新やサポートについては{partner}にお問い合わせください。",
+  "grace.renew": "外部データベースを引き続き使用するには、Teamサブスクリプションを更新してください。",
   "inv._select_a_preset": "— プリセットを選択します —",
   "inv.action": "アクション...",
   "inv.active_batch": "アクティブなバッチ:",
@@ -3072,5 +3079,10 @@
   "settings_cloud.partner_claim_token_placeholder": "申請コードを貼り付け",
   "settings_cloud.partner_claim_review": "申請を確認",
   "settings_cloud.partner_claim_managed_by": "このインストールの管理者:",
-  "settings_cloud.partner_claim_error": "この申請を確認できませんでした。無効、期限切れ、またはすでに使用されている可能性があります。"
+  "settings_cloud.partner_claim_error": "この申請を確認できませんでした。無効、期限切れ、またはすでに使用されている可能性があります。",
+  "settings_cloud.config_write_failed": "設定を書き込めませんでした",
+  "settings_cloud.saved_restart_to_apply": "✓ 保存しました。変更を適用するには Celerp を再起動してください。",
+  "settings_cloud.restored_restart_to_apply": "↩ 以前のデータベース設定を復元しました。適用するには Celerp を再起動してください。",
+  "settings_cloud.s3_support_unavailable": "このビルドでは S3 はサポートされていません",
+  "settings_cloud.s3_connection_failed": "接続に失敗しました"
 }

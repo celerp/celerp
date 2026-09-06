@@ -71,6 +71,31 @@ class TestElectronMainJS:
         assert migration_pos >= 0, "runMigrations(dbConfig.url) call not found in boot sequence"
         assert seed_pos < migration_pos, "seedDefaultModules() must be called before runMigrations()"
 
+    def test_boot_seam_persists_local(self):
+        """At grace expiry the boot must persist db_mode=local: applyDbModePersist
+        is wired between the resolve call and startApi, so the persist happens
+        before the API/gateway process can touch the config."""
+        resolve_pos = self._src.find("const dbConfig = resolveDatabaseConfig")
+        persist_pos = self._src.find("applyDbModePersist(")
+        start_api_pos = self._src.find("await startApi(dbConfig.url")
+        assert resolve_pos >= 0, "resolve call not found in boot sequence"
+        assert persist_pos >= 0, "applyDbModePersist() not wired into boot sequence"
+        assert start_api_pos >= 0, "startApi() call not found in boot sequence"
+        assert resolve_pos < persist_pos < start_api_pos, (
+            "applyDbModePersist() must run after the resolve call and before startApi()"
+        )
+
+    def test_writeconfig_atomic_persist(self):
+        """writeConfig must be an atomic temp-write + rename with temp cleanup on
+        failure, because it is now on the boot-critical path deciding which
+        database opens; a torn write must never leave a corrupt config."""
+        start = self._src.find("function writeConfig(")
+        assert start >= 0, "writeConfig() not found"
+        body = self._src[start:start + 800]
+        assert "renameSync" in body, "writeConfig must rename a temp file into place (atomic)"
+        assert "unlinkSync" in body, "writeConfig must remove the temp file on failure"
+        assert "catch" in body, "writeConfig must catch and handle a write/rename failure"
+
     def test_module_dir_env_var_in_api_start(self):
         assert "MODULE_DIR: MODULE_DIR" in self._src
 
