@@ -13,6 +13,7 @@ and never caches a failure.
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 
 import pytest
@@ -126,3 +127,88 @@ async def test_close_shared_client_clears_refresh_state(monkeypatch):
     assert not api._refresh_success
     with pytest.raises((asyncio.CancelledError, api.APIError)):
         await task
+
+
+# --- Section 3: the shared task owns its own cleanup ---
+
+
+def _blocking_upstream(monkeypatch, gate: asyncio.Event, *, fail: bool, result=("acc", "ref")):
+    """Upstream that blocks on *gate* before completing. Returns a call counter."""
+    state = {"calls": 0}
+
+    async def _fake(refresh_token: str):
+        state["calls"] += 1
+        await gate.wait()
+        if fail:
+            raise api.APIError(401, "refresh rejected")
+        return result
+
+    monkeypatch.setattr(api, "_refresh_upstream", _fake)
+    return state
+
+
+@pytest.mark.asyncio
+async def test_all_waiters_cancel_then_upstream_fails_self_cleans(monkeypatch):
+    gate = asyncio.Event()
+    state = _blocking_upstream(monkeypatch, gate, fail=True)
+    waiters = [asyncio.ensure_future(api.refresh_access_token("tok")) for _ in range(3)]
+    await asyncio.sleep(0.02)
+    assert api._refresh_inflight, "the shared task should be inflight"
+    for w in waiters:
+        w.cancel()
+    for w in waiters:
+        with pytest.raises(asyncio.CancelledError):
+            await w
+    # Release the shared task; with every waiter gone it must still clean itself.
+    gate.set()
+    await asyncio.sleep(0.05)
+    assert not api._refresh_inflight, "the task, not a waiter, owns cleanup"
+    assert not api._refresh_success
+    assert state["calls"] == 1
+    # A later independent request performs a fresh upstream request, not a replay.
+    gate2 = asyncio.Event()
+    gate2.set()
+    state2 = _blocking_upstream(monkeypatch, gate2, fail=False, result=("acc2", "ref2"))
+    again = await api.refresh_access_token("tok")
+    assert again == ("acc2", "ref2")
+    assert state2["calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_orphan_failure_emits_no_unretrieved_task_warning(monkeypatch):
+    seen = []
+    loop = asyncio.get_running_loop()
+    prev = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, ctx: seen.append(ctx.get("message", "")))
+    try:
+        gate = asyncio.Event()
+        _blocking_upstream(monkeypatch, gate, fail=True)
+        w = asyncio.ensure_future(api.refresh_access_token("tok"))
+        await asyncio.sleep(0.02)
+        w.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await w
+        gate.set()
+        await asyncio.sleep(0.05)
+        # Force the failed orphan to be collected and its exception state inspected.
+        import gc
+
+        gc.collect()
+        await asyncio.sleep(0.01)
+    finally:
+        loop.set_exception_handler(prev)
+    assert not any("never retrieved" in m for m in seen), seen
+
+
+@pytest.mark.asyncio
+async def test_expired_success_entries_for_other_hashes_are_pruned(monkeypatch):
+    _install_counting_upstream(monkeypatch, result=("acc", "ref"))
+    other = api._refresh_key("a-different-refresh-token")
+    api._refresh_success[other] = (
+        time.monotonic() - (api._REFRESH_GRACE_SECONDS + 1.0),
+        ("stale", "stale"),
+    )
+    await api.refresh_access_token("tok")
+    # The unrelated expired digest entry is pruned during the next refresh, not
+    # left to accumulate for a token that is never presented again.
+    assert other not in api._refresh_success

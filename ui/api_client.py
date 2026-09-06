@@ -465,47 +465,76 @@ def _reset_refresh_state_for_tests() -> None:
     _refresh_success.clear()
 
 
+def _consume_task_exception(task: asyncio.Task) -> None:
+    """Retrieve a finished task's exception so the loop never warns about it.
+
+    Registered as a done-callback on every shared coordinator task, so a failed
+    orphan (one whose every waiter cancelled before it finished) has its
+    exception state read and never surfaces as "Task exception was never
+    retrieved".
+    """
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
+
+
+def _prune_refresh_success_locked(now: float) -> None:
+    """Drop every success entry older than the coalescing grace. Lock held."""
+    for key, (created_at, _pair) in list(_refresh_success.items()):
+        if now - created_at > _REFRESH_GRACE_SECONDS:
+            _refresh_success.pop(key, None)
+
+
+async def _run_refresh_task(key: bytes, refresh_token: str) -> tuple[str, str]:
+    """The shared refresh task: it owns its own map cleanup, never a waiter.
+
+    On failure it removes its own inflight entry so the next presentation
+    retries; on success it swaps inflight for a short-lived success entry. It
+    only touches the map while it is still the registered task for the key, so a
+    later generation's task never clobbers it.
+    """
+    current = asyncio.current_task()
+    try:
+        result = await _refresh_upstream(refresh_token)
+    except BaseException:
+        async with _refresh_lock:
+            if _refresh_inflight.get(key) is current:
+                _refresh_inflight.pop(key, None)
+        raise
+
+    async with _refresh_lock:
+        if _refresh_inflight.get(key) is current:
+            _refresh_inflight.pop(key, None)
+            _refresh_success[key] = (time.monotonic(), result)
+    return result
+
+
 async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
     """Exchange refresh token for new (access_token, refresh_token), single-flight.
 
     Concurrent callers presenting the same refresh token share one upstream POST.
-    A waiter that is cancelled (its request disconnected) does not cancel the
-    shared task, so the other waiters still complete. Raises APIError on failure,
-    and a failure is never cached.
+    A waiter that is cancelled (its request disconnected) simply raises
+    CancelledError; the shared task keeps running and cleans itself up, so the
+    other waiters still complete and a later request never replays a dead task.
+    Raises APIError on failure, and a failure is never cached.
     """
     key = _refresh_key(refresh_token)
     async with _refresh_lock:
+        now = time.monotonic()
+        _prune_refresh_success_locked(now)
         cached = _refresh_success.get(key)
         if cached is not None:
-            issued_at, pair = cached
-            if (time.monotonic() - issued_at) <= _REFRESH_GRACE_SECONDS:
-                return pair
-            del _refresh_success[key]
+            return cached[1]
         task = _refresh_inflight.get(key)
         if task is None:
-            task = asyncio.ensure_future(_refresh_upstream(refresh_token))
+            task = asyncio.create_task(_run_refresh_task(key, refresh_token))
+            task.add_done_callback(_consume_task_exception)
             _refresh_inflight[key] = task
 
-    try:
-        # shield: this waiter's own cancellation must not cancel the shared task
-        # the other waiters are still awaiting.
-        result = await asyncio.shield(task)
-    except asyncio.CancelledError:
-        raise
-    except BaseException:
-        # Failure: drop the inflight entry so the next presentation retries, and
-        # never cache a failure. The first waiter to observe the error clears it;
-        # a concurrent waiter finding it already gone simply does not re-clear.
-        async with _refresh_lock:
-            if _refresh_inflight.get(key) is task:
-                del _refresh_inflight[key]
-        raise
-
-    async with _refresh_lock:
-        if _refresh_inflight.get(key) is task:
-            del _refresh_inflight[key]
-        _refresh_success[key] = (time.monotonic(), result)
-    return result
+    # shield: this waiter's own cancellation must not cancel the shared task the
+    # other waiters are still awaiting. The task, not the waiter, owns cleanup.
+    return await asyncio.shield(task)
 
 
 async def my_companies(token: str) -> dict:
