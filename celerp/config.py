@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     # credential cannot be erased from the environment). Persisted as
     # [cloud] deployment_associated.
     deployment_associated: bool = False
+    # Idempotency nonce for the partner deployment association. Generated once,
+    # persisted before the first associate call, and reused on every retry and
+    # restart so a lost response cannot create a duplicate association: the relay
+    # keys the relationship on (partner, nonce). Dropped once consumed on a
+    # successful association. Persisted as [cloud] deployment_nonce.
+    deployment_nonce: str = ""
     # True after an explicit Cloud disconnect: the startup probe must not
     # re-link the install. Cleared when the user reconnects (settings or a
     # sign-in flow applies a fresh token). Persisted as [cloud] disconnected.
@@ -166,22 +172,48 @@ def persist_cloud_settings(**values: str) -> None:
     write_config(cfg)
 
 
-def record_deployment_association() -> None:
-    """Record that the relay has associated this instance and remove the
-    deployment credential from bootstrap state.
+def ensure_deployment_nonce() -> str:
+    """Return the deployment association nonce, generating and persisting one when
+    absent.
 
-    Called once, after the first successful hello_ack that carried the
-    credential. persist_cloud_settings never erases a key, so a dedicated helper
-    is needed to pop the credential: it drops [cloud] deployment_credential, sets
-    the sticky deployment_associated marker, persists, and clears the in-memory
-    credential so it cannot be re-offered this session.
+    The nonce must be persisted before the association call so a lost response
+    plus a retry reuses the same value and resolves to the same association
+    (idempotency keyed on partner + nonce). A persist failure propagates so the
+    caller can abort before any network call rather than send an unpersisted
+    nonce that a later boot could not reproduce.
+    """
+    if settings.deployment_nonce:
+        return settings.deployment_nonce
+    import uuid as _uuid
+    nonce = _uuid.uuid4().hex
+    settings.deployment_nonce = nonce
+    persist_cloud_settings(deployment_nonce=nonce)
+    return nonce
+
+
+def record_deployment_association(gateway_token: str, instance_id: str) -> None:
+    """Record a successful partner deployment association durably in one write.
+
+    Persists the relay-issued gateway_token and instance_id, sets the sticky
+    deployment_associated marker, and removes the now-consumed deployment
+    credential and nonce from [cloud]. persist_cloud_settings never erases a key,
+    so this dedicated helper is what drops them. The disk write precedes the
+    in-memory updates: if the write raises, the caller sees the failure and no
+    live-but-unpersisted identity is carried, so the next boot's idempotent retry
+    can recover.
     """
     cfg = read_config()
     cloud = cfg.setdefault("cloud", {})
-    cloud.pop("deployment_credential", None)
+    cloud["token"] = gateway_token
+    cloud["instance_id"] = instance_id
     cloud["deployment_associated"] = True
+    cloud.pop("deployment_credential", None)
+    cloud.pop("deployment_nonce", None)
     write_config(cfg)
+    settings.gateway_token = gateway_token
+    settings.gateway_instance_id = instance_id
     settings.deployment_credential = ""
+    settings.deployment_nonce = ""
     settings.deployment_associated = True
 
 
@@ -230,6 +262,10 @@ def load_cloud_config() -> None:
         settings.deployment_credential = cloud["deployment_credential"]
     if cloud.get("deployment_associated"):
         settings.deployment_associated = True
+    # The association nonce is reused across boots: reload it so a retry after a
+    # lost response resolves to the same association rather than minting a new one.
+    if cloud.get("deployment_nonce") and not settings.deployment_nonce:
+        settings.deployment_nonce = cloud["deployment_nonce"]
     # Auto-enable secure cookies when relay-connected (HTTPS via Caddy/Cloudflare)
     if settings.gateway_token and not os.environ.get("COOKIE_SECURE"):
         settings.cookie_secure = True
@@ -359,6 +395,10 @@ def write_config(cfg: dict) -> None:
         # fixed-key serializer would drop the credential before the first hello.
         if cloud.get("deployment_credential"):
             lines.append(f'deployment_credential = {_str(cloud["deployment_credential"])}')
+        # The association nonce persists across boots until an association
+        # consumes it, so a retry reuses it; emitted only while set.
+        if cloud.get("deployment_nonce"):
+            lines.append(f'deployment_nonce = {_str(cloud["deployment_nonce"])}')
         if cloud.get("deployment_associated"):
             lines.append("deployment_associated = true")
         lines.append("")
