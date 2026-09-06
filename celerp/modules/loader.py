@@ -1148,6 +1148,47 @@ _SEARCH_PROVIDER_KEYS = frozenset({"handler", "result_key", "permission"})
 _SEARCH_RESULT_KEYS = frozenset({"items", "entries"})
 
 
+def _enclosing_first_party_module(source_file: Path, expected_name: str) -> Path | None:
+    """The nearest ancestor directory of ``source_file`` that is a content-verified
+    first-party module folder named ``expected_name``, or None.
+
+    Used to accept a first-party module whose handler resolves to the SAME
+    first-party module already loaded from another location (a shipped default
+    scanned from two roots - e.g. the repo copy and a reseeded copy). is_first_party
+    requires the lock name AND a matching content digest, so a match here is
+    content-identical to the module being loaded; a resolution to core, or to any
+    other module, has no such ancestor and is rejected.
+    """
+    for parent in source_file.parents:
+        if parent.name == expected_name and is_first_party(parent):
+            return parent
+    return None
+
+
+def _handler_source_owned(
+    proof: str | None, pkg_root: str, pkg_name: str, trusted: bool
+) -> bool:
+    """True if a resolved handler/module source file legitimately belongs to the
+    module being loaded.
+
+    It must live under the module's own package root. For a content-verified
+    first-party module ONLY, a source under a different copy of the SAME first-party
+    module (same lock name and verified digest) is also legitimate - the one case
+    where importlib returns an identically-named default already loaded from another
+    root. ``is_relative_to`` returns False for paths on different drives rather than
+    raising, so it needs no cross-drive guard. Never accepts a resolution to core or
+    to a different module, and every untrusted module is held to strict same-tree.
+    """
+    if not proof:
+        return False
+    real = Path(os.path.realpath(proof))
+    if real.is_relative_to(pkg_root):
+        return True
+    if not trusted:
+        return False
+    return _enclosing_first_party_module(real, pkg_name) is not None
+
+
 def _prepare_search_provider(
     pkg_name: str, pkg_path: Path, contribution, *, trusted: bool
 ) -> dict:
@@ -1234,36 +1275,34 @@ def _prepare_search_provider(
             f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} must be async; "
             f"the aggregator awaits it."
         )
-    # Provenance (third-party only): an on-disk file matching the dotted path is
-    # not proof of what importlib actually resolved. A decoy source shipped inside
-    # the module's own tree (e.g. celerp/ai/service.py) satisfies the existence and
-    # AST checks above, yet importlib returns the already-loaded REAL core module of
-    # the same dotted name, binding the provider to arbitrary core code. Require that
-    # BOTH the resolved module's file AND the handler's own source file live under
-    # this module's package directory. realpath collapses symlinks and '..' so
-    # neither can point the proof outside the tree. First-party modules are lock- and
-    # content-digest-verified (is_first_party), so they cannot be spoofed and are
-    # free to re-export a core handler (celerp-inventory's provider is the aggregator
-    # itself); the same trust gate skips their AST scan above.
-    if not trusted:
-        pkg_root = os.path.realpath(pkg_path)
-        try:
-            resolved_module = importlib.import_module(module_path)
-            module_file = getattr(resolved_module, "__file__", None)
-            handler_file = inspect.getsourcefile(inspect.unwrap(handler))
-        except Exception as exc:
+    # Provenance: an on-disk file matching the dotted path is not proof of what
+    # importlib actually resolved. A decoy source shipped inside the module's own
+    # tree (e.g. a celerp/ai/service.py) satisfies the existence and AST checks
+    # above, yet importlib returns the already-loaded REAL core module of the same
+    # dotted name, binding the provider to arbitrary code. Require that BOTH the
+    # resolved module's file AND the handler's own source file be owned by this
+    # module (_handler_source_owned): under its own package root, or - for a
+    # content-verified first-party module only - inside the same first-party module
+    # (same lock name and digest) loaded from another root. realpath collapses
+    # symlinks and '..' so neither can point a proof outside the tree. This runs for
+    # every module: a first-party manifest whose handler resolves to core, or to a
+    # different module, is rejected exactly as an untrusted decoy is.
+    pkg_root = os.path.realpath(pkg_path)
+    try:
+        resolved_module = importlib.import_module(module_path)
+        module_file = getattr(resolved_module, "__file__", None)
+        handler_file = inspect.getsourcefile(inspect.unwrap(handler))
+    except Exception as exc:
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} source could "
+            f"not be located ({type(exc).__name__})."
+        )
+    for proof in (module_file, handler_file):
+        if not _handler_source_owned(proof, pkg_root, pkg_name, trusted):
             raise ModuleLoadError(
-                f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} source could "
-                f"not be located ({type(exc).__name__})."
+                f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} resolves to "
+                f"source outside module {pkg_name!r}'s own package tree."
             )
-        for proof in (module_file, handler_file):
-            if not proof or os.path.commonpath(
-                (pkg_root, os.path.realpath(proof))
-            ) != pkg_root:
-                raise ModuleLoadError(
-                    f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} resolves to "
-                    f"source outside module {pkg_name!r}'s own package tree."
-                )
     # Runtime-owned trust metadata is injected AFTER the manifest contribution, and
     # the closed key set above already rejects a manifest that tries to supply
     # _module / _first_party itself, so neither can be spoofed.

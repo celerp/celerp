@@ -1487,6 +1487,38 @@ class TestSearchProviderSlot:
         with pytest.raises(ModuleLoadError):
             _load_one(pkg, name)
 
+    def test_trusted_decoy_shadowing_core_still_rejected(self, tmp_path, monkeypatch):
+        # A content-verified FIRST-PARTY module (trusted) ships a decoy source at a
+        # dotted path that collides with an already-loaded core module. Trust exempts
+        # it from the protected-BSL AST scan, but NOT from source provenance: importlib
+        # still resolves the handler to the real core module, whose source is neither
+        # under this module's tree nor inside another copy of this same first-party
+        # module. The loader must reject - a first-party manifest cannot bind its
+        # provider to core by shadowing a dotted name.
+        import importlib
+        importlib.import_module("celerp.ai.service")  # ensure the real core module is loaded
+        name = "celerp-decoy-fp"
+        pkg = tmp_path / name
+        decoy_dir = pkg / "celerp" / "ai"
+        decoy_dir.mkdir(parents=True)
+        (pkg / "celerp" / "__init__.py").write_text("")
+        (decoy_dir / "__init__.py").write_text("")
+        (decoy_dir / "service.py").write_text(
+            "async def run_query(session, company_id, role, q, limit):\n"
+            "    return {'items': []}\n"
+        )
+        (pkg / "__init__.py").write_text(
+            f'PLUGIN_MANIFEST = {{"name": "{name}", "version": "1.0", '
+            f'"slots": {{"search_provider": {{"handler": "celerp.ai.service:run_query", '
+            f'"result_key": "items", "permission": "view_inventory"}}}}}}'
+        )
+        # Make the module genuinely first-party: lock it to its own live digest.
+        digest = _fpt_loader.module_content_digest(pkg)
+        monkeypatch.setattr(_fpt_loader, "_first_party_lock", lambda: {name: digest})
+        assert _fpt_loader.is_first_party(pkg) is True
+        with pytest.raises(ModuleLoadError):
+            _load_one(pkg, name, trusted=True)
+
     def test_handler_separate_file_importing_protected_internal_rejected(self, tmp_path):
         # No api/ui routes, but the lazily-imported search handler pulls a protected
         # BSL internal; the search-handler AST scan must catch it at load.
