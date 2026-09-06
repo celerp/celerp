@@ -230,6 +230,8 @@ _FILE_BODY_WRAPPERS = [
     "import_recon_csv",
     "attach_recon_line",
     "import_module_zip",
+    "export_items_csv",
+    "export_contacts_csv",
 ]
 
 

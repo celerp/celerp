@@ -1954,7 +1954,7 @@ async def _stream_csv(token: str, path: str, params: dict | None = None):
 
 
 async def export_items_csv(token: str, params: dict | None = None) -> bytes:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         r = _raise(await c.get("/items/export/csv", params=params or {}))
         return r.content
 
@@ -1965,7 +1965,7 @@ async def export_docs_csv(token: str, params: dict | None = None):
 
 
 async def export_contacts_csv(token: str, params: dict | None = None) -> bytes:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         r = _raise(await c.get("/crm/contacts/export/csv", params=params or {}))
         return r.content
 
