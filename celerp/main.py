@@ -300,6 +300,12 @@ async def lifespan(_app: FastAPI):
             "missing COGS until a later boot retries"
         )
 
+    # A partner-packaged install with an unconsumed deployment credential
+    # associates with its partner through the explicit relay seam before the
+    # gateway starts. No-op for a direct install or one already associated.
+    from celerp.gateway.bootstrap import associate_partner_deployment
+    await associate_partner_deployment()
+
     # Bring up the relay tunnel per the lazy free-tier lifecycle (3.1). A token-holder
     # is past first activation and never re-enters it. Paid instances (public_url set)
     # keep the tunnel always-on; a free instance opens it at boot only when it already
