@@ -173,23 +173,28 @@ def _local_client(
 
 
 async def close_shared_client() -> None:
-    """Close the shared transport if one was built. Called from the UI app shutdown.
+    """Close the shared transports if built. Called from the UI app shutdown.
 
-    Safe to call when none was built. Cancels any in-flight single-flight refresh
-    tasks and clears the coordinator's state so nothing is left awaiting a pool
-    that is going away. Logs the total request count as observability for how much
-    traffic the bounded pool carried this process lifetime."""
-    global _shared_transport, _bulk_transport
-    inflight = list(_refresh_inflight.values())
+    Safe to call when none was built. Owns BOTH background coordinators: it
+    snapshots every in-flight refresh and metadata task, clears their maps and
+    caches, bumps the metadata generation so no straggler can repopulate, then
+    cancels and awaits every task before tearing down the transports they run on.
+    Logs the total request count as observability for how much traffic the
+    bounded pool carried this process lifetime."""
+    global _shared_transport, _bulk_transport, _metadata_generation
+    refresh_tasks = list(_refresh_inflight.values())
+    metadata_tasks = list(_metadata_tasks)
     _refresh_inflight.clear()
     _refresh_success.clear()
-    for task in inflight:
+    _metadata_inflight.clear()
+    _metadata_cache.clear()
+    _metadata_tasks.clear()
+    _metadata_generation += 1
+    all_tasks = refresh_tasks + metadata_tasks
+    for task in all_tasks:
         task.cancel()
-    for task in inflight:
-        try:
-            await task
-        except BaseException:
-            pass
+    if all_tasks:
+        await asyncio.gather(*all_tasks, return_exceptions=True)
     transports = [t for t in (_shared_transport, _bulk_transport) if t is not None]
     _shared_transport = None
     _bulk_transport = None
@@ -600,7 +605,7 @@ async def patch_company(token: str, data: dict) -> dict:
         if direct_patch:
             _raise(await c.patch("/companies/me", json=direct_patch))
         raw = _raise(await c.get("/companies/me")).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return _flatten_company(raw)
 
 
@@ -618,7 +623,7 @@ async def patch_role_permission(token: str, perm_key: str, role_key: str, grante
             "/companies/me/role-permissions",
             json={"perm_key": perm_key, "role_key": role_key, "granted": granted},
         )).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -630,7 +635,7 @@ async def get_item_schema(token: str) -> list[dict]:
 async def patch_item_schema(token: str, fields: list[dict]) -> dict:
     async with _api_client(token) as c:
         result = _raise(await c.patch("/companies/me/item-schema", json={"fields": fields})).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -659,7 +664,7 @@ async def get_category_schema(token: str, category: str) -> list[dict]:
 async def patch_category_schema(token: str, category: str, fields: list[dict]) -> dict:
     async with _api_client(token) as c:
         result = _raise(await c.patch(f"/companies/me/category-schema/{category}", json={"fields": fields})).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -667,7 +672,7 @@ async def merge_category_schemas(token: str, schemas: dict[str, list[dict]]) -> 
     """Auto-merge attribute keys from import into category schemas."""
     async with _api_client(token) as c:
         result = _raise(await c.post("/companies/me/category-schemas/merge", json={"schemas": schemas})).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -679,7 +684,7 @@ async def get_column_prefs(token: str) -> dict:
 async def patch_column_prefs(token: str, prefs: dict[str, list[str]]) -> dict:
     async with _api_client(token) as c:
         result = _raise(await c.patch("/companies/me/column-prefs", json={"prefs": prefs})).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -691,14 +696,14 @@ async def get_locations(token: str) -> dict:
 async def create_location(token: str, data: dict) -> dict:
     async with _api_client(token) as c:
         result = _raise(await c.post("/companies/me/locations", json=data)).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
 async def delete_location(token: str, location_id: str) -> dict:
     async with _api_client(token) as c:
         result = _raise(await c.delete(f"/companies/me/locations/{location_id}")).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -811,7 +816,7 @@ async def patch_units(token: str, units: list[dict]) -> list[dict]:
     """PUT /companies/me/units → replace units list."""
     async with _api_client(token) as c:
         result = _raise(await c.put("/companies/me/units", json={"units": units})).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -831,18 +836,20 @@ _METADATA_TTL_SECONDS = 5.0
 
 
 class InventoryMetadata(NamedTuple):
-    """One immutable snapshot of the seven inventory static-metadata getters.
+    """One immutable snapshot of the six genuinely static inventory getters.
 
-    Named fields (not a tuple of positional results) so a caller can never swap
-    two same-typed results by position. Callers receive defensive copies, so a
-    caller mutating what it reads cannot poison the cache.
+    Company/settings is deliberately NOT here: it carries authorization state
+    (role_grants, enabled_modules) that must never be served from a short-lived,
+    per-token UI optimization, so inventory views fetch it fresh on every
+    request. Named fields (not a tuple of positional results) so a caller can
+    never swap two same-typed results by position. Callers receive defensive
+    copies, so a caller mutating what it reads cannot poison the cache.
     """
 
     item_schema: list[dict]
     category_schemas: dict
     category_display_names: dict
     column_prefs: dict
-    company: dict
     locations: dict
     units: list[dict]
 
@@ -858,22 +865,33 @@ def _metadata_key(token: str) -> bytes:
 _metadata_lock = asyncio.Lock()
 _metadata_cache: dict[bytes, tuple[float, InventoryMetadata]] = {}
 _metadata_inflight: dict[bytes, asyncio.Task] = {}
+# A monotone generation counter guards cache publication against a write that
+# lands mid-fetch: a task only writes its result if the generation it captured at
+# creation still matches, so an old cold fetch cannot repopulate the cache with
+# pre-write data after an invalidation.
+_metadata_generation = 0
+# Every created metadata task, tracked so shutdown can cancel and await them all.
+_metadata_tasks: set[asyncio.Task] = set()
 
 
 def _reset_metadata_cache_for_tests() -> None:
     """Clear the metadata cache maps. For tests only."""
     _metadata_cache.clear()
     _metadata_inflight.clear()
+    _metadata_tasks.clear()
 
 
 async def _fetch_inventory_metadata(token: str) -> InventoryMetadata:
-    """One cold fetch: the seven getters gathered once, assembled by name."""
+    """One cold fetch: the six static getters gathered once, assembled by name.
+
+    Company is intentionally absent: it is fetched fresh per request outside this
+    cache so authorization state is never stale.
+    """
     (
         item_schema,
         category_schemas,
         category_display_names,
         column_prefs,
-        company,
         locations,
         units,
     ) = await asyncio.gather(
@@ -881,7 +899,6 @@ async def _fetch_inventory_metadata(token: str) -> InventoryMetadata:
         get_all_category_schemas(token),
         get_category_display_names(token),
         get_column_prefs(token),
-        get_company(token),
         get_locations(token),
         get_units(token),
     )
@@ -890,63 +907,101 @@ async def _fetch_inventory_metadata(token: str) -> InventoryMetadata:
         category_schemas=category_schemas,
         category_display_names=category_display_names,
         column_prefs=column_prefs,
-        company=company,
         locations=locations,
         units=units,
     )
 
 
+async def _run_metadata_task(key: bytes, token: str, generation: int) -> InventoryMetadata:
+    """The shared metadata fetch task: it owns its own map cleanup and publishing.
+
+    On failure it removes its own inflight entry so the next caller retries. On
+    success it publishes to the cache only if it is still the registered task for
+    the key AND its captured generation is still current, so a fetch that began
+    before an invalidation can never overwrite fresher state.
+    """
+    current = asyncio.current_task()
+    try:
+        snapshot = await _fetch_inventory_metadata(token)
+    except BaseException:
+        async with _metadata_lock:
+            if _metadata_inflight.get(key) is current:
+                _metadata_inflight.pop(key, None)
+        raise
+
+    async with _metadata_lock:
+        if _metadata_inflight.get(key) is current:
+            _metadata_inflight.pop(key, None)
+            if generation == _metadata_generation:
+                _metadata_cache[key] = (time.monotonic(), snapshot)
+    return snapshot
+
+
+def _prune_expired_metadata_locked(now: float) -> None:
+    """Drop every cache entry past the TTL, not only the current key. Lock held.
+
+    Access/refresh tokens rotate, so a digest never presented again would
+    otherwise leave a dead entry forever; pruning globally on each read keeps the
+    map bounded in a long-running process.
+    """
+    for old_key, (created_at, _snapshot) in list(_metadata_cache.items()):
+        if now - created_at > _METADATA_TTL_SECONDS:
+            _metadata_cache.pop(old_key, None)
+
+
 async def get_inventory_metadata(token: str) -> InventoryMetadata:
-    """Return the seven static-metadata getters as one snapshot, cached briefly.
+    """Return the six static-metadata getters as one snapshot, cached briefly.
 
     A fresh entry within the TTL is served from cache; a cold key runs exactly
     one gather even under a concurrent burst, because concurrent cold callers
-    await a single shared inflight Task rather than each launching their own.
+    await a single shared inflight Task rather than each launching their own. The
+    shared task owns its own cleanup, so a cancelled waiter never orphans state.
     Failures are never cached. Every returned snapshot is a defensive deep copy
     so a caller mutating what it reads cannot corrupt the stored entry.
     """
     key = _metadata_key(token)
-    now = time.monotonic()
 
     async with _metadata_lock:
+        now = time.monotonic()
+        _prune_expired_metadata_locked(now)
         entry = _metadata_cache.get(key)
         if entry is not None and (now - entry[0]) <= _METADATA_TTL_SECONDS:
             return _copy.deepcopy(entry[1])
         task = _metadata_inflight.get(key)
         if task is None:
-            task = asyncio.ensure_future(_fetch_inventory_metadata(token))
+            generation = _metadata_generation
+            task = asyncio.create_task(_run_metadata_task(key, token, generation))
+            _metadata_tasks.add(task)
+
+            def _metadata_done(finished: asyncio.Task) -> None:
+                _metadata_tasks.discard(finished)
+                _consume_task_exception(finished)
+
+            task.add_done_callback(_metadata_done)
             _metadata_inflight[key] = task
 
-    try:
-        snapshot = await asyncio.shield(task)
-    except asyncio.CancelledError:
-        # This waiter was cancelled; leave the shared task running for the
-        # others and never cache a partial result.
-        raise
-    except Exception:
-        # Failure is never cached; drop the inflight marker so the next caller
-        # retries a fresh fetch.
-        async with _metadata_lock:
-            if _metadata_inflight.get(key) is task:
-                del _metadata_inflight[key]
-        raise
-
-    async with _metadata_lock:
-        if _metadata_inflight.get(key) is task:
-            del _metadata_inflight[key]
-            _metadata_cache[key] = (time.monotonic(), snapshot)
+    # shield: this waiter's own cancellation must not cancel the shared task the
+    # other waiters are still awaiting. The task, not the waiter, owns cleanup.
+    snapshot = await asyncio.shield(task)
     return _copy.deepcopy(snapshot)
 
 
-def _invalidate_inventory_metadata(token: str) -> None:
-    """Drop this token's cached snapshot after a write that can change it.
+def _invalidate_inventory_metadata() -> None:
+    """Invalidate all cached static metadata process-wide after a settings write.
 
-    Called from the mutation wrappers below, never from route handlers, so the
-    invalidation lives in exactly one place per write and cannot be forgotten by
-    a caller. Dropping the entry (not overwriting it) means the next read does a
-    fresh cold fetch, so a failed write can never leave a poisoned snapshot.
+    A settings write by one authenticated user can change what other users see,
+    so invalidating only the writer's token digest would leave others stale.
+    Bumping the generation and clearing both maps means no request that starts
+    after the write attaches to the old task, and any old inflight fetch cannot
+    repopulate the cache because its captured generation is now stale. Existing
+    requests already awaiting the old task still finish against their snapshot;
+    over-invalidating across companies is acceptable for a five-second cache and
+    far safer than cross-token staleness.
     """
-    _metadata_cache.pop(_metadata_key(token), None)
+    global _metadata_generation
+    _metadata_generation += 1
+    _metadata_cache.clear()
+    _metadata_inflight.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -2492,7 +2547,7 @@ async def download_item_file(token: str, entity_id: str, file_id: str) -> httpx.
 async def patch_location(token: str, location_id: str, data: dict) -> dict:
     async with _api_client(token) as c:
         result = _raise(await c.patch(f"/companies/me/locations/{location_id}", json=data)).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -2722,7 +2777,7 @@ async def enable_module(token: str, module_name: str) -> dict:
     """POST /companies/me/modules/{name}/enable — enable a module (admin only)."""
     async with _api_client(token) as c:
         result = _raise(await c.post(f"/companies/me/modules/{module_name}/enable")).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -2730,7 +2785,7 @@ async def disable_module(token: str, module_name: str) -> dict:
     """POST /companies/me/modules/{name}/disable — disable a module (admin only)."""
     async with _api_client(token) as c:
         result = _raise(await c.post(f"/companies/me/modules/{module_name}/disable")).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -2738,7 +2793,7 @@ async def delete_module(token: str, module_name: str) -> dict:
     """POST /companies/me/modules/{name}/delete - remove a disabled, non-default module (admin only)."""
     async with _api_client(token) as c:
         result = _raise(await c.post(f"/companies/me/modules/{module_name}/delete")).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -2749,7 +2804,7 @@ async def purge_module_data(token: str, module_name: str) -> dict:
     prefix, so displayed counts are never replayed as input."""
     async with _api_client(token) as c:
         result = _raise(await c.post(f"/companies/me/modules/{module_name}/purge-data")).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -2834,7 +2889,7 @@ async def apply_vertical_preset(token: str, vertical: str) -> dict:
     """POST /companies/me/apply-preset?vertical=X — seed category schemas from a preset."""
     async with _api_client(token) as c:
         result = _raise(await c.post("/companies/me/apply-preset", params={"vertical": vertical})).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -2842,7 +2897,7 @@ async def apply_vertical_category(token: str, name: str) -> dict:
     """POST /companies/me/apply-category?name=X — seed a single category schema."""
     async with _api_client(token) as c:
         result = _raise(await c.post("/companies/me/apply-category", params={"name": name})).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -2850,7 +2905,7 @@ async def create_category(token: str, name: str) -> dict:
     """POST /companies/me/categories — create a new empty category."""
     async with _api_client(token) as c:
         result = _raise(await c.post("/companies/me/categories", json={"name": name})).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -2858,7 +2913,7 @@ async def rename_category(token: str, category_key: str, new_name: str) -> dict:
     """PATCH /companies/me/categories/{key} — rename category and update all item projections."""
     async with _api_client(token) as c:
         result = _raise(await c.patch(f"/companies/me/categories/{category_key}", json={"name": new_name})).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 
@@ -2866,7 +2921,7 @@ async def delete_category(token: str, category_key: str) -> dict:
     """DELETE /companies/me/categories/{key} — delete category (403 if items reference it)."""
     async with _api_client(token) as c:
         result = _raise(await c.delete(f"/companies/me/categories/{category_key}")).json()
-    _invalidate_inventory_metadata(token)
+    _invalidate_inventory_metadata()
     return result
 
 

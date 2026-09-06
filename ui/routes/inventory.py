@@ -855,23 +855,62 @@ def _inventory_content_error(p: dict, lang: str) -> FT:
     )
 
 
-async def _load_inventory_view_metadata(token: str) -> tuple:
-    """Fetch the shared inventory metadata snapshot and unpack it into the seven
-    values `_inventory_content` renders from.
+async def _load_inventory_static_metadata(token: str) -> tuple:
+    """Unpack the cached six static inventory values `_inventory_content` renders
+    from (schema, category schemas, column prefs, locations, units, category
+    labels).
 
     One round-trip-collapsing snapshot backs every inventory view (page,
     content, columns, search); each caller unpacks the same shape here rather
-    than repeating a five-call gather. Raises `APIError` so the caller decides
-    how to degrade (401 -> login, other -> honest error fragment)."""
+    than repeating a six-call gather. Company/settings is deliberately not part
+    of this snapshot: it carries authorization state and is fetched fresh per
+    request. Raises `APIError` so the caller decides how to degrade (401 ->
+    login, other -> honest error fragment)."""
     m = await api.get_inventory_metadata(token)
     return (
         m.item_schema,
         m.category_schemas,
         m.column_prefs,
-        m.company,
         m.locations.get("items", []),
         m.units,
         m.category_display_names,
+    )
+
+
+async def _load_inventory_view_metadata(token: str) -> tuple:
+    """Fresh company plus the cached static metadata, as the seven values
+    `_inventory_content` renders from.
+
+    Company is fetched fresh on every request so a dynamically revoked
+    permission is never served from a warm per-token cache, then combined with
+    the cached static snapshot. Raises `APIError` so the caller decides how to
+    degrade."""
+    company = await api.get_company(token)
+    schema, cat_schemas, col_prefs, locations, units, cat_labels = (
+        await _load_inventory_static_metadata(token)
+    )
+    return (schema, cat_schemas, col_prefs, company, locations, units, cat_labels)
+
+
+async def _inventory_page_error(request: Request, lang: str) -> FT:
+    """Minimal authenticated full-page inventory error with a retry.
+
+    Rendered when the fresh company/settings read itself fails, so the page has
+    no authorization context with which to build the normal inventory shell. It
+    deliberately needs no company settings: it shows an honest error and a way
+    to retry, never a normal inventory page backed by fabricated empty
+    settings."""
+    return await base_shell(
+        page_header(t("page.inventory", lang)),
+        Div(
+            P(t("inventory.content_load_failed", lang), cls="flash flash--error"),
+            A(t("btn.retry", lang), href="/inventory", cls="btn btn--primary"),
+            cls="empty-state",
+        ),
+        title=page_title("nav.inventory"),
+        nav_active="inventory",
+        lang=lang,
+        request=request,
     )
 
 
@@ -1114,23 +1153,31 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         p = _parse_params(request)
+        lang = get_lang(request)
 
+        # Authorization state is fetched fresh, never from the per-token metadata
+        # cache. If this read itself fails there is no basis to authorize the
+        # page, so we show an honest error rather than a page backed by empty
+        # settings that would fall back to registry-default permissions.
         try:
-            schema, cat_schemas, col_prefs, company, locations, units, cat_labels = (
-                await _load_inventory_view_metadata(token)
-            )
+            company = await api.get_company(token)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            schema, cat_schemas, col_prefs, company, locations, units, cat_labels = [], {}, {}, {}, [], [], {}
+            return await _inventory_page_error(request, lang)
 
         _settings = company.get("settings") or {}
         _role = _get_role(request)
         if not role_has_permission(_settings, _role, "view_inventory"):
             return RedirectResponse("/dashboard", status_code=302)
 
-        lang = get_lang(request)
+        # Company is fresh and valid here; a static-metadata or list/valuation
+        # failure degrades to an honest content error inside the normal shell,
+        # never a blank catalog.
         try:
+            schema, cat_schemas, col_prefs, locations, units, cat_labels = (
+                await _load_inventory_static_metadata(token)
+            )
             content = await _inventory_content(
                 token, p, schema, cat_schemas, col_prefs, company, locations, units, cat_labels,
                 lang=lang, role=_role,
@@ -1138,7 +1185,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            raise
+            content = _inventory_content_error(p, lang)
 
         # Search must carry the active filters (status/category/type/location), so searching inside
         # e.g. Sold inventory stays scoped to sold instead of falling back to the default active set.

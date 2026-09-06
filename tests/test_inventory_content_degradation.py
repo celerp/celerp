@@ -118,27 +118,32 @@ async def test_static_metadata_comes_from_snapshot_not_a_fetch(monkeypatch):
     assert 'id="inventory-content"' in html
 
 
-@pytest.mark.asyncio
-async def test_inventory_page_does_not_refetch_company_for_shell(ui_client, monkeypatch):
-    # Item 4: the page holds the company from the shared metadata snapshot and
-    # passes it into base_shell, so the whole /inventory render fetches the
-    # company exactly once - not a second time for the shell chrome.
+def _install_inventory_getters(monkeypatch, *, company=None, company_error=None,
+                               metadata_error=None):
+    """Stub every getter the /inventory full page reads and count the calls.
+
+    Returns a dict of counters: `company` (fresh authorization reads) and
+    `static` (the six cached static getters). `company_error`/`metadata_error`
+    make the respective read raise.
+    """
     import ui.api_client as api
 
-    calls = {"company": 0}
+    calls = {"company": 0, "static": 0}
+    company = company if company is not None else {"currency": "USD", "settings": {"vertical": "jewelry"}}
 
     async def _get_company(_token):
         calls["company"] += 1
-        return {"currency": "USD", "settings": {"vertical": "jewelry"}}
+        if company_error is not None:
+            raise company_error
+        return company
 
-    async def _empty_dict(_token):
-        return {}
-
-    async def _empty_list(_token):
-        return []
-
-    async def _locations(_token):
-        return {"items": []}
+    def _static(retval):
+        async def _f(_token):
+            calls["static"] += 1
+            if metadata_error is not None:
+                raise metadata_error
+            return retval
+        return _f
 
     async def _valuation(_token, **_kw):
         return {}
@@ -148,16 +153,85 @@ async def test_inventory_page_does_not_refetch_company_for_shell(ui_client, monk
 
     api._reset_metadata_cache_for_tests()
     monkeypatch.setattr(api, "get_company", _get_company)
-    monkeypatch.setattr(api, "get_item_schema", _empty_list)
-    monkeypatch.setattr(api, "get_all_category_schemas", _empty_dict)
-    monkeypatch.setattr(api, "get_category_display_names", _empty_dict)
-    monkeypatch.setattr(api, "get_column_prefs", _empty_dict)
-    monkeypatch.setattr(api, "get_locations", _locations)
-    monkeypatch.setattr(api, "get_units", _empty_list)
+    monkeypatch.setattr(api, "get_item_schema", _static([]))
+    monkeypatch.setattr(api, "get_all_category_schemas", _static({}))
+    monkeypatch.setattr(api, "get_category_display_names", _static({}))
+    monkeypatch.setattr(api, "get_column_prefs", _static({}))
+    monkeypatch.setattr(api, "get_locations", _static({"items": []}))
+    monkeypatch.setattr(api, "get_units", _static([]))
     monkeypatch.setattr(api, "get_valuation", _valuation)
     monkeypatch.setattr(api, "list_items", _list_items)
+    return calls
 
+
+@pytest.mark.asyncio
+async def test_inventory_page_reads_company_fresh_once(ui_client, monkeypatch):
+    # Items 4 and 5: the page reads company fresh exactly once per request and
+    # base_shell reuses those settings rather than performing a second read.
+    calls = _install_inventory_getters(monkeypatch)
     r = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
     assert r.status_code == 200
-    # One fetch total: the snapshot's. base_shell reused the passed settings.
     assert calls["company"] == 1
+
+
+@pytest.mark.asyncio
+async def test_warm_fragment_reads_company_fresh_and_zero_static(ui_client, monkeypatch):
+    # Item 4: after the static snapshot is warm, a second inventory fragment
+    # request still reads company fresh (authorization is never cached) and makes
+    # zero of the six static getter calls.
+    calls = _install_inventory_getters(monkeypatch)
+    cookies = {"celerp_token": make_test_token()}
+    await ui_client.get("/inventory", cookies=cookies)
+    assert calls["static"] == 6, "cold page primes the static snapshot once"
+    company_before = calls["company"]
+    r = await ui_client.get(
+        "/inventory/content", cookies=cookies, headers={"HX-Request": "true"}
+    )
+    assert r.status_code == 200
+    assert calls["static"] == 6, "warm fragment makes zero new static getter calls"
+    assert calls["company"] == company_before + 1, "company is still read fresh"
+
+
+@pytest.mark.asyncio
+async def test_company_read_failure_does_not_substitute_empty_settings(ui_client, monkeypatch):
+    # Item 1: when the fresh company read fails, the page must not fall back to
+    # {} settings and continue; it renders an honest retryable error, and the
+    # authorization check is never run against fabricated empty settings.
+    calls = _install_inventory_getters(monkeypatch, company_error=APIError(503, "saturated"))
+    perm_calls = []
+    real_perm = inv.role_has_permission
+    monkeypatch.setattr(
+        inv, "role_has_permission",
+        lambda settings, role, perm: perm_calls.append((settings, perm)) or real_perm(settings, role, perm),
+    )
+    r = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
+    assert r.status_code == 200
+    assert "flash--error" in r.text
+    assert not perm_calls, "authorization must not be decided on fabricated {} settings"
+
+
+@pytest.mark.asyncio
+async def test_revoked_view_inventory_denied_even_when_metadata_fails(ui_client, monkeypatch):
+    # Item 2: a dynamically revoked view_inventory user is redirected away even
+    # when the static metadata read fails, because company (and its live
+    # role_grants) is read fresh before any static metadata is touched.
+    _install_inventory_getters(monkeypatch, metadata_error=APIError(503, "down"))
+    monkeypatch.setattr(inv, "role_has_permission", lambda settings, role, perm: False)
+    r = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
+    assert r.status_code == 302
+    assert r.headers["location"] == "/dashboard"
+
+
+@pytest.mark.asyncio
+async def test_static_failure_after_company_success_shows_error_in_shell(ui_client, monkeypatch):
+    # Item 3: company read succeeds but a static metadata read fails, so the page
+    # renders the normal authenticated shell with an honest content error and a
+    # retry, never a blank catalog.
+    _install_inventory_getters(monkeypatch, metadata_error=APIError(503, "down"))
+    r = await ui_client.get("/inventory", cookies={"celerp_token": make_test_token()})
+    assert r.status_code == 200
+    assert "flash--error" in r.text
+    # The content region is the honest error fragment (empty-state + retry), not
+    # a rendered data table dressed up as an empty catalog.
+    assert 'id="inventory-content"' in r.text
+    assert "empty-state" in r.text
