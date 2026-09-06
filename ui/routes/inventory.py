@@ -892,6 +892,44 @@ async def _load_inventory_view_metadata(token: str) -> tuple:
     return (schema, cat_schemas, col_prefs, company, locations, units, cat_labels)
 
 
+async def _render_inventory_fragment(
+    token: str, p: dict, lang: str, role: str, **content_kwargs,
+):
+    """Load the view metadata then render #inventory-content, degrading identically.
+
+    Shared by every HTMX fragment route (content, columns, search): each one loads
+    fresh view metadata and renders content in the same two steps, and each must
+    degrade the same way on failure - a 401 from either step sends the browser to
+    login, any other APIError falls back to the honest content-error fragment
+    rather than a blank or broken swap. Extra keyword arguments (e.g.
+    col_manager_open) pass straight through to `_inventory_content`.
+
+    The full page route does not use this helper: it wraps a single try/except
+    around both the metadata load and the content render together (one honest
+    error covers either failure), whereas the fragment routes need the metadata
+    failure to short-circuit before it produces a possibly-incomplete `p` for the
+    content render. The two shapes are similar but not identical, so folding them
+    together would need a flag to tell them apart.
+    """
+    try:
+        schema, cat_schemas, col_prefs, company, locations, units, cat_labels = (
+            await _load_inventory_view_metadata(token)
+        )
+    except APIError as e:
+        if e.status == 401:
+            return RedirectResponse("/login", status_code=302)
+        return _inventory_content_error(p, lang)
+    try:
+        return await _inventory_content(
+            token, p, schema, cat_schemas, col_prefs, company, locations, units, cat_labels,
+            lang=lang, role=role, **content_kwargs,
+        )
+    except APIError as e:
+        if e.status == 401:
+            return RedirectResponse("/login", status_code=302)
+        return _inventory_content_error(p, lang)
+
+
 async def _inventory_page_error(request: Request, lang: str) -> FT:
     """Minimal authenticated full-page inventory error with a retry.
 
@@ -1239,23 +1277,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         p = _parse_params(request)
         lang = get_lang(request)
-        try:
-            schema, cat_schemas, col_prefs, company, locations, units, cat_labels = (
-                await _load_inventory_view_metadata(token)
-            )
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return _inventory_content_error(p, lang)
-        try:
-            return await _inventory_content(
-                token, p, schema, cat_schemas, col_prefs, company, locations, units, cat_labels,
-                lang=lang, role=_get_role(request),
-            )
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return _inventory_content_error(p, lang)
+        return await _render_inventory_fragment(token, p, lang, _get_role(request))
 
     @app.post("/inventory/columns")
     async def inventory_columns(request: Request):
@@ -1290,23 +1312,9 @@ def setup_routes(app):
         lang = get_lang(request)
         # The column-pref write above invalidated the metadata snapshot, so this
         # reload reflects the saved prefs rather than a stale cached copy.
-        try:
-            schema, cat_schemas, col_prefs, company, locations, units, cat_labels = (
-                await _load_inventory_view_metadata(token)
-            )
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return _inventory_content_error(p, lang)
-        try:
-            return await _inventory_content(
-                token, p, schema, cat_schemas, col_prefs, company, locations, units, cat_labels,
-                col_manager_open=True, lang=lang, role=_get_role(request),
-            )
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return _inventory_content_error(p, lang)
+        return await _render_inventory_fragment(
+            token, p, lang, _get_role(request), col_manager_open=True,
+        )
 
     @app.get("/inventory/search")
     async def inventory_search(request: Request):
@@ -1316,23 +1324,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         p = _parse_params(request)
         lang = get_lang(request)
-        try:
-            schema, cat_schemas, col_prefs, company, locations, units, cat_labels = (
-                await _load_inventory_view_metadata(token)
-            )
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return _inventory_content_error(p, lang)
-        try:
-            return await _inventory_content(
-                token, p, schema, cat_schemas, col_prefs, company, locations, units, cat_labels,
-                lang=lang, role=_get_role(request),
-            )
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return _inventory_content_error(p, lang)
+        return await _render_inventory_fragment(token, p, lang, _get_role(request))
 
     @app.get("/inventory/export/csv")
     async def inventory_export_csv(request: Request):
