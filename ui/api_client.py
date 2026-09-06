@@ -334,8 +334,10 @@ async def batch_import(token: str, path: str, records: list[dict], upsert: bool 
 
     This is intentionally generic so UI routes can reuse it for items/docs/lists/crm/etc.
     Timeout is set high (300s) because large batches involve many DB writes server-side.
+    A large import holds its connection for the whole write, so it rides the bulk pool
+    rather than pinning an interactive slot a page fan-out needs.
     """
-    async with _api_client(token, timeout=300.0) as c:
+    async with _bulk_api_client(token, timeout=300.0) as c:
         r = _raise(await c.post(path, json={"records": records, "upsert": upsert}))
         return r.json()
 
@@ -518,22 +520,32 @@ class _SingleFlightCoordinator:
                 self.store.pop(key, None)
 
     def clear_maps(self) -> None:
-        """Clear inflight, store, and any tracked tasks. Generation untouched."""
+        """Clear the inflight and store maps. Tracked tasks and generation untouched.
+
+        Invalidation and shutdown both call this to drop cached results and
+        detach new callers from any old task, but a task already running is
+        removed from the tracked set only by its own completion callback or by
+        final shutdown - never here. Forgetting a live task here would hide it
+        from tasks_for_shutdown(), so close_shared_client could tear down the
+        transport the task is still reading on.
+        """
         self.inflight.clear()
         self.store.clear()
+
+    def reset_for_tests(self) -> None:
+        """Clear inflight, store, and any tracked tasks. For tests only."""
+        self.clear_maps()
         if self.tasks is not None:
             self.tasks.clear()
 
-    def reset_for_tests(self) -> None:
-        """Clear the coordinator's module-level maps. For tests only."""
-        self.clear_maps()
-
     def invalidate_all(self) -> None:
-        """Bump the generation and clear every map. Process-wide, not per-key.
+        """Bump the generation and clear the inflight and store maps. Process-wide.
 
         No request that starts after this can attach to the old task, and any
         old inflight fetch cannot repopulate the store because its captured
-        generation is now stale.
+        generation is now stale. A pre-invalidation fetch keeps running and stays
+        tracked, so shutdown can still cancel and await it before its transport is
+        torn down: invalidation forgets cached results, never live tasks.
         """
         self._generation += 1
         self.clear_maps()
@@ -1927,26 +1939,34 @@ async def update_mfg_settings(token: str, mfg: dict) -> dict:
 # CSV export
 # ---------------------------------------------------------------------------
 
-async def _stream_csv(token: str, path: str, params: dict | None = None):
-    """GET a CSV export endpoint with the body streamed, never buffered. Returns
-    (chunk_iterator, headers).
+async def _stream_get(token: str, path: str, *, params: dict | None = None,
+                      timeout_message: str):
+    """GET a streaming endpoint on the BULK transport, body streamed not buffered.
+    Returns (chunk_iterator, headers).
 
-    The backend already streams these exports row by row; the UI must not re-read the
-    whole body into memory (a large export would then sit in UI RAM and defeat the
-    backend's streaming, pinning a pooled connection for the whole read). The caller
-    pipes the iterator straight into a StreamingResponse, and the httpx client + response
-    stay open until the iterator is exhausted. Content-Length is forwarded so the browser
-    can show a real download progress bar. Mirrors export_backup's streaming shape."""
-    from ui.config import API_BASE
-    client = _client(token, timeout=httpx.Timeout(300.0, connect=10.0))
+    The one streaming helper behind every long/large local download (CSV exports,
+    backup archives). Each can run long or reach many GB, so they ride the small
+    bulk pool: a slow export or a multi-GB download can never hold one of the
+    interactive connection slots ordinary page requests need. The UI must not
+    re-read the whole body into memory (that would defeat the backend's streaming
+    and pin a connection for the full read); the caller pipes the iterator
+    straight into a StreamingResponse, and the httpx client + response stay open
+    until the iterator is exhausted. Content-Length is forwarded so the browser
+    shows a real download progress bar. PoolTimeout (bulk pool saturated -> 503
+    retryable) is caught before TimeoutException (slow upstream -> 504), the same
+    order the shared error mapping uses, because PoolTimeout subclasses it."""
+    client = _local_client(token, timeout=httpx.Timeout(300.0, connect=10.0), bulk=True)
     try:
         resp = await client.send(client.build_request("GET", path, params=params or {}), stream=True)
+    except httpx.PoolTimeout as exc:
+        await client.aclose()
+        raise APIError(503, SATURATION_MESSAGE) from exc
     except httpx.TimeoutException as exc:
         await client.aclose()
-        raise APIError(504, "The export timed out.") from exc
+        raise APIError(504, timeout_message) from exc
     except httpx.ConnectError as exc:
         await client.aclose()
-        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
+        raise APIError(503, _connect_message()) from exc
     if resp.status_code >= 400:
         body = await resp.aread()
         await resp.aclose()
@@ -1981,8 +2001,9 @@ async def export_items_csv(token: str, params: dict | None = None) -> bytes:
 
 
 async def export_docs_csv(token: str, params: dict | None = None):
-    """GET /docs/export/csv, streamed. Returns (chunk_iterator, headers)."""
-    return await _stream_csv(token, "/docs/export/csv", params)
+    """GET /docs/export/csv, streamed on the bulk transport. Returns (iter, headers)."""
+    return await _stream_get(token, "/docs/export/csv", params=params,
+                             timeout_message="The export timed out.")
 
 
 async def export_contacts_csv(token: str, params: dict | None = None) -> bytes:
@@ -2203,7 +2224,8 @@ async def delete_list_note(token: str, entity_id: str, note_id: str) -> dict:
 
 async def export_lists_csv(token: str, params: dict | None = None):
     """GET /lists/export/csv, streamed. Returns (chunk_iterator, headers)."""
-    return await _stream_csv(token, "/lists/export/csv", params)
+    return await _stream_get(token, "/lists/export/csv", params=params,
+                             timeout_message="The export timed out.")
 
 
 # ---------------------------------------------------------------------------
@@ -2870,8 +2892,9 @@ async def module_licenses(token: str) -> list[str]:
 async def marketplace_download(token: str, slug: str) -> dict:
     """POST /companies/me/modules/marketplace-download - fetch a marketplace
     module from the relay and stage it for install (the download can take a
-    while). Returns the staged path the following Install reads."""
-    async with _api_client(token, timeout=90.0) as c:
+    while). Returns the staged path the following Install reads. The long fetch
+    rides the bulk pool so it cannot hold an interactive connection slot."""
+    async with _bulk_api_client(token, timeout=90.0) as c:
         return _raise(await c.post("/companies/me/modules/marketplace-download",
                                    json={"slug": slug})).json()
 
@@ -3006,59 +3029,28 @@ async def trigger_backup(token: str) -> None:
 
     A snapshot (pg_dump + dedup upload) can take well over 10 s; use a generous
     timeout so the UI handler gets a real success/error rather than a timeout
-    exception that it can't distinguish from a connection failure.
+    exception that it can't distinguish from a connection failure. The long-held
+    request rides the bulk pool so it cannot hold an interactive connection slot.
     """
-    async with _api_client(token, timeout=120.0) as c:
+    async with _bulk_api_client(token, timeout=120.0) as c:
         _raise(await c.post("/backup/trigger"))
 
 
 async def export_backup(token: str, backup_id: str | None = None):
-    """GET /backup/export[/{backup_id}], streamed. Returns (chunk_iterator, headers).
+    """GET /backup/export[/{backup_id}], streamed on the bulk transport.
+    Returns (chunk_iterator, headers).
 
-    With no ``backup_id`` this streams a fresh local export; with one it streams a cloud
-    snapshot the server reassembles on the fly. Either archive can be many GB (DB dump +
-    attachments), so we never buffer it in memory: the caller pipes the iterator straight
-    into a StreamingResponse, and the httpx client + response stay open until the iterator
-    is exhausted. The server builds the archive before the first byte, so the read timeout
-    is generous; once bytes flow, each chunk just needs to arrive within it. We forward
-    Content-Length so the browser shows a real download progress bar.
+    With no ``backup_id`` this streams a fresh local export; with one it streams a
+    cloud snapshot the server reassembles on the fly. Either archive can be many GB
+    (DB dump + attachments), so it rides the shared streaming helper on the bulk
+    pool: it is never buffered in memory and never holds an interactive connection
+    slot. The server builds the archive before the first byte, so the helper's read
+    timeout is generous; once bytes flow, each chunk just needs to arrive within it.
     """
-    from ui.config import API_BASE
     url = f"/backup/export/{backup_id}" if backup_id else "/backup/export"
-    client = _client(token, timeout=httpx.Timeout(300.0, connect=10.0))
-    try:
-        resp = await client.send(client.build_request("GET", url), stream=True)
-    except httpx.TimeoutException as exc:
-        await client.aclose()
-        raise APIError(504, "Backup timed out. The archive took too long to build.") from exc
-    except httpx.ConnectError as exc:
-        await client.aclose()
-        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
-    if resp.status_code >= 400:
-        body = await resp.aread()
-        await resp.aclose()
-        await client.aclose()
-        try:
-            import json as _json
-            detail = _json.loads(body).get("detail", body.decode("utf-8", "replace"))
-        except Exception:
-            detail = body.decode("utf-8", "replace")
-        raise APIError(resp.status_code, detail)
-    headers = {
-        k: resp.headers[k]
-        for k in ("content-length", "content-disposition", "content-type")
-        if k in resp.headers
-    }
-
-    async def _iter():
-        try:
-            async for chunk in resp.aiter_bytes():
-                yield chunk
-        finally:
-            await resp.aclose()
-            await client.aclose()
-
-    return _iter(), headers
+    return await _stream_get(
+        token, url,
+        timeout_message="Backup timed out. The archive took too long to build.")
 
 
 async def disconnect_relay(token: str) -> dict:

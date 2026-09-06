@@ -399,3 +399,135 @@ async def test_metadata_only_file_wrappers_stay_interactive(name, monkeypatch):
     await _metadata_only_call_recipes("tok")[name]()
     assert entered["interactive"] == 1, f"{name} must stay interactive"
     assert entered["bulk"] == 0, f"{name} must not use the bulk transport"
+
+
+# --- Section 11: long/large streamed and finite operations ride the bulk pool ---
+
+# A CSV export, a backup archive, a large batch import, a backup trigger, and a
+# marketplace archive fetch each hold a connection for a long time or move a large
+# body. They must run on the small bulk pool so an interactive page fan-out can
+# never be starved of connections by them, and a pool-acquire timeout on that path
+# must surface as saturation (503), never as a generic upstream timeout (504).
+
+
+class _FakeStreamResponse:
+    """A real-enough streaming response for the streamed export/backup path."""
+
+    def __init__(self, status_code=200, headers=None, chunks=(b"col\n", b"val\n")):
+        self.status_code = status_code
+        self.headers = headers or {"content-type": "text/csv", "content-length": "8"}
+        self._chunks = chunks
+
+    async def aiter_bytes(self):
+        for chunk in self._chunks:
+            yield chunk
+
+    async def aread(self):
+        return b"".join(self._chunks)
+
+    async def aclose(self):
+        return None
+
+
+class _FakeStreamClient:
+    """Stand-in for the AsyncClient the streaming helper builds.
+
+    build_request / send(stream=True) / aclose match exactly what the helper
+    calls, so the streamed path exercises real control flow; the spy that hands
+    this out records which transport (bulk or interactive) the helper selected.
+    """
+
+    def __init__(self, response=None, send_exc=None):
+        self._response = response if response is not None else _FakeStreamResponse()
+        self._send_exc = send_exc
+
+    def build_request(self, method, path, params=None):
+        return ("request", method, path, params)
+
+    async def send(self, request, stream=False):
+        if self._send_exc is not None:
+            raise self._send_exc
+        return self._response
+
+    async def aclose(self):
+        return None
+
+
+def _spy_stream_local_client(monkeypatch, *, response=None, send_exc=None):
+    """Replace _local_client with a spy recording each call's bulk choice.
+
+    The streamed helpers build their client through _local_client, so this
+    observes the transport they actually select without reading their source.
+    """
+    calls = {"bulk": []}
+
+    def _fake(*_a, **k):
+        calls["bulk"].append(bool(k.get("bulk", False)))
+        return _FakeStreamClient(response=response, send_exc=send_exc)
+
+    monkeypatch.setattr(api, "_local_client", _fake)
+    return calls
+
+
+async def _drain(pair):
+    it, _headers = pair
+    async for _chunk in it:
+        pass
+
+
+_STREAM_RECIPES = {
+    "export_docs_csv": lambda: api.export_docs_csv("tok"),
+    "export_lists_csv": lambda: api.export_lists_csv("tok"),
+    "export_backup": lambda: api.export_backup("tok"),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", list(_STREAM_RECIPES))
+async def test_streamed_export_uses_bulk_transport(name, monkeypatch):
+    # A CSV export or backup archive can run long or many-GB; it must stream on
+    # the small bulk pool so it never holds an interactive connection slot.
+    calls = _spy_stream_local_client(monkeypatch)
+    await _drain(await _STREAM_RECIPES[name]())
+    assert calls["bulk"] == [True], f"{name} must stream on the bulk transport"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", list(_STREAM_RECIPES))
+async def test_streamed_export_pool_saturation_maps_to_503(name, monkeypatch):
+    # Pool saturation on the streamed path is a 503 (retryable), never a 504:
+    # PoolTimeout subclasses TimeoutException, so the except order on the streamed
+    # helper must catch PoolTimeout first, exactly as the wrapped clients do.
+    _spy_stream_local_client(monkeypatch, send_exc=httpx.PoolTimeout("pool"))
+    with pytest.raises(APIError) as exc:
+        await _STREAM_RECIPES[name]()
+    assert exc.value.status == 503
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", list(_STREAM_RECIPES))
+async def test_streamed_export_read_timeout_maps_to_504(name, monkeypatch):
+    # A genuine slow upstream on the streamed path keeps its 504 meaning.
+    _spy_stream_local_client(monkeypatch, send_exc=httpx.ReadTimeout("slow"))
+    with pytest.raises(APIError) as exc:
+        await _STREAM_RECIPES[name]()
+    assert exc.value.status == 504
+
+
+_LONG_OP_RECIPES = {
+    "batch_import": lambda: api.batch_import("tok", "/items/import", [{"a": 1}]),
+    "trigger_backup": lambda: api.trigger_backup("tok"),
+    "marketplace_download": lambda: api.marketplace_download("tok", "slug"),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", list(_LONG_OP_RECIPES))
+async def test_long_local_operation_uses_bulk_transport(name, monkeypatch):
+    # The long finite local operations (large batch import, backup trigger,
+    # marketplace archive fetch) each hold a connection for many seconds; they
+    # ride the bulk pool so they cannot starve interactive page traffic.
+    entered = _spy_client_factories(monkeypatch)
+    await _LONG_OP_RECIPES[name]()
+    assert entered["bulk"] == 1, f"{name} must use the bulk transport"
+    assert entered["interactive"] == 0, f"{name} must not use the interactive transport"
