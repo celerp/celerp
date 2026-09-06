@@ -3076,6 +3076,7 @@
   "btn.decline": "辞退",
   "settings_cloud.partner_claim_title": "パートナー申請",
   "settings_cloud.partner_claim_desc": "パートナーからこのインストールを管理するための申請コードを受け取った場合は、ここに貼り付けて、承認する前に相手を確認してください。",
+  "settings_cloud.partner_claim_label": "申請コード",
   "settings_cloud.partner_claim_token_placeholder": "申請コードを貼り付け",
   "settings_cloud.partner_claim_review": "申請を確認",
   "settings_cloud.partner_claim_managed_by": "このインストールの管理者:",

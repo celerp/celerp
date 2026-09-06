@@ -634,12 +634,13 @@ def _partner_claim_card(lang: str = "en", error: str | None = None) -> FT:
         children.append(P(error, cls="text-error", style="margin:8px 0;"))
     children.append(
         Form(
-            Input(name="claim_token", type="text", autocomplete="off",
+            Label(t("settings_cloud.partner_claim_label", lang), For="claim_token"),
+            Input(name="claim_token", id="claim_token", type="text", autocomplete="off",
                   placeholder=t("settings_cloud.partner_claim_token_placeholder", lang),
                   cls="input", style="max-width:360px;"),
             Button(t("settings_cloud.partner_claim_review", lang),
-                   type="submit", cls="btn btn--primary", style="margin-left:8px;"),
-            Span(cls="htmx-indicator", id="partner-claim-spinner"),
+                   type="submit", cls="btn btn--primary"),
+            Span(cls="spinner htmx-indicator", id="partner-claim-spinner"),
             hx_post="/settings/partner-claim/resolve",
             hx_target="#partner-claim-card",
             hx_swap="outerHTML",
@@ -671,7 +672,8 @@ def _partner_claim_preview(identity: dict, claim_token: str, lang: str = "en") -
     support_url = identity.get("support_url") or ""
     support_children: list = []
     if support_email:
-        support_children.append(Div(support_email, cls="settings-value", style="margin:4px 0;"))
+        support_children.append(A(support_email, href=f"mailto:{support_email}",
+                                   cls="settings-value", style="margin:4px 0;"))
     if support_url:
         support_children.append(A(
             t("cloud.partner_support", lang),
@@ -697,7 +699,7 @@ def _partner_claim_preview(identity: dict, claim_token: str, lang: str = "en") -
                    hx_post="/settings/partner-claim/decline",
                    hx_target="#partner-claim-card",
                    hx_swap="outerHTML"),
-            Span(cls="htmx-indicator", id="partner-claim-spinner"),
+            Span(cls="spinner htmx-indicator", id="partner-claim-spinner"),
             style="margin-top:12px;",
         ),
         id="partner-claim-card", cls="settings-card",

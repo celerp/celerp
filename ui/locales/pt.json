@@ -3076,6 +3076,7 @@
   "btn.decline": "Recusar",
   "settings_cloud.partner_claim_title": "Reivindicação de parceiro",
   "settings_cloud.partner_claim_desc": "Se um parceiro lhe deu um código de reivindicação para gerir esta instalação, cole-o aqui para verificar quem é antes de aceitar.",
+  "settings_cloud.partner_claim_label": "Código de reivindicação",
   "settings_cloud.partner_claim_token_placeholder": "Colar código de reivindicação",
   "settings_cloud.partner_claim_review": "Rever reivindicação",
   "settings_cloud.partner_claim_managed_by": "Esta instalação será gerida por:",

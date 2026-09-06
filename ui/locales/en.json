@@ -2890,6 +2890,7 @@
   "settings_cloud.per_mo": "/mo",
   "settings_cloud.partner_claim_title": "Partner claim",
   "settings_cloud.partner_claim_desc": "If a partner gave you a claim code to manage this install, paste it here to review who they are before you accept.",
+  "settings_cloud.partner_claim_label": "Claim code",
   "settings_cloud.partner_claim_token_placeholder": "Paste claim code",
   "settings_cloud.partner_claim_review": "Review claim",
   "settings_cloud.partner_claim_managed_by": "This install will be managed by:",

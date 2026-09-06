@@ -3076,6 +3076,7 @@
   "btn.decline": "Ablehnen",
   "settings_cloud.partner_claim_title": "Partneranspruch",
   "settings_cloud.partner_claim_desc": "Wenn ein Partner Ihnen einen Anspruchscode zur Verwaltung dieser Installation gegeben hat, fügen Sie ihn hier ein, um vor dem Annehmen zu prüfen, wer er ist.",
+  "settings_cloud.partner_claim_label": "Anspruchscode",
   "settings_cloud.partner_claim_token_placeholder": "Anspruchscode einfügen",
   "settings_cloud.partner_claim_review": "Anspruch prüfen",
   "settings_cloud.partner_claim_managed_by": "Diese Installation wird verwaltet von:",

@@ -3076,6 +3076,7 @@
   "btn.decline": "Tolak",
   "settings_cloud.partner_claim_title": "Klaim mitra",
   "settings_cloud.partner_claim_desc": "Jika mitra memberi Anda kode klaim untuk mengelola pemasangan ini, tempelkan di sini untuk meninjau siapa mereka sebelum Anda menerima.",
+  "settings_cloud.partner_claim_label": "Kode klaim",
   "settings_cloud.partner_claim_token_placeholder": "Tempel kode klaim",
   "settings_cloud.partner_claim_review": "Tinjau klaim",
   "settings_cloud.partner_claim_managed_by": "Pemasangan ini akan dikelola oleh:",

@@ -3076,6 +3076,7 @@
   "btn.decline": "አትቀበል",
   "settings_cloud.partner_claim_title": "የአጋር ጥያቄ",
   "settings_cloud.partner_claim_desc": "አንድ አጋር ይህን ጭነት ለማስተዳደር የጥያቄ ኮድ ከሰጠዎት፣ ከመቀበልዎ በፊት ማንነታቸውን ለመገምገም እዚህ ይለጥፉት።",
+  "settings_cloud.partner_claim_label": "የጥያቄ ኮድ",
   "settings_cloud.partner_claim_token_placeholder": "የጥያቄ ኮድ ይለጥፉ",
   "settings_cloud.partner_claim_review": "ጥያቄውን ይገምግሙ",
   "settings_cloud.partner_claim_managed_by": "ይህ ጭነት የሚተዳደረው በ፦",

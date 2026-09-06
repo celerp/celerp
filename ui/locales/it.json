@@ -3076,6 +3076,7 @@
   "btn.decline": "Rifiuta",
   "settings_cloud.partner_claim_title": "Rivendicazione del partner",
   "settings_cloud.partner_claim_desc": "Se un partner ti ha fornito un codice di rivendicazione per gestire questa installazione, incollalo qui per verificare chi è prima di accettare.",
+  "settings_cloud.partner_claim_label": "Codice di rivendicazione",
   "settings_cloud.partner_claim_token_placeholder": "Incolla il codice di rivendicazione",
   "settings_cloud.partner_claim_review": "Verifica la rivendicazione",
   "settings_cloud.partner_claim_managed_by": "Questa installazione sarà gestita da:",

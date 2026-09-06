@@ -1491,6 +1491,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* Text */
 .text-muted { color: var(--c-text2); }
 .text-connected { color: var(--c-green); font-weight: 600; }
+.text-error { color: var(--c-red); }
 .text-pre-wrap { white-space: pre-wrap; line-height: 1.6; }
 .text-sm { font-size: 11px; }
 .text-center { text-align: center; }

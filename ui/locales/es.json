@@ -3076,6 +3076,7 @@
   "btn.decline": "Rechazar",
   "settings_cloud.partner_claim_title": "Reclamación de socio",
   "settings_cloud.partner_claim_desc": "Si un socio le dio un código de reclamación para gestionar esta instalación, péguelo aquí para revisar quién es antes de aceptar.",
+  "settings_cloud.partner_claim_label": "Código de reclamación",
   "settings_cloud.partner_claim_token_placeholder": "Pegar código de reclamación",
   "settings_cloud.partner_claim_review": "Revisar reclamación",
   "settings_cloud.partner_claim_managed_by": "Esta instalación será gestionada por:",
