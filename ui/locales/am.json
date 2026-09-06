@@ -3085,5 +3085,11 @@
   "settings_cloud.saved_restart_to_apply": "✓ ተቀምጧል። ለውጡን ለመተግበር Celerp እንደገና ያስጀምሩ።",
   "settings_cloud.restored_restart_to_apply": "↩ የቀድሞ የውሂብ ጎታ ቅንብሮች ተመልሰዋል። ለመተግበር Celerp እንደገና ያስጀምሩ።",
   "settings_cloud.s3_support_unavailable": "በዚህ ግንባታ ውስጥ የS3 ድጋፍ የለም",
-  "settings_cloud.s3_connection_failed": "ግንኙነት አልተሳካም"
+  "settings_cloud.s3_connection_failed": "ግንኙነት አልተሳካም",
+  "settings_cloud.password_unchanged_placeholder": "ያልተለወጠ",
+  "settings_cloud.clear_password_label": "የተቀመጠውን የይለፍ ቃል አጽዳ",
+  "settings_cloud.invalid_port": "ትክክለኛ የፖርት ቁጥር ያስገቡ (1-65535)",
+  "settings_cloud.db_connection_failed": "ግንኙነት አልተሳካም። አስተናጋጅ፣ ወደብ እና ማረጋገጫዎችን ያረጋግጡ።",
+  "settings_cloud.invalid_storage_backend": "ትክክለኛ የማከማቻ ዓይነት ይምረጡ",
+  "settings_cloud.invalid_s3_endpoint": "ትክክለኛ https:// መድረሻ ያስገቡ"
 }

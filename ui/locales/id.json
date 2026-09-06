@@ -3085,5 +3085,11 @@
   "settings_cloud.saved_restart_to_apply": "✓ Tersimpan. Mulai ulang Celerp untuk menerapkan perubahan.",
   "settings_cloud.restored_restart_to_apply": "↩ Pengaturan basis data sebelumnya dipulihkan. Mulai ulang Celerp untuk menerapkan.",
   "settings_cloud.s3_support_unavailable": "Dukungan S3 tidak tersedia di build ini",
-  "settings_cloud.s3_connection_failed": "Koneksi gagal"
+  "settings_cloud.s3_connection_failed": "Koneksi gagal",
+  "settings_cloud.password_unchanged_placeholder": "Tidak berubah",
+  "settings_cloud.clear_password_label": "Hapus kata sandi yang tersimpan",
+  "settings_cloud.invalid_port": "Masukkan nomor port yang valid (1-65535)",
+  "settings_cloud.db_connection_failed": "Koneksi gagal. Periksa host, port, dan kredensial.",
+  "settings_cloud.invalid_storage_backend": "Pilih backend penyimpanan yang valid",
+  "settings_cloud.invalid_s3_endpoint": "Masukkan endpoint https:// yang valid"
 }

@@ -3085,5 +3085,11 @@
   "settings_cloud.saved_restart_to_apply": "✓ บันทึกแล้ว รีสตาร์ท Celerp เพื่อใช้การเปลี่ยนแปลง",
   "settings_cloud.restored_restart_to_apply": "↩ กู้คืนการตั้งค่าฐานข้อมูลก่อนหน้าแล้ว รีสตาร์ท Celerp เพื่อใช้งาน",
   "settings_cloud.s3_support_unavailable": "บิลด์นี้ไม่รองรับ S3",
-  "settings_cloud.s3_connection_failed": "การเชื่อมต่อล้มเหลว"
+  "settings_cloud.s3_connection_failed": "การเชื่อมต่อล้มเหลว",
+  "settings_cloud.password_unchanged_placeholder": "ไม่เปลี่ยนแปลง",
+  "settings_cloud.clear_password_label": "ล้างรหัสผ่านที่บันทึกไว้",
+  "settings_cloud.invalid_port": "กรอกหมายเลขพอร์ตที่ถูกต้อง (1-65535)",
+  "settings_cloud.db_connection_failed": "การเชื่อมต่อล้มเหลว ตรวจสอบโฮสต์ พอร์ต และข้อมูลรับรอง",
+  "settings_cloud.invalid_storage_backend": "เลือกแบ็กเอนด์พื้นที่จัดเก็บที่ถูกต้อง",
+  "settings_cloud.invalid_s3_endpoint": "กรอกปลายทาง https:// ที่ถูกต้อง"
 }

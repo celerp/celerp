@@ -3085,5 +3085,11 @@
   "settings_cloud.saved_restart_to_apply": "✓ 保存しました。変更を適用するには Celerp を再起動してください。",
   "settings_cloud.restored_restart_to_apply": "↩ 以前のデータベース設定を復元しました。適用するには Celerp を再起動してください。",
   "settings_cloud.s3_support_unavailable": "このビルドでは S3 はサポートされていません",
-  "settings_cloud.s3_connection_failed": "接続に失敗しました"
+  "settings_cloud.s3_connection_failed": "接続に失敗しました",
+  "settings_cloud.password_unchanged_placeholder": "変更なし",
+  "settings_cloud.clear_password_label": "保存されたパスワードを消去",
+  "settings_cloud.invalid_port": "有効なポート番号を入力してください (1-65535)",
+  "settings_cloud.db_connection_failed": "接続に失敗しました。ホスト、ポート、認証情報を確認してください。",
+  "settings_cloud.invalid_storage_backend": "有効なストレージバックエンドを選択してください",
+  "settings_cloud.invalid_s3_endpoint": "有効な https:// エンドポイントを入力してください"
 }
