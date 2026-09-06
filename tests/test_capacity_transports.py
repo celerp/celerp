@@ -234,17 +234,138 @@ _FILE_BODY_WRAPPERS = [
     "export_contacts_csv",
 ]
 
+_METADATA_ONLY_FILE_WRAPPERS = [
+    "tag_item_file",
+    "describe_item_file",
+    "delete_item_file",
+    "tag_contact_file",
+    "patch_contact_file_description",
+    "delete_contact_file",
+    "tag_doc_file",
+    "patch_doc_file_description",
+    "delete_doc_file",
+]
 
+
+class _FakeUploadFile:
+    """A drop-in for the multipart-upload object the file wrappers accept.
+
+    Matches the shape the wrappers actually read: `.filename`, `.content_type`,
+    and an async `.read()` (the `hasattr(file, "read")` branch every upload
+    wrapper takes).
+    """
+
+    def __init__(self, filename="upload.bin", content=b"data", content_type="application/octet-stream"):
+        self.filename = filename
+        self.content_type = content_type
+        self._content = content
+
+    async def read(self):
+        return self._content
+
+
+class _FakeAsyncClient:
+    """Answers every verb a wrapper calls with a stock success response.
+
+    A real httpx.Response (not a hand-rolled stand-in) so `_raise` and the
+    wrappers' own `.json()` / `.content` reads work exactly as they do against
+    a live client.
+    """
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_a):
+        return False
+
+    async def get(self, *_a, **_k):
+        return httpx.Response(200, json={"ok": True})
+
+    async def post(self, *_a, **_k):
+        return httpx.Response(200, json={"ok": True})
+
+    async def patch(self, *_a, **_k):
+        return httpx.Response(200, json={"ok": True})
+
+    async def delete(self, *_a, **_k):
+        return httpx.Response(200, json={"ok": True})
+
+    async def put(self, *_a, **_k):
+        return httpx.Response(200, json={"ok": True})
+
+
+def _spy_client_factories(monkeypatch):
+    """Replace the three local client-factory functions with counting spies.
+
+    Each spy yields a `_FakeAsyncClient` and increments a counter for the
+    factory (and, for the AI factory, the bulk/interactive branch) it was
+    entered through. This observes which transport a wrapper's code actually
+    runs on, instead of inferring it from the wrapper's source text.
+    """
+    entered = {"interactive": 0, "bulk": 0, "ai_interactive": 0, "ai_bulk": 0}
+
+    @contextlib.asynccontextmanager
+    async def _interactive(*_a, **_k):
+        entered["interactive"] += 1
+        yield _FakeAsyncClient()
+
+    @contextlib.asynccontextmanager
+    async def _bulk(*_a, **_k):
+        entered["bulk"] += 1
+        yield _FakeAsyncClient()
+
+    @contextlib.asynccontextmanager
+    async def _ai(*_a, bulk=False, **_k):
+        entered["ai_bulk" if bulk else "ai_interactive"] += 1
+        yield _FakeAsyncClient()
+
+    monkeypatch.setattr(api, "_api_client", _interactive)
+    monkeypatch.setattr(api, "_bulk_api_client", _bulk)
+    monkeypatch.setattr(api, "_ai_api_client", _ai)
+    return entered
+
+
+def _file_body_call_recipes(token: str) -> dict:
+    """One zero-argument async call per file-body wrapper, valid arguments only."""
+    return {
+        "upload_attachment": lambda: api.upload_attachment(token, "e1", _FakeUploadFile()),
+        "upload_item_file": lambda: api.upload_item_file(token, "e1", _FakeUploadFile()),
+        "download_item_file": lambda: api.download_item_file(token, "e1", "f1"),
+        "bulk_attach": lambda: api.bulk_attach(token, _FakeUploadFile(filename="a.zip")),
+        "upload_contact_file": lambda: api.upload_contact_file(token, "c1", b"data", "f.txt", "text/plain"),
+        "download_contact_file": lambda: api.download_contact_file(token, "c1", "f1"),
+        "upload_doc_file": lambda: api.upload_doc_file(token, "e1", b"data", "f.txt", "text/plain"),
+        "download_doc_file": lambda: api.download_doc_file(token, "e1", "f1"),
+        "import_recon_csv": lambda: api.import_recon_csv(token, "s1", b"csv", "f.csv"),
+        "attach_recon_line": lambda: api.attach_recon_line(token, "s1", "l1", b"data", "f.bin"),
+        "import_module_zip": lambda: api.import_module_zip(token, "mod.zip", b"zip"),
+        "export_items_csv": lambda: api.export_items_csv(token),
+        "export_contacts_csv": lambda: api.export_contacts_csv(token),
+    }
+
+
+def _metadata_only_call_recipes(token: str) -> dict:
+    """One zero-argument async call per metadata-only file wrapper."""
+    return {
+        "tag_item_file": lambda: api.tag_item_file(token, "e1", "f1", "tag"),
+        "describe_item_file": lambda: api.describe_item_file(token, "e1", "f1", "desc"),
+        "delete_item_file": lambda: api.delete_item_file(token, "e1", "f1"),
+        "tag_contact_file": lambda: api.tag_contact_file(token, "c1", "f1", "tag"),
+        "patch_contact_file_description": lambda: api.patch_contact_file_description(token, "c1", "f1", "desc"),
+        "delete_contact_file": lambda: api.delete_contact_file(token, "c1", "f1"),
+        "tag_doc_file": lambda: api.tag_doc_file(token, "e1", "f1", "tag"),
+        "patch_doc_file_description": lambda: api.patch_doc_file_description(token, "e1", "f1", "desc"),
+        "delete_doc_file": lambda: api.delete_doc_file(token, "e1", "f1"),
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("name", _FILE_BODY_WRAPPERS)
-def test_file_body_wrapper_uses_bulk_transport(name):
-    import inspect
-
-    src = inspect.getsource(getattr(api, name))
-    # Enters the bulk context manager, never the interactive one. The literal
-    # "async with _api_client(" cannot match "_bulk_api_client(", so the negative
-    # check is exact.
-    assert "async with _bulk_api_client(" in src, f"{name} must use the bulk transport"
-    assert "async with _api_client(" not in src, f"{name} must not use the interactive transport"
+async def test_file_body_wrapper_uses_bulk_transport(name, monkeypatch):
+    entered = _spy_client_factories(monkeypatch)
+    await _file_body_call_recipes("tok")[name]()
+    assert entered["bulk"] == 1, f"{name} must use the bulk transport"
+    assert entered["interactive"] == 0, f"{name} must not use the interactive transport"
 
 
 @pytest.mark.asyncio
@@ -258,24 +379,23 @@ async def test_ai_client_can_select_bulk_transport_and_keeps_session():
         assert c.timeout.pool == 2.0
 
 
-def test_ai_file_upload_uses_bulk_transport():
+@pytest.mark.asyncio
+async def test_ai_file_upload_uses_bulk_transport(monkeypatch):
     # ai_upload posts a user-supplied file body to the local API; it must select
     # the bulk pool so a large upload never holds an interactive connection slot.
-    import inspect
+    entered = _spy_client_factories(monkeypatch)
+    await api.ai_upload("tok", "sess", [("f.txt", b"data", "text/plain")])
+    assert entered["ai_bulk"] == 1, "ai_upload must transfer its file body on the bulk pool"
+    assert entered["ai_interactive"] == 0, "ai_upload must not run its upload on the interactive branch"
 
-    src = inspect.getsource(api.ai_upload)
-    assert "bulk=True" in src, "ai_upload must transfer its file body on the bulk pool"
 
-
-def test_metadata_only_file_wrappers_stay_interactive():
-    # A file's tag/description/delete carry no body: they belong on the interactive
-    # transport. This pins the boundary so a future edit cannot quietly push small
-    # metadata calls onto the bulk pool (or vice versa).
-    import inspect
-
-    for name in ("tag_item_file", "describe_item_file", "delete_item_file",
-                 "tag_contact_file", "patch_contact_file_description", "delete_contact_file",
-                 "tag_doc_file", "patch_doc_file_description", "delete_doc_file"):
-        src = inspect.getsource(getattr(api, name))
-        assert "async with _api_client(" in src, f"{name} must stay interactive"
-        assert "_bulk_api_client(" not in src, f"{name} must not use the bulk transport"
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", _METADATA_ONLY_FILE_WRAPPERS)
+async def test_metadata_only_file_wrappers_stay_interactive(name, monkeypatch):
+    # A file's tag/description/delete carry no body: they belong on the
+    # interactive transport. This pins the boundary so a future edit cannot
+    # quietly push small metadata calls onto the bulk pool (or vice versa).
+    entered = _spy_client_factories(monkeypatch)
+    await _metadata_only_call_recipes("tok")[name]()
+    assert entered["interactive"] == 1, f"{name} must stay interactive"
+    assert entered["bulk"] == 0, f"{name} must not use the bulk transport"
