@@ -774,17 +774,18 @@ async def list_items(
     from celerp.services.reorder import is_below_reorder
     from celerp.models.company import Company
     from .search import (
+        apply_item_order,
         apply_query_match,
-        default_order,
-        load_flattened_items,
+        flatten_item_rows,
+        load_item_rows,
         strip_field_visibility,
     )
     # Load + flatten is the shared front of the search pipeline (single-sourced in
-    # celerp_inventory.search); the holdings/sold scopes below still need the raw
-    # projection rows and their state, so those are loaded once here too.
-    stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
-    rows = (await session.execute(stmt)).scalars().all()
-    result = await load_flattened_items(session, company_id)
+    # celerp_inventory.search). The projection set is read once here and reused:
+    # the holdings/sold scopes below need the raw rows and their state, and the
+    # flatten runs over that same snapshot rather than issuing a second full load.
+    rows = await load_item_rows(session, company_id)
+    result = await flatten_item_rows(session, company_id, rows)
 
     # Status filtering: default excludes hidden statuses; "all" skips filtering; "archived" expands
     # to include merged/expired; a comma-separated value matches any (column-filter multi-select).
@@ -977,37 +978,16 @@ async def list_items(
             if str(r.get("status") or "").lower() == "sold":
                 r["sold_price"] = sold_price.get(r.get("id"))
 
-    # FEFO: when company uses fefo, sort available items by expires_at ascending (soonest first)
-    # so staff always see the items that need to be picked/sold first at the top.
-    if company and (company.settings or {}).get("inventory_method") == "fefo":
-        def _fefo_key(item: dict):
-            exp = item.get("expires_at")
-            # Items without expiry float to the bottom; expired items sort before no-expiry
-            return exp or "9999-99-99"
-        result.sort(key=_fefo_key)
-
-    # User-requested column sort - applied AFTER all filtering so pagination is globally correct.
-    # FEFO overrides user sort for available items; explicit sort wins for all other statuses.
-    if sort and (not company or (company.settings or {}).get("inventory_method") != "fefo" or status not in (None, "available", "")):
-        reverse = dir.lower() != "asc"
-
-        def _sort_key(item: dict):
-            v = item.get(sort)
-            if v is None:
-                # Nulls always last regardless of direction
-                return (1, "")
-            if isinstance(v, (int, float)):
-                return (0, v)
-            s = str(v)
-            # ISO date/datetime strings sort correctly as strings
-            return (0, s.lower())
-
-        result.sort(key=_sort_key, reverse=reverse)
-    elif not sort and (not company or (company.settings or {}).get("inventory_method") != "fefo"):
-        # Default order (shared with the search provider, single-sourced in
-        # celerp_inventory.search): most-recently-updated first, then name asc, then
-        # entity_id asc for stability.
-        default_order(result)
+    # Ordering (FEFO / user column sort / default) is single-sourced in
+    # celerp_inventory.search so the list and the global-search bar stay in
+    # lockstep. Applied AFTER all filtering so pagination is globally correct.
+    apply_item_order(
+        result,
+        inventory_method=(company.settings or {}).get("inventory_method") if company else None,
+        sort=sort,
+        direction=dir,
+        status=status,
+    )
 
     total = len(result)
     resp: dict = {"items": result[offset: offset + limit], "total": total,

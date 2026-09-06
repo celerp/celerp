@@ -40,19 +40,18 @@ from .routes import (
 )
 
 
-async def load_flattened_items(
+async def load_item_rows(
     session: AsyncSession, company_id
-) -> list[dict]:
-    """Load every item projection for the company and flatten it to the
-    schema-driven shape, with location names, price config, and unit map applied.
+) -> list[Projection]:
+    """Load every item projection for the company, once.
 
-    This is the pre-visibility shared front of the pipeline: it holds no status,
-    contact, or query filtering, so both the list route and the global-search
-    provider start from an identical projection load.
+    This is the single dominant inventory read. Both the list route and the
+    global-search provider load through here and then flatten the same rows, so
+    a request never reads the full item projection set twice (which also kept
+    the raw rows and the flattened result from drifting across two READ
+    COMMITTED snapshots).
     """
-    from celerp.models.company import Location
-
-    rows = (
+    return (
         await session.execute(
             select(Projection).where(
                 Projection.company_id == company_id,
@@ -60,6 +59,21 @@ async def load_flattened_items(
             )
         )
     ).scalars().all()
+
+
+async def flatten_item_rows(
+    session: AsyncSession, company_id, rows: list[Projection]
+) -> list[dict]:
+    """Flatten already-loaded item projections to the schema-driven shape, with
+    location names, price config, and unit map applied.
+
+    Takes the rows from `load_item_rows` rather than reloading them, so the
+    caller keeps the raw projections available (holdings/sold scopes need them)
+    while the flatten runs exactly once over the same snapshot. This is the
+    pre-visibility shared front of the pipeline: no status, contact, or query
+    filtering, so both callers start from an identical flattened set.
+    """
+    from celerp.models.company import Location
 
     loc_rows = (
         await session.execute(
@@ -176,23 +190,76 @@ def default_order(result: list[dict]) -> None:
     result.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
 
 
+def apply_item_order(
+    result: list[dict], *,
+    inventory_method: str | None,
+    sort: str | None,
+    direction: str,
+    status: str | None,
+) -> None:
+    """Order the flattened item set exactly as the list route does, single-sourced
+    so the global-search bar and the list stay in lockstep. Sorts in place.
+
+    FEFO (when the company's inventory_method is "fefo"): available items float to
+    the top by expires_at ascending, no-expiry last. An explicit user column sort
+    wins for every status other than the available set; for the available set FEFO
+    overrides it. With no user sort and no FEFO, the default order applies
+    (most-recently-updated first, then name asc, then entity_id asc).
+    """
+    is_fefo = inventory_method == "fefo"
+    if is_fefo:
+        def _fefo_key(item: dict):
+            # Items without expiry float to the bottom; expired items sort first.
+            return item.get("expires_at") or "9999-99-99"
+        result.sort(key=_fefo_key)
+
+    if sort and (not is_fefo or status not in (None, "available", "")):
+        reverse = direction.lower() != "asc"
+
+        def _sort_key(item: dict):
+            v = item.get(sort)
+            if v is None:
+                # Nulls always last regardless of direction
+                return (1, "")
+            if isinstance(v, (int, float)):
+                return (0, v)
+            # ISO date/datetime strings sort correctly as strings
+            return (0, str(v).lower())
+
+        result.sort(key=_sort_key, reverse=reverse)
+    elif not sort and not is_fefo:
+        default_order(result)
+
+
 async def global_search(session, company_id, role, q, limit) -> dict:
     """Global-search bar contribution for inventory items (read-only).
 
     Reproduces the inventory list route's search behavior for the shared bar:
     status="all" (no status filtering), the same flattened item shape, the same
     role-dependent field visibility, the same q grammar with q_match attachment,
-    and the same default order (most-recently-updated first, then name asc, then
-    entity_id asc). It takes no request, no attribute filters, no facets, no
-    holdings or sold scope, and no column sort - just the shared pipeline, capped
-    at ``limit`` items.
+    and the same ordering. Ordering honors the company's inventory_method so a
+    FEFO company's global-search hits lead with the same soonest-expiring items
+    the list shows; a non-FEFO company falls to the shared default order. It takes
+    no request, no attribute filters, no facets, no holdings or sold scope, and no
+    column sort - just the shared pipeline, capped at ``limit`` items.
     """
-    result = await load_flattened_items(session, company_id)
+    from celerp.models.company import Company
+
+    rows = await load_item_rows(session, company_id)
+    result = await flatten_item_rows(session, company_id, rows)
     # status="all" - no status filtering, matching the list route's "all" mode.
     result, item_field_sets = await strip_field_visibility(
         session, company_id, role, result
     )
     if q:
         result = apply_query_match(result, q, item_field_sets)
-    default_order(result)
+    company = await session.get(Company, company_id)
+    inventory_method = (company.settings or {}).get("inventory_method") if company else None
+    apply_item_order(
+        result,
+        inventory_method=inventory_method,
+        sort=None,
+        direction="desc",
+        status="all",
+    )
     return {"items": result[:limit]}
