@@ -32,6 +32,18 @@ async def ui():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _fresh_inventory_metadata():
+    """Inventory views read their six static getters through one cached snapshot
+    (api.get_inventory_metadata). The token is deterministic here, so the snapshot
+    keys identically across tests; reset the cache per test so one test's mocked
+    snapshot never leaks into the next."""
+    from ui import api_client
+    api_client._reset_metadata_cache_for_tests()
+    yield
+    api_client._reset_metadata_cache_for_tests()
+
+
 def _c(token: str | None = None, role: str = "owner") -> dict:
     return {"celerp_token": token or make_test_token(role=role)}
 
@@ -119,6 +131,7 @@ def _inventory_mocks(items=None):
         "ui.api_client.get_item_schema": AsyncMock(return_value=_SCHEMA),
         "ui.api_client.get_all_category_schemas": AsyncMock(return_value={}),
         "ui.api_client.get_company_category_schemas": AsyncMock(return_value={}),
+        "ui.api_client.get_category_display_names": AsyncMock(return_value={}),
         "ui.api_client.get_units": AsyncMock(return_value=[]),
         "ui.api_client.get_column_prefs": AsyncMock(return_value={}),
         "ui.api_client.get_company": AsyncMock(return_value=_COMPANY),
