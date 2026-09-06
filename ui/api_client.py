@@ -181,15 +181,11 @@ async def close_shared_client() -> None:
     cancels and awaits every task before tearing down the transports they run on.
     Logs the total request count as observability for how much traffic the
     bounded pool carried this process lifetime."""
-    global _shared_transport, _bulk_transport, _metadata_generation
-    refresh_tasks = list(_refresh_inflight.values())
-    metadata_tasks = list(_metadata_tasks)
-    _refresh_inflight.clear()
-    _refresh_success.clear()
-    _metadata_inflight.clear()
-    _metadata_cache.clear()
-    _metadata_tasks.clear()
-    _metadata_generation += 1
+    global _shared_transport, _bulk_transport
+    refresh_tasks = _refresh_coordinator.tasks_for_shutdown()
+    metadata_tasks = _metadata_coordinator.tasks_for_shutdown()
+    _refresh_coordinator.clear_maps()
+    _metadata_coordinator.invalidate_all()
     all_tasks = refresh_tasks + metadata_tasks
     for task in all_tasks:
         task.cancel()
@@ -447,11 +443,9 @@ async def register(company_name: str, email: str, name: str, password: str,
 import asyncio  # noqa: E402 - kept beside the coordinator it serves
 import hashlib  # noqa: E402
 import time  # noqa: E402
+import copy as _copy  # noqa: E402
 
 _REFRESH_GRACE_SECONDS = 0.5
-_refresh_lock = asyncio.Lock()
-_refresh_inflight: dict[bytes, asyncio.Task] = {}
-_refresh_success: dict[bytes, tuple[float, tuple[str, str]]] = {}
 
 
 def _refresh_key(refresh_token: str) -> bytes:
@@ -470,12 +464,6 @@ async def _refresh_upstream(refresh_token: str) -> tuple[str, str]:
         return data["access_token"], data["refresh_token"]
 
 
-def _reset_refresh_state_for_tests() -> None:
-    """Clear the coordinator's module-level maps. For tests only."""
-    _refresh_inflight.clear()
-    _refresh_success.clear()
-
-
 def _consume_task_exception(task: asyncio.Task) -> None:
     """Retrieve a finished task's exception so the loop never warns about it.
 
@@ -490,35 +478,142 @@ def _consume_task_exception(task: asyncio.Task) -> None:
         pass
 
 
-def _prune_refresh_success_locked(now: float) -> None:
-    """Drop every success entry older than the coalescing grace. Lock held."""
-    for key, (created_at, _pair) in list(_refresh_success.items()):
-        if now - created_at > _REFRESH_GRACE_SECONDS:
-            _refresh_success.pop(key, None)
+class _SingleFlightCoordinator:
+    """One coalescing coordinator, shared by the refresh and metadata caches.
 
+    Concurrent callers presenting the same key share one task. The task, never a
+    waiter, owns its own map cleanup: on failure it removes its own inflight
+    entry so the next presentation retries; on success it removes its own
+    inflight entry and, only if it is still the registered task for the key AND
+    the generation captured at its creation still matches, publishes into the
+    success/cache map for a short grace/TTL window - so a fetch that started
+    before an invalidation can never overwrite fresher state. A waiter is
+    shielded from its own cancellation so the shared task keeps running for the
+    others. Failures are never cached.
 
-async def _run_refresh_task(key: bytes, refresh_token: str) -> tuple[str, str]:
-    """The shared refresh task: it owns its own map cleanup, never a waiter.
-
-    On failure it removes its own inflight entry so the next presentation
-    retries; on success it swaps inflight for a short-lived success entry. It
-    only touches the map while it is still the registered task for the key, so a
-    later generation's task never clobbers it.
+    ``grace_seconds`` is a callable, not a fixed float, so a caller (or a test)
+    that reassigns the backing module constant is observed on the coordinator's
+    next prune, exactly as the two hand-written coordinators this replaces did.
     """
-    current = asyncio.current_task()
-    try:
-        result = await _refresh_upstream(refresh_token)
-    except BaseException:
-        async with _refresh_lock:
-            if _refresh_inflight.get(key) is current:
-                _refresh_inflight.pop(key, None)
-        raise
 
-    async with _refresh_lock:
-        if _refresh_inflight.get(key) is current:
-            _refresh_inflight.pop(key, None)
-            _refresh_success[key] = (time.monotonic(), result)
-    return result
+    def __init__(self, *, grace_seconds, track_tasks: bool = False, copy_on_read: bool = False):
+        self.lock = asyncio.Lock()
+        self.inflight: dict[bytes, asyncio.Task] = {}
+        self.store: dict[bytes, tuple[float, object]] = {}
+        self.tasks: set[asyncio.Task] | None = set() if track_tasks else None
+        self._grace_seconds = grace_seconds
+        self._generation = 0
+        self._copy_on_read = copy_on_read
+
+    def _prune_locked(self, now: float) -> None:
+        """Drop every store entry older than the grace/TTL. Lock held.
+
+        Pruned globally (every key), not only the one being read, so a digest
+        never presented again does not accumulate forever in a long-running
+        process.
+        """
+        grace = self._grace_seconds()
+        for key, (created_at, _value) in list(self.store.items()):
+            if now - created_at > grace:
+                self.store.pop(key, None)
+
+    def clear_maps(self) -> None:
+        """Clear inflight, store, and any tracked tasks. Generation untouched."""
+        self.inflight.clear()
+        self.store.clear()
+        if self.tasks is not None:
+            self.tasks.clear()
+
+    def reset_for_tests(self) -> None:
+        """Clear the coordinator's module-level maps. For tests only."""
+        self.clear_maps()
+
+    def invalidate_all(self) -> None:
+        """Bump the generation and clear every map. Process-wide, not per-key.
+
+        No request that starts after this can attach to the old task, and any
+        old inflight fetch cannot repopulate the store because its captured
+        generation is now stale.
+        """
+        self._generation += 1
+        self.clear_maps()
+
+    def tasks_for_shutdown(self) -> list[asyncio.Task]:
+        """Every task shutdown must cancel and await.
+
+        A tracked coordinator uses its done-tracked set, a superset of inflight
+        that stays populated through the brief window between the task's own
+        inflight cleanup and asyncio marking it done. An untracked coordinator
+        has no such set and uses inflight directly.
+        """
+        if self.tasks is not None:
+            return list(self.tasks)
+        return list(self.inflight.values())
+
+    async def _run(self, key: bytes, generation: int, fetch) -> object:
+        current = asyncio.current_task()
+        try:
+            result = await fetch()
+        except BaseException:
+            async with self.lock:
+                if self.inflight.get(key) is current:
+                    self.inflight.pop(key, None)
+            raise
+
+        async with self.lock:
+            if self.inflight.get(key) is current:
+                self.inflight.pop(key, None)
+                if generation == self._generation:
+                    self.store[key] = (time.monotonic(), result)
+        return result
+
+    async def run(self, key: bytes, fetch):
+        """Coalesce concurrent identical-key calls onto one shared task.
+
+        A fresh store entry is served directly; a cold or expired key runs
+        exactly one shared task even under a concurrent burst, because
+        concurrent callers await the same task rather than each starting their
+        own.
+        """
+        async with self.lock:
+            now = time.monotonic()
+            self._prune_locked(now)
+            entry = self.store.get(key)
+            if entry is not None and (now - entry[0]) <= self._grace_seconds():
+                value = entry[1]
+                return _copy.deepcopy(value) if self._copy_on_read else value
+            task = self.inflight.get(key)
+            if task is None:
+                generation = self._generation
+                task = asyncio.create_task(self._run(key, generation, fetch))
+                if self.tasks is not None:
+                    tracked = self.tasks
+                    tracked.add(task)
+
+                    def _done(finished: asyncio.Task) -> None:
+                        tracked.discard(finished)
+                        _consume_task_exception(finished)
+
+                    task.add_done_callback(_done)
+                else:
+                    task.add_done_callback(_consume_task_exception)
+                self.inflight[key] = task
+
+        # shield: this waiter's own cancellation must not cancel the shared task
+        # the other waiters are still awaiting. The task, not the waiter, owns
+        # cleanup.
+        result = await asyncio.shield(task)
+        return _copy.deepcopy(result) if self._copy_on_read else result
+
+
+_refresh_coordinator = _SingleFlightCoordinator(grace_seconds=lambda: _REFRESH_GRACE_SECONDS)
+_refresh_inflight = _refresh_coordinator.inflight
+_refresh_success = _refresh_coordinator.store
+
+
+def _reset_refresh_state_for_tests() -> None:
+    """Clear the coordinator's module-level maps. For tests only."""
+    _refresh_coordinator.reset_for_tests()
 
 
 async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
@@ -531,21 +626,7 @@ async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
     Raises APIError on failure, and a failure is never cached.
     """
     key = _refresh_key(refresh_token)
-    async with _refresh_lock:
-        now = time.monotonic()
-        _prune_refresh_success_locked(now)
-        cached = _refresh_success.get(key)
-        if cached is not None:
-            return cached[1]
-        task = _refresh_inflight.get(key)
-        if task is None:
-            task = asyncio.create_task(_run_refresh_task(key, refresh_token))
-            task.add_done_callback(_consume_task_exception)
-            _refresh_inflight[key] = task
-
-    # shield: this waiter's own cancellation must not cancel the shared task the
-    # other waiters are still awaiting. The task, not the waiter, owns cleanup.
-    return await asyncio.shield(task)
+    return await _refresh_coordinator.run(key, lambda: _refresh_upstream(refresh_token))
 
 
 async def my_companies(token: str) -> dict:
@@ -836,7 +917,6 @@ async def patch_units(token: str, units: list[dict]) -> list[dict]:
 # failures are never cached, and every write that could change the snapshot
 # invalidates it centrally in the mutation wrapper, not the route.
 
-import copy as _copy  # noqa: E402
 from typing import NamedTuple  # noqa: E402
 
 _METADATA_TTL_SECONDS = 5.0
@@ -869,23 +949,20 @@ def _metadata_key(token: str) -> bytes:
     return hashlib.sha256(token.encode()).digest()
 
 
-_metadata_lock = asyncio.Lock()
-_metadata_cache: dict[bytes, tuple[float, InventoryMetadata]] = {}
-_metadata_inflight: dict[bytes, asyncio.Task] = {}
-# A monotone generation counter guards cache publication against a write that
-# lands mid-fetch: a task only writes its result if the generation it captured at
-# creation still matches, so an old cold fetch cannot repopulate the cache with
-# pre-write data after an invalidation.
-_metadata_generation = 0
+_metadata_coordinator = _SingleFlightCoordinator(
+    grace_seconds=lambda: _METADATA_TTL_SECONDS,
+    track_tasks=True,
+    copy_on_read=True,
+)
+_metadata_cache = _metadata_coordinator.store
+_metadata_inflight = _metadata_coordinator.inflight
 # Every created metadata task, tracked so shutdown can cancel and await them all.
-_metadata_tasks: set[asyncio.Task] = set()
+_metadata_tasks = _metadata_coordinator.tasks
 
 
 def _reset_metadata_cache_for_tests() -> None:
     """Clear the metadata cache maps. For tests only."""
-    _metadata_cache.clear()
-    _metadata_inflight.clear()
-    _metadata_tasks.clear()
+    _metadata_coordinator.reset_for_tests()
 
 
 async def _fetch_inventory_metadata(token: str) -> InventoryMetadata:
@@ -919,43 +996,6 @@ async def _fetch_inventory_metadata(token: str) -> InventoryMetadata:
     )
 
 
-async def _run_metadata_task(key: bytes, token: str, generation: int) -> InventoryMetadata:
-    """The shared metadata fetch task: it owns its own map cleanup and publishing.
-
-    On failure it removes its own inflight entry so the next caller retries. On
-    success it publishes to the cache only if it is still the registered task for
-    the key AND its captured generation is still current, so a fetch that began
-    before an invalidation can never overwrite fresher state.
-    """
-    current = asyncio.current_task()
-    try:
-        snapshot = await _fetch_inventory_metadata(token)
-    except BaseException:
-        async with _metadata_lock:
-            if _metadata_inflight.get(key) is current:
-                _metadata_inflight.pop(key, None)
-        raise
-
-    async with _metadata_lock:
-        if _metadata_inflight.get(key) is current:
-            _metadata_inflight.pop(key, None)
-            if generation == _metadata_generation:
-                _metadata_cache[key] = (time.monotonic(), snapshot)
-    return snapshot
-
-
-def _prune_expired_metadata_locked(now: float) -> None:
-    """Drop every cache entry past the TTL, not only the current key. Lock held.
-
-    Access/refresh tokens rotate, so a digest never presented again would
-    otherwise leave a dead entry forever; pruning globally on each read keeps the
-    map bounded in a long-running process.
-    """
-    for old_key, (created_at, _snapshot) in list(_metadata_cache.items()):
-        if now - created_at > _METADATA_TTL_SECONDS:
-            _metadata_cache.pop(old_key, None)
-
-
 async def get_inventory_metadata(token: str) -> InventoryMetadata:
     """Return the six static-metadata getters as one snapshot, cached briefly.
 
@@ -967,30 +1007,7 @@ async def get_inventory_metadata(token: str) -> InventoryMetadata:
     so a caller mutating what it reads cannot corrupt the stored entry.
     """
     key = _metadata_key(token)
-
-    async with _metadata_lock:
-        now = time.monotonic()
-        _prune_expired_metadata_locked(now)
-        entry = _metadata_cache.get(key)
-        if entry is not None and (now - entry[0]) <= _METADATA_TTL_SECONDS:
-            return _copy.deepcopy(entry[1])
-        task = _metadata_inflight.get(key)
-        if task is None:
-            generation = _metadata_generation
-            task = asyncio.create_task(_run_metadata_task(key, token, generation))
-            _metadata_tasks.add(task)
-
-            def _metadata_done(finished: asyncio.Task) -> None:
-                _metadata_tasks.discard(finished)
-                _consume_task_exception(finished)
-
-            task.add_done_callback(_metadata_done)
-            _metadata_inflight[key] = task
-
-    # shield: this waiter's own cancellation must not cancel the shared task the
-    # other waiters are still awaiting. The task, not the waiter, owns cleanup.
-    snapshot = await asyncio.shield(task)
-    return _copy.deepcopy(snapshot)
+    return await _metadata_coordinator.run(key, lambda: _fetch_inventory_metadata(token))
 
 
 def _invalidate_inventory_metadata() -> None:
@@ -1005,10 +1022,7 @@ def _invalidate_inventory_metadata() -> None:
     over-invalidating across companies is acceptable for a five-second cache and
     far safer than cross-token staleness.
     """
-    global _metadata_generation
-    _metadata_generation += 1
-    _metadata_cache.clear()
-    _metadata_inflight.clear()
+    _metadata_coordinator.invalidate_all()
 
 
 # ---------------------------------------------------------------------------
