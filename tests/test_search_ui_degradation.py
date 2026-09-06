@@ -222,6 +222,27 @@ async def test_third_party_label_is_escaped(ui_client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_known_and_generic_results_with_partial_notice(ui_client, monkeypatch):
+    # A first-party bucket and a generic third-party bucket both render, and a
+    # degraded sibling still adds the partial notice, all in one answer.
+    answer = {
+        "results": {
+            "celerp-inventory": {"items": [{"id": "i1", "name": "Widget", "sku": "W-1", "status": "active"}]},
+            "acme-crm": {"items": [{"id": "t1", "label": "Acme Lead", "href": "/acme/1"}]},
+        },
+        "degraded_modules": ["celerp-contacts"],
+    }
+    r, calls = await _search(ui_client, monkeypatch, answer)
+    assert r.status_code == 200
+    body = r.text
+    assert "Widget" in body          # first-party renderer
+    assert "Acme Lead" in body       # generic renderer
+    assert "/acme/1" in body
+    assert "search-partial" in body  # the degraded sibling's notice
+    assert "No results" not in body
+
+
+@pytest.mark.asyncio
 async def test_over_long_query_shows_error_not_no_results(ui_client, monkeypatch):
     # The API answers an over-long query with 422; the UI shows the retry-able
     # error, never the no-results state.
