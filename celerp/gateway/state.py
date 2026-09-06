@@ -298,6 +298,45 @@ def relay_http_url() -> str:
     return url.rstrip("/")
 
 
+# Transient transport failures (slow first network, relay restarting) are retried;
+# any HTTP response of any status is final. Single source for every relay POST that
+# needs this shape (auto-activate, deployment association).
+_RELAY_POST_RETRY_DELAYS = (0, 5, 30)
+_RELAY_POST_TIMEOUT_S = 10.0
+
+
+async def relay_post_with_retry(url: str, json_body: dict):
+    """POST json_body to url, retrying only transient transport failures.
+
+    Returns the httpx.Response (of any status) on the first attempt that gets one,
+    or None when every attempt hit a transport error. httpx's own logger is quieted
+    for the duration because its records can carry request detail, and some callers
+    send a credential in the body; the exception value is never logged for the same
+    reason (an httpx error repr can embed the request body).
+    """
+    import asyncio
+
+    import httpx
+
+    httpx_log = logging.getLogger("httpx")
+    prev_level = httpx_log.level
+    httpx_log.setLevel(logging.WARNING)
+    try:
+        for delay in _RELAY_POST_RETRY_DELAYS:
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                async with httpx.AsyncClient(timeout=_RELAY_POST_TIMEOUT_S) as client:
+                    return await client.post(url, json=json_body)
+            except httpx.HTTPError as exc:
+                log.debug("Relay POST transient transport error (%s); retrying.",
+                          type(exc).__name__)
+                continue
+    finally:
+        httpx_log.setLevel(prev_level)
+    return None
+
+
 async def fetch_relay_bearer(http_client) -> str:
     """Exchange the instance API key (gateway_token) for a short-lived relay
     bearer JWT via POST /auth/token.

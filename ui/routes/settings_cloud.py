@@ -5,12 +5,15 @@
 
 from __future__ import annotations
 
+import json
+
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, Response
 
 from ui.components.shell import base_shell, page_header, page_title
 from ui.i18n import t, get_lang
+from ui.config import get_role as _get_role
 
 from ui.routes.settings import (
     _check_permission,
@@ -98,13 +101,14 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
     )
 
 
-def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False) -> FT:
+def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False,
+                     show_partner_claim: bool = False) -> FT:
     """Full value-proposition landing page shown when not connected to cloud.
 
     `disconnected` marks a sticky Cloud disconnect: the credential is preserved,
     so the connect section withholds its auto-connect (landing here must not
     silently undo the disconnect) while the Connect button still reconnects in
-    one click."""
+    one click. `show_partner_claim` adds the owner/admin partner-claim card."""
     return Div(
         # Hero - explain the relay concept simply
         Div(
@@ -119,6 +123,7 @@ def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False) -> 
         _plans_ad(iid, lang=lang),
         # Already subscribed / connect section
         _connect_section(iid, lang=lang, disconnected=disconnected),
+        *([_partner_claim_card(lang=lang)] if show_partner_claim else []),
         cls="content-area",
     )
 
@@ -558,6 +563,90 @@ async def _relay_state(token) -> tuple[str, str, str, bool, bool]:
     return relay_status, public_url, tier, disconnected, token_bound
 
 
+def _partner_claim_card(lang: str = "en", error: str | None = None) -> FT:
+    """Neutral partner-claim card: a claim-code field and a Review button.
+
+    Distinct from the subscription email-claim flow. Resolving previews the
+    partner behind a code without binding anything; nothing is committed until
+    the owner accepts on the preview."""
+    children = [
+        H3(t("settings_cloud.partner_claim_title", lang), cls="settings-section-title"),
+        P(t("settings_cloud.partner_claim_desc", lang), cls="settings-hint"),
+    ]
+    if error:
+        children.append(P(error, cls="text-error", style="margin:8px 0;"))
+    children.append(
+        Form(
+            Input(name="claim_token", type="text", autocomplete="off",
+                  placeholder=t("settings_cloud.partner_claim_token_placeholder", lang),
+                  cls="input", style="max-width:360px;"),
+            Button(t("settings_cloud.partner_claim_review", lang),
+                   type="submit", cls="btn btn--primary", style="margin-left:8px;"),
+            Span(cls="htmx-indicator", id="partner-claim-spinner"),
+            hx_post="/settings/partner-claim/resolve",
+            hx_target="#partner-claim-card",
+            hx_swap="outerHTML",
+            hx_indicator="#partner-claim-spinner",
+            style="display:flex;align-items:center;gap:8px;margin-top:8px;",
+        )
+    )
+    return Div(*children, id="partner-claim-card", cls="settings-card")
+
+
+def _partner_managed_note(lang: str = "en") -> FT:
+    """Neutral note shown in place of the claim-entry control on a partner_managed
+    install: the claim control is intentionally withheld, and its absence is stated
+    with the generic managed-by note rather than left silent. No partner name is
+    interpolated (no fabricated identity)."""
+    return Div(
+        P(t("cloud.partner_managed_note", lang), cls="settings-hint"),
+        id="partner-managed-note", cls="settings-card",
+    )
+
+
+def _partner_claim_preview(identity: dict, claim_token: str, lang: str = "en") -> FT:
+    """Preview of the partner behind a resolved claim, with Accept and Decline.
+
+    Accept is the one deliberate commit; the disable-on-submit posture stops a
+    double-click from double-submitting. Decline binds nothing and restores the
+    neutral card."""
+    support_email = identity.get("support_email") or ""
+    support_url = identity.get("support_url") or ""
+    support_children: list = []
+    if support_email:
+        support_children.append(Div(support_email, cls="settings-value", style="margin:4px 0;"))
+    if support_url:
+        support_children.append(A(
+            t("cloud.partner_support", lang),
+            href=support_url, target="_blank",
+            cls="btn btn--outline btn--sm", style="margin-top:4px;"))
+    return Div(
+        H3(t("settings_cloud.partner_claim_title", lang), cls="settings-section-title"),
+        P(t("settings_cloud.partner_claim_managed_by", lang), cls="settings-hint"),
+        Div(identity.get("display_name") or "--", cls="settings-value",
+            style="font-weight:600;margin:6px 0;"),
+        *([Div(*support_children, style="margin:8px 0;")] if support_children else []),
+        Div(
+            Button(t("btn.accept", lang),
+                   cls="btn btn--primary",
+                   hx_post="/settings/partner-claim/accept",
+                   hx_vals=json.dumps({"claim_token": claim_token}),
+                   hx_target="#partner-claim-card",
+                   hx_swap="outerHTML",
+                   hx_indicator="#partner-claim-spinner",
+                   **{"hx-disabled-elt": "this"}),
+            Button(t("btn.decline", lang),
+                   cls="btn btn--outline", style="margin-left:8px;",
+                   hx_post="/settings/partner-claim/decline",
+                   hx_target="#partner-claim-card",
+                   hx_swap="outerHTML"),
+            Span(cls="htmx-indicator", id="partner-claim-spinner"),
+            style="margin-top:12px;",
+        ),
+        id="partner-claim-card", cls="settings-card",
+    )
+
+
 def setup_routes(app):
 
     @app.get("/settings/cloud-relay-tab")
@@ -586,6 +675,7 @@ def setup_routes(app):
 
         import ui.api_client as _api
         lang = get_lang(request)
+        is_owner_admin = _get_role(request) in ("owner", "admin")
         relay_status, public_url, tier, disconnected, token_bound = await _relay_state(token)
         # A free tier is signed in (holds a gateway_token) but never starts the WS
         # client - it has no tunnel to serve - so relay_status stays "inactive".
@@ -597,13 +687,21 @@ def setup_routes(app):
         # keeps its preserved credential, so the connect section withholds its
         # auto-connect (a page visit must not silently undo the disconnect) while
         # the Connect button still reconnects in one click.
+        # The claim-entry control is offered only to an owner/admin on an install
+        # that is not already partner_managed - a managed install already shows the
+        # partner offer and managed note (via _partner_offer), so the same gate at
+        # both render sites (value-prop landing and status tab) mirrors _plans_ad.
+        from celerp.gateway.state import get_commercial_mode
+        can_claim = is_owner_admin and get_commercial_mode() != "partner_managed"
+
         if not gw_ok:
             from celerp.config import ensure_instance_id
             iid = ensure_instance_id()
             return await base_shell(
                 _section_breadcrumb(t("settings_cloud.web_access", lang)),
                 page_header(t("settings_cloud.web_access", lang)),
-                _value_prop_page(iid, lang=lang, disconnected=disconnected),
+                _value_prop_page(iid, lang=lang, disconnected=disconnected,
+                                 show_partner_claim=can_claim),
                 title=page_title("settings_cloud.web_access"),
                 nav_active="web-access",
                 lang=lang,
@@ -639,6 +737,9 @@ def setup_routes(app):
             if tier not in PAID_TIERS:
                 from celerp.config import ensure_instance_id
                 parts.append(_plans_ad(ensure_instance_id(), lang=lang))
+            if is_owner_admin:
+                parts.append(_partner_claim_card(lang=lang) if can_claim
+                             else _partner_managed_note(lang=lang))
             content = Div(*parts)
             tab = "status"
 
@@ -652,6 +753,51 @@ def setup_routes(app):
             lang=lang,
             request=request,
         )
+
+    @app.post("/settings/partner-claim/resolve")
+    async def partner_claim_resolve_ui(request: Request):
+        """HTMX: proxy to the API to preview the partner behind a claim code.
+        Owner/admin only; binds nothing."""
+        lang = get_lang(request)
+        if _get_role(request) not in ("owner", "admin"):
+            return _partner_claim_card(lang=lang)
+        import ui.api_client as _api
+        token = _token(request)
+        form = await request.form()
+        claim_token = (form.get("claim_token") or "").strip()
+        try:
+            data = await _api.resolve_partner_claim(token, claim_token)
+        except Exception:
+            return _partner_claim_card(lang=lang, error=t("settings_cloud.partner_claim_error", lang))
+        if err := data.get("error"):
+            return _partner_claim_card(lang=lang, error=err)
+        return _partner_claim_preview(data, claim_token, lang=lang)
+
+    @app.post("/settings/partner-claim/accept")
+    async def partner_claim_accept_ui(request: Request):
+        """HTMX: proxy to the API to accept a partner claim. Owner/admin only. On
+        success the relay pushes the new commercial context, so the page reloads
+        to reflect it."""
+        lang = get_lang(request)
+        if _get_role(request) not in ("owner", "admin"):
+            return _partner_claim_card(lang=lang)
+        import ui.api_client as _api
+        token = _token(request)
+        form = await request.form()
+        claim_token = (form.get("claim_token") or "").strip()
+        try:
+            data = await _api.accept_partner_claim(token, claim_token)
+        except Exception:
+            return _partner_claim_card(lang=lang, error=t("settings_cloud.partner_claim_error", lang))
+        if err := data.get("error"):
+            return _partner_claim_card(lang=lang, error=err)
+        return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
+
+    @app.post("/settings/partner-claim/decline")
+    async def partner_claim_decline_ui(request: Request):
+        """HTMX: decline a partner claim. A pure client-side dismissal - no relay
+        or API call - that restores the neutral claim card, binding nothing."""
+        return _partner_claim_card(lang=get_lang(request))
 
     @app.post("/settings/cloud/test-db")
     async def cloud_test_db(request: Request):

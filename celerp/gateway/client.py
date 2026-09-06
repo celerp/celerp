@@ -24,6 +24,8 @@ from typing import Any
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from celerp.config import settings
+
 log = logging.getLogger(__name__)
 
 _PING_INTERVAL = 30   # seconds
@@ -350,12 +352,7 @@ class GatewayClient:
             await self._send(ws, {
                 "type": "hello",
                 "id": str(uuid.uuid4()),
-                "payload": {
-                    "gateway_token": self._token,
-                    "instance_id": self._instance_id,
-                    "tos_version": tos_version,
-                    "version": app_version,
-                },
+                "payload": self._build_hello_payload(tos_version, app_version),
             })
             # Message dispatch loop
             async for raw in ws:
@@ -367,6 +364,20 @@ class GatewayClient:
                 await self._dispatch(msg)
         self._ws = None
         self._set_status("inactive")
+
+    def _build_hello_payload(self, tos_version: str, app_version: str) -> dict:
+        """Build the hello frame payload.
+
+        The four base keys match a direct install byte for byte. Partner
+        deployment association happens separately, before the gateway starts
+        (celerp.gateway.bootstrap) - the handshake never carries the credential.
+        """
+        return {
+            "gateway_token": self._token,
+            "instance_id": self._instance_id,
+            "tos_version": tos_version,
+            "version": app_version,
+        }
 
     async def _dispatch(self, msg: dict) -> None:
         msg_type = msg.get("type", "")

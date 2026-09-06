@@ -3054,5 +3054,12 @@
   "settings.tab_line_items": "البنود",
   "th.factor": "عامل",
   "th.position": "#",
-  "th.rounding": "التقريب"
+  "th.rounding": "التقريب",
+  "btn.decline": "رفض",
+  "settings_cloud.partner_claim_title": "مطالبة الشريك",
+  "settings_cloud.partner_claim_desc": "إذا أعطاك شريك رمز مطالبة لإدارة هذا التثبيت، فالصقه هنا لمراجعة هويته قبل القبول.",
+  "settings_cloud.partner_claim_token_placeholder": "الصق رمز المطالبة",
+  "settings_cloud.partner_claim_review": "مراجعة المطالبة",
+  "settings_cloud.partner_claim_managed_by": "ستتم إدارة هذا التثبيت بواسطة:",
+  "settings_cloud.partner_claim_error": "تعذّر التحقق من هذه المطالبة. قد تكون غير صالحة أو منتهية الصلاحية أو مستخدمة بالفعل."
 }

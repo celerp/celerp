@@ -88,35 +88,15 @@ async def _try_auto_activate() -> None:
     """
     _log = logging.getLogger(__name__)
     try:
-        import asyncio
-
-        import httpx
         from celerp.config import settings as _s, ensure_instance_id, config_path, persist_cloud_settings
         if _s.cloud_disconnected:
             return
         first_boot = not config_path().exists()
         iid = ensure_instance_id()
-        from celerp.gateway.state import activate_payload, relay_http_url as _rhu
+        from celerp.gateway.state import activate_payload, relay_http_url as _rhu, relay_post_with_retry
         relay_base = _rhu()
-        _httpx_log = logging.getLogger("httpx")
-        _prev_level = _httpx_log.level
-        _httpx_log.setLevel(logging.WARNING)
-        try:
-            payload = activate_payload(iid, first_boot=first_boot)
-            # Retry transient transport failures (slow first network, relay
-            # restarting); an HTTP response of any status is final.
-            r = None
-            for delay in (0, 5, 30):
-                if delay:
-                    await asyncio.sleep(delay)
-                try:
-                    async with httpx.AsyncClient(timeout=10.0) as c:
-                        r = await c.post(f"{relay_base}/auth/activate", json=payload)
-                    break
-                except httpx.HTTPError:
-                    continue
-        finally:
-            _httpx_log.setLevel(_prev_level)
+        payload = activate_payload(iid, first_boot=first_boot)
+        r = await relay_post_with_retry(f"{relay_base}/auth/activate", payload)
         if r is None or r.status_code != 200:
             return
         data = r.json()
@@ -299,6 +279,12 @@ async def lifespan(_app: FastAPI):
             "COGS backfill failed (non-fatal); affected invoices keep their "
             "missing COGS until a later boot retries"
         )
+
+    # A partner-packaged install with an unconsumed deployment credential
+    # associates with its partner through the explicit relay seam before the
+    # gateway starts. No-op for a direct install or one already associated.
+    from celerp.gateway.bootstrap import associate_partner_deployment
+    await associate_partner_deployment()
 
     # Bring up the relay tunnel per the lazy free-tier lifecycle (3.1). A token-holder
     # is past first activation and never re-enters it. Paid instances (public_url set)

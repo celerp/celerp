@@ -3054,5 +3054,12 @@
   "settings.attr_overflow_more": "+{n} ተጨማሪ",
   "settings.db_backup_size_uploaded": "- {mb} ሜባ ተሰቅሏል",
   "table.daterange_from_aria": "{label} ከ",
-  "table.daterange_to_aria": "{label} ወደ"
+  "table.daterange_to_aria": "{label} ወደ",
+  "btn.decline": "አትቀበል",
+  "settings_cloud.partner_claim_title": "የአጋር ጥያቄ",
+  "settings_cloud.partner_claim_desc": "አንድ አጋር ይህን ጭነት ለማስተዳደር የጥያቄ ኮድ ከሰጠዎት፣ ከመቀበልዎ በፊት ማንነታቸውን ለመገምገም እዚህ ይለጥፉት።",
+  "settings_cloud.partner_claim_token_placeholder": "የጥያቄ ኮድ ይለጥፉ",
+  "settings_cloud.partner_claim_review": "ጥያቄውን ይገምግሙ",
+  "settings_cloud.partner_claim_managed_by": "ይህ ጭነት የሚተዳደረው በ፦",
+  "settings_cloud.partner_claim_error": "ይህ ጥያቄ ማረጋገጥ አልተቻለም። ልክ ያልሆነ፣ ጊዜው ያለፈበት ወይም አስቀድሞ ጥቅም ላይ የዋለ ሊሆን ይችላል።"
 }

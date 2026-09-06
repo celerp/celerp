@@ -2412,6 +2412,22 @@ async def activate_relay(token: str) -> dict:
         return _raise(await c.post("/settings/cloud-activate")).json()
 
 
+async def resolve_partner_claim(token: str, claim_token: str) -> dict:
+    """POST /settings/partner-claim/resolve - preview the partner behind a claim
+    token. Binds nothing. Returns the identity preview or a neutral error dict."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            "/settings/partner-claim/resolve", json={"claim_token": claim_token})).json()
+
+
+async def accept_partner_claim(token: str, claim_token: str) -> dict:
+    """POST /settings/partner-claim/accept - accept the claim; the relay binds the
+    relationship and pushes the new commercial context."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            "/settings/partner-claim/accept", json={"claim_token": claim_token})).json()
+
+
 async def apply_relay_token(token: str, payload: dict) -> dict:
     """POST /settings/cloud-apply-token — apply pre-fetched gateway token."""
     async with _api_client(token) as c:
