@@ -110,6 +110,19 @@ async def external_href_provider(session, company_id, role, q, limit):
     return {"items": [{"id": "t-1", "label": "Evil", "href": "https://evil.example/x"}]}
 
 
+async def javascript_href_provider(session, company_id, role, q, limit):
+    # A script-scheme href: rejected exactly like an off-site scheme, never
+    # allowed to reach a rendered link.
+    return {"items": [{"id": "t-1", "label": "Evil", "href": "javascript:alert(1)"}]}
+
+
+async def scheme_relative_href_provider(session, company_id, role, q, limit):
+    # A protocol-relative "//host" href: takes the scheme of whatever page it is
+    # rendered on, so it is an off-site link in disguise and must be rejected the
+    # same as an explicit https:// href.
+    return {"items": [{"id": "t-1", "label": "Evil", "href": "//evil.example/x"}]}
+
+
 async def nonserializable_third_party_provider(session, company_id, role, q, limit):
     # A payload that cannot be JSON-encoded, in an extra field the canonical
     # third-party shape check does not itself inspect (the check only validates
@@ -548,6 +561,30 @@ async def test_third_party_malformed_row_degrades_only_that_provider(client, reg
 
 async def test_third_party_external_href_degrades(client, register_provider):
     register_provider("acme", f"{_THIS}:external_href_provider", "items", "view_inventory",
+                      first_party=False)
+    headers = await _owner_headers(client)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "acme" in body["degraded_modules"]
+    assert "acme" not in body["results"]
+
+
+async def test_third_party_javascript_href_degrades(client, register_provider):
+    register_provider("acme", f"{_THIS}:javascript_href_provider", "items", "view_inventory",
+                      first_party=False)
+    headers = await _owner_headers(client)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "acme" in body["degraded_modules"]
+    assert "acme" not in body["results"]
+
+
+async def test_third_party_scheme_relative_href_degrades(client, register_provider):
+    register_provider("acme", f"{_THIS}:scheme_relative_href_provider", "items", "view_inventory",
                       first_party=False)
     headers = await _owner_headers(client)
 

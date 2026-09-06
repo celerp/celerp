@@ -204,6 +204,52 @@ async def test_third_party_unsafe_href_row_skipped(ui_client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_third_party_javascript_href_row_skipped(ui_client, monkeypatch):
+    # A script-scheme href is rejected exactly like an off-site scheme: the UI
+    # re-checks every third-party href itself before rendering a link it did
+    # not build.
+    answer = {
+        "results": {
+            "acme-crm": {"items": [
+                {"id": "s1", "label": "Safe One", "href": "/acme/1"},
+                {"id": "e1", "label": "Evil One", "href": "javascript:alert(1)"},
+            ]},
+        },
+        "degraded_modules": [],
+    }
+    r, calls = await _search(ui_client, monkeypatch, answer)
+    assert r.status_code == 200
+    body = r.text
+    assert "Safe One" in body
+    assert "/acme/1" in body
+    assert "Evil One" not in body
+    assert "javascript:" not in body
+
+
+@pytest.mark.asyncio
+async def test_third_party_scheme_relative_href_row_skipped(ui_client, monkeypatch):
+    # A protocol-relative "//host" href takes the scheme of whatever page it is
+    # rendered on, so it is an off-site link in disguise and must be rejected
+    # the same as an explicit https:// href.
+    answer = {
+        "results": {
+            "acme-crm": {"items": [
+                {"id": "s1", "label": "Safe One", "href": "/acme/1"},
+                {"id": "e1", "label": "Evil One", "href": "//evil.example/x"},
+            ]},
+        },
+        "degraded_modules": [],
+    }
+    r, calls = await _search(ui_client, monkeypatch, answer)
+    assert r.status_code == 200
+    body = r.text
+    assert "Safe One" in body
+    assert "/acme/1" in body
+    assert "Evil One" not in body
+    assert "evil.example" not in body
+
+
+@pytest.mark.asyncio
 async def test_third_party_label_is_escaped(ui_client, monkeypatch):
     # A generic label is rendered as escaped text, never raw markup.
     answer = {
