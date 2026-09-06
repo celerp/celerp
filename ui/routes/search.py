@@ -3,13 +3,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from urllib.parse import quote
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse
+from starlette.responses import Response
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -18,17 +17,6 @@ from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 
 logger = logging.getLogger(__name__)
-
-
-async def _safe(coro):
-    """Run one module's list call in isolation. On an APIError (e.g. a 403 from a
-    permission-gated module, or a 500) return an empty response so one module's
-    failure never blanks the whole search - the other modules still render."""
-    try:
-        return await coro
-    except APIError as e:
-        logger.warning("search module error: %s", e.detail)
-        return {}
 
 
 def _match_tags(record: dict, visible: tuple[str, ...]) -> list:
@@ -73,8 +61,17 @@ def setup_routes(app):
     async def global_search(request: Request):
         """HTMX partial: search WIDE across every primary module (items - all
         statuses, contacts, documents, manufacturing orders, subscriptions and
-        journal entries), each through its existing authenticated list endpoint so
-        role/company scoping is preserved."""
+        journal entries).
+
+        One aggregated request to the API's /search router replaces the per-module
+        fan-out: the router walks each module's search provider on a single database
+        session, gates each on its own permission, and merges the answers under
+        {"results": {module: {result_key: [...]}}, "degraded_modules": [...]}. This
+        route renders that answer with the same cards, icons, and links as before,
+        and degrades honestly: a total failure shows a retry-able error rather than
+        an empty 'no results', and a partial failure shows the results it reached
+        alongside a plain notice."""
+        lang = get_lang(request)
         token = _token(request)
         if not token:
             return Div()
@@ -82,56 +79,61 @@ def setup_routes(app):
         if len(q) < 2:
             return Div()
 
-        # (coroutine, results_key, icon, label_fn, href_fn, sub_fn,
-        # inactive_statuses, status_domain). status_domain is the enum domain used
-        # to resolve each result's status label in the request language (display
-        # only - the raw status stays canonical for the inactive split below).
-        # Items pass status="all" so sold/archived/merged/
-        # expired surface in the global bar (the on-page inventory search keeps
-        # its active-only default). Each call reuses the module's authenticated
-        # wrapper - status="all" filters, it does not bypass the role/company
-        # scoping those endpoints enforce. Every list endpoint returns each
-        # record's entity id under "id"; detail hrefs link straight to the
-        # record's own page. inactive_statuses render greyed and sort after
-        # active results.
+        try:
+            data = await api.global_search(token, q)
+        except APIError as e:
+            if e.status == 401:
+                # Session no longer valid: send the browser to login instead of
+                # swapping a broken fragment into the results dropdown.
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            # Every other total failure (503 saturation, 504 timeout, 5xx) is an
+            # honest error, not an empty result set. Offer a plain retry.
+            logger.warning("global search failed: %s", e.detail)
+            return Div(Span(t("search.error", lang), cls="search-empty"), cls="search-results-list")
+
+        results_by_module = data.get("results") or {}
+        degraded = data.get("degraded_modules") or []
+
+        # (module, result_key, icon, label_fn, href_fn, sub_fn, inactive_statuses,
+        # status_domain). module is the aggregator's key (the module folder name);
+        # result_key is the list field that module's provider returns its rows under.
+        # status_domain resolves each result's status label in the request language
+        # (display only - the raw status stays canonical for the inactive split).
+        # inactive_statuses render greyed and sort after active results. Every
+        # provider returns each record's entity id under "id"; detail hrefs link
+        # straight to the record's own page.
         descriptors = [
-            (api.list_items(token, {"q": q, "limit": "5", "status": "all"}),
-             "items", "📦",
+            ("celerp-inventory", "items", "📦",
              lambda r: r.get("name") or r.get("sku") or "",
              lambda r: f"/inventory/{r.get('id', '')}",
              lambda r: r.get("sku") or "",
              frozenset({"sold", "archived", "merged", "expired", "disposed"}),
              "item_status"),
-            (api.list_contacts(token, {"q": q, "limit": "5"}),
-             "items", "👤",
+            ("celerp-contacts", "items", "👤",
              lambda r: r.get("name") or r.get("contact_name") or "",
              lambda r: f"/contacts/{r.get('id', '')}",
              lambda r: "",
              frozenset(),
              "contact_status"),
-            (api.list_docs(token, {"q": q, "limit": "5"}),
-             "items", "📄",
+            ("celerp-docs", "items", "📄",
              lambda r: r.get("doc_number") or r.get("ref") or "",
              lambda r: f"/docs/{r.get('id', '')}",
              lambda r: r.get("doc_type") or "",
              frozenset({"void"}),
              "doc_status"),
-            (api.list_mfg_orders(token, {"q": q, "limit": "5"}),
-             "items", "🏭",
+            ("celerp-manufacturing", "items", "🏭",
              lambda r: r.get("description") or r.get("id") or "",
              lambda r: f"/manufacturing/production?q={quote(q)}",
              lambda r: "",
              frozenset({"cancelled"}),
              "mfg_run_status"),
-            (api.list_subscriptions(token, {"q": q, "limit": "5"}),
-             "items", "🔁",
+            ("celerp-subscriptions", "items", "🔁",
              lambda r: r.get("name") or r.get("doc_number") or r.get("ref_id") or r.get("id") or "",
              lambda r: f"/subscriptions/{r.get('id', '')}",
              lambda r: "",
              frozenset({"cancelled"}),
              "subscription_status"),
-            (api.get_journal(token, {"q": q, "limit": "5"}),
-             "entries", "📒",
+            ("celerp-accounting", "entries", "📒",
              lambda r: r.get("memo") or ((r.get("lines") or [{}])[0].get("name") or ""),
              lambda r: "/accounting",
              lambda r: "",
@@ -139,14 +141,12 @@ def setup_routes(app):
              None),
         ]
 
-        responses = await asyncio.gather(*[_safe(d[0]) for d in descriptors])
-
-        # (is_inactive, rendered) pairs; the stable sort below floats every
-        # active result above the inactive ones while keeping module order
-        # within each group.
+        # (is_inactive, rendered) pairs; the stable sort below floats every active
+        # result above the inactive ones while keeping module order within each group.
         rendered: list[tuple[bool, FT]] = []
-        for resp, (_coro, key, icon, label_fn, href_fn, sub_fn, inactive_statuses, status_domain) in zip(responses, descriptors):
-            for record in (resp.get(key) or [])[:5]:
+        for module, key, icon, label_fn, href_fn, sub_fn, inactive_statuses, status_domain in descriptors:
+            bucket = (results_by_module.get(module) or {}).get(key) or []
+            for record in bucket[:5]:
                 label = label_fn(record)
                 if not label:
                     continue
@@ -165,6 +165,16 @@ def setup_routes(app):
         results: list[FT] = [ft for _inactive, ft in rendered]
 
         if not results:
-            return Div(Span(t("msg.no_results"), cls="search-empty"), cls="search-results-list")
+            # No matches. If some modules could not be searched, that is a failure,
+            # not a genuine empty result: show the retry-able error. Only a clean
+            # search that truly matched nothing uses the no-results message.
+            if degraded:
+                return Div(Span(t("search.error", lang), cls="search-empty"), cls="search-results-list")
+            return Div(Span(t("msg.no_results", lang), cls="search-empty"), cls="search-results-list")
 
-        return Div(*results, cls="search-results-list")
+        children: list[FT] = list(results)
+        if degraded:
+            # Some modules answered and some could not. Show what we reached, with a
+            # plain notice so the list is never silently partial.
+            children.append(Span(t("search.partial", lang), cls="search-partial"))
+        return Div(*children, cls="search-results-list")

@@ -1332,6 +1332,8 @@
   "rpt.sales_desc": "Revenue by customer, item, or period",
   "rpt.statement_desc": "Activity and balance for any customer, supplier or account",
   "rpt.trial_balance_desc": "Every account's debit and credit totals",
+  "search.error": "Search is unavailable right now. Please try again in a moment.",
+  "search.partial": "Some areas could not be searched. Showing the results we could reach.",
   "settings._a_restart_is_required_for_module_changes_to_take": "⚠️ A restart is required for module changes to take effect.",
   "settings._applied": "✓ Applied",
   "settings._changing_the_database_requires_a_restart_and_data": "⚠️ Changing the database requires a restart and data migration. Back up first.",

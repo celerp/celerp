@@ -1599,6 +1599,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                 hx_trigger="keyup changed delay:300ms",
                 hx_target="#global-search-results",
                 hx_swap="innerHTML",
+                hx_sync="this:replace",
                 cls="global-search-input",
                 autocomplete="off",
             ),
