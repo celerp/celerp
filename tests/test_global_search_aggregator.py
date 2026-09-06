@@ -14,9 +14,31 @@ from __future__ import annotations
 import pytest
 
 from celerp.modules import slots
+from celerp.services.auth import get_token_claims
 from test_helpers import register_admin, grant_permission
 
 pytestmark = pytest.mark.asyncio
+
+
+async def _set_enabled_modules(session, company_id, value):
+    """Set (or, with value is _ABSENT, remove) the company's enabled_modules key.
+
+    Written through the request-shared session so the aggregator's fresh
+    get_current_company_settings read sees exactly this within the test's
+    savepoint-joined transaction.
+    """
+    from celerp.models.company import Company
+    company = await session.get(Company, company_id)
+    settings = dict(company.settings or {})
+    if value is _ABSENT:
+        settings.pop("enabled_modules", None)
+    else:
+        settings["enabled_modules"] = value
+    company.settings = settings
+    await session.flush()
+
+
+_ABSENT = object()
 
 
 # ── Controllable provider handlers ────────────────────────────────────────────
@@ -298,6 +320,73 @@ async def test_over_long_query_rejected_without_invoking(client, register_provid
     r = await client.get("/search", params={"q": "x" * 201}, headers=headers)
     assert r.status_code == 422, r.text
     assert "never" not in _invocation_calls
+
+
+# ── Per-company module enablement ─────────────────────────────────────────────
+
+async def test_company_disabled_module_omitted_while_slot_registered(client, session, register_provider):
+    # The slot stays registered process-wide, but the company's enabled_modules
+    # list excludes it: the provider must not run, and must be absent from BOTH
+    # results and degraded_modules (it is disabled, not broken).
+    tok = await register_admin(client)
+    headers = {"Authorization": f"Bearer {tok}"}
+    company_id = get_token_claims(tok)["company_id"]
+    register_provider("test-alpha", f"{_THIS}:never_called_provider", "items", "view_inventory")
+    register_provider("test-beta", f"{_THIS}:ok_entries_provider", "entries", "view_financial_reports")
+    await _set_enabled_modules(session, company_id, ["test-beta"])
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "test-alpha" not in body["results"]
+    assert "test-alpha" not in body["degraded_modules"]
+    assert "never" not in _invocation_calls
+    # The enabled sibling still runs.
+    assert body["results"]["test-beta"] == {"entries": [{"id": "prov-b-1"}]}
+
+
+async def test_company_enabled_module_runs(client, session, register_provider):
+    # Adding the module to the company's enabled list lets its provider run.
+    tok = await register_admin(client)
+    headers = {"Authorization": f"Bearer {tok}"}
+    company_id = get_token_claims(tok)["company_id"]
+    register_provider("test-alpha", f"{_THIS}:ok_items_provider", "items", "view_inventory")
+    await _set_enabled_modules(session, company_id, ["test-alpha"])
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["results"]["test-alpha"] == {"items": [{"id": "prov-a-1", "name": "hit-widget"}]}
+
+
+async def test_malformed_enabled_modules_fails_closed(client, session, register_provider):
+    # enabled_modules present but not a list: get_enabled() returns empty and the
+    # key IS present, so search shows nothing rather than everything.
+    tok = await register_admin(client)
+    headers = {"Authorization": f"Bearer {tok}"}
+    company_id = get_token_claims(tok)["company_id"]
+    register_provider("test-alpha", f"{_THIS}:never_called_provider", "items", "view_inventory")
+    await _set_enabled_modules(session, company_id, "not-a-list")
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["results"] == {}
+    assert body["degraded_modules"] == []
+    assert "never" not in _invocation_calls
+
+
+async def test_absent_enabled_key_runs_all(client, session, register_provider):
+    # Legacy fallback: with no enabled_modules key at all, every permitted
+    # provider runs (a company that predates per-module enablement).
+    tok = await register_admin(client)
+    headers = {"Authorization": f"Bearer {tok}"}
+    company_id = get_token_claims(tok)["company_id"]
+    register_provider("test-alpha", f"{_THIS}:ok_items_provider", "items", "view_inventory")
+    await _set_enabled_modules(session, company_id, _ABSENT)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["results"]["test-alpha"] == {"items": [{"id": "prov-a-1", "name": "hit-widget"}]}
 
 
 async def test_requires_authentication(client, register_provider):
