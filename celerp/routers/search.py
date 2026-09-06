@@ -25,6 +25,7 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -108,6 +109,24 @@ def _canonical_third_party_row(row: dict) -> dict:
             raise ValueError("third-party row subtitle must be a bounded string")
         clean["subtitle"] = subtitle
     return clean
+
+
+def _jsonable_rows(rows: list) -> list[dict]:
+    """Run the final capped row list through jsonable_encoder and shape-check it.
+
+    Applied to both the first-party and third-party paths so a row containing a
+    value FastAPI's response encoder cannot serialize is caught here, inside the
+    provider's own try/except, and degrades only that provider. Without this,
+    such a row reaches the aggregate response untouched and FastAPI's own final
+    response encoding 500s the whole request after every provider has already
+    run. Raises ValueError on anything that fails to encode or does not come
+    back as a list of dicts; the caller's existing except Exception treats that
+    exactly like any other provider failure.
+    """
+    encoded = jsonable_encoder(rows)
+    if not isinstance(encoded, list) or not all(isinstance(row, dict) for row in encoded):
+        raise ValueError("provider rows did not encode to a list of objects")
+    return encoded
 
 
 @router.get("/search")
@@ -224,7 +243,8 @@ async def global_search(
             capped = hits[:_PER_PROVIDER_LIMIT]
             if contribution.get("_first_party"):
                 # Bundled provider: trusted to return rich domain rows the UI
-                # renders directly, passed through untouched.
+                # renders directly, passed through untouched other than the
+                # jsonable_encoder guard below.
                 rows = capped
             else:
                 # Third-party provider: hold every row to the canonical shape,
@@ -232,6 +252,11 @@ async def global_search(
                 # JSON-serializable. Any violation raises and degrades this
                 # provider, never the aggregate response.
                 rows = [_canonical_third_party_row(row) for row in capped]
+            # Final guard on both paths: a row containing a value the response
+            # encoder cannot serialize must degrade this provider now, not turn
+            # the whole aggregate response into a 500 once every provider has
+            # already run.
+            rows = _jsonable_rows(rows)
             results[module] = {result_key: rows}
         except Exception as exc:
             log.warning(

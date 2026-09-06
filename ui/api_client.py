@@ -829,8 +829,9 @@ async def patch_units(token: str, units: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Inventory static-metadata cache
 # ---------------------------------------------------------------------------
-# The inventory pages fetch the same seven immutable-for-a-session getters on
-# every load. A short-lived cache collapses those repeated round-trips to one
+# The inventory pages fetch the same six genuinely static getters on every
+# load (company/settings is fetched separately and fresh every time, never
+# cached here). A short-lived cache collapses those repeated round-trips to one
 # per token per window without ever serving a stale snapshot: the TTL is small,
 # failures are never cached, and every write that could change the snapshot
 # invalidates it centrally in the mutation wrapper, not the route.

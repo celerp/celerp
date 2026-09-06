@@ -110,10 +110,22 @@ async def external_href_provider(session, company_id, role, q, limit):
     return {"items": [{"id": "t-1", "label": "Evil", "href": "https://evil.example/x"}]}
 
 
-async def nonserializable_provider(session, company_id, role, q, limit):
-    # A payload that cannot be JSON-encoded; degrading this provider must not turn
-    # the whole aggregate response into a 500.
-    return {"items": [{"id": "t-1", "label": "X", "href": "/ok", "subtitle": object()}]}
+async def nonserializable_third_party_provider(session, company_id, role, q, limit):
+    # A payload that cannot be JSON-encoded, in an extra field the canonical
+    # third-party shape check does not itself inspect (the check only validates
+    # id/label/href/subtitle; it drops other keys rather than raising on them).
+    # This is only reachable in production if canonicalization is bypassed, so
+    # the test that uses it monkeypatches _canonical_third_party_row to an
+    # identity function to prove the jsonable_encoder guard is an independent
+    # backstop on this path too, not merely inherited from the shape check.
+    return {"items": [{"id": "t-1", "label": "X", "href": "/ok", "extra": object()}]}
+
+
+async def nonserializable_first_party_provider(session, company_id, role, q, limit):
+    # First-party rows are trusted and pass through untouched (no canonical
+    # shape check at all), so a non-JSON-encodable value here reaches the
+    # aggregate response directly unless the aggregator itself guards it.
+    return {"items": [{"id": "p-1", "name": object()}]}
 
 
 @pytest.fixture(autouse=True)
@@ -546,11 +558,37 @@ async def test_third_party_external_href_degrades(client, register_provider):
     assert "acme" not in body["results"]
 
 
-async def test_third_party_nonserializable_row_degrades_not_500(client, register_provider):
-    # A non-JSON-serializable row must degrade only its provider, never turn the
-    # whole aggregate response into a 500.
-    register_provider("acme", f"{_THIS}:nonserializable_provider", "items", "view_inventory",
-                      first_party=False)
+async def test_first_party_nonserializable_row_degrades_not_500(client, register_provider):
+    # A first-party row is passed through untouched (no canonical shape check),
+    # so a value jsonable_encoder cannot serialize must be caught by the
+    # aggregator itself. Before the fix this reaches the final response body
+    # unguarded and FastAPI's own response encoding 500s the WHOLE aggregate
+    # request, taking every other provider's results down with it.
+    register_provider("test-alpha", f"{_THIS}:nonserializable_first_party_provider", "items",
+                      "view_inventory")
+    register_provider("test-beta", f"{_THIS}:ok_entries_provider", "entries", "view_financial_reports")
+    headers = await _owner_headers(client)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "test-alpha" in body["degraded_modules"]
+    assert "test-alpha" not in body["results"]
+    # The sibling provider's results survive: the whole response never 500s.
+    assert body["results"]["test-beta"] == {"entries": [{"id": "prov-b-1"}]}
+
+
+async def test_third_party_nonserializable_row_degrades_not_500(client, register_provider, monkeypatch):
+    # The canonical third-party shape check (_canonical_third_party_row) already
+    # forces id/label/href/subtitle to plain bounded strings, so a value it
+    # cannot serialize cannot normally reach this point on the third-party path.
+    # Monkeypatch canonicalization to an identity function to simulate that
+    # check having a gap, proving the jsonable_encoder guard is an independent
+    # backstop on the third-party path too, not merely inherited from the shape
+    # check: it must still degrade only this provider, never 500 the aggregate.
+    monkeypatch.setattr(_search_router, "_canonical_third_party_row", lambda row: row)
+    register_provider("acme", f"{_THIS}:nonserializable_third_party_provider", "items",
+                      "view_inventory", first_party=False)
     register_provider("test-beta", f"{_THIS}:ok_entries_provider", "entries", "view_financial_reports")
     headers = await _owner_headers(client)
 
