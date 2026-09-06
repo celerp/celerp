@@ -24,7 +24,7 @@ from typing import Any
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from celerp.config import record_deployment_association, settings
+from celerp.config import settings
 
 log = logging.getLogger(__name__)
 
@@ -124,14 +124,6 @@ class GatewayClient:
         self._auth_failures = 0
         self._auth_rejected = False
         self._required_tos_version: str = ""
-        # Reusable partner deployment credential: a one-time registration input,
-        # distinct from the live session credential (_token). Sent on the first
-        # hello when set and not yet associated, cleared once hello_ack records
-        # the association. _credential_sent guards against re-send within a
-        # session; _association_recorded is the durable "already registered" flag.
-        self._deployment_credential = settings.deployment_credential
-        self._association_recorded = settings.deployment_associated
-        self._credential_sent = False
         # Hold strong refs to fire-and-forget tasks so the loop can't GC them mid-run
         # (a dropped task = a lost proxy response or webhook sync).
         self._bg_tasks: set = set()
@@ -376,24 +368,16 @@ class GatewayClient:
     def _build_hello_payload(self, tos_version: str, app_version: str) -> dict:
         """Build the hello frame payload.
 
-        The four base keys match a direct install byte for byte. The reusable
-        deployment credential is appended only when one is set, has not already
-        been sent this session, and the install is not already associated - so a
-        direct install and an already-registered install send an identical
-        payload. Sending flips _credential_sent so a reconnect in the same
-        session does not re-offer it.
+        The four base keys match a direct install byte for byte. Partner
+        deployment association happens separately, before the gateway starts
+        (celerp.gateway.bootstrap) - the handshake never carries the credential.
         """
-        payload = {
+        return {
             "gateway_token": self._token,
             "instance_id": self._instance_id,
             "tos_version": tos_version,
             "version": app_version,
         }
-        credential = (self._deployment_credential or "").strip()
-        if credential and not self._credential_sent and not self._association_recorded:
-            payload["deployment_credential"] = credential
-            self._credential_sent = True
-        return payload
 
     async def _dispatch(self, msg: dict) -> None:
         msg_type = msg.get("type", "")
@@ -402,17 +386,6 @@ class GatewayClient:
         if msg_type == "hello_ack":
             self._set_status("active")
             self._auth_failures = 0  # an accepted handshake clears the strike count
-            # A hello_ack that follows a credentialled hello confirms the relay
-            # accepted the registration: record the association (removing the
-            # credential from bootstrap state) exactly once. The in-memory marker
-            # is set even if the durable write fails, so a persist error never
-            # causes the credential to be re-offered this session.
-            if self._credential_sent and not self._association_recorded:
-                try:
-                    record_deployment_association()
-                except Exception:
-                    log.debug("Deployment association persist failed; suppressing re-send this session.")
-                self._association_recorded = True
             # Relay returns the canonical instance_id - store it for quota calls
             from celerp.gateway.state import set_session_token, set_instance_id
             canonical_id = payload.get("instance_id", "")
