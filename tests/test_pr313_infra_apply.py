@@ -27,7 +27,6 @@ from fasthtml.common import FastHTML, to_xml
 
 import ui.routes.settings_cloud as sc
 from celerp.services import attachments
-from celerp.gateway import client as gwclient
 from ui.i18n import t
 
 
@@ -178,8 +177,7 @@ async def test_save_infra_packaged_reports_write_failure(client, tmp_path, monke
     monkeypatch.setattr(subprocess, "Popen", MagicMock())
     monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
     _sandbox_toml(monkeypatch, tmp_path)
-    monkeypatch.setattr(gwclient, "_merge_config_key", MagicMock(return_value=False),
-                        raising=False)
+    monkeypatch.setattr(sc, "merge_packaged_config", MagicMock(return_value=False))
     (tmp_path / "celerp-config.json").write_text(
         json.dumps({"db_mode": "local", "external_db_url": ""}))
     r = await client.post("/settings/cloud/save-infra", data={
@@ -431,7 +429,7 @@ async def test_infra_handler_rejects_without_manage_integrations(
     popen = MagicMock()
     monkeypatch.setattr(subprocess, "Popen", popen)
     merge_key = MagicMock(return_value=True)
-    monkeypatch.setattr(gwclient, "_merge_config_key", merge_key, raising=False)
+    monkeypatch.setattr(sc, "merge_packaged_config", merge_key)
 
     # Deny: override the client fixture's grant with a truthy redirect, the
     # same shape _check_permission itself returns on denial.

@@ -6,11 +6,14 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import urlparse
 
 from fasthtml.common import *
+from sqlalchemy.engine import URL, make_url
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
+from celerp.config_store import merge_packaged_config
 from ui.components.shell import base_shell, page_header, page_title
 from ui.i18n import t, get_lang
 from ui.config import get_role as _get_role
@@ -22,6 +25,12 @@ from ui.routes.settings import (
     PAID_TIERS,
 )
 from ui.routes.settings_general import _section_breadcrumb
+
+# The only storage backends the infra form and its handlers accept. A value
+# outside this set is rejected before it ever reaches celerp-config.json or
+# config.toml, since both files are trusted verbatim by the reader that
+# selects the storage implementation at startup.
+_VALID_STORAGE_BACKENDS = {"local", "s3"}
 
 
 def _has_team_features(state: dict) -> bool:
@@ -304,38 +313,89 @@ def _connect_section(iid: str, lang: str = "en", disconnected: bool = False) -> 
 
 
 def _parse_db_url(url: str) -> dict:
-    """Parse a postgresql+asyncpg://user:pass@host:port/dbname URL into components."""
-    from urllib.parse import urlparse
+    """Parse a database URL into display components using SQLAlchemy's
+    structural URL parser, which handles percent-encoding, IPv6 host
+    literals, and reserved characters in the password correctly instead of a
+    naive urlparse that only works for the simplest case."""
     try:
-        parsed = urlparse(url)
+        parsed = make_url(url)
         return {
-            "host": parsed.hostname or "",
+            "host": parsed.host or "",
             "port": str(parsed.port or 5432),
-            "name": parsed.path.lstrip("/") if parsed.path else "",
+            "name": parsed.database or "",
             "user": parsed.username or "",
-            # password intentionally omitted (masked in UI)
+            "has_password": bool(parsed.password),
         }
     except Exception:
-        return {"host": "", "port": "5432", "name": "", "user": ""}
+        return {"host": "", "port": "5432", "name": "", "user": "", "has_password": False}
+
+
+def _build_db_url(host: str, port: int, name: str, user: str, password: str | None) -> str:
+    """Build a postgresql+asyncpg URL from components with SQLAlchemy's URL
+    builder, which percent-encodes the user, password, and host correctly
+    (reserved characters, IPv6 literals) instead of hand-built interpolation."""
+    return URL.create(
+        "postgresql+asyncpg",
+        username=user,
+        password=password or None,
+        host=host,
+        port=port,
+        database=name,
+    ).render_as_string(hide_password=False)
+
+
+def _masked_db_url(url: str) -> str:
+    """Return the URL with its password redacted for display, via the
+    structural parser so a password containing '@' or other reserved
+    characters cannot break the mask (a plain string.replace could match the
+    wrong '@' or miss an encoded one)."""
+    if not url:
+        return url
+    try:
+        return make_url(url).render_as_string(hide_password=True)
+    except Exception:
+        return url
+
+
+def _url_password(url: str) -> str | None:
+    """Return the password embedded in a database URL, or None when there is
+    none or the URL cannot be parsed."""
+    if not url:
+        return None
+    try:
+        return make_url(url).password
+    except Exception:
+        return None
+
+
+def _valid_s3_endpoint(endpoint: str) -> bool:
+    """An S3-compatible endpoint must be a well-formed https URL: a plain
+    http endpoint would send the access key and secret key in the clear."""
+    if not endpoint:
+        return False
+    try:
+        parsed = urlparse(endpoint)
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and bool(parsed.hostname)
 
 
 def _infra_db_section() -> FT:
+    import os
     from celerp.config import settings, read_config
     current_url = settings.database_url
     db = _parse_db_url(current_url)
+    masked_url = _masked_db_url(current_url)
 
-    masked_url = current_url
-    if "@" in current_url:
-        try:
-            from urllib.parse import urlparse
-            p = urlparse(current_url)
-            masked_url = current_url.replace(f":{p.password}@", ":****@") if p.password else current_url
-        except Exception:
-            pass
-
-    # Check if there's a previous URL to restore
-    cfg = read_config()
-    prev_url = cfg.get("database_backup", {}).get("previous_url", "")
+    # The backup lives wherever this build actually writes: packaged installs
+    # (CELERP_DATA_DIR set) keep it in celerp-config.json, self-hosted in
+    # config.toml. Reading only the self-hosted path here hid the restore
+    # button from every packaged install that had one to restore.
+    if os.environ.get("CELERP_DATA_DIR"):
+        prev_url = _read_packaged_config().get("external_db_url_backup", "") or ""
+    else:
+        cfg = read_config()
+        prev_url = cfg.get("database_backup", {}).get("previous_url", "") or ""
 
     return Div(
         H3(t("page.database")),
@@ -373,9 +433,20 @@ def _infra_db_section() -> FT:
             ),
             Div(
                 Label(t("label.password"), For="db_pass"),
-                Input(id="db_pass", name="db_pass", type="password", placeholder="••••••••", cls="input"),
+                Input(id="db_pass", name="db_pass", type="password",
+                      placeholder=t("settings_cloud.password_unchanged_placeholder")
+                      if db["has_password"] else "••••••••",
+                      cls="input"),
                 cls="form-row",
             ),
+            Div(
+                Label(
+                    Input(type="checkbox", name="db_clear_password", value="1"),
+                    Span(t("settings_cloud.clear_password_label")),
+                    cls="settings-toggle",
+                ),
+                cls="form-group",
+            ) if db["has_password"] else "",
             Div(
                 Button(t("btn.test_connection"),
                     type="button",
@@ -865,7 +936,9 @@ def setup_routes(app):
 
     @app.post("/settings/cloud/test-db")
     async def cloud_test_db(request: Request):
-        """HTMX: test database connectivity with provided credentials."""
+        """HTMX: test database connectivity, falling back to the currently
+        configured password when the field is left blank so testing does not
+        force retyping a password that is already saved."""
         token = _token(request)
         # Infra changes (DB/storage endpoints) are admin/owner actions - the
         # page is role-gated, so its fragments must be too.
@@ -876,30 +949,43 @@ def setup_routes(app):
 
         form = await request.form()
         host = form.get("db_host", "").strip()
-        port = int(form.get("db_port", "5432") or "5432")
         name = form.get("db_name", "").strip()
         user = form.get("db_user", "").strip()
-        password = form.get("db_pass", "")
 
         if not all([host, name, user]):
             return Span(t("settings.please_fill_in_host_database_name_and_username"),
                         cls="infra-test-result--err")
 
+        port_raw = (form.get("db_port", "5432") or "5432").strip()
+        try:
+            port = int(port_raw)
+        except ValueError:
+            return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
+        if not 1 <= port <= 65535:
+            return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
+
+        from celerp.config import settings
+        password = form.get("db_pass", "") or (_url_password(settings.database_url) or "")
+
         import asyncio
         try:
-            conn = await asyncio.wait_for(
+            await asyncio.wait_for(
                 _try_db_connect(host, port, name, user, password),
                 timeout=3.0,
             )
             return Span(t("settings_cloud.connected_to", target=f"{name}@{host}:{port}"), cls="infra-test-result--ok")
         except asyncio.TimeoutError:
             return Span(t("settings.connection_timed_out_3s"), cls="infra-test-result--err")
-        except Exception as exc:
-            return Span(f"✗ {type(exc).__name__}: {exc}", cls="infra-test-result--err")
+        except Exception:
+            # Never echo the raw driver error: it can restate the host,
+            # database name, or user back at an unauthenticated caller.
+            return Span(t("settings_cloud.db_connection_failed"), cls="infra-test-result--err")
 
     @app.post("/settings/cloud/test-storage")
     async def cloud_test_storage(request: Request):
-        """HTMX: test S3-compatible storage connectivity."""
+        """HTMX: test S3-compatible storage connectivity, falling back to the
+        currently configured secret key when the field is left blank so
+        testing does not force retyping a secret that is already saved."""
         token = _token(request)
         # Infra changes (DB/storage endpoints) are admin/owner actions - the
         # page is role-gated, so its fragments must be too.
@@ -910,16 +996,21 @@ def setup_routes(app):
 
         form = await request.form()
         backend = form.get("storage_backend", "local")
+        if backend not in _VALID_STORAGE_BACKENDS:
+            return Span(t("settings_cloud.invalid_storage_backend"), cls="infra-test-result--err")
         if backend == "local":
             return Span(t("settings._local_filesystem_no_connection_needed"), cls="infra-test-result--ok")
 
         endpoint = form.get("s3_endpoint", "").strip()
         bucket = form.get("s3_bucket", "").strip()
         access_key = form.get("s3_access_key", "").strip()
-        secret_key = form.get("s3_secret_key", "")
+        from celerp.config import settings
+        secret_key = form.get("s3_secret_key", "") or settings.storage_s3_secret_key
 
         if not all([endpoint, bucket, access_key, secret_key]):
             return Span(t("settings.please_fill_in_all_s3_fields"), cls="infra-test-result--err")
+        if not _valid_s3_endpoint(endpoint):
+            return Span(t("settings_cloud.invalid_s3_endpoint"), cls="infra-test-result--err")
 
         import asyncio
         try:
@@ -931,6 +1022,8 @@ def setup_routes(app):
         except asyncio.TimeoutError:
             return Span(t("settings.connection_timed_out_3s"), cls="infra-test-result--err")
         except Exception as exc:
+            # _try_s3_connect already maps every outcome to a safe translated
+            # RuntimeError message; str(exc) here is never a raw driver error.
             return Span(f"✗ {exc}", cls="infra-test-result--err")
 
     @app.post("/settings/cloud/save-infra")
@@ -980,23 +1073,14 @@ def setup_routes(app):
 
 def _read_packaged_config() -> dict:
     """Read the Electron-owned celerp-config.json, degrading to {} on any error.
-    Reads are only for computing backups and prior state; the atomic writer in
-    the gateway client owns every write so the 0600 mode is never widened."""
-    import os
-    import json
-    data_dir = os.environ.get("CELERP_DATA_DIR", "")
-    if not data_dir:
-        return {}
-    config_path = os.path.join(data_dir, "celerp-config.json")
-    try:
-        if os.path.exists(config_path):
-            with open(config_path) as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                return loaded
-    except Exception:
-        return {}
-    return {}
+    Reads are only for computing backups and prior state; merge_packaged_config
+    owns every write so the 0600 mode is never widened.
+
+    Thin wrapper over celerp.config_store.read_packaged_config, which owns the
+    read, so this module has one source of truth for the packaged-config shape
+    instead of a second copy of the same read-and-degrade logic."""
+    from celerp.config_store import read_packaged_config
+    return read_packaged_config()
 
 
 def _packaged_apply_fragment(message: str) -> FT:
@@ -1013,47 +1097,76 @@ def _packaged_apply_fragment(message: str) -> FT:
 
 
 def _save_infra_packaged(form) -> FT:
-    """Persist DB/storage config to celerp-config.json via the atomic merge
-    writer. Any failed write reports the error and leaves prior config intact;
-    the packaged apply is a full Electron relaunch, never pkill."""
-    from celerp.gateway import client as gwclient
-    current = _read_packaged_config()
+    """Persist DB/storage config to celerp-config.json in one atomic merge.
+    Any failed write reports the error and leaves prior config intact; the
+    packaged apply is a full Electron relaunch, never pkill.
 
-    updates: list[tuple[str, object]] = []
+    A blank password field preserves the currently configured password
+    (the field is never pre-filled with the real secret); the explicit
+    db_clear_password checkbox is the only way to actually clear it, so a
+    save can never silently wipe a working credential.
+    """
+    current = _read_packaged_config()
+    patch: dict[str, object] = {}
 
     host = form.get("db_host", "").strip()
     name = form.get("db_name", "").strip()
     user = form.get("db_user", "").strip()
     if host and name and user:
-        port = form.get("db_port", "5432").strip() or "5432"
-        password = form.get("db_pass", "")
-        new_url = f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{name}"
+        port_raw = (form.get("db_port", "5432") or "5432").strip()
+        try:
+            port = int(port_raw)
+        except ValueError:
+            return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
+        if not 1 <= port <= 65535:
+            return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
+
         prev_url = current.get("external_db_url", "") or ""
+        submitted_password = form.get("db_pass", "")
+        if form.get("db_clear_password") == "1":
+            effective_password = None
+        elif submitted_password:
+            effective_password = submitted_password
+        else:
+            effective_password = _url_password(prev_url)
+
+        new_url = _build_db_url(host=host, port=port, name=name, user=user,
+                                 password=effective_password)
         if new_url != prev_url:
             if prev_url:
-                updates.append(("external_db_url_backup", prev_url))
-            updates.append(("db_mode", "external"))
-            updates.append(("external_db_url", new_url))
+                patch["external_db_url_backup"] = prev_url
+            patch["db_mode"] = "external"
+            patch["external_db_url"] = new_url
 
     storage_backend = form.get("storage_backend", "")
     if storage_backend:
-        updates.append(("storage_mode", storage_backend))
-        updates.append(("storage_s3_endpoint", form.get("s3_endpoint", "")))
-        updates.append(("storage_s3_bucket", form.get("s3_bucket", "")))
-        updates.append(("storage_s3_access_key", form.get("s3_access_key", "")))
+        if storage_backend not in _VALID_STORAGE_BACKENDS:
+            return Span(t("settings_cloud.invalid_storage_backend"), cls="infra-test-result--err")
+        if storage_backend == "s3":
+            endpoint = form.get("s3_endpoint", "").strip()
+            if not _valid_s3_endpoint(endpoint):
+                return Span(t("settings_cloud.invalid_s3_endpoint"), cls="infra-test-result--err")
+        patch["storage_mode"] = storage_backend
+        patch["storage_s3_endpoint"] = form.get("s3_endpoint", "")
+        patch["storage_s3_bucket"] = form.get("s3_bucket", "")
+        patch["storage_s3_access_key"] = form.get("s3_access_key", "")
         if form.get("s3_secret_key"):
-            updates.append(("storage_s3_secret_key", form.get("s3_secret_key")))
+            patch["storage_s3_secret_key"] = form.get("s3_secret_key")
 
-    for key, value in updates:
-        if not gwclient._merge_config_key(key, value):
-            return Span(t("settings_cloud.save_failed", err=t("settings_cloud.config_write_failed")),
-                        cls="infra-test-result--err")
+    if patch and not merge_packaged_config(patch):
+        return Span(t("settings_cloud.save_failed", err=t("settings_cloud.config_write_failed")),
+                    cls="infra-test-result--err")
     return _packaged_apply_fragment(t("settings_cloud.saved_restart_to_apply"))
 
 
 def _save_infra_selfhosted(form) -> FT:
-    """Persist DB/storage config to config.toml and reload the server via SIGHUP
-    (self-hosted POSIX build)."""
+    """Persist DB/storage config to config.toml and reload the server via
+    SIGHUP (self-hosted POSIX build).
+
+    A blank password field preserves the currently configured password; the
+    explicit db_clear_password checkbox is the only way to actually clear
+    it (see _save_infra_packaged).
+    """
     try:
         from celerp.config import read_config, write_config, settings
         cfg = read_config()
@@ -1067,10 +1180,25 @@ def _save_infra_selfhosted(form) -> FT:
         name = form.get("db_name", "").strip()
         user = form.get("db_user", "").strip()
         if host and name and user:
-            port = form.get("db_port", "5432").strip() or "5432"
-            password = form.get("db_pass", "")
-            new_url = f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{name}"
+            port_raw = (form.get("db_port", "5432") or "5432").strip()
+            try:
+                port = int(port_raw)
+            except ValueError:
+                return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
+            if not 1 <= port <= 65535:
+                return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
+
             previous_url = cfg.get("database", {}).get("url", settings.database_url)
+            submitted_password = form.get("db_pass", "")
+            if form.get("db_clear_password") == "1":
+                effective_password = None
+            elif submitted_password:
+                effective_password = submitted_password
+            else:
+                effective_password = _url_password(previous_url)
+
+            new_url = _build_db_url(host=host, port=port, name=name, user=user,
+                                     password=effective_password)
             if new_url != previous_url:
                 # Backup previous URL for undo support
                 cfg.setdefault("database_backup", {})["previous_url"] = previous_url
@@ -1080,6 +1208,12 @@ def _save_infra_selfhosted(form) -> FT:
         # Storage settings
         storage_backend = form.get("storage_backend", "")
         if storage_backend:
+            if storage_backend not in _VALID_STORAGE_BACKENDS:
+                return Span(t("settings_cloud.invalid_storage_backend"), cls="infra-test-result--err")
+            if storage_backend == "s3":
+                endpoint = form.get("s3_endpoint", "").strip()
+                if not _valid_s3_endpoint(endpoint):
+                    return Span(t("settings_cloud.invalid_s3_endpoint"), cls="infra-test-result--err")
             prev_storage = cfg.get("storage", {})
             cfg.setdefault("storage_backup", {}).update({
                 "backend": prev_storage.get("backend", ""),
@@ -1107,19 +1241,18 @@ def _save_infra_selfhosted(form) -> FT:
 
 
 def _restore_db_packaged() -> FT:
-    """Swap external_db_url with its backup in celerp-config.json. Apply is a
-    full Electron relaunch, never pkill."""
-    from celerp.gateway import client as gwclient
+    """Swap external_db_url with its backup in celerp-config.json in one
+    atomic merge, so a crash between the two writes can never leave the file
+    with the backup slot and the live URL both pointing at the new value.
+    Apply is a full Electron relaunch, never pkill."""
     current = _read_packaged_config()
     prev_url = current.get("external_db_url_backup", "") or ""
     if not prev_url:
         return Span(t("settings.no_previous_database_url_to_restore"), cls="infra-test-result--err")
 
     current_url = current.get("external_db_url", "") or ""
-    if not gwclient._merge_config_key("external_db_url_backup", current_url):
-        return Span(t("settings_cloud.restore_failed", err=t("settings_cloud.config_write_failed")),
-                    cls="infra-test-result--err")
-    if not gwclient._merge_config_key("external_db_url", prev_url):
+    patch = {"external_db_url_backup": current_url, "external_db_url": prev_url}
+    if not merge_packaged_config(patch):
         return Span(t("settings_cloud.restore_failed", err=t("settings_cloud.config_write_failed")),
                     cls="infra-test-result--err")
     return _packaged_apply_fragment(t("settings_cloud.restored_restart_to_apply"))
