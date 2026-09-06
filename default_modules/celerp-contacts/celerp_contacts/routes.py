@@ -25,6 +25,8 @@ from celerp.services.attachments import remove_attachment, store_upload
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
 
+from celerp_contacts.search import search_contacts
+
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
@@ -126,12 +128,6 @@ class CRMBatchImportRequest(BaseModel):
 
 # ── Contact CRUD ──────────────────────────────────────────────────────────────
 
-_CONTACT_TYPE_FILTER: dict[str, tuple[str, ...]] = {
-    "customer": ("customer", "both"),
-    "vendor": ("vendor", "both"),
-    "both": ("both",),
-}
-
 
 @router.post("/contacts")
 async def create_contact(payload: ContactCreate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
@@ -165,25 +161,11 @@ async def list_contacts(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    rows = (
-        await session.execute(select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "contact"))
-    ).scalars().all()
-    results = [r.state | {"id": r.entity_id} for r in rows]
-    if not include_deleted:
-        results = [c for c in results if not c.get("deleted")]
-    if q:
-        q_lower = q.lower()
-        results = [c for c in results if q_lower in (c.get("name") or "").lower()
-                   or q_lower in (c.get("email") or "").lower()
-                   or q_lower in (c.get("phone") or "").lower()
-                   or q_lower in (c.get("company_name") or "").lower()
-                   or any(q_lower in t.lower() for t in (c.get("tags") or []))]
-    if contact_type and contact_type in _CONTACT_TYPE_FILTER:
-        allowed = _CONTACT_TYPE_FILTER[contact_type]
-        results = [c for c in results if (c.get("contact_type") or "customer") in allowed]
     # Deterministic order (name, then unique id) so OFFSET pagination over this Python-sliced list
-    # is stable — otherwise the DB's arbitrary row order lets a contact be skipped between pages.
-    results.sort(key=lambda c: ((c.get("name") or "").lower(), c.get("id") or ""))
+    # is stable - otherwise the DB's arbitrary row order lets a contact be skipped between pages.
+    results = await search_contacts(
+        session, company_id, q, include_deleted=include_deleted, contact_type=contact_type
+    )
     return {"items": results[offset:offset + limit], "total": len(results)}
 
 

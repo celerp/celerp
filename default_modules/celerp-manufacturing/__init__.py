@@ -82,6 +82,11 @@ PLUGIN_MANIFEST = {
         "doc_finalize_hook": [
             {"handler": "celerp_manufacturing.routes:auto_create_work_orders_on_finalize"},
         ],
+        "search_provider": {
+            "handler": "celerp_manufacturing.search:global_search",
+            "result_key": "items",
+            "permission": "manage_manufacturing",
+        },
     },
 
     # ── No DB migrations needed ───────────────────────────────────────────────

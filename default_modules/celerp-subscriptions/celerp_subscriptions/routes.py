@@ -21,8 +21,8 @@ from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp_docs.sequences import next_doc_ref
+from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 
-SUBSCRIPTION_DOC_TYPES = frozenset({"subscription_invoice", "subscription_po"})
 VALID_FREQUENCIES = frozenset({"weekly", "biweekly", "monthly", "quarterly", "annually", "custom"})
 
 
@@ -84,46 +84,9 @@ def _build_router() -> APIRouter:
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """List subscription templates (docs with subscription_invoice/subscription_po doc_type)."""
-        from sqlalchemy import or_ as _or
-        where = [
-            Projection.company_id == company_id,
-            Projection.entity_type == "doc",
-            _or(*(Projection.state["doc_type"].as_string() == dt for dt in SUBSCRIPTION_DOC_TYPES)),
-        ]
-        if direction == "sales":
-            where = [
-                Projection.company_id == company_id,
-                Projection.entity_type == "doc",
-                Projection.state["doc_type"].as_string() == "subscription_invoice",
-            ]
-        elif direction == "purchasing":
-            where = [
-                Projection.company_id == company_id,
-                Projection.entity_type == "doc",
-                Projection.state["doc_type"].as_string() == "subscription_po",
-            ]
-        if status:
-            where.append(Projection.state["status"].as_string() == status)
-        from sqlalchemy import func as _func
-        if q and q.strip():
-            # Push the search into the WHERE so it runs BEFORE the COUNT and LIMIT
-            # (a Python post-filter would run after pagination truncated the rows).
-            # A subscription template stores ref_id at creation and only gains
-            # doc_number on a later renumber, so both are matched; name is the
-            # human template label the global bar most often searches.
-            _fields = ("name", "doc_number", "ref_id", "contact_name")
-            terms = [t.strip().lower() for t in q.split(",") if t.strip()]
-            where.append(_or(*[
-                _func.lower(Projection.state[f].as_string()).like(f"%{term}%")
-                for term in terms for f in _fields
-            ]))
-        total = (await session.execute(
-            select(_func.count()).select_from(Projection).where(*where)
-        )).scalar_one()
-        rows = (await session.execute(
-            select(Projection).where(*where).order_by(Projection.entity_id.desc()).offset(offset).limit(limit)
-        )).scalars().all()
-        items = [r.state | {"id": r.entity_id} for r in rows]
+        items, total = await search_subscription_templates(
+            session, company_id, direction=direction, status=status, q=q, limit=limit, offset=offset
+        )
         return {"items": items, "total": total}
 
     @router.post("/{entity_id}/generate")

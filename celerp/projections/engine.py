@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import importlib
 import logging
 from datetime import datetime, timezone
 
@@ -18,11 +17,15 @@ log = logging.getLogger(__name__)
 
 
 def _resolve_module_handler(dotted: str):
-    """Import and return a handler callable from a 'module.path:function' string."""
+    """Import and return a handler callable from a 'module.path:function' string.
+
+    Returns None on any resolution failure so a single bad projection_handler
+    slot cannot stop the engine from picking up its siblings.
+    """
+    from celerp.modules.slots import resolve_handler
+
     try:
-        module_path, func_name = dotted.rsplit(":", 1)
-        mod = importlib.import_module(module_path)
-        return getattr(mod, func_name)
+        return resolve_handler(dotted)
     except Exception as exc:
         log.error("ProjectionEngine: cannot resolve module handler %r: %s", dotted, exc)
         return None

@@ -31,6 +31,11 @@ PLUGIN_MANIFEST = {
             {"prefix": "item.", "handler": "celerp_inventory.projections:apply_item_event"},
             # {"prefix": "scan.", "handler": "celerp.projections.handlers.scanning:apply_scanning_event"},  # Scanning module disabled until properly finished
         ],
+        "search_provider": {
+            "handler": "celerp_inventory.search:global_search",
+            "result_key": "items",
+            "permission": "view_inventory",
+        },
     },
     "migrations": None,
     "requires": [],
