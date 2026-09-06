@@ -15,7 +15,6 @@ side effect of an ordinary hello_ack.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from celerp.config import (
@@ -25,11 +24,6 @@ from celerp.config import (
 )
 
 log = logging.getLogger(__name__)
-
-# Transient transport failures (slow first network, relay restarting) are
-# retried; any HTTP response of any status is final. Mirrors _try_auto_activate.
-_RETRY_DELAYS = (0, 5, 30)
-_TIMEOUT_S = 10.0
 
 
 async def associate_partner_deployment() -> bool:
@@ -45,9 +39,7 @@ async def associate_partner_deployment() -> bool:
     if not credential or settings.deployment_associated or settings.cloud_disconnected:
         return False
 
-    import httpx
-
-    from celerp.gateway.state import relay_http_url
+    from celerp.gateway.state import relay_http_url, relay_post_with_retry
 
     try:
         # Persist the nonce before any network call: an unpersisted nonce could
@@ -63,29 +55,9 @@ async def associate_partner_deployment() -> bool:
     url = f"{relay_http_url()}/partners/deployments/associate"
     body = {"deployment_credential": credential, "deployment_nonce": nonce}
 
-    # Quiet httpx's own logger for the duration: its records can carry request
-    # detail, and the credential travels in this request body.
-    _httpx_log = logging.getLogger("httpx")
-    _prev_level = _httpx_log.level
-    _httpx_log.setLevel(logging.WARNING)
-    resp = None
-    try:
-        for delay in _RETRY_DELAYS:
-            if delay:
-                await asyncio.sleep(delay)
-            try:
-                async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
-                    resp = await client.post(url, json=body)
-                break
-            except httpx.HTTPError as exc:
-                # Never log the exception value: an httpx error repr can embed the
-                # request body, which carries the credential.
-                log.debug("Deployment association transport error (%s); retrying.",
-                          type(exc).__name__)
-                resp = None
-                continue
-    finally:
-        _httpx_log.setLevel(_prev_level)
+    # The shared helper retries only transient transport failures and quiets
+    # httpx's own logger for the duration (the credential travels in this body).
+    resp = await relay_post_with_retry(url, body)
 
     if resp is None:
         log.warning("Deployment association could not reach the relay; will retry next boot.")
