@@ -210,3 +210,50 @@ def test_configured_client_has_a_finite_pool_bound():
 
 def test_bulk_and_interactive_transports_are_distinct():
     assert api._get_transport() is not api._get_bulk_transport()
+
+
+# --- Section 10: every local file-body transfer selects the bulk transport ---
+
+# Every wrapper that moves a finite file body (upload or download) over the local
+# API must run on the small bulk pool, never the interactive one, so a large
+# transfer can never hold an interactive connection slot. Metadata-only wrappers
+# (tag/describe/delete/hero) stay interactive and are deliberately excluded.
+_FILE_BODY_WRAPPERS = [
+    "upload_attachment",
+    "upload_item_file",
+    "download_item_file",
+    "bulk_attach",
+    "upload_contact_file",
+    "download_contact_file",
+    "upload_doc_file",
+    "download_doc_file",
+    "import_recon_csv",
+    "attach_recon_line",
+    "import_module_zip",
+]
+
+
+@pytest.mark.parametrize("name", _FILE_BODY_WRAPPERS)
+def test_file_body_wrapper_uses_bulk_transport(name):
+    import inspect
+
+    src = inspect.getsource(getattr(api, name))
+    # Enters the bulk context manager, never the interactive one. The literal
+    # "async with _api_client(" cannot match "_bulk_api_client(", so the negative
+    # check is exact.
+    assert "async with _bulk_api_client(" in src, f"{name} must use the bulk transport"
+    assert "async with _api_client(" not in src, f"{name} must not use the interactive transport"
+
+
+def test_metadata_only_file_wrappers_stay_interactive():
+    # A file's tag/description/delete carry no body: they belong on the interactive
+    # transport. This pins the boundary so a future edit cannot quietly push small
+    # metadata calls onto the bulk pool (or vice versa).
+    import inspect
+
+    for name in ("tag_item_file", "describe_item_file", "delete_item_file",
+                 "tag_contact_file", "patch_contact_file_description", "delete_contact_file",
+                 "tag_doc_file", "patch_doc_file_description", "delete_doc_file"):
+        src = inspect.getsource(getattr(api, name))
+        assert "async with _api_client(" in src, f"{name} must stay interactive"
+        assert "_bulk_api_client(" not in src, f"{name} must not use the bulk transport"

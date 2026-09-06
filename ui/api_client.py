@@ -1102,7 +1102,7 @@ async def patch_item(token: str, entity_id: str, fields_changed: dict) -> dict:
 
 
 async def upload_attachment(token: str, entity_id: str, file) -> dict:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "upload")
         content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
@@ -1113,7 +1113,7 @@ async def upload_attachment(token: str, entity_id: str, file) -> dict:
 
 
 async def upload_item_file(token: str, entity_id: str, file) -> dict:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "upload")
         content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
@@ -1156,7 +1156,7 @@ async def delete_attachment(token: str, entity_id: str, att_id: str) -> None:
 
 async def bulk_attach(token: str, file, override_hero: bool = False) -> dict:
     # Large ZIP upload + per-file processing can take well over the default 10s.
-    async with _api_client(token, timeout=180.0) as c:
+    async with _bulk_api_client(token, timeout=180.0) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "attachments.zip")
         params = {"override_hero": "1"} if override_hero else {}
@@ -1546,7 +1546,7 @@ async def complete_reconciliation(token: str, session_id: str) -> dict:
 
 async def import_recon_csv(token: str, session_id: str, content: bytes, filename: str, column_map: dict | None = None) -> dict:
     import json as _json
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         files = {"file": (filename, content, "text/csv")}
         data = {"column_map": _json.dumps(column_map)} if column_map else {}
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/import-csv", files=files, data=data)).json()
@@ -1600,7 +1600,7 @@ async def skip_recon_line(token: str, session_id: str, line_id: str) -> dict:
 
 
 async def attach_recon_line(token: str, session_id: str, line_id: str, content: bytes, filename: str) -> dict:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         files = {"file": (filename, content, "application/octet-stream")}
         return _raise(await c.post(
             f"/accounting/reconciliation/{session_id}/lines/{line_id}/attach",
@@ -2485,7 +2485,7 @@ async def patch_contact_defaults(token: str, defaults: dict) -> dict:
 
 
 async def upload_contact_file(token: str, contact_id: str, file_data: bytes, filename: str, content_type: str, description: str = "", document_tag: str = "") -> dict:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         files = {"file": (filename, file_data, content_type)}
         data = {"description": description, "document_tag": document_tag}
         return _raise(await c.post(f"/crm/contacts/{contact_id}/files", files=files, data=data)).json()
@@ -2507,13 +2507,13 @@ async def delete_contact_file(token: str, contact_id: str, file_id: str) -> dict
 
 
 async def download_contact_file(token: str, contact_id: str, file_id: str) -> httpx.Response:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         r = _raise(await c.get(f"/crm/contacts/{contact_id}/files/{file_id}"))
         return r
 
 
 async def upload_doc_file(token: str, entity_id: str, file_data: bytes, filename: str, content_type: str, description: str = "", document_tag: str = "") -> dict:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         files = {"file": (filename, file_data, content_type)}
         data = {"description": description, "document_tag": document_tag}
         return _raise(await c.post(f"/docs/{entity_id}/files", files=files, data=data)).json()
@@ -2535,12 +2535,12 @@ async def delete_doc_file(token: str, entity_id: str, file_id: str) -> dict:
 
 
 async def download_doc_file(token: str, entity_id: str, file_id: str) -> httpx.Response:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         return _raise(await c.get(f"/docs/{entity_id}/files/{file_id}"))
 
 
 async def download_item_file(token: str, entity_id: str, file_id: str) -> httpx.Response:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         return _raise(await c.get(f"/items/{entity_id}/files/{file_id}"))
 
 
@@ -2814,7 +2814,7 @@ async def import_module_zip(token: str, filename: str, data: bytes,
 
     `source` records the module's provenance (a plain sideload by default; the
     community-import surface passes "community")."""
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         return _raise(await c.post(
             "/companies/me/modules/import",
             files={"file": (filename, data, "application/zip")},
