@@ -24,6 +24,9 @@ from typing import Any
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from celerp.config import settings
+from celerp.config_store import merge_packaged_config
+
 log = logging.getLogger(__name__)
 
 _BACKOFF_MAX = 60     # seconds
@@ -50,6 +53,16 @@ def _shop_key(handle: str | None) -> str:
     for pre in ("https://", "http://"):
         s = s.removeprefix(pre)
     return s.rstrip("/").removesuffix(".myshopify.com")
+
+
+def _merge_config_key(key: str, value) -> bool:
+    """Merge a single top-level key into Electron's celerp-config.json.
+
+    Thin wrapper over celerp.config_store.merge_packaged_config, which owns
+    the atomic multi-key write; kept here so the existing single-key call
+    sites (feature_flags, commercial_context) do not need to build a dict.
+    """
+    return merge_packaged_config({key: value})
 
 
 class GatewayClient:
@@ -347,12 +360,7 @@ class GatewayClient:
                 await self._send(ws, {
                     "type": "hello",
                     "id": str(uuid.uuid4()),
-                    "payload": {
-                        "gateway_token": self._token,
-                        "instance_id": self._instance_id,
-                        "tos_version": tos_version,
-                        "version": app_version,
-                    },
+                    "payload": self._build_hello_payload(tos_version, app_version),
                 })
                 # Message dispatch loop
                 async for raw in ws:
@@ -384,6 +392,20 @@ class GatewayClient:
                 self._timeout_count, self._stale_dropped_count,
             )
             self._set_status("inactive")
+
+    def _build_hello_payload(self, tos_version: str, app_version: str) -> dict:
+        """Build the hello frame payload.
+
+        The four base keys match a direct install byte for byte. Partner
+        deployment association happens separately, before the gateway starts
+        (celerp.gateway.bootstrap) - the handshake never carries the credential.
+        """
+        return {
+            "gateway_token": self._token,
+            "instance_id": self._instance_id,
+            "tos_version": tos_version,
+            "version": app_version,
+        }
 
     async def _dispatch(self, msg: dict) -> None:
         msg_type = msg.get("type", "")
@@ -417,6 +439,14 @@ class GatewayClient:
                 from celerp.gateway.state import set_feature_flags
                 set_feature_flags(feature_flags)
                 await self._persist_feature_flags(feature_flags)
+            # commercial_context rides hello_ack when present; its absence must
+            # leave any cached partner_managed identity intact, so the read is
+            # presence-guarded rather than defaulted.
+            if "commercial_context" in payload:
+                from celerp.gateway.state import set_commercial_context
+                ctx = payload["commercial_context"]
+                if set_commercial_context(ctx):
+                    await self._persist_commercial_context(ctx)
             # tier/status ride hello_ack too (not just subscription_updated): a
             # plain free connection never triggers a Stripe billing event, so
             # that push alone would never tell a free instance its own tier.
@@ -488,32 +518,34 @@ class GatewayClient:
         elif msg_type == "invoice.payment":
             self._spawn(self._handle_invoice_payment(payload))
 
+        elif msg_type == "commercial_updated":
+            # The payload is the context itself (flat, like subscription_updated);
+            # the same acceptance gate and persist path as the hello_ack branch.
+            from celerp.gateway.state import set_commercial_context
+            if set_commercial_context(payload):
+                await self._persist_commercial_context(payload)
+
         else:
             log.debug("Unhandled gateway message type: %s", msg_type)
 
     async def _persist_feature_flags(self, feature_flags: dict) -> None:
         """Write feature_flags into Electron's celerp-config.json.
 
-        This is a best-effort operation — it only works when running inside Electron
-        where DATA_DIR is set. In dev/server mode this is a no-op.
+        Best-effort: only works inside Electron where CELERP_DATA_DIR is set; a
+        no-op in dev/server mode. Delegates to the shared atomic, 0600-forcing
+        writer so the co-resident secrets are never broadened.
         """
-        import os
-        import json
-        data_dir = os.environ.get("CELERP_DATA_DIR", "")
-        if not data_dir:
-            return
-        config_path = os.path.join(data_dir, "celerp-config.json")
-        try:
-            existing: dict = {}
-            if os.path.exists(config_path):
-                with open(config_path) as f:
-                    existing = json.load(f)
-            existing["feature_flags"] = feature_flags
-            with open(config_path, "w") as f:
-                json.dump(existing, f, indent=2)
-            log.debug("Gateway: feature_flags persisted to config.")
-        except Exception as exc:
-            log.warning("Gateway: failed to persist feature_flags: %s", exc)
+        _merge_config_key("feature_flags", feature_flags)
+
+    async def _persist_commercial_context(self, ctx: dict) -> None:
+        """Write commercial_context into Electron's celerp-config.json.
+
+        Best-effort: only works inside Electron where CELERP_DATA_DIR is set; a
+        no-op in dev/server mode. Delegates to the shared atomic, 0600-forcing
+        writer so the existing feature_flags entry is preserved and a crash
+        mid-write never leaves a torn config for the next startup read.
+        """
+        _merge_config_key("commercial_context", ctx)
 
     async def _handle_shopify_webhook(self, payload: dict) -> None:
         """A Shopify webhook the relay forwarded. Trigger a targeted incremental

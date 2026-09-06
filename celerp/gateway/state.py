@@ -8,11 +8,23 @@ and is required for cloud-gated endpoints (/ai/*, /backup/*, /connectors/*).
 """
 from __future__ import annotations
 
+import copy
+import logging
+
+log = logging.getLogger(__name__)
+
 _session_token: str = ""
 _subscription_tier: str = ""
 _subscription_status: str = ""
 _feature_flags: dict = {}
+_commercial_context: dict = {}
 _instance_id: str = ""
+
+# The client understands commercial-context envelopes up to this schema_version.
+# A higher one is rejected (last-known-good preserved) rather than partial-parsed,
+# so partner identity is never misrepresented from an unknown shape.
+_SUPPORTED_SCHEMA_VERSION = 1
+_VALID_COMMERCIAL_MODES = ("celerp_direct", "partner_managed")
 
 
 def get_instance_id() -> str:
@@ -60,6 +72,302 @@ def get_feature_flags() -> dict:
     return dict(_feature_flags)
 
 
+def _valid_int(value) -> bool:
+    """A real JSON integer, not a bool (True/False are int subclasses and must
+    never pass as a version or schema_version)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+# A support_url is a relay-controlled string that reaches an href. urlparse
+# silently strips leading/embedded whitespace and control characters and admits
+# userinfo, so a boolean "looks like a URL" check is not enough: an attacker who
+# controls the partner record could smuggle a javascript:/data: payload or a
+# credentials-bearing host past a naive check. The validator below rejects any
+# non-canonical value outright rather than trying to sanitise it.
+MAX_SUPPORT_URL_LEN = 2048
+
+# The maximum retail_amount an offer may carry, in minor units. A value at or
+# above this (or negative, or a bool) is treated as malformed and drops the offer.
+_MAX_RETAIL_AMOUNT = 10 ** 12
+
+
+def _safe_support_url(value) -> str:
+    """Return a partner support URL only if it is a canonical, safe https URL;
+    otherwise the empty string.
+
+    Rejects: non-strings, anything longer than MAX_SUPPORT_URL_LEN, any value
+    urlparse would silently alter (leading/embedded whitespace or C0 control
+    characters), embedded userinfo (user:pass@host), any scheme other than
+    https, and an empty host. A clean value is returned unchanged.
+    """
+    from urllib.parse import urlparse
+
+    if not isinstance(value, str):
+        return ""
+    if len(value) > MAX_SUPPORT_URL_LEN:
+        return ""
+    # urlparse strips these silently, so a downstream re-parse would disagree
+    # with the value we validated. Reject rather than canonicalise.
+    if value != value.strip():
+        return ""
+    if any(ch.isspace() or ord(ch) < 0x20 for ch in value):
+        return ""
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return ""
+    if parsed.scheme != "https":
+        return ""
+    if not parsed.hostname:
+        return ""
+    if parsed.username or parsed.password:
+        return ""
+    return value
+
+
+def _validated_offer(offer):
+    """Return the offer dict when every field it carries is well-formed, else
+    None. Degrades honestly: a malformed offer is dropped whole rather than
+    partially trusted, so no fabricated price or currency can reach a surface.
+    """
+    if not isinstance(offer, dict):
+        return None
+    amount = offer.get("retail_amount")
+    if amount is not None:
+        if isinstance(amount, bool) or not isinstance(amount, int):
+            return None
+        if amount < 0 or amount >= _MAX_RETAIL_AMOUNT:
+            return None
+    currency = offer.get("currency")
+    if currency is not None and not isinstance(currency, str):
+        return None
+    bullets = offer.get("service_bullets")
+    if bullets is not None and not isinstance(bullets, list):
+        return None
+    return offer
+
+
+def _normalized_implementation(implementation):
+    """Return the implementation dict with validated fields, or None when the
+    block is unusable. partner_id is required and must be a non-empty string;
+    display_name, support_email, and status are optional but must be strings
+    when present. A present-but-invalid support_url, or any field of the wrong
+    shape, drops the whole block (fail closed) so no malformed partner
+    identity survives.
+    """
+    if not isinstance(implementation, dict):
+        return None
+    partner_id = implementation.get("partner_id")
+    if not isinstance(partner_id, str) or not partner_id:
+        return None
+    for key in ("display_name", "support_email", "status"):
+        value = implementation.get(key)
+        if value is not None and not isinstance(value, str):
+            return None
+    raw = implementation.get("support_url")
+    if raw is not None:
+        safe = _safe_support_url(raw)
+        if not safe:
+            return None
+        implementation = dict(implementation)
+        implementation["support_url"] = safe
+    return implementation
+
+
+def set_commercial_context(new: dict) -> bool:
+    """Validate a relay-pushed commercial context and, if it is a strictly-newer
+    well-formed update, replace the held model. Returns whether it was accepted.
+
+    This is the single acceptance gate: both inbound branches (hello_ack and
+    commercial_updated) route through it. On any rejection the last-known-good
+    model is preserved unchanged and a single reason line is logged; the context
+    is never partial-applied. Called by GatewayClient.
+    """
+    global _commercial_context
+    if not isinstance(new, dict):
+        log.warning("Commercial context rejected: payload is not an object.")
+        return False
+    version = new.get("version")
+    if not _valid_int(version):
+        log.warning("Commercial context rejected: version missing or not an integer.")
+        return False
+    current = _commercial_context.get("version")
+    if _valid_int(current) and version <= current:
+        log.warning(
+            "Commercial context rejected: version %s is not newer than held %s.",
+            version, current)
+        return False
+    schema_version = new.get("schema_version")
+    if not _valid_int(schema_version):
+        log.warning("Commercial context rejected: schema_version missing or not an integer.")
+        return False
+    if schema_version > _SUPPORTED_SCHEMA_VERSION:
+        log.warning(
+            "Commercial context schema_version %s exceeds the supported maximum %s; "
+            "this client needs updating. Preserving last-known-good.",
+            schema_version, _SUPPORTED_SCHEMA_VERSION)
+        return False
+    if schema_version < _SUPPORTED_SCHEMA_VERSION:
+        log.warning(
+            "Commercial context rejected: invalid schema_version %s (below the "
+            "supported %s).",
+            schema_version, _SUPPORTED_SCHEMA_VERSION)
+        return False
+    if new.get("commercial_mode") not in _VALID_COMMERCIAL_MODES:
+        log.warning("Commercial context rejected: unrecognised commercial_mode.")
+        return False
+    for key in ("implementation", "offer"):
+        value = new.get(key)
+        if value is not None and not isinstance(value, dict):
+            log.warning("Commercial context rejected: %s is neither null nor an object.", key)
+            return False
+    accepted = copy.deepcopy(new)
+    # Normalize the relay-controlled sub-objects at ingress: a malformed
+    # support_url or offer drops that block whole (fail closed) while the
+    # envelope is still accepted so the version advances. A later egress guard
+    # backstops caches written by an older, pre-validation binary.
+    normalized_impl = _normalized_implementation(accepted.get("implementation"))
+    if normalized_impl is None:
+        accepted.pop("implementation", None)
+    else:
+        accepted["implementation"] = normalized_impl
+    if _validated_offer(accepted.get("offer")) is None:
+        accepted.pop("offer", None)
+    _commercial_context = accepted
+    return True
+
+
+def get_commercial_context() -> dict:
+    """Return a copy of the current commercial-context model (empty when none
+    has been accepted)."""
+    return copy.deepcopy(_commercial_context)
+
+
+def get_commercial_mode() -> str:
+    """Return the current commercial mode, defaulting to the neutral
+    'celerp_direct' when no context has been accepted."""
+    return _commercial_context.get("commercial_mode", "celerp_direct")
+
+
+def get_partner_identity() -> dict | None:
+    """Return a copy of the partner implementation object, or None when the
+    install is not partner-managed."""
+    implementation = _commercial_context.get("implementation")
+    return copy.deepcopy(implementation) if isinstance(implementation, dict) else None
+
+
+def get_offer() -> dict | None:
+    """Return a copy of the partner offer object, or None when none is set."""
+    offer = _commercial_context.get("offer")
+    return copy.deepcopy(offer) if isinstance(offer, dict) else None
+
+
+def load_commercial_context() -> None:
+    """Load the last-known-good commercial context from the local cache at
+    startup, ungated by the relay connection so an offline restart still
+    presents the cached partner_managed identity instead of the neutral default.
+
+    Reads the 'commercial_context' key from <CELERP_DATA_DIR>/celerp-config.json.
+    A missing data dir, missing file, missing key, or corrupt JSON leaves the
+    neutral empty model in place; it never fabricates a partner.
+    """
+    import os
+    import json
+    data_dir = os.environ.get("CELERP_DATA_DIR", "")
+    if not data_dir:
+        return
+    config_path = os.path.join(data_dir, "celerp-config.json")
+    if not os.path.exists(config_path):
+        return
+    try:
+        with open(config_path) as f:
+            existing = json.load(f)
+        cached = existing.get("commercial_context")
+        if isinstance(cached, dict):
+            set_commercial_context(cached)
+    except Exception as exc:
+        log.debug("Gateway: commercial-context cache unreadable; using neutral default: %s", exc)
+
+
+def _grace_ends_in_future(value) -> bool:
+    """True when an ISO-8601 grace_period_ends timestamp is still in the future.
+
+    A missing or unparseable value is treated as expired (False), so a corrupt
+    flag can never keep a lapsed install in grace.
+    """
+    if not value:
+        return False
+    from datetime import datetime, timezone
+    try:
+        ends = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return False
+    if ends.tzinfo is None:
+        ends = ends.replace(tzinfo=timezone.utc)
+    return ends > datetime.now(timezone.utc)
+
+
+def get_packaged_db_state() -> dict:
+    """Read the packaged app's database mode straight from celerp-config.json on
+    disk, mirroring load_commercial_context's read pattern.
+
+    This deliberately does NOT use the in-memory get_feature_flags(): those are
+    empty until the relay pushes flags, which is exactly wrong for the cold-boot,
+    after-grace, and relay-disconnected cases this state must serve. Only a
+    has_external_url boolean is exposed, never the URL string, which holds the
+    database password.
+
+    Returns {db_mode, has_external_url, external_db_entitled, in_grace,
+    grace_period_ends, storage_mode, has_external_storage,
+    external_storage_entitled, storage_in_grace}. A missing data dir, missing
+    file, or corrupt JSON degrades to the neutral local state, never an
+    exception. Only booleans are exposed for the external targets, never the URL
+    or the S3 secret, both of which hold credentials.
+    """
+    import os
+    import json
+    db_mode = "local"
+    external_db_url = ""
+    storage_mode = "local"
+    has_external_storage = False
+    flags: dict = {}
+    data_dir = os.environ.get("CELERP_DATA_DIR", "")
+    if data_dir:
+        config_path = os.path.join(data_dir, "celerp-config.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path) as f:
+                    existing = json.load(f)
+                db_mode = existing.get("db_mode", "local") or "local"
+                external_db_url = existing.get("external_db_url", "") or ""
+                storage_mode = existing.get("storage_mode", "local") or "local"
+                has_external_storage = storage_mode == "s3" or any(
+                    existing.get(k)
+                    for k in ("storage_s3_endpoint", "storage_s3_bucket", "storage_s3_access_key")
+                )
+                raw_flags = existing.get("feature_flags")
+                if isinstance(raw_flags, dict):
+                    flags = raw_flags
+            except Exception as exc:
+                log.debug("Gateway: packaged db-state unreadable; using neutral default: %s", exc)
+    external_db_entitled = bool(flags.get("external_db"))
+    external_storage_entitled = bool(flags.get("external_storage"))
+    grace_period_ends = flags.get("grace_period_ends")
+    in_grace = _grace_ends_in_future(grace_period_ends) and not external_db_entitled
+    storage_in_grace = _grace_ends_in_future(grace_period_ends) and not external_storage_entitled
+    return {
+        "db_mode": db_mode,
+        "has_external_url": bool(external_db_url),
+        "external_db_entitled": external_db_entitled,
+        "in_grace": in_grace,
+        "grace_period_ends": grace_period_ends,
+        "storage_mode": storage_mode,
+        "has_external_storage": bool(has_external_storage),
+        "external_storage_entitled": external_storage_entitled,
+        "storage_in_grace": storage_in_grace,
+    }
+
+
 # ── Relay connection helpers (single source of truth) ────────────────────────
 # All relay HTTP calls use these. Never inline these values elsewhere.
 
@@ -77,6 +385,45 @@ def relay_http_url() -> str:
     if "/ws/" in url:
         url = url.rsplit("/ws/", 1)[0]
     return url.rstrip("/")
+
+
+# Transient transport failures (slow first network, relay restarting) are retried;
+# any HTTP response of any status is final. Single source for every relay POST that
+# needs this shape (auto-activate, deployment association).
+_RELAY_POST_RETRY_DELAYS = (0, 5, 30)
+_RELAY_POST_TIMEOUT_S = 10.0
+
+
+async def relay_post_with_retry(url: str, json_body: dict):
+    """POST json_body to url, retrying only transient transport failures.
+
+    Returns the httpx.Response (of any status) on the first attempt that gets one,
+    or None when every attempt hit a transport error. httpx's own logger is quieted
+    for the duration because its records can carry request detail, and some callers
+    send a credential in the body; the exception value is never logged for the same
+    reason (an httpx error repr can embed the request body).
+    """
+    import asyncio
+
+    import httpx
+
+    httpx_log = logging.getLogger("httpx")
+    prev_level = httpx_log.level
+    httpx_log.setLevel(logging.WARNING)
+    try:
+        for delay in _RELAY_POST_RETRY_DELAYS:
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                async with httpx.AsyncClient(timeout=_RELAY_POST_TIMEOUT_S) as client:
+                    return await client.post(url, json=json_body)
+            except httpx.HTTPError as exc:
+                log.debug("Relay POST transient transport error (%s); retrying.",
+                          type(exc).__name__)
+                continue
+    finally:
+        httpx_log.setLevel(prev_level)
+    return None
 
 
 async def fetch_relay_bearer(http_client) -> str:
@@ -170,9 +517,57 @@ def build_subscribe_url(instance_id: str = "", *, topup: bool = False, extra: st
     return build_handoff_url(path, medium="inapp", lead=lead, extra=extra)
 
 
-def relay_subscribe_url(plan: str = "") -> str:
-    """Subscribe URL pre-filled with the connected gateway instance id."""
-    from celerp.config import settings
-    return build_subscribe_url(_instance_id or settings.gateway_instance_id,
-                               extra=f"plan={plan}" if plan else "")
+def build_commercial_handoff(instance_id: str, intent: str, sku: str = "") -> str:
+    """Single policy point resolving every core-app commercial CTA to its correct
+    destination, layered above the URL builders (never changing their signatures).
 
+    Keyed on the install's commercial mode and the requested sku:
+      - partner_managed: the partner's support URL when set, else the Enterprise
+        acquisition route. Never a direct Celerp checkout, so a partner-managed
+        install can never be sent to self-serve billing.
+      - a team sku (direct install, no partner): the Enterprise route; the app
+        never emits a direct plan=team checkout.
+      - celerp_direct with a cloud/ai sku: the same direct subscribe URL the app
+        has always produced for that plan (behavior-preserving).
+      - celerp_direct with an empty or unknown sku: the generic subscribe URL.
+
+    ``intent`` is the acquisition intent the CTA carries: "subscribe" for an
+    upgrade/subscribe CTA, "topup" for a credit top-up. It selects the direct
+    variant only on the celerp_direct path; a partner-managed or unknown mode
+    never reaches a direct checkout regardless of intent.
+
+    Fails closed: only the explicit ``celerp_direct`` mode reaches a direct
+    subscribe URL. partner_managed routes to the partner support URL (re-validated
+    at egress) or the Enterprise route; any other or unknown mode routes to
+    Enterprise. The returned URL is always non-empty, so callers need no per-site
+    empty-href guard.
+    """
+    mode = get_commercial_mode()
+    if mode == "partner_managed":
+        # Egress re-validation: an auto-updated binary may read an on-disk cache
+        # written by a prior binary that predates the ingress guard, so trust the
+        # stored support_url only after re-checking it here too.
+        support_url = _safe_support_url((get_partner_identity() or {}).get("support_url"))
+        if support_url:
+            return support_url
+        return _enterprise_handoff(instance_id)
+    if mode != "celerp_direct":
+        return _enterprise_handoff(instance_id)
+    if sku == "team":
+        return _enterprise_handoff(instance_id)
+    if intent == "topup":
+        return build_subscribe_url(instance_id, topup=True)
+    if sku in ("cloud", "ai"):
+        return build_subscribe_url(instance_id, extra=f"plan={sku}")
+    return build_subscribe_url(instance_id)
+
+
+def _enterprise_handoff(instance_id: str) -> str:
+    """The Enterprise/partner acquisition route, attributed to the instance."""
+    lead = f"instance_id={instance_id}" if instance_id else ""
+    return build_handoff_url("/enterprise", medium="inapp", lead=lead)
+
+
+def enterprise_url(instance_id: str = "") -> str:
+    """Public entry point for the Enterprise/partner acquisition route."""
+    return _enterprise_handoff(instance_id)

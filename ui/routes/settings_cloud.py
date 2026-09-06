@@ -5,12 +5,18 @@
 
 from __future__ import annotations
 
-from fasthtml.common import *
-from starlette.requests import Request
-from starlette.responses import RedirectResponse
+import json
+from urllib.parse import urlparse
 
+from fasthtml.common import *
+from sqlalchemy.engine import URL, make_url
+from starlette.requests import Request
+from starlette.responses import RedirectResponse, Response
+
+from celerp.config_store import merge_packaged_config
 from ui.components.shell import base_shell, page_header, page_title
 from ui.i18n import t, get_lang
+from ui.config import get_role as _get_role
 
 from ui.routes.settings import (
     _check_permission,
@@ -20,12 +26,60 @@ from ui.routes.settings import (
 )
 from ui.routes.settings_general import _section_breadcrumb
 
+# The only storage backends the infra form and its handlers accept. A value
+# outside this set is rejected before it ever reaches celerp-config.json or
+# config.toml, since both files are trusted verbatim by the reader that
+# selects the storage implementation at startup.
+_VALID_STORAGE_BACKENDS = {"local", "s3"}
 
-def _has_team_features() -> bool:
-    """Check if Team-tier infrastructure features are available (in-memory, no I/O)."""
-    from celerp.gateway.state import get_feature_flags
-    flags = get_feature_flags()
-    return bool(flags.get("external_db") or flags.get("external_storage"))
+
+def _has_team_features(state: dict) -> bool:
+    """Whether Team-tier infrastructure controls should be shown.
+
+    Active entitlement comes from the fetched commercial state's feature flags.
+    During grace and after grace those flags are false, so also consult the
+    on-disk packaged db-state: infrastructure stays reachable while grace is
+    open, and after grace (an external database still configured on a lapsed
+    install) so the user can read the fallback notice and restore a backup.
+    Fail-closed on a neutral state.
+    """
+    from celerp.gateway.state import get_packaged_db_state
+    flags = state.get("feature_flags") or {}
+    if flags.get("external_db") or flags.get("external_storage"):
+        return True
+    db_state = get_packaged_db_state()
+    return bool(
+        db_state["in_grace"]
+        or (db_state["has_external_url"] and not db_state["external_db_entitled"])
+        or db_state["storage_in_grace"]
+        or (db_state["has_external_storage"] and not db_state["external_storage_entitled"])
+    )
+
+
+async def _commercial_state(request: Request) -> dict:
+    """Fetch the live commercial state from the API once per request, memoized on
+    request.state so both the tab decision and any consumer share one call.
+
+    Fails closed to a neutral empty state: a missing token or any fetch error
+    yields {} so the page renders with the neutral (no-team) tab set rather than
+    fabricating entitlement or 500-ing."""
+    cached = getattr(request.state, "commercial_state", None)
+    if cached is not None:
+        return cached
+    from ui.config import get_token
+    import ui.api_client as _api
+    token = get_token(request)
+    if not token:
+        request.state.commercial_state = {}
+        return {}
+    try:
+        state = await _api.get_commercial_state(token)
+        if not isinstance(state, dict):
+            state = {}
+    except Exception:
+        state = {}
+    request.state.commercial_state = state
+    return state
 
 
 def _cloud_tabs(active: str, has_team_features: bool = False, lang: str = "en") -> FT:
@@ -60,25 +114,26 @@ def _feature_card(icon: str, title: str, desc: str, lang: str = "en") -> FT:
     )
 
 
-def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_url: str, featured: bool = False, lang: str = "en") -> FT:
+def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_url: str, featured: bool = False, lang: str = "en", cta_label: str | None = None) -> FT:
     card_cls = "cloud-plan-card cloud-plan-card--featured" if featured else "cloud-plan-card"
     return Div(
         Div(name, cls="cloud-plan-card__name"),
         Div(price, Span(t("settings_cloud.per_mo", lang)), cls="cloud-plan-card__price"),
         Div(desc, cls="cloud-plan-card__desc"),
         Ul(*[Li(b) for b in bullets]),
-        A(t("cloud.start_trial", lang), href=subscribe_url, target="_blank", cls="btn btn--primary btn--sm"),
+        A(cta_label or t("cloud.start_trial", lang), href=subscribe_url, target="_blank", cls="btn btn--primary btn--sm"),
         cls=card_cls,
     )
 
 
-def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False) -> FT:
+def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False,
+                     show_partner_claim: bool = False) -> FT:
     """Full value-proposition landing page shown when not connected to cloud.
 
     `disconnected` marks a sticky Cloud disconnect: the credential is preserved,
     so the connect section withholds its auto-connect (landing here must not
     silently undo the disconnect) while the Connect button still reconnects in
-    one click."""
+    one click. `show_partner_claim` adds the owner/admin partner-claim card."""
     return Div(
         # Hero - explain the relay concept simply
         Div(
@@ -93,15 +148,84 @@ def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False) -> 
         _plans_ad(iid, lang=lang),
         # Already subscribed / connect section
         _connect_section(iid, lang=lang, disconnected=disconnected),
+        *([_partner_claim_card(lang=lang)] if show_partner_claim else []),
         cls="content-area",
     )
 
 
 def _plans_ad(iid: str, lang: str = "en") -> FT:
-    """The paid-plan advertisement: feature cards, trial banner, plan cards.
-    Shown on the not-connected landing page and, below the status tab, to
-    connected free-tier accounts (the plans are what they are missing)."""
-    from celerp.gateway.state import build_subscribe_url
+    """Dispatch the plan area by commercial mode: a partner-managed install sees
+    its partner's offer (no direct Celerp price), every other install sees the
+    standard direct grid. Signature unchanged, so both call sites (value-prop
+    page, status tab) are untouched."""
+    from celerp.gateway.state import get_commercial_mode
+    if get_commercial_mode() == "partner_managed":
+        return _partner_offer(iid, lang=lang)
+    return _direct_plans(iid, lang=lang)
+
+
+def _partner_offer(iid: str, lang: str = "en") -> FT:
+    """Partner-managed plan area: the partner's offer rendered from the relay-
+    pushed commercial context, with no direct Celerp price, plus a contact line
+    pointing at the implementation partner. A missing or malformed offer degrades
+    to the contact line alone rather than a broken or fabricated price card."""
+    from celerp.gateway.state import (
+        build_commercial_handoff, get_offer, get_partner_identity,
+    )
+    from ui.components.table import fmt_money
+
+    identity = get_partner_identity() or {}
+    partner_name = identity.get("display_name") or ""
+    partner_url = build_commercial_handoff(iid, "subscribe", "")
+    offer = get_offer()
+
+    children: list = []
+    if partner_name:
+        children.append(Div(partner_name, cls="cloud-partner-offer__partner"))
+
+    amount = offer.get("retail_amount") if offer else None
+    currency = offer.get("currency") if offer else None
+    # Egress guard: render a priced card only when both amount and currency are
+    # well-formed. A stale cache from a pre-validator binary could still hold a
+    # non-string currency or a bool amount, so re-check here rather than trust
+    # the stored offer, and degrade to the contact line if it fails.
+    priced = (
+        offer
+        and isinstance(amount, int) and not isinstance(amount, bool)
+        and isinstance(currency, str)
+        and offer.get("display_name")
+    )
+    if priced:
+        bullets = [b for b in (offer.get("service_bullets") or []) if isinstance(b, str)]
+        children.append(_plan_card(
+            offer["display_name"],
+            fmt_money(amount / 100, currency),
+            offer.get("service_description") or "",
+            bullets,
+            partner_url,
+            cta_label=t("cloud.partner_support", lang),
+            lang=lang,
+        ))
+    elif partner_url:
+        # Degraded branch: no usable offer, but a valid partner destination
+        # exists, so give the user a real contact CTA rather than a dead-end
+        # text note (BLOCKER 6).
+        children.append(A(
+            t("cloud.partner_support", lang),
+            href=partner_url, target="_blank",
+            cls="btn btn--primary btn--sm cloud-partner-offer__contact",
+        ))
+
+    children.append(Div(t("cloud.partner_managed_note", lang), cls="cloud-partner-offer__note"))
+    return Div(*children, cls="cloud-partner-offer")
+
+
+def _direct_plans(iid: str, lang: str = "en") -> FT:
+    """The direct paid-plan advertisement: feature cards, trial banner, plan
+    cards. Shown on the not-connected landing page and, below the status tab, to
+    connected free-tier accounts (the plans are what they are missing). Every
+    plan CTA resolves through the central handoff policy."""
+    from celerp.gateway.state import build_commercial_handoff
 
     return Div(
         # Feature cards - three platform features on top...
@@ -158,7 +282,7 @@ def _plans_ad(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_cloud_b3", lang),
                     t("cloud.plan_cloud_b4", lang),
                 ],
-                build_subscribe_url(iid, extra="plan=cloud"),
+                build_commercial_handoff(iid, "subscribe", "cloud"),
                 lang=lang,
             ),
             _plan_card(
@@ -169,7 +293,7 @@ def _plans_ad(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_ai_b2", lang),
                     t("cloud.plan_ai_b3", lang),
                 ],
-                build_subscribe_url(iid, extra="plan=ai"),
+                build_commercial_handoff(iid, "subscribe", "ai"),
                 featured=True,
                 lang=lang,
             ),
@@ -189,38 +313,89 @@ def _connect_section(iid: str, lang: str = "en", disconnected: bool = False) -> 
 
 
 def _parse_db_url(url: str) -> dict:
-    """Parse a postgresql+asyncpg://user:pass@host:port/dbname URL into components."""
-    from urllib.parse import urlparse
+    """Parse a database URL into display components using SQLAlchemy's
+    structural URL parser, which handles percent-encoding, IPv6 host
+    literals, and reserved characters in the password correctly instead of a
+    naive urlparse that only works for the simplest case."""
     try:
-        parsed = urlparse(url)
+        parsed = make_url(url)
         return {
-            "host": parsed.hostname or "",
+            "host": parsed.host or "",
             "port": str(parsed.port or 5432),
-            "name": parsed.path.lstrip("/") if parsed.path else "",
+            "name": parsed.database or "",
             "user": parsed.username or "",
-            # password intentionally omitted (masked in UI)
+            "has_password": bool(parsed.password),
         }
     except Exception:
-        return {"host": "", "port": "5432", "name": "", "user": ""}
+        return {"host": "", "port": "5432", "name": "", "user": "", "has_password": False}
+
+
+def _build_db_url(host: str, port: int, name: str, user: str, password: str | None) -> str:
+    """Build a postgresql+asyncpg URL from components with SQLAlchemy's URL
+    builder, which percent-encodes the user, password, and host correctly
+    (reserved characters, IPv6 literals) instead of hand-built interpolation."""
+    return URL.create(
+        "postgresql+asyncpg",
+        username=user,
+        password=password or None,
+        host=host,
+        port=port,
+        database=name,
+    ).render_as_string(hide_password=False)
+
+
+def _masked_db_url(url: str) -> str:
+    """Return the URL with its password redacted for display, via the
+    structural parser so a password containing '@' or other reserved
+    characters cannot break the mask (a plain string.replace could match the
+    wrong '@' or miss an encoded one)."""
+    if not url:
+        return url
+    try:
+        return make_url(url).render_as_string(hide_password=True)
+    except Exception:
+        return url
+
+
+def _url_password(url: str) -> str | None:
+    """Return the password embedded in a database URL, or None when there is
+    none or the URL cannot be parsed."""
+    if not url:
+        return None
+    try:
+        return make_url(url).password
+    except Exception:
+        return None
+
+
+def _valid_s3_endpoint(endpoint: str) -> bool:
+    """An S3-compatible endpoint must be a well-formed https URL: a plain
+    http endpoint would send the access key and secret key in the clear."""
+    if not endpoint:
+        return False
+    try:
+        parsed = urlparse(endpoint)
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and bool(parsed.hostname)
 
 
 def _infra_db_section() -> FT:
+    import os
     from celerp.config import settings, read_config
     current_url = settings.database_url
     db = _parse_db_url(current_url)
+    masked_url = _masked_db_url(current_url)
 
-    masked_url = current_url
-    if "@" in current_url:
-        try:
-            from urllib.parse import urlparse
-            p = urlparse(current_url)
-            masked_url = current_url.replace(f":{p.password}@", ":****@") if p.password else current_url
-        except Exception:
-            pass
-
-    # Check if there's a previous URL to restore
-    cfg = read_config()
-    prev_url = cfg.get("database_backup", {}).get("previous_url", "")
+    # The backup lives wherever this build actually writes: packaged installs
+    # (CELERP_DATA_DIR set) keep it in celerp-config.json, self-hosted in
+    # config.toml. Reading only the self-hosted path here hid the restore
+    # button from every packaged install that had one to restore.
+    if os.environ.get("CELERP_DATA_DIR"):
+        prev_url = _read_packaged_config().get("external_db_url_backup", "") or ""
+    else:
+        cfg = read_config()
+        prev_url = cfg.get("database_backup", {}).get("previous_url", "") or ""
 
     return Div(
         H3(t("page.database")),
@@ -258,9 +433,20 @@ def _infra_db_section() -> FT:
             ),
             Div(
                 Label(t("label.password"), For="db_pass"),
-                Input(id="db_pass", name="db_pass", type="password", placeholder="••••••••", cls="input"),
+                Input(id="db_pass", name="db_pass", type="password",
+                      placeholder=t("settings_cloud.password_unchanged_placeholder")
+                      if db["has_password"] else "••••••••",
+                      cls="input"),
                 cls="form-row",
             ),
+            Div(
+                Label(
+                    Input(type="checkbox", name="db_clear_password", value="1"),
+                    Span(t("settings_cloud.clear_password_label")),
+                    cls="settings-toggle",
+                ),
+                cls="form-group",
+            ) if db["has_password"] else "",
             Div(
                 Button(t("btn.test_connection"),
                     type="button",
@@ -284,11 +470,11 @@ def _infra_db_section() -> FT:
             Button(t("btn._restore_previous_db_settings"),
                 cls="btn btn--outline btn--sm",
                 hx_post="/settings/cloud/restore-db",
-                hx_target="#db-test-result",
+                hx_target="#restore-db-result",
                 hx_swap="innerHTML",
                 hx_confirm=t("settings_cloud.restore_db_confirm"),
             ),
-            Div(id="db-test-result", cls="infra-test-result"),
+            Div(id="restore-db-result", cls="infra-test-result"),
             style="margin-top:8px;",
         ) if prev_url else "",
         cls="infra-section",
@@ -352,7 +538,8 @@ def _infra_storage_section() -> FT:
                     hx_target="#storage-test-result",
                     hx_swap="innerHTML",
                 ),
-                Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm", style="margin-left:8px;"),
+                Button(t("btn.save_restart"), type="submit", cls="btn btn--primary btn--sm", style="margin-left:8px;",
+                       hx_confirm=t("settings_cloud.restart_server_confirm")),
                 style="display:flex;align-items:center;margin-top:4px;",
             ),
             Div(id="storage-test-result", cls="infra-test-result"),
@@ -364,13 +551,65 @@ def _infra_storage_section() -> FT:
     )
 
 
-def _infrastructure_tab() -> FT:
-    """Team plan infrastructure config: external DB + S3 storage."""
-    return Div(
-        _infra_db_section(),
-        _infra_storage_section(),
-        cls="settings-card",
-    )
+def _format_deadline(value) -> str:
+    """Format an ISO-8601 grace deadline as a plain date. An unparseable value
+    falls back to its raw string rather than raising."""
+    if not value:
+        return ""
+    from datetime import datetime, timezone
+    try:
+        return datetime.fromisoformat(value).astimezone(timezone.utc).strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        return str(value)
+
+
+def _append_renewal(children: list, partner: dict | None, lang: str) -> None:
+    """Append the renewal affordance: a neutral renewal line always, plus a
+    partner support line only when the install is partner-managed. Never
+    fabricates a partner."""
+    children.append(P(t("grace.renew", lang), cls="settings-hint"))
+    if partner:
+        name = partner.get("display_name") or ""
+        children.append(P(t("grace.partner_support", lang, partner=name), cls="settings-hint"))
+
+
+def _grace_notice(state: dict, partner: dict | None, lang: str = "en") -> FT | None:
+    """Grace-period banner (during grace) or the after-grace persistent notice.
+
+    During grace: the renewal deadline, that the external database stays
+    customer-owned, and the renewal affordance. After grace: that the app has
+    fallen back to the local database, that the external database is still
+    available to reselect, and a warning that reselecting risks divergence.
+    Returns None when neither state applies.
+    """
+    if state.get("in_grace") or state.get("storage_in_grace"):
+        children = [
+            P(t("grace.deadline", lang, deadline=_format_deadline(state.get("grace_period_ends")))),
+            P(t("grace.external_owned", lang), cls="settings-hint"),
+        ]
+        _append_renewal(children, partner, lang)
+        return Div(*children, cls="flash flash--warning", style="margin-bottom:12px;")
+    if (state.get("has_external_url") and not state.get("external_db_entitled")) or (
+        state.get("has_external_storage") and not state.get("external_storage_entitled")
+    ):
+        children = [
+            P(t("grace.local_now", lang)),
+            P(t("grace.external_available", lang), cls="settings-hint"),
+            P(t("grace.divergence_warning", lang), cls="settings-hint"),
+        ]
+        _append_renewal(children, partner, lang)
+        return Div(*children, cls="flash flash--warning", style="margin-bottom:12px;")
+    return None
+
+
+def _infrastructure_tab(grace_notice: FT | None = None) -> FT:
+    """Team plan infrastructure config: external DB + S3 storage. The grace or
+    after-grace notice, when present, sits above the config sections."""
+    children: list = []
+    if grace_notice is not None:
+        children.append(grace_notice)
+    children.extend([_infra_db_section(), _infra_storage_section()])
+    return Div(*children, cls="settings-card")
 
 
 def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -> FT:
@@ -452,6 +691,92 @@ async def _relay_state(token) -> tuple[str, str, str, bool, bool]:
     return relay_status, public_url, tier, disconnected, token_bound
 
 
+def _partner_claim_card(lang: str = "en", error: str | None = None) -> FT:
+    """Neutral partner-claim card: a claim-code field and a Review button.
+
+    Distinct from the subscription email-claim flow. Resolving previews the
+    partner behind a code without binding anything; nothing is committed until
+    the owner accepts on the preview."""
+    children = [
+        H3(t("settings_cloud.partner_claim_title", lang), cls="settings-section-title"),
+        P(t("settings_cloud.partner_claim_desc", lang), cls="settings-hint"),
+    ]
+    if error:
+        children.append(P(error, cls="text-error", style="margin:8px 0;"))
+    children.append(
+        Form(
+            Label(t("settings_cloud.partner_claim_label", lang), For="claim_token"),
+            Input(name="claim_token", id="claim_token", type="text", autocomplete="off",
+                  placeholder=t("settings_cloud.partner_claim_token_placeholder", lang),
+                  cls="input", style="max-width:360px;"),
+            Button(t("settings_cloud.partner_claim_review", lang),
+                   type="submit", cls="btn btn--primary"),
+            Span(cls="spinner htmx-indicator", id="partner-claim-spinner"),
+            hx_post="/settings/partner-claim/resolve",
+            hx_target="#partner-claim-card",
+            hx_swap="outerHTML",
+            hx_indicator="#partner-claim-spinner",
+            style="display:flex;align-items:center;gap:8px;margin-top:8px;",
+        )
+    )
+    return Div(*children, id="partner-claim-card", cls="settings-card")
+
+
+def _partner_managed_note(lang: str = "en") -> FT:
+    """Neutral note shown in place of the claim-entry control on a partner_managed
+    install: the claim control is intentionally withheld, and its absence is stated
+    with the generic managed-by note rather than left silent. No partner name is
+    interpolated (no fabricated identity)."""
+    return Div(
+        P(t("cloud.partner_managed_note", lang), cls="settings-hint"),
+        id="partner-managed-note", cls="settings-card",
+    )
+
+
+def _partner_claim_preview(identity: dict, claim_token: str, lang: str = "en") -> FT:
+    """Preview of the partner behind a resolved claim, with Accept and Decline.
+
+    Accept is the one deliberate commit; the disable-on-submit posture stops a
+    double-click from double-submitting. Decline binds nothing and restores the
+    neutral card."""
+    support_email = identity.get("support_email") or ""
+    support_url = identity.get("support_url") or ""
+    support_children: list = []
+    if support_email:
+        support_children.append(A(support_email, href=f"mailto:{support_email}",
+                                   cls="settings-value", style="margin:4px 0;"))
+    if support_url:
+        support_children.append(A(
+            t("cloud.partner_support", lang),
+            href=support_url, target="_blank", rel="noopener",
+            cls="btn btn--outline btn--sm", style="margin-top:4px;"))
+    return Div(
+        H3(t("settings_cloud.partner_claim_title", lang), cls="settings-section-title"),
+        P(t("settings_cloud.partner_claim_managed_by", lang), cls="settings-hint"),
+        Div(identity.get("display_name") or "--", cls="settings-value",
+            style="font-weight:600;margin:6px 0;"),
+        *([Div(*support_children, style="margin:8px 0;")] if support_children else []),
+        Div(
+            Button(t("btn.accept", lang),
+                   cls="btn btn--primary",
+                   hx_post="/settings/partner-claim/accept",
+                   hx_vals=json.dumps({"claim_token": claim_token}),
+                   hx_target="#partner-claim-card",
+                   hx_swap="outerHTML",
+                   hx_indicator="#partner-claim-spinner",
+                   **{"hx-disabled-elt": "this"}),
+            Button(t("btn.decline", lang),
+                   cls="btn btn--outline", style="margin-left:8px;",
+                   hx_post="/settings/partner-claim/decline",
+                   hx_target="#partner-claim-card",
+                   hx_swap="outerHTML"),
+            Span(cls="spinner htmx-indicator", id="partner-claim-spinner"),
+            style="margin-top:12px;",
+        ),
+        id="partner-claim-card", cls="settings-card",
+    )
+
+
 def setup_routes(app):
 
     @app.get("/settings/cloud-relay-tab")
@@ -480,6 +805,7 @@ def setup_routes(app):
 
         import ui.api_client as _api
         lang = get_lang(request)
+        is_owner_admin = _get_role(request) in ("owner", "admin")
         relay_status, public_url, tier, disconnected, token_bound = await _relay_state(token)
         # A free tier is signed in (holds a gateway_token) but never starts the WS
         # client - it has no tunnel to serve - so relay_status stays "inactive".
@@ -491,13 +817,21 @@ def setup_routes(app):
         # keeps its preserved credential, so the connect section withholds its
         # auto-connect (a page visit must not silently undo the disconnect) while
         # the Connect button still reconnects in one click.
+        # The claim-entry control is offered only to an owner/admin on an install
+        # that is not already partner_managed - a managed install already shows the
+        # partner offer and managed note (via _partner_offer), so the same gate at
+        # both render sites (value-prop landing and status tab) mirrors _plans_ad.
+        from celerp.gateway.state import get_commercial_mode
+        can_claim = is_owner_admin and get_commercial_mode() != "partner_managed"
+
         if not gw_ok:
             from celerp.config import ensure_instance_id
             iid = ensure_instance_id()
             return await base_shell(
                 _section_breadcrumb(t("settings_cloud.web_access", lang)),
                 page_header(t("settings_cloud.web_access", lang)),
-                _value_prop_page(iid, lang=lang, disconnected=disconnected),
+                _value_prop_page(iid, lang=lang, disconnected=disconnected,
+                                 show_partner_claim=can_claim),
                 title=page_title("settings_cloud.web_access"),
                 nav_active="web-access",
                 lang=lang,
@@ -506,10 +840,12 @@ def setup_routes(app):
 
         # Connected or connecting - show tabs
         tab = request.query_params.get("tab", "status")
-        has_team = _has_team_features()
+        has_team = _has_team_features(await _commercial_state(request))
+        from celerp.gateway.state import get_packaged_db_state, get_partner_identity
+        grace_notice = _grace_notice(get_packaged_db_state(), get_partner_identity(), lang=lang)
 
         if tab == "infrastructure" and has_team:
-            content = _infrastructure_tab()
+            content = _infrastructure_tab(grace_notice=grace_notice)
         elif tab in ("website", "accounting"):
             from ui.routes.settings_connectors import connectors_tab_content
             content = await connectors_tab_content(lang, token=token, category=tab)
@@ -523,8 +859,11 @@ def setup_routes(app):
             # no public_url and no backup entitlement, so the summary card is omitted
             # entirely rather than showing scheduler/pending state for a plan that
             # never runs backups.
-            parts = [_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier, token_bound=token_bound),
-                     _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)]
+            parts = []
+            if grace_notice is not None:
+                parts.append(grace_notice)
+            parts.extend([_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier, token_bound=token_bound),
+                          _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)])
             # A connected free-tier account keeps its free tabs but still sees
             # the paid-plan advertisement the not-connected page carries - the
             # plans are exactly what the free tier is missing. An unknown tier
@@ -533,6 +872,9 @@ def setup_routes(app):
             if tier not in PAID_TIERS:
                 from celerp.config import ensure_instance_id
                 parts.append(_plans_ad(ensure_instance_id(), lang=lang))
+            if is_owner_admin:
+                parts.append(_partner_claim_card(lang=lang) if can_claim
+                             else _partner_managed_note(lang=lang))
             content = Div(*parts)
             tab = "status"
 
@@ -547,9 +889,56 @@ def setup_routes(app):
             request=request,
         )
 
+    @app.post("/settings/partner-claim/resolve")
+    async def partner_claim_resolve_ui(request: Request):
+        """HTMX: proxy to the API to preview the partner behind a claim code.
+        Owner/admin only; binds nothing."""
+        lang = get_lang(request)
+        if _get_role(request) not in ("owner", "admin"):
+            return _partner_claim_card(lang=lang)
+        import ui.api_client as _api
+        token = _token(request)
+        form = await request.form()
+        claim_token = (form.get("claim_token") or "").strip()
+        try:
+            data = await _api.resolve_partner_claim(token, claim_token)
+        except Exception:
+            return _partner_claim_card(lang=lang, error=t("settings_cloud.partner_claim_error", lang))
+        if err := data.get("error"):
+            return _partner_claim_card(lang=lang, error=err)
+        return _partner_claim_preview(data, claim_token, lang=lang)
+
+    @app.post("/settings/partner-claim/accept")
+    async def partner_claim_accept_ui(request: Request):
+        """HTMX: proxy to the API to accept a partner claim. Owner/admin only. On
+        success the relay pushes the new commercial context, so the page reloads
+        to reflect it."""
+        lang = get_lang(request)
+        if _get_role(request) not in ("owner", "admin"):
+            return _partner_claim_card(lang=lang)
+        import ui.api_client as _api
+        token = _token(request)
+        form = await request.form()
+        claim_token = (form.get("claim_token") or "").strip()
+        try:
+            data = await _api.accept_partner_claim(token, claim_token)
+        except Exception:
+            return _partner_claim_card(lang=lang, error=t("settings_cloud.partner_claim_error", lang))
+        if err := data.get("error"):
+            return _partner_claim_card(lang=lang, error=err)
+        return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
+
+    @app.post("/settings/partner-claim/decline")
+    async def partner_claim_decline_ui(request: Request):
+        """HTMX: decline a partner claim. A pure client-side dismissal - no relay
+        or API call - that restores the neutral claim card, binding nothing."""
+        return _partner_claim_card(lang=get_lang(request))
+
     @app.post("/settings/cloud/test-db")
     async def cloud_test_db(request: Request):
-        """HTMX: test database connectivity with provided credentials."""
+        """HTMX: test database connectivity, falling back to the currently
+        configured password when the field is left blank so testing does not
+        force retyping a password that is already saved."""
         token = _token(request)
         # Infra changes (DB/storage endpoints) are admin/owner actions - the
         # page is role-gated, so its fragments must be too.
@@ -560,30 +949,43 @@ def setup_routes(app):
 
         form = await request.form()
         host = form.get("db_host", "").strip()
-        port = int(form.get("db_port", "5432") or "5432")
         name = form.get("db_name", "").strip()
         user = form.get("db_user", "").strip()
-        password = form.get("db_pass", "")
 
         if not all([host, name, user]):
             return Span(t("settings.please_fill_in_host_database_name_and_username"),
                         cls="infra-test-result--err")
 
+        port_raw = (form.get("db_port", "5432") or "5432").strip()
+        try:
+            port = int(port_raw)
+        except ValueError:
+            return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
+        if not 1 <= port <= 65535:
+            return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
+
+        from celerp.config import settings
+        password = form.get("db_pass", "") or (_url_password(settings.database_url) or "")
+
         import asyncio
         try:
-            conn = await asyncio.wait_for(
+            await asyncio.wait_for(
                 _try_db_connect(host, port, name, user, password),
                 timeout=3.0,
             )
             return Span(t("settings_cloud.connected_to", target=f"{name}@{host}:{port}"), cls="infra-test-result--ok")
         except asyncio.TimeoutError:
             return Span(t("settings.connection_timed_out_3s"), cls="infra-test-result--err")
-        except Exception as exc:
-            return Span(f"✗ {type(exc).__name__}: {exc}", cls="infra-test-result--err")
+        except Exception:
+            # Never echo the raw driver error: it can restate the host,
+            # database name, or user back at an unauthenticated caller.
+            return Span(t("settings_cloud.db_connection_failed"), cls="infra-test-result--err")
 
     @app.post("/settings/cloud/test-storage")
     async def cloud_test_storage(request: Request):
-        """HTMX: test S3-compatible storage connectivity."""
+        """HTMX: test S3-compatible storage connectivity, falling back to the
+        currently configured secret key when the field is left blank so
+        testing does not force retyping a secret that is already saved."""
         token = _token(request)
         # Infra changes (DB/storage endpoints) are admin/owner actions - the
         # page is role-gated, so its fragments must be too.
@@ -594,16 +996,21 @@ def setup_routes(app):
 
         form = await request.form()
         backend = form.get("storage_backend", "local")
+        if backend not in _VALID_STORAGE_BACKENDS:
+            return Span(t("settings_cloud.invalid_storage_backend"), cls="infra-test-result--err")
         if backend == "local":
             return Span(t("settings._local_filesystem_no_connection_needed"), cls="infra-test-result--ok")
 
         endpoint = form.get("s3_endpoint", "").strip()
         bucket = form.get("s3_bucket", "").strip()
         access_key = form.get("s3_access_key", "").strip()
-        secret_key = form.get("s3_secret_key", "")
+        from celerp.config import settings
+        secret_key = form.get("s3_secret_key", "") or settings.storage_s3_secret_key
 
         if not all([endpoint, bucket, access_key, secret_key]):
             return Span(t("settings.please_fill_in_all_s3_fields"), cls="infra-test-result--err")
+        if not _valid_s3_endpoint(endpoint):
+            return Span(t("settings_cloud.invalid_s3_endpoint"), cls="infra-test-result--err")
 
         import asyncio
         try:
@@ -615,11 +1022,20 @@ def setup_routes(app):
         except asyncio.TimeoutError:
             return Span(t("settings.connection_timed_out_3s"), cls="infra-test-result--err")
         except Exception as exc:
+            # _try_s3_connect already maps every outcome to a safe translated
+            # RuntimeError message; str(exc) here is never a raw driver error.
             return Span(f"✗ {exc}", cls="infra-test-result--err")
 
     @app.post("/settings/cloud/save-infra")
     async def cloud_save_infra(request: Request):
-        """Save infrastructure config (DB + storage) to config.toml."""
+        """Save infrastructure config (DB + storage).
+
+        In the packaged Team build (CELERP_DATA_DIR set) writes go to the
+        Electron-owned celerp-config.json, the only store the packaged launcher
+        reads, and apply is a full Electron relaunch (no config.toml, no pkill).
+        In the self-hosted build writes go to config.toml and apply is a server
+        reload via SIGHUP.
+        """
         token = _token(request)
         # Infra changes (DB/storage endpoints) are admin/owner actions - the
         # page is role-gated, so its fragments must be too.
@@ -629,60 +1045,18 @@ def setup_routes(app):
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
 
         form = await request.form()
-        try:
-            from celerp.config import read_config, write_config, settings
-            cfg = read_config()
-            if not cfg:
-                return Span(t("settings.no_config_file_found"), cls="infra-test-result--err")
-
-            db_url_changed = False
-
-            # DB settings: compose URL when host+name+user are all present
-            host = form.get("db_host", "").strip()
-            name = form.get("db_name", "").strip()
-            user = form.get("db_user", "").strip()
-            if host and name and user:
-                port = form.get("db_port", "5432").strip() or "5432"
-                password = form.get("db_pass", "")
-                new_url = f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{name}"
-                previous_url = cfg.get("database", {}).get("url", settings.database_url)
-                if new_url != previous_url:
-                    # Backup previous URL for undo support
-                    cfg.setdefault("database_backup", {})["previous_url"] = previous_url
-                    cfg.setdefault("database", {})["url"] = new_url
-                    db_url_changed = True
-
-            # Storage settings
-            storage_backend = form.get("storage_backend", "")
-            if storage_backend:
-                prev_storage = cfg.get("storage", {})
-                cfg.setdefault("storage_backup", {}).update({
-                    "backend": prev_storage.get("backend", ""),
-                    "s3_endpoint": prev_storage.get("s3_endpoint", ""),
-                    "s3_bucket": prev_storage.get("s3_bucket", ""),
-                    "s3_access_key": prev_storage.get("s3_access_key", ""),
-                    "s3_secret_key": prev_storage.get("s3_secret_key", ""),
-                })
-                cfg.setdefault("storage", {})["backend"] = storage_backend
-                cfg["storage"]["s3_endpoint"] = form.get("s3_endpoint", "")
-                cfg["storage"]["s3_bucket"] = form.get("s3_bucket", "")
-                cfg["storage"]["s3_access_key"] = form.get("s3_access_key", "")
-                if form.get("s3_secret_key"):
-                    cfg["storage"]["s3_secret_key"] = form.get("s3_secret_key")
-
-            write_config(cfg)
-
-            if db_url_changed:
-                import subprocess
-                subprocess.Popen(["pkill", "-HUP", "-f", "uvicorn"])
-
-            return Span(t("settings._saved"), cls="infra-test-result--ok")
-        except Exception as exc:
-            return Span(t("settings_cloud.save_failed", err=exc), cls="infra-test-result--err")
+        import os
+        if os.environ.get("CELERP_DATA_DIR"):
+            return _save_infra_packaged(form)
+        return _save_infra_selfhosted(form)
 
     @app.post("/settings/cloud/restore-db")
     async def cloud_restore_db(request: Request):
-        """Restore the previous database URL (GDR undo support)."""
+        """Restore the previous database URL (GDR undo support).
+
+        Packaged build swaps external_db_url with its backup in celerp-config.json
+        and relaunches Electron; self-hosted swaps config.toml and reloads.
+        """
         token = _token(request)
         # Infra changes (DB/storage endpoints) are admin/owner actions - the
         # page is role-gated, so its fragments must be too.
@@ -691,27 +1065,222 @@ def setup_routes(app):
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
 
+        import os
+        if os.environ.get("CELERP_DATA_DIR"):
+            return _restore_db_packaged()
+        return _restore_db_selfhosted()
+
+
+def _read_packaged_config() -> dict:
+    """Read the Electron-owned celerp-config.json, degrading to {} on any error.
+    Reads are only for computing backups and prior state; merge_packaged_config
+    owns every write so the 0600 mode is never widened.
+
+    Thin wrapper over celerp.config_store.read_packaged_config, which owns the
+    read, so this module has one source of truth for the packaged-config shape
+    instead of a second copy of the same read-and-degrade logic."""
+    from celerp.config_store import read_packaged_config
+    return read_packaged_config()
+
+
+def _packaged_apply_fragment(message: str) -> FT:
+    """Success fragment for a packaged save/restore. Carries a neutral factual
+    message (shown as-is to a remote admin on a plain browser) plus a
+    bridge-guarded script that triggers a full Electron relaunch when the
+    window.celerp bridge is present, mirroring the existing openExternal/
+    installUpdate presence guards. No OS process control is attempted on either
+    path (pkill is dropped for the packaged build)."""
+    return Div(
+        Span(message, cls="infra-test-result--ok"),
+        Script("if(window.celerp&&window.celerp.restartApp){window.celerp.restartApp();}"),
+    )
+
+
+def _save_infra_packaged(form) -> FT:
+    """Persist DB/storage config to celerp-config.json in one atomic merge.
+    Any failed write reports the error and leaves prior config intact; the
+    packaged apply is a full Electron relaunch, never pkill.
+
+    A blank password field preserves the currently configured password
+    (the field is never pre-filled with the real secret); the explicit
+    db_clear_password checkbox is the only way to actually clear it, so a
+    save can never silently wipe a working credential.
+    """
+    current = _read_packaged_config()
+    patch: dict[str, object] = {}
+
+    host = form.get("db_host", "").strip()
+    name = form.get("db_name", "").strip()
+    user = form.get("db_user", "").strip()
+    if host and name and user:
+        port_raw = (form.get("db_port", "5432") or "5432").strip()
         try:
-            from celerp.config import read_config, write_config
-            cfg = read_config()
-            if not cfg:
-                return Span(t("settings.no_config_file_found"), cls="infra-test-result--err")
+            port = int(port_raw)
+        except ValueError:
+            return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
+        if not 1 <= port <= 65535:
+            return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
 
-            prev_url = cfg.get("database_backup", {}).get("previous_url", "")
-            if not prev_url:
-                return Span(t("settings.no_previous_database_url_to_restore"), cls="infra-test-result--err")
+        prev_url = current.get("external_db_url", "") or ""
+        submitted_password = form.get("db_pass", "")
+        if form.get("db_clear_password") == "1":
+            effective_password = None
+        elif submitted_password:
+            effective_password = submitted_password
+        else:
+            effective_password = _url_password(prev_url)
 
-            current_url = cfg.get("database", {}).get("url", "")
-            cfg.setdefault("database_backup", {})["previous_url"] = current_url
-            cfg.setdefault("database", {})["url"] = prev_url
-            write_config(cfg)
+        new_url = _build_db_url(host=host, port=port, name=name, user=user,
+                                 password=effective_password)
+        if new_url != prev_url:
+            if prev_url:
+                patch["external_db_url_backup"] = prev_url
+            patch["db_mode"] = "external"
+            patch["external_db_url"] = new_url
 
+    storage_backend = form.get("storage_backend", "")
+    if storage_backend:
+        if storage_backend not in _VALID_STORAGE_BACKENDS:
+            return Span(t("settings_cloud.invalid_storage_backend"), cls="infra-test-result--err")
+        if storage_backend == "s3":
+            endpoint = form.get("s3_endpoint", "").strip()
+            if not _valid_s3_endpoint(endpoint):
+                return Span(t("settings_cloud.invalid_s3_endpoint"), cls="infra-test-result--err")
+        patch["storage_mode"] = storage_backend
+        patch["storage_s3_endpoint"] = form.get("s3_endpoint", "")
+        patch["storage_s3_bucket"] = form.get("s3_bucket", "")
+        patch["storage_s3_access_key"] = form.get("s3_access_key", "")
+        if form.get("s3_secret_key"):
+            patch["storage_s3_secret_key"] = form.get("s3_secret_key")
+
+    if patch and not merge_packaged_config(patch):
+        return Span(t("settings_cloud.save_failed", err=t("settings_cloud.config_write_failed")),
+                    cls="infra-test-result--err")
+    return _packaged_apply_fragment(t("settings_cloud.saved_restart_to_apply"))
+
+
+def _save_infra_selfhosted(form) -> FT:
+    """Persist DB/storage config to config.toml and reload the server via
+    SIGHUP (self-hosted POSIX build).
+
+    A blank password field preserves the currently configured password; the
+    explicit db_clear_password checkbox is the only way to actually clear
+    it (see _save_infra_packaged).
+    """
+    try:
+        from celerp.config import read_config, write_config, settings
+        cfg = read_config()
+        if not cfg:
+            return Span(t("settings.no_config_file_found"), cls="infra-test-result--err")
+
+        db_url_changed = False
+
+        # DB settings: compose URL when host+name+user are all present
+        host = form.get("db_host", "").strip()
+        name = form.get("db_name", "").strip()
+        user = form.get("db_user", "").strip()
+        if host and name and user:
+            port_raw = (form.get("db_port", "5432") or "5432").strip()
+            try:
+                port = int(port_raw)
+            except ValueError:
+                return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
+            if not 1 <= port <= 65535:
+                return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
+
+            previous_url = cfg.get("database", {}).get("url", settings.database_url)
+            submitted_password = form.get("db_pass", "")
+            if form.get("db_clear_password") == "1":
+                effective_password = None
+            elif submitted_password:
+                effective_password = submitted_password
+            else:
+                effective_password = _url_password(previous_url)
+
+            new_url = _build_db_url(host=host, port=port, name=name, user=user,
+                                     password=effective_password)
+            if new_url != previous_url:
+                # Backup previous URL for undo support
+                cfg.setdefault("database_backup", {})["previous_url"] = previous_url
+                cfg.setdefault("database", {})["url"] = new_url
+                db_url_changed = True
+
+        # Storage settings
+        storage_backend = form.get("storage_backend", "")
+        if storage_backend:
+            if storage_backend not in _VALID_STORAGE_BACKENDS:
+                return Span(t("settings_cloud.invalid_storage_backend"), cls="infra-test-result--err")
+            if storage_backend == "s3":
+                endpoint = form.get("s3_endpoint", "").strip()
+                if not _valid_s3_endpoint(endpoint):
+                    return Span(t("settings_cloud.invalid_s3_endpoint"), cls="infra-test-result--err")
+            prev_storage = cfg.get("storage", {})
+            cfg.setdefault("storage_backup", {}).update({
+                "backend": prev_storage.get("backend", ""),
+                "s3_endpoint": prev_storage.get("s3_endpoint", ""),
+                "s3_bucket": prev_storage.get("s3_bucket", ""),
+                "s3_access_key": prev_storage.get("s3_access_key", ""),
+                "s3_secret_key": prev_storage.get("s3_secret_key", ""),
+            })
+            cfg.setdefault("storage", {})["backend"] = storage_backend
+            cfg["storage"]["s3_endpoint"] = form.get("s3_endpoint", "")
+            cfg["storage"]["s3_bucket"] = form.get("s3_bucket", "")
+            cfg["storage"]["s3_access_key"] = form.get("s3_access_key", "")
+            if form.get("s3_secret_key"):
+                cfg["storage"]["s3_secret_key"] = form.get("s3_secret_key")
+
+        write_config(cfg)
+
+        if db_url_changed:
             import subprocess
             subprocess.Popen(["pkill", "-HUP", "-f", "uvicorn"])
 
-            return Span(t("settings._restored_previous_db_url_restarting"), cls="infra-test-result--ok")
-        except Exception as exc:
-            return Span(t("settings_cloud.restore_failed", err=exc), cls="infra-test-result--err")
+        return Span(t("settings._saved"), cls="infra-test-result--ok")
+    except Exception as exc:
+        return Span(t("settings_cloud.save_failed", err=exc), cls="infra-test-result--err")
+
+
+def _restore_db_packaged() -> FT:
+    """Swap external_db_url with its backup in celerp-config.json in one
+    atomic merge, so a crash between the two writes can never leave the file
+    with the backup slot and the live URL both pointing at the new value.
+    Apply is a full Electron relaunch, never pkill."""
+    current = _read_packaged_config()
+    prev_url = current.get("external_db_url_backup", "") or ""
+    if not prev_url:
+        return Span(t("settings.no_previous_database_url_to_restore"), cls="infra-test-result--err")
+
+    current_url = current.get("external_db_url", "") or ""
+    patch = {"external_db_url_backup": current_url, "external_db_url": prev_url}
+    if not merge_packaged_config(patch):
+        return Span(t("settings_cloud.restore_failed", err=t("settings_cloud.config_write_failed")),
+                    cls="infra-test-result--err")
+    return _packaged_apply_fragment(t("settings_cloud.restored_restart_to_apply"))
+
+
+def _restore_db_selfhosted() -> FT:
+    """Swap config.toml's database URL with its backup and reload via SIGHUP."""
+    try:
+        from celerp.config import read_config, write_config
+        cfg = read_config()
+        if not cfg:
+            return Span(t("settings.no_config_file_found"), cls="infra-test-result--err")
+
+        prev_url = cfg.get("database_backup", {}).get("previous_url", "")
+        if not prev_url:
+            return Span(t("settings.no_previous_database_url_to_restore"), cls="infra-test-result--err")
+
+        current_url = cfg.get("database", {}).get("url", "")
+        cfg.setdefault("database_backup", {})["previous_url"] = current_url
+        cfg.setdefault("database", {})["url"] = prev_url
+        write_config(cfg)
+
+        import subprocess
+        subprocess.Popen(["pkill", "-HUP", "-f", "uvicorn"])
+
+        return Span(t("settings._restored_previous_db_url_restarting"), cls="infra-test-result--ok")
+    except Exception as exc:
+        return Span(t("settings_cloud.restore_failed", err=exc), cls="infra-test-result--err")
 
 
 async def _try_db_connect(host: str, port: int, name: str, user: str, password: str) -> None:
@@ -724,28 +1293,53 @@ async def _try_db_connect(host: str, port: int, name: str, user: str, password: 
 
 
 async def _try_s3_connect(endpoint: str, bucket: str, access_key: str, secret_key: str) -> str:
-    """Test S3-compatible storage connectivity with meaningful error messages."""
-    import httpx
+    """Test S3-compatible storage connectivity with a real SigV4 head_bucket via
+    the shared client helper, mapping outcomes to honest translated messages.
 
-    url = endpoint.rstrip("/")
-    bucket_url = f"{url}/{bucket}"
+    Never leaks credentials or a raw botocore repr: every unmapped error degrades
+    to a generic translated "connection failed", so the endpoint/access-key text
+    the caller passed can never surface in the result span.
+    """
+    from celerp.services import attachments
+
+    # botocore's exception classes drive the classification. In a build without
+    # botocore they are unreachable, so fall back to a sentinel that never
+    # matches - the connect attempt itself raises ImportError first and degrades.
+    try:
+        from botocore.exceptions import (
+            ClientError,
+            EndpointConnectionError,
+            ConnectTimeoutError,
+            ReadTimeoutError,
+        )
+    except ImportError:
+        class _NoMatch(Exception):
+            pass
+        ClientError = EndpointConnectionError = ConnectTimeoutError = ReadTimeoutError = _NoMatch
 
     try:
-        async with httpx.AsyncClient(timeout=2.5) as client:
-            r = await client.head(bucket_url, headers={"Authorization": "dummy"})
-    except httpx.ConnectError:
+        async with attachments._s3_client(endpoint, access_key, secret_key) as client:
+            await client.head_bucket(Bucket=bucket)
+    except ImportError:
+        raise RuntimeError(t("settings_cloud.s3_support_unavailable"))
+    except ClientError as exc:
+        response = getattr(exc, "response", None)
+        code = ""
+        status = None
+        if isinstance(response, dict):
+            code = (response.get("Error") or {}).get("Code", "") or ""
+            status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+        if code in ("AccessDenied", "403", "InvalidAccessKeyId", "SignatureDoesNotMatch") or status == 403:
+            raise RuntimeError(t("settings_cloud.invalid_credentials_403"))
+        if code in ("NoSuchBucket", "404") or status == 404:
+            raise RuntimeError(t("settings_cloud.bucket_not_found_404"))
+        raise RuntimeError(t("settings_cloud.s3_connection_failed"))
+    except (EndpointConnectionError, ConnectTimeoutError, ReadTimeoutError):
         raise RuntimeError(t("settings_cloud.cannot_reach_endpoint"))
-    except httpx.TimeoutException:
-        raise RuntimeError(t("settings_cloud.cannot_reach_endpoint"))
+    except RuntimeError:
+        raise
+    except Exception:
+        # Never echo the raw error: it can carry the endpoint or access key.
+        raise RuntimeError(t("settings_cloud.s3_connection_failed"))
 
-    if r.status_code == 200:
-        return t("settings_cloud.connected_to_bucket", bucket=bucket)
-    elif r.status_code == 403:
-        raise RuntimeError(t("settings_cloud.invalid_credentials_403"))
-    elif r.status_code == 404:
-        raise RuntimeError(t("settings_cloud.bucket_not_found_404"))
-    elif r.status_code in (301, 307, 308):
-        # Redirect - endpoint reachable but bucket may be in different region
-        raise RuntimeError(t("settings_cloud.bucket_redirect", status=r.status_code))
-    else:
-        raise RuntimeError(t("settings_cloud.s3_returned", status=r.status_code))
+    return t("settings_cloud.connected_to_bucket", bucket=bucket)

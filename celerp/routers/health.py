@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import __version__
 from celerp.db import get_session
-from celerp.services.auth import get_current_user
+from celerp.services.auth import ROLE_LEVELS, get_current_role, get_current_user
 from celerp.services.system_health import get_system_health
 
 router = APIRouter()
@@ -339,6 +339,138 @@ async def cloud_activate_api() -> dict:
 
     await _apply_gateway_token_api(token, iid, public_url=public_url, tos_version=tos_version)
     return _connected(public_url)
+
+
+# ── Existing-install partner claim ───────────────────────────────────────────
+# An owner/admin previews and accepts a partner's claim over an already-running
+# install. The app stores no relay-authoritative state: resolve is a pure preview,
+# accept triggers the relay bind, and the binding arrives back only via the relay's
+# commercial_updated push (handled by the gateway consumer). This path never touches
+# gateway_token, keeping the one-time claim disjoint from the live-session credential.
+
+_CLAIM_TOKEN_MAX = 512
+
+
+def _validate_claim_token(raw: object) -> tuple[str | None, dict | None]:
+    """Function-boundary validation for a claim token, before any relay call.
+
+    Returns (token, None) when valid, else (None, {"error": ...}) with a neutral
+    message. Bounds the length so a repeated resolve cannot push an unbounded
+    payload at the relay.
+    """
+    token = raw.strip() if isinstance(raw, str) else ""
+    if not token:
+        return None, {"error": "Enter a claim token to continue."}
+    if len(token) > _CLAIM_TOKEN_MAX:
+        return None, {"error": "That claim token is too long to be valid."}
+    return token, None
+
+
+def _partner_identity(data: object) -> dict | None:
+    """Presence/type-check a relay resolve response into a display identity.
+
+    A 200 with missing or wrong-typed fields is treated as could-not-verify, never
+    partially rendered or fabricated. The support_url is sanitised through the same
+    guard the partner offer uses before it can ever reach an href; a hostile or
+    non-https value is dropped to empty rather than carried through.
+    """
+    from celerp.gateway.state import _safe_support_url
+
+    if not isinstance(data, dict):
+        return None
+    name = data.get("display_name")
+    partner_id = data.get("partner_id")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    if not isinstance(partner_id, str) or not partner_id.strip():
+        return None
+    support_email = data.get("support_email")
+    return {
+        "display_name": name,
+        "partner_id": partner_id,
+        "support_email": support_email if isinstance(support_email, str) else "",
+        "support_url": _safe_support_url(data.get("support_url")),
+    }
+
+
+async def _post_partner_claim(path: str, body: dict) -> tuple[dict | None, dict | None]:
+    """POST to a relay claim endpoint with the instance bearer, degrading honestly.
+
+    Exchanges the instance credential for a short-lived relay bearer on the same
+    client before the claim POST, so a connect/timeout during either leg degrades
+    through one set of transport branches. Returns (json, None) on a 200 response,
+    else (None, {"error": ...}) for a connect/timeout error, a failed exchange or
+    any other exception, a 409 (the token is no longer acceptable), or any other
+    non-200 status (the parked or unreachable relay INERT case). Callers pass the
+    full /partners/... path so the endpoint string lives at the call site.
+    """
+    import httpx
+    from celerp.gateway.state import fetch_relay_bearer, relay_http_url
+
+    relay_base = relay_http_url()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            jwt = await fetch_relay_bearer(c)
+            r = await c.post(
+                f"{relay_base}{path}", json=body,
+                headers={"Authorization": f"Bearer {jwt}"})
+    except httpx.ConnectError:
+        return None, {"error": "Could not reach the relay to verify this claim. Check your internet connection."}
+    except httpx.TimeoutException:
+        return None, {"error": "Verifying this claim timed out. Try again."}
+    except Exception as exc:
+        return None, {"error": f"Could not verify this claim: {type(exc).__name__}."}
+    if r.status_code == 409:
+        return None, {"error": "This claim is no longer available. It may already have been claimed or expired."}
+    if r.status_code != 200:
+        return None, {"error": "This claim could not be verified. It may be invalid, expired, or already used."}
+    return r.json(), None
+
+
+@router.post("/settings/partner-claim/resolve")
+async def partner_claim_resolve(payload: dict, role: str = Depends(get_current_role)) -> dict:
+    """Preview the partner identity behind a claim token. Owner/admin only. Binds
+    nothing: a resolve leaves the install celerp_direct."""
+    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["admin"]:
+        raise HTTPException(status_code=403, detail="Only an owner or admin can review a partner claim.")
+    from celerp.config import settings
+
+    token, err = _validate_claim_token(payload.get("claim_token"))
+    if err:
+        return err
+    if not settings.gateway_token:
+        return {"error": "This installation has no cloud identity, so a partner claim cannot be verified."}
+    data, err = await _post_partner_claim("/partners/claims/resolve", {"token": token})
+    if err:
+        return err
+    identity = _partner_identity(data)
+    if identity is None:
+        return {"error": "This claim could not be verified. It may be invalid, expired, or already used."}
+    return identity
+
+
+@router.post("/settings/partner-claim/accept")
+async def partner_claim_accept(payload: dict, role: str = Depends(get_current_role)) -> dict:
+    """Accept a partner claim: the relay binds the relationship and pushes the new
+    commercial context. Owner/admin only. Accepting a token that is no longer
+    acceptable (already claimed or expired) is a relay 409, surfaced as a neutral
+    not-available message, never a fabricated success. Never touches gateway_token."""
+    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["admin"]:
+        raise HTTPException(status_code=403, detail="Only an owner or admin can accept a partner claim.")
+    from celerp.config import settings
+
+    token, err = _validate_claim_token(payload.get("claim_token"))
+    if err:
+        return err
+    if not settings.gateway_token:
+        return {"error": "This installation has no cloud identity, so a partner claim cannot be accepted."}
+    data, err = await _post_partner_claim("/partners/claims/accept", {"token": token})
+    if err:
+        return err
+    partner_id = data.get("partner_id") if isinstance(data, dict) else None
+    if not isinstance(partner_id, str) or not partner_id.strip():
+        return {"error": "This claim could not be accepted. It may be invalid, expired, or already used."}
+    return {"partner_id": partner_id}
 
 
 @router.post("/settings/cloud-apply-token")
