@@ -58,6 +58,57 @@ _MAX_Q_LEN = 200
 # request timeout, so one hung source can never blank the whole search.
 _PROVIDER_TIMEOUT_SECONDS = 1.25
 
+# Bounds on a third-party canonical row. A first-party provider is trusted to
+# return rich domain rows the bundled UI renders directly; a third-party provider
+# is held to exactly these keys so an untrusted module cannot inject arbitrary
+# fields, off-site links, or unbounded text into the shared search bar.
+_CANONICAL_ROW_KEYS = {"id", "label", "href", "subtitle"}
+_LABEL_MAX = 200
+_SUBTITLE_MAX = 300
+_HREF_MAX = 2048
+
+
+def _local_href(href) -> bool:
+    """True only for a non-empty, bounded, app-local path.
+
+    Rejects any scheme, protocol-relative "//host", and anything that does not
+    start with a single leading slash, so a third-party provider can only link
+    within this app, never off-site.
+    """
+    return (
+        isinstance(href, str)
+        and 0 < len(href) <= _HREF_MAX
+        and href.startswith("/")
+        and not href.startswith("//")
+    )
+
+
+def _canonical_third_party_row(row: dict) -> dict:
+    """Reduce a third-party row to the canonical shape or raise.
+
+    Returns a fresh dict holding exactly the canonical keys (subtitle only when
+    present). Any shape violation raises ValueError, which the caller treats as a
+    provider failure and degrades the whole provider.
+    """
+    if not isinstance(row, dict):
+        raise ValueError("third-party row must be an object")
+    rid = row.get("id")
+    if not isinstance(rid, str) or not rid:
+        raise ValueError("third-party row id must be a non-empty string")
+    label = row.get("label")
+    if not isinstance(label, str) or not label or len(label) > _LABEL_MAX:
+        raise ValueError("third-party row label must be a non-empty bounded string")
+    href = row.get("href")
+    if not _local_href(href):
+        raise ValueError("third-party row href must be a bounded app-local path")
+    clean = {"id": rid, "label": label, "href": href}
+    subtitle = row.get("subtitle")
+    if subtitle is not None:
+        if not isinstance(subtitle, str) or len(subtitle) > _SUBTITLE_MAX:
+            raise ValueError("third-party row subtitle must be a bounded string")
+        clean["subtitle"] = subtitle
+    return clean
+
 
 @router.get("/search")
 async def global_search(
@@ -170,7 +221,18 @@ async def global_search(
             hits = payload[result_key]
             if not isinstance(hits, list):
                 raise TypeError(f"provider returned non-list for {result_key!r}")
-            results[module] = {result_key: hits[:_PER_PROVIDER_LIMIT]}
+            capped = hits[:_PER_PROVIDER_LIMIT]
+            if contribution.get("_first_party"):
+                # Bundled provider: trusted to return rich domain rows the UI
+                # renders directly, passed through untouched.
+                rows = capped
+            else:
+                # Third-party provider: hold every row to the canonical shape,
+                # which yields plain string fields that are always
+                # JSON-serializable. Any violation raises and degrades this
+                # provider, never the aggregate response.
+                rows = [_canonical_third_party_row(row) for row in capped]
+            results[module] = {result_key: rows}
         except Exception as exc:
             log.warning(
                 "search: provider %s raised %s",

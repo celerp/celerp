@@ -84,6 +84,38 @@ async def slow_provider(session, company_id, role, q, limit):
     return {"items": [{"id": "slow-1"}]}
 
 
+# Third-party providers (registered first_party=False) are held to the canonical
+# row contract: exactly {id, label, href[, subtitle]}, app-local href, and a
+# JSON-serializable payload. First-party providers above skip that contract and
+# return rich domain rows the bundled UI already knows how to render.
+
+async def canonical_provider(session, company_id, role, q, limit):
+    # A well-formed third-party row carrying an extra field the aggregator drops.
+    return {"items": [{"id": "t-1", "label": "Result One", "href": "/acme/1",
+                       "subtitle": "sub", "secret": "leak"}]}
+
+
+async def canonical_over_limit_provider(session, company_id, role, q, limit):
+    return {"items": [{"id": f"t-{i}", "label": f"L{i}", "href": f"/acme/{i}",
+                       "secret": "leak"} for i in range(20)]}
+
+
+async def bad_row_provider(session, company_id, role, q, limit):
+    # Missing label and href: violates the canonical third-party row shape.
+    return {"items": [{"id": "t-1", "name": "no label or href"}]}
+
+
+async def external_href_provider(session, company_id, role, q, limit):
+    # An off-site href: a third-party provider may only link app-local paths.
+    return {"items": [{"id": "t-1", "label": "Evil", "href": "https://evil.example/x"}]}
+
+
+async def nonserializable_provider(session, company_id, role, q, limit):
+    # A payload that cannot be JSON-encoded; degrading this provider must not turn
+    # the whole aggregate response into a 500.
+    return {"items": [{"id": "t-1", "label": "X", "href": "/ok", "subtitle": object()}]}
+
+
 @pytest.fixture(autouse=True)
 def _clear_invocation_log():
     _invocation_calls.clear()
@@ -104,12 +136,18 @@ def register_provider():
     saved = list(slots.get("search_provider"))
     slots._slots["search_provider"] = []
 
-    def _add(module: str, handler: str, result_key: str, permission: str):
+    def _add(module: str, handler: str, result_key: str, permission: str,
+             first_party: bool = True):
+        # first_party defaults True: most controllable providers simulate the
+        # bundled modules, which return rich domain rows the aggregator passes
+        # through untouched. A third-party provider (first_party=False) is held to
+        # the canonical row contract instead.
         contrib = {
             "handler": handler,
             "result_key": result_key,
             "permission": permission,
             "_module": module,
+            "_first_party": first_party,
         }
         slots.register("search_provider", contrib)
         return contrib
@@ -465,6 +503,77 @@ async def test_absent_enabled_key_runs_all(client, session, register_provider):
     r = await client.get("/search", params={"q": "widget"}, headers=headers)
     assert r.status_code == 200, r.text
     assert r.json()["results"]["test-alpha"] == {"items": [{"id": "prov-a-1", "name": "hit-widget"}]}
+
+
+# ── Canonical third-party rows ────────────────────────────────────────────────
+
+async def test_third_party_canonical_row_succeeds_and_strips_extras(client, register_provider):
+    # A well-formed third-party row is kept, reduced to exactly the canonical keys.
+    register_provider("acme", f"{_THIS}:canonical_provider", "items", "view_inventory",
+                      first_party=False)
+    headers = await _owner_headers(client)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    rows = r.json()["results"]["acme"]["items"]
+    assert rows == [{"id": "t-1", "label": "Result One", "href": "/acme/1", "subtitle": "sub"}]
+
+
+async def test_third_party_malformed_row_degrades_only_that_provider(client, register_provider):
+    register_provider("acme", f"{_THIS}:bad_row_provider", "items", "view_inventory",
+                      first_party=False)
+    register_provider("test-beta", f"{_THIS}:ok_entries_provider", "entries", "view_financial_reports")
+    headers = await _owner_headers(client)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "acme" in body["degraded_modules"]
+    assert "acme" not in body["results"]
+    # A well-formed sibling is unaffected.
+    assert body["results"]["test-beta"] == {"entries": [{"id": "prov-b-1"}]}
+
+
+async def test_third_party_external_href_degrades(client, register_provider):
+    register_provider("acme", f"{_THIS}:external_href_provider", "items", "view_inventory",
+                      first_party=False)
+    headers = await _owner_headers(client)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "acme" in body["degraded_modules"]
+    assert "acme" not in body["results"]
+
+
+async def test_third_party_nonserializable_row_degrades_not_500(client, register_provider):
+    # A non-JSON-serializable row must degrade only its provider, never turn the
+    # whole aggregate response into a 500.
+    register_provider("acme", f"{_THIS}:nonserializable_provider", "items", "view_inventory",
+                      first_party=False)
+    register_provider("test-beta", f"{_THIS}:ok_entries_provider", "entries", "view_financial_reports")
+    headers = await _owner_headers(client)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "acme" in body["degraded_modules"]
+    assert "acme" not in body["results"]
+    assert body["results"]["test-beta"] == {"entries": [{"id": "prov-b-1"}]}
+
+
+async def test_third_party_capped_to_five_after_canonicalization(client, register_provider):
+    register_provider("acme", f"{_THIS}:canonical_over_limit_provider", "items", "view_inventory",
+                      first_party=False)
+    headers = await _owner_headers(client)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    rows = r.json()["results"]["acme"]["items"]
+    assert len(rows) == 5
+    # Every returned row is canonicalized: extra fields dropped.
+    assert all(set(row.keys()) <= {"id", "label", "href", "subtitle"} for row in rows)
+    assert all("secret" not in row for row in rows)
 
 
 async def test_requires_authentication(client, register_provider):
