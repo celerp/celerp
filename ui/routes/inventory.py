@@ -20,7 +20,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
-from ui.components.shell import base_shell, page_header, search_help, toast_header, page_title
+from ui.components.shell import base_shell, minimal_shell, page_header, search_help, toast_header, page_title
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
@@ -930,15 +930,17 @@ async def _render_inventory_fragment(
         return _inventory_content_error(p, lang)
 
 
-async def _inventory_page_error(request: Request, lang: str) -> FT:
+def _inventory_page_error(request: Request, lang: str) -> FT:
     """Minimal authenticated full-page inventory error with a retry.
 
-    Rendered when the fresh company/settings read itself fails, so the page has
-    no authorization context with which to build the normal inventory shell. It
-    deliberately needs no company settings: it shows an honest error and a way
-    to retry, never a normal inventory page backed by fabricated empty
-    settings."""
-    return await base_shell(
+    Rendered when the fresh company/settings read itself fails, so the page has no
+    authorization context. It uses `minimal_shell` - header/chrome only, no
+    permission-filtered sidebar - so it never performs a second company read and
+    never presents nav entries derived from registry DEFAULT grants (which would
+    misrepresent a company-revoked capability as available). It shows an honest
+    error and a way to retry, never a normal inventory page backed by fabricated
+    empty settings."""
+    return minimal_shell(
         page_header(t("page.inventory", lang)),
         Div(
             P(t("inventory.content_load_failed", lang), cls="flash flash--error"),
@@ -946,7 +948,6 @@ async def _inventory_page_error(request: Request, lang: str) -> FT:
             cls="empty-state",
         ),
         title=page_title("nav.inventory"),
-        nav_active="inventory",
         lang=lang,
         request=request,
     )
@@ -1202,7 +1203,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return await _inventory_page_error(request, lang)
+            return _inventory_page_error(request, lang)
 
         _settings = company.get("settings") or {}
         _role = _get_role(request)
