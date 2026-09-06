@@ -20,6 +20,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
+import ui.api_client as api
 from ui.api_client import APIError, bootstrap_status
 from ui.api_client import login as api_login, login_force as api_login_force, logout as api_logout, register as api_register
 from ui.api_client import my_companies as api_my_companies
@@ -27,6 +28,7 @@ from ui.api_client import get_company as api_get_company
 from ui.components.shell import auth_shell, flash, page_title, star_supporter_card, toast_header
 from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies
 from ui.i18n import t, get_lang
+from ui.security import is_app_local_path
 from celerp.config import settings as _settings
 
 
@@ -69,7 +71,7 @@ def setup_routes(app):
         """Same-app absolute paths only - ?next= must never become an open
         redirect or bounce back into the auth pages."""
         raw = str(raw or "")
-        if raw.startswith("/") and not raw.startswith("//") and not raw.startswith(("/login", "/logout")):
+        if is_app_local_path(raw) and not raw.startswith(("/login", "/logout")):
             return raw
         return "/"
 
@@ -208,7 +210,6 @@ def setup_routes(app):
 
     @app.post("/setup/import-backup")
     async def setup_import_submit(request: Request):
-        from ui.config import API_BASE
         import httpx
         try:
             bootstrapped = await bootstrap_status()
@@ -224,7 +225,7 @@ def setup_routes(app):
         if not raw:
             return auth_shell(_setup_import_form(error=t("auth.file_empty")), title=page_title("page.restore_from_backup"))
         try:
-            async with httpx.AsyncClient(base_url=API_BASE, timeout=120.0) as c:
+            async with api._local_client(timeout=120.0, follow_redirects=False, bulk=True) as c:
                 r = await c.post(
                     "/backup/import-bootstrap",
                     files={"file": (file.filename, raw, "application/octet-stream")},
@@ -460,11 +461,9 @@ def setup_routes(app):
     @app.get("/health")
     async def health_proxy():
         """Proxy /health to the API so version checks work from the UI port."""
-        from ui.config import API_BASE
         from starlette.responses import JSONResponse
-        import httpx
         try:
-            async with httpx.AsyncClient(base_url=API_BASE, timeout=3.0) as c:
+            async with api._local_client(timeout=3.0, follow_redirects=False) as c:
                 r = await c.get("/health")
                 return JSONResponse(r.json(), status_code=r.status_code)
         except Exception:
@@ -473,11 +472,9 @@ def setup_routes(app):
     @app.get("/health/system")
     async def health_system_proxy():
         """Proxy /health/system to the API so the UI health banner works on any port."""
-        from ui.config import API_BASE
         from starlette.responses import JSONResponse
-        import httpx
         try:
-            async with httpx.AsyncClient(base_url=API_BASE, timeout=3.0) as c:
+            async with api._local_client(timeout=3.0, follow_redirects=False) as c:
                 r = await c.get("/health/system")
                 return JSONResponse(r.json(), status_code=r.status_code)
         except Exception:
@@ -507,12 +504,10 @@ def setup_routes(app):
 
     @app.post("/forgot-password")
     async def forgot_password_submit(request: Request):
-        from ui.config import API_BASE
         form = await request.form()
         email = str(form.get("email", "")).strip()
-        import httpx
         try:
-            async with httpx.AsyncClient(base_url=API_BASE, timeout=5.0) as c:
+            async with api._local_client(timeout=5.0, follow_redirects=False) as c:
                 await c.post("/auth/password-reset/request", json={"email": email})
         except Exception:
             pass
@@ -528,16 +523,14 @@ def setup_routes(app):
 
     @app.post("/reset-password")
     async def reset_password_submit(request: Request):
-        from ui.config import API_BASE
         form = await request.form()
         token = str(form.get("token", ""))
         new_password = str(form.get("new_password", ""))
         confirm = str(form.get("confirm_password", ""))
         if new_password != confirm:
             return auth_shell(_reset_password_form(token=token, error=t("settings.passwords_do_not_match")), title=page_title("page.reset_password"))
-        import httpx
         try:
-            async with httpx.AsyncClient(base_url=API_BASE, timeout=5.0) as c:
+            async with api._local_client(timeout=5.0, follow_redirects=False) as c:
                 r = await c.post("/auth/password-reset/confirm", json={"token": token, "new_password": new_password})
             if r.status_code == 200:
                 return RedirectResponse("/login", status_code=302)

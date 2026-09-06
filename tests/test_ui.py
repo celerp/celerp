@@ -182,6 +182,23 @@ def _mock_get_modules():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _fresh_inventory_metadata():
+    """The inventory views read their static metadata through one cached snapshot
+    (api.get_inventory_metadata), which gathers the per-field getters. Reset that
+    cache per test so a snapshot built from one test's mocks never leaks into the
+    next, and give the two getters without their own autouse default a shape here
+    so any inventory view renders even when a test does not mock them itself. A
+    test that mocks a getter (e.g. get_item_schema=_SCHEMA) still wins: its patch
+    starts after this fixture and the cold snapshot reads the patched getter."""
+    from ui import api_client
+    api_client._reset_metadata_cache_for_tests()
+    with patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])), \
+         patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})):
+        yield
+    api_client._reset_metadata_cache_for_tests()
+
+
 # ── Auth routing state machine ────────────────────────────────────────────────
 
 class TestAuthRouting:
@@ -3622,12 +3639,13 @@ class TestGlobalSearch:
 
     @pytest.mark.asyncio
     async def test_search_returns_items(self, ui_client):
-        items = [{"entity_id": "i:1", "sku": "SKU1", "name": "Gold Ring"}]
-        with (
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items, "total": len(items)})),
-            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
-        ):
+        # The bar asks the API one aggregated question and renders the merged answer.
+        answer = {
+            "results": {"celerp-inventory": {"items": [
+                {"id": "i:1", "sku": "SKU1", "name": "Gold Ring", "status": "available"}]}},
+            "degraded_modules": [],
+        }
+        with patch("ui.api_client.global_search", new=AsyncMock(return_value=answer)):
             r = await ui_client.get("/search?q=gold", cookies=_authed())
         assert r.status_code == 200
         assert b"Gold Ring" in r.content
@@ -19187,8 +19205,11 @@ def _api_get_mock(content: bytes = b"fake-image-bytes", content_type: str = "ima
     calls: list[str] = []
 
     async def _dispatch(self, url, *args, **kwargs):
-        if str(url).startswith(API_BASE):
-            calls.append(str(url))
+        # The proxy calls a base_url'd client with a relative path, so resolve the
+        # request URL against the client's base before matching the API origin.
+        absolute = str(self.base_url.join(str(url))) if self.base_url else str(url)
+        if absolute.startswith(API_BASE):
+            calls.append(absolute)
             return httpx.Response(200, content=content, headers={"content-type": content_type})
         return await original(self, url, *args, **kwargs)
 

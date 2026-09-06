@@ -35,6 +35,7 @@ import functools
 import hashlib
 import importlib
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -45,7 +46,7 @@ from pathlib import Path
 from celerp.modules.importer import PREMIUM_MARKER
 from celerp.modules.license import check_license, exchange_api_key_for_jwt, is_premium_path
 from celerp.modules.meta import META_FILENAME
-from celerp.modules.slots import register as register_slot
+from celerp.modules.slots import register as register_slot, resolve_handler
 from celerp.services.permissions import is_permission_key
 
 log = logging.getLogger(__name__)
@@ -808,10 +809,16 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
                 f"  {_MODULE_AI_API_URL}"
             )
 
+    slots_manifest = manifest.get("slots") or {}
+
     # A slot item naming a permission key outside the registry would KeyError in
     # the sidebar builder on every page render, taking the whole UI down for
-    # every user. Refuse the module here, with the bad key named, instead.
-    for slot_name, contribution in (manifest.get("slots") or {}).items():
+    # every user. Refuse the module here, with the bad key named, instead. The
+    # search_provider slot has its own stricter validation below (which also
+    # checks its permission), so it is skipped here.
+    for slot_name, contribution in slots_manifest.items():
+        if slot_name == _SEARCH_PROVIDER_SLOT:
+            continue
         items = contribution if isinstance(contribution, list) else [contribution]
         for item in items:
             perm = item.get("permission") if isinstance(item, dict) else None
@@ -829,13 +836,37 @@ def _load_one(pkg_path: Path, pkg_name: str, *, trusted: bool = False) -> dict |
                     f"closest existing key."
                 )
 
-    # Register extension slots
-    for slot_name, contribution in (manifest.get("slots") or {}).items():
+    # Validate the search_provider descriptor and resolve its handler BEFORE any
+    # slot is registered, so a broken provider rejects the whole module cleanly
+    # (no half-registered slots) rather than first surfacing as a degraded source
+    # when a user types into search.
+    prepared_search_provider = None
+    if _SEARCH_PROVIDER_SLOT in slots_manifest:
+        try:
+            prepared_search_provider = _prepare_search_provider(
+                pkg_name, pkg_path, slots_manifest[_SEARCH_PROVIDER_SLOT],
+                trusted=trusted,
+            )
+        except ModuleLoadError:
+            log.error("Module %r rejected: invalid search_provider slot", pkg_name)
+            for key in list(sys.modules.keys()):
+                if key == pkg_name or key.startswith(pkg_name + "."):
+                    sys.modules.pop(key, None)
+            raise
+
+    # Register extension slots (search_provider is registered from its prepared
+    # descriptor below, never through the generic path).
+    for slot_name, contribution in slots_manifest.items():
+        if slot_name == _SEARCH_PROVIDER_SLOT:
+            continue
         if isinstance(contribution, dict):
             register_slot(slot_name, {**contribution, "_module": pkg_name})
         elif isinstance(contribution, list):
             for item in contribution:
                 register_slot(slot_name, {**item, "_module": pkg_name})
+
+    if prepared_search_provider is not None:
+        register_slot(_SEARCH_PROVIDER_SLOT, prepared_search_provider)
 
     # Register module-contributed UI translation catalogs (the `locales`
     # manifest key, mirroring `slots` above). Each entry maps a language code to
@@ -1004,6 +1035,31 @@ def _flag_dynamic_import(node: ast.Call, violations: set[str]) -> None:
             violations.add(hit)
 
 
+def _module_source_file(pkg_path: Path, dotted_module_path: str) -> Path | None:
+    """The local ``.py`` (or package ``__init__.py``) inside ``pkg_path`` that a
+    dotted module path names, or None if no such source lives in the installed
+    module tree.
+
+    Handles both the flat layout (``pkg_path`` IS the top-level package, its
+    folder name == the package) and the nested GitHub-style layout (the package
+    sits one level in, at ``pkg_path/<top_pkg>``). Used to prove a search
+    handler's source is owned by the module before core imports it, and to seed
+    the protected-BSL AST scan from that same file.
+    """
+    parts = dotted_module_path.split(".")
+    if not parts or not parts[0]:
+        return None
+    top_pkg = parts[0]
+    pkg_dir = pkg_path if pkg_path.name == top_pkg else pkg_path / top_pkg
+    entry = pkg_dir.joinpath(*parts[1:]).with_suffix(".py")
+    if entry.exists():
+        return entry
+    entry = pkg_dir.joinpath(*parts[1:], "__init__.py")
+    if entry.exists():
+        return entry
+    return None
+
+
 def _ast_scan_module_file(pkg_path: Path, dotted_module_path: str) -> set[str]:
     """Protected-BSL-internal imports reachable from the given entry module.
 
@@ -1038,10 +1094,8 @@ def _ast_scan_module_file(pkg_path: Path, dotted_module_path: str) -> set[str]:
                 return cand
         return None
 
-    entry = pkg_dir.joinpath(*parts[1:]).with_suffix(".py")
-    if not entry.exists():
-        entry = pkg_dir.joinpath(*parts[1:], "__init__.py")
-    if not entry.exists():
+    entry = _module_source_file(pkg_path, dotted_module_path)
+    if entry is None:
         return set()
 
     violations: set[str] = set()
@@ -1084,3 +1138,172 @@ def _ast_scan_module_file(pkg_path: Path, dotted_module_path: str) -> set[str]:
             elif isinstance(node, ast.Call):
                 _flag_dynamic_import(node, violations)
     return violations
+
+
+# The search_provider slot has a stricter contract than the generic slots: a
+# single descriptor (never a list), a closed key set, and a locally-owned async
+# handler resolved at load time. The template linter mirrors these exactly.
+_SEARCH_PROVIDER_SLOT = "search_provider"
+_SEARCH_PROVIDER_KEYS = frozenset({"handler", "result_key", "permission"})
+_SEARCH_RESULT_KEYS = frozenset({"items", "entries"})
+
+
+def _enclosing_first_party_module(source_file: Path, expected_name: str) -> Path | None:
+    """The nearest ancestor directory of ``source_file`` that is a content-verified
+    first-party module folder named ``expected_name``, or None.
+
+    Used to accept a first-party module whose handler resolves to the SAME
+    first-party module already loaded from another location (a shipped default
+    scanned from two roots - e.g. the repo copy and a reseeded copy). is_first_party
+    requires the lock name AND a matching content digest, so a match here is
+    content-identical to the module being loaded; a resolution to core, or to any
+    other module, has no such ancestor and is rejected.
+    """
+    for parent in source_file.parents:
+        if parent.name == expected_name and is_first_party(parent):
+            return parent
+    return None
+
+
+def _handler_source_owned(
+    proof: str | None, pkg_root: str, pkg_name: str, trusted: bool
+) -> bool:
+    """True if a resolved handler/module source file legitimately belongs to the
+    module being loaded.
+
+    It must live under the module's own package root. For a content-verified
+    first-party module ONLY, a source under a different copy of the SAME first-party
+    module (same lock name and verified digest) is also legitimate - the one case
+    where importlib returns an identically-named default already loaded from another
+    root. ``is_relative_to`` returns False for paths on different drives rather than
+    raising, so it needs no cross-drive guard. Never accepts a resolution to core or
+    to a different module, and every untrusted module is held to strict same-tree.
+    """
+    if not proof:
+        return False
+    real = Path(os.path.realpath(proof))
+    if real.is_relative_to(pkg_root):
+        return True
+    if not trusted:
+        return False
+    return _enclosing_first_party_module(real, pkg_name) is not None
+
+
+def _prepare_search_provider(
+    pkg_name: str, pkg_path: Path, contribution, *, trusted: bool
+) -> dict:
+    """Validate a ``search_provider`` descriptor and resolve its handler at load
+    time, returning the runtime descriptor to register.
+
+    The slot takes exactly one dict: one module, one provider, one results
+    bucket, so a module can never overwrite its own search bucket. The descriptor
+    must carry exactly ``{handler, result_key, permission}`` (extra keys are
+    rejected, never ignored, so a misspelling fails loudly); ``result_key`` is one
+    of ``{items, entries}``; ``permission`` is a known key. The handler
+    ``module:function`` must name source that lives inside this module's own tree,
+    must import no protected BSL internal (third-party only), and must resolve at
+    load to an async callable. A provider that cannot pass all of this fails
+    module load rather than first surfacing as a degraded source when a user types
+    into search. Raises :class:`ModuleLoadError` on any violation.
+    """
+    if not isinstance(contribution, dict):
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} takes exactly one descriptor dict, "
+            f"not a {type(contribution).__name__}."
+        )
+    keys = set(contribution)
+    if keys != set(_SEARCH_PROVIDER_KEYS):
+        missing = sorted(_SEARCH_PROVIDER_KEYS - keys)
+        extra = sorted(keys - _SEARCH_PROVIDER_KEYS)
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} descriptor keys must be exactly "
+            f"{sorted(_SEARCH_PROVIDER_KEYS)} (missing={missing}, extra={extra})."
+        )
+    result_key = contribution["result_key"]
+    if result_key not in _SEARCH_RESULT_KEYS:
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} result_key {result_key!r} must be one "
+            f"of {sorted(_SEARCH_RESULT_KEYS)}."
+        )
+    perm = contribution["permission"]
+    if not is_permission_key(perm):
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} names unknown permission key {perm!r}."
+        )
+    handler_path = contribution["handler"]
+    if not isinstance(handler_path, str) or handler_path.count(":") != 1:
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} must be "
+            f"'module.path:function'."
+        )
+    module_path, func_name = handler_path.split(":", 1)
+    if not module_path or not func_name:
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} must name a "
+            f"non-empty module path and function."
+        )
+    # Local ownership: the handler must resolve to source inside this module's own
+    # tree, so a manifest can never point core at 'celerp.some_internal:fn' and
+    # have it imported on demand around the protected-import gate.
+    if _module_source_file(pkg_path, module_path) is None:
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} does not "
+            f"resolve to source inside module {pkg_name!r}."
+        )
+    # The handler is a lazily-imported entry point, so it goes through the same
+    # transitive protected-BSL scan as the route entry modules (third-party only).
+    if not trusted:
+        violations = _ast_scan_module_file(pkg_path, module_path)
+        if violations:
+            raise ModuleLoadError(
+                f"Slot {_SEARCH_PROVIDER_SLOT!r} handler imports protected BSL "
+                f"internals ({', '.join(sorted(violations))})."
+            )
+    try:
+        handler = resolve_handler(handler_path)
+    except Exception as exc:
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} failed to "
+            f"resolve ({type(exc).__name__})."
+        )
+    if not callable(handler):
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} is not callable."
+        )
+    if not inspect.iscoroutinefunction(handler):
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} must be async; "
+            f"the aggregator awaits it."
+        )
+    # Provenance: an on-disk file matching the dotted path is not proof of what
+    # importlib actually resolved. A decoy source shipped inside the module's own
+    # tree (e.g. a celerp/ai/service.py) satisfies the existence and AST checks
+    # above, yet importlib returns the already-loaded REAL core module of the same
+    # dotted name, binding the provider to arbitrary code. Require that BOTH the
+    # resolved module's file AND the handler's own source file be owned by this
+    # module (_handler_source_owned): under its own package root, or - for a
+    # content-verified first-party module only - inside the same first-party module
+    # (same lock name and digest) loaded from another root. realpath collapses
+    # symlinks and '..' so neither can point a proof outside the tree. This runs for
+    # every module: a first-party manifest whose handler resolves to core, or to a
+    # different module, is rejected exactly as an untrusted decoy is.
+    pkg_root = os.path.realpath(pkg_path)
+    try:
+        resolved_module = importlib.import_module(module_path)
+        module_file = getattr(resolved_module, "__file__", None)
+        handler_file = inspect.getsourcefile(inspect.unwrap(handler))
+    except Exception as exc:
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} source could "
+            f"not be located ({type(exc).__name__})."
+        )
+    for proof in (module_file, handler_file):
+        if not _handler_source_owned(proof, pkg_root, pkg_name, trusted):
+            raise ModuleLoadError(
+                f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} resolves to "
+                f"source outside module {pkg_name!r}'s own package tree."
+            )
+    # Runtime-owned trust metadata is injected AFTER the manifest contribution, and
+    # the closed key set above already rejects a manifest that tries to supply
+    # _module / _first_party itself, so neither can be spoofed.
+    return {**contribution, "_module": pkg_name, "_first_party": trusted}

@@ -8,7 +8,7 @@ Covers:
   - _api_client: ConnectError → APIError(503)
   - _anon_api_client: TimeoutException → APIError(504)
   - _anon_api_client: ConnectError → APIError(503)
-  - batch_import: uses _api_client (timeout propagated)
+  - batch_import: rides the bulk transport with a 300s timeout
 """
 
 from __future__ import annotations
@@ -102,24 +102,27 @@ async def test_anon_api_client_connect_error_raises_503():
 
 
 # ---------------------------------------------------------------------------
-# batch_import uses a 300s timeout
+# batch_import rides the bulk transport with a 300s timeout
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_batch_import_uses_300s_timeout():
-    """batch_import must request a 300s timeout so large payloads don't time out."""
-    captured_timeout = None
+async def test_batch_import_uses_bulk_transport_and_300s_timeout():
+    """A large batch import rides the bulk pool (never an interactive slot) with a
+    300s timeout, and a slow server still surfaces as APIError(504)."""
+    captured: dict = {}
 
-    def fake_client(token: str, timeout: float = 10.0) -> httpx.AsyncClient:
-        nonlocal captured_timeout
-        captured_timeout = timeout
-        # Return a client that immediately raises TimeoutException so we can
-        # verify the timeout was passed without needing a real server.
+    def fake_local_client(token=None, *, timeout=10.0, follow_redirects=True,
+                          bulk=False, headers=None) -> httpx.AsyncClient:
+        captured["timeout"] = timeout
+        captured["bulk"] = bulk
+        # Raise inside the wrapper's error mapping so we can verify the timeout and
+        # transport selection without needing a real server.
         raise httpx.ReadTimeout("injected")
 
-    with patch("ui.api_client._client", side_effect=fake_client):
+    with patch("ui.api_client._local_client", side_effect=fake_local_client):
         with pytest.raises(APIError) as exc_info:
             await batch_import("tok", "/items/import/batch", [{"x": 1}])
 
-    assert captured_timeout == 300.0
+    assert captured["timeout"] == 300.0
+    assert captured["bulk"] is True
     assert exc_info.value.status == 504

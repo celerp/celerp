@@ -213,13 +213,23 @@ def browser_context(playwright, ui_server, seeded_user):
 
 @pytest.fixture
 def page(browser_context, request):
-    """Fresh page per test. On teardown, clear per-origin localStorage/sessionStorage so client
-    state (column prefs, Excel-funnel filters, etc.) can't leak to the next test - this is what made
-    the suite order- and shard-sensitive (e.g. the inventory attribute funnel).
+    """Fresh page per test, from cold server- and client-side state. On setup, drop the UI's
+    per-token metadata snapshot; on teardown, clear per-origin localStorage/sessionStorage so
+    client state (column prefs, Excel-funnel filters, etc.) can't leak to the next test - both are
+    what made the suite order- and shard-sensitive (e.g. the inventory attribute funnel).
 
     A Playwright trace is recorded and, on failure, saved to /tmp/playwright_failures so CI-only
     browser flakes (which never reproduce locally) can be diagnosed from the uploaded artifact -
     the trace carries the DOM snapshots, network log and console for every step."""
+    # The UI holds a short-lived per-token metadata snapshot (schema, locations,
+    # units, category labels). In the app that snapshot is dropped the instant a
+    # schema/preset/location write goes through the UI. Browser tests seed those
+    # writes straight against the API, which the UI never sees, so a snapshot a
+    # prior test warmed would mask this test's setup. Start each test from a cold
+    # snapshot, the same reason localStorage is cleared on teardown below.
+    from ui import api_client
+    api_client._reset_metadata_cache_for_tests()
+
     p = browser_context.new_page()
     browser_context.tracing.start(snapshots=True, screenshots=True, sources=True)
     yield p

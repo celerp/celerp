@@ -20,7 +20,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import files_section as _shared_files_section
-from ui.components.shell import base_shell, page_header, search_help, toast_header, page_title
+from ui.components.shell import base_shell, minimal_shell, page_header, search_help, toast_header, page_title
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
@@ -834,6 +834,125 @@ def _inventory_column_filters(eff_schema: list[dict], global_schema: list[dict],
     return filters or None
 
 
+def _inventory_content_error(p: dict, lang: str) -> FT:
+    """Honest read-failure fragment for #inventory-content.
+
+    Rendered when the list, valuation, or required metadata actually failed to
+    load - never a blank table dressed up as an empty catalog. Retries its own
+    content URL with the current filters so the user can recover in place."""
+    retry_url = "/inventory/content" + (f"?{urlencode(_base_state(p))}" if _base_state(p) else "")
+    return Div(
+        P(t("inventory.content_load_failed", lang), cls="flash flash--error"),
+        Button(
+            t("btn.retry", lang),
+            hx_get=retry_url,
+            hx_target="#inventory-content",
+            hx_swap="outerHTML",
+            cls="btn btn--primary",
+        ),
+        id="inventory-content",
+        cls="empty-state",
+    )
+
+
+async def _load_inventory_static_metadata(token: str) -> tuple:
+    """Unpack the cached six static inventory values `_inventory_content` renders
+    from (schema, category schemas, column prefs, locations, units, category
+    labels).
+
+    One round-trip-collapsing snapshot backs every inventory view (page,
+    content, columns, search); each caller unpacks the same shape here rather
+    than repeating a six-call gather. Company/settings is deliberately not part
+    of this snapshot: it carries authorization state and is fetched fresh per
+    request. Raises `APIError` so the caller decides how to degrade (401 ->
+    login, other -> honest error fragment)."""
+    m = await api.get_inventory_metadata(token)
+    return (
+        m.item_schema,
+        m.category_schemas,
+        m.column_prefs,
+        m.locations.get("items", []),
+        m.units,
+        m.category_display_names,
+    )
+
+
+async def _load_inventory_view_metadata(token: str) -> tuple:
+    """Fresh company plus the cached static metadata, as the seven values
+    `_inventory_content` renders from.
+
+    Company is fetched fresh on every request so a dynamically revoked
+    permission is never served from a warm per-token cache, then combined with
+    the cached static snapshot. Raises `APIError` so the caller decides how to
+    degrade."""
+    company = await api.get_company(token)
+    schema, cat_schemas, col_prefs, locations, units, cat_labels = (
+        await _load_inventory_static_metadata(token)
+    )
+    return (schema, cat_schemas, col_prefs, company, locations, units, cat_labels)
+
+
+async def _render_inventory_fragment(
+    token: str, p: dict, lang: str, role: str, **content_kwargs,
+):
+    """Load the view metadata then render #inventory-content, degrading identically.
+
+    Shared by every HTMX fragment route (content, columns, search): each one loads
+    fresh view metadata and renders content in the same two steps, and each must
+    degrade the same way on failure - a 401 from either step sends the browser to
+    login, any other APIError falls back to the honest content-error fragment
+    rather than a blank or broken swap. Extra keyword arguments (e.g.
+    col_manager_open) pass straight through to `_inventory_content`.
+
+    The full page route does not use this helper: it wraps a single try/except
+    around both the metadata load and the content render together (one honest
+    error covers either failure), whereas the fragment routes need the metadata
+    failure to short-circuit before it produces a possibly-incomplete `p` for the
+    content render. The two shapes are similar but not identical, so folding them
+    together would need a flag to tell them apart.
+    """
+    try:
+        schema, cat_schemas, col_prefs, company, locations, units, cat_labels = (
+            await _load_inventory_view_metadata(token)
+        )
+    except APIError as e:
+        if e.status == 401:
+            return RedirectResponse("/login", status_code=302)
+        return _inventory_content_error(p, lang)
+    try:
+        return await _inventory_content(
+            token, p, schema, cat_schemas, col_prefs, company, locations, units, cat_labels,
+            lang=lang, role=role, **content_kwargs,
+        )
+    except APIError as e:
+        if e.status == 401:
+            return RedirectResponse("/login", status_code=302)
+        return _inventory_content_error(p, lang)
+
+
+def _inventory_page_error(request: Request, lang: str) -> FT:
+    """Minimal authenticated full-page inventory error with a retry.
+
+    Rendered when the fresh company/settings read itself fails, so the page has no
+    authorization context. It uses `minimal_shell` - header/chrome only, no
+    permission-filtered sidebar - so it never performs a second company read and
+    never presents nav entries derived from registry DEFAULT grants (which would
+    misrepresent a company-revoked capability as available). It shows an honest
+    error and a way to retry, never a normal inventory page backed by fabricated
+    empty settings."""
+    return minimal_shell(
+        page_header(t("page.inventory", lang)),
+        Div(
+            P(t("inventory.content_load_failed", lang), cls="flash flash--error"),
+            A(t("btn.retry", lang), href="/inventory", cls="btn btn--primary"),
+            cls="empty-state",
+        ),
+        title=page_title("nav.inventory"),
+        lang=lang,
+        request=request,
+    )
+
+
 async def _inventory_content(
     token: str,
     p: dict,
@@ -842,6 +961,8 @@ async def _inventory_content(
     col_prefs: dict,
     company: dict,
     locations: list[dict],
+    units: list[dict],
+    category_display_names: dict,
     col_manager_open: bool = False,
     lang: str = "en",
     role: str = "owner",
@@ -887,28 +1008,28 @@ async def _inventory_content(
         if p["sort"]:
             params["sort"] = p["sort"]
             params["dir"] = p["dir"]
-        items_resp, units_resp = await asyncio.gather(
-            api.list_items(token, params),
-            api.get_units(token),
-        )
+        items_resp = await api.list_items(token, params)
         items = items_resp.get("items", [])
         # Pagination must reflect the SAME filters as the rows (incl. the search `q`), not the
-        # valuation's unfiltered item_count — otherwise a search shows pages that don't exist
+        # valuation's unfiltered item_count - otherwise a search shows pages that don't exist
         # and clicking them lands on a blank page.
         list_total = items_resp.get("total", len(items))
         # Present only under a contact holdings scope: the value of the whole scoped set.
         holdings_total = items_resp.get("value_total")
         attribute_facets = items_resp.get("attribute_facets", {})
-        unit_names: list[str] = [u["name"] for u in units_resp if u.get("name")]
-        units_map: dict[str, dict] = {u["name"]: u for u in units_resp if u.get("name")}
-        try:
-            category_label_map: dict = await api.get_category_display_names(token)
-        except Exception:
-            category_label_map = {}
-    except APIError:
-        valuation, items, unit_names, units_map, category_label_map, attribute_facets = {}, [], [], {}, {}, {}
-        list_total = 0
-        holdings_total = None
+    except APIError as e:
+        # 401 belongs to the caller's auth handler; every other read failure gets
+        # an explicit, retryable error - never a blank table pretending the
+        # catalog is empty. The static metadata (units, category labels) is
+        # already resolved by the shared snapshot before this function runs.
+        if e.status == 401:
+            raise
+        return _inventory_content_error(p, lang)
+    # Units and category display names come from the shared metadata snapshot,
+    # not a per-render round-trip.
+    unit_names: list[str] = [u["name"] for u in units if u.get("name")]
+    units_map: dict[str, dict] = {u["name"]: u for u in units if u.get("name")}
+    category_label_map: dict = category_display_names or {}
 
     currency = company.get("currency")
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
@@ -1071,34 +1192,39 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         p = _parse_params(request)
+        lang = get_lang(request)
 
+        # Authorization state is fetched fresh, never from the per-token metadata
+        # cache. If this read itself fails there is no basis to authorize the
+        # page, so we show an honest error rather than a page backed by empty
+        # settings that would fall back to registry-default permissions.
         try:
-            schema, cat_schemas, col_prefs, company, loc_resp = await asyncio.gather(
-                api.get_item_schema(token),
-                api.get_all_category_schemas(token),
-                api.get_column_prefs(token),
-                api.get_company(token),
-                api.get_locations(token),
-            )
-            locations = loc_resp.get("items", [])
+            company = await api.get_company(token)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            schema, cat_schemas, col_prefs, company, locations = [], {}, {}, {}, []
+            return _inventory_page_error(request, lang)
 
         _settings = company.get("settings") or {}
         _role = _get_role(request)
         if not role_has_permission(_settings, _role, "view_inventory"):
             return RedirectResponse("/dashboard", status_code=302)
 
-        currency = company.get("currency")
-        lang = get_lang(request)
-        vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
-        active_cat = p.get("category", "")
-        eff_schema = _effective_schema(schema, cat_schemas, active_cat)
-        visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
-
-        content = await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, lang=lang, role=_role)
+        # Company is fresh and valid here; a static-metadata or list/valuation
+        # failure degrades to an honest content error inside the normal shell,
+        # never a blank catalog.
+        try:
+            schema, cat_schemas, col_prefs, locations, units, cat_labels = (
+                await _load_inventory_static_metadata(token)
+            )
+            content = await _inventory_content(
+                token, p, schema, cat_schemas, col_prefs, company, locations, units, cat_labels,
+                lang=lang, role=_role,
+            )
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            content = _inventory_content_error(p, lang)
 
         # Search must carry the active filters (status/category/type/location), so searching inside
         # e.g. Sold inventory stays scoped to sold instead of falling back to the default active set.
@@ -1133,6 +1259,7 @@ def setup_routes(app):
             nav_active="inventory",
             lang=lang,
             request=request,
+            company_settings=_settings,
         )
 
     @app.get("/inventory/content")
@@ -1150,18 +1277,8 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         p = _parse_params(request)
-        try:
-            schema, cat_schemas, col_prefs, company, loc_resp = await asyncio.gather(
-                api.get_item_schema(token),
-                api.get_all_category_schemas(token),
-                api.get_column_prefs(token),
-                api.get_company(token),
-                api.get_locations(token),
-            )
-            locations = loc_resp.get("items", [])
-        except APIError as e:
-            schema, cat_schemas, col_prefs, company, locations = [], {}, {}, {}, []
-        return await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, lang=get_lang(request), role=_get_role(request))
+        lang = get_lang(request)
+        return await _render_inventory_fragment(token, p, lang, _get_role(request))
 
     @app.post("/inventory/columns")
     async def inventory_columns(request: Request):
@@ -1193,38 +1310,22 @@ def setup_routes(app):
             "per_page": int(form.get("per_page", _DEFAULT_PER_PAGE) or _DEFAULT_PER_PAGE),
             "cols": [],  # cols are now saved in prefs; don't pass via URL
         }
-        try:
-            schema, cat_schemas, col_prefs, company, loc_resp = await asyncio.gather(
-                api.get_item_schema(token),
-                api.get_all_category_schemas(token),
-                api.get_column_prefs(token),
-                api.get_company(token),
-                api.get_locations(token),
-            )
-            locations = loc_resp.get("items", [])
-        except APIError:
-            schema, cat_schemas, col_prefs, company, locations = [], {}, {}, {}, []
-        return await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, col_manager_open=True, lang=get_lang(request), role=_get_role(request))
+        lang = get_lang(request)
+        # The column-pref write above invalidated the metadata snapshot, so this
+        # reload reflects the saved prefs rather than a stale cached copy.
+        return await _render_inventory_fragment(
+            token, p, lang, _get_role(request), col_manager_open=True,
+        )
 
     @app.get("/inventory/search")
     async def inventory_search(request: Request):
-        """Legacy search endpoint — now delegates to /inventory/content for full fragment swap."""
+        """Legacy search endpoint - now delegates to /inventory/content for full fragment swap."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         p = _parse_params(request)
-        try:
-            schema, cat_schemas, col_prefs, company, loc_resp = await asyncio.gather(
-                api.get_item_schema(token),
-                api.get_all_category_schemas(token),
-                api.get_column_prefs(token),
-                api.get_company(token),
-                api.get_locations(token),
-            )
-            locations = loc_resp.get("items", [])
-        except APIError as e:
-            schema, cat_schemas, col_prefs, company, locations = [], {}, {}, {}, []
-        return await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, lang=get_lang(request), role=_get_role(request))
+        lang = get_lang(request)
+        return await _render_inventory_fragment(token, p, lang, _get_role(request))
 
     @app.get("/inventory/export/csv")
     async def inventory_export_csv(request: Request):
@@ -1985,17 +2086,12 @@ def setup_routes(app):
     @app.get("/api/items/{entity_id}/label-templates")
     async def item_label_templates(request: Request, entity_id: str):
         """Return label template dropdown options for the print button."""
-        from ui.config import API_BASE
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         try:
-            import httpx
-            async with httpx.AsyncClient(timeout=5) as c:
-                r = await c.get(
-                    f"{API_BASE}/api/labels/templates",
-                    headers={"Authorization": f"Bearer {token}"},
-                )
+            async with api._local_client(token, timeout=5.0, follow_redirects=False) as c:
+                r = await c.get("/api/labels/templates")
                 templates = r.json().get("items", []) if r.status_code == 200 else []
         except Exception:
             templates = []

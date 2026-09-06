@@ -41,6 +41,7 @@ from .costing import RecipeError, labor_hours, roll_up_cost, where_used
 DEFAULT_HOURS_PER_DAY = 8.0
 from .expansion import expand_recipe, explode_demand, is_manufacturable
 from .labor import apply_labor_providers
+from .search import _INCOMPLETE_STATUSES, search_orders
 
 router = APIRouter(prefix="/manufacturing", dependencies=[Depends(get_current_user)], tags=["manufacturing"])
 
@@ -1555,8 +1556,8 @@ async def _recost_run_lots(session: AsyncSession, company_id, user, order_id: st
 # ---------------------------------------------------------------------------
 
 # Canonical run statuses. "incomplete" = everything still needing attention.
+# _INCOMPLETE_STATUSES is single-sourced in search.py, which owns the list filter.
 _RUN_STATUSES = ("planned", "in_progress", "on_hold", "completed", "cancelled")
-_INCOMPLETE_STATUSES = frozenset({"planned", "in_progress", "on_hold"})
 
 
 @router.get("")
@@ -1575,36 +1576,7 @@ async def list_orders(
 
     Runs are NOT auto-created from documents in the product-centric model; demand lives on the
     To-Make board (GET /manufacturing/to-make) and a run is created when you choose to produce."""
-    rows = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "mfg_order",
-        )
-    )).scalars().all()
-    items = [
-        r.state | {"id": r.entity_id,
-                   "created_at": r.created_at.isoformat() if r.created_at else None}
-        for r in rows
-    ]
-    if status:
-        s = status.lower().strip()
-        if s == "incomplete":
-            items = [o for o in items if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
-        else:
-            items = [o for o in items if str(o.get("status") or "").lower() == s]
-    if q:
-        ql = q.lower().strip().strip(",")
-        def _hay(o: dict) -> str:
-            return " ".join([
-                str(o.get("id", "")), str(o.get("description", "")), str(o.get("source_doc_id", "")),
-                " ".join(str(x.get("sku", "")) for x in o.get("expected_outputs", [])),
-            ]).lower()
-        items = [o for o in items if ql in _hay(o)]
-    if date_from:
-        items = [o for o in items if (o.get("created_at") or "")[:10] >= date_from]
-    if date_to:
-        items = [o for o in items if (o.get("created_at") or "")[:10] <= date_to]
-    items.sort(key=lambda o: o.get("created_at") or "", reverse=True)
+    items = await search_orders(session, company_id, q=q, status=status, date_from=date_from, date_to=date_to)
     return {"items": items, "total": len(items)}
 
 

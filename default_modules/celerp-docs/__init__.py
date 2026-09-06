@@ -34,6 +34,11 @@ PLUGIN_MANIFEST = {
             {"label": "Shipping Document", "doc_type": "shipping_doc", "statuses": ["draft", "sent"]},
             {"label": "Purchase Order", "doc_type": "purchase_order", "statuses": ["draft"]},
         ],
+        "search_provider": {
+            "handler": "celerp_docs.search:global_search",
+            "result_key": "items",
+            "permission": "view_documents",
+        },
     },
     "migrations": None,
     "requires": [],

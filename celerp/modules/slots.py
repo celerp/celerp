@@ -17,6 +17,14 @@ import_adapter     Source option in the CSV import page
 category_schema    Default field definitions for a named category
 projection_handler Maps event-type prefixes to a handler function
 on_company_created Async callback(session, company_id) fired after a new company is persisted
+search_provider    Contributes rows to the global search bar. Exactly one descriptor
+                   dict per module: {"handler", "result_key", "permission"}. handler
+                   names an in-module "module.path:function" resolved and validated
+                   async at load, invoked as
+                   `async def handler(session, company_id, role, q, limit) -> dict`
+                   returning {result_key: [rows]}; result_key is "items" or "entries";
+                   permission gates the source per company role. See the module loader
+                   for the full descriptor contract.
 
 Usage in core UI
 ----------------
@@ -29,7 +37,24 @@ Usage in core UI
 """
 from __future__ import annotations
 
+from typing import Callable
+
 _slots: dict[str, list[dict]] = {}
+
+
+def resolve_handler(dotted: str) -> Callable:
+    """Resolve a "module.path:function" string to the callable it names.
+
+    Raises ImportError if the module cannot be imported and AttributeError if
+    the module has no such attribute. Callers wrap this in their own try/except
+    to apply their failure policy (swallow, propagate, log-and-skip); the shared
+    resolver never decides that policy, it only does the import and lookup.
+    """
+    import importlib
+
+    module_path, func_name = dotted.rsplit(":", 1)
+    mod = importlib.import_module(module_path)
+    return getattr(mod, func_name)
 
 
 def register(slot: str, contribution: dict) -> None:
@@ -64,7 +89,6 @@ async def fire_lifecycle(slot: str, **kwargs) -> None:
     (with traceback) and swallowed, so a recurrence surfaces as an alert
     instead of vanishing.
     """
-    import importlib
     import logging
 
     _log = logging.getLogger(__name__)
@@ -74,9 +98,7 @@ async def fire_lifecycle(slot: str, **kwargs) -> None:
         if not handler_path:
             continue
         try:
-            mod_path, func_name = handler_path.rsplit(":", 1)
-            mod = importlib.import_module(mod_path)
-            func = getattr(mod, func_name)
+            func = resolve_handler(handler_path)
             await func(**kwargs)
         except Exception as exc:
             _log.exception(
@@ -90,7 +112,6 @@ async def fire_lifecycle_strict(slot_name: str, **kwargs) -> None:
 
     Use for slots where a handler must be able to block the action.
     """
-    import importlib
     import logging
     from fastapi import HTTPException
 
@@ -101,9 +122,7 @@ async def fire_lifecycle_strict(slot_name: str, **kwargs) -> None:
         if not handler_path:
             continue
         try:
-            mod_path, func_name = handler_path.rsplit(":", 1)
-            mod = importlib.import_module(mod_path)
-            func = getattr(mod, func_name)
+            func = resolve_handler(handler_path)
             await func(**kwargs)
         except HTTPException:
             raise

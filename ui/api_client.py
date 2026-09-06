@@ -8,7 +8,34 @@ from contextlib import asynccontextmanager
 
 import httpx
 
+from celerp.capacity import REQUEST_DB_POOL_SIZE
+
 logger = logging.getLogger(__name__)
+
+# The bulk transport carries the handful of long, finite local operations (backup
+# bootstrap/import, large attachment transfer) so they never hold an interactive
+# connection slot. Two is enough for the concurrent long operations the UI can
+# start, and keeping it small guarantees a page fan-out cannot be starved by them.
+_BULK_MAX_CONNECTIONS = 2
+# How long a request waits for a free pooled connection before failing fast rather
+# than hanging: a saturated pool should surface a temporary error, not an
+# indefinite stall.
+_POOL_ACQUIRE_TIMEOUT = 2.0
+
+# One source of truth for the temporary-failure copy every local client surfaces,
+# so the interactive, anonymous, AI, and bulk context managers cannot drift apart.
+SATURATION_MESSAGE = (
+    "The app is handling too many requests right now. Please try again in a moment."
+)
+TIMEOUT_MESSAGE = (
+    "Request timed out. The server is busy or the payload is too large. "
+    "Try again or reduce the batch size."
+)
+
+
+def _connect_message() -> str:
+    from ui.config import API_BASE
+    return f"Cannot reach API at {API_BASE}. Is the server running?"
 
 
 class APIError(Exception):
@@ -52,6 +79,7 @@ class _SharedTransport(httpx.AsyncHTTPTransport):
 # client) is the right shape here because auth differs per request; alt (d) in the
 # plan rejected a single global client for exactly that reason.
 _shared_transport: _SharedTransport | None = None
+_bulk_transport: _SharedTransport | None = None
 
 # Lightweight observability for the UI client path: how many requests were driven
 # through the shared pool, logged on shutdown so pool pressure is visible.
@@ -59,107 +87,206 @@ _ui_request_count = 0
 
 
 def _get_transport() -> _SharedTransport:
-    """Return the shared bounded transport, building it lazily on first use."""
+    """Return the shared interactive transport, building it lazily on first use.
+
+    Its connection ceiling is the API's own request pool size, so an interactive
+    page fan-out can never ask the pool for more connections than it holds for
+    interactive work.
+    """
     global _shared_transport
     if _shared_transport is None:
         _shared_transport = _SharedTransport(
-            limits=httpx.Limits(max_connections=32, max_keepalive_connections=8),
+            limits=httpx.Limits(
+                max_connections=REQUEST_DB_POOL_SIZE, max_keepalive_connections=8
+            ),
         )
     return _shared_transport
 
 
-async def close_shared_client() -> None:
-    """Close the shared transport if one was built. Called from the UI app shutdown.
+def _get_bulk_transport() -> _SharedTransport:
+    """Return the shared bulk transport for long, finite local operations.
 
-    Safe to call when none was built. Logs the total request count as observability
-    for how much traffic the bounded pool carried this process lifetime."""
-    global _shared_transport
-    transport = _shared_transport
+    Separate and small (two connections) so backup import and large attachment
+    transfers cannot consume the interactive pool's slots.
+    """
+    global _bulk_transport
+    if _bulk_transport is None:
+        _bulk_transport = _SharedTransport(
+            limits=httpx.Limits(
+                max_connections=_BULK_MAX_CONNECTIONS, max_keepalive_connections=1
+            ),
+        )
+    return _bulk_transport
+
+
+def _local_timeout(timeout: float | httpx.Timeout) -> httpx.Timeout:
+    """Return a Timeout that always forces the local pool-acquire bound.
+
+    A caller may hand in a bare float or a fully specified httpx.Timeout; either
+    way the pool component is overridden to the local bound so no call site can
+    accidentally widen or drop it, while any connect/read/write the caller set is
+    preserved.
+    """
+    if isinstance(timeout, httpx.Timeout):
+        return httpx.Timeout(
+            connect=timeout.connect,
+            read=timeout.read,
+            write=timeout.write,
+            pool=_POOL_ACQUIRE_TIMEOUT,
+        )
+    return httpx.Timeout(timeout, pool=_POOL_ACQUIRE_TIMEOUT)
+
+
+def _local_client(
+    token: str | None = None,
+    *,
+    timeout: float | httpx.Timeout = 10.0,
+    follow_redirects: bool = True,
+    bulk: bool = False,
+    headers: dict | None = None,
+) -> httpx.AsyncClient:
+    """Build an AsyncClient sharing one of the two bounded local transports.
+
+    This is the single place UI code creates a client into the local API, so no
+    call site opens its own private pool. Each site keeps control of the behavior
+    that differs between them: an optional bearer token, its timeout, whether
+    redirects are followed (proxy routes that inspect a raw redirect pass
+    follow_redirects=False), and interactive versus bulk transport selection. A
+    finite pool-acquire timeout is applied so a saturated pool fails fast instead
+    of hanging.
+    """
+    global _ui_request_count
+    _ui_request_count += 1
+    from ui.config import API_BASE
+
+    merged_headers = dict(headers or {})
+    if token is not None:
+        merged_headers["Authorization"] = f"Bearer {token}"
+
+    return httpx.AsyncClient(
+        base_url=API_BASE,
+        headers=merged_headers or None,
+        timeout=_local_timeout(timeout),
+        follow_redirects=follow_redirects,
+        transport=_get_bulk_transport() if bulk else _get_transport(),
+    )
+
+
+async def close_shared_client() -> None:
+    """Close the shared transports if built. Called from the UI app shutdown.
+
+    Safe to call when none was built. Owns BOTH background coordinators: it
+    snapshots every in-flight refresh and metadata task, clears their maps and
+    caches, bumps the metadata generation so no straggler can repopulate, then
+    cancels and awaits every task before tearing down the transports they run on.
+    Logs the total request count as observability for how much traffic the
+    bounded pool carried this process lifetime."""
+    global _shared_transport, _bulk_transport
+    refresh_tasks = _refresh_coordinator.tasks_for_shutdown()
+    metadata_tasks = _metadata_coordinator.tasks_for_shutdown()
+    _refresh_coordinator.clear_maps()
+    _metadata_coordinator.invalidate_all()
+    all_tasks = refresh_tasks + metadata_tasks
+    for task in all_tasks:
+        task.cancel()
+    if all_tasks:
+        await asyncio.gather(*all_tasks, return_exceptions=True)
+    transports = [t for t in (_shared_transport, _bulk_transport) if t is not None]
     _shared_transport = None
+    _bulk_transport = None
     logger.info("UI API client shutdown: %d requests served via shared pool", _ui_request_count)
-    if transport is not None:
+    for transport in transports:
         try:
             await transport.shutdown_pool()
         except Exception:
             pass
 
 
-def _client(token: str, timeout: float = 10.0) -> httpx.AsyncClient:
-    global _ui_request_count
-    _ui_request_count += 1
-    from ui.config import API_BASE
-    return httpx.AsyncClient(
-        base_url=API_BASE,
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=timeout,
-        follow_redirects=True,
-        transport=_get_transport(),
-    )
+def _client(token: str, timeout: float | httpx.Timeout = 10.0) -> httpx.AsyncClient:
+    return _local_client(token, timeout=timeout, follow_redirects=True, bulk=False)
 
 
-def _anon_client(timeout: float = 10.0) -> httpx.AsyncClient:
+def _anon_client(timeout: float | httpx.Timeout = 10.0) -> httpx.AsyncClient:
     """Unauthenticated client (no Authorization header)."""
-    global _ui_request_count
-    _ui_request_count += 1
-    from ui.config import API_BASE
-    return httpx.AsyncClient(
-        base_url=API_BASE,
-        timeout=timeout,
-        follow_redirects=True,
-        transport=_get_transport(),
-    )
+    return _local_client(None, timeout=timeout, follow_redirects=True, bulk=False)
 
 
 @asynccontextmanager
-async def _api_client(token: str, timeout: float = 10.0):
+async def _local_error_mapping():
+    """Map httpx transport errors to the shared APIError statuses/copy.
+
+    The order matters: PoolTimeout (pool saturated -> 503 retryable) subclasses
+    TimeoutException (slow upstream -> 504), so it is caught first. Every local
+    client context manager wraps its body in this one mapping so the four of them
+    can never diverge in status or copy.
+    """
+    try:
+        yield
+    except httpx.PoolTimeout as exc:
+        raise APIError(503, SATURATION_MESSAGE) from exc
+    except httpx.TimeoutException as exc:
+        raise APIError(504, TIMEOUT_MESSAGE) from exc
+    except httpx.ConnectError as exc:
+        raise APIError(503, _connect_message()) from exc
+
+
+@asynccontextmanager
+async def _api_client(token: str, timeout: float | httpx.Timeout = 10.0):
     """Authenticated client context manager.
 
     Converts httpx network errors to APIError so all callers only need to
     handle APIError — no scattered per-function try/except for timeouts or
     connection failures.
     """
-    from ui.config import API_BASE
-    try:
+    async with _local_error_mapping():
         async with _client(token, timeout=timeout) as c:
             yield c
-    except httpx.TimeoutException as exc:
-        raise APIError(504, "Request timed out. The server is busy or the payload is too large. Try again or reduce the batch size.") from exc
-    except httpx.ConnectError as exc:
-        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
 
 
 @asynccontextmanager
-async def _anon_api_client(timeout: float = 10.0):
+async def _anon_api_client(timeout: float | httpx.Timeout = 10.0):
     """Unauthenticated client context manager with the same error mapping."""
-    from ui.config import API_BASE
-    try:
+    async with _local_error_mapping():
         async with _anon_client(timeout=timeout) as c:
             yield c
-    except httpx.TimeoutException as exc:
-        raise APIError(504, "Request timed out. The server is busy or the payload is too large.") from exc
-    except httpx.ConnectError as exc:
-        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
 
 
 @asynccontextmanager
-async def _ai_api_client(token: str, session_token: str, timeout: float = 10.0):
-    """Authenticated client with X-Session-Token header for AI endpoints."""
-    global _ui_request_count
-    _ui_request_count += 1
-    from ui.config import API_BASE
-    try:
-        async with httpx.AsyncClient(
-            base_url=API_BASE,
-            headers={"Authorization": f"Bearer {token}", "X-Session-Token": session_token},
+async def _ai_api_client(token: str, session_token: str, timeout: float | httpx.Timeout = 10.0,
+                         bulk: bool = False):
+    """Authenticated client with X-Session-Token header for AI endpoints.
+
+    AI traffic rides the interactive transport by default; a file upload sets
+    ``bulk`` so its finite body drives the small bulk pool instead of holding an
+    interactive connection slot, while still carrying the session token.
+    """
+    async with _local_error_mapping():
+        async with _local_client(
+            token,
             timeout=timeout,
             follow_redirects=True,
-            transport=_get_transport(),
+            bulk=bulk,
+            headers={"X-Session-Token": session_token},
         ) as c:
             yield c
-    except httpx.TimeoutException as exc:
-        raise APIError(504, "Request timed out. The server is busy or the payload is too large.") from exc
-    except httpx.ConnectError as exc:
-        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
+
+
+@asynccontextmanager
+async def _bulk_api_client(token: str, timeout: float | httpx.Timeout = 10.0):
+    """Authenticated client on the bulk transport for long, finite file transfers.
+
+    Same 503/504/connect mapping as the interactive wrapper, but its requests
+    drive the small separate bulk pool so a large upload/download can never hold
+    an interactive connection slot.
+    """
+    async with _local_error_mapping():
+        async with _local_client(
+            token,
+            timeout=timeout,
+            follow_redirects=True,
+            bulk=True,
+        ) as c:
+            yield c
 
 
 def _raise(r: httpx.Response) -> httpx.Response:
@@ -207,8 +334,10 @@ async def batch_import(token: str, path: str, records: list[dict], upsert: bool 
 
     This is intentionally generic so UI routes can reuse it for items/docs/lists/crm/etc.
     Timeout is set high (300s) because large batches involve many DB writes server-side.
+    A large import holds its connection for the whole write, so it rides the bulk pool
+    rather than pinning an interactive slot a page fan-out needs.
     """
-    async with _api_client(token, timeout=300.0) as c:
+    async with _bulk_api_client(token, timeout=300.0) as c:
         r = _raise(await c.post(path, json={"records": records, "upsert": upsert}))
         return r.json()
 
@@ -296,12 +425,220 @@ async def register(company_name: str, email: str, name: str, password: str,
         return data["access_token"], data["refresh_token"]
 
 
-async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
-    """Exchange refresh token for new (access_token, refresh_token). Raises APIError on failure."""
+# ---------------------------------------------------------------------------
+# Single-flight refresh coordinator
+# ---------------------------------------------------------------------------
+# Several authenticated requests can arrive at once carrying the same refresh
+# cookie (a page that fires a handful of concurrent HTMX fragments, all past the
+# token's sliding half-life). Each used to run its own POST /auth/token/refresh,
+# so N concurrent requests meant N upstream refreshes hammering the auth path at
+# exactly the moment the pool is under pressure. The coordinator collapses
+# concurrent identical presentations into one upstream POST whose result every
+# caller receives.
+#
+# Keys are the SHA-256 digest of the refresh token, never the raw token: the map
+# lives in process memory and the digest is enough to coalesce identical
+# presentations without keeping the secret around as a dict key. A failure is
+# never cached - only a successful pair is held, and only for a short grace so a
+# straggler that arrives microseconds after the winner still coalesces, after
+# which the next presentation refreshes again.
+import asyncio  # noqa: E402 - kept beside the coordinator it serves
+import hashlib  # noqa: E402
+import time  # noqa: E402
+import copy as _copy  # noqa: E402
+
+_REFRESH_GRACE_SECONDS = 0.5
+
+
+def _refresh_key(refresh_token: str) -> bytes:
+    return hashlib.sha256(refresh_token.encode()).digest()
+
+
+async def _refresh_upstream(refresh_token: str) -> tuple[str, str]:
+    """The raw upstream exchange: POST the refresh token, return the new pair.
+
+    This is the single network call the coordinator coalesces onto; it holds no
+    coordination state of its own so it stays trivially testable and mockable.
+    """
     async with _anon_api_client() as c:
         r = _raise(await c.post("/auth/token/refresh", json={"refresh_token": refresh_token}))
         data = r.json()
         return data["access_token"], data["refresh_token"]
+
+
+def _consume_task_exception(task: asyncio.Task) -> None:
+    """Retrieve a finished task's exception so the loop never warns about it.
+
+    Registered as a done-callback on every shared coordinator task, so a failed
+    orphan (one whose every waiter cancelled before it finished) has its
+    exception state read and never surfaces as "Task exception was never
+    retrieved".
+    """
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
+
+
+class _SingleFlightCoordinator:
+    """One coalescing coordinator, shared by the refresh and metadata caches.
+
+    Concurrent callers presenting the same key share one task. The task, never a
+    waiter, owns its own map cleanup: on failure it removes its own inflight
+    entry so the next presentation retries; on success it removes its own
+    inflight entry and, only if it is still the registered task for the key AND
+    the generation captured at its creation still matches, publishes into the
+    success/cache map for a short grace/TTL window - so a fetch that started
+    before an invalidation can never overwrite fresher state. A waiter is
+    shielded from its own cancellation so the shared task keeps running for the
+    others. Failures are never cached.
+
+    ``grace_seconds`` is a callable, not a fixed float, so a caller (or a test)
+    that reassigns the backing module constant is observed on the coordinator's
+    next prune, exactly as the two hand-written coordinators this replaces did.
+    """
+
+    def __init__(self, *, grace_seconds, track_tasks: bool = False, copy_on_read: bool = False):
+        self.lock = asyncio.Lock()
+        self.inflight: dict[bytes, asyncio.Task] = {}
+        self.store: dict[bytes, tuple[float, object]] = {}
+        self.tasks: set[asyncio.Task] | None = set() if track_tasks else None
+        self._grace_seconds = grace_seconds
+        self._generation = 0
+        self._copy_on_read = copy_on_read
+
+    def _prune_locked(self, now: float) -> None:
+        """Drop every store entry older than the grace/TTL. Lock held.
+
+        Pruned globally (every key), not only the one being read, so a digest
+        never presented again does not accumulate forever in a long-running
+        process.
+        """
+        grace = self._grace_seconds()
+        for key, (created_at, _value) in list(self.store.items()):
+            if now - created_at > grace:
+                self.store.pop(key, None)
+
+    def clear_maps(self) -> None:
+        """Clear the inflight and store maps. Tracked tasks and generation untouched.
+
+        Invalidation and shutdown both call this to drop cached results and
+        detach new callers from any old task, but a task already running is
+        removed from the tracked set only by its own completion callback or by
+        final shutdown - never here. Forgetting a live task here would hide it
+        from tasks_for_shutdown(), so close_shared_client could tear down the
+        transport the task is still reading on.
+        """
+        self.inflight.clear()
+        self.store.clear()
+
+    def reset_for_tests(self) -> None:
+        """Clear inflight, store, and any tracked tasks. For tests only."""
+        self.clear_maps()
+        if self.tasks is not None:
+            self.tasks.clear()
+
+    def invalidate_all(self) -> None:
+        """Bump the generation and clear the inflight and store maps. Process-wide.
+
+        No request that starts after this can attach to the old task, and any
+        old inflight fetch cannot repopulate the store because its captured
+        generation is now stale. A pre-invalidation fetch keeps running and stays
+        tracked, so shutdown can still cancel and await it before its transport is
+        torn down: invalidation forgets cached results, never live tasks.
+        """
+        self._generation += 1
+        self.clear_maps()
+
+    def tasks_for_shutdown(self) -> list[asyncio.Task]:
+        """Every task shutdown must cancel and await.
+
+        A tracked coordinator uses its done-tracked set, a superset of inflight
+        that stays populated through the brief window between the task's own
+        inflight cleanup and asyncio marking it done. An untracked coordinator
+        has no such set and uses inflight directly.
+        """
+        if self.tasks is not None:
+            return list(self.tasks)
+        return list(self.inflight.values())
+
+    async def _run(self, key: bytes, generation: int, fetch) -> object:
+        current = asyncio.current_task()
+        try:
+            result = await fetch()
+        except BaseException:
+            async with self.lock:
+                if self.inflight.get(key) is current:
+                    self.inflight.pop(key, None)
+            raise
+
+        async with self.lock:
+            if self.inflight.get(key) is current:
+                self.inflight.pop(key, None)
+                if generation == self._generation:
+                    self.store[key] = (time.monotonic(), result)
+        return result
+
+    async def run(self, key: bytes, fetch):
+        """Coalesce concurrent identical-key calls onto one shared task.
+
+        A fresh store entry is served directly; a cold or expired key runs
+        exactly one shared task even under a concurrent burst, because
+        concurrent callers await the same task rather than each starting their
+        own.
+        """
+        async with self.lock:
+            now = time.monotonic()
+            self._prune_locked(now)
+            entry = self.store.get(key)
+            if entry is not None and (now - entry[0]) <= self._grace_seconds():
+                value = entry[1]
+                return _copy.deepcopy(value) if self._copy_on_read else value
+            task = self.inflight.get(key)
+            if task is None:
+                generation = self._generation
+                task = asyncio.create_task(self._run(key, generation, fetch))
+                if self.tasks is not None:
+                    tracked = self.tasks
+                    tracked.add(task)
+
+                    def _done(finished: asyncio.Task) -> None:
+                        tracked.discard(finished)
+                        _consume_task_exception(finished)
+
+                    task.add_done_callback(_done)
+                else:
+                    task.add_done_callback(_consume_task_exception)
+                self.inflight[key] = task
+
+        # shield: this waiter's own cancellation must not cancel the shared task
+        # the other waiters are still awaiting. The task, not the waiter, owns
+        # cleanup.
+        result = await asyncio.shield(task)
+        return _copy.deepcopy(result) if self._copy_on_read else result
+
+
+_refresh_coordinator = _SingleFlightCoordinator(grace_seconds=lambda: _REFRESH_GRACE_SECONDS)
+_refresh_inflight = _refresh_coordinator.inflight
+_refresh_success = _refresh_coordinator.store
+
+
+def _reset_refresh_state_for_tests() -> None:
+    """Clear the coordinator's module-level maps. For tests only."""
+    _refresh_coordinator.reset_for_tests()
+
+
+async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
+    """Exchange refresh token for new (access_token, refresh_token), single-flight.
+
+    Concurrent callers presenting the same refresh token share one upstream POST.
+    A waiter that is cancelled (its request disconnected) simply raises
+    CancelledError; the shared task keeps running and cleans itself up, so the
+    other waiters still complete and a later request never replays a dead task.
+    Raises APIError on failure, and a failure is never cached.
+    """
+    key = _refresh_key(refresh_token)
+    return await _refresh_coordinator.run(key, lambda: _refresh_upstream(refresh_token))
 
 
 async def my_companies(token: str) -> dict:
@@ -367,7 +704,8 @@ async def patch_company(token: str, data: dict) -> dict:
         if direct_patch:
             _raise(await c.patch("/companies/me", json=direct_patch))
         raw = _raise(await c.get("/companies/me")).json()
-        return _flatten_company(raw)
+    _invalidate_inventory_metadata()
+    return _flatten_company(raw)
 
 
 async def create_company(token: str, company_name: str) -> str:
@@ -380,10 +718,12 @@ async def create_company(token: str, company_name: str) -> str:
 async def patch_role_permission(token: str, perm_key: str, role_key: str, granted: bool) -> dict:
     """Toggle one permission's minimum role. Owner-gated by the backing endpoint."""
     async with _api_client(token) as c:
-        return _raise(await c.patch(
+        result = _raise(await c.patch(
             "/companies/me/role-permissions",
             json={"perm_key": perm_key, "role_key": role_key, "granted": granted},
         )).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def get_item_schema(token: str) -> list[dict]:
@@ -393,7 +733,9 @@ async def get_item_schema(token: str) -> list[dict]:
 
 async def patch_item_schema(token: str, fields: list[dict]) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.patch("/companies/me/item-schema", json={"fields": fields})).json()
+        result = _raise(await c.patch("/companies/me/item-schema", json={"fields": fields})).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def get_all_category_schemas(token: str) -> dict:
@@ -420,13 +762,17 @@ async def get_category_schema(token: str, category: str) -> list[dict]:
 
 async def patch_category_schema(token: str, category: str, fields: list[dict]) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.patch(f"/companies/me/category-schema/{category}", json={"fields": fields})).json()
+        result = _raise(await c.patch(f"/companies/me/category-schema/{category}", json={"fields": fields})).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def merge_category_schemas(token: str, schemas: dict[str, list[dict]]) -> dict:
     """Auto-merge attribute keys from import into category schemas."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/companies/me/category-schemas/merge", json={"schemas": schemas})).json()
+        result = _raise(await c.post("/companies/me/category-schemas/merge", json={"schemas": schemas})).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def get_column_prefs(token: str) -> dict:
@@ -436,7 +782,9 @@ async def get_column_prefs(token: str) -> dict:
 
 async def patch_column_prefs(token: str, prefs: dict[str, list[str]]) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.patch("/companies/me/column-prefs", json={"prefs": prefs})).json()
+        result = _raise(await c.patch("/companies/me/column-prefs", json={"prefs": prefs})).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def get_locations(token: str) -> dict:
@@ -446,12 +794,16 @@ async def get_locations(token: str) -> dict:
 
 async def create_location(token: str, data: dict) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post("/companies/me/locations", json=data)).json()
+        result = _raise(await c.post("/companies/me/locations", json=data)).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def delete_location(token: str, location_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.delete(f"/companies/me/locations/{location_id}")).json()
+        result = _raise(await c.delete(f"/companies/me/locations/{location_id}")).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def get_users(token: str) -> dict:
@@ -562,7 +914,127 @@ async def get_units(token: str) -> list[dict]:
 async def patch_units(token: str, units: list[dict]) -> list[dict]:
     """PUT /companies/me/units → replace units list."""
     async with _api_client(token) as c:
-        return _raise(await c.put("/companies/me/units", json={"units": units})).json()
+        result = _raise(await c.put("/companies/me/units", json={"units": units})).json()
+    _invalidate_inventory_metadata()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Inventory static-metadata cache
+# ---------------------------------------------------------------------------
+# The inventory pages fetch the same six genuinely static getters on every
+# load (company/settings is fetched separately and fresh every time, never
+# cached here). A short-lived cache collapses those repeated round-trips to one
+# per token per window without ever serving a stale snapshot: the TTL is small,
+# failures are never cached, and every write that could change the snapshot
+# invalidates it centrally in the mutation wrapper, not the route.
+
+from typing import NamedTuple  # noqa: E402
+
+_METADATA_TTL_SECONDS = 5.0
+
+
+class InventoryMetadata(NamedTuple):
+    """One immutable snapshot of the six genuinely static inventory getters.
+
+    Company/settings is deliberately NOT here: it carries authorization state
+    (role_grants, enabled_modules) that must never be served from a short-lived,
+    per-token UI optimization, so inventory views fetch it fresh on every
+    request. Named fields (not a tuple of positional results) so a caller can
+    never swap two same-typed results by position. Callers receive defensive
+    copies, so a caller mutating what it reads cannot poison the cache.
+    """
+
+    item_schema: list[dict]
+    category_schemas: dict
+    category_display_names: dict
+    column_prefs: dict
+    locations: dict
+    units: list[dict]
+
+
+def _metadata_key(token: str) -> bytes:
+    # SHA-256 of the whole validated access token, never a decoded company_id:
+    # the UI does not verify JWT signatures locally, so keying on a claim would
+    # let a forged token collide with an authorized entry. A different token is
+    # a different key even when it claims the same company.
+    return hashlib.sha256(token.encode()).digest()
+
+
+_metadata_coordinator = _SingleFlightCoordinator(
+    grace_seconds=lambda: _METADATA_TTL_SECONDS,
+    track_tasks=True,
+    copy_on_read=True,
+)
+_metadata_cache = _metadata_coordinator.store
+_metadata_inflight = _metadata_coordinator.inflight
+# Every created metadata task, tracked so shutdown can cancel and await them all.
+_metadata_tasks = _metadata_coordinator.tasks
+
+
+def _reset_metadata_cache_for_tests() -> None:
+    """Clear the metadata cache maps. For tests only."""
+    _metadata_coordinator.reset_for_tests()
+
+
+async def _fetch_inventory_metadata(token: str) -> InventoryMetadata:
+    """One cold fetch: the six static getters gathered once, assembled by name.
+
+    Company is intentionally absent: it is fetched fresh per request outside this
+    cache so authorization state is never stale.
+    """
+    (
+        item_schema,
+        category_schemas,
+        category_display_names,
+        column_prefs,
+        locations,
+        units,
+    ) = await asyncio.gather(
+        get_item_schema(token),
+        get_all_category_schemas(token),
+        get_category_display_names(token),
+        get_column_prefs(token),
+        get_locations(token),
+        get_units(token),
+    )
+    return InventoryMetadata(
+        item_schema=item_schema,
+        category_schemas=category_schemas,
+        category_display_names=category_display_names,
+        column_prefs=column_prefs,
+        locations=locations,
+        units=units,
+    )
+
+
+async def get_inventory_metadata(token: str) -> InventoryMetadata:
+    """Return the six static-metadata getters as one snapshot, cached briefly.
+
+    A fresh entry within the TTL is served from cache; a cold key runs exactly
+    one gather even under a concurrent burst, because concurrent cold callers
+    await a single shared inflight Task rather than each launching their own. The
+    shared task owns its own cleanup, so a cancelled waiter never orphans state.
+    Failures are never cached. Every returned snapshot is a defensive deep copy
+    so a caller mutating what it reads cannot corrupt the stored entry.
+    """
+    key = _metadata_key(token)
+    return await _metadata_coordinator.run(key, lambda: _fetch_inventory_metadata(token))
+
+
+def _invalidate_inventory_metadata() -> None:
+    """Invalidate all cached static metadata process-wide after a settings write.
+
+    A settings write by one authenticated user can change what other users see,
+    so invalidating only the writer's token digest would leave others stale.
+    Bumping the generation and clearing both maps means no request that starts
+    after the write attaches to the old task, and any old inflight fetch cannot
+    repopulate the cache because its captured generation is now stale. Existing
+    requests already awaiting the old task still finish against their snapshot;
+    over-invalidating across companies is acceptable for a five-second cache and
+    far safer than cross-token staleness.
+    """
+    _metadata_coordinator.invalidate_all()
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +1135,7 @@ async def patch_item(token: str, entity_id: str, fields_changed: dict) -> dict:
 
 
 async def upload_attachment(token: str, entity_id: str, file) -> dict:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "upload")
         content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
@@ -674,7 +1146,7 @@ async def upload_attachment(token: str, entity_id: str, file) -> dict:
 
 
 async def upload_item_file(token: str, entity_id: str, file) -> dict:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "upload")
         content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
@@ -717,7 +1189,7 @@ async def delete_attachment(token: str, entity_id: str, att_id: str) -> None:
 
 async def bulk_attach(token: str, file, override_hero: bool = False) -> dict:
     # Large ZIP upload + per-file processing can take well over the default 10s.
-    async with _api_client(token, timeout=180.0) as c:
+    async with _bulk_api_client(token, timeout=180.0) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "attachments.zip")
         params = {"override_hero": "1"} if override_hero else {}
@@ -1107,7 +1579,7 @@ async def complete_reconciliation(token: str, session_id: str) -> dict:
 
 async def import_recon_csv(token: str, session_id: str, content: bytes, filename: str, column_map: dict | None = None) -> dict:
     import json as _json
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         files = {"file": (filename, content, "text/csv")}
         data = {"column_map": _json.dumps(column_map)} if column_map else {}
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/import-csv", files=files, data=data)).json()
@@ -1161,7 +1633,7 @@ async def skip_recon_line(token: str, session_id: str, line_id: str) -> dict:
 
 
 async def attach_recon_line(token: str, session_id: str, line_id: str, content: bytes, filename: str) -> dict:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         files = {"file": (filename, content, "application/octet-stream")}
         return _raise(await c.post(
             f"/accounting/reconciliation/{session_id}/lines/{line_id}/attach",
@@ -1467,26 +1939,34 @@ async def update_mfg_settings(token: str, mfg: dict) -> dict:
 # CSV export
 # ---------------------------------------------------------------------------
 
-async def _stream_csv(token: str, path: str, params: dict | None = None):
-    """GET a CSV export endpoint with the body streamed, never buffered. Returns
-    (chunk_iterator, headers).
+async def _stream_get(token: str, path: str, *, params: dict | None = None,
+                      timeout_message: str):
+    """GET a streaming endpoint on the BULK transport, body streamed not buffered.
+    Returns (chunk_iterator, headers).
 
-    The backend already streams these exports row by row; the UI must not re-read the
-    whole body into memory (a large export would then sit in UI RAM and defeat the
-    backend's streaming, pinning a pooled connection for the whole read). The caller
-    pipes the iterator straight into a StreamingResponse, and the httpx client + response
-    stay open until the iterator is exhausted. Content-Length is forwarded so the browser
-    can show a real download progress bar. Mirrors export_backup's streaming shape."""
-    from ui.config import API_BASE
-    client = _client(token, timeout=httpx.Timeout(300.0, connect=10.0))
+    The one streaming helper behind every long/large local download (CSV exports,
+    backup archives). Each can run long or reach many GB, so they ride the small
+    bulk pool: a slow export or a multi-GB download can never hold one of the
+    interactive connection slots ordinary page requests need. The UI must not
+    re-read the whole body into memory (that would defeat the backend's streaming
+    and pin a connection for the full read); the caller pipes the iterator
+    straight into a StreamingResponse, and the httpx client + response stay open
+    until the iterator is exhausted. Content-Length is forwarded so the browser
+    shows a real download progress bar. PoolTimeout (bulk pool saturated -> 503
+    retryable) is caught before TimeoutException (slow upstream -> 504), the same
+    order the shared error mapping uses, because PoolTimeout subclasses it."""
+    client = _local_client(token, timeout=httpx.Timeout(300.0, connect=10.0), bulk=True)
     try:
         resp = await client.send(client.build_request("GET", path, params=params or {}), stream=True)
+    except httpx.PoolTimeout as exc:
+        await client.aclose()
+        raise APIError(503, SATURATION_MESSAGE) from exc
     except httpx.TimeoutException as exc:
         await client.aclose()
-        raise APIError(504, "The export timed out.") from exc
+        raise APIError(504, timeout_message) from exc
     except httpx.ConnectError as exc:
         await client.aclose()
-        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
+        raise APIError(503, _connect_message()) from exc
     if resp.status_code >= 400:
         body = await resp.aread()
         await resp.aclose()
@@ -1515,18 +1995,19 @@ async def _stream_csv(token: str, path: str, params: dict | None = None):
 
 
 async def export_items_csv(token: str, params: dict | None = None) -> bytes:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         r = _raise(await c.get("/items/export/csv", params=params or {}))
         return r.content
 
 
 async def export_docs_csv(token: str, params: dict | None = None):
-    """GET /docs/export/csv, streamed. Returns (chunk_iterator, headers)."""
-    return await _stream_csv(token, "/docs/export/csv", params)
+    """GET /docs/export/csv, streamed on the bulk transport. Returns (iter, headers)."""
+    return await _stream_get(token, "/docs/export/csv", params=params,
+                             timeout_message="The export timed out.")
 
 
 async def export_contacts_csv(token: str, params: dict | None = None) -> bytes:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         r = _raise(await c.get("/crm/contacts/export/csv", params=params or {}))
         return r.content
 
@@ -1743,7 +2224,8 @@ async def delete_list_note(token: str, entity_id: str, note_id: str) -> dict:
 
 async def export_lists_csv(token: str, params: dict | None = None):
     """GET /lists/export/csv, streamed. Returns (chunk_iterator, headers)."""
-    return await _stream_csv(token, "/lists/export/csv", params)
+    return await _stream_get(token, "/lists/export/csv", params=params,
+                             timeout_message="The export timed out.")
 
 
 # ---------------------------------------------------------------------------
@@ -2046,7 +2528,7 @@ async def patch_contact_defaults(token: str, defaults: dict) -> dict:
 
 
 async def upload_contact_file(token: str, contact_id: str, file_data: bytes, filename: str, content_type: str, description: str = "", document_tag: str = "") -> dict:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         files = {"file": (filename, file_data, content_type)}
         data = {"description": description, "document_tag": document_tag}
         return _raise(await c.post(f"/crm/contacts/{contact_id}/files", files=files, data=data)).json()
@@ -2068,13 +2550,13 @@ async def delete_contact_file(token: str, contact_id: str, file_id: str) -> dict
 
 
 async def download_contact_file(token: str, contact_id: str, file_id: str) -> httpx.Response:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         r = _raise(await c.get(f"/crm/contacts/{contact_id}/files/{file_id}"))
         return r
 
 
 async def upload_doc_file(token: str, entity_id: str, file_data: bytes, filename: str, content_type: str, description: str = "", document_tag: str = "") -> dict:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         files = {"file": (filename, file_data, content_type)}
         data = {"description": description, "document_tag": document_tag}
         return _raise(await c.post(f"/docs/{entity_id}/files", files=files, data=data)).json()
@@ -2096,18 +2578,20 @@ async def delete_doc_file(token: str, entity_id: str, file_id: str) -> dict:
 
 
 async def download_doc_file(token: str, entity_id: str, file_id: str) -> httpx.Response:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         return _raise(await c.get(f"/docs/{entity_id}/files/{file_id}"))
 
 
 async def download_item_file(token: str, entity_id: str, file_id: str) -> httpx.Response:
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         return _raise(await c.get(f"/items/{entity_id}/files/{file_id}"))
 
 
 async def patch_location(token: str, location_id: str, data: dict) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.patch(f"/companies/me/locations/{location_id}", json=data)).json()
+        result = _raise(await c.patch(f"/companies/me/locations/{location_id}", json=data)).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2278,7 +2762,7 @@ async def ai_upload(token: str, session_token: str, files: list[tuple[str, bytes
     Returns {"file_ids": [...]}.
     """
     multipart = [("files", (name, data, ct)) for name, data, ct in files]
-    async with _ai_api_client(token, session_token, timeout=60.0) as c:
+    async with _ai_api_client(token, session_token, timeout=60.0, bulk=True) as c:
         return _raise(await c.post("/ai/upload", files=multipart)).json()
 
 
@@ -2335,19 +2819,25 @@ async def get_modules(token: str) -> list[dict]:
 async def enable_module(token: str, module_name: str) -> dict:
     """POST /companies/me/modules/{name}/enable — enable a module (admin only)."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/companies/me/modules/{module_name}/enable")).json()
+        result = _raise(await c.post(f"/companies/me/modules/{module_name}/enable")).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def disable_module(token: str, module_name: str) -> dict:
     """POST /companies/me/modules/{name}/disable — disable a module (admin only)."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/companies/me/modules/{module_name}/disable")).json()
+        result = _raise(await c.post(f"/companies/me/modules/{module_name}/disable")).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def delete_module(token: str, module_name: str) -> dict:
     """POST /companies/me/modules/{name}/delete - remove a disabled, non-default module (admin only)."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/companies/me/modules/{module_name}/delete")).json()
+        result = _raise(await c.post(f"/companies/me/modules/{module_name}/delete")).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def purge_module_data(token: str, module_name: str) -> dict:
@@ -2356,7 +2846,9 @@ async def purge_module_data(token: str, module_name: str) -> dict:
     Carries no preview data: the server re-derives the drop list from the manifest
     prefix, so displayed counts are never replayed as input."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/companies/me/modules/{module_name}/purge-data")).json()
+        result = _raise(await c.post(f"/companies/me/modules/{module_name}/purge-data")).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def import_module_zip(token: str, filename: str, data: bytes,
@@ -2365,7 +2857,7 @@ async def import_module_zip(token: str, filename: str, data: bytes,
 
     `source` records the module's provenance (a plain sideload by default; the
     community-import surface passes "community")."""
-    async with _api_client(token) as c:
+    async with _bulk_api_client(token) as c:
         return _raise(await c.post(
             "/companies/me/modules/import",
             files={"file": (filename, data, "application/zip")},
@@ -2400,8 +2892,9 @@ async def module_licenses(token: str) -> list[str]:
 async def marketplace_download(token: str, slug: str) -> dict:
     """POST /companies/me/modules/marketplace-download - fetch a marketplace
     module from the relay and stage it for install (the download can take a
-    while). Returns the staged path the following Install reads."""
-    async with _api_client(token, timeout=90.0) as c:
+    while). Returns the staged path the following Install reads. The long fetch
+    rides the bulk pool so it cannot hold an interactive connection slot."""
+    async with _bulk_api_client(token, timeout=90.0) as c:
         return _raise(await c.post("/companies/me/modules/marketplace-download",
                                    json={"slug": slug})).json()
 
@@ -2439,31 +2932,41 @@ async def list_verticals_presets(token: str) -> list[dict]:
 async def apply_vertical_preset(token: str, vertical: str) -> dict:
     """POST /companies/me/apply-preset?vertical=X — seed category schemas from a preset."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/companies/me/apply-preset", params={"vertical": vertical})).json()
+        result = _raise(await c.post("/companies/me/apply-preset", params={"vertical": vertical})).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def apply_vertical_category(token: str, name: str) -> dict:
     """POST /companies/me/apply-category?name=X — seed a single category schema."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/companies/me/apply-category", params={"name": name})).json()
+        result = _raise(await c.post("/companies/me/apply-category", params={"name": name})).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def create_category(token: str, name: str) -> dict:
     """POST /companies/me/categories — create a new empty category."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/companies/me/categories", json={"name": name})).json()
+        result = _raise(await c.post("/companies/me/categories", json={"name": name})).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def rename_category(token: str, category_key: str, new_name: str) -> dict:
     """PATCH /companies/me/categories/{key} — rename category and update all item projections."""
     async with _api_client(token) as c:
-        return _raise(await c.patch(f"/companies/me/categories/{category_key}", json={"name": new_name})).json()
+        result = _raise(await c.patch(f"/companies/me/categories/{category_key}", json={"name": new_name})).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def delete_category(token: str, category_key: str) -> dict:
     """DELETE /companies/me/categories/{key} — delete category (403 if items reference it)."""
     async with _api_client(token) as c:
-        return _raise(await c.delete(f"/companies/me/categories/{category_key}")).json()
+        result = _raise(await c.delete(f"/companies/me/categories/{category_key}")).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 # ── Period Lock + Fiscal Year Close ──────────────────────────────────────────
@@ -2526,59 +3029,28 @@ async def trigger_backup(token: str) -> None:
 
     A snapshot (pg_dump + dedup upload) can take well over 10 s; use a generous
     timeout so the UI handler gets a real success/error rather than a timeout
-    exception that it can't distinguish from a connection failure.
+    exception that it can't distinguish from a connection failure. The long-held
+    request rides the bulk pool so it cannot hold an interactive connection slot.
     """
-    async with _api_client(token, timeout=120.0) as c:
+    async with _bulk_api_client(token, timeout=120.0) as c:
         _raise(await c.post("/backup/trigger"))
 
 
 async def export_backup(token: str, backup_id: str | None = None):
-    """GET /backup/export[/{backup_id}], streamed. Returns (chunk_iterator, headers).
+    """GET /backup/export[/{backup_id}], streamed on the bulk transport.
+    Returns (chunk_iterator, headers).
 
-    With no ``backup_id`` this streams a fresh local export; with one it streams a cloud
-    snapshot the server reassembles on the fly. Either archive can be many GB (DB dump +
-    attachments), so we never buffer it in memory: the caller pipes the iterator straight
-    into a StreamingResponse, and the httpx client + response stay open until the iterator
-    is exhausted. The server builds the archive before the first byte, so the read timeout
-    is generous; once bytes flow, each chunk just needs to arrive within it. We forward
-    Content-Length so the browser shows a real download progress bar.
+    With no ``backup_id`` this streams a fresh local export; with one it streams a
+    cloud snapshot the server reassembles on the fly. Either archive can be many GB
+    (DB dump + attachments), so it rides the shared streaming helper on the bulk
+    pool: it is never buffered in memory and never holds an interactive connection
+    slot. The server builds the archive before the first byte, so the helper's read
+    timeout is generous; once bytes flow, each chunk just needs to arrive within it.
     """
-    from ui.config import API_BASE
     url = f"/backup/export/{backup_id}" if backup_id else "/backup/export"
-    client = _client(token, timeout=httpx.Timeout(300.0, connect=10.0))
-    try:
-        resp = await client.send(client.build_request("GET", url), stream=True)
-    except httpx.TimeoutException as exc:
-        await client.aclose()
-        raise APIError(504, "Backup timed out. The archive took too long to build.") from exc
-    except httpx.ConnectError as exc:
-        await client.aclose()
-        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
-    if resp.status_code >= 400:
-        body = await resp.aread()
-        await resp.aclose()
-        await client.aclose()
-        try:
-            import json as _json
-            detail = _json.loads(body).get("detail", body.decode("utf-8", "replace"))
-        except Exception:
-            detail = body.decode("utf-8", "replace")
-        raise APIError(resp.status_code, detail)
-    headers = {
-        k: resp.headers[k]
-        for k in ("content-length", "content-disposition", "content-type")
-        if k in resp.headers
-    }
-
-    async def _iter():
-        try:
-            async for chunk in resp.aiter_bytes():
-                yield chunk
-        finally:
-            await resp.aclose()
-            await client.aclose()
-
-    return _iter(), headers
+    return await _stream_get(
+        token, url,
+        timeout_message="Backup timed out. The archive took too long to build.")
 
 
 async def disconnect_relay(token: str) -> dict:

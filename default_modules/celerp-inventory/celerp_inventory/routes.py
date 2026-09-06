@@ -736,6 +736,7 @@ def item_matches_query(record: dict, q: str) -> bool:
 async def list_items(
     request: Request,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("view_inventory"),
     session: AsyncSession = Depends(get_session),
     role: str = Depends(get_current_role),
     limit: int = 50,
@@ -771,27 +772,20 @@ async def list_items(
             the sum of holding_value over the whole scoped set (pre-pagination).
     """
     from celerp.services.reorder import is_below_reorder
-    from celerp.models.company import Company, Location
-    from celerp.services.field_schema import get_effective_field_schema
-    stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
-    rows = (await session.execute(stmt)).scalars().all()
-
-    loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()
-    loc_map = {str(r.id): r.name for r in loc_rows}
-
-    price_config = await get_price_config(session, company_id)
-    units = await _get_company_units(session, company_id)
-    unit_map = {u["name"]: u for u in units}
-    result = [
-        flatten_item(r.state, r.entity_id,
-                      location_id=str(r.location_id) if r.location_id else None,
-                      location_name=loc_map.get(str(r.location_id)) if r.location_id else None,
-                      created_at=r.created_at,
-                      updated_at=r.updated_at,
-                      price_config=price_config,
-                      unit_map=unit_map)
-        for r in rows
-    ]
+    from celerp.models.company import Company
+    from .search import (
+        apply_item_order,
+        apply_query_match,
+        flatten_item_rows,
+        load_item_rows,
+        strip_field_visibility,
+    )
+    # Load + flatten is the shared front of the search pipeline (single-sourced in
+    # celerp_inventory.search). The projection set is read once here and reused:
+    # the holdings/sold scopes below need the raw rows and their state, and the
+    # flatten runs over that same snapshot rather than issuing a second full load.
+    rows = await load_item_rows(session, company_id)
+    result = await flatten_item_rows(session, company_id, rows)
 
     # Status filtering: default excludes hidden statuses; "all" skips filtering; "archived" expands
     # to include merged/expired; a comma-separated value matches any (column-filter multi-select).
@@ -891,38 +885,12 @@ async def list_items(
     company = await session.get(Company, company_id)
     settings = (company.settings if company else {}) or {}
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
-    can_author_drafts = role_has_permission(settings, role, "edit_inventory")
-    # Per-category schema cache: N items across M categories cost M schema resolves.
-    _schema_cache: dict[str | None, tuple[list[dict], frozenset[str], frozenset[str]]] = {}
-
-    async def _category_ctx(cat: str | None):
-        if cat not in _schema_cache:
-            fs = await get_effective_field_schema(session, company_id, category=cat)
-            num, txt = searchable_field_sets(fs)
-            _schema_cache[cat] = (fs, num, txt)
-        return _schema_cache[cat]
-
-    # Read each item's category before stripping (the grouping key may itself be hidden),
-    # then strip per its category schema. numeric/text sets are stashed for the q-search
-    # loop below, keyed by the item id.
-    item_field_sets: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
-    stripped: list[dict] = []
-    for r in result:
-        cat = r.get("category")
-        fs, num, txt = await _category_ctx(cat)
-        item_field_sets[r.get("id")] = (num, txt)
-        # Fill the inventory_type default on the ALLOWED side of the visibility boundary,
-        # mirroring the projection-time default so a legacy projection that predates it
-        # (never re-snapshotted, genuinely missing the key) still carries the real-or-default
-        # value for a role that may see it. A restricted role has the key removed by the strip
-        # below, so the default never lands on the denied side.
-        r.setdefault("inventory_type", "stocked")
-        stripped.append(apply_field_visibility(
-            [r], role, fs, can_see_costs,
-            can_author_drafts=can_author_drafts,
-            derived_field_deps=DERIVED_FIELD_DEPS,
-        )[0])
-    result = stripped
+    # Per-category strip + searchable field sets are the shared visibility phase
+    # (single-sourced in celerp_inventory.search). item_field_sets drives the q-search
+    # loop below. The helper resolves the effective schema per the item's category,
+    # mirroring the detail endpoint, so a category-scoped restriction is honored and a
+    # null/unresolved category falls back to the base item schema.
+    result, item_field_sets = await strip_field_visibility(session, company_id, role, result)
 
     # category / inventory_type / location_id are schema fields a role may be denied, so
     # they filter over the visibility-stripped dicts: a denied role sees the key absent
@@ -988,23 +956,13 @@ async def list_items(
                   and str(r.get("status") or "").lower() != "draft"]
 
     if q:
-        # Grammar: comma = OR groups, & = AND terms, lo-hi = numeric range, bare
-        # number = numeric-exact OR text, else text substring (query_match_reasons).
-        # Each item is matched against its own category's numeric/text field sets, so a
-        # number-typed category field resolves and a text-typed one is not coerced.
-        q_reasons: dict = {}
-        matched = []
-        for r in result:
-            num, txt = item_field_sets.get(r.get("id"), (_DEFAULT_NUMERIC_FIELDS, _DEFAULT_TEXT_FIELDS))
-            reasons = query_match_reasons(r, q, num, txt)
-            if reasons is not None:
-                q_reasons[r.get("id")] = reasons
-                matched.append(r)
-        result = matched
-        # Reasons are computed over the visibility-filtered dict, so every cited
-        # field is one the role may see; no post-filter is needed.
-        for r in result:
-            r["q_match"] = [{"field": f, "match": m} for f, m in q_reasons.get(r.get("id"), [])]
+        # Shared q-filter + q_match attachment (single-sourced in celerp_inventory.search):
+        # comma = OR groups, & = AND terms, lo-hi = numeric range, bare number =
+        # numeric-exact OR text, else text substring. Each item is matched against its own
+        # category's numeric/text field sets, so a number-typed category field resolves and
+        # a text-typed one is not coerced. Reasons are computed over the visibility-filtered
+        # dict, so every cited field is one the role may see; no post-filter is needed.
+        result = apply_query_match(result, q, item_field_sets)
 
     # Attach the per-item scope value AFTER visibility (so it survives any dict rebuild).
     # The consignment value is cost, so it is gated by view_inventory_costs exactly like
@@ -1020,37 +978,16 @@ async def list_items(
             if str(r.get("status") or "").lower() == "sold":
                 r["sold_price"] = sold_price.get(r.get("id"))
 
-    # FEFO: when company uses fefo, sort available items by expires_at ascending (soonest first)
-    # so staff always see the items that need to be picked/sold first at the top.
-    if company and (company.settings or {}).get("inventory_method") == "fefo":
-        def _fefo_key(item: dict):
-            exp = item.get("expires_at")
-            # Items without expiry float to the bottom; expired items sort before no-expiry
-            return exp or "9999-99-99"
-        result.sort(key=_fefo_key)
-
-    # User-requested column sort - applied AFTER all filtering so pagination is globally correct.
-    # FEFO overrides user sort for available items; explicit sort wins for all other statuses.
-    if sort and (not company or (company.settings or {}).get("inventory_method") != "fefo" or status not in (None, "available", "")):
-        reverse = dir.lower() != "asc"
-
-        def _sort_key(item: dict):
-            v = item.get(sort)
-            if v is None:
-                # Nulls always last regardless of direction
-                return (1, "")
-            if isinstance(v, (int, float)):
-                return (0, v)
-            s = str(v)
-            # ISO date/datetime strings sort correctly as strings
-            return (0, s.lower())
-
-        result.sort(key=_sort_key, reverse=reverse)
-    elif not sort and (not company or (company.settings or {}).get("inventory_method") != "fefo"):
-        # Default: most-recently-updated first, then name asc, then entity_id asc for stability.
-        # Use two-pass: primary descending on updated_at, then stable sub-sort on name+entity_id.
-        result.sort(key=lambda item: (str(item.get("name") or "").lower(), str(item.get("entity_id") or "")))
-        result.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    # Ordering (FEFO / user column sort / default) is single-sourced in
+    # celerp_inventory.search so the list and the global-search bar stay in
+    # lockstep. Applied AFTER all filtering so pagination is globally correct.
+    apply_item_order(
+        result,
+        inventory_method=(company.settings or {}).get("inventory_method") if company else None,
+        sort=sort,
+        direction=dir,
+        status=status,
+    )
 
     total = len(result)
     resp: dict = {"items": result[offset: offset + limit], "total": total,
@@ -1069,6 +1006,7 @@ async def get_valuation(
     on_memo_to: str | None = None,
     consigned_from: str | None = None,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("view_inventory"),
     role: str = Depends(get_current_role),
     settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),

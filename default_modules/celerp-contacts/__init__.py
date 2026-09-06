@@ -30,6 +30,11 @@ PLUGIN_MANIFEST = {
         # were seeded with two separate customer+vendor self-contacts into one both+is_self record.
         "on_modules_ready": {"handler": "celerp_contacts.migrations:backfill_self_contacts_hook"},
         "send_to_targets": [],
+        "search_provider": {
+            "handler": "celerp_contacts.search:global_search",
+            "result_key": "items",
+            "permission": "view_contacts",
+        },
     },
     "migrations": None,
     "requires": [],

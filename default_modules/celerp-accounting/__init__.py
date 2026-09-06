@@ -26,5 +26,10 @@ PLUGIN_MANIFEST = {
             {"prefix": "je.", "handler": "celerp_accounting.projections:apply_accounting_event"},
             {"prefix": "acc.", "handler": "celerp_accounting.projections:apply_accounting_event"},
         ],
+        "search_provider": {
+            "handler": "celerp_accounting.search:global_search",
+            "result_key": "entries",
+            "permission": "view_financial_reports",
+        },
     },
 }

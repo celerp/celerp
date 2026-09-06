@@ -35,6 +35,7 @@ from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
+from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import checked_exchange_rate, round_money, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, resolve_price
@@ -545,21 +546,9 @@ async def list_docs(
         base_where.append(Projection.state["due_date"].as_string() >= due_from)
     if due_to:
         base_where.append(Projection.state["due_date"].as_string() <= due_to)
-    if q:
-        # Comma is an OR operand (matches inventory search + the search box's Enter-appends-comma
-        # behaviour). Split on commas so "2816," / "2816, 2817" match, instead of LIKE-ing the
-        # whole string (which fails on the trailing comma the search box inserts).
-        terms = [t.strip().lower() for t in q.split(",") if t.strip()]
-        if terms:
-            _fields = ("doc_number", "contact_name", "contact_id", "ref")
-            term_clauses = [
-                _sa.or_(*[
-                    _sa.func.lower(Projection.state[f].as_string()).like(f"%{term}%")
-                    for f in _fields
-                ])
-                for term in terms
-            ]
-            base_where.append(_sa.or_(*term_clauses))
+    _q_clause = doc_q_clause(q)
+    if _q_clause is not None:
+        base_where.append(_q_clause)
 
     # Remaining filters still need Python evaluation (multi-field logic).
     needs_python_filter = any([all_issued, overdue_only, unfulfilled_only, not_restocked, not_stocked, converted_to_type])

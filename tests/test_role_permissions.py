@@ -1385,15 +1385,22 @@ async def test_raised_view_inventory_redirects_viewer(ui):
     from unittest.mock import AsyncMock, patch
 
     from test_helpers import make_test_token
+    from ui import api_client
 
+    # The page reads its company settings through the cached metadata snapshot;
+    # clear it so this request's authorization decision is made from these mocks,
+    # never a snapshot another test warmed.
+    api_client._reset_metadata_cache_for_tests()
     company = {"currency": "THB",
                "settings": {"role_grants": {"view_inventory": _roles_from("operator")}}}
     patches = [
         patch("ui.api_client.get_company", AsyncMock(return_value=company)),
         patch("ui.api_client.get_item_schema", AsyncMock(return_value={})),
         patch("ui.api_client.get_all_category_schemas", AsyncMock(return_value={})),
+        patch("ui.api_client.get_category_display_names", AsyncMock(return_value={})),
         patch("ui.api_client.get_column_prefs", AsyncMock(return_value={})),
         patch("ui.api_client.get_locations", AsyncMock(return_value={"items": []})),
+        patch("ui.api_client.get_units", AsyncMock(return_value=[])),
     ]
     for p in patches:
         p.start()

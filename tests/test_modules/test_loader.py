@@ -1307,6 +1307,238 @@ class TestResolveModulePath:
         assert _fpt_loader.resolve_module_path("ghost") is None
 
 
+_ASYNC_HANDLER = (
+    "async def prov(session, company_id, role, q, limit):\n"
+    "    return {'items': []}\n"
+)
+
+
+def _sp_module(base: Path, name: str, descriptor, *,
+               as_list: bool = False, handler_code: str = _ASYNC_HANDLER) -> Path:
+    """Write a module whose only slot is a search_provider carrying *descriptor*.
+
+    ``descriptor`` is the slot value (a dict); ``as_list=True`` wraps it in a list
+    to exercise the single-dict rule. ``handler_code`` (its own indentation kept
+    verbatim, so a multi-line async body stays valid) is written into __init__.py
+    before the manifest so a ``prov`` (or a deliberately wrong handler) exists to
+    resolve. The manifest is emitted as JSON, a valid Python literal here.
+    """
+    slot_value = [descriptor] if as_list else descriptor
+    # repr() emits a valid Python literal (True, not JSON's true), so a boolean
+    # value in a descriptor - e.g. a spoofed _first_party - survives into the
+    # written manifest instead of raising NameError at import.
+    manifest = repr(
+        {"name": name, "version": "1.0", "slots": {"search_provider": slot_value}}
+    )
+    pkg = base / name
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(f"{handler_code}\nPLUGIN_MANIFEST = {manifest}\n")
+    return pkg
+
+
+class TestSearchProviderSlot:
+    """The search_provider slot's runtime contract: exactly one dict with a closed
+    key set, a locally-owned async handler resolved at load, and runtime-owned
+    trust metadata a manifest cannot spoof."""
+
+    def _load(self, tmp_path, name, descriptor, *,
+              as_list=False, handler_code=_ASYNC_HANDLER, trusted=False):
+        pkg = _sp_module(tmp_path, name, descriptor,
+                         as_list=as_list, handler_code=handler_code)
+        return _load_one(pkg, name, trusted=trusted)
+
+    def test_valid_single_dict_registers_with_runtime_trust(self, tmp_path):
+        self._load(tmp_path, "good_module_sp_ok", {
+            "handler": "good_module_sp_ok:prov",
+            "result_key": "items", "permission": "view_inventory"})
+        provs = slots.get("search_provider")
+        assert len(provs) == 1
+        d = provs[0]
+        assert d["_module"] == "good_module_sp_ok"
+        assert d["_first_party"] is False
+        assert d["handler"] == "good_module_sp_ok:prov"
+
+    def test_first_party_marked_and_scan_skipped(self, tmp_path):
+        # A trusted (first-party) module still passes shape + handler resolution and
+        # is marked _first_party True.
+        self._load(tmp_path, "good_module_sp_fp", {
+            "handler": "good_module_sp_fp:prov",
+            "result_key": "items", "permission": "view_inventory"}, trusted=True)
+        assert slots.get("search_provider")[0]["_first_party"] is True
+
+    def test_list_form_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="exactly one descriptor"):
+            self._load(tmp_path, "good_module_sp_list", {
+                "handler": "good_module_sp_list:prov",
+                "result_key": "items", "permission": "view_inventory"}, as_list=True)
+        assert slots.get("search_provider") == []
+
+    def test_missing_handler_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="keys must be exactly"):
+            self._load(tmp_path, "good_module_sp_nh", {
+                "result_key": "items", "permission": "view_inventory"})
+
+    def test_missing_result_key_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="keys must be exactly"):
+            self._load(tmp_path, "good_module_sp_nrk", {
+                "handler": "good_module_sp_nrk:prov", "permission": "view_inventory"})
+
+    def test_missing_permission_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="keys must be exactly"):
+            self._load(tmp_path, "good_module_sp_np", {
+                "handler": "good_module_sp_np:prov", "result_key": "items"})
+
+    def test_extra_key_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="keys must be exactly"):
+            self._load(tmp_path, "good_module_sp_extra", {
+                "handler": "good_module_sp_extra:prov", "result_key": "items",
+                "permission": "view_inventory", "limit": 3})
+
+    def test_unknown_permission_rejected(self, tmp_path):
+        # Preserved behavior: an unknown permission key rejects the module. This
+        # held generically before the search_provider validator existed; the
+        # validator keeps it, now enforcing the provider's own permission after
+        # the generic loop skips this slot. Green at HEAD by design (pre-existing
+        # coverage), so it guards against the relocation dropping the gate.
+        with pytest.raises(ModuleLoadError, match="unknown permission key"):
+            self._load(tmp_path, "good_module_sp_perm", {
+                "handler": "good_module_sp_perm:prov", "result_key": "items",
+                "permission": "not_a_real_perm"})
+
+    def test_invalid_result_key_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="result_key"):
+            self._load(tmp_path, "good_module_sp_rk", {
+                "handler": "good_module_sp_rk:prov", "result_key": "widgets",
+                "permission": "view_inventory"})
+
+    def test_malformed_handler_string_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="module.path:function"):
+            self._load(tmp_path, "good_module_sp_mh", {
+                "handler": "no_colon_here", "result_key": "items",
+                "permission": "view_inventory"})
+
+    def test_handler_module_outside_package_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="does not resolve to source inside"):
+            self._load(tmp_path, "good_module_sp_out", {
+                "handler": "some_other_pkg.mod:prov", "result_key": "items",
+                "permission": "view_inventory"})
+
+    def test_handler_into_celerp_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="does not resolve to source inside"):
+            self._load(tmp_path, "good_module_sp_celerp", {
+                "handler": "celerp.services.auth:get_current_user",
+                "result_key": "items", "permission": "view_inventory"})
+
+    def test_missing_handler_function_rejected_at_load(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="failed to resolve"):
+            self._load(tmp_path, "good_module_sp_nofn", {
+                "handler": "good_module_sp_nofn:nope", "result_key": "items",
+                "permission": "view_inventory"})
+
+    def test_non_callable_handler_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="not callable"):
+            self._load(tmp_path, "good_module_sp_nc", {
+                "handler": "good_module_sp_nc:prov", "result_key": "items",
+                "permission": "view_inventory"},
+                handler_code="prov = 'not a function'\n")
+
+    def test_sync_handler_rejected(self, tmp_path):
+        with pytest.raises(ModuleLoadError, match="must be async"):
+            self._load(tmp_path, "good_module_sp_sync", {
+                "handler": "good_module_sp_sync:prov", "result_key": "items",
+                "permission": "view_inventory"},
+                handler_code=(
+                    "def prov(session, company_id, role, q, limit):\n"
+                    "    return {'items': []}\n"))
+
+    def test_spoofed_trust_metadata_rejected(self, tmp_path):
+        # A manifest cannot supply _first_party (or _module): the closed key set
+        # rejects it outright, so runtime-owned trust can never be spoofed.
+        with pytest.raises(ModuleLoadError, match="keys must be exactly"):
+            self._load(tmp_path, "good_module_sp_spoof", {
+                "handler": "good_module_sp_spoof:prov", "result_key": "items",
+                "permission": "view_inventory", "_first_party": True})
+
+    def test_decoy_file_shadowing_core_module_rejected(self, tmp_path):
+        # Provenance: the module ships a decoy source file at a dotted path that
+        # collides with an already-loaded core module (celerp.ai.service, whose
+        # run_query is async). The on-disk decoy satisfies the local-ownership
+        # existence check and passes the benign AST scan, but importlib resolves
+        # the dotted handler to the REAL core module already in sys.modules, not
+        # the decoy. The loader must reject: the resolved handler's source is not
+        # inside the module's own package tree.
+        import importlib
+        importlib.import_module("celerp.ai.service")  # ensure the real core module is loaded
+        name = "good_module_sp_decoy"
+        pkg = tmp_path / name
+        decoy_dir = pkg / "celerp" / "ai"
+        decoy_dir.mkdir(parents=True)
+        (pkg / "celerp" / "__init__.py").write_text("")
+        (pkg / "celerp" / "ai" / "__init__.py").write_text("")
+        (decoy_dir / "service.py").write_text(
+            "async def run_query(session, company_id, role, q, limit):\n"
+            "    return {'items': []}\n"
+        )
+        (pkg / "__init__.py").write_text(
+            f'PLUGIN_MANIFEST = {{"name": "{name}", "version": "1.0", '
+            f'"slots": {{"search_provider": {{"handler": "celerp.ai.service:run_query", '
+            f'"result_key": "items", "permission": "view_inventory"}}}}}}'
+        )
+        with pytest.raises(ModuleLoadError):
+            _load_one(pkg, name)
+
+    def test_trusted_decoy_shadowing_core_still_rejected(self, tmp_path, monkeypatch):
+        # A content-verified FIRST-PARTY module (trusted) ships a decoy source at a
+        # dotted path that collides with an already-loaded core module. Trust exempts
+        # it from the protected-BSL AST scan, but NOT from source provenance: importlib
+        # still resolves the handler to the real core module, whose source is neither
+        # under this module's tree nor inside another copy of this same first-party
+        # module. The loader must reject - a first-party manifest cannot bind its
+        # provider to core by shadowing a dotted name.
+        import importlib
+        importlib.import_module("celerp.ai.service")  # ensure the real core module is loaded
+        name = "celerp-decoy-fp"
+        pkg = tmp_path / name
+        decoy_dir = pkg / "celerp" / "ai"
+        decoy_dir.mkdir(parents=True)
+        (pkg / "celerp" / "__init__.py").write_text("")
+        (decoy_dir / "__init__.py").write_text("")
+        (decoy_dir / "service.py").write_text(
+            "async def run_query(session, company_id, role, q, limit):\n"
+            "    return {'items': []}\n"
+        )
+        (pkg / "__init__.py").write_text(
+            f'PLUGIN_MANIFEST = {{"name": "{name}", "version": "1.0", '
+            f'"slots": {{"search_provider": {{"handler": "celerp.ai.service:run_query", '
+            f'"result_key": "items", "permission": "view_inventory"}}}}}}'
+        )
+        # Make the module genuinely first-party: lock it to its own live digest.
+        digest = _fpt_loader.module_content_digest(pkg)
+        monkeypatch.setattr(_fpt_loader, "_first_party_lock", lambda: {name: digest})
+        assert _fpt_loader.is_first_party(pkg) is True
+        with pytest.raises(ModuleLoadError):
+            _load_one(pkg, name, trusted=True)
+
+    def test_handler_separate_file_importing_protected_internal_rejected(self, tmp_path):
+        # No api/ui routes, but the lazily-imported search handler pulls a protected
+        # BSL internal; the search-handler AST scan must catch it at load.
+        name = "good_module_sp_bsl"
+        pkg = tmp_path / name
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text(
+            f'PLUGIN_MANIFEST = {{"name": "{name}", "version": "1.0", '
+            f'"slots": {{"search_provider": {{"handler": "{name}.searchmod:prov", '
+            f'"result_key": "items", "permission": "view_inventory"}}}}}}'
+        )
+        (pkg / "searchmod.py").write_text(
+            "from celerp.session_gate import require_session_token\n"
+            "async def prov(session, company_id, role, q, limit):\n"
+            "    return {'items': []}\n"
+        )
+        with pytest.raises(ModuleLoadError, match="protected BSL internals"):
+            _load_one(pkg, name)
+
+
 class TestRecordLoadError:
     def test_record_load_error_sets_and_load_errors_reads_it(self):
         from celerp.modules import loader
