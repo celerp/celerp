@@ -87,8 +87,8 @@ def _license_upsell(lang: str) -> FT:
     another computer. Frames it additively (your module still works there;
     Connect brings it here + across devices/team), not as a punitive error."""
     from celerp.config import ensure_instance_id
-    from celerp.gateway.state import build_subscribe_url
-    url = build_subscribe_url(ensure_instance_id(), extra="plan=cloud")
+    from celerp.gateway.state import build_commercial_handoff
+    url = build_commercial_handoff(ensure_instance_id(), "subscribe", "cloud")
     return Div(
         Strong(t("modules.license_move_title", lang), cls="small"),
         P(t("modules.license_move_body", lang), cls="text-muted small", style="margin:4px 0 8px;"),

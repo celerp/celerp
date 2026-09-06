@@ -397,6 +397,8 @@
   "cloud.hero_desc1": "Kiểm tra hàng tồn kho từ nhà. Cho phép nhân viên đăng nhập từ cửa hàng, mỗi người với quyền hạn bạn thiết lập. Celerp vẫn chạy trên máy của bạn và dữ liệu vẫn ở đó - Truy cập web thêm một URL bảo mật (như yourname.celerp.com) truy cập được từ bất kỳ trình duyệt nào.",
   "cloud.hero_desc2": "Dữ liệu của bạn không bao giờ rời khỏi máy của bạn. Chúng tôi chỉ chuyển tiếp kết nối.",
   "cloud.hero_title": "Truy cập Celerp từ mọi nơi",
+  "cloud.partner_managed_note": "Gói đăng ký Celerp của bạn được quản lý bởi đối tác triển khai của bạn.",
+  "cloud.partner_support": "Liên hệ hỗ trợ của đối tác",
   "cloud.plan_ai_b1": "Đặt câu hỏi bằng ngôn ngữ thông thường",
   "cloud.plan_ai_b2": "Tự động soạn đơn đặt hàng, đối soát hóa đơn",
   "cloud.plan_ai_b3": "200 truy vấn AI/tháng",
@@ -3063,5 +3065,12 @@
   "documents.reopen_memo_confirm": "Mở lại bản ghi nhớ này và khôi phục trạng thái trước đó?",
   "documents.line_label_returned": "Đã trả lại",
   "documents.line_label_not_shipped": "Chưa gửi",
-  "documents.th_shipped": "Vận chuyển"
+  "documents.th_shipped": "Vận chuyển",
+  "btn.decline": "Từ chối",
+  "settings_cloud.partner_claim_title": "Yêu cầu của đối tác",
+  "settings_cloud.partner_claim_desc": "Nếu một đối tác đã cung cấp cho bạn mã yêu cầu để quản lý bản cài đặt này, hãy dán mã vào đây để xem họ là ai trước khi bạn chấp nhận.",
+  "settings_cloud.partner_claim_token_placeholder": "Dán mã yêu cầu",
+  "settings_cloud.partner_claim_review": "Xem lại yêu cầu",
+  "settings_cloud.partner_claim_managed_by": "Bản cài đặt này sẽ được quản lý bởi:",
+  "settings_cloud.partner_claim_error": "Không thể xác minh yêu cầu này. Yêu cầu có thể không hợp lệ, đã hết hạn hoặc đã được sử dụng."
 }

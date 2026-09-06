@@ -71,15 +71,22 @@ async def ai_query(
             return {"answer": result["answer"]}
     """
     # Validate session token (revenue gate — runs against live gateway token)
-    from celerp.gateway.state import get_session_token, relay_subscribe_url
+    from celerp.gateway.state import (
+        build_commercial_handoff,
+        get_instance_id,
+        get_session_token,
+    )
     from fastapi import HTTPException, status
 
     if not session_token:
+        from celerp.config import settings
+        url = build_commercial_handoff(
+            get_instance_id() or settings.gateway_instance_id, "subscribe", "ai")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=(
                 "AI queries require an active Connect + AI subscription. "
-                f"Subscribe at {relay_subscribe_url(plan='ai')}"
+                f"Subscribe at {url}"
             ),
         )
 

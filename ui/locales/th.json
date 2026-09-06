@@ -397,6 +397,8 @@
   "cloud.hero_desc1": "ตรวจสอบสต็อกจากที่บ้าน ให้พนักงานเข้าสู่ระบบจากหน้าร้าน แต่ละคนมีสิทธิ์ตามที่คุณกำหนด Celerp ยังคงทำงานบนเครื่องของคุณและข้อมูลของคุณอยู่ที่นั่น - การเข้าถึงเว็บเพิ่ม URL ที่ปลอดภัย (เช่น yourname.celerp.com) ที่เข้าถึงได้จากเบราว์เซอร์ใดก็ได้",
   "cloud.hero_desc2": "ข้อมูลของคุณไม่เคยออกจากเครื่องของคุณ เราแค่ส่งต่อการเชื่อมต่อ",
   "cloud.hero_title": "เข้าถึง Celerp จากทุกที่",
+  "cloud.partner_managed_note": "การสมัครใช้งาน Celerp ของคุณได้รับการจัดการโดยพันธมิตรผู้ติดตั้งของคุณ",
+  "cloud.partner_support": "ติดต่อฝ่ายสนับสนุนของพันธมิตร",
   "cloud.plan_ai_b1": "ถามคำถามด้วยภาษาธรรมดา",
   "cloud.plan_ai_b2": "ร่างใบสั่งซื้ออัตโนมัติ กระทบยอดใบแจ้งหนี้",
   "cloud.plan_ai_b3": "การสอบถาม AI 200 ครั้ง/เดือน",
@@ -3063,5 +3065,12 @@
   "documents.reopen_memo_confirm": "เปิดเมมโมนี้ใหม่และคืนสถานะเดิมหรือไม่?",
   "documents.line_label_returned": "คืนแล้ว",
   "documents.line_label_not_shipped": "ยังไม่จัดส่ง",
-  "documents.th_shipped": "การจัดส่ง"
+  "documents.th_shipped": "การจัดส่ง",
+  "btn.decline": "ปฏิเสธ",
+  "settings_cloud.partner_claim_title": "การอ้างสิทธิ์ของพาร์ทเนอร์",
+  "settings_cloud.partner_claim_desc": "หากพาร์ทเนอร์ให้รหัสอ้างสิทธิ์แก่คุณเพื่อจัดการการติดตั้งนี้ ให้วางรหัสที่นี่เพื่อตรวจสอบว่าพวกเขาเป็นใครก่อนที่คุณจะยอมรับ",
+  "settings_cloud.partner_claim_token_placeholder": "วางรหัสอ้างสิทธิ์",
+  "settings_cloud.partner_claim_review": "ตรวจสอบการอ้างสิทธิ์",
+  "settings_cloud.partner_claim_managed_by": "การติดตั้งนี้จะถูกจัดการโดย:",
+  "settings_cloud.partner_claim_error": "ไม่สามารถยืนยันการอ้างสิทธิ์นี้ได้ อาจไม่ถูกต้อง หมดอายุ หรือถูกใช้ไปแล้ว"
 }

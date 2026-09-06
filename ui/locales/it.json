@@ -397,6 +397,8 @@
   "cloud.hero_desc1": "Controlla le scorte da casa. Consenti al tuo personale di accedere dal punto vendita, ciascuno con i permessi che imposti. Celerp continua a funzionare sul tuo computer e i tuoi dati restano lì - l'Accesso web aggiunge un URL sicuro (come yourname.celerp.com) raggiungibile da qualsiasi browser.",
   "cloud.hero_desc2": "I tuoi dati non lasciano mai la tua macchina. Trasmettiamo solo la connessione.",
   "cloud.hero_title": "Accedi a Celerp da ovunque",
+  "cloud.partner_managed_note": "Il tuo abbonamento Celerp è gestito dal tuo partner di implementazione.",
+  "cloud.partner_support": "Contatta il supporto del partner",
   "cloud.plan_ai_b1": "Fai domande in linguaggio naturale",
   "cloud.plan_ai_b2": "Bozze automatiche di ordini d'acquisto, riconciliazione fatture",
   "cloud.plan_ai_b3": "200 query AI/mese",
@@ -3063,5 +3065,12 @@
   "documents.reopen_memo_confirm": "Riaprire questo memo e ripristinare il suo stato precedente?",
   "documents.line_label_returned": "Restituito",
   "documents.line_label_not_shipped": "Non spedito",
-  "documents.th_shipped": "Spedizione"
+  "documents.th_shipped": "Spedizione",
+  "btn.decline": "Rifiuta",
+  "settings_cloud.partner_claim_title": "Rivendicazione del partner",
+  "settings_cloud.partner_claim_desc": "Se un partner ti ha fornito un codice di rivendicazione per gestire questa installazione, incollalo qui per verificare chi è prima di accettare.",
+  "settings_cloud.partner_claim_token_placeholder": "Incolla il codice di rivendicazione",
+  "settings_cloud.partner_claim_review": "Verifica la rivendicazione",
+  "settings_cloud.partner_claim_managed_by": "Questa installazione sarà gestita da:",
+  "settings_cloud.partner_claim_error": "Non è stato possibile verificare questa rivendicazione. Potrebbe non essere valida, scaduta o già utilizzata."
 }

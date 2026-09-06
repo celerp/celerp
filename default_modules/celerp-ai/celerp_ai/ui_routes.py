@@ -11,7 +11,12 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.cloud_gate import _subscribe_url
+from ui.components.cloud_gate import (
+    subscribe_url,
+    topup_url,
+    is_partner_managed,
+    direct_price,
+)
 from ui.components.shell import base_shell
 from ui.config import get_token as _token, get_role
 from ui.i18n import t, get_lang
@@ -61,6 +66,49 @@ def _get_example_queries(lang: str = "en") -> list[dict]:
         {"icon": "🔍", "title": t("ai.query_audit_title", lang), "query": t("ai.query_audit_query", lang), "needs_files": False},
         {"icon": "📊", "title": t("ai.query_summary_title", lang), "query": t("ai.query_summary_query", lang), "needs_files": False},
     ]
+
+
+# ---------------------------------------------------------------------------
+# Quota-exceeded upgrade / top-up card
+# ---------------------------------------------------------------------------
+
+def _quota_exceeded_card(detail: dict, user_bubble, lang: str = "en") -> FT:
+    """The card shown when an AI query is refused for hitting the quota.
+
+    Routes both destinations through the commercial policy: the top-up CTA via
+    ``topup_url()`` and the upgrade CTA via ``subscribe_url("ai")``. A
+    relay-supplied ``detail.upgrade_url`` is never used - the resolver alone
+    decides the destination, so a partner-managed install is never sent to a
+    direct Celerp checkout. The upgrade label's direct price is suppressed under
+    partner_managed.
+    """
+    limit = detail.get("limit", 0)
+    is_ai_tier = "ai" in str(detail.get("tier", "")) or "team" in str(detail.get("tier", ""))
+    if is_ai_tier:
+        return Div(
+            user_bubble,
+            _msg_bubble("ai", f"You've used all {limit} included AI queries this period."),
+            Div(
+                P(t("msg.need_more_topup_credits_never_expire", lang), cls="ai-upgrade-label"),
+                A(t("msg.buy_more_credits", lang),
+                  href=topup_url(),
+                  target="_blank", cls="btn btn--primary"),
+                cls="ai-upgrade-cta",
+            ),
+        )
+    upgrade_label = direct_price(t("msg.upgrade_to_ai_plan_49mo", lang)) \
+        or t("msg.get_the_ai_plan", lang)
+    return Div(
+        user_bubble,
+        _msg_bubble("ai", f"You've used all {limit} included AI queries."),
+        Div(
+            P(t("msg.upgrade_to_keep_your_ai_operator_working", lang), cls="ai-upgrade-label"),
+            A(upgrade_label,
+              href=subscribe_url("ai"),
+              target="_blank", cls="btn btn--primary"),
+            cls="ai-upgrade-cta",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -164,45 +212,18 @@ def setup_ui_routes(app) -> None:
             detail = e.detail
             if isinstance(detail, dict):
                 code = detail.get("code", "")
-                limit = detail.get("limit", 0)
             else:
                 code = "quota_exceeded" if "quota_exceeded" in str(detail) else ""
-                limit = 0
 
             if code == "quota_exceeded":
-                from celerp.gateway.state import build_subscribe_url
-                topup_url = build_subscribe_url(detail.get('instance_id', ''), topup=True)
-                upgrade_url = detail.get("upgrade_url", _subscribe_url("ai"))
-                is_ai_tier = "ai" in str(detail.get("tier", "")) or "team" in str(detail.get("tier", ""))
-                if is_ai_tier:
-                    return Div(
-                        user_bubble,
-                        _msg_bubble("ai", f"You've used all {limit} included AI queries this period."),
-                        Div(
-                            P(t("msg.need_more_topup_credits_never_expire"), cls="ai-upgrade-label"),
-                            A(t("msg.buy_more_credits"),
-                              href=topup_url,
-                              target="_blank", cls="btn btn--primary"),
-                            cls="ai-upgrade-cta",
-                        ),
-                    )
-                return Div(
-                    user_bubble,
-                    _msg_bubble("ai", f"You've used all {limit} included AI queries."),
-                    Div(
-                        P(t("msg.upgrade_to_keep_your_ai_operator_working"), cls="ai-upgrade-label"),
-                        A(t("msg.upgrade_to_ai_plan_49mo"),
-                          href=upgrade_url,
-                          target="_blank", cls="btn btn--primary"),
-                        cls="ai-upgrade-cta",
-                    ),
-                )
+                card_detail = detail if isinstance(detail, dict) else {}
+                return _quota_exceeded_card(card_detail, user_bubble, get_lang(request))
             if "subscription" in str(detail).lower() or "subscribe" in str(detail).lower():
                 return Div(
                     user_bubble,
                     _msg_bubble("ai", "A Connect + AI subscription is required to use the AI assistant."),
                     A(t("msg.subscribe_at_celerpcom_u2192"),
-                      href=_subscribe_url("ai"),
+                      href=subscribe_url("ai"),
                       target="_blank", cls="btn btn--primary mt-sm"),
                 )
             return Div(user_bubble, _msg_bubble("ai", f"Error: {detail}"))
@@ -363,6 +384,10 @@ def setup_ui_routes(app) -> None:
             from celerp.gateway.state import get_session_token
             session_token = get_session_token()
             result = await api.ai_quota_status(token, session_token)
+            # Compute the top-up destination server-side through the commercial
+            # policy so the client never builds a direct checkout URL itself.
+            if isinstance(result, dict):
+                result = {**result, "topup_url": topup_url()}
             return JSONResponse(result)
         except Exception:
             return JSONResponse({"local": True})
@@ -428,7 +453,7 @@ async def _quota_section(token: str, session_token: str) -> FT:
         ),
         Div(
             Span(f"Resets {resets_at}" if resets_at else "", cls="ai-settings__reset-date"),
-            A(t("msg.buy_more_credits"), href=_subscribe_url("ai"), target="_blank",
+            A(t("msg.buy_more_credits"), href=topup_url(), target="_blank",
               cls="ai-settings__buy-link"),
             cls="ai-settings__quota-footer",
         ),
@@ -614,14 +639,14 @@ def _showcase_view(lang: str = "en") -> FT:
                     Div(
                         Span(t("msg.start_here"), cls="ai-showcase__cta-badge ai-showcase__cta-badge--default"),
                         P(t("settings.tab_cloud_relay"), cls="ai-showcase__cta-name"),
-                        P(t("msg.29mo"), cls="ai-showcase__cta-price ai-showcase__cta-price--default"),
+                        P(direct_price(t("msg.29mo")), cls="ai-showcase__cta-price ai-showcase__cta-price--default"),
                         P(t("msg.secure_remote_access"), cls="ai-showcase__cta-feature"),
                         P(t("msg.automated_daily_backups"), cls="ai-showcase__cta-feature"),
                         P(t("msg.100_lifetime_ai_queries_included"),
                           cls="ai-showcase__cta-feature ai-showcase__cta-feature--highlight"),
                         Div(
                             A(t("msg.start_with_cloud_relay"),
-                              href=_subscribe_url("cloud"),
+                              href=subscribe_url("cloud"),
                               target="_blank", cls="btn btn--outline"),
                             P(t("msg.cancel_anytime"), cls="ai-showcase__cta-fine"),
                             cls="ai-showcase__cta-actions",
@@ -631,13 +656,13 @@ def _showcase_view(lang: str = "en") -> FT:
                     Div(
                         Span(t("msg.recommended"), cls="ai-showcase__cta-badge ai-showcase__cta-badge--featured"),
                         P(t("msg.celerp_ai_plan"), cls="ai-showcase__cta-name"),
-                        P(t("msg.49mo"), cls="ai-showcase__cta-price ai-showcase__cta-price--featured"),
+                        P(direct_price(t("msg.49mo")), cls="ai-showcase__cta-price ai-showcase__cta-price--featured"),
                         P(t("msg.200_ai_queries_every_month"), cls="ai-showcase__cta-feature"),
                         P(t("msg.batch_invoice_pdf_processing"), cls="ai-showcase__cta-feature"),
                         P(t("msg.agentic_record_creation"), cls="ai-showcase__cta-feature"),
                         Div(
                             A(t("msg.get_the_ai_plan"),
-                              href=_subscribe_url("ai"),
+                              href=subscribe_url("ai"),
                               target="_blank", cls="btn btn--accent"),
                             P(t("msg.cancel_anytime"), cls="ai-showcase__cta-fine"),
                             cls="ai-showcase__cta-actions",
@@ -989,8 +1014,8 @@ function _celerpAiUploadFormData(formData, fileNames) {
         if (remaining < 10) {
             badge.classList.add('ai-quota--low');
         }
-        if (remaining < 20 && (data.tier === 'ai' || data.tier === 'team')) {
-            link.href = 'https://celerp.com/subscribe/topup?instance_id=' + encodeURIComponent(data.instance_id || '') + '&utm_source=app&utm_medium=inapp';
+        if (remaining < 20 && (data.tier === 'ai' || data.tier === 'team') && data.topup_url) {
+            link.href = data.topup_url;
             link.style.display = 'inline';
         }
     })

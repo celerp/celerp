@@ -13,7 +13,7 @@ from fasthtml.common import *
 from ui.i18n import t, get_lang
 
 
-def _subscribe_url(plan: str = "") -> str:
+def subscribe_url(plan: str = "") -> str:
     """Build subscribe URL with instance_id passthrough if available.
 
     ``plan`` is passed as a query param (not a fragment) so the website can
@@ -21,8 +21,44 @@ def _subscribe_url(plan: str = "") -> str:
     it to scroll to the matching plan card.
     """
     from celerp.config import ensure_instance_id
-    from celerp.gateway.state import build_subscribe_url
-    return build_subscribe_url(ensure_instance_id(), extra=f"plan={plan}" if plan else "")
+    from celerp.gateway.state import build_commercial_handoff
+    return build_commercial_handoff(ensure_instance_id(), "subscribe", plan or "")
+
+
+def topup_url() -> str:
+    """Build the credit top-up URL through the commercial policy.
+
+    Mirrors ``subscribe_url`` for the top-up intent: on a celerp_direct install
+    it yields the direct /subscribe/topup URL; on a partner-managed install it
+    routes to the partner support or Enterprise route, never a direct top-up
+    checkout.
+    """
+    from celerp.config import ensure_instance_id
+    from celerp.gateway.state import build_commercial_handoff
+    return build_commercial_handoff(ensure_instance_id(), "topup", "ai")
+
+
+def is_partner_managed() -> bool:
+    """Whether this install is partner-managed.
+
+    Single predicate every presentation surface uses to decide whether to
+    suppress direct Celerp pricing: a partner-managed install must never show a
+    direct price, because the partner sets and bills its own price.
+    """
+    from celerp.gateway.state import get_commercial_mode
+    return get_commercial_mode() == "partner_managed"
+
+
+def direct_price(text: str) -> str:
+    """Return direct-pricing copy on a celerp_direct install, or the empty string
+    when partner-managed.
+
+    Presentation-side suppressor for any string that names a direct Celerp price
+    ("$29", "USD $49/mo", the see-all-plans price). Callers render the returned
+    value directly; an empty string renders as nothing, so a partner-managed
+    surface simply omits the price rather than showing a wrong one.
+    """
+    return "" if is_partner_managed() else text
 
 
 def upgrade_banner(
@@ -43,8 +79,13 @@ def upgrade_banner(
         plan: Plan key for the /subscribe CTA, e.g. "cloud" or "ai".
         lang: UI language code.
     """
-    href = _subscribe_url(plan)
-    price_text = price if price is not None else t("msg.29mo", lang)
+    href = subscribe_url(plan)
+    # Suppress the direct price under partner_managed even when a caller passes an
+    # explicit price string: the partner sets its own price, so the CTA reads as a
+    # plain action with no direct figure.
+    price_text = direct_price(price if price is not None else t("msg.29mo", lang))
+    cta_label = f"{t('cloud.start_trial', lang)} - {price_text}" if price_text \
+        else t("cloud.start_trial", lang)
     return Div(
         Div(
             Span(t("msg.u0001f512", lang), cls="upgrade-banner__icon"),
@@ -56,7 +97,7 @@ def upgrade_banner(
             cls="upgrade-banner__left",
         ),
         A(
-            f"{t('cloud.start_trial', lang)} - {price_text}",
+            cta_label,
             href=href,
             target="_blank",
             cls="btn btn--primary upgrade-banner__cta",

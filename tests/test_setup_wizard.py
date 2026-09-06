@@ -789,9 +789,10 @@ class TestSettingsSectionTabs:
         assert "tab=infrastructure" in self._xml(_cloud_tabs("status", has_team_features=True))
 
     def test_value_prop_plan_ctas_carry_plan_params(self):
-        """Each plan card's subscribe CTA sends its plan as a query param so
-        the website can attribute the click server-side; fragments never
-        reach the server."""
+        """Each direct plan card's subscribe CTA sends its plan as a query param
+        so the website can attribute the click server-side; fragments never
+        reach the server. The Team card routes to the Enterprise handoff, so it
+        carries no direct plan=team checkout."""
         from ui.routes.settings_cloud import _value_prop_page
         html = self._xml(_value_prop_page("test-instance"))
         for plan in ("cloud", "ai"):
@@ -1008,3 +1009,50 @@ class TestSetupFringe:
             r = await ui_client.get("/setup/company", cookies=_authed())
         assert r.status_code == 200
         assert b"Company details" in r.content
+
+
+class TestSetupCloudPartnerManaged:
+    """The setup wizard cloud step suppresses every direct-price artifact in
+    partner mode: no "$29", no pricing link, no see-all-plans, and the subscribe
+    CTA label carries no price."""
+
+    @pytest.fixture(autouse=True)
+    def _partner_mode(self):
+        import celerp.gateway.state as gw_state
+        gw_state._commercial_context = {
+            "commercial_mode": "partner_managed",
+            "implementation": {"display_name": "Partner Co",
+                               "support_url": "https://partner.example.com/support"},
+        }
+        yield
+        gw_state._commercial_context = {}
+
+    @staticmethod
+    def _render():
+        from fasthtml.common import to_xml
+        from ui.routes.setup import _cloud_form
+        return to_xml(_cloud_form())
+
+    def test_setup_wizard_partner_no_direct_price(self):
+        html = self._render()
+        assert "$29" not in html
+        assert "celerp.com/pricing" not in html
+
+    def test_setup_wizard_partner_no_see_all_plans(self):
+        html = self._render()
+        assert "cloud-upsell-compare" not in html
+
+    def test_setup_subscribe_label_not_price_in_partner(self):
+        html = self._render()
+        # The price-bearing subscribe CTA label (default "Subscribe - USD $29/mo")
+        # is swapped to a non-price partner label.
+        assert "$29" not in html
+
+    def test_setup_wizard_direct_keeps_price(self):
+        """celerp_direct still renders the direct price and see-all-plans link
+        (positive control)."""
+        import celerp.gateway.state as gw_state
+        gw_state._commercial_context = {}
+        html = self._render()
+        assert "$29" in html
+        assert "cloud-upsell-compare" in html

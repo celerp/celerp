@@ -397,6 +397,8 @@
   "cloud.hero_desc1": "自宅から在庫を確認。スタッフは現場からログインでき、それぞれに設定した権限が適用されます。Celerpはお使いのマシンで動き続け、データもそこに残ります。ウェブアクセスは、どのブラウザからでもアクセスできる安全なURL（yourname.celerp.comなど）を追加します。",
   "cloud.hero_desc2": "データはお客様のマシンから出ません。接続をリレーするだけです。",
   "cloud.hero_title": "どこからでもCelerp にアクセス",
+  "cloud.partner_managed_note": "お使いのCelerpサブスクリプションは、導入パートナーによって管理されています。",
+  "cloud.partner_support": "パートナーサポートに連絡",
   "cloud.plan_ai_b1": "普通の言葉で質問できる",
   "cloud.plan_ai_b2": "発注書の自動下書き、請求書の消込",
   "cloud.plan_ai_b3": "月200回のAIクエリ",
@@ -3063,5 +3065,12 @@
   "documents.reopen_memo_confirm": "このメモを再開して以前の状態に戻しますか？",
   "documents.line_label_returned": "返却済み",
   "documents.line_label_not_shipped": "未出荷",
-  "documents.th_shipped": "出荷状況"
+  "documents.th_shipped": "出荷状況",
+  "btn.decline": "辞退",
+  "settings_cloud.partner_claim_title": "パートナー申請",
+  "settings_cloud.partner_claim_desc": "パートナーからこのインストールを管理するための申請コードを受け取った場合は、ここに貼り付けて、承認する前に相手を確認してください。",
+  "settings_cloud.partner_claim_token_placeholder": "申請コードを貼り付け",
+  "settings_cloud.partner_claim_review": "申請を確認",
+  "settings_cloud.partner_claim_managed_by": "このインストールの管理者:",
+  "settings_cloud.partner_claim_error": "この申請を確認できませんでした。無効、期限切れ、またはすでに使用されている可能性があります。"
 }

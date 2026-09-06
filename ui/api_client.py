@@ -341,6 +341,16 @@ async def get_company(token: str) -> dict:
         return _flatten_company(data)
 
 
+async def get_commercial_state(token: str, timeout: float = 3.0) -> dict:
+    """Fetch the live commercial state (feature_flags, commercial_context,
+    partner_identity, commercial_mode) the API process holds from the relay.
+
+    Short timeout so a hung API degrades the settings page to neutral quickly
+    rather than hanging on the render path."""
+    async with _api_client(token, timeout=timeout) as c:
+        return _raise(await c.get("/companies/commercial-state")).json()
+
+
 async def patch_company(token: str, data: dict) -> dict:
     """Patch company. Settings sub-fields and dashboard preferences are merged into
     the settings dict; top-level fields (name, slug) are patched directly."""
@@ -2591,6 +2601,22 @@ async def activate_relay(token: str) -> dict:
     """POST /settings/cloud-activate — call relay /auth/activate, start gateway."""
     async with _api_client(token) as c:
         return _raise(await c.post("/settings/cloud-activate")).json()
+
+
+async def resolve_partner_claim(token: str, claim_token: str) -> dict:
+    """POST /settings/partner-claim/resolve - preview the partner behind a claim
+    token. Binds nothing. Returns the identity preview or a neutral error dict."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            "/settings/partner-claim/resolve", json={"claim_token": claim_token})).json()
+
+
+async def accept_partner_claim(token: str, claim_token: str) -> dict:
+    """POST /settings/partner-claim/accept - accept the claim; the relay binds the
+    relationship and pushes the new commercial context."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            "/settings/partner-claim/accept", json={"claim_token": claim_token})).json()
 
 
 async def apply_relay_token(token: str, payload: dict) -> dict:

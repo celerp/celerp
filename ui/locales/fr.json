@@ -397,6 +397,8 @@
   "cloud.hero_desc1": "Vérifiez le stock depuis chez vous. Laissez votre personnel se connecter depuis l'atelier, chacun avec les permissions que vous définissez. Celerp continue de tourner sur votre machine et vos données y restent - l'Accès Web ajoute une URL sécurisée (comme yourname.celerp.com) accessible depuis n'importe quel navigateur.",
   "cloud.hero_desc2": "Vos données ne quittent jamais votre machine. Nous relayons simplement la connexion.",
   "cloud.hero_title": "Accédez à Celerp de partout",
+  "cloud.partner_managed_note": "Votre abonnement Celerp est géré par votre partenaire d'implémentation.",
+  "cloud.partner_support": "Contacter le support du partenaire",
   "cloud.plan_ai_b1": "Posez vos questions en langage courant",
   "cloud.plan_ai_b2": "Bons de commande auto-rédigés, factures rapprochées",
   "cloud.plan_ai_b3": "200 requêtes IA/mois",
@@ -3063,5 +3065,12 @@
   "documents.reopen_memo_confirm": "Rouvrir ce mémo et restaurer son statut précédent ?",
   "documents.line_label_returned": "Retourné",
   "documents.line_label_not_shipped": "Non expédié",
-  "documents.th_shipped": "Expédition"
+  "documents.th_shipped": "Expédition",
+  "btn.decline": "Refuser",
+  "settings_cloud.partner_claim_title": "Revendication de partenaire",
+  "settings_cloud.partner_claim_desc": "Si un partenaire vous a donné un code de revendication pour gérer cette installation, collez-le ici afin de vérifier son identité avant d'accepter.",
+  "settings_cloud.partner_claim_token_placeholder": "Coller le code de revendication",
+  "settings_cloud.partner_claim_review": "Vérifier la revendication",
+  "settings_cloud.partner_claim_managed_by": "Cette installation sera gérée par :",
+  "settings_cloud.partner_claim_error": "Cette revendication n'a pas pu être vérifiée. Elle est peut-être invalide, expirée ou déjà utilisée."
 }
