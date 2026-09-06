@@ -17,6 +17,14 @@ import_adapter     Source option in the CSV import page
 category_schema    Default field definitions for a named category
 projection_handler Maps event-type prefixes to a handler function
 on_company_created Async callback(session, company_id) fired after a new company is persisted
+search_provider    Contributes rows to the global search bar. Exactly one descriptor
+                   dict per module: {"handler", "result_key", "permission"}. handler
+                   names an in-module "module.path:function" resolved and validated
+                   async at load, invoked as
+                   `async def handler(session, company_id, role, q, limit) -> dict`
+                   returning {result_key: [rows]}; result_key is "items" or "entries";
+                   permission gates the source per company role. See the module loader
+                   for the full descriptor contract.
 
 Usage in core UI
 ----------------
