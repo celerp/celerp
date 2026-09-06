@@ -71,9 +71,21 @@ def _get_transport() -> _SharedTransport:
 async def close_shared_client() -> None:
     """Close the shared transport if one was built. Called from the UI app shutdown.
 
-    Safe to call when none was built. Logs the total request count as observability
-    for how much traffic the bounded pool carried this process lifetime."""
+    Safe to call when none was built. Cancels any in-flight single-flight refresh
+    tasks and clears the coordinator's state so nothing is left awaiting a pool
+    that is going away. Logs the total request count as observability for how much
+    traffic the bounded pool carried this process lifetime."""
     global _shared_transport
+    inflight = list(_refresh_inflight.values())
+    _refresh_inflight.clear()
+    _refresh_success.clear()
+    for task in inflight:
+        task.cancel()
+    for task in inflight:
+        try:
+            await task
+        except BaseException:
+            pass
     transport = _shared_transport
     _shared_transport = None
     logger.info("UI API client shutdown: %d requests served via shared pool", _ui_request_count)
@@ -296,12 +308,96 @@ async def register(company_name: str, email: str, name: str, password: str,
         return data["access_token"], data["refresh_token"]
 
 
-async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
-    """Exchange refresh token for new (access_token, refresh_token). Raises APIError on failure."""
+# ---------------------------------------------------------------------------
+# Single-flight refresh coordinator
+# ---------------------------------------------------------------------------
+# Several authenticated requests can arrive at once carrying the same refresh
+# cookie (a page that fires a handful of concurrent HTMX fragments, all past the
+# token's sliding half-life). Each used to run its own POST /auth/token/refresh,
+# so N concurrent requests meant N upstream refreshes hammering the auth path at
+# exactly the moment the pool is under pressure. The coordinator collapses
+# concurrent identical presentations into one upstream POST whose result every
+# caller receives.
+#
+# Keys are the SHA-256 digest of the refresh token, never the raw token: the map
+# lives in process memory and the digest is enough to coalesce identical
+# presentations without keeping the secret around as a dict key. A failure is
+# never cached - only a successful pair is held, and only for a short grace so a
+# straggler that arrives microseconds after the winner still coalesces, after
+# which the next presentation refreshes again.
+import asyncio  # noqa: E402 - kept beside the coordinator it serves
+import hashlib  # noqa: E402
+import time  # noqa: E402
+
+_REFRESH_GRACE_SECONDS = 0.5
+_refresh_lock = asyncio.Lock()
+_refresh_inflight: dict[bytes, asyncio.Task] = {}
+_refresh_success: dict[bytes, tuple[float, tuple[str, str]]] = {}
+
+
+def _refresh_key(refresh_token: str) -> bytes:
+    return hashlib.sha256(refresh_token.encode()).digest()
+
+
+async def _refresh_upstream(refresh_token: str) -> tuple[str, str]:
+    """The raw upstream exchange: POST the refresh token, return the new pair.
+
+    This is the single network call the coordinator coalesces onto; it holds no
+    coordination state of its own so it stays trivially testable and mockable.
+    """
     async with _anon_api_client() as c:
         r = _raise(await c.post("/auth/token/refresh", json={"refresh_token": refresh_token}))
         data = r.json()
         return data["access_token"], data["refresh_token"]
+
+
+def _reset_refresh_state_for_tests() -> None:
+    """Clear the coordinator's module-level maps. For tests only."""
+    _refresh_inflight.clear()
+    _refresh_success.clear()
+
+
+async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
+    """Exchange refresh token for new (access_token, refresh_token), single-flight.
+
+    Concurrent callers presenting the same refresh token share one upstream POST.
+    A waiter that is cancelled (its request disconnected) does not cancel the
+    shared task, so the other waiters still complete. Raises APIError on failure,
+    and a failure is never cached.
+    """
+    key = _refresh_key(refresh_token)
+    async with _refresh_lock:
+        cached = _refresh_success.get(key)
+        if cached is not None:
+            issued_at, pair = cached
+            if (time.monotonic() - issued_at) <= _REFRESH_GRACE_SECONDS:
+                return pair
+            del _refresh_success[key]
+        task = _refresh_inflight.get(key)
+        if task is None:
+            task = asyncio.ensure_future(_refresh_upstream(refresh_token))
+            _refresh_inflight[key] = task
+
+    try:
+        # shield: this waiter's own cancellation must not cancel the shared task
+        # the other waiters are still awaiting.
+        result = await asyncio.shield(task)
+    except asyncio.CancelledError:
+        raise
+    except BaseException:
+        # Failure: drop the inflight entry so the next presentation retries, and
+        # never cache a failure. The first waiter to observe the error clears it;
+        # a concurrent waiter finding it already gone simply does not re-clear.
+        async with _refresh_lock:
+            if _refresh_inflight.get(key) is task:
+                del _refresh_inflight[key]
+        raise
+
+    async with _refresh_lock:
+        if _refresh_inflight.get(key) is task:
+            del _refresh_inflight[key]
+        _refresh_success[key] = (time.monotonic(), result)
+    return result
 
 
 async def my_companies(token: str) -> dict:
