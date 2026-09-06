@@ -186,20 +186,50 @@ def _accounting_mocks():
     }
 
 
+# Which module folder each old per-module override kwarg now lives under, and the
+# result_key its provider returns rows under, in the aggregated /search answer.
+_SEARCH_MODULE = {
+    "list_items": ("celerp-inventory", "items"),
+    "list_contacts": ("celerp-contacts", "items"),
+    "list_docs": ("celerp-docs", "items"),
+    "list_mfg_orders": ("celerp-manufacturing", "items"),
+    "list_subscriptions": ("celerp-subscriptions", "items"),
+    "get_journal": ("celerp-accounting", "entries"),
+}
+
+
 def _search_mocks(**overrides):
-    """Mocks for the six modules the global /search bar aggregates. Each defaults to
-    an empty result; pass an AsyncMock by keyword (e.g. list_items=...) to override."""
-    mocks = {
-        "ui.api_client.list_items": AsyncMock(return_value={"items": [], "total": 0}),
-        "ui.api_client.list_contacts": AsyncMock(return_value={"items": [], "total": 0}),
-        "ui.api_client.list_docs": AsyncMock(return_value={"items": [], "total": 0}),
-        "ui.api_client.list_mfg_orders": AsyncMock(return_value={"items": [], "total": 0}),
-        "ui.api_client.list_subscriptions": AsyncMock(return_value={"items": [], "total": 0}),
-        "ui.api_client.get_journal": AsyncMock(return_value={"entries": []}),
-    }
-    for k, v in overrides.items():
-        mocks[f"ui.api_client.{k}"] = v
-    return mocks
+    """One mock for the global /search bar, which now asks the API a single question
+    through api.global_search. Overrides are still expressed per module (e.g.
+    list_items=AsyncMock(return_value={"items": [...]})), matching how each module's
+    provider is exercised; this folds them into the aggregated answer the route
+    renders: {"results": {module: {result_key: [...]}}, "degraded_modules": [...]}.
+    A module whose override raises is reported as degraded (its provider failed and
+    was isolated), which is exactly how the aggregator surfaces a failed module."""
+    results: dict[str, dict] = {}
+    degraded: list[str] = []
+    for kwarg, (module, key) in _SEARCH_MODULE.items():
+        mock = overrides.get(kwarg)
+        if mock is None:
+            results[module] = {key: []}
+            continue
+        payload = None
+        side = getattr(mock, "side_effect", None)
+        if side is not None:
+            # A permission denial gates the module out cleanly (omitted, never a
+            # degraded notice); any other failure is an isolated degradation.
+            status = getattr(side, "status", None)
+            if status != 403:
+                degraded.append(module)
+        else:
+            rv = mock.return_value
+            payload = rv.get(key, rv.get("items", rv.get("entries", [])))
+            results[module] = {key: payload}
+
+    async def _global_search(token, query):
+        return {"results": results, "degraded_modules": degraded}
+
+    return {"ui.api_client.global_search": AsyncMock(side_effect=_global_search)}
 
 
 def _apply(mocks: dict):
@@ -790,9 +820,12 @@ class TestSearchAndFilter:
 
     @pytest.mark.asyncio
     async def test_global_search_returns_results(self, ui):
-        with _Patches({"ui.api_client.list_items": AsyncMock(return_value={"items": [_ITEM], "total": 1}),
-                       "ui.api_client.list_contacts": AsyncMock(return_value={"items": [_CONTACT], "total": 1}),
-                       "ui.api_client.list_docs": AsyncMock(return_value={"items": [_DOC_INV], "total": 1})}):
+        mocks = _search_mocks(
+            list_items=AsyncMock(return_value={"items": [_ITEM], "total": 1}),
+            list_contacts=AsyncMock(return_value={"items": [_CONTACT], "total": 1}),
+            list_docs=AsyncMock(return_value={"items": [_DOC_INV], "total": 1}),
+        )
+        with _Patches(mocks):
             r = await ui.get("/search?q=Ruby", cookies=_c())
         assert r.status_code == 200
 
@@ -1015,17 +1048,16 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_global_search_returns_sold_item(self, ui):
-        """The global bar searches WIDE: it requests all item statuses so a sold item
-        surfaces. Red at merge-base: /search calls list_items with only q+limit, no
-        status, so the sold item is filtered out by the active-only default."""
+        """The global bar searches WIDE: the inventory provider returns all statuses,
+        so a sold item surfaces in the rendered dropdown (an active-only list would
+        drop it). The provider's all-status query is covered by the provider tests;
+        here we assert the route renders the sold row it is handed."""
         mock_items = AsyncMock(return_value={"items": [
             {"name": "Sold Widget", "sku": "SW1", "id": "item:sw1", "status": "sold"}], "total": 1})
         with _Patches(_search_mocks(list_items=mock_items)):
             r = await ui.get("/search?q=widget", cookies=_c())
         assert r.status_code == 200
         assert b"Sold Widget" in r.content
-        _, params = mock_items.call_args.args
-        assert params.get("status") == "all"
 
     @pytest.mark.asyncio
     async def test_global_search_shows_match_reason_tags(self, ui):
@@ -1050,8 +1082,8 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_global_search_includes_new_modules(self, ui):
-        """The global bar reaches manufacturing, subscriptions and journal. Red at
-        merge-base: /search only queries items/contacts/docs, so none of these appear."""
+        """The global bar renders manufacturing, subscription and journal rows from
+        the aggregated answer, so every primary module is reachable from one bar."""
         mocks = _search_mocks(
             list_mfg_orders=AsyncMock(return_value={"items": [{"description": "MO Assembly Run", "id": "mo:1"}], "total": 1}),
             list_subscriptions=AsyncMock(return_value={"items": [{"name": "Gold Retainer", "id": "doc:sub1"}], "total": 1}),
@@ -1066,11 +1098,10 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_global_search_journal_hidden_without_perm(self, ui):
-        """A user lacking view_financial_reports gets 403 from get_journal; the bar
-        still returns the item, manufacturing and subscription results while journal
-        is silently omitted (auth preserved by reusing the gated endpoint). Red at
-        merge-base: /search queries none of manufacturing/subscriptions/journal, so
-        the manufacturing/subscription results the assertion requires are absent."""
+        """A user lacking the journal permission has the accounting module gated out
+        of the aggregated answer; the bar still renders the item, manufacturing and
+        subscription rows while journal never appears (auth preserved by the
+        aggregator's per-module permission gate)."""
         from ui.api_client import APIError
         mocks = _search_mocks(
             get_journal=AsyncMock(side_effect=APIError(403, "Forbidden")),
@@ -1089,9 +1120,9 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_global_search_module_error_isolated(self, ui):
-        """One module raising does not blank the whole search; the others still return.
-        Red at merge-base: the added modules are not queried, so there is nothing to
-        isolate and the assertion on the isolated module's peers is vacuous."""
+        """One module's provider failing does not blank the whole search: the
+        aggregator isolates it (reported as degraded) and the reachable modules still
+        render their rows."""
         from ui.api_client import APIError
         mocks = _search_mocks(
             list_subscriptions=AsyncMock(side_effect=APIError(500, "boom")),
@@ -1108,9 +1139,8 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_global_search_links_to_detail_pages(self, ui):
         """Each result links straight to its record's detail page using the "id" key
-        the list endpoints actually return. Red at merge-base: item/doc hrefs read an
-        "entity_id" key the endpoints do not return (so they render as /inventory/ and
-        /docs/ with no id), and contacts point at /crm/, a route that does not exist."""
+        every provider returns: items to /inventory/<id>, docs to /docs/<id>, contacts
+        to /contacts/<id>."""
         mocks = _search_mocks(
             list_items=AsyncMock(return_value={"items": [
                 {"name": "Linked Widget", "sku": "LW1", "id": "item:lw1", "status": "available"}], "total": 1}),
@@ -1130,8 +1160,7 @@ class TestEdgeCases:
     async def test_global_search_shows_status_and_greys_inactive(self, ui):
         """Results with a status display it (so relevance is judgeable at a glance),
         and sold/archived items and voided documents render greyed via the
-        --inactive modifier. Red at merge-base: no status is rendered and no
-        inactive class exists."""
+        --inactive modifier."""
         mocks = _search_mocks(
             list_items=AsyncMock(return_value={"items": [
                 {"name": "Live Widget", "sku": "AW1", "id": "item:aw1", "status": "available"},
@@ -1155,8 +1184,7 @@ class TestEdgeCases:
     async def test_global_search_actives_first(self, ui):
         """Active records sort above inactive ones across the whole result list: a
         voided doc from an earlier-queried module still lands below an available
-        item and an issued doc. Red at merge-base: results render strictly in
-        module order with no active/inactive partition."""
+        item and an issued doc, regardless of module order."""
         mocks = _search_mocks(
             list_items=AsyncMock(return_value={"items": [
                 {"name": "Stale Widget", "sku": "SW9", "id": "item:sw9", "status": "archived"}], "total": 1}),
