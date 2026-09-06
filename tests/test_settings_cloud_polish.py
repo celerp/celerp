@@ -35,6 +35,20 @@ def test_partner_claim_preview_support_mailto():
     assert re.search(r'<a[^>]*href="mailto:support@example\.test"[^>]*>support@example\.test</a>', html)
 
 
+def test_partner_claim_preview_support_link_noopener():
+    """The support-URL link opens in a new tab with rel="noopener" set, so the
+    partner-controlled page cannot reach back into this window via
+    window.opener."""
+    html = to_xml(_partner_claim_preview(
+        {"display_name": "A partner", "support_url": "https://partner.example.test/help"},
+        "tok-abc",
+        lang="en",
+    ))
+    m = re.search(r'<a[^>]*href="https://partner\.example\.test/help"[^>]*>', html)
+    assert m, "support_url anchor not found"
+    assert 'rel="noopener"' in m.group(0)
+
+
 def test_text_error_style_defined():
     """The .text-error class used by the error paragraphs is defined with a color
     that resolves to a declared custom property (not a phantom variable), and the
