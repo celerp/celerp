@@ -35,10 +35,13 @@ def real_providers():
     Module load appends providers without clearing, so the registry may already
     hold these or a subset when the test runs. The fixture sets the slot to
     exactly the six declared providers (no duplicates, no leftovers) and restores
-    the prior contents at teardown."""
+    the prior contents at teardown. Each carries the ``_first_party`` trust flag
+    the loader stamps on a bundled module, so the aggregator trusts their row
+    shape as it does in production (only third-party rows are canonicalized)."""
     saved = list(slots.get("search_provider"))
     slots._slots["search_provider"] = [
-        {"handler": handler, "result_key": result_key, "permission": permission, "_module": module}
+        {"handler": handler, "result_key": result_key, "permission": permission,
+         "_module": module, "_first_party": True}
         for module, handler, result_key, permission in _PROVIDERS
     ]
     yield
