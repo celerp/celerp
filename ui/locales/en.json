@@ -2467,6 +2467,7 @@
   "inventory.dur_hours": "{n} h",
   "inventory.dur_min": "{n} min",
   "inventory.dur_zero": "0 min",
+  "inventory.content_load_failed": "The inventory list could not be loaded. Check your connection and try again.",
   "inventory.error_detail": "Error: {detail}",
   "inventory.history_of": "History: {name}",
   "inventory.import_col_total": "{name} (Total)",

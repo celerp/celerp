@@ -9,10 +9,14 @@ cannot starve interactive page traffic of connections.
 """
 from __future__ import annotations
 
+import contextlib
+
 import httpx
+import pytest
 
 import celerp.capacity as capacity
 import ui.api_client as api
+from ui.api_client import APIError
 
 
 def test_capacity_constants_are_the_pool_budget():
@@ -79,3 +83,45 @@ def test_local_client_bulk_uses_bulk_transport():
     assert c._transport is api._get_bulk_transport()
     interactive = api._local_client(bulk=False)
     assert interactive._transport is api._get_transport()
+
+
+def _raising_client(exc):
+    """A drop-in for _client/_anon_client whose context entry raises *exc*."""
+    @contextlib.asynccontextmanager
+    async def _cm(*_a, **_k):
+        raise exc
+        yield  # pragma: no cover - unreachable, keeps this an async generator
+
+    return _cm
+
+
+@pytest.mark.asyncio
+async def test_pool_saturation_maps_to_503_not_504(monkeypatch):
+    # A pool-acquire timeout means every interactive slot is busy: the app is
+    # saturated. It must surface as 503 (retryable), distinct from a genuine
+    # upstream 504 timeout - PoolTimeout subclasses TimeoutException, so the
+    # order of the except branches is what makes this correct.
+    monkeypatch.setattr(api, "_client", _raising_client(httpx.PoolTimeout("pool")))
+    with pytest.raises(APIError) as exc:
+        async with api._api_client("tok") as _c:
+            pass
+    assert exc.value.status == 503
+
+
+@pytest.mark.asyncio
+async def test_upstream_timeout_still_maps_to_504(monkeypatch):
+    # A non-pool timeout (the request itself was slow) keeps its 504 meaning.
+    monkeypatch.setattr(api, "_client", _raising_client(httpx.ReadTimeout("slow")))
+    with pytest.raises(APIError) as exc:
+        async with api._api_client("tok") as _c:
+            pass
+    assert exc.value.status == 504
+
+
+@pytest.mark.asyncio
+async def test_anon_pool_saturation_maps_to_503(monkeypatch):
+    monkeypatch.setattr(api, "_anon_client", _raising_client(httpx.PoolTimeout("pool")))
+    with pytest.raises(APIError) as exc:
+        async with api._anon_api_client() as _c:
+            pass
+    assert exc.value.status == 503

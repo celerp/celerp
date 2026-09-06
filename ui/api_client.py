@@ -211,6 +211,11 @@ async def _api_client(token: str, timeout: float = 10.0):
     try:
         async with _client(token, timeout=timeout) as c:
             yield c
+    except httpx.PoolTimeout as exc:
+        # Every interactive connection slot is busy: the app is saturated, not
+        # the upstream. A distinct 503 lets routes offer a plain retry instead
+        # of a misleading "server is busy or payload too large" timeout notice.
+        raise APIError(503, "The app is handling too many requests right now. Please try again in a moment.") from exc
     except httpx.TimeoutException as exc:
         raise APIError(504, "Request timed out. The server is busy or the payload is too large. Try again or reduce the batch size.") from exc
     except httpx.ConnectError as exc:
@@ -224,6 +229,8 @@ async def _anon_api_client(timeout: float = 10.0):
     try:
         async with _anon_client(timeout=timeout) as c:
             yield c
+    except httpx.PoolTimeout as exc:
+        raise APIError(503, "The app is handling too many requests right now. Please try again in a moment.") from exc
     except httpx.TimeoutException as exc:
         raise APIError(504, "Request timed out. The server is busy or the payload is too large.") from exc
     except httpx.ConnectError as exc:
@@ -245,6 +252,8 @@ async def _ai_api_client(token: str, session_token: str, timeout: float = 10.0):
             transport=_get_transport(),
         ) as c:
             yield c
+    except httpx.PoolTimeout as exc:
+        raise APIError(503, "The app is handling too many requests right now. Please try again in a moment.") from exc
     except httpx.TimeoutException as exc:
         raise APIError(504, "Request timed out. The server is busy or the payload is too large.") from exc
     except httpx.ConnectError as exc:
@@ -540,7 +549,8 @@ async def patch_company(token: str, data: dict) -> dict:
         if direct_patch:
             _raise(await c.patch("/companies/me", json=direct_patch))
         raw = _raise(await c.get("/companies/me")).json()
-        return _flatten_company(raw)
+    _invalidate_inventory_metadata(token)
+    return _flatten_company(raw)
 
 
 async def create_company(token: str, company_name: str) -> str:
@@ -553,10 +563,12 @@ async def create_company(token: str, company_name: str) -> str:
 async def patch_role_permission(token: str, perm_key: str, role_key: str, granted: bool) -> dict:
     """Toggle one permission's minimum role. Owner-gated by the backing endpoint."""
     async with _api_client(token) as c:
-        return _raise(await c.patch(
+        result = _raise(await c.patch(
             "/companies/me/role-permissions",
             json={"perm_key": perm_key, "role_key": role_key, "granted": granted},
         )).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def get_item_schema(token: str) -> list[dict]:
@@ -566,7 +578,9 @@ async def get_item_schema(token: str) -> list[dict]:
 
 async def patch_item_schema(token: str, fields: list[dict]) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.patch("/companies/me/item-schema", json={"fields": fields})).json()
+        result = _raise(await c.patch("/companies/me/item-schema", json={"fields": fields})).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def get_all_category_schemas(token: str) -> dict:
@@ -593,13 +607,17 @@ async def get_category_schema(token: str, category: str) -> list[dict]:
 
 async def patch_category_schema(token: str, category: str, fields: list[dict]) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.patch(f"/companies/me/category-schema/{category}", json={"fields": fields})).json()
+        result = _raise(await c.patch(f"/companies/me/category-schema/{category}", json={"fields": fields})).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def merge_category_schemas(token: str, schemas: dict[str, list[dict]]) -> dict:
     """Auto-merge attribute keys from import into category schemas."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/companies/me/category-schemas/merge", json={"schemas": schemas})).json()
+        result = _raise(await c.post("/companies/me/category-schemas/merge", json={"schemas": schemas})).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def get_column_prefs(token: str) -> dict:
@@ -609,7 +627,9 @@ async def get_column_prefs(token: str) -> dict:
 
 async def patch_column_prefs(token: str, prefs: dict[str, list[str]]) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.patch("/companies/me/column-prefs", json={"prefs": prefs})).json()
+        result = _raise(await c.patch("/companies/me/column-prefs", json={"prefs": prefs})).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def get_locations(token: str) -> dict:
@@ -619,12 +639,16 @@ async def get_locations(token: str) -> dict:
 
 async def create_location(token: str, data: dict) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post("/companies/me/locations", json=data)).json()
+        result = _raise(await c.post("/companies/me/locations", json=data)).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def delete_location(token: str, location_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.delete(f"/companies/me/locations/{location_id}")).json()
+        result = _raise(await c.delete(f"/companies/me/locations/{location_id}")).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def get_users(token: str) -> dict:
@@ -735,7 +759,143 @@ async def get_units(token: str) -> list[dict]:
 async def patch_units(token: str, units: list[dict]) -> list[dict]:
     """PUT /companies/me/units → replace units list."""
     async with _api_client(token) as c:
-        return _raise(await c.put("/companies/me/units", json={"units": units})).json()
+        result = _raise(await c.put("/companies/me/units", json={"units": units})).json()
+    _invalidate_inventory_metadata(token)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Inventory static-metadata cache
+# ---------------------------------------------------------------------------
+# The inventory pages fetch the same seven immutable-for-a-session getters on
+# every load. A short-lived cache collapses those repeated round-trips to one
+# per token per window without ever serving a stale snapshot: the TTL is small,
+# failures are never cached, and every write that could change the snapshot
+# invalidates it centrally in the mutation wrapper, not the route.
+
+import copy as _copy  # noqa: E402
+from typing import NamedTuple  # noqa: E402
+
+_METADATA_TTL_SECONDS = 5.0
+
+
+class InventoryMetadata(NamedTuple):
+    """One immutable snapshot of the seven inventory static-metadata getters.
+
+    Named fields (not a tuple of positional results) so a caller can never swap
+    two same-typed results by position. Callers receive defensive copies, so a
+    caller mutating what it reads cannot poison the cache.
+    """
+
+    item_schema: list[dict]
+    category_schemas: dict
+    category_display_names: dict
+    column_prefs: dict
+    company: dict
+    locations: dict
+    units: list[dict]
+
+
+def _metadata_key(token: str) -> bytes:
+    # SHA-256 of the whole validated access token, never a decoded company_id:
+    # the UI does not verify JWT signatures locally, so keying on a claim would
+    # let a forged token collide with an authorized entry. A different token is
+    # a different key even when it claims the same company.
+    return hashlib.sha256(token.encode()).digest()
+
+
+_metadata_lock = asyncio.Lock()
+_metadata_cache: dict[bytes, tuple[float, InventoryMetadata]] = {}
+_metadata_inflight: dict[bytes, asyncio.Task] = {}
+
+
+def _reset_metadata_cache_for_tests() -> None:
+    """Clear the metadata cache maps. For tests only."""
+    _metadata_cache.clear()
+    _metadata_inflight.clear()
+
+
+async def _fetch_inventory_metadata(token: str) -> InventoryMetadata:
+    """One cold fetch: the seven getters gathered once, assembled by name."""
+    (
+        item_schema,
+        category_schemas,
+        category_display_names,
+        column_prefs,
+        company,
+        locations,
+        units,
+    ) = await asyncio.gather(
+        get_item_schema(token),
+        get_all_category_schemas(token),
+        get_category_display_names(token),
+        get_column_prefs(token),
+        get_company(token),
+        get_locations(token),
+        get_units(token),
+    )
+    return InventoryMetadata(
+        item_schema=item_schema,
+        category_schemas=category_schemas,
+        category_display_names=category_display_names,
+        column_prefs=column_prefs,
+        company=company,
+        locations=locations,
+        units=units,
+    )
+
+
+async def get_inventory_metadata(token: str) -> InventoryMetadata:
+    """Return the seven static-metadata getters as one snapshot, cached briefly.
+
+    A fresh entry within the TTL is served from cache; a cold key runs exactly
+    one gather even under a concurrent burst, because concurrent cold callers
+    await a single shared inflight Task rather than each launching their own.
+    Failures are never cached. Every returned snapshot is a defensive deep copy
+    so a caller mutating what it reads cannot corrupt the stored entry.
+    """
+    key = _metadata_key(token)
+    now = time.monotonic()
+
+    async with _metadata_lock:
+        entry = _metadata_cache.get(key)
+        if entry is not None and (now - entry[0]) <= _METADATA_TTL_SECONDS:
+            return _copy.deepcopy(entry[1])
+        task = _metadata_inflight.get(key)
+        if task is None:
+            task = asyncio.ensure_future(_fetch_inventory_metadata(token))
+            _metadata_inflight[key] = task
+
+    try:
+        snapshot = await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # This waiter was cancelled; leave the shared task running for the
+        # others and never cache a partial result.
+        raise
+    except Exception:
+        # Failure is never cached; drop the inflight marker so the next caller
+        # retries a fresh fetch.
+        async with _metadata_lock:
+            if _metadata_inflight.get(key) is task:
+                del _metadata_inflight[key]
+        raise
+
+    async with _metadata_lock:
+        if _metadata_inflight.get(key) is task:
+            del _metadata_inflight[key]
+            _metadata_cache[key] = (time.monotonic(), snapshot)
+    return _copy.deepcopy(snapshot)
+
+
+def _invalidate_inventory_metadata(token: str) -> None:
+    """Drop this token's cached snapshot after a write that can change it.
+
+    Called from the mutation wrappers below, never from route handlers, so the
+    invalidation lives in exactly one place per write and cannot be forgotten by
+    a caller. Dropping the entry (not overwriting it) means the next read does a
+    fresh cold fetch, so a failed write can never leave a poisoned snapshot.
+    """
+    _metadata_cache.pop(_metadata_key(token), None)
 
 
 # ---------------------------------------------------------------------------
@@ -2280,7 +2440,9 @@ async def download_item_file(token: str, entity_id: str, file_id: str) -> httpx.
 
 async def patch_location(token: str, location_id: str, data: dict) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.patch(f"/companies/me/locations/{location_id}", json=data)).json()
+        result = _raise(await c.patch(f"/companies/me/locations/{location_id}", json=data)).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2508,19 +2670,25 @@ async def get_modules(token: str) -> list[dict]:
 async def enable_module(token: str, module_name: str) -> dict:
     """POST /companies/me/modules/{name}/enable — enable a module (admin only)."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/companies/me/modules/{module_name}/enable")).json()
+        result = _raise(await c.post(f"/companies/me/modules/{module_name}/enable")).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def disable_module(token: str, module_name: str) -> dict:
     """POST /companies/me/modules/{name}/disable — disable a module (admin only)."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/companies/me/modules/{module_name}/disable")).json()
+        result = _raise(await c.post(f"/companies/me/modules/{module_name}/disable")).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def delete_module(token: str, module_name: str) -> dict:
     """POST /companies/me/modules/{name}/delete - remove a disabled, non-default module (admin only)."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/companies/me/modules/{module_name}/delete")).json()
+        result = _raise(await c.post(f"/companies/me/modules/{module_name}/delete")).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def purge_module_data(token: str, module_name: str) -> dict:
@@ -2529,7 +2697,9 @@ async def purge_module_data(token: str, module_name: str) -> dict:
     Carries no preview data: the server re-derives the drop list from the manifest
     prefix, so displayed counts are never replayed as input."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/companies/me/modules/{module_name}/purge-data")).json()
+        result = _raise(await c.post(f"/companies/me/modules/{module_name}/purge-data")).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def import_module_zip(token: str, filename: str, data: bytes,
@@ -2612,31 +2782,41 @@ async def list_verticals_presets(token: str) -> list[dict]:
 async def apply_vertical_preset(token: str, vertical: str) -> dict:
     """POST /companies/me/apply-preset?vertical=X — seed category schemas from a preset."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/companies/me/apply-preset", params={"vertical": vertical})).json()
+        result = _raise(await c.post("/companies/me/apply-preset", params={"vertical": vertical})).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def apply_vertical_category(token: str, name: str) -> dict:
     """POST /companies/me/apply-category?name=X — seed a single category schema."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/companies/me/apply-category", params={"name": name})).json()
+        result = _raise(await c.post("/companies/me/apply-category", params={"name": name})).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def create_category(token: str, name: str) -> dict:
     """POST /companies/me/categories — create a new empty category."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/companies/me/categories", json={"name": name})).json()
+        result = _raise(await c.post("/companies/me/categories", json={"name": name})).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def rename_category(token: str, category_key: str, new_name: str) -> dict:
     """PATCH /companies/me/categories/{key} — rename category and update all item projections."""
     async with _api_client(token) as c:
-        return _raise(await c.patch(f"/companies/me/categories/{category_key}", json={"name": new_name})).json()
+        result = _raise(await c.patch(f"/companies/me/categories/{category_key}", json={"name": new_name})).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 async def delete_category(token: str, category_key: str) -> dict:
     """DELETE /companies/me/categories/{key} — delete category (403 if items reference it)."""
     async with _api_client(token) as c:
-        return _raise(await c.delete(f"/companies/me/categories/{category_key}")).json()
+        result = _raise(await c.delete(f"/companies/me/categories/{category_key}")).json()
+    _invalidate_inventory_metadata(token)
+    return result
 
 
 # ── Period Lock + Fiscal Year Close ──────────────────────────────────────────
