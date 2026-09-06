@@ -1459,6 +1459,34 @@ class TestSearchProviderSlot:
                 "handler": "good_module_sp_spoof:prov", "result_key": "items",
                 "permission": "view_inventory", "_first_party": True})
 
+    def test_decoy_file_shadowing_core_module_rejected(self, tmp_path):
+        # Provenance: the module ships a decoy source file at a dotted path that
+        # collides with an already-loaded core module (celerp.ai.service, whose
+        # run_query is async). The on-disk decoy satisfies the local-ownership
+        # existence check and passes the benign AST scan, but importlib resolves
+        # the dotted handler to the REAL core module already in sys.modules, not
+        # the decoy. The loader must reject: the resolved handler's source is not
+        # inside the module's own package tree.
+        import importlib
+        importlib.import_module("celerp.ai.service")  # ensure the real core module is loaded
+        name = "good_module_sp_decoy"
+        pkg = tmp_path / name
+        decoy_dir = pkg / "celerp" / "ai"
+        decoy_dir.mkdir(parents=True)
+        (pkg / "celerp" / "__init__.py").write_text("")
+        (pkg / "celerp" / "ai" / "__init__.py").write_text("")
+        (decoy_dir / "service.py").write_text(
+            "async def run_query(session, company_id, role, q, limit):\n"
+            "    return {'items': []}\n"
+        )
+        (pkg / "__init__.py").write_text(
+            f'PLUGIN_MANIFEST = {{"name": "{name}", "version": "1.0", '
+            f'"slots": {{"search_provider": {{"handler": "celerp.ai.service:run_query", '
+            f'"result_key": "items", "permission": "view_inventory"}}}}}}'
+        )
+        with pytest.raises(ModuleLoadError):
+            _load_one(pkg, name)
+
     def test_handler_separate_file_importing_protected_internal_rejected(self, tmp_path):
         # No api/ui routes, but the lazily-imported search handler pulls a protected
         # BSL internal; the search-handler AST scan must catch it at load.

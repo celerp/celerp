@@ -1234,6 +1234,32 @@ def _prepare_search_provider(
             f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} must be async; "
             f"the aggregator awaits it."
         )
+    # Provenance: an on-disk file matching the dotted path is not proof of what
+    # importlib actually resolved. A decoy source shipped inside the module's own
+    # tree (e.g. celerp/ai/service.py) satisfies the existence and AST checks
+    # above, yet importlib returns the already-loaded REAL core module of the same
+    # dotted name, binding the provider to arbitrary core code. Require that BOTH
+    # the resolved module's file AND the handler's own source file live under this
+    # module's package directory. realpath collapses symlinks and '..' so neither
+    # can point the proof outside the tree.
+    pkg_root = os.path.realpath(pkg_path)
+    try:
+        resolved_module = importlib.import_module(module_path)
+        module_file = getattr(resolved_module, "__file__", None)
+        handler_file = inspect.getsourcefile(inspect.unwrap(handler))
+    except Exception as exc:
+        raise ModuleLoadError(
+            f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} source could "
+            f"not be located ({type(exc).__name__})."
+        )
+    for proof in (module_file, handler_file):
+        if not proof or os.path.commonpath(
+            (pkg_root, os.path.realpath(proof))
+        ) != pkg_root:
+            raise ModuleLoadError(
+                f"Slot {_SEARCH_PROVIDER_SLOT!r} handler {handler_path!r} resolves to "
+                f"source outside module {pkg_name!r}'s own package tree."
+            )
     # Runtime-owned trust metadata is injected AFTER the manifest contribution, and
     # the closed key set above already rejects a manifest that tries to supply
     # _module / _first_party itself, so neither can be spoofed.
