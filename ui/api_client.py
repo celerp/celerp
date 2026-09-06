@@ -22,6 +22,21 @@ _BULK_MAX_CONNECTIONS = 2
 # indefinite stall.
 _POOL_ACQUIRE_TIMEOUT = 2.0
 
+# One source of truth for the temporary-failure copy every local client surfaces,
+# so the interactive, anonymous, AI, and bulk context managers cannot drift apart.
+SATURATION_MESSAGE = (
+    "The app is handling too many requests right now. Please try again in a moment."
+)
+TIMEOUT_MESSAGE = (
+    "Request timed out. The server is busy or the payload is too large. "
+    "Try again or reduce the batch size."
+)
+
+
+def _connect_message() -> str:
+    from ui.config import API_BASE
+    return f"Cannot reach API at {API_BASE}. Is the server running?"
+
 
 class APIError(Exception):
     def __init__(self, status: int, detail: str, data: dict | None = None):
@@ -104,6 +119,24 @@ def _get_bulk_transport() -> _SharedTransport:
     return _bulk_transport
 
 
+def _local_timeout(timeout: float | httpx.Timeout) -> httpx.Timeout:
+    """Return a Timeout that always forces the local pool-acquire bound.
+
+    A caller may hand in a bare float or a fully specified httpx.Timeout; either
+    way the pool component is overridden to the local bound so no call site can
+    accidentally widen or drop it, while any connect/read/write the caller set is
+    preserved.
+    """
+    if isinstance(timeout, httpx.Timeout):
+        return httpx.Timeout(
+            connect=timeout.connect,
+            read=timeout.read,
+            write=timeout.write,
+            pool=_POOL_ACQUIRE_TIMEOUT,
+        )
+    return httpx.Timeout(timeout, pool=_POOL_ACQUIRE_TIMEOUT)
+
+
 def _local_client(
     token: str | None = None,
     *,
@@ -130,15 +163,10 @@ def _local_client(
     if token is not None:
         merged_headers["Authorization"] = f"Bearer {token}"
 
-    if isinstance(timeout, httpx.Timeout):
-        effective_timeout = timeout
-    else:
-        effective_timeout = httpx.Timeout(timeout, pool=_POOL_ACQUIRE_TIMEOUT)
-
     return httpx.AsyncClient(
         base_url=API_BASE,
         headers=merged_headers or None,
-        timeout=effective_timeout,
+        timeout=_local_timeout(timeout),
         follow_redirects=follow_redirects,
         transport=_get_bulk_transport() if bulk else _get_transport(),
     )
@@ -173,91 +201,85 @@ async def close_shared_client() -> None:
             pass
 
 
-def _client(token: str, timeout: float = 10.0) -> httpx.AsyncClient:
-    global _ui_request_count
-    _ui_request_count += 1
-    from ui.config import API_BASE
-    return httpx.AsyncClient(
-        base_url=API_BASE,
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=timeout,
-        follow_redirects=True,
-        transport=_get_transport(),
-    )
+def _client(token: str, timeout: float | httpx.Timeout = 10.0) -> httpx.AsyncClient:
+    return _local_client(token, timeout=timeout, follow_redirects=True, bulk=False)
 
 
-def _anon_client(timeout: float = 10.0) -> httpx.AsyncClient:
+def _anon_client(timeout: float | httpx.Timeout = 10.0) -> httpx.AsyncClient:
     """Unauthenticated client (no Authorization header)."""
-    global _ui_request_count
-    _ui_request_count += 1
-    from ui.config import API_BASE
-    return httpx.AsyncClient(
-        base_url=API_BASE,
-        timeout=timeout,
-        follow_redirects=True,
-        transport=_get_transport(),
-    )
+    return _local_client(None, timeout=timeout, follow_redirects=True, bulk=False)
 
 
 @asynccontextmanager
-async def _api_client(token: str, timeout: float = 10.0):
+async def _local_error_mapping():
+    """Map httpx transport errors to the shared APIError statuses/copy.
+
+    The order matters: PoolTimeout (pool saturated -> 503 retryable) subclasses
+    TimeoutException (slow upstream -> 504), so it is caught first. Every local
+    client context manager wraps its body in this one mapping so the four of them
+    can never diverge in status or copy.
+    """
+    try:
+        yield
+    except httpx.PoolTimeout as exc:
+        raise APIError(503, SATURATION_MESSAGE) from exc
+    except httpx.TimeoutException as exc:
+        raise APIError(504, TIMEOUT_MESSAGE) from exc
+    except httpx.ConnectError as exc:
+        raise APIError(503, _connect_message()) from exc
+
+
+@asynccontextmanager
+async def _api_client(token: str, timeout: float | httpx.Timeout = 10.0):
     """Authenticated client context manager.
 
     Converts httpx network errors to APIError so all callers only need to
     handle APIError — no scattered per-function try/except for timeouts or
     connection failures.
     """
-    from ui.config import API_BASE
-    try:
+    async with _local_error_mapping():
         async with _client(token, timeout=timeout) as c:
             yield c
-    except httpx.PoolTimeout as exc:
-        # Every interactive connection slot is busy: the app is saturated, not
-        # the upstream. A distinct 503 lets routes offer a plain retry instead
-        # of a misleading "server is busy or payload too large" timeout notice.
-        raise APIError(503, "The app is handling too many requests right now. Please try again in a moment.") from exc
-    except httpx.TimeoutException as exc:
-        raise APIError(504, "Request timed out. The server is busy or the payload is too large. Try again or reduce the batch size.") from exc
-    except httpx.ConnectError as exc:
-        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
 
 
 @asynccontextmanager
-async def _anon_api_client(timeout: float = 10.0):
+async def _anon_api_client(timeout: float | httpx.Timeout = 10.0):
     """Unauthenticated client context manager with the same error mapping."""
-    from ui.config import API_BASE
-    try:
+    async with _local_error_mapping():
         async with _anon_client(timeout=timeout) as c:
             yield c
-    except httpx.PoolTimeout as exc:
-        raise APIError(503, "The app is handling too many requests right now. Please try again in a moment.") from exc
-    except httpx.TimeoutException as exc:
-        raise APIError(504, "Request timed out. The server is busy or the payload is too large.") from exc
-    except httpx.ConnectError as exc:
-        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
 
 
 @asynccontextmanager
-async def _ai_api_client(token: str, session_token: str, timeout: float = 10.0):
+async def _ai_api_client(token: str, session_token: str, timeout: float | httpx.Timeout = 10.0):
     """Authenticated client with X-Session-Token header for AI endpoints."""
-    global _ui_request_count
-    _ui_request_count += 1
-    from ui.config import API_BASE
-    try:
-        async with httpx.AsyncClient(
-            base_url=API_BASE,
-            headers={"Authorization": f"Bearer {token}", "X-Session-Token": session_token},
+    async with _local_error_mapping():
+        async with _local_client(
+            token,
             timeout=timeout,
             follow_redirects=True,
-            transport=_get_transport(),
+            bulk=False,
+            headers={"X-Session-Token": session_token},
         ) as c:
             yield c
-    except httpx.PoolTimeout as exc:
-        raise APIError(503, "The app is handling too many requests right now. Please try again in a moment.") from exc
-    except httpx.TimeoutException as exc:
-        raise APIError(504, "Request timed out. The server is busy or the payload is too large.") from exc
-    except httpx.ConnectError as exc:
-        raise APIError(503, f"Cannot reach API at {API_BASE}. Is the server running?") from exc
+
+
+@asynccontextmanager
+async def _bulk_api_client(token: str, timeout: float | httpx.Timeout = 10.0):
+    """Authenticated client on the bulk transport for long, finite file transfers.
+
+    Same 503/504/connect mapping as the interactive wrapper, but its requests
+    drive the small separate bulk pool so a large upload/download can never hold
+    an interactive connection slot.
+    """
+    async with _local_error_mapping():
+        async with _local_client(
+            token,
+            timeout=timeout,
+            follow_redirects=True,
+            bulk=True,
+        ) as c:
+            yield c
 
 
 def _raise(r: httpx.Response) -> httpx.Response:
