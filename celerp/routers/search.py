@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -73,14 +73,12 @@ async def global_search(
     stripped = (q or "").strip()
 
     if len(stripped) > _MAX_Q_LEN:
-        return {
-            "results": {},
-            "degraded_modules": [],
-            "error": (
-                f"Search text is {len(stripped)} characters, longer than the "
-                f"{_MAX_Q_LEN} the search accepts."
-            ),
-        }
+        # Invalid input, not an empty search: answer 422 before waking any
+        # provider so the UI renders a real error instead of "no results".
+        raise HTTPException(
+            status_code=422,
+            detail=f"Search text must be at most {_MAX_Q_LEN} characters.",
+        )
 
     if len(stripped) < _MIN_Q_LEN:
         # Too short to run: answer empty without waking any provider.

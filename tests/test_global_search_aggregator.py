@@ -289,15 +289,14 @@ async def test_blank_query_returns_empty(client, register_provider):
 
 
 async def test_over_long_query_rejected_without_invoking(client, register_provider):
+    # An over-long stripped query is invalid input, not an empty search: the
+    # aggregator answers 422 before waking any provider, so the UI can render a
+    # real error instead of the no-results state.
     register_provider("test-alpha", f"{_THIS}:never_called_provider", "items", "view_inventory")
     headers = await _owner_headers(client)
 
     r = await client.get("/search", params={"q": "x" * 201}, headers=headers)
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["results"] == {}
-    assert body["degraded_modules"] == []
-    assert "error" in body
+    assert r.status_code == 422, r.text
     assert "never" not in _invocation_calls
 
 
