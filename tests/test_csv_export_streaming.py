@@ -45,8 +45,10 @@ async def _assert_streams_lazily(monkeypatch, export_coro, expected_path):
     chunks = [b"col_a,col_b\n"] + [b"row-%d,value\n" % i for i in range(500)]
     total = sum(len(c) for c in chunks)
     started = {"read": False}
+    # These exports stream on the bulk transport (a large export must never hold an
+    # interactive slot), so the mock stands in for the bulk pool the helper selects.
     monkeypatch.setattr(
-        api, "_get_transport", lambda: _mock_transport(expected_path, chunks, started))
+        api, "_get_bulk_transport", lambda: _mock_transport(expected_path, chunks, started))
 
     result = await export_coro()
     # A buffered export reads the whole CSV into a bytes object; a streaming one returns

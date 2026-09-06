@@ -269,6 +269,56 @@ async def test_shutdown_clears_and_cancels_metadata_tasks(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_invalidation_keeps_inflight_task_tracked_until_shutdown(monkeypatch):
+    # Defect A: a mutation's invalidate_all() drops cached results and detaches
+    # new callers, but it must NOT forget a fetch that is still running. If it
+    # did, tasks_for_shutdown() could not see that fetch, and close_shared_client
+    # would tear down the transport the fetch is still reading on.
+    gate = asyncio.Event()
+
+    async def _blocking_fetch(_token):
+        await gate.wait()
+        return api.InventoryMetadata([], {}, {}, {}, {}, [])
+
+    monkeypatch.setattr(api, "_fetch_inventory_metadata", _blocking_fetch)
+    # Force both transports to exist so shutdown actually tears one down.
+    api._get_transport()
+    api._get_bulk_transport()
+
+    key = api._metadata_key("tok")
+    a_task = asyncio.ensure_future(api.get_inventory_metadata("tok"))
+    await asyncio.sleep(0.02)
+    inflight = api._metadata_inflight[key]
+
+    # A mutation invalidates while fetch A is still running.
+    api._invalidate_inventory_metadata()
+    # It leaves the inflight map (new callers start fresh) but stays tracked.
+    assert key not in api._metadata_inflight
+    assert inflight in api._metadata_tasks, (
+        "an invalidated-but-still-running fetch must remain tracked for shutdown")
+    assert inflight in api._metadata_coordinator.tasks_for_shutdown()
+
+    # Every transport is torn down only after the tracked task has finished, so it
+    # is never closed underneath a live request.
+    order = []
+    real_shutdown = api._SharedTransport.shutdown_pool
+
+    async def _spy_shutdown(self):
+        order.append(inflight.done())
+        return await real_shutdown(self)
+
+    monkeypatch.setattr(api._SharedTransport, "shutdown_pool", _spy_shutdown)
+    await api.close_shared_client()
+
+    assert order, "shutdown should have torn down at least one built transport"
+    assert all(order), "the tracked task must finish before any transport closes"
+    assert inflight.cancelled() or inflight.done()
+    assert not api._metadata_tasks
+    with pytest.raises((asyncio.CancelledError, api.APIError)):
+        await a_task
+
+
+@pytest.mark.asyncio
 async def test_returned_snapshot_is_defensively_copied(monkeypatch):
     _install_counting_getters(monkeypatch)
     first = await api.get_inventory_metadata("tok")
