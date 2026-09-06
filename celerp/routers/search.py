@@ -21,6 +21,7 @@ the exception message.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -50,6 +51,12 @@ _MIN_Q_LEN = 2
 # against a pathological pattern. A longer query is refused deterministically,
 # before any provider runs.
 _MAX_Q_LEN = 200
+
+# The most wall-clock time one provider may take before it is degraded. Providers
+# run sequentially, so the worst-case provider budget is this times the number of
+# providers; at six providers that is 7.5 seconds, inside the 10 second local API
+# request timeout, so one hung source can never blank the whole search.
+_PROVIDER_TIMEOUT_SECONDS = 1.25
 
 
 @router.get("/search")
@@ -151,7 +158,15 @@ async def global_search(
         # rolls back. If the rollback itself fails the session is unusable, so the
         # remaining providers are degraded and the loop stops.
         try:
-            payload = await handler(session, company_id, role, stripped, _PER_PROVIDER_LIMIT)
+            # A provider that hangs rather than raises would otherwise let the
+            # whole aggregate request time out before earlier buckets return; its
+            # own timeout raises TimeoutError, taking the same degrade+rollback
+            # path as any provider failure. Outer request cancellation is a
+            # BaseException and is not caught here, so it propagates as it should.
+            payload = await asyncio.wait_for(
+                handler(session, company_id, role, stripped, _PER_PROVIDER_LIMIT),
+                timeout=_PROVIDER_TIMEOUT_SECONDS,
+            )
             hits = payload[result_key]
             if not isinstance(hits, list):
                 raise TypeError(f"provider returned non-list for {result_key!r}")

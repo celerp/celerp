@@ -75,6 +75,15 @@ async def never_called_provider(session, company_id, role, q, limit):
     return {"items": [{"id": "should-not-run"}]}
 
 
+async def slow_provider(session, company_id, role, q, limit):
+    # Hangs past the (test-shortened) provider timeout without ever raising, so
+    # the aggregator's own timeout is what must contain it.
+    import asyncio
+    _invocation_calls.append("slow")
+    await asyncio.sleep(1.0)
+    return {"items": [{"id": "slow-1"}]}
+
+
 @pytest.fixture(autouse=True)
 def _clear_invocation_log():
     _invocation_calls.clear()
@@ -319,6 +328,75 @@ async def test_over_long_query_rejected_without_invoking(client, register_provid
 
     r = await client.get("/search", params={"q": "x" * 201}, headers=headers)
     assert r.status_code == 422, r.text
+    assert "never" not in _invocation_calls
+
+
+# ── Provider timeout ──────────────────────────────────────────────────────────
+
+import celerp.routers.search as _search_router
+
+
+async def test_slow_provider_times_out_and_later_provider_runs(client, register_provider, monkeypatch):
+    # A provider that hangs past the provider timeout is degraded; the aggregate
+    # request still completes and a normal provider after it still runs.
+    monkeypatch.setattr(_search_router, "_PROVIDER_TIMEOUT_SECONDS", 0.1)
+    register_provider("test-slow", f"{_THIS}:slow_provider", "items", "view_inventory")
+    register_provider("test-beta", f"{_THIS}:ok_entries_provider", "entries", "view_financial_reports")
+    headers = await _owner_headers(client)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "test-slow" in body["degraded_modules"]
+    assert "test-slow" not in body["results"]
+    assert body["results"]["test-beta"] == {"entries": [{"id": "prov-b-1"}]}
+    assert "slow" in _invocation_calls
+
+
+async def test_timeout_rolls_session_back(client, session, register_provider, monkeypatch):
+    # A provider timeout follows the same failure path as any provider failure:
+    # the session is rolled back before the next provider runs.
+    monkeypatch.setattr(_search_router, "_PROVIDER_TIMEOUT_SECONDS", 0.1)
+    register_provider("test-slow", f"{_THIS}:slow_provider", "items", "view_inventory")
+    register_provider("test-beta", f"{_THIS}:ok_entries_provider", "entries", "view_financial_reports")
+    headers = await _owner_headers(client)
+
+    rolled_back = []
+    orig_rollback = session.rollback
+
+    async def _spy_rollback():
+        rolled_back.append(True)
+        return await orig_rollback()
+
+    monkeypatch.setattr(session, "rollback", _spy_rollback)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "test-slow" in body["degraded_modules"]
+    assert rolled_back == [True]
+    assert body["results"]["test-beta"] == {"entries": [{"id": "prov-b-1"}]}
+
+
+async def test_timeout_then_rollback_failure_degrades_rest(client, session, register_provider, monkeypatch):
+    # The slow provider times out; the rollback that follows also fails, so the
+    # session is unusable and every remaining provider is degraded without running.
+    monkeypatch.setattr(_search_router, "_PROVIDER_TIMEOUT_SECONDS", 0.1)
+    register_provider("test-slow", f"{_THIS}:slow_provider", "items", "view_inventory")
+    register_provider("test-omega", f"{_THIS}:never_called_provider", "items", "view_inventory")
+    headers = await _owner_headers(client)
+
+    async def _boom_rollback():
+        raise RuntimeError("rollback failed")
+
+    monkeypatch.setattr(session, "rollback", _boom_rollback)
+
+    r = await client.get("/search", params={"q": "widget"}, headers=headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "test-slow" in body["degraded_modules"]
+    assert "test-omega" in body["degraded_modules"]
+    assert body["results"] == {}
     assert "never" not in _invocation_calls
 
 
