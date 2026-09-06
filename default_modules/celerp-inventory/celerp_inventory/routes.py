@@ -736,6 +736,7 @@ def item_matches_query(record: dict, q: str) -> bool:
 async def list_items(
     request: Request,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("view_inventory"),
     session: AsyncSession = Depends(get_session),
     role: str = Depends(get_current_role),
     limit: int = 50,
@@ -1025,6 +1026,7 @@ async def get_valuation(
     on_memo_to: str | None = None,
     consigned_from: str | None = None,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("view_inventory"),
     role: str = Depends(get_current_role),
     settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
