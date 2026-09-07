@@ -8,11 +8,23 @@ and is required for cloud-gated endpoints (/ai/*, /backup/*, /connectors/*).
 """
 from __future__ import annotations
 
+import copy
+import logging
+
+log = logging.getLogger(__name__)
+
 _session_token: str = ""
 _subscription_tier: str = ""
 _subscription_status: str = ""
 _feature_flags: dict = {}
+_commercial_context: dict = {}
 _instance_id: str = ""
+
+# The client understands commercial-context envelopes up to this schema_version.
+# A higher one is rejected (last-known-good preserved) rather than partial-parsed,
+# so partner identity is never misrepresented from an unknown shape.
+_SUPPORTED_SCHEMA_VERSION = 1
+_VALID_COMMERCIAL_MODES = ("celerp_direct", "partner_managed")
 
 
 def get_instance_id() -> str:
@@ -58,6 +70,115 @@ def set_feature_flags(flags: dict) -> None:
 def get_feature_flags() -> dict:
     """Return a copy of the current feature flags."""
     return dict(_feature_flags)
+
+
+def _valid_int(value) -> bool:
+    """A real JSON integer, not a bool (True/False are int subclasses and must
+    never pass as a version or schema_version)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def set_commercial_context(new: dict) -> bool:
+    """Validate a relay-pushed commercial context and, if it is a strictly-newer
+    well-formed update, replace the held model. Returns whether it was accepted.
+
+    This is the single acceptance gate: both inbound branches (hello_ack and
+    commercial_updated) route through it. On any rejection the last-known-good
+    model is preserved unchanged and a single reason line is logged; the context
+    is never partial-applied. Called by GatewayClient.
+    """
+    global _commercial_context
+    if not isinstance(new, dict):
+        log.warning("Commercial context rejected: payload is not an object.")
+        return False
+    version = new.get("version")
+    if not _valid_int(version):
+        log.warning("Commercial context rejected: version missing or not an integer.")
+        return False
+    current = _commercial_context.get("version")
+    if _valid_int(current) and version <= current:
+        log.warning(
+            "Commercial context rejected: version %s is not newer than held %s.",
+            version, current)
+        return False
+    schema_version = new.get("schema_version")
+    if not _valid_int(schema_version):
+        log.warning("Commercial context rejected: schema_version missing or not an integer.")
+        return False
+    if schema_version > _SUPPORTED_SCHEMA_VERSION:
+        log.warning(
+            "Commercial context schema_version %s exceeds the supported maximum %s; "
+            "this client needs updating. Preserving last-known-good.",
+            schema_version, _SUPPORTED_SCHEMA_VERSION)
+        return False
+    if schema_version < _SUPPORTED_SCHEMA_VERSION:
+        log.warning(
+            "Commercial context rejected: invalid schema_version %s (below the "
+            "supported %s).",
+            schema_version, _SUPPORTED_SCHEMA_VERSION)
+        return False
+    if new.get("commercial_mode") not in _VALID_COMMERCIAL_MODES:
+        log.warning("Commercial context rejected: unrecognised commercial_mode.")
+        return False
+    for key in ("implementation", "offer"):
+        value = new.get(key)
+        if value is not None and not isinstance(value, dict):
+            log.warning("Commercial context rejected: %s is neither null nor an object.", key)
+            return False
+    _commercial_context = copy.deepcopy(new)
+    return True
+
+
+def get_commercial_context() -> dict:
+    """Return a copy of the current commercial-context model (empty when none
+    has been accepted)."""
+    return copy.deepcopy(_commercial_context)
+
+
+def get_commercial_mode() -> str:
+    """Return the current commercial mode, defaulting to the neutral
+    'celerp_direct' when no context has been accepted."""
+    return _commercial_context.get("commercial_mode", "celerp_direct")
+
+
+def get_partner_identity() -> dict | None:
+    """Return a copy of the partner implementation object, or None when the
+    install is not partner-managed."""
+    implementation = _commercial_context.get("implementation")
+    return copy.deepcopy(implementation) if isinstance(implementation, dict) else None
+
+
+def get_offer() -> dict | None:
+    """Return a copy of the partner offer object, or None when none is set."""
+    offer = _commercial_context.get("offer")
+    return copy.deepcopy(offer) if isinstance(offer, dict) else None
+
+
+def load_commercial_context() -> None:
+    """Load the last-known-good commercial context from the local cache at
+    startup, ungated by the relay connection so an offline restart still
+    presents the cached partner_managed identity instead of the neutral default.
+
+    Reads the 'commercial_context' key from <CELERP_DATA_DIR>/celerp-config.json.
+    A missing data dir, missing file, missing key, or corrupt JSON leaves the
+    neutral empty model in place; it never fabricates a partner.
+    """
+    import os
+    import json
+    data_dir = os.environ.get("CELERP_DATA_DIR", "")
+    if not data_dir:
+        return
+    config_path = os.path.join(data_dir, "celerp-config.json")
+    if not os.path.exists(config_path):
+        return
+    try:
+        with open(config_path) as f:
+            existing = json.load(f)
+        cached = existing.get("commercial_context")
+        if isinstance(cached, dict):
+            set_commercial_context(cached)
+    except Exception as exc:
+        log.debug("Gateway: commercial-context cache unreadable; using neutral default: %s", exc)
 
 
 # ── Relay connection helpers (single source of truth) ────────────────────────

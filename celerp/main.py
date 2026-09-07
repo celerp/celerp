@@ -15,8 +15,10 @@ from slowapi.util import get_remote_address
 from celerp.db import engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import BarcodeConflictError
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
+from celerp.gateway.state import load_commercial_context
 load_cloud_config()
 load_backup_config()
+load_commercial_context()
 assert_secure_jwt()
 ensure_instance_id()
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception

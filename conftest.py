@@ -441,9 +441,17 @@ def _reset_gateway_state():
     """
     from celerp.gateway import state as _gw
     _iid, _tok = _gw.get_instance_id(), _gw.get_session_token()
+    # Relay-pushed commercial state (feature flags + commercial context) also
+    # lives in gateway-state module globals. A test that pushes flags or a
+    # commercial context leaks them into later tests on the same worker. The
+    # setter for commercial context rejects a non-newer version, so restore its
+    # global directly rather than through set_commercial_context.
+    _flags, _ctx = _gw.get_feature_flags(), _gw.get_commercial_context()
     yield
     _gw.set_instance_id(_iid)
     _gw.set_session_token(_tok)
+    _gw.set_feature_flags(_flags)
+    _gw._commercial_context = _ctx
     # Gateway-lifecycle globals: a test that patches asyncio.create_task while the
     # real ensure_running() runs leaves celerp.gateway._run_task a MagicMock (and
     # can leave a stray client). A later test's gateway shutdown() would then await
@@ -540,20 +548,31 @@ def _mock_get_modules_default():
 def _reset_loaded_modules(request):
     """Clear the loader's in-process registry around each unit test. A test (or
     a test module's import) that calls load_all() populates
-    celerp.modules.loader._loaded; without this it leaks into later tests in the
-    same worker (e.g. a module shows running=True), which surfaces under xdist's
-    test distribution.
+    celerp.modules.loader._loaded AND registers every module's lifecycle hooks
+    into celerp.modules.slots._slots; without resetting both they leak into
+    later tests in the same worker (e.g. a module shows running=True, or the
+    manufacturing on_company_created hook seeds a default work center for a test
+    that expects none), which surfaces under xdist's test distribution.
+
+    The slot registry is snapshotted and restored around the test rather than
+    cleared, so the canonical unit-harness contributions (_ensure_slots) survive
+    while anything a load_all() adds during the test is torn down.
 
     Browser tests are exempt: their server runs in-process and legitimately owns
     a populated _loaded (module-gated UI like the credit-note "Receive Returns"
-    button reads loaded_modules()), so wiping it would hide that UI."""
+    button reads loaded_modules()) and slot registry, so wiping it would hide
+    that UI."""
     if request.node.get_closest_marker("browser"):
         yield
         return
     from celerp.modules.loader import _loaded
+    from celerp.modules import slots as _slots_mod
     _loaded.clear()
+    _slot_snapshot = {k: list(v) for k, v in _slots_mod._slots.items()}
     yield
     _loaded.clear()
+    _slots_mod._slots.clear()
+    _slots_mod._slots.update({k: list(v) for k, v in _slot_snapshot.items()})
 
 
 @pytest.fixture(scope="session", autouse=True)
