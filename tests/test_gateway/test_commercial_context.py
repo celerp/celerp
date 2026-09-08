@@ -56,6 +56,7 @@ def _ctx(version=1, schema_version=1, mode="partner_managed",
             "display_name": "Managed Plan",
             "retail_amount": 4900,
             "currency": "USD",
+            "currency_exponent": 2,
             "billing_interval": "month",
             "service_description": "Fully managed onboarding and support.",
             "service_bullets": ["Setup", "Support", "Training"],
@@ -536,7 +537,8 @@ def test_set_context_offer_retail_amount_rejected():
     for bad_amount in (True, False, -100, 10 ** 12):
         gw_state._commercial_context = {}
         offer = {"display_name": "Managed Plan", "retail_amount": bad_amount,
-                 "currency": "USD"}
+                 "currency": "USD", "currency_exponent": 2,
+                 "billing_interval": "month"}
         assert gw_state.set_commercial_context(
             _ctx(version=1, mode="partner_managed", offer=offer)) is True
         assert gw_state.get_offer() is None, f"amount={bad_amount!r} was not rejected"
@@ -547,7 +549,8 @@ def test_set_context_offer_service_bullets_nonlist():
     """A non-list service_bullets normalizes the offer to None (no raise), keeping
     partner identity."""
     offer = {"display_name": "Managed Plan", "retail_amount": 4900,
-             "currency": "USD", "service_bullets": 42}
+             "currency": "USD", "currency_exponent": 2,
+             "billing_interval": "month", "service_bullets": 42}
     assert gw_state.set_commercial_context(
         _ctx(version=1, mode="partner_managed", offer=offer)) is True
     assert gw_state.get_offer() is None
@@ -558,7 +561,8 @@ def test_set_context_offer_currency_nonstring():
     """A non-string currency normalizes the offer to None, keeping partner
     identity."""
     offer = {"display_name": "Managed Plan", "retail_amount": 4900,
-             "currency": 840}
+             "currency": 840, "currency_exponent": 2,
+             "billing_interval": "month"}
     assert gw_state.set_commercial_context(
         _ctx(version=1, mode="partner_managed", offer=offer)) is True
     assert gw_state.get_offer() is None
@@ -587,3 +591,54 @@ def test_load_commercial_context_routes_through_gate(monkeypatch, tmp_path):
     gw_state.load_commercial_context()
     assert gw_state.get_partner_identity() is None
     assert "javascript:" not in json.dumps(gw_state.get_commercial_context())
+
+
+# -- subscription block + offer exponent/interval ingress (s27) --------------
+
+def _good_offer():
+    return {
+        "offer_id": "offer-1", "display_name": "Managed Plan",
+        "retail_amount": 4900, "currency": "USD",
+        "currency_exponent": 2, "billing_interval": "month",
+        "service_bullets": ["Setup"],
+    }
+
+
+def test_ingress_rejects_bad_subscription_exponent_interval():
+    """The subscription block validates like offer/implementation: a malformed
+    block drops whole while the envelope advances, a non-dict block rejects the
+    whole update, and a bad currency_exponent or billing_interval drops the
+    offer block whole."""
+    # A well-formed subscription is accepted and readable.
+    v1 = _ctx(version=10, offer=_good_offer())
+    v1["subscription"] = {"status": "active", "cancel_at_period_end": False,
+                          "current_period_end": "2027-01-01T00:00:00Z"}
+    assert gw_state.set_commercial_context(v1) is True
+    assert gw_state.get_commercial_context()["subscription"]["status"] == "active"
+
+    # A malformed subscription (unparseable current_period_end) is dropped whole;
+    # the version still advances and the sibling offer stays intact.
+    v2 = _ctx(version=11, offer=_good_offer())
+    v2["subscription"] = {"status": "active", "cancel_at_period_end": False,
+                          "current_period_end": "not-a-date"}
+    assert gw_state.set_commercial_context(v2) is True
+    ctx = gw_state.get_commercial_context()
+    assert "subscription" not in ctx
+    assert ctx["version"] == 11
+    assert ctx["offer"]["offer_id"] == "offer-1"
+
+    # A non-dict subscription rejects the whole update; last-known-good is kept.
+    v3 = _ctx(version=12, offer=_good_offer())
+    v3["subscription"] = ["not", "a", "dict"]
+    assert gw_state.set_commercial_context(v3) is False
+    assert gw_state.get_commercial_context()["version"] == 11
+
+    # A string currency_exponent drops the offer block whole.
+    v4 = _ctx(version=13, offer={**_good_offer(), "currency_exponent": "2"})
+    assert gw_state.set_commercial_context(v4) is True
+    assert "offer" not in gw_state.get_commercial_context()
+
+    # An unknown billing_interval drops the offer block whole.
+    v5 = _ctx(version=14, offer={**_good_offer(), "billing_interval": "weekly"})
+    assert gw_state.set_commercial_context(v5) is True
+    assert "offer" not in gw_state.get_commercial_context()

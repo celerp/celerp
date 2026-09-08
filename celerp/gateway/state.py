@@ -138,6 +138,15 @@ def _validated_offer(offer):
             return None
         if amount < 0 or amount >= _MAX_RETAIL_AMOUNT:
             return None
+        # A priced offer must carry the minor-unit exponent and billing interval
+        # the price renderer needs: the amount is meaningless without the
+        # exponent (amount / 10 ** exponent) and the interval decides the /mo or
+        # /yr suffix. A missing or malformed either drops the offer whole.
+        exponent = offer.get("currency_exponent")
+        if not _valid_int(exponent) or not (0 <= exponent <= 4):
+            return None
+        if offer.get("billing_interval") not in ("month", "year"):
+            return None
     currency = offer.get("currency")
     if currency is not None and not isinstance(currency, str):
         return None
@@ -145,6 +154,35 @@ def _validated_offer(offer):
     if bullets is not None and not isinstance(bullets, list):
         return None
     return offer
+
+
+def _validated_subscription(sub):
+    """Return the subscription dict when well-formed, else None (dropped whole).
+
+    status is a required non-empty string of at most 64 characters;
+    cancel_at_period_end, when present, must be a real bool (not an int);
+    current_period_end, when present, must be an ISO-8601 string that parses
+    after normalising a trailing Z, the same shape the grace handling reads. A
+    malformed block is dropped whole so nothing grants on a half-trusted state.
+    """
+    if not isinstance(sub, dict):
+        return None
+    status = sub.get("status")
+    if not isinstance(status, str) or not status or len(status) > 64:
+        return None
+    cancel_at_period_end = sub.get("cancel_at_period_end")
+    if cancel_at_period_end is not None and not isinstance(cancel_at_period_end, bool):
+        return None
+    period_end = sub.get("current_period_end")
+    if period_end is not None:
+        if not isinstance(period_end, str):
+            return None
+        from datetime import datetime
+        try:
+            datetime.fromisoformat(period_end.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return sub
 
 
 def _normalized_implementation(implementation):
@@ -216,16 +254,16 @@ def set_commercial_context(new: dict) -> bool:
     if new.get("commercial_mode") not in _VALID_COMMERCIAL_MODES:
         log.warning("Commercial context rejected: unrecognised commercial_mode.")
         return False
-    for key in ("implementation", "offer"):
+    for key in ("implementation", "offer", "subscription"):
         value = new.get(key)
         if value is not None and not isinstance(value, dict):
             log.warning("Commercial context rejected: %s is neither null nor an object.", key)
             return False
     accepted = copy.deepcopy(new)
     # Normalize the relay-controlled sub-objects at ingress: a malformed
-    # support_url or offer drops that block whole (fail closed) while the
-    # envelope is still accepted so the version advances. A later egress guard
-    # backstops caches written by an older, pre-validation binary.
+    # support_url, offer, or subscription drops that block whole (fail closed)
+    # while the envelope is still accepted so the version advances. A later
+    # egress guard backstops caches written by an older, pre-validation binary.
     normalized_impl = _normalized_implementation(accepted.get("implementation"))
     if normalized_impl is None:
         accepted.pop("implementation", None)
@@ -233,6 +271,8 @@ def set_commercial_context(new: dict) -> bool:
         accepted["implementation"] = normalized_impl
     if _validated_offer(accepted.get("offer")) is None:
         accepted.pop("offer", None)
+    if _validated_subscription(accepted.get("subscription")) is None:
+        accepted.pop("subscription", None)
     _commercial_context = accepted
     return True
 
