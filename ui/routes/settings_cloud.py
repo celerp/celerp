@@ -392,22 +392,42 @@ def _valid_s3_endpoint(endpoint: str) -> bool:
     return parsed.scheme == "https" and bool(parsed.hostname)
 
 
-def _infra_db_section() -> FT:
-    import os
-    from celerp.config import settings, read_config
-    current_url = settings.database_url
-    db = _parse_db_url(current_url)
-    masked_url = _masked_db_url(current_url)
+# Sentinel distinguishing "caller passed no packaged config" (read it here) from
+# an explicit None ("not a packaged build, use runtime settings"), so the render
+# path can read the packaged config once and pass it to both infra sections.
+_UNSET = object()
 
-    # The backup lives wherever this build actually writes: packaged installs
-    # (CELERP_DATA_DIR set) keep it in celerp-config.json, self-hosted in
-    # config.toml. Reading only the self-hosted path here hid the restore
-    # button from every packaged install that had one to restore.
-    if os.environ.get("CELERP_DATA_DIR"):
-        prev_url = _read_packaged_config().get("external_db_url_backup", "") or ""
+
+def _packaged_infra_or_none() -> dict | None:
+    """The Electron-owned packaged config when this build is packaged
+    (CELERP_DATA_DIR set), else None so the caller sources infra values from the
+    runtime settings. A packaged build whose config is unreadable yields {},
+    which each field treats the same as an absent key and falls back per field."""
+    import os
+    if not os.environ.get("CELERP_DATA_DIR"):
+        return None
+    return _read_packaged_config()
+
+
+def _infra_db_section(packaged=_UNSET) -> FT:
+    from celerp.config import settings, read_config
+    if packaged is _UNSET:
+        packaged = _packaged_infra_or_none()
+
+    # In a packaged build the form must show the configured external target, not
+    # the runtime database_url (which points at the local store while grace has
+    # it running locally). The backup that gates the restore button lives in the
+    # same packaged config; self-hosted keeps both in config.toml. An unset or
+    # unreadable packaged URL falls back to the honest runtime URL.
+    if packaged is not None:
+        current_url = packaged.get("external_db_url") or settings.database_url
+        prev_url = packaged.get("external_db_url_backup", "") or ""
     else:
+        current_url = settings.database_url
         cfg = read_config()
         prev_url = cfg.get("database_backup", {}).get("previous_url", "") or ""
+    db = _parse_db_url(current_url)
+    masked_url = _masked_db_url(current_url)
 
     return Div(
         H3(t("page.database")),
@@ -493,9 +513,24 @@ def _infra_db_section() -> FT:
     )
 
 
-def _infra_storage_section() -> FT:
+def _infra_storage_section(packaged=_UNSET) -> FT:
     from celerp.config import settings
-    backend = settings.storage_backend or "local"
+    if packaged is _UNSET:
+        packaged = _packaged_infra_or_none()
+
+    # Packaged builds store storage under storage_mode (mapped to the runtime
+    # storage_backend) plus the storage_s3_* keys; self-hosted uses the runtime
+    # settings. The secret key is never sourced into the form in either mode.
+    if packaged is not None:
+        backend = packaged.get("storage_mode") or "local"
+        s3_endpoint = packaged.get("storage_s3_endpoint", "") or ""
+        s3_bucket = packaged.get("storage_s3_bucket", "") or ""
+        s3_access_key = packaged.get("storage_s3_access_key", "") or ""
+    else:
+        backend = settings.storage_backend or "local"
+        s3_endpoint = settings.storage_s3_endpoint
+        s3_bucket = settings.storage_s3_bucket
+        s3_access_key = settings.storage_s3_access_key
 
     return Div(
         H3(t("page.file_storage")),
@@ -516,20 +551,20 @@ def _infra_storage_section() -> FT:
                 Div(
                     Label(t("label.endpoint_url"), For="s3_endpoint"),
                     Input(id="s3_endpoint", name="s3_endpoint",
-                          placeholder="https://s3.amazonaws.com", value=settings.storage_s3_endpoint,
+                          placeholder="https://s3.amazonaws.com", value=s3_endpoint,
                           cls="input"),
                     cls="form-row",
                 ),
                 Div(
                     Label(t("label.bucket_name"), For="s3_bucket"),
                     Input(id="s3_bucket", name="s3_bucket", placeholder="my-celerp-bucket",
-                          value=settings.storage_s3_bucket, cls="input"),
+                          value=s3_bucket, cls="input"),
                     cls="form-row",
                 ),
                 Div(
                     Label(t("label.access_key"), For="s3_access_key"),
                     Input(id="s3_access_key", name="s3_access_key", placeholder="AKIAIOSFODNN7EXAMPLE",
-                          value=settings.storage_s3_access_key, cls="input"),
+                          value=s3_access_key, cls="input"),
                     cls="form-row",
                 ),
                 Div(
@@ -620,7 +655,8 @@ def _infrastructure_tab(grace_notice: FT | None = None) -> FT:
     children: list = []
     if grace_notice is not None:
         children.append(grace_notice)
-    children.extend([_infra_db_section(), _infra_storage_section()])
+    _packaged_infra = _packaged_infra_or_none()
+    children.extend([_infra_db_section(_packaged_infra), _infra_storage_section(_packaged_infra)])
     return Div(*children, cls="settings-card")
 
 
@@ -977,7 +1013,16 @@ def setup_routes(app):
             return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
 
         from celerp.config import settings
-        password = form.get("db_pass", "") or (_url_password(settings.database_url) or "")
+        # A blank password preserves the saved credential. In a packaged build
+        # that saved credential is the packaged external_db_url's password, not
+        # the local runtime one, so testing a preserved external target does not
+        # silently probe with the local secret.
+        packaged = _packaged_infra_or_none()
+        if packaged is not None:
+            fallback_url = packaged.get("external_db_url") or settings.database_url
+        else:
+            fallback_url = settings.database_url
+        password = form.get("db_pass", "") or (_url_password(fallback_url) or "")
 
         import asyncio
         try:
@@ -1017,7 +1062,14 @@ def setup_routes(app):
         bucket = form.get("s3_bucket", "").strip()
         access_key = form.get("s3_access_key", "").strip()
         from celerp.config import settings
-        secret_key = form.get("s3_secret_key", "") or settings.storage_s3_secret_key
+        # A blank secret preserves the saved one: the packaged storage secret in
+        # a packaged build, the runtime setting otherwise.
+        packaged = _packaged_infra_or_none()
+        if packaged is not None:
+            fallback_secret = packaged.get("storage_s3_secret_key") or settings.storage_s3_secret_key
+        else:
+            fallback_secret = settings.storage_s3_secret_key
+        secret_key = form.get("s3_secret_key", "") or fallback_secret
 
         if not all([endpoint, bucket, access_key, secret_key]):
             return Span(t("settings.please_fill_in_all_s3_fields"), cls="infra-test-result--err")

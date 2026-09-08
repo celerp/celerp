@@ -456,3 +456,63 @@ async def test_infra_handler_rejects_without_manage_integrations(
     cfg = json.loads((tmp_path / "celerp-config.json").read_text())
     assert cfg["external_db_url"] == "OLD"
     assert cfg["external_db_url_backup"] == "OLDER"
+
+
+# ── packaged-aware infra form value source (s30) ─────────────────────────────
+
+async def test_packaged_form_shows_preserved_external_db(client, tmp_path, monkeypatch):
+    """In packaged mode the infra form sources its DB URL and storage fields from
+    celerp-config.json, not the runtime settings: the external URL is shown
+    redacted and the S3 fields carry the packaged values. An unreadable packaged
+    config degrades to the runtime values, and a blank test-db password falls
+    back to the packaged URL's password rather than the runtime one."""
+    from celerp.config import settings
+    ext_url = "postgresql+asyncpg://celerp:secretpw@ext.example.com:5432/celerp"
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    (tmp_path / "celerp-config.json").write_text(json.dumps({
+        "db_mode": "external",
+        "external_db_url": ext_url,
+        "storage_mode": "s3",
+        "storage_s3_endpoint": "https://s3.ext",
+        "storage_s3_bucket": "extbucket",
+        "storage_s3_access_key": "EXTAK",
+        "storage_s3_secret_key": "EXTSK",
+    }))
+    # Runtime settings deliberately point at a local DB and empty storage, so any
+    # packaged value that appears proves the form is not reading settings.
+    monkeypatch.setattr(settings, "database_url",
+                        "postgresql+asyncpg://celerp:localpw@127.0.0.1:5432/celerp")
+
+    db_html = to_xml(sc._infra_db_section())
+    assert "ext.example.com" in db_html      # packaged host shown
+    assert "secretpw" not in db_html         # password redacted
+    assert "127.0.0.1" not in db_html        # not the runtime host
+
+    storage_html = to_xml(sc._infra_storage_section())
+    assert 'value="https://s3.ext"' in storage_html
+    assert 'value="extbucket"' in storage_html
+    assert 'value="EXTAK"' in storage_html
+    assert "EXTSK" not in storage_html       # secret never rendered into the form
+
+    # Unreadable packaged config -> degrade to the runtime settings values.
+    (tmp_path / "celerp-config.json").write_text("{ not valid json")
+    degraded = to_xml(sc._infra_db_section())
+    assert "127.0.0.1" in degraded
+    assert "ext.example.com" not in degraded
+
+    # Restore the packaged config; a blank test-db password falls back to the
+    # packaged URL's password, not the runtime one.
+    (tmp_path / "celerp-config.json").write_text(json.dumps({
+        "db_mode": "external", "external_db_url": ext_url}))
+    captured = {}
+
+    async def _fake_connect(host, port, name, user, password):
+        captured["password"] = password
+
+    monkeypatch.setattr(sc, "_try_db_connect", _fake_connect)
+    r = await client.post("/settings/cloud/test-db", data={
+        "db_host": "ext.example.com", "db_port": "5432",
+        "db_name": "celerp", "db_user": "celerp", "db_pass": "",
+    })
+    assert r.status_code == 200
+    assert captured.get("password") == "secretpw"
