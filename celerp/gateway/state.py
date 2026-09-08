@@ -33,8 +33,17 @@ def get_instance_id() -> str:
 
 
 def set_instance_id(iid: str) -> None:
-    """Set the canonical instance_id. Called only by GatewayClient on hello_ack."""
-    global _instance_id
+    """Set the canonical instance_id. Called only by GatewayClient on hello_ack.
+
+    An observed CHANGE of a known instance_id resets the commercial-context
+    version namespace: the held snapshot belonged to the previous instance, so a
+    new instance's context (which may start from a lower version) must not be
+    rejected as stale. The initial set from the empty default is not a change -
+    it preserves a context loaded from disk at startup.
+    """
+    global _instance_id, _commercial_context
+    if _instance_id and iid != _instance_id:
+        _commercial_context = {}
     _instance_id = iid
 
 
@@ -218,13 +227,19 @@ def _normalized_implementation(implementation):
 
 
 def set_commercial_context(new: dict) -> bool:
-    """Validate a relay-pushed commercial context and, if it is a strictly-newer
-    well-formed update, replace the held model. Returns whether it was accepted.
+    """Validate a relay-pushed commercial context and, if the WHOLE envelope is
+    valid and strictly newer, replace the held model. Returns whether it was
+    accepted.
 
     This is the single acceptance gate: both inbound branches (hello_ack and
-    commercial_updated) route through it. On any rejection the last-known-good
-    model is preserved unchanged and a single reason line is logged; the context
-    is never partial-applied. Called by GatewayClient.
+    commercial_updated) route through it. Acceptance is all-or-nothing. Any
+    invalidity - a bad envelope shape, a partner_managed context without a valid
+    implementation, a supplied offer or subscription that fails validation, or a
+    celerp_direct context carrying an implementation or offer - rejects the whole
+    envelope: the last-known-good model AND its version are preserved unchanged
+    and a single reason line is logged. Nothing is ever partial-applied, so a
+    rejected envelope never advances the held version and a corrected
+    retransmission at the same version is accepted. Called by GatewayClient.
     """
     global _commercial_context
     if not isinstance(new, dict):
@@ -233,12 +248,6 @@ def set_commercial_context(new: dict) -> bool:
     version = new.get("version")
     if not _valid_int(version):
         log.warning("Commercial context rejected: version missing or not an integer.")
-        return False
-    current = _commercial_context.get("version")
-    if _valid_int(current) and version <= current:
-        log.warning(
-            "Commercial context rejected: version %s is not newer than held %s.",
-            version, current)
         return False
     schema_version = new.get("schema_version")
     if not _valid_int(schema_version):
@@ -256,7 +265,8 @@ def set_commercial_context(new: dict) -> bool:
             "supported %s).",
             schema_version, _SUPPORTED_SCHEMA_VERSION)
         return False
-    if new.get("commercial_mode") not in _VALID_COMMERCIAL_MODES:
+    mode = new.get("commercial_mode")
+    if mode not in _VALID_COMMERCIAL_MODES:
         log.warning("Commercial context rejected: unrecognised commercial_mode.")
         return False
     for key in ("implementation", "offer", "subscription"):
@@ -264,20 +274,51 @@ def set_commercial_context(new: dict) -> bool:
         if value is not None and not isinstance(value, dict):
             log.warning("Commercial context rejected: %s is neither null nor an object.", key)
             return False
+
+    # All-or-nothing validation of the whole candidate, BEFORE the version gate,
+    # so a rejected envelope never advances the held version. A malformed
+    # sub-block fails the whole update rather than being dropped and stored.
+    raw_impl = new.get("implementation")
+    normalized_impl = _normalized_implementation(raw_impl) if raw_impl is not None else None
+    if mode == "partner_managed":
+        if normalized_impl is None:
+            log.warning(
+                "Commercial context rejected: partner_managed requires a valid "
+                "implementation (mode=%s, version=%s).", mode, version)
+            return False
+    else:  # celerp_direct
+        if raw_impl is not None or new.get("offer") is not None:
+            log.warning(
+                "Commercial context rejected: celerp_direct must carry no "
+                "implementation or offer (mode=%s, version=%s).", mode, version)
+            return False
+    raw_offer = new.get("offer")
+    if raw_offer is not None and _validated_offer(raw_offer) is None:
+        log.warning(
+            "Commercial context rejected: offer failed validation (version=%s).", version)
+        return False
+    raw_subscription = new.get("subscription")
+    if raw_subscription is not None and _validated_subscription(raw_subscription) is None:
+        log.warning(
+            "Commercial context rejected: subscription failed validation (version=%s).",
+            version)
+        return False
+
+    # The whole envelope is valid; only now does the strictly-newer version gate
+    # decide whether it supersedes the held snapshot.
+    current = _commercial_context.get("version")
+    if _valid_int(current) and version <= current:
+        log.warning(
+            "Commercial context rejected: version %s is not newer than held %s.",
+            version, current)
+        return False
+
     accepted = copy.deepcopy(new)
-    # Normalize the relay-controlled sub-objects at ingress: a malformed
-    # support_url, offer, or subscription drops that block whole (fail closed)
-    # while the envelope is still accepted so the version advances. A later
-    # egress guard backstops caches written by an older, pre-validation binary.
-    normalized_impl = _normalized_implementation(accepted.get("implementation"))
-    if normalized_impl is None:
-        accepted.pop("implementation", None)
-    else:
+    # Carry the normalized implementation (a sanitised support_url) into the
+    # stored snapshot. The block is present and valid here for partner_managed;
+    # celerp_direct carries none.
+    if normalized_impl is not None:
         accepted["implementation"] = normalized_impl
-    if _validated_offer(accepted.get("offer")) is None:
-        accepted.pop("offer", None)
-    if _validated_subscription(accepted.get("subscription")) is None:
-        accepted.pop("subscription", None)
     _commercial_context = accepted
     return True
 

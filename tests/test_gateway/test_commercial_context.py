@@ -117,7 +117,8 @@ def test_version_rejects_equal():
 def test_version_accepts_newer():
     """A strictly-newer version is accepted and replaces the held context."""
     assert gw_state.set_commercial_context(_ctx(version=5)) is True
-    assert gw_state.set_commercial_context(_ctx(version=6, mode="celerp_direct")) is True
+    assert gw_state.set_commercial_context(
+        _ctx(version=6, mode="celerp_direct", implementation=None, offer=None)) is True
     assert gw_state.get_commercial_context()["version"] == 6
     assert gw_state.get_commercial_mode() == "celerp_direct"
 
@@ -463,15 +464,17 @@ async def test_system_commercial_state_endpoint_returns_state(client):
 
 # -- support_url trust boundary at ingress (BLOCKER 1) -----------------------
 
-def test_set_context_bad_support_url_drops_implementation():
-    """A present-but-invalid support_url causes the whole implementation block to
-    be dropped (fail closed): the context is still accepted (version advances)
-    but no partner identity survives to reach an href."""
-    impl = {"display_name": "Partner Co", "support_url": "javascript:alert(1)"}
+def test_set_context_bad_support_url_rejects_whole():
+    """A present-but-invalid support_url makes the partner_managed implementation
+    invalid, so the WHOLE envelope is rejected (fail closed): the last-known-good
+    model is preserved and no hostile URL ever reaches the held model."""
+    assert gw_state.set_commercial_context(_ctx(version=1, mode="partner_managed")) is True
+    impl = {"partner_id": "partner-1", "display_name": "Partner Co",
+            "support_url": "javascript:alert(1)"}
     assert gw_state.set_commercial_context(
-        _ctx(version=1, mode="partner_managed", implementation=impl)) is True
-    assert gw_state.get_partner_identity() is None
-    # The malformed URL never survives anywhere in the held model.
+        _ctx(version=2, mode="partner_managed", implementation=impl)) is False
+    # Last-known-good preserved; the malformed URL never enters the held model.
+    assert gw_state.get_commercial_context()["version"] == 1
     assert "javascript:" not in json.dumps(gw_state.get_commercial_context())
 
 
@@ -487,34 +490,38 @@ def test_set_context_valid_support_url_kept():
     assert identity["support_url"] == "https://partner.example.com/support"
 
 
-def test_set_context_missing_partner_id_drops_implementation():
-    """An implementation block with no partner_id is dropped (fail closed): a
-    relay-managed identity without an id is not a usable identity."""
+def test_set_context_missing_partner_id_rejects_whole():
+    """An implementation block with no partner_id makes a partner_managed context
+    invalid, so the whole envelope is rejected: a relay-managed identity without
+    an id is not a usable identity."""
     impl = {"display_name": "Partner Co",
             "support_url": "https://partner.example.com/support"}
     assert gw_state.set_commercial_context(
-        _ctx(version=1, mode="partner_managed", implementation=impl)) is True
-    assert gw_state.get_partner_identity() is None
+        _ctx(version=1, mode="partner_managed", implementation=impl)) is False
+    assert gw_state.get_commercial_context() == {}
 
 
-def test_set_context_nonstring_partner_id_drops_implementation():
-    """A non-string, or empty-string, partner_id drops the block."""
+def test_set_context_nonstring_partner_id_rejects_whole():
+    """A non-string, or empty-string, partner_id rejects the whole envelope."""
     for bad_id in (42, "", None):
         gw_state._commercial_context = {}
         impl = {"partner_id": bad_id, "display_name": "Partner Co"}
         assert gw_state.set_commercial_context(
-            _ctx(version=1, mode="partner_managed", implementation=impl)) is True
-        assert gw_state.get_partner_identity() is None, f"partner_id={bad_id!r} was not rejected"
+            _ctx(version=1, mode="partner_managed", implementation=impl)) is False, \
+            f"partner_id={bad_id!r} was not rejected"
+        assert gw_state.get_commercial_context() == {}
 
 
-def test_set_context_nonstring_display_name_drops_implementation():
-    """A non-string display_name, support_email, or status drops the block."""
+def test_set_context_nonstring_display_name_rejects_whole():
+    """A non-string display_name, support_email, or status rejects the whole
+    envelope."""
     for key in ("display_name", "support_email", "status"):
         gw_state._commercial_context = {}
         impl = {"partner_id": "partner-1", key: 42}
         assert gw_state.set_commercial_context(
-            _ctx(version=1, mode="partner_managed", implementation=impl)) is True
-        assert gw_state.get_partner_identity() is None, f"{key}=42 was not rejected"
+            _ctx(version=1, mode="partner_managed", implementation=impl)) is False, \
+            f"{key}=42 was not rejected"
+        assert gw_state.get_commercial_context() == {}
 
 
 def test_set_context_well_typed_implementation_kept():
@@ -531,42 +538,40 @@ def test_set_context_well_typed_implementation_kept():
 
 # -- nested-offer strict validation at ingress (BLOCKER 4) -------------------
 
-def test_set_context_offer_retail_amount_rejected():
-    """A retail_amount that is a bool, negative, or oversized normalizes the offer
-    to None while keeping partner identity."""
-    for bad_amount in (True, False, -100, 10 ** 12):
+def test_set_context_offer_retail_amount_rejects_whole():
+    """A retail_amount that is a bool, zero, negative, or oversized makes the
+    supplied offer invalid, so the whole envelope is rejected."""
+    for bad_amount in (True, False, 0, -100, 10 ** 12):
         gw_state._commercial_context = {}
         offer = {"display_name": "Managed Plan", "retail_amount": bad_amount,
                  "currency": "USD", "currency_exponent": 2,
                  "billing_interval": "month"}
         assert gw_state.set_commercial_context(
-            _ctx(version=1, mode="partner_managed", offer=offer)) is True
-        assert gw_state.get_offer() is None, f"amount={bad_amount!r} was not rejected"
-        assert gw_state.get_partner_identity() is not None
+            _ctx(version=1, mode="partner_managed", offer=offer)) is False, \
+            f"amount={bad_amount!r} was not rejected"
+        assert gw_state.get_commercial_context() == {}
 
 
-def test_set_context_offer_service_bullets_nonlist():
-    """A non-list service_bullets normalizes the offer to None (no raise), keeping
-    partner identity."""
+def test_set_context_offer_service_bullets_nonlist_rejects_whole():
+    """A non-list service_bullets makes the offer invalid, so the whole envelope
+    is rejected."""
     offer = {"display_name": "Managed Plan", "retail_amount": 4900,
              "currency": "USD", "currency_exponent": 2,
              "billing_interval": "month", "service_bullets": 42}
     assert gw_state.set_commercial_context(
-        _ctx(version=1, mode="partner_managed", offer=offer)) is True
-    assert gw_state.get_offer() is None
-    assert gw_state.get_partner_identity() is not None
+        _ctx(version=1, mode="partner_managed", offer=offer)) is False
+    assert gw_state.get_commercial_context() == {}
 
 
-def test_set_context_offer_currency_nonstring():
-    """A non-string currency normalizes the offer to None, keeping partner
-    identity."""
+def test_set_context_offer_currency_nonstring_rejects_whole():
+    """A non-string currency makes the offer invalid, so the whole envelope is
+    rejected."""
     offer = {"display_name": "Managed Plan", "retail_amount": 4900,
              "currency": 840, "currency_exponent": 2,
              "billing_interval": "month"}
     assert gw_state.set_commercial_context(
-        _ctx(version=1, mode="partner_managed", offer=offer)) is True
-    assert gw_state.get_offer() is None
-    assert gw_state.get_partner_identity() is not None
+        _ctx(version=1, mode="partner_managed", offer=offer)) is False
+    assert gw_state.get_commercial_context() == {}
 
 
 def test_set_context_valid_offer_kept():
@@ -605,10 +610,9 @@ def _good_offer():
 
 
 def test_ingress_rejects_bad_subscription_exponent_interval():
-    """The subscription block validates like offer/implementation: a malformed
-    block drops whole while the envelope advances, a non-dict block rejects the
-    whole update, and a bad currency_exponent or billing_interval drops the
-    offer block whole."""
+    """The subscription and offer blocks validate whole: a well-formed envelope
+    is accepted, and any malformed sub-block rejects the WHOLE envelope with the
+    last-known-good preserved (all-or-nothing acceptance)."""
     # A well-formed subscription is accepted and readable.
     v1 = _ctx(version=10, offer=_good_offer())
     v1["subscription"] = {"status": "active", "cancel_at_period_end": False,
@@ -616,29 +620,30 @@ def test_ingress_rejects_bad_subscription_exponent_interval():
     assert gw_state.set_commercial_context(v1) is True
     assert gw_state.get_commercial_context()["subscription"]["status"] == "active"
 
-    # A malformed subscription (unparseable current_period_end) is dropped whole;
-    # the version still advances and the sibling offer stays intact.
+    # A malformed subscription (unparseable current_period_end) rejects the whole
+    # envelope; the held version and the sibling offer are preserved unchanged.
     v2 = _ctx(version=11, offer=_good_offer())
     v2["subscription"] = {"status": "active", "cancel_at_period_end": False,
                           "current_period_end": "not-a-date"}
-    assert gw_state.set_commercial_context(v2) is True
+    assert gw_state.set_commercial_context(v2) is False
     ctx = gw_state.get_commercial_context()
-    assert "subscription" not in ctx
-    assert ctx["version"] == 11
-    assert ctx["offer"]["offer_id"] == "offer-1"
+    assert ctx["version"] == 10
+    assert ctx["subscription"]["status"] == "active"
 
     # A non-dict subscription rejects the whole update; last-known-good is kept.
     v3 = _ctx(version=12, offer=_good_offer())
     v3["subscription"] = ["not", "a", "dict"]
     assert gw_state.set_commercial_context(v3) is False
-    assert gw_state.get_commercial_context()["version"] == 11
+    assert gw_state.get_commercial_context()["version"] == 10
 
-    # A string currency_exponent drops the offer block whole.
+    # A string currency_exponent invalidates the offer, rejecting the whole
+    # envelope; last-known-good is kept.
     v4 = _ctx(version=13, offer={**_good_offer(), "currency_exponent": "2"})
-    assert gw_state.set_commercial_context(v4) is True
-    assert "offer" not in gw_state.get_commercial_context()
+    assert gw_state.set_commercial_context(v4) is False
+    assert gw_state.get_commercial_context()["version"] == 10
 
-    # An unknown billing_interval drops the offer block whole.
+    # An unknown billing_interval invalidates the offer, rejecting the whole
+    # envelope; last-known-good is kept.
     v5 = _ctx(version=14, offer={**_good_offer(), "billing_interval": "weekly"})
-    assert gw_state.set_commercial_context(v5) is True
-    assert "offer" not in gw_state.get_commercial_context()
+    assert gw_state.set_commercial_context(v5) is False
+    assert gw_state.get_commercial_context()["version"] == 10
