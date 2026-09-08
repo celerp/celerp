@@ -56,11 +56,31 @@ def _stub(monkeypatch, resp=None, exc=None):
         monkeypatch.setattr(pf, "_request_subscription", AsyncMock(return_value=resp))
 
 
+def _flags(external_db=False, external_storage=False, payments_enabled=False,
+           grace=None):
+    """Build a canonical feature_flags object: all three required bool flags
+    present plus a null-or-tz-aware grace, the shape the relay always emits."""
+    return {
+        "payments_enabled": payments_enabled,
+        "external_db": external_db,
+        "external_storage": external_storage,
+        "grace_period_ends": grace,
+    }
+
+
+def _body(external_db=False, external_storage=False, payments_enabled=False,
+          grace=None):
+    """A full canonical relay body: canonical feature_flags with the top-level
+    grace mirroring the nested value."""
+    flags = _flags(external_db=external_db, external_storage=external_storage,
+                   payments_enabled=payments_enabled, grace=grace)
+    return {"feature_flags": flags, "grace_period_ends": grace}
+
+
 def test_preflight_renewed_merges_flags(monkeypatch):
     """200 with external_db entitled -> RENEWED, and the flags are persisted
     through the packaged-config writer."""
-    _stub(monkeypatch, _Resp(200, {"feature_flags": {"external_db": True},
-                                   "grace_period_ends": None}))
+    _stub(monkeypatch, _Resp(200, _body(external_db=True)))
     assert pf.run_preflight() == pf.RENEWED
     persisted = config_store.read_packaged_config()
     assert persisted["feature_flags"]["external_db"] is True
@@ -68,8 +88,7 @@ def test_preflight_renewed_merges_flags(monkeypatch):
 
 def test_preflight_expired_when_flags_deny(monkeypatch):
     """200 with external_db denied and no grace -> EXPIRED."""
-    _stub(monkeypatch, _Resp(200, {"feature_flags": {"external_db": False},
-                                   "grace_period_ends": None}))
+    _stub(monkeypatch, _Resp(200, _body(external_db=False)))
     assert pf.run_preflight() == pf.EXPIRED
 
 
@@ -88,6 +107,7 @@ def test_preflight_missing_token_is_expired(monkeypatch):
     (_Resp(403, {}), None),
     (_Resp(200, bad_json=True), None),
     (_Resp(200, {"feature_flags": "notadict", "grace_period_ends": None}), None),
+    (_Resp(200, {"feature_flags": {"external_db": True}, "grace_period_ends": None}), None),
 ])
 def test_preflight_unreachable_paths(monkeypatch, resp, exc):
     """Transport error, 5xx, 401/403, and malformed bodies all map to
@@ -99,7 +119,6 @@ def test_preflight_unreachable_paths(monkeypatch, resp, exc):
 def test_preflight_failed_merge_is_unreachable(monkeypatch):
     """A refreshed 200 whose flag write fails -> UNREACHABLE, never a
     half-refreshed RENEWED."""
-    _stub(monkeypatch, _Resp(200, {"feature_flags": {"external_db": True},
-                                   "grace_period_ends": None}))
+    _stub(monkeypatch, _Resp(200, _body(external_db=True)))
     monkeypatch.setattr(pf, "merge_packaged_config", lambda updates: False)
     assert pf.run_preflight() == pf.UNREACHABLE
