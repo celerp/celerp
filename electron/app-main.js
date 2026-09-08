@@ -177,6 +177,7 @@ const {
   applyStoragePersist,
 } = require("./db-mode");
 const { migrateArgs } = require("./migrate_cmd");
+const { writeConfig: writeLockedConfig } = require("./config-writer");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -596,20 +597,17 @@ function readConfig() {
 /**
  * Persist config changes atomically. This runs on the boot-critical path that
  * decides which database opens, so a torn write must never leave a corrupt
- * config for the next startup read: write a temp file, then rename it into
- * place. On failure the temp file is removed and the error is rethrown after
- * logging only its message - never the config or patch, which hold
- * external_db_url.
+ * config for the next startup read, and a Python writer (config_store) may be
+ * saving the same file at the same moment. Both go through config-writer's
+ * cross-process lock, which re-reads inside the lock, merges, fsyncs a unique
+ * 0600 temp, and renames it in. On failure the error is rethrown after logging
+ * only its message - never the config or patch, which hold external_db_url.
  */
 function writeConfig(patch) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  const current = readConfig();
-  const tmp = `${CONFIG_PATH}.tmp`;
   try {
-    fs.writeFileSync(tmp, JSON.stringify({ ...current, ...patch }, null, 2), { mode: 0o600 });
-    fs.renameSync(tmp, CONFIG_PATH);
+    writeLockedConfig(CONFIG_PATH, patch);
   } catch (err) {
-    try { fs.unlinkSync(tmp); } catch { /* temp may not exist */ }
     console.error("[db-mode] config persist failed:", err.message);
     throw err;
   }

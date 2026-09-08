@@ -82,16 +82,6 @@ def _shop_key(handle: str | None) -> str:
     return s.rstrip("/").removesuffix(".myshopify.com")
 
 
-def _merge_config_key(key: str, value) -> bool:
-    """Merge a single top-level key into Electron's celerp-config.json.
-
-    Thin wrapper over celerp.config_store.merge_packaged_config, which owns
-    the atomic multi-key write; kept here so the existing single-key call
-    sites (feature_flags, commercial_context) do not need to build a dict.
-    """
-    return merge_packaged_config({key: value})
-
-
 class GatewayClient:
     """Persistent outbound WS connection to the Celerp gateway.
 
@@ -564,7 +554,7 @@ class GatewayClient:
         no-op in dev/server mode. Delegates to the shared atomic, 0600-forcing
         writer so the co-resident secrets are never broadened.
         """
-        _merge_config_key("feature_flags", feature_flags)
+        merge_packaged_config({"feature_flags": feature_flags})
 
     async def _persist_commercial_context(self, ctx: dict) -> None:
         """Write commercial_context into Electron's celerp-config.json.
@@ -574,7 +564,7 @@ class GatewayClient:
         writer so the existing feature_flags entry is preserved and a crash
         mid-write never leaves a torn config for the next startup read.
         """
-        _merge_config_key("commercial_context", ctx)
+        merge_packaged_config({"commercial_context": ctx})
 
     async def _handle_shopify_webhook(self, payload: dict) -> None:
         """A Shopify webhook the relay forwarded. Trigger a targeted incremental
