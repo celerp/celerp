@@ -637,6 +637,11 @@ async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
     other waiters still complete and a later request never replays a dead task.
     Raises APIError on failure, and a failure is never cached.
     """
+    # A non-string, empty, or whitespace-only token cannot be a valid credential:
+    # reject it here, before hashing or any upstream call, so the same guard covers
+    # every caller of this single refresh seam.
+    if not isinstance(refresh_token, str) or not refresh_token.strip():
+        raise APIError(401, "Invalid refresh token")
     key = _refresh_key(refresh_token)
     return await _refresh_coordinator.run(key, lambda: _refresh_upstream(refresh_token))
 
