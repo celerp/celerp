@@ -103,10 +103,41 @@ function applyStoragePersist(cfg, decision, writeConfigFn) {
   }
 }
 
+// Tri-state exit codes from celerp/entitlement_preflight.py. Kept here so the
+// pure gate mapping and its jest tests do not depend on the spawn wiring.
+const PREFLIGHT_RENEWED = 0;
+const PREFLIGHT_EXPIRED = 2;
+const PREFLIGHT_UNREACHABLE = 3;
+
+/**
+ * Map a preflight result onto the boot action, purely. The gate only applies
+ * when the cached decision would fall back to local AND there is an external_db
+ * url worth preserving; otherwise the ordinary flow runs unchanged. An unknown
+ * exit code is treated as UNREACHABLE so a packaging bug asks rather than
+ * silently switching the database.
+ *
+ * @param {object} cfg - { external_db_url }
+ * @param {{ persistLocal: boolean }} decision
+ * @param {number} exitCode - a preflight exit code
+ * @returns {{ action: "none"|"external"|"fallback"|"confirm" }}
+ */
+function preflightGate(cfg, decision, exitCode) {
+  if (!decision.persistLocal || !cfg.external_db_url) {
+    return { action: "none" };
+  }
+  if (exitCode === PREFLIGHT_RENEWED) return { action: "external" };
+  if (exitCode === PREFLIGHT_EXPIRED) return { action: "fallback" };
+  return { action: "confirm" };
+}
+
 module.exports = {
   isInGrace,
   dbModeDecision,
   applyDbModePersist,
   storageModeDecision,
   applyStoragePersist,
+  preflightGate,
+  PREFLIGHT_RENEWED,
+  PREFLIGHT_EXPIRED,
+  PREFLIGHT_UNREACHABLE,
 };

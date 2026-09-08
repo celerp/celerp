@@ -175,6 +175,9 @@ const {
   applyDbModePersist,
   storageModeDecision,
   applyStoragePersist,
+  preflightGate,
+  PREFLIGHT_RENEWED,
+  PREFLIGHT_UNREACHABLE,
 } = require("./db-mode");
 const { migrateArgs } = require("./migrate_cmd");
 const { writeConfig: writeLockedConfig } = require("./config-writer");
@@ -346,6 +349,38 @@ function runMigrations(dbUrl) {
     env,
     stdio: "pipe",
   });
+}
+
+/**
+ * Spawn the pre-boot entitlement preflight one-shot and return its tri-state
+ * exit code (RENEWED 0, EXPIRED 2, UNREACHABLE 3). It runs before the external
+ * database is opened, refreshing the subscription from the relay. A crash,
+ * timeout, or killed process maps to UNREACHABLE so a packaging bug asks rather
+ * than silently forking data. The env carries the Python config path and data
+ * dir the one-shot needs to read the token and write the refreshed config; the
+ * migrations env deliberately omits both, so they are set here explicitly.
+ */
+function runEntitlementPreflight() {
+  const env = {
+    ...process.env,
+    PYTHONUTF8: "1",
+    PYTHONPATH: `${APP_DIR}${path.delimiter}${MODULE_DIR}`,
+    CELERP_DATA_DIR: DATA_DIR,
+    CELERP_CONFIG: PYTHON_CONFIG_PATH,
+  };
+  try {
+    execFileSync(pythonBin(), ["-m", "celerp.entitlement_preflight"], {
+      cwd: APP_DIR,
+      env,
+      stdio: "pipe",
+      timeout: 20000,
+    });
+    return PREFLIGHT_RENEWED;
+  } catch (err) {
+    // A non-zero exit carries the tri-state code in err.status; a timeout or
+    // signal leaves it null, which is treated as UNREACHABLE.
+    return typeof err.status === "number" ? err.status : PREFLIGHT_UNREACHABLE;
+  }
 }
 
 /**
@@ -1216,8 +1251,52 @@ app.whenReady().then(async () => {
     }
 
     const dbPort = await getFreePort();
-    const cfg = readConfig();
-    const dbConfig = resolveDatabaseConfig(dbPort, cfg);
+    let cfg = readConfig();
+    let dbConfig = resolveDatabaseConfig(dbPort, cfg);
+
+    // Entitlement preflight: only when the cached decision would fall back to
+    // local yet an external_db_url is still on file - a previously active
+    // external database whose grace has lapsed. Refresh the subscription from
+    // the relay before choosing the database, so a renewal keeps external and a
+    // relay we cannot reach asks rather than silently forking history between an
+    // external and a local store.
+    if (dbConfig.persistLocal && cfg.external_db_url) {
+      for (let resolved = false; !resolved; ) {
+        const gate = preflightGate(cfg, dbConfig, runEntitlementPreflight());
+        if (gate.action === "external") {
+          // The refreshed flags were written to disk by the one Python writer;
+          // re-read and recompute so the external database opens with the
+          // renewed entitlement and nothing is persisted as local.
+          cfg = readConfig();
+          dbConfig = resolveDatabaseConfig(dbPort, cfg);
+          resolved = true;
+        } else if (gate.action === "fallback") {
+          resolved = true; // Falls through to the local-fallback persist below.
+        } else {
+          // UNREACHABLE: never switch the database silently. Ask, with no timer
+          // default and exactly three choices.
+          const choice = dialog.showMessageBoxSync({
+            type: "warning",
+            title: "Subscription Check Failed",
+            message: "Celerp could not confirm your subscription.",
+            detail:
+              "Your external database was in use, but the subscription could not be verified right now.\n\n" +
+              "Retry the check, continue with local data (local and external data will diverge until you reconnect), or quit.",
+            buttons: ["Retry", "Continue with local data", "Quit"],
+            defaultId: 0,
+            cancelId: 2,
+          });
+          if (choice === 0) {
+            continue; // Loop back and re-run the preflight.
+          } else if (choice === 1) {
+            resolved = true; // Proceed to the local-fallback persist below.
+          } else {
+            app.exit(0);
+            return;
+          }
+        }
+      }
+    }
 
     // When grace has expired (external was selected but neither entitlement nor
     // grace remains) persist db_mode=local before the API and gateway start, so

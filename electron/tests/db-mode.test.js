@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 "use strict";
 
-const { isInGrace, dbModeDecision, applyDbModePersist } = require("../db-mode");
+const { isInGrace, dbModeDecision, applyDbModePersist, preflightGate } = require("../db-mode");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const future = () => new Date(Date.now() + DAY_MS).toISOString();
@@ -133,5 +133,45 @@ describe("applyDbModePersist", () => {
     expect(() => { result = applyDbModePersist({}, { persistLocal: true }, throwing); }).not.toThrow();
     expect(result).toBe(false);
     expect(throwing).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── preflightGate ─────────────────────────────────────────────────────────────
+// Tri-state exit codes mirror celerp/entitlement_preflight.py: RENEWED 0,
+// EXPIRED 2, UNREACHABLE 3.
+
+describe("preflightGate", () => {
+  const RENEWED = 0;
+  const EXPIRED = 2;
+  const UNREACHABLE = 3;
+
+  test("no gate when the decision does not fall back to local", () => {
+    expect(preflightGate({ external_db_url: EXT_URL }, { persistLocal: false }, EXPIRED))
+      .toEqual({ action: "none" });
+  });
+
+  test("no gate when there is no external_db_url to preserve", () => {
+    expect(preflightGate({ external_db_url: "" }, { persistLocal: true }, EXPIRED))
+      .toEqual({ action: "none" });
+  });
+
+  test("RENEWED continues external and does not persist local", () => {
+    expect(preflightGate({ external_db_url: EXT_URL }, { persistLocal: true }, RENEWED))
+      .toEqual({ action: "external" });
+  });
+
+  test("EXPIRED falls back to local", () => {
+    expect(preflightGate({ external_db_url: EXT_URL }, { persistLocal: true }, EXPIRED))
+      .toEqual({ action: "fallback" });
+  });
+
+  test("UNREACHABLE asks for confirmation, never a silent switch", () => {
+    expect(preflightGate({ external_db_url: EXT_URL }, { persistLocal: true }, UNREACHABLE))
+      .toEqual({ action: "confirm" });
+  });
+
+  test("an unknown exit code is treated as UNREACHABLE (confirm)", () => {
+    expect(preflightGate({ external_db_url: EXT_URL }, { persistLocal: true }, 1))
+      .toEqual({ action: "confirm" });
   });
 });
