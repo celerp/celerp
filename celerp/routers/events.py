@@ -22,6 +22,11 @@ router = APIRouter(tags=["events"])
 
 _TICK = object()  # sentinel: asyncio.TimeoutError path
 
+# Seconds the stream waits for a queued event before running the periodic
+# session-watch poll (nonce eviction, drain, keepalive). A module constant so the
+# poll cadence has one source of truth and tests can drive it deterministically.
+_STREAM_TICK_SECONDS = 10.0
+
 
 @router.get("/events/stream")
 async def events_stream(token: str = Depends(oauth2_scheme)):
@@ -58,7 +63,7 @@ async def events_stream(token: str = Depends(oauth2_scheme)):
         try:
             while True:
                 try:
-                    event = await asyncio.wait_for(q.get(), timeout=10.0)
+                    event = await asyncio.wait_for(q.get(), timeout=_STREAM_TICK_SECONDS)
                 except asyncio.TimeoutError:
                     event = _TICK
                 except asyncio.CancelledError:
