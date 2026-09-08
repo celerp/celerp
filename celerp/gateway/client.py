@@ -20,6 +20,7 @@ import os
 import time
 import uuid
 from typing import Any
+from urllib.parse import unquote
 
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -621,6 +622,35 @@ class GatewayClient:
             except Exception:
                 pass
 
+    @staticmethod
+    def _policy_path(raw_path: Any) -> str | None:
+        """Return the canonical local route a relay-supplied path resolves to.
+
+        The local ASGI server splits the target on the first '?', percent-decodes
+        the path once, and routes on the result; a browser never sends a fragment.
+        Classification and the local-only guard must run on that same canonical
+        value, not the raw wire string, or an encoded ('/settings/%66actory-reset')
+        or fragmented ('/settings/factory-reset#x') variant would slip past a raw
+        match yet still route to the blocked handler locally. Returns None for any
+        path that cannot address a local route (non-string, non-absolute, carrying a
+        fragment or control character, or not decodable); the caller refuses those
+        with a neutral 400.
+        """
+        if not isinstance(raw_path, str) or not raw_path.startswith("/"):
+            return None
+        if "#" in raw_path or any(ord(c) < 0x20 or ord(c) == 0x7f for c in raw_path):
+            return None
+        path_part = raw_path.split("?", 1)[0]
+        try:
+            decoded = unquote(path_part, errors="strict")
+        except (UnicodeDecodeError, ValueError):
+            return None
+        if not decoded.startswith("/"):
+            return None
+        if "#" in decoded or any(ord(c) < 0x20 or ord(c) == 0x7f for c in decoded):
+            return None
+        return decoded
+
     async def _handle_proxy_request(self, payload: dict) -> None:
         """Handle a proxied HTTP request from the relay.
 
@@ -644,11 +674,10 @@ class GatewayClient:
 
         request_id = payload.get("id", "")
         method = payload.get("method", "GET")
-        path = payload.get("path", "/")
+        raw_path = payload.get("path")
         query = payload.get("query", "")
         headers = payload.get("headers", {})
         body_b64 = payload.get("body_b64", "")
-        body = base64.b64decode(body_b64) if body_b64 else None
         # Additive per-request deadline: a numeric timeout_ms bounds this request below
         # the fixed cap so a single slow local handler can't pin a relay slot for 180s.
         # Absent or non-numeric leaves the default cap in force.
@@ -657,11 +686,15 @@ class GatewayClient:
         if isinstance(timeout_ms, (int, float)) and not isinstance(timeout_ms, bool) and timeout_ms > 0:
             deadline_s = timeout_ms / 1000.0
 
-        # Validate the relay-supplied path before any classification, port
-        # selection, or local forwarding. A non-string or non-absolute path
-        # cannot address a local route, so it is refused with a neutral 400 that
-        # echoes nothing back to the caller.
-        if not isinstance(path, str) or not path.startswith("/"):
+        # Validate the relay-supplied path before decoding the body or any
+        # classification, port selection, or local forwarding. Classification and
+        # the local-only guard run on the CANONICAL path the local server would
+        # route to (percent-decoded once, fragment stripped), so an encoded or
+        # fragmented variant of a blocked route cannot slip past a raw string
+        # match. A path that cannot address a local route is refused with a neutral
+        # 400 that echoes nothing back to the caller.
+        policy_path = self._policy_path(raw_path)
+        if policy_path is None:
             await self._send(self._ws, {
                 "type": "http.response",
                 "payload": {
@@ -673,17 +706,38 @@ class GatewayClient:
             })
             return
 
+        # Decode the body only after the path is known good. A malformed base64
+        # payload is contained with a neutral 400 rather than raising.
+        try:
+            body = base64.b64decode(body_b64) if body_b64 else None
+        except (ValueError, TypeError):
+            await self._send(self._ws, {
+                "type": "http.response",
+                "payload": {
+                    "id": request_id,
+                    "status": 400,
+                    "headers": [["content-type", "text/plain"]],
+                    "body_b64": base64.b64encode(b"Invalid request body").decode(),
+                },
+            })
+            return
+
         # SSE / long-poll paths cannot be proxied over the WS request/response
-        # protocol. Return an empty stream so the browser doesn't 500.
+        # protocol. Answer with an immediate stub carrying a long retry: directive
+        # so the browser's EventSource backs off instead of reconnecting in a tight
+        # loop; real-time updates only work on direct local access. Mirrors the
+        # relay's own SSE suppression stub.
         _streaming_paths = ("/events/stream",)
-        if any(path == p or path.startswith(p) for p in _streaming_paths):
+        if any(policy_path == p or policy_path.startswith(p + "/") for p in _streaming_paths):
             await self._send(self._ws, {
                 "type": "http.response",
                 "payload": {
                     "id": request_id,
                     "status": 200,
                     "headers": [["content-type", "text/event-stream"], ["cache-control", "no-cache"]],
-                    "body_b64": base64.b64encode(b"data: {}\n\n").decode(),
+                    "body_b64": base64.b64encode(
+                        b"retry: 3600000\n: sse not supported over relay\n\n"
+                    ).decode(),
                 },
             })
             return
@@ -694,7 +748,7 @@ class GatewayClient:
         # setup is intentionally NOT blocked here - a headless cloud instance is provisioned
         # through this same proxy, so blocking it would break cloud onboarding.
         _local_only_paths = ("/settings/factory-reset",)
-        if any(path == p or path.startswith(p + "/") or path.startswith(p + "?") for p in _local_only_paths):
+        if any(policy_path == p or policy_path.startswith(p + "/") for p in _local_only_paths):
             await self._send(self._ws, {
                 "type": "http.response",
                 "payload": {
@@ -708,9 +762,12 @@ class GatewayClient:
             })
             return
 
-        port = self._local_port_for(path)
+        # Port is chosen from the canonical path (an encoded variant must map to
+        # the same local app), but the original path is forwarded verbatim so the
+        # local server performs its own decoding.
+        port = self._local_port_for(policy_path)
 
-        url = f"http://127.0.0.1:{port}{path}"
+        url = f"http://127.0.0.1:{port}{raw_path}"
         if query:
             url = f"{url}?{query}"
 
@@ -746,7 +803,7 @@ class GatewayClient:
             # The per-request deadline elapsed before the local handler answered. Surface
             # it as an error response instead of hanging to the fixed cap.
             self._timeout_count += 1
-            log.warning("Proxy request timed out after %sms for %s %s", timeout_ms, method, path)
+            log.warning("Proxy request timed out after %sms for %s %s", timeout_ms, method, raw_path)
             if generation == self._generation:
                 await self._send(self._ws, {
                     "type": "http.response",
@@ -761,7 +818,7 @@ class GatewayClient:
                 self._stale_dropped_count += 1
             return
         except Exception as exc:
-            log.warning("Proxy request failed for %s %s: %s", method, path, exc)
+            log.warning("Proxy request failed for %s %s: %s", method, raw_path, exc)
             if generation == self._generation:
                 await self._send(self._ws, {
                     "type": "http.response",

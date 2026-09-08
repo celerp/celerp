@@ -589,7 +589,12 @@ async def test_events_stream_is_short_circuited_before_local_proxy(client, monke
     assert payload["status"] == 200
     header_map = {k.lower(): v for k, v in payload["headers"]}
     assert header_map.get("content-type") == "text/event-stream"
-    assert _b64.b64decode(payload["body_b64"]) == b"data: {}\n\n"
+    # The stub carries a long retry: directive so the browser's EventSource backs
+    # off (matching the relay's own SSE suppression) instead of reconnecting in a
+    # tight loop once the finite stub stream closes.
+    body = _b64.b64decode(payload["body_b64"])
+    assert body.startswith(b"retry: 3600000\n")
+    assert body.endswith(b"\n\n")
 
 
 @pytest.mark.asyncio
@@ -622,6 +627,168 @@ async def test_proxy_rejects_invalid_path_before_classification(client, monkeypa
     body = _b64.b64decode(payload["body_b64"])
     if isinstance(bad_path, str) and bad_path:
         assert bad_path.encode() not in body
+
+
+@pytest.mark.asyncio
+async def test_proxy_rejects_absent_path(client, monkeypatch):
+    """A payload with no path key is refused with a neutral 400, never silently
+    treated as '/' and forwarded to the local root route."""
+    import base64 as _b64
+    sent = []
+
+    async def fake_send(ws, msg):
+        sent.append(msg)
+
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
+
+    def _fatal_client(self):
+        raise AssertionError("local HTTP client must not be built for an absent path")
+
+    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    client._ws = object()
+
+    # No "path" key at all - previously defaulted to "/" and was forwarded.
+    await client._handle_proxy_request(
+        {"id": "r1", "method": "GET", "query": "", "headers": {}, "body_b64": ""}
+    )
+
+    assert len(sent) == 1, sent
+    assert sent[0]["payload"]["status"] == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoded_path", [
+    "/settings/%66actory-reset",           # %66 == 'f' -> decodes to the blocked route
+    "/settings/factory-reset%2Fconfirm",   # %2F == '/' -> decodes into the blocked subtree
+])
+async def test_proxy_blocks_percent_encoded_local_only_route(client, monkeypatch, encoded_path):
+    """A percent-encoded variant of a destructive local-only route is blocked with
+    403 and never forwarded. The local server decodes the path once before routing,
+    so classifying the raw wire string alone would let an encoded factory-reset
+    through to a wipe. The canonical (decoded) path is what the guard must see."""
+    import base64 as _b64
+    sent = []
+
+    async def fake_send(ws, msg):
+        sent.append(msg)
+
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
+
+    def _fatal_client(self):
+        raise AssertionError("local HTTP client must not be built for a blocked route")
+
+    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    client._ws = object()
+
+    await client._handle_proxy_request(
+        {"id": "r1", "method": "POST", "path": encoded_path,
+         "query": "", "headers": {}, "body_b64": ""}
+    )
+
+    assert len(sent) == 1, (encoded_path, sent)
+    payload = sent[0]["payload"]
+    assert payload["status"] == 403, encoded_path
+    assert b"local machine" in _b64.b64decode(payload["body_b64"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_path", [
+    "/settings/factory-reset#x",   # fragment suffix on a blocked route
+    "/items#/../settings",          # fragment anywhere
+    "/items\x00",                   # embedded control character
+    "/items%00",                    # encoded control character
+    "/items%ff",                    # undecodable (invalid UTF-8) percent escape
+])
+async def test_proxy_rejects_fragment_control_and_malformed_paths(client, monkeypatch, bad_path):
+    """Fragments, control characters, and undecodable percent escapes cannot address
+    a local route; each is refused with a neutral 400 before any forwarding, so a
+    fragmented factory-reset never reaches the local server that would strip the
+    fragment and route to the wipe."""
+    import base64 as _b64
+    sent = []
+
+    async def fake_send(ws, msg):
+        sent.append(msg)
+
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
+
+    def _fatal_client(self):
+        raise AssertionError("local HTTP client must not be built for a rejected path")
+
+    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    client._ws = object()
+
+    await client._handle_proxy_request(
+        {"id": "r1", "method": "GET", "path": bad_path,
+         "query": "", "headers": {}, "body_b64": ""}
+    )
+
+    assert len(sent) == 1, (bad_path, sent)
+    assert sent[0]["payload"]["status"] == 400, bad_path
+
+
+@pytest.mark.asyncio
+async def test_proxy_rejects_malformed_body_before_forwarding(client, monkeypatch):
+    """A malformed base64 body on an otherwise valid path is contained with a neutral
+    400 instead of raising out of the handler, and nothing is forwarded locally."""
+    import base64 as _b64
+    sent = []
+
+    async def fake_send(ws, msg):
+        sent.append(msg)
+
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
+
+    def _fatal_client(self):
+        raise AssertionError("local HTTP client must not be built for a malformed body")
+
+    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    client._ws = object()
+
+    await client._handle_proxy_request(
+        {"id": "r1", "method": "POST", "path": "/items",
+         "query": "", "headers": {}, "body_b64": "not!valid!base64!"}
+    )
+
+    assert len(sent) == 1, sent
+    assert sent[0]["payload"]["status"] == 400
+
+
+@pytest.mark.asyncio
+async def test_proxy_forwards_valid_encoded_path_verbatim(client, monkeypatch):
+    """A legitimate percent-encoded path (space in a query-free segment) still reaches
+    the local server with its original encoding intact - the canonical form is used
+    only for classification and port selection, not for rewriting the forwarded URL."""
+    captured = {}
+
+    class FakeResp:
+        status_code = 200
+        content = b"ok"
+        headers = httpx.Headers()
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def request(self, method, url, headers=None, content=None):
+            captured["url"] = url
+            return FakeResp()
+
+    monkeypatch.setattr("httpx.AsyncClient", FakeClient)
+
+    async def fake_send(ws, msg):
+        pass
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
+    client._ws = object()
+
+    await client._handle_proxy_request({
+        "id": "r1", "method": "GET", "path": "/items/a%20b",
+        "query": "", "headers": {}, "body_b64": "",
+    })
+    assert captured["url"].endswith("/items/a%20b"), captured
 
 
 # ── reconnect loop console noise ──────────────────────────────────────────────
