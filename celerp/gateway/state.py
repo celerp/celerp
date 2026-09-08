@@ -87,7 +87,9 @@ def _valid_int(value) -> bool:
 MAX_SUPPORT_URL_LEN = 2048
 
 # The maximum retail_amount an offer may carry, in minor units. A value at or
-# above this (or negative, or a bool) is treated as malformed and drops the offer.
+# above this (or zero, negative, or a bool) is treated as malformed and drops
+# the offer. Cloud is the source of truth for the bound; the app enforces the
+# same 0 < amount < ceiling range on the values it consumes.
 _MAX_RETAIL_AMOUNT = 10 ** 12
 
 
@@ -136,7 +138,10 @@ def _validated_offer(offer):
     if amount is not None:
         if isinstance(amount, bool) or not isinstance(amount, int):
             return None
-        if amount < 0 or amount >= _MAX_RETAIL_AMOUNT:
+        # Cloud is the source of truth for the bound: a retail amount must be
+        # strictly positive and below the ceiling. Zero is not a valid price, so
+        # the lower bound rejects it rather than admitting a free offer.
+        if amount <= 0 or amount >= _MAX_RETAIL_AMOUNT:
             return None
         # A priced offer must carry the minor-unit exponent and billing interval
         # the price renderer needs: the amount is meaningless without the
