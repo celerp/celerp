@@ -117,9 +117,9 @@ def run_preflight() -> int:
     if not merge_packaged_config({"feature_flags": persisted_flags}):
         return UNREACHABLE
 
-    from celerp.gateway.state import _grace_ends_in_future
+    from celerp.gateway.state import grace_ends_in_future
 
-    external_allowed = bool(flags.get("external_db")) or _grace_ends_in_future(grace_period_ends)
+    external_allowed = bool(flags.get("external_db")) or grace_ends_in_future(grace_period_ends)
     return RENEWED if external_allowed else EXPIRED
 
 

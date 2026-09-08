@@ -329,7 +329,7 @@ def load_commercial_context() -> None:
         log.debug("Gateway: commercial-context cache unreadable; using neutral default: %s", exc)
 
 
-def _grace_ends_in_future(value) -> bool:
+def grace_ends_in_future(value) -> bool:
     """True when an ISO-8601 grace_period_ends timestamp is still in the future.
 
     A missing or unparseable value is treated as expired (False), so a corrupt
@@ -393,8 +393,8 @@ def get_packaged_db_state() -> dict:
     external_db_entitled = bool(flags.get("external_db"))
     external_storage_entitled = bool(flags.get("external_storage"))
     grace_period_ends = flags.get("grace_period_ends")
-    in_grace = _grace_ends_in_future(grace_period_ends) and not external_db_entitled
-    storage_in_grace = _grace_ends_in_future(grace_period_ends) and not external_storage_entitled
+    in_grace = grace_ends_in_future(grace_period_ends) and not external_db_entitled
+    storage_in_grace = grace_ends_in_future(grace_period_ends) and not external_storage_entitled
     return {
         "db_mode": db_mode,
         "has_external_url": bool(external_db_url),
