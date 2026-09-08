@@ -2791,6 +2791,7 @@
   "auth.reset_failed": "Reset gagal",
   "auth.ph_min_8_chars": "Minimal 8 karakter",
   "settings_cloud.per_mo": "/bulan",
+  "settings_cloud.per_year": "/tahun",
   "settings_cloud.restart_server_confirm": "Ini akan me-restart server. Lanjutkan?",
   "settings_cloud.restore_db_confirm": "Kembalikan URL basis data sebelumnya dan restart?",
   "settings_cloud.connected_to": "✓ Terhubung ke {target}",

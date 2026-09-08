@@ -2792,6 +2792,7 @@
   "auth.reset_failed": "Zurücksetzen fehlgeschlagen",
   "auth.ph_min_8_chars": "Mindestens 8 Zeichen",
   "settings_cloud.per_mo": "/Monat",
+  "settings_cloud.per_year": "/Jahr",
   "settings_cloud.restart_server_confirm": "Dadurch wird der Server neu gestartet. Fortfahren?",
   "settings_cloud.restore_db_confirm": "Die vorherige Datenbank-URL wiederherstellen und neu starten?",
   "settings_cloud.connected_to": "✓ Mit {target} verbunden",

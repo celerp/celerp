@@ -2895,6 +2895,7 @@
   "auth.reset_failed": "ዳግም ማስጀመር አልተሳካም",
   "auth.ph_min_8_chars": "ዝቅተኛ 8 ቁምፊዎች",
   "settings_cloud.per_mo": "/ mo",
+  "settings_cloud.per_year": "/ yr",
   "settings_cloud.restart_server_confirm": "ይሄ አገልጋዩን እንደገና ያስጀምረዋል። ይቀጥል?",
   "settings_cloud.restore_db_confirm": "የቀድሞው የውሂብ ጎታ ዩአርኤል ወደነበረበት ይመለስ እና እንደገና ይጀመር?",
   "settings_cloud.connected_to": "✓ ከ{target} ጋር ተገናኝቷል",

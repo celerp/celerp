@@ -2791,6 +2791,7 @@
   "auth.reset_failed": "รีเซ็ตไม่สำเร็จ",
   "auth.ph_min_8_chars": "อย่างน้อย 8 ตัวอักษร",
   "settings_cloud.per_mo": "/เดือน",
+  "settings_cloud.per_year": "/ปี",
   "settings_cloud.restart_server_confirm": "การดำเนินการนี้จะรีสตาร์ทเซิร์ฟเวอร์ ดำเนินการต่อหรือไม่?",
   "settings_cloud.restore_db_confirm": "กู้คืน URL ฐานข้อมูลก่อนหน้าและรีสตาร์ทหรือไม่?",
   "settings_cloud.connected_to": "✓ เชื่อมต่อกับ {target} แล้ว",

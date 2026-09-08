@@ -2791,6 +2791,7 @@
   "auth.reset_failed": "リセットに失敗しました",
   "auth.ph_min_8_chars": "8文字以上",
   "settings_cloud.per_mo": "/月",
+  "settings_cloud.per_year": "/年",
   "settings_cloud.restart_server_confirm": "これによりサーバーが再起動します。続行しますか？",
   "settings_cloud.restore_db_confirm": "以前のデータベースURLを復元して再起動しますか？",
   "settings_cloud.connected_to": "✓ {target} に接続しました",

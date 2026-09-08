@@ -2792,6 +2792,7 @@
   "auth.reset_failed": "Reimpostazione non riuscita",
   "auth.ph_min_8_chars": "Minimo 8 caratteri",
   "settings_cloud.per_mo": "/mese",
+  "settings_cloud.per_year": "/anno",
   "settings_cloud.restart_server_confirm": "Questa operazione riavvierà il server. Continuare?",
   "settings_cloud.restore_db_confirm": "Ripristinare l’URL del database precedente e riavviare?",
   "settings_cloud.connected_to": "✓ Connesso a {target}",

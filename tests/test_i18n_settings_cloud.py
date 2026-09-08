@@ -17,6 +17,7 @@ import pytest
 from fasthtml.common import to_xml
 
 from ui import i18n
+from ui.i18n import t
 from ui.routes.settings_cloud import (
     _plan_card,
     _backup_summary_card,
@@ -46,9 +47,11 @@ def _xx_lang():
 
 
 def test_plan_card_price_suffix_translates():
-    """The "/mo" price suffix resolves at render time (module-render label)."""
+    """The interval suffix resolves at render time: the caller passes the
+    language-resolved label, which _plan_card renders alongside the price."""
     html = to_xml(_plan_card("Connect", "USD $29", "desc", ["a", "b"],
-                             "https://example.test/subscribe", lang="xx"))
+                             "https://example.test/subscribe",
+                             t("settings_cloud.per_mo", "xx"), lang="xx"))
     assert "XX_PERMO" in html
 
 

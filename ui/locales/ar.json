@@ -2791,6 +2791,7 @@
   "auth.reset_failed": "فشلت عملية إعادة التعيين",
   "auth.ph_min_8_chars": "8 أحرف على الأقل",
   "settings_cloud.per_mo": "/شهريًا",
+  "settings_cloud.per_year": "/سنويًا",
   "settings_cloud.restart_server_confirm": "سيؤدي هذا إلى إعادة تشغيل الخادم. هل تريد المتابعة؟",
   "settings_cloud.restore_db_confirm": "هل تريد استعادة عنوان URL السابق لقاعدة البيانات وإعادة التشغيل؟",
   "settings_cloud.connected_to": "✓ تم الاتصال بـ {target}",

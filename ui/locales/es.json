@@ -2791,6 +2791,7 @@
   "auth.reset_failed": "Error al restablecer",
   "auth.ph_min_8_chars": "Mínimo 8 caracteres",
   "settings_cloud.per_mo": "/mes",
+  "settings_cloud.per_year": "/año",
   "settings_cloud.restart_server_confirm": "Esto reiniciará el servidor. ¿Deseas continuar?",
   "settings_cloud.restore_db_confirm": "¿Restablecer la URL anterior de la base de datos y reiniciar?",
   "settings_cloud.connected_to": "✓ Conectado a {target}",

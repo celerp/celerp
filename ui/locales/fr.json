@@ -2792,6 +2792,7 @@
   "auth.reset_failed": "Échec de la réinitialisation",
   "auth.ph_min_8_chars": "8 caractères minimum",
   "settings_cloud.per_mo": "/mois",
+  "settings_cloud.per_year": "/an",
   "settings_cloud.restart_server_confirm": "Cela va redémarrer le serveur. Continuer ?",
   "settings_cloud.restore_db_confirm": "Restaurer l'URL précédente de la base de données et redémarrer ?",
   "settings_cloud.connected_to": "✓ Connecté à {target}",

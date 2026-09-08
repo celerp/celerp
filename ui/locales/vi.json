@@ -2791,6 +2791,7 @@
   "auth.reset_failed": "Đặt lại không thành công",
   "auth.ph_min_8_chars": "Tối thiểu 8 ký tự",
   "settings_cloud.per_mo": "/tháng",
+  "settings_cloud.per_year": "/năm",
   "settings_cloud.restart_server_confirm": "Thao tác này sẽ khởi động lại máy chủ. Tiếp tục?",
   "settings_cloud.restore_db_confirm": "Khôi phục URL cơ sở dữ liệu trước đó và khởi động lại?",
   "settings_cloud.connected_to": "✓ Đã kết nối với {target}",

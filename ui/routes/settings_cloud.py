@@ -114,11 +114,11 @@ def _feature_card(icon: str, title: str, desc: str, lang: str = "en") -> FT:
     )
 
 
-def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_url: str, featured: bool = False, lang: str = "en", cta_label: str | None = None) -> FT:
+def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_url: str, interval_label: str, featured: bool = False, lang: str = "en", cta_label: str | None = None) -> FT:
     card_cls = "cloud-plan-card cloud-plan-card--featured" if featured else "cloud-plan-card"
     return Div(
         Div(name, cls="cloud-plan-card__name"),
-        Div(price, Span(t("settings_cloud.per_mo", lang)), cls="cloud-plan-card__price"),
+        Div(price, Span(interval_label), cls="cloud-plan-card__price"),
         Div(desc, cls="cloud-plan-card__desc"),
         Ul(*[Li(b) for b in bullets]),
         A(cta_label or t("cloud.start_trial", lang), href=subscribe_url, target="_blank", cls="btn btn--primary btn--sm"),
@@ -185,24 +185,34 @@ def _partner_offer(iid: str, lang: str = "en") -> FT:
 
     amount = offer.get("retail_amount") if offer else None
     currency = offer.get("currency") if offer else None
-    # Egress guard: render a priced card only when both amount and currency are
-    # well-formed. A stale cache from a pre-validator binary could still hold a
-    # non-string currency or a bool amount, so re-check here rather than trust
-    # the stored offer, and degrade to the contact line if it fails.
+    exponent = offer.get("currency_exponent") if offer else None
+    # Egress guard: render a priced card only when amount, currency, and the
+    # minor-unit exponent are all well-formed. A stale cache from a pre-validator
+    # binary could hold a non-string currency, a bool amount, or no exponent at
+    # all, so re-check here rather than trust the stored offer, and degrade to
+    # the contact line if it fails.
     priced = (
         offer
         and isinstance(amount, int) and not isinstance(amount, bool)
         and isinstance(currency, str)
+        and isinstance(exponent, int) and not isinstance(exponent, bool)
+        and 0 <= exponent <= 4
         and offer.get("display_name")
     )
     if priced:
         bullets = [b for b in (offer.get("service_bullets") or []) if isinstance(b, str)]
+        interval_label = (
+            t("settings_cloud.per_year", lang)
+            if offer.get("billing_interval") == "year"
+            else t("settings_cloud.per_mo", lang)
+        )
         children.append(_plan_card(
             offer["display_name"],
-            fmt_money(amount / 100, currency),
+            fmt_money(amount / 10 ** exponent, currency),
             offer.get("service_description") or "",
             bullets,
             partner_url,
+            interval_label,
             cta_label=t("cloud.partner_support", lang),
             lang=lang,
         ))
@@ -283,6 +293,7 @@ def _direct_plans(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_cloud_b4", lang),
                 ],
                 build_commercial_handoff(iid, "subscribe", "cloud"),
+                t("settings_cloud.per_mo", lang),
                 lang=lang,
             ),
             _plan_card(
@@ -294,6 +305,7 @@ def _direct_plans(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_ai_b3", lang),
                 ],
                 build_commercial_handoff(iid, "subscribe", "ai"),
+                t("settings_cloud.per_mo", lang),
                 featured=True,
                 lang=lang,
             ),

@@ -20081,6 +20081,7 @@ class TestCommercialRoutingRender:
                 "display_name": "Managed Plan",
                 "retail_amount": 4900,
                 "currency": "USD",
+                "currency_exponent": 2,
                 "billing_interval": "month",
                 "service_bullets": ["Setup", "Support"],
             }
@@ -20171,6 +20172,63 @@ class TestCommercialRoutingRender:
         assert "USD $" not in html
         assert "840" not in html
 
+    def test_partner_offer_jpy_price(self):
+        """A JPY offer (retail_amount 120000, exponent 0) renders a whole-number
+        price using the context exponent, not a hardcoded /100 at 2dp. A stored
+        offer predating the validators (no exponent/interval) degrades to the
+        partner contact line rather than a mis-scaled price."""
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        self._set_partner(offer={
+            "display_name": "Managed Plan",
+            "retail_amount": 120000,
+            "currency": "JPY",
+            "currency_exponent": 0,
+            "billing_interval": "year",
+            "service_bullets": ["Setup"],
+        })
+        html = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "120,000" in html      # exponent 0 -> whole yen
+        assert ".00" not in html      # no 2dp artifact
+        assert "1,200" not in html    # not the /100 mis-scale
+        # Stored offer missing the exponent/interval fields: the extended priced
+        # guard degrades to the contact CTA, no fabricated price.
+        self._set_partner(offer={
+            "display_name": "Managed Plan",
+            "retail_amount": 120000,
+            "currency": "JPY",
+            "service_bullets": ["Setup"],
+        })
+        degraded = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "120,000" not in degraded
+        assert "1,200" not in degraded
+        assert 'href="https://partner.example.com/support"' in degraded
+
+    def test_partner_offer_annual_interval(self):
+        """billing_interval 'year' renders the per-year label; 'month' renders
+        the per-month label. Read through t() so the test is value-agnostic."""
+        from fasthtml.common import to_xml
+        from ui.i18n import t
+        from ui.routes.settings_cloud import _plans_ad
+        per_year = t("settings_cloud.per_year", "en")
+        per_mo = t("settings_cloud.per_mo", "en")
+        self._set_partner(offer={
+            "display_name": "Managed Plan", "retail_amount": 4900,
+            "currency": "USD", "currency_exponent": 2, "billing_interval": "year",
+            "service_bullets": ["Setup"],
+        })
+        yearly = to_xml(_plans_ad("inst-1", lang="en"))
+        assert per_year in yearly
+        assert per_mo not in yearly
+        self._set_partner(offer={
+            "display_name": "Managed Plan", "retail_amount": 4900,
+            "currency": "USD", "currency_exponent": 2, "billing_interval": "month",
+            "service_bullets": ["Setup"],
+        })
+        monthly = to_xml(_plans_ad("inst-1", lang="en"))
+        assert per_mo in monthly
+        assert per_year not in monthly
+
     def test_upgrade_banner_partner_suppresses_price(self):
         """The upgrade banner shows no direct price in partner mode even when an
         explicit price argument is passed (E2 call site parity)."""
@@ -20243,7 +20301,8 @@ class TestCommercialPartnerManagedInvariant:
             # sentinel ($29/$49/$99): the invariant sweeps for DIRECT price
             # leakage, and the partner's own arbitrary price is legitimate.
             "offer": {"display_name": "Managed Plan", "retail_amount": 7700,
-                      "currency": "USD", "service_bullets": ["Setup", "Support"]},
+                      "currency": "USD", "currency_exponent": 2,
+                      "service_bullets": ["Setup", "Support"]},
         }
         yield
         gw_state._commercial_context = {}

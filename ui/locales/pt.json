@@ -2791,6 +2791,7 @@
   "auth.reset_failed": "Falha na redefinição",
   "auth.ph_min_8_chars": "Mínimo de 8 caracteres",
   "settings_cloud.per_mo": "/mês",
+  "settings_cloud.per_year": "/ano",
   "settings_cloud.restart_server_confirm": "Isso reiniciará o servidor. Deseja continuar?",
   "settings_cloud.restore_db_confirm": "Restaurar a URL anterior do banco de dados e reiniciar?",
   "settings_cloud.connected_to": "✓ Conectado a {target}",
