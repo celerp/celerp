@@ -657,9 +657,25 @@ class GatewayClient:
         if isinstance(timeout_ms, (int, float)) and not isinstance(timeout_ms, bool) and timeout_ms > 0:
             deadline_s = timeout_ms / 1000.0
 
+        # Validate the relay-supplied path before any classification, port
+        # selection, or local forwarding. A non-string or non-absolute path
+        # cannot address a local route, so it is refused with a neutral 400 that
+        # echoes nothing back to the caller.
+        if not isinstance(path, str) or not path.startswith("/"):
+            await self._send(self._ws, {
+                "type": "http.response",
+                "payload": {
+                    "id": request_id,
+                    "status": 400,
+                    "headers": [["content-type", "text/plain"]],
+                    "body_b64": base64.b64encode(b"Invalid request path").decode(),
+                },
+            })
+            return
+
         # SSE / long-poll paths cannot be proxied over the WS request/response
         # protocol. Return an empty stream so the browser doesn't 500.
-        _streaming_paths = ("/notifications/stream",)
+        _streaming_paths = ("/events/stream",)
         if any(path == p or path.startswith(p) for p in _streaming_paths):
             await self._send(self._ws, {
                 "type": "http.response",

@@ -558,6 +558,72 @@ async def test_proxy_blocks_destructive_local_only_route(client, monkeypatch):
         assert b"local machine" in _b64.b64decode(payload["body_b64"])
 
 
+# ── events stream classification + path validation ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_events_stream_is_short_circuited_before_local_proxy(client, monkeypatch):
+    """A remote /events/stream request is classified as a non-proxiable stream and
+    answered with the neutral SSE stub, without ever constructing the local HTTP
+    client. Making the local client fatal proves the request never falls through to
+    the ordinary local proxy path."""
+    import base64 as _b64
+    sent = []
+
+    async def fake_send(ws, msg):
+        sent.append(msg)
+
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
+
+    def _fatal_client(self):
+        raise AssertionError("local HTTP client must not be built for /events/stream")
+
+    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    client._ws = object()
+
+    await client._handle_proxy_request(
+        {"id": "r1", "method": "GET", "path": "/events/stream", "query": "", "headers": {}, "body_b64": ""}
+    )
+
+    assert len(sent) == 1, sent
+    payload = sent[0]["payload"]
+    assert payload["status"] == 200
+    header_map = {k.lower(): v for k, v in payload["headers"]}
+    assert header_map.get("content-type") == "text/event-stream"
+    assert _b64.b64decode(payload["body_b64"]) == b"data: {}\n\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_path", [None, "", 123, "events/stream", "http://evil/x"])
+async def test_proxy_rejects_invalid_path_before_classification(client, monkeypatch, bad_path):
+    """A malformed relay path (non-string, empty, or not absolute) is contained with one
+    400 response before any classification, port selection, or local forwarding, and the
+    supplied value is never echoed back."""
+    import base64 as _b64
+    sent = []
+
+    async def fake_send(ws, msg):
+        sent.append(msg)
+
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
+
+    def _fatal_client(self):
+        raise AssertionError("local HTTP client must not be built for an invalid path")
+
+    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    client._ws = object()
+
+    await client._handle_proxy_request(
+        {"id": "r1", "method": "GET", "path": bad_path, "query": "", "headers": {}, "body_b64": ""}
+    )
+
+    assert len(sent) == 1, sent
+    payload = sent[0]["payload"]
+    assert payload["status"] == 400
+    body = _b64.b64decode(payload["body_b64"])
+    if isinstance(bad_path, str) and bad_path:
+        assert bad_path.encode() not in body
+
+
 # ── reconnect loop console noise ──────────────────────────────────────────────
 # The relay being down must not spam the console: one line when the connection
 # is lost, silence during retries, one line when it comes back.
