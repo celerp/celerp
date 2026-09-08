@@ -190,22 +190,3 @@ async def test_auth_required(auth_client):
     # No auth headers
     r = await c.get("/notifications")
     assert r.status_code == 401
-
-
-# ── GET /notifications/stream ────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_stream_endpoint_exists(auth_client):
-    """Verify the SSE endpoint is registered and returns 200.
-
-    ASGITransport doesn't support real HTTP timeouts, so we test
-    the endpoint exists by checking the route is registered.
-    Functional SSE tests are in test_sse.py (unit level).
-    """
-    c, headers = auth_client
-    # Verify the SSE route on its OWNING router (the source of truth). Asserting against the
-    # process-global celerp.main.app is fragile under xdist: a worker's test ordering + the suite's
-    # sys.modules surgery can leave the shared app's route table in a different state than at import.
-    from celerp.routers.notifications import router as notif_router
-    route_paths = [r.path for r in notif_router.routes]
-    assert "/notifications/stream" in route_paths

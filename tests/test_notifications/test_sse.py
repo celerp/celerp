@@ -13,7 +13,6 @@ import pytest
 from celerp.notifications.sse import (
     MAX_SUBSCRIBERS_PER_USER,
     _subscribers,
-    event_stream,
     publish,
     subscribe,
     unsubscribe,
@@ -110,54 +109,3 @@ async def test_multiple_subscribers_same_user():
     await publish(_CID, _UID, {"msg": "both tabs"})
     assert q1.get_nowait() == {"msg": "both tabs"}
     assert q2.get_nowait() == {"msg": "both tabs"}
-
-
-# ── event_stream ─────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_event_stream_yields_data():
-    async def _produce():
-        await asyncio.sleep(0.05)
-        await publish(_CID, _UID, {"type": "test"})
-        await asyncio.sleep(0.05)
-        # Send None to terminate the stream
-        key = f"{_CID}:{_UID}"
-        for q in _subscribers.get(key, []):
-            q.put_nowait(None)
-
-    task = asyncio.create_task(_produce())
-    events = []
-    async for chunk in event_stream(_CID, _UID):
-        events.append(chunk)
-        if "test" in chunk:
-            # Got our event, terminate
-            key = f"{_CID}:{_UID}"
-            for q in _subscribers.get(key, []):
-                q.put_nowait(None)
-            break
-    await task
-    assert any('"type": "test"' in e for e in events)
-
-
-@pytest.mark.asyncio
-async def test_event_stream_cleans_up_on_exit():
-    """After generator exits, subscriber is removed."""
-    gen = event_stream(_CID, _UID)
-    key = f"{_CID}:{_UID}"
-
-    # Start the generator - it subscribes on first iteration
-    # Send a sentinel right away so it yields and then terminates
-    async def _start_and_terminate():
-        # We need to push None into the queue, but the queue doesn't exist yet.
-        # Start iterating (which subscribes), then immediately push None.
-        await asyncio.sleep(0.05)
-        for q in _subscribers.get(key, []):
-            q.put_nowait(None)
-
-    task = asyncio.create_task(_start_and_terminate())
-    async for _ in gen:
-        pass  # Exhaust the generator
-    await task
-
-    # After generator cleanup, subscriber should be gone
-    assert key not in _subscribers or len(_subscribers.get(key, [])) == 0

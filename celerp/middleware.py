@@ -216,7 +216,7 @@ def log_unhandled_exception(request: Request, exc: Exception) -> None:
 
 
 _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-_DRAIN_BYPASS_PREFIXES = ("/__celerp/", "/health", "/auth/session-watch")
+_DRAIN_BYPASS_PREFIXES = ("/__celerp/", "/health")
 
 
 class DrainMiddleware:
@@ -226,7 +226,7 @@ class DrainMiddleware:
     Fails open (passes the request through) if the DB is unreachable so that
     a DB hiccup doesn't hard-block all mutations.
 
-    Safe paths (bypass): /__celerp/*, /health, /auth/session-watch.
+    Safe paths (bypass): /__celerp/*, /health.
     """
 
     def __init__(self, app: ASGIApp) -> None:

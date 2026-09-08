@@ -10,10 +10,9 @@ same origin without CORS issues.
 
 from __future__ import annotations
 
-import asyncio
 import httpx
 from starlette.requests import Request
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import Response
 
 import ui.api_client as api
 from ui.config import get_token as _token
@@ -57,45 +56,3 @@ def setup_routes(app):
                 return Response(content=r.content, status_code=r.status_code)
             except (httpx.ConnectError, httpx.TimeoutException):
                 return Response(status_code=503)
-
-    @app.get("/notifications/stream")
-    async def proxy_notifications_stream(request: Request) -> Response:
-        token = _token(request)
-        if not token:
-            # Return an empty SSE stream so EventSource doesn't loop on 401
-            async def _empty():
-                yield "data: {}\n\n"
-            return StreamingResponse(_empty(), media_type="text/event-stream")
-
-        async def _stream():
-            from ui.config import API_BASE
-            # Yield a keepalive immediately to commit the 200 response and
-            # prevent any subsequent exception from becoming a 500.
-            yield ": keepalive\n\n"
-
-            _RETRY_DELAYS = [1, 2, 4, 8, 16]
-            for delay in _RETRY_DELAYS:
-                if await request.is_disconnected():
-                    return
-                try:
-                    async with httpx.AsyncClient(base_url=API_BASE, timeout=None) as c:
-                        async with c.stream(
-                            "GET",
-                            "/notifications/stream",
-                            headers={
-                                "Authorization": f"Bearer {token}",
-                                "Accept": "text/event-stream",
-                            },
-                        ) as resp:
-                            async for chunk in resp.aiter_bytes():
-                                if await request.is_disconnected():
-                                    return
-                                yield chunk
-                    return  # clean stream close - stop retrying
-                except (asyncio.CancelledError, GeneratorExit):
-                    return
-                except Exception:
-                    # API not ready or temporary error - wait then retry
-                    await asyncio.sleep(delay)
-
-        return StreamingResponse(_stream(), media_type="text/event-stream")

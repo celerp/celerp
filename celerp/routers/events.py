@@ -73,7 +73,7 @@ async def events_stream(token: str = Depends(oauth2_scheme)):
                     yield f"event: notification\ndata: {json.dumps(event)}\n\n"
                     continue
 
-                # Timeout path: poll nonce (same cache-first logic as auth.py session_watch)
+                # Timeout path: poll nonce (cache-first, DB only on a miss)
                 # Skip nonce checks for legacy tokens that have no snonce claim - consistent
                 # with get_current_user which allows missing snonce for backward compatibility.
                 if token_nonce:
