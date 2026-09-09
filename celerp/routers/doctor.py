@@ -35,9 +35,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.document_lines import line_item_id
 from celerp.services.je_keys import je_idempotency_key, je_void_data
-from celerp.services.line_measures import splitting_allowed
 
 router = APIRouter()
 
@@ -53,7 +51,6 @@ ALL_CHECKS = [
     "inverted_doc_dates",
     "fractional_piece_quantities",
     "contact_file_schema",
-    "duplicate_non_splittable_document_items",
 ]
 
 
@@ -230,68 +227,6 @@ async def _check_ghost_events(
     # Ghost events are flagged only - auto-fix is dangerous (which is canonical?)
     return {"check": "ghost_events", "found": len(ghosts), "fixed": 0, "auto_fixable": False, "details": ghosts[:50],
             "note": "Ghost events require manual review - cannot auto-determine canonical record"}
-
-
-async def _check_duplicate_non_splittable_document_items(
-    session: AsyncSession, company_id, user_id, *, fix: bool,
-) -> dict:
-    """Find docs whose line_items repeat a non-splittable physical item.
-
-    Read-only: historical finalized financial documents are never mutated, so
-    this is a report. Mirrors the event-boundary guard's identity rule
-    (item_id/entity_id, never SKU) and splittability resolver.
-    """
-    docs = (await session.execute(
-        select(Projection.entity_id, Projection.state).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "doc",
-        )
-    )).all()
-
-    # Collect the item ids that appear more than once in any doc so splittability
-    # can be resolved for all of them in a single query.
-    doc_repeats: dict[str, list[str]] = {}
-    all_repeated: set[str] = set()
-    for entity_id, state in docs:
-        counts: dict[str, int] = {}
-        for line in (state or {}).get("line_items") or []:
-            if not isinstance(line, dict):
-                continue
-            ident = line_item_id(line)
-            if ident:
-                counts[ident] = counts.get(ident, 0) + 1
-        repeated = [ident for ident, n in counts.items() if n > 1]
-        if repeated:
-            doc_repeats[entity_id] = repeated
-            all_repeated.update(repeated)
-
-    non_splittable: set[str] = set()
-    if all_repeated:
-        rows = (await session.execute(
-            select(Projection.entity_id, Projection.state).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "item",
-                Projection.entity_id.in_(all_repeated),
-            )
-        )).all()
-        for item_id, item_state in rows:
-            if splitting_allowed(item_state or {}) is False:
-                non_splittable.add(item_id)
-
-    affected = []
-    for entity_id, repeated in doc_repeats.items():
-        offending = [ident for ident in repeated if ident in non_splittable]
-        if offending:
-            affected.append({"entity_id": entity_id, "item_ids": offending})
-
-    return {
-        "check": "duplicate_non_splittable_document_items",
-        "found": len(affected),
-        "fixed": 0,
-        "auto_fixable": False,
-        "details": affected[:50],
-        "note": "Historical documents with a repeated non-splittable item require manual review.",
-    }
 
 
 async def _check_orphan_projections(
@@ -826,7 +761,6 @@ _CHECK_FNS = {
     "inverted_doc_dates": _check_inverted_doc_dates,
     "fractional_piece_quantities": _check_fractional_piece_quantities,
     "contact_file_schema": _check_contact_file_schema,
-    "duplicate_non_splittable_document_items": _check_duplicate_non_splittable_document_items,
 }
 
 
