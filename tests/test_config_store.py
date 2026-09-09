@@ -142,6 +142,107 @@ def test_locked_writer_waits_on_held_lock(tmp_path, monkeypatch):
     assert not lock_path.exists(), "lock not released after a successful write"
 
 
+def test_config_lock_stale_takeover_single_writer(tmp_path, monkeypatch):
+    """A superseded owner's release must not delete the successor's lock.
+
+    Owner A acquires the lock, the lock ages past the stale threshold, owner B
+    takes it over (its own token now on disk). When the superseded owner A then
+    releases, its unlink is token-verified and must be a no-op, so B's live lock
+    survives and exactly one writer holds it. Without owner-token verification
+    A's unconditional unlink would delete B's lock and admit a second writer."""
+    lock_path = str(tmp_path / "celerp-config.json.lock")
+
+    # Owner A acquires and writes its token.
+    fd_a, token_a = config_store._acquire_lock(lock_path)
+    assert fd_a is not None
+    assert pathlib.Path(lock_path).read_bytes() == token_a
+
+    # Age the lock so a takeover is permitted, then owner B takes it over. B's
+    # acquire re-creates the lock with B's own token via the O_EXCL path.
+    stale = time.time() - (config_store._LOCK_STALE_S + 20)
+    os.utime(lock_path, (stale, stale))
+    fd_b, token_b = config_store._acquire_lock(lock_path)
+    assert fd_b is not None
+    assert token_b != token_a, "takeover did not write a distinct owner token"
+    assert pathlib.Path(lock_path).read_bytes() == token_b
+
+    # The superseded owner A releases. Its unlink must be a no-op because the
+    # lock no longer holds A's token; B's live lock survives.
+    config_store._release_lock(fd_a, lock_path, token_a)
+    assert pathlib.Path(lock_path).exists(), "superseded release deleted the successor's lock"
+    assert pathlib.Path(lock_path).read_bytes() == token_b, "successor's lock was clobbered"
+
+    # B's own release removes its lock cleanly.
+    config_store._release_lock(fd_b, lock_path, token_b)
+    assert not pathlib.Path(lock_path).exists(), "owner B's release did not remove its lock"
+
+
+def test_config_lock_release_only_unlinks_own_token(tmp_path, monkeypatch):
+    """A release must unlink only while the on-disk lock still carries this
+    owner's token; a lock replaced by a different token is left alone."""
+    lock_path = str(tmp_path / "celerp-config.json.lock")
+    fd, token = config_store._acquire_lock(lock_path)
+    assert fd is not None
+
+    # Simulate another writer having replaced the lock file after this owner
+    # acquired it: the on-disk token no longer matches ours.
+    pathlib.Path(lock_path).write_bytes(b"different-owner-token")
+    config_store._release_lock(fd, lock_path, token)
+    assert pathlib.Path(lock_path).exists(), "release unlinked a lock it no longer owned"
+    assert pathlib.Path(lock_path).read_bytes() == b"different-owner-token"
+    os.unlink(lock_path)
+
+
+def test_config_dir_fsynced_after_rename(tmp_path, monkeypatch):
+    """The containing directory is fsynced after the atomic rename so the
+    rename itself is durable, not only the file contents. A directory-fsync
+    OSError is swallowed and the write still reports success."""
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    config_path = tmp_path / "celerp-config.json"
+    config_path.write_text(json.dumps({"db_mode": "local"}))
+
+    real_fsync = os.fsync
+    dir_fsync_fds: list[int] = []
+
+    def _tracking_fsync(fd):
+        try:
+            st = os.fstat(fd)
+            if stat.S_ISDIR(st.st_mode):
+                dir_fsync_fds.append(fd)
+        except OSError:
+            pass
+        return real_fsync(fd)
+
+    monkeypatch.setattr(config_store.os, "fsync", _tracking_fsync)
+    ok = config_store.merge_packaged_config({"db_mode": "external"})
+    assert ok is True
+    assert dir_fsync_fds, "the containing directory was not fsynced after the rename"
+
+
+def test_config_dir_fsync_oserror_is_swallowed(tmp_path, monkeypatch):
+    """A directory-fsync failure (a filesystem or platform that rejects it) does
+    not fail the write: the rename already committed the update."""
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    config_path = tmp_path / "celerp-config.json"
+    config_path.write_text(json.dumps({"db_mode": "local"}))
+
+    real_fsync = os.fsync
+
+    def _fsync_dir_raises(fd):
+        try:
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError("directory fsync not supported")
+        except OSError as exc:
+            if "not supported" in str(exc):
+                raise
+        return real_fsync(fd)
+
+    monkeypatch.setattr(config_store.os, "fsync", _fsync_dir_raises)
+    ok = config_store.merge_packaged_config({"db_mode": "external"})
+    assert ok is True, "a directory-fsync OSError must not fail the write"
+    assert json.loads(config_path.read_text())["db_mode"] == "external"
+
+
 def test_concurrent_node_python_writers(tmp_path, monkeypatch):
     """N Python writers (merge_packaged_config) and N Node writers
     (electron/config-writer.js CLI) each merge their own key against one config

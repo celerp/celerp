@@ -10,13 +10,58 @@
 "use strict";
 
 const fs = require("fs");
+const path = require("path");
 const crypto = require("crypto");
+
+/**
+ * Fsync the containing directory so a preceding atomic rename is durable, not
+ * only the renamed file's contents. No-op on platforms that cannot fsync a
+ * directory (Windows rejects opening a directory for fsync), and any error is
+ * swallowed because the rename itself already committed the write. Mirrors
+ * celerp/config_store.py's _fsync_dir.
+ */
+function fsyncDir(dirPath) {
+  if (process.platform === "win32") return;
+  let dirFd;
+  try {
+    dirFd = fs.openSync(dirPath, "r");
+  } catch {
+    return;
+  }
+  try {
+    fs.fsyncSync(dirFd);
+  } catch {
+    // Filesystem or platform rejected the directory fsync; the rename stands.
+  } finally {
+    try {
+      fs.closeSync(dirFd);
+    } catch {
+      // Already closed.
+    }
+  }
+}
 
 // Lock protocol constants, identical to celerp/config_store.py. Overridable per
 // call (opts) only so the tests can shrink the budget; production uses these.
 const LOCK_BUDGET_MS = 5000;
 const LOCK_RETRY_MS = 50;
 const LOCK_STALE_MS = 10000;
+
+// A unique owner token for one acquisition (pid plus a random suffix), written
+// as the whole lock-file body and re-read for control, identical in shape to
+// the Python writer's f"{pid} {uuid4().hex}".
+function lockToken() {
+  return `${process.pid} ${crypto.randomBytes(16).toString("hex")}`;
+}
+
+// Return the current lock-file body, or null when it cannot be read.
+function readLockToken(lockPath) {
+  try {
+    return fs.readFileSync(lockPath, "utf8");
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Block the current thread for `ms` without a busy spin. The boot-path writers
@@ -28,10 +73,14 @@ function sleep(ms) {
 }
 
 /**
- * Acquire the config lock by exclusive create, returning the open fd. Throws
- * when another writer holds a fresh lock past the budget. A lock whose mtime
- * has aged past the stale threshold is unlinked, after which the exclusive
- * create stays the only way to win the takeover race.
+ * Acquire the config lock by exclusive create, returning { fd, token }. The
+ * token is the exact lock-file body written; the caller passes it back to
+ * releaseLock so only the electing writer ever removes this lock. Throws when
+ * another writer holds a fresh lock past the budget. A lock whose mtime has aged
+ * past the stale threshold is token-verified before removal: the stale token is
+ * re-read immediately before the unlink, so a faster successor that already
+ * replaced the lock is never deleted, after which the exclusive create stays the
+ * only way to win the takeover race.
  */
 function acquireLock(lockPath, opts) {
   const budgetMs = opts.budgetMs ?? LOCK_BUDGET_MS;
@@ -41,12 +90,10 @@ function acquireLock(lockPath, opts) {
   for (;;) {
     try {
       const fd = fs.openSync(lockPath, "wx", 0o600);
-      try {
-        fs.writeSync(fd, `${process.pid} ${Date.now()}`);
-      } catch {
-        // Diagnostics only; a failed write here never blocks acquisition.
-      }
-      return fd;
+      const token = lockToken();
+      fs.writeSync(fd, token);
+      fs.fsyncSync(fd);
+      return { fd, token };
     } catch (err) {
       if (err.code !== "EEXIST") throw err;
       let age = 0;
@@ -56,10 +103,17 @@ function acquireLock(lockPath, opts) {
         age = 0;
       }
       if (age > staleMs) {
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          // Raced with another taker; loop and retry the exclusive create.
+        // Re-read the stale token immediately before removing and unlink only
+        // that same token, so a faster successor's lock is never deleted.
+        const staleToken = readLockToken(lockPath);
+        if (staleToken !== null) {
+          try {
+            if (readLockToken(lockPath) === staleToken) {
+              fs.unlinkSync(lockPath);
+            }
+          } catch {
+            // Raced with another taker; loop and retry the exclusive create.
+          }
         }
         continue;
       }
@@ -71,14 +125,21 @@ function acquireLock(lockPath, opts) {
   }
 }
 
-function releaseLock(fd, lockPath) {
+/**
+ * Release the lock, unlinking it only while it still holds this owner's token;
+ * a lock a stale takeover already replaced is left untouched, so a superseded
+ * owner's release is a no-op.
+ */
+function releaseLock(fd, lockPath, token) {
   try {
     fs.closeSync(fd);
   } catch {
     // Already closed.
   }
   try {
-    fs.unlinkSync(lockPath);
+    if (readLockToken(lockPath) === token) {
+      fs.unlinkSync(lockPath);
+    }
   } catch {
     // Already gone via a stale takeover.
   }
@@ -102,7 +163,7 @@ function readRaw(configPath) {
  */
 function writeConfig(configPath, patch, opts = {}) {
   const lockPath = `${configPath}.lock`;
-  const fd = acquireLock(lockPath, opts);
+  const { fd, token } = acquireLock(lockPath, opts);
   const tmp = `${configPath}.${crypto.randomBytes(8).toString("hex")}.tmp`;
   try {
     const merged = { ...readRaw(configPath), ...patch };
@@ -114,6 +175,7 @@ function writeConfig(configPath, patch, opts = {}) {
       fs.closeSync(out);
     }
     fs.renameSync(tmp, configPath);
+    fsyncDir(path.dirname(configPath));
   } catch (err) {
     try {
       fs.unlinkSync(tmp);
@@ -122,7 +184,7 @@ function writeConfig(configPath, patch, opts = {}) {
     }
     throw err;
   } finally {
-    releaseLock(fd, lockPath);
+    releaseLock(fd, lockPath, token);
   }
 }
 
@@ -147,4 +209,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { writeConfig };
+module.exports = { writeConfig, acquireLock, releaseLock };

@@ -64,3 +64,79 @@ describe("config-writer locked writer", () => {
     expect(fs.existsSync(lock)).toBe(false); // released in the finally path
   });
 });
+
+// check_js_config_lock_single_writer: a superseded owner's release must not
+// delete the successor's lock. Uses the internal acquire/release primitives so
+// the token-verified unlink is exercised at the same granularity as the Python
+// side (tests/test_config_store.py::test_config_lock_stale_takeover_single_writer).
+const { acquireLock, releaseLock } = require("../config-writer");
+
+describe("config-writer single-writer owner token", () => {
+  test("check_js_config_lock_single_writer: superseded release leaves the successor's lock", () => {
+    const { lock } = sandbox();
+
+    // Owner A acquires and writes its token.
+    const { fd: fdA, token: tokenA } = acquireLock(lock, {});
+    expect(fs.readFileSync(lock, "utf8")).toBe(tokenA);
+
+    // Age the lock so a takeover is permitted; owner B takes it over via the
+    // exclusive-create path, writing B's own distinct token.
+    const old = new Date(Date.now() - 30000);
+    fs.utimesSync(lock, old, old);
+    const { fd: fdB, token: tokenB } = acquireLock(lock, {});
+    expect(tokenB).not.toBe(tokenA); // takeover wrote a distinct owner token
+    expect(fs.readFileSync(lock, "utf8")).toBe(tokenB);
+
+    // Superseded owner A releases: its unlink is token-verified and must be a
+    // no-op, so B's live lock survives.
+    releaseLock(fdA, lock, tokenA);
+    expect(fs.existsSync(lock)).toBe(true); // successor's lock not deleted
+    expect(fs.readFileSync(lock, "utf8")).toBe(tokenB);
+
+    // B's own release removes its lock cleanly.
+    releaseLock(fdB, lock, tokenB);
+    expect(fs.existsSync(lock)).toBe(false);
+  });
+
+  test("release only unlinks while the on-disk token is still ours", () => {
+    const { lock } = sandbox();
+    const { fd, token } = acquireLock(lock, {});
+    fs.writeFileSync(lock, "different-owner-token");
+    releaseLock(fd, lock, token);
+    expect(fs.existsSync(lock)).toBe(true);
+    expect(fs.readFileSync(lock, "utf8")).toBe("different-owner-token");
+    fs.unlinkSync(lock);
+  });
+});
+
+// check_js_config_dir_fsync: writeConfig fsyncs the containing directory after
+// the atomic rename so the rename is durable, mirroring the Python side
+// (tests/test_config_store.py::test_config_dir_fsynced_after_rename).
+describe("config-writer directory fsync", () => {
+  test("check_js_config_dir_fsync: the parent directory is fsynced after rename", () => {
+    const { dir, cfg } = sandbox();
+    const openSpy = jest.spyOn(fs, "openSync");
+    const fsyncSpy = jest.spyOn(fs, "fsyncSync");
+    let dirFsynced = false;
+    try {
+      // Track which fds correspond to the directory open, then confirm one of
+      // them is fsynced.
+      const dirFds = new Set();
+      openSpy.mockImplementation((p, ...rest) => {
+        const fd = jest.requireActual("fs").openSync(p, ...rest);
+        if (p === dir) dirFds.add(fd);
+        return fd;
+      });
+      fsyncSpy.mockImplementation((fd) => {
+        if (dirFds.has(fd)) dirFsynced = true;
+        return jest.requireActual("fs").fsyncSync(fd);
+      });
+      writeConfig(cfg, { durable: true });
+    } finally {
+      openSpy.mockRestore();
+      fsyncSpy.mockRestore();
+    }
+    expect(dirFsynced).toBe(true);
+    expect(JSON.parse(fs.readFileSync(cfg, "utf8")).durable).toBe(true);
+  });
+});
