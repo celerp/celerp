@@ -1253,35 +1253,45 @@ app.whenReady().then(async () => {
     const dbPort = await getFreePort();
     let cfg = readConfig();
     let dbConfig = resolveDatabaseConfig(dbPort, cfg);
+    let storageDecision = storageModeDecision(cfg);
 
-    // Entitlement preflight: only when the cached decision would fall back to
-    // local yet an external_db_url is still on file - a previously active
-    // external database whose grace has lapsed. Refresh the subscription from
-    // the relay before choosing the database, so a renewal keeps external and a
-    // relay we cannot reach asks rather than silently forking history between an
-    // external and a local store.
-    if (dbConfig.persistLocal && cfg.external_db_url) {
+    // Entitlement preflight: only when the cached decision for EITHER external
+    // resource would fall back to local yet a configured target is still on file
+    // - a previously active external database or S3 store whose grace has
+    // lapsed. Refresh the subscription from the relay before choosing either
+    // resource, so a renewal keeps them external and a relay we cannot reach
+    // asks rather than silently forking data between an external and a local
+    // store.
+    const dbLapsed = dbConfig.persistLocal && cfg.external_db_url;
+    const storageLapsed = storageDecision.persistLocal && cfg.storage_s3_endpoint;
+    if (dbLapsed || storageLapsed) {
       for (let resolved = false; !resolved; ) {
-        const gate = preflightGate(cfg, dbConfig, runEntitlementPreflight());
+        const gate = preflightGate(cfg, dbConfig, storageDecision, runEntitlementPreflight());
         if (gate.action === "external") {
           // The refreshed flags were written to disk by the one Python writer;
-          // re-read and recompute so the external database opens with the
-          // renewed entitlement and nothing is persisted as local.
+          // re-read and recompute both decisions so the external resources open
+          // with the renewed entitlement and nothing is persisted as local.
           cfg = readConfig();
           dbConfig = resolveDatabaseConfig(dbPort, cfg);
+          storageDecision = storageModeDecision(cfg);
           resolved = true;
         } else if (gate.action === "fallback") {
-          resolved = true; // Falls through to the local-fallback persist below.
+          resolved = true; // Falls through to the local-fallback persists below.
         } else {
-          // UNREACHABLE: never switch the database silently. Ask, with no timer
-          // default and exactly three choices.
+          // UNREACHABLE: never switch a resource silently. Ask, with no timer
+          // default and exactly three choices. The detail names every affected
+          // resource so the user cannot miss what will diverge.
+          const affected = [];
+          if (dbLapsed) affected.push("external database");
+          if (storageLapsed) affected.push("external file storage");
+          const affectedText = affected.join(" and ");
           const choice = dialog.showMessageBoxSync({
             type: "warning",
             title: "Subscription Check Failed",
             message: "Celerp could not confirm your subscription.",
             detail:
-              "Your external database was in use, but the subscription could not be verified right now.\n\n" +
-              "Retry the check, continue with local data (local and external data will diverge until you reconnect), or quit.",
+              `Your ${affectedText} was in use, but the subscription could not be verified right now.\n\n` +
+              `Retry the check, continue with local data (your local and ${affectedText} data will diverge until you reconnect), or quit.`,
             buttons: ["Retry", "Continue with local data", "Quit"],
             defaultId: 0,
             cancelId: 2,
@@ -1289,7 +1299,7 @@ app.whenReady().then(async () => {
           if (choice === 0) {
             continue; // Loop back and re-run the preflight.
           } else if (choice === 1) {
-            resolved = true; // Proceed to the local-fallback persist below.
+            resolved = true; // Proceed to the local-fallback persists below.
           } else {
             app.exit(0);
             return;
@@ -1304,10 +1314,12 @@ app.whenReady().then(async () => {
     // gateway feature-flag persister. external_db_url is preserved untouched.
     applyDbModePersist(cfg, dbConfig, writeConfig);
 
-    // Same fallback for external storage: when grace has expired, persist
-    // storage_mode=local so the next boot uses local storage. The storage_s3_*
-    // settings are preserved so the customer can reselect S3 after renewing.
-    applyStoragePersist(cfg, storageModeDecision(cfg), writeConfig);
+    // Same fallback for external storage, off the SAME re-read decision the gate
+    // resolved against (not a fresh recompute of a stale cfg): when grace has
+    // expired, persist storage_mode=local so the next boot uses local storage.
+    // The storage_s3_* settings are preserved so the customer can reselect S3
+    // after renewing.
+    applyStoragePersist(cfg, storageDecision, writeConfig);
 
     // Create the main window immediately so user sees the loading page (no white frame).
     createWindow();

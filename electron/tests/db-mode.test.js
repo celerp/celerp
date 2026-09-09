@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: BUSL-1.1
 "use strict";
 
-const { isInGrace, dbModeDecision, applyDbModePersist, preflightGate } = require("../db-mode");
+const {
+  isInGrace,
+  dbModeDecision,
+  applyDbModePersist,
+  storageModeDecision,
+  applyStoragePersist,
+  preflightGate,
+} = require("../db-mode");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const future = () => new Date(Date.now() + DAY_MS).toISOString();
@@ -145,33 +152,93 @@ describe("preflightGate", () => {
   const EXPIRED = 2;
   const UNREACHABLE = 3;
 
-  test("no gate when the decision does not fall back to local", () => {
-    expect(preflightGate({ external_db_url: EXT_URL }, { persistLocal: false }, EXPIRED))
+  const noFallback = { persistLocal: false };
+  const dbFallback = { persistLocal: true };
+  const storageFallback = { persistLocal: true };
+  const S3_CFG = {
+    external_db_url: "",
+    storage_mode: "s3",
+    storage_s3_endpoint: "https://s3.example.com",
+  };
+
+  test("no gate when neither resource falls back to local", () => {
+    expect(preflightGate({ external_db_url: EXT_URL }, noFallback, noFallback, EXPIRED))
       .toEqual({ action: "none" });
   });
 
-  test("no gate when there is no external_db_url to preserve", () => {
-    expect(preflightGate({ external_db_url: "" }, { persistLocal: true }, EXPIRED))
+  test("no gate when db falls back but no external_db_url is on file", () => {
+    expect(preflightGate({ external_db_url: "" }, dbFallback, noFallback, EXPIRED))
       .toEqual({ action: "none" });
   });
 
-  test("RENEWED continues external and does not persist local", () => {
-    expect(preflightGate({ external_db_url: EXT_URL }, { persistLocal: true }, RENEWED))
+  test("RENEWED continues external and does not persist local (db)", () => {
+    expect(preflightGate({ external_db_url: EXT_URL }, dbFallback, noFallback, RENEWED))
       .toEqual({ action: "external" });
   });
 
-  test("EXPIRED falls back to local", () => {
-    expect(preflightGate({ external_db_url: EXT_URL }, { persistLocal: true }, EXPIRED))
+  test("EXPIRED falls back to local (db)", () => {
+    expect(preflightGate({ external_db_url: EXT_URL }, dbFallback, noFallback, EXPIRED))
       .toEqual({ action: "fallback" });
   });
 
-  test("UNREACHABLE asks for confirmation, never a silent switch", () => {
-    expect(preflightGate({ external_db_url: EXT_URL }, { persistLocal: true }, UNREACHABLE))
+  test("UNREACHABLE asks for confirmation, never a silent switch (db)", () => {
+    expect(preflightGate({ external_db_url: EXT_URL }, dbFallback, noFallback, UNREACHABLE))
       .toEqual({ action: "confirm" });
   });
 
   test("an unknown exit code is treated as UNREACHABLE (confirm)", () => {
-    expect(preflightGate({ external_db_url: EXT_URL }, { persistLocal: true }, 1))
+    expect(preflightGate({ external_db_url: EXT_URL }, dbFallback, noFallback, 1))
       .toEqual({ action: "confirm" });
+  });
+
+  // check_js_storage_mode_decision_gated: the gate triggers on an S3-only
+  // fallback too, not only the database. Without this an S3-only lapse would
+  // skip the refresh/dialog and silently persist storage_mode=local.
+  test("check_js_storage_mode_decision_gated: an S3-only fallback triggers the gate", () => {
+    expect(preflightGate(S3_CFG, noFallback, storageFallback, EXPIRED))
+      .toEqual({ action: "fallback" });
+    expect(preflightGate(S3_CFG, noFallback, storageFallback, UNREACHABLE))
+      .toEqual({ action: "confirm" });
+    expect(preflightGate(S3_CFG, noFallback, storageFallback, RENEWED))
+      .toEqual({ action: "external" });
+  });
+
+  test("no gate when storage falls back but no S3 endpoint is configured", () => {
+    const cfg = { external_db_url: "", storage_mode: "s3", storage_s3_endpoint: "" };
+    expect(preflightGate(cfg, noFallback, storageFallback, EXPIRED))
+      .toEqual({ action: "none" });
+  });
+
+  test("either resource forcing local triggers the gate (db and S3 both lapsed)", () => {
+    const cfg = {
+      external_db_url: EXT_URL,
+      storage_mode: "s3",
+      storage_s3_endpoint: "https://s3.example.com",
+    };
+    expect(preflightGate(cfg, dbFallback, storageFallback, EXPIRED))
+      .toEqual({ action: "fallback" });
+  });
+});
+
+// A2: applyStoragePersist must not persist storage_mode=local off a stale
+// decision before the trigger resolves. These pin the pure helper's contract
+// that the persist writes exactly {storage_mode:'local'} and only when the
+// re-read decision still forces local.
+describe("applyStoragePersist storage fallback", () => {
+  test("test_storage_persist_writes_local_only: writes exactly {storage_mode:'local'}", () => {
+    const writeConfigFn = jest.fn();
+    const persisted = applyStoragePersist(
+      { storage_mode: "s3" }, { persistLocal: true }, writeConfigFn);
+    expect(persisted).toBe(true);
+    expect(writeConfigFn).toHaveBeenCalledTimes(1);
+    const patch = writeConfigFn.mock.calls[0][0];
+    expect(Object.keys(patch)).toEqual(["storage_mode"]);
+    expect(patch).toEqual({ storage_mode: "local" });
+  });
+
+  test("no persist when storage entitlement is still active", () => {
+    const writeConfigFn = jest.fn();
+    expect(applyStoragePersist({}, { persistLocal: false }, writeConfigFn)).toBe(false);
+    expect(writeConfigFn).not.toHaveBeenCalled();
   });
 });

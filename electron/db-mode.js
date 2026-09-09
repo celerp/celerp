@@ -110,19 +110,26 @@ const PREFLIGHT_EXPIRED = 2;
 const PREFLIGHT_UNREACHABLE = 3;
 
 /**
- * Map a preflight result onto the boot action, purely. The gate only applies
- * when the cached decision would fall back to local AND there is an external_db
- * url worth preserving; otherwise the ordinary flow runs unchanged. An unknown
- * exit code is treated as UNREACHABLE so a packaging bug asks rather than
- * silently switching the database.
+ * Map a preflight result onto the boot action, purely. The gate applies when
+ * EITHER external resource would fall back to local AND there is a configured
+ * target worth preserving: the database's external_db_url, or S3's endpoint. A
+ * lapse of either resource must trigger the refresh/dialog, so an S3-only lapse
+ * is no longer silently persisted while the database drives the exit code
+ * alone. Otherwise the ordinary flow runs unchanged. An unknown exit code is
+ * treated as UNREACHABLE so a packaging bug asks rather than silently switching
+ * a resource.
  *
- * @param {object} cfg - { external_db_url }
- * @param {{ persistLocal: boolean }} decision
+ * @param {object} cfg - { external_db_url, storage_s3_endpoint }
+ * @param {{ persistLocal: boolean }} dbDecision
+ * @param {{ persistLocal: boolean }} storageDecision
  * @param {number} exitCode - a preflight exit code
  * @returns {{ action: "none"|"external"|"fallback"|"confirm" }}
  */
-function preflightGate(cfg, decision, exitCode) {
-  if (!decision.persistLocal || !cfg.external_db_url) {
+function preflightGate(cfg, dbDecision, storageDecision, exitCode) {
+  const dbFallsBack = dbDecision.persistLocal && Boolean(cfg.external_db_url);
+  const storageFallsBack =
+    storageDecision.persistLocal && Boolean(cfg.storage_s3_endpoint);
+  if (!dbFallsBack && !storageFallsBack) {
     return { action: "none" };
   }
   if (exitCode === PREFLIGHT_RENEWED) return { action: "external" };
