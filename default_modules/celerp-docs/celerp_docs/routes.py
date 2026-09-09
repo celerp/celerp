@@ -6390,6 +6390,10 @@ def _scan_line_from_item(item: Projection, list_type: str, price_list: str | Non
     st = item.state
     line = {"item_id": item.entity_id, "sku": st.get("sku"), "name": st.get("name"),
             "description": st.get("name"), "barcode": st.get("barcode")}
+    # Carry the item's unit so the stored line renders with it (a 650 gram scan stays 650 gram, not a
+    # bare 650). unit and sell_by are the same value; the line row reads either.
+    line["unit"] = st.get("sell_by")
+    line["sell_by"] = st.get("sell_by")
     # System qty snapshot for the Qty column; on_hand is frozen separately at finalize.
     line["quantity"] = float(st.get("quantity") or 0)
     if list_type != "audit":
@@ -6507,6 +6511,7 @@ async def scan_list(
     _normalize_line_item_ids(lines)  # heal any legacy lines stored with only entity_id so matching works
     now = datetime.now(timezone.utc).isoformat()
     price_config = None  # money lists price new lines; fetched once for the whole batch, lazily
+    unit_map = None      # unit rules for scan-line validation; fetched once, lazily, only if needed
     results: list[dict] = []
     failed: list[dict] = []
     changed = False
@@ -6555,6 +6560,22 @@ async def scan_list(
                     detail = f"{item.state.get('sku') or code}: already on the list"
                     failed.append({"code": code, "reason": "duplicate_scan", "label": detail})
                     results.append({"code": code, "state": "error", "reason": "duplicate_scan", "label": detail})
+                    continue
+                # Scan runs through the SAME per-line rule as an ordinary writer: a stocked line's
+                # snapshot must satisfy its unit rule (a zero-on-hand non-audit line is invalid). A
+                # failure is reported per-code and skipped, never persisted. sell_by is already in the
+                # item's own state, so no per-item query is needed.
+                if unit_map is None:
+                    unit_map = await _get_unit_map(session, company_id)
+                try:
+                    _check_line_quantity(
+                        item.state.get("quantity"), item.state.get("sell_by"), unit_map,
+                        require_positive=(lt != "audit"),
+                        label=item.state.get("sku") or code,
+                    )
+                except HTTPException as exc:
+                    failed.append({"code": code, "reason": "invalid_quantity", "label": exc.detail})
+                    results.append({"code": code, "state": "error", "reason": "invalid_quantity", "label": exc.detail})
                     continue
                 if price_config is None:
                     price_config = await get_price_config(session, company_id)
