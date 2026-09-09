@@ -626,24 +626,30 @@ class GatewayClient:
     def _policy_path(raw_path: Any) -> str | None:
         """Return the canonical local route a relay-supplied path resolves to.
 
-        The local ASGI server splits the target on the first '?', percent-decodes
-        the path once, and routes on the result; a browser never sends a fragment.
-        Classification and the local-only guard must run on that same canonical
-        value, not the raw wire string, or an encoded ('/settings/%66actory-reset')
+        httpx removes dot segments ('/x/../settings' -> '/settings') before it puts
+        the request on the wire, the local ASGI server then splits the target on the
+        first '?', percent-decodes the path once, and routes on the result; a browser
+        never sends a fragment. Classification and the local-only guard must run on
+        that same canonical value, not the raw wire string, or an encoded
+        ('/settings/%66actory-reset'), dot-segment ('/x/../settings/factory-reset'),
         or fragmented ('/settings/factory-reset#x') variant would slip past a raw
-        match yet still route to the blocked handler locally. Returns None for any
-        path that cannot address a local route (non-string, non-absolute, carrying a
-        fragment or control character, or not decodable); the caller refuses those
-        with a neutral 400.
+        match yet still route to the blocked handler locally. The canonical path is
+        derived from httpx itself so it can never diverge from what httpx transmits.
+        Returns None for any path that cannot address a local route (non-string,
+        non-absolute, carrying a fragment or control character, or not decodable);
+        the caller refuses those with a neutral 400.
         """
+        import httpx
+
         if not isinstance(raw_path, str) or not raw_path.startswith("/"):
             return None
         if "#" in raw_path or any(ord(c) < 0x20 or ord(c) == 0x7f for c in raw_path):
             return None
         path_part = raw_path.split("?", 1)[0]
         try:
-            decoded = unquote(path_part, errors="strict")
-        except (UnicodeDecodeError, ValueError):
+            transmitted = httpx.URL("http://127.0.0.1" + path_part).raw_path.split(b"?", 1)[0]
+            decoded = unquote(transmitted.decode("ascii"), errors="strict")
+        except (UnicodeDecodeError, ValueError, httpx.InvalidURL):
             return None
         if not decoded.startswith("/"):
             return None
@@ -707,9 +713,12 @@ class GatewayClient:
             return
 
         # Decode the body only after the path is known good. A malformed base64
-        # payload is contained with a neutral 400 rather than raising.
+        # payload is contained with a neutral 400 rather than raising. validate=True
+        # rejects non-alphabet characters outright: the permissive default silently
+        # drops them, turning a malformed relay payload into a different request body
+        # instead of the intended containment.
         try:
-            body = base64.b64decode(body_b64) if body_b64 else None
+            body = base64.b64decode(body_b64, validate=True) if body_b64 else None
         except (ValueError, TypeError):
             await self._send(self._ws, {
                 "type": "http.response",

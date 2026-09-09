@@ -692,6 +692,76 @@ async def test_proxy_blocks_percent_encoded_local_only_route(client, monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("dotted_path", [
+    "/x/../settings/factory-reset",               # dot segment hops into the blocked route
+    "/settings/foo/../../settings/factory-reset",  # deeper traversal back to the blocked route
+    "/./settings/factory-reset",                   # single-dot no-op segment
+])
+async def test_proxy_blocks_dot_segment_local_only_route(client, monkeypatch, dotted_path):
+    """A dot-segment variant of a destructive local-only route is blocked with 403 and
+    never forwarded. httpx removes dot segments before transmitting, so the local server
+    receives '/settings/factory-reset' and would wipe; classifying the raw wire string
+    alone lets the traversal through. The guard must see the same canonical path httpx
+    sends."""
+    import base64 as _b64
+    sent = []
+
+    async def fake_send(ws, msg):
+        sent.append(msg)
+
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
+
+    def _fatal_client(self):
+        raise AssertionError("local HTTP client must not be built for a blocked route")
+
+    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    client._ws = object()
+
+    await client._handle_proxy_request(
+        {"id": "r1", "method": "POST", "path": dotted_path,
+         "query": "", "headers": {}, "body_b64": ""}
+    )
+
+    assert len(sent) == 1, (dotted_path, sent)
+    payload = sent[0]["payload"]
+    assert payload["status"] == 403, dotted_path
+    assert b"local machine" in _b64.b64decode(payload["body_b64"])
+
+
+@pytest.mark.asyncio
+async def test_proxy_classifies_dot_segment_events_stream_as_sse(client, monkeypatch):
+    """A dot-segment variant of /events/stream is classified as a non-proxiable stream
+    and answered with the SSE stub, never forwarded. httpx normalizes '/x/../events/stream'
+    to '/events/stream' on the wire, so classifying the raw string alone would send the
+    request down the ordinary request/response proxy this stub exists to keep it off."""
+    import base64 as _b64
+    sent = []
+
+    async def fake_send(ws, msg):
+        sent.append(msg)
+
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
+
+    def _fatal_client(self):
+        raise AssertionError("local HTTP client must not be built for an SSE path")
+
+    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    client._ws = object()
+
+    await client._handle_proxy_request(
+        {"id": "r1", "method": "GET", "path": "/x/../events/stream",
+         "query": "", "headers": {}, "body_b64": ""}
+    )
+
+    assert len(sent) == 1, sent
+    payload = sent[0]["payload"]
+    assert payload["status"] == 200
+    header_map = {k.lower(): v for k, v in payload["headers"]}
+    assert header_map.get("content-type") == "text/event-stream"
+    assert _b64.b64decode(payload["body_b64"]).startswith(b"retry: 3600000\n")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("bad_path", [
     "/settings/factory-reset#x",   # fragment suffix on a blocked route
     "/items#/../settings",          # fragment anywhere
@@ -728,9 +798,15 @@ async def test_proxy_rejects_fragment_control_and_malformed_paths(client, monkey
 
 
 @pytest.mark.asyncio
-async def test_proxy_rejects_malformed_body_before_forwarding(client, monkeypatch):
+@pytest.mark.parametrize("bad_body", [
+    "not!valid!base64!",  # non-alphabet chars plus bad padding
+    "!!!!",               # non-alphabet chars the permissive decoder silently drops to b""
+])
+async def test_proxy_rejects_malformed_body_before_forwarding(client, monkeypatch, bad_body):
     """A malformed base64 body on an otherwise valid path is contained with a neutral
-    400 instead of raising out of the handler, and nothing is forwarded locally."""
+    400 instead of raising out of the handler, and nothing is forwarded locally. Strict
+    decoding is required: the permissive default turns '!!!!' into an empty body and
+    forwards it rather than rejecting the malformed payload."""
     import base64 as _b64
     sent = []
 
@@ -747,11 +823,11 @@ async def test_proxy_rejects_malformed_body_before_forwarding(client, monkeypatc
 
     await client._handle_proxy_request(
         {"id": "r1", "method": "POST", "path": "/items",
-         "query": "", "headers": {}, "body_b64": "not!valid!base64!"}
+         "query": "", "headers": {}, "body_b64": bad_body}
     )
 
-    assert len(sent) == 1, sent
-    assert sent[0]["payload"]["status"] == 400
+    assert len(sent) == 1, (bad_body, sent)
+    assert sent[0]["payload"]["status"] == 400, bad_body
 
 
 @pytest.mark.asyncio
