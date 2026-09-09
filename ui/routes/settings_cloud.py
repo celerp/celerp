@@ -366,7 +366,10 @@ def _masked_db_url(url: str) -> str:
     try:
         return make_url(url).render_as_string(hide_password=True)
     except Exception:
-        return url
+        # An unparseable DSN can still carry an embedded secret, so it is never
+        # echoed back: it fails closed to an inert marker that names nothing and
+        # cannot be mistaken for a usable connection target.
+        return "***"
 
 
 def _url_password(url: str) -> str | None:

@@ -89,6 +89,18 @@ def test_url_password_none_when_absent():
     assert sc._parse_db_url(url)["has_password"] is False
 
 
+def test_masked_db_url_redacts_on_parse_failure():
+    """A secret-bearing DSN the structural parser cannot read is shown as an
+    inert redacted marker, never echoed raw: the fallback must not leak the
+    embedded secret and must not itself be a usable connection target."""
+    dsn = ":topsecret no host"  # unparseable by make_url, carries a secret
+    masked = sc._masked_db_url(dsn)
+    assert "topsecret" not in masked, "raw secret leaked on a parse failure"
+    assert masked != dsn, "the raw unparseable DSN was returned verbatim"
+    assert "://" not in masked, "the marker must not read as a connection URL"
+    assert "***" in masked
+
+
 # ── blank-password preservation (§49/M1) ─────────────────────────────────────
 
 async def test_save_infra_packaged_blank_password_preserves_existing(client, tmp_path, monkeypatch):
