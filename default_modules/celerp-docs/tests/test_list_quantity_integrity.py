@@ -324,7 +324,7 @@ async def test_draft_audit_zero_on_hand_autosavable(client):
     loc = await _location(client, t)
     await _item(client, t, "AUD-0", loc=loc, qty=0, barcode="940001", sell_by="piece")
 
-    r = await client.post("/audit", headers=_h(t), json={"location_id": loc})
+    r = await client.post("/lists/audit", headers=_h(t), json={"location_id": loc})
     assert r.status_code == 200, r.text
     audit_id = r.json()["id"]
 
