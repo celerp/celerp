@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
 from celerp.projections.engine import ProjectionEngine
-from celerp.services.document_lines import assert_document_item_uniqueness
+from celerp.services.document_lines import assert_outbound_stock_uniqueness
 
 
 def apply_event(state: dict, event: LedgerEntry) -> dict:
@@ -130,12 +130,13 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
     # Enforce period lock
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))
 
-    # Enforce document physical-item uniqueness on new writes. Extract the
-    # post-change line set by DATA SHAPE so every doc writer (create, patch,
-    # shared_import, update, conversion, import, future doc types) is covered
-    # by one rule, keyed on entity_type == "doc" rather than an event list.
-    # Rebuild/replay applies events via apply_event, never emit_event, so
-    # historical events are never re-validated here.
+    # Enforce physical-item uniqueness on new OUTBOUND doc writes (invoice, memo).
+    # Extract the post-change line set by DATA SHAPE so every doc writer (create,
+    # patch, shared_import, update, conversion, import) is covered by one rule; the
+    # doc-type scope + resolution live in assert_outbound_stock_uniqueness beside the
+    # invariant, so this engine reads no projection and owns no doc-type classification.
+    # Rebuild/replay applies events via apply_event, never emit_event, so historical
+    # events are never re-validated here.
     if kwargs.get("entity_type") == "doc":
         data = kwargs.get("data") or {}
         line_set = None
@@ -146,7 +147,9 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
             if isinstance(changed, dict):
                 line_set = changed.get("new")
         if line_set is not None:
-            await assert_document_item_uniqueness(session, kwargs.get("company_id"), line_set)
+            await assert_outbound_stock_uniqueness(
+                session, kwargs.get("company_id"), kwargs.get("entity_id"),
+                data.get("doc_type"), line_set)
 
     entry = LedgerEntry(**kwargs)
 

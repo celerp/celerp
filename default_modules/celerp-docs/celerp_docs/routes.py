@@ -405,8 +405,33 @@ async def _get_item_sell_by_map(session: AsyncSession, company_id: str) -> dict[
     return result
 
 
-async def _validate_list_line_quantities(
+async def _list_lines_sell_by_by_id(
     line_items: list[dict], session: AsyncSession, company_id: str
+) -> dict[str, str]:
+    """Return an item-id -> sell_by map for exactly the linked lines' own ids.
+
+    Bounded to the lines' own ids (one company-scoped ``entity_id.in_`` query), so a list
+    with a handful of lines never loads every company item. A line's identity is its item
+    id, never its SKU: two distinct lots can share a SKU, so a SKU map would wrongly lend
+    one lot's unit rules to another line, and an unlinked row that merely contains a real
+    SKU would inherit that item's rules. Resolving by id avoids both.
+    """
+    ids = {line_item_id(li) for li in line_items if isinstance(li, dict)}
+    ids.discard(None)
+    if not ids:
+        return {}
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+            Projection.entity_id.in_(ids),
+        )
+    )).scalars().all()
+    return {row.entity_id: sb for row in rows if (sb := row.state.get("sell_by"))}
+
+
+async def _validate_list_line_quantities(
+    line_items: list[dict], session: AsyncSession, company_id: str, list_type: str
 ) -> None:
     """Reject malformed list-line quantities at the function boundary before any list write.
 
@@ -414,13 +439,17 @@ async def _validate_list_line_quantities(
     does not coerce to float, or a non-finite float (NaN/inf) is rejected 422 naming the offending
     line. This own gate is required because validate_line_quantity skips entirely when sell_by is
     absent/unknown/service, and its positive check only rejects qty <= 0, so NaN and True slip past it.
-    Only then is the positive/decimal check delegated to validate_line_quantity for the rest. A numeric
-    0 is a legitimate value and is not rejected here.
+    Then the positive/decimal check is delegated to validate_line_quantity, resolving each line's
+    sell_by BY ITS OWN ITEM ID (its own ``sell_by`` first, else the id map) - never by SKU, so a line
+    is only ever held to its own item's unit rules and an unlinked row borrows none. An audit list
+    passes ``require_positive=False`` so a legitimate zero-on-hand line is allowed; every other list
+    type keeps the positive check. A numeric 0 is otherwise a legitimate value and is not rejected here.
     """
     if not line_items:
         return
     unit_map = await _get_unit_map(session, company_id)
-    sell_by_map = await _get_item_sell_by_map(session, company_id)
+    sell_by_by_id = await _list_lines_sell_by_by_id(line_items, session, company_id)
+    require_positive = list_type != "audit"
     for li in line_items:
         if not isinstance(li, dict):
             continue
@@ -434,9 +463,9 @@ async def _validate_list_line_quantities(
             raise HTTPException(status_code=422, detail=f"{label}: quantity must be a number, got {raw!r}")
         if not math.isfinite(qty):
             raise HTTPException(status_code=422, detail=f"{label}: quantity must be a finite number, got {raw!r}")
-        sku = li.get("sku")
-        resolved_sell_by = li.get("sell_by") or (sell_by_map.get(sku) if sku else None)
-        validate_line_quantity(qty, resolved_sell_by, unit_map, label=label)
+        ident = line_item_id(li)
+        resolved_sell_by = li.get("sell_by") or (sell_by_by_id.get(ident) if ident else None)
+        validate_line_quantity(qty, resolved_sell_by, unit_map, label=label, require_positive=require_positive)
 
 
 async def _catalog_unit_price(session: AsyncSession, company_id, line: dict, price_config) -> float:
@@ -4222,7 +4251,8 @@ async def create_list(
         session, company_id,
         (li.get("item_id") or li.get("entity_id") for li in data.get("line_items") or []),
     )
-    await _validate_list_line_quantities(data.get("line_items") or [], session, company_id)
+    await _validate_list_line_quantities(data.get("line_items") or [], session, company_id,
+                                         data.get("list_type") or DEFAULT_LIST_TYPE)
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
     await session.commit()
     return {"event_id": entry.id, "id": entity_id}
@@ -4264,7 +4294,8 @@ async def patch_list(
             session, company_id,
             {li.get("item_id") for li in _new_lines} - _existing,
         )
-        await _validate_list_line_quantities(_new_lines, session, company_id)
+        await _validate_list_line_quantities(_new_lines, session, company_id,
+                                             row.state.get("list_type") or DEFAULT_LIST_TYPE)
     # expected_version is a concurrency guard, not list data - it never enters the event payload.
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
                              payload.model_dump(exclude_none=True, exclude={"expected_version"}),
@@ -4360,7 +4391,8 @@ async def patch_list_line_page(
         session, company_id,
         {_line_identity(li) for li in page} - _existing,
     )
-    await _validate_list_line_quantities(page, session, company_id)
+    await _validate_list_line_quantities(page, session, company_id,
+                                         row.state.get("list_type") or DEFAULT_LIST_TYPE)
 
     # Slice-splice: replace exactly the originally-loaded window. A shorter page truncates, a longer
     # one inserts; positional overwrite/append could never delete a tail row.
@@ -6338,7 +6370,7 @@ def _scan_line_from_item(item: Projection, list_type: str, price_list: str | Non
     price list via the shared resolver, on flattened state so derived lists price correctly."""
     st = item.state
     line = {"item_id": item.entity_id, "sku": st.get("sku"), "name": st.get("name"),
-            "description": st.get("name"), "barcode": st.get("barcode")}
+            "description": st.get("name"), "barcode": st.get("barcode"), "unit": st.get("sell_by")}
     # System qty snapshot for the Qty column; on_hand is frozen separately at finalize.
     line["quantity"] = float(st.get("quantity") or 0)
     if list_type != "audit":
@@ -6373,7 +6405,8 @@ async def create_audit_list(
         if (st.get("inventory_type") or "stocked") not in _AUDIT_STOCK_TYPES:
             continue
         lines.append({"item_id": r.entity_id, "sku": st.get("sku"), "name": st.get("name"),
-                      "barcode": st.get("barcode"), "quantity": float(st.get("quantity") or 0)})
+                      "barcode": st.get("barcode"), "unit": st.get("sell_by"),
+                      "quantity": float(st.get("quantity") or 0)})
     ref_id = next_doc_ref(company, "audit")
     entity_id = f"list:{ref_id}"
     if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
@@ -6456,6 +6489,7 @@ async def scan_list(
     _normalize_line_item_ids(lines)  # heal any legacy lines stored with only entity_id so matching works
     now = datetime.now(timezone.utc).isoformat()
     price_config = None  # money lists price new lines; fetched once for the whole batch, lazily
+    unit_map = await _get_unit_map(session, company_id)  # per-line quantity gate, same as the writers
     results: list[dict] = []
     failed: list[dict] = []
     changed = False
@@ -6507,7 +6541,20 @@ async def scan_list(
                     continue
                 if price_config is None:
                     price_config = await get_price_config(session, company_id)
-                lines.append(_scan_line_from_item(item, lt, payload.price_list, price_config=price_config))
+                new_line = _scan_line_from_item(item, lt, payload.price_list, price_config=price_config)
+                # Same per-line quantity rule the manual writers apply: a resolved line whose
+                # system quantity is invalid for its unit (e.g. a zero-on-hand stocked line on a
+                # non-audit list) is reported in `failed`, not silently appended. Audit lists allow
+                # a zero on-hand line (require_positive=False).
+                try:
+                    validate_line_quantity(new_line["quantity"], new_line.get("unit"), unit_map,
+                                           label=item.state.get("sku") or code,
+                                           require_positive=(lt != "audit"))
+                except HTTPException as exc:
+                    failed.append({"code": code, "reason": "invalid_quantity", "label": exc.detail})
+                    results.append({"code": code, "state": "error", "reason": "invalid_quantity", "label": exc.detail})
+                    continue
+                lines.append(new_line)
                 result_state = "added"
         else:
             # FINALIZED audit: the manifest is LOCKED - scanning only checks off items already on the

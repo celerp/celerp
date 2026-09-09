@@ -18,6 +18,14 @@ from sqlalchemy import select
 from celerp.models.projections import Projection
 from celerp.services.line_measures import splitting_allowed
 
+# Physical-item uniqueness is an OUTBOUND customer-stock rule, not a universal document
+# invariant: a customer-facing invoice or memo must not list the same non-splittable
+# physical lot twice. Inbound and internal docs (bill, consignment_in, novel types) may.
+# This is the single authoritative source; it mirrors the two existing synced outbound
+# copies (ui.routes.documents._FULFILLABLE_DOC_TYPES and
+# celerp_docs.doc_constants.FULFILLABLE_STATUSES) and must stay in lockstep with them.
+OUTBOUND_LINE_UNIQUENESS_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo"})
+
 
 def line_item_id(line: dict) -> str | None:
     """The single authoritative identity of a document line.
@@ -85,3 +93,27 @@ async def assert_document_item_uniqueness(session, company_id, line_items) -> No
                     "item_id": ident,
                 },
             )
+
+
+async def assert_outbound_stock_uniqueness(
+    session, company_id, entity_id, doc_type, line_items
+) -> None:
+    """Enforce physical-item uniqueness only for OUTBOUND docs (invoice, memo).
+
+    The doc.updated event shape carries no ``doc_type``, so when ``doc_type`` is None it is
+    resolved from the persisted projection by ``(company_id, entity_id)``. This keeps the
+    doc-type scope and its resolution beside the invariant, so the event engine stays thin
+    and gains no projection-reading responsibility.
+
+    Fail-open on scope: an unresolvable doc_type (no projection, or absent field) is skipped.
+    This is provably safe rather than permissive - every outbound doc is created through a
+    required ``doc_type`` and writes its projection at ``doc.created`` before any ``doc.updated``
+    can fire, so the set of docs with an unresolvable doc_type is disjoint from the invoice/memo
+    set this guard protects, and that set was already validated at ``doc.created``.
+    """
+    if doc_type is None:
+        row = await session.get(Projection, (company_id, entity_id))
+        doc_type = row.state.get("doc_type") if row else None
+    if doc_type not in OUTBOUND_LINE_UNIQUENESS_DOC_TYPES:
+        return
+    await assert_document_item_uniqueness(session, company_id, line_items)
