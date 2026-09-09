@@ -170,10 +170,7 @@ class TestCelerpCollectLinesFunction:
     @pytest.mark.asyncio
     async def test_reads_line_total_from_dom_field(self, draft_html):
         """_celerpCollectLines must read from the .line-total DOM element."""
-        start = draft_html.find("function _celerpCollectLines")
-        assert start >= 0, "_celerpCollectLines not found in rendered JS"
-        # Use 2500 chars — the long category/receiveAs lines push the new code past 1200
-        func_body = draft_html[start: start + 2500]
+        func_body = _extract_function(draft_html, "_celerpCollectLines")
         assert "querySelector('.line-total')" in func_body, (
             "_celerpCollectLines must read line_total from .line-total DOM field, not recompute"
         )
@@ -181,9 +178,7 @@ class TestCelerpCollectLinesFunction:
     @pytest.mark.asyncio
     async def test_has_fallback_when_field_missing(self, draft_html):
         """_celerpCollectLines must fall back to qty*price when .line-total is absent."""
-        start = draft_html.find("function _celerpCollectLines")
-        assert start >= 0
-        func_body = draft_html[start: start + 2500]
+        func_body = _extract_function(draft_html, "_celerpCollectLines")
         # Ternary fallback: lineTotalEl ? ... : qty * price * (1 - discPct / 100)
         assert "qty * price * (1 - discPct / 100)" in func_body, (
             "_celerpCollectLines must fall back to qty*price when .line-total element is absent"
