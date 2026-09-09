@@ -13,6 +13,7 @@ Enterprise fallback) for a partner-managed install, never a direct checkout.
 from __future__ import annotations
 
 import os
+import pathlib
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
@@ -141,17 +142,67 @@ def test_safe_support_url_rejects_whitespace_and_creds():
     """Non-canonical values urlparse silently strips (leading/embedded
     whitespace, control chars, embedded userinfo) and protocol-relative or
     oversized URLs are rejected; a clean https URL is returned canonical."""
-    from celerp.gateway.state import _safe_support_url
-    assert _safe_support_url(" https://partner.example.com/x") == ""
-    assert _safe_support_url("https://partner.example.com/x\n") == ""
-    assert _safe_support_url("https://part\tner.example.com/x") == ""
-    assert _safe_support_url("https://user:pass@partner.example.com/x") == ""
-    assert _safe_support_url("//partner.example.com/x") == ""
-    assert _safe_support_url("https://" + "a" * 4000 + ".example.com") == ""
-    assert _safe_support_url(None) == ""
-    assert _safe_support_url(42) == ""
+    from celerp.gateway.state import safe_support_url
+    assert safe_support_url(" https://partner.example.com/x") == ""
+    assert safe_support_url("https://partner.example.com/x\n") == ""
+    assert safe_support_url("https://part\tner.example.com/x") == ""
+    assert safe_support_url("https://user:pass@partner.example.com/x") == ""
+    assert safe_support_url("//partner.example.com/x") == ""
+    assert safe_support_url("https://" + "a" * 4000 + ".example.com") == ""
+    assert safe_support_url(None) == ""
+    assert safe_support_url(42) == ""
     clean = "https://partner.example.com/support"
-    assert _safe_support_url(clean) == clean
+    assert safe_support_url(clean) == clean
+
+
+def test_safe_support_url_public_shared():
+    """The validator is exported under one public name and is the same object
+    every URL surface uses: ingress/handoff (state), health identity, and the
+    settings claim preview. DRY: one validator, not a per-surface copy."""
+    from celerp.gateway import state as _state
+    from celerp.routers import health as _health
+    from ui.routes import settings_cloud as _sc
+
+    assert hasattr(_state, "safe_support_url"), "public validator not exported"
+    assert not hasattr(_state, "_safe_support_url"), "private name still present after promotion"
+    # health imports the public name (module-level or function-level).
+    src = pathlib.Path(_health.__file__).read_text()
+    assert "safe_support_url" in src and "_safe_support_url" not in src
+    # the settings preview routes support_url through the same shared validator.
+    sc_src = pathlib.Path(_sc.__file__).read_text()
+    assert "safe_support_url" in sc_src
+
+
+def test_safe_support_email_validates_address():
+    """safe_support_email returns a clean address unchanged and rejects
+    non-addresses, control/whitespace characters, and header-injection payloads
+    (returning ''), so a mailto: can never be built from a hostile value."""
+    from celerp.gateway.state import safe_support_email
+    assert safe_support_email("help@partner.example.com") == "help@partner.example.com"
+    assert safe_support_email("not-an-email") == ""
+    assert safe_support_email("a@b@c.com") == ""
+    assert safe_support_email("user@exa mple.com") == ""
+    assert safe_support_email("user@example.com\r\nBcc: x@y.com") == ""
+    assert safe_support_email("@nolocal.com") == ""
+    assert safe_support_email("nolocal@") == ""
+    assert safe_support_email(None) == ""
+    assert safe_support_email(42) == ""
+    assert safe_support_email("x" * 400 + "@example.com") == ""
+
+
+def test_health_identity_validates_support_email():
+    """The health identity build routes support_email through safe_support_email:
+    a hostile value is dropped to empty rather than carried into a mailto."""
+    from celerp.routers.health import _partner_identity
+    identity = _partner_identity({
+        "display_name": "A partner",
+        "partner_id": "pid-1",
+        "support_email": "user@example.com\r\nBcc: x@y.com",
+        "support_url": "https://partner.example.com/support",
+    })
+    assert identity is not None
+    assert identity["support_email"] == "", "hostile support_email was not dropped"
+    assert identity["support_url"] == "https://partner.example.com/support"
 
 
 def test_handoff_partner_rejects_whitespace_credentials_at_egress():

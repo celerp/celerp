@@ -36,9 +36,9 @@ def test_partner_claim_preview_support_mailto():
 
 
 def test_partner_claim_preview_support_link_noopener():
-    """The support-URL link opens in a new tab with rel="noopener" set, so the
-    partner-controlled page cannot reach back into this window via
-    window.opener."""
+    """The support-URL link opens in a new tab with rel="noopener noreferrer"
+    set, so the partner-controlled page cannot reach back into this window via
+    window.opener nor read the referrer."""
     html = to_xml(_partner_claim_preview(
         {"display_name": "A partner", "support_url": "https://partner.example.test/help"},
         "tok-abc",
@@ -46,7 +46,39 @@ def test_partner_claim_preview_support_link_noopener():
     ))
     m = re.search(r'<a[^>]*href="https://partner\.example\.test/help"[^>]*>', html)
     assert m, "support_url anchor not found"
-    assert 'rel="noopener"' in m.group(0)
+    assert 'rel="noopener noreferrer"' in m.group(0)
+
+
+def test_claim_preview_rejects_unsafe_support_url():
+    """An unsafe support_url (non-https, embedded creds, control chars) is
+    omitted entirely: no anchor is rendered, and the raw value never reaches
+    an href. A valid https url still renders with rel="noopener noreferrer"."""
+    for bad in ("javascript:alert(1)", "http://insecure.example.test",
+                "https://user:pass@partner.example.test/x", "data:text/html,x"):
+        html = to_xml(_partner_claim_preview(
+            {"display_name": "A partner", "support_url": bad}, "tok", lang="en"))
+        assert bad not in html, f"raw unsafe url {bad!r} reached the DOM"
+        assert "cloud.partner_support" not in html  # no support-link button
+        assert 'target="_blank"' not in html, f"an outbound link rendered for {bad!r}"
+
+
+def test_claim_preview_rejects_unsafe_email():
+    """An unsafe support_email (non-address, control chars, header-injection
+    attempt) is omitted: no mailto anchor is rendered."""
+    for bad in ("not-an-email", "a@b@c.test", "user@exa mple.test",
+                "user@example.test\r\nBcc: victim@x.test", "@nolocal.test"):
+        html = to_xml(_partner_claim_preview(
+            {"display_name": "A partner", "support_email": bad}, "tok", lang="en"))
+        assert "mailto:" not in html, f"a mailto anchor rendered for {bad!r}"
+
+
+def test_claim_preview_valid_email_renders_mailto():
+    """A well-formed support_email renders as a mailto anchor (regression guard
+    against over-rejection)."""
+    html = to_xml(_partner_claim_preview(
+        {"display_name": "A partner", "support_email": "help@partner.example.test"},
+        "tok", lang="en"))
+    assert 'href="mailto:help@partner.example.test"' in html
 
 
 def test_text_error_style_defined():

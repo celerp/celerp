@@ -803,8 +803,14 @@ def _partner_claim_preview(identity: dict, claim_token: str, lang: str = "en") -
     Accept is the one deliberate commit; the disable-on-submit posture stops a
     double-click from double-submitting. Decline binds nothing and restores the
     neutral card."""
-    support_email = identity.get("support_email") or ""
-    support_url = identity.get("support_url") or ""
+    # Both values are relay-controlled and reach an href, so each is routed
+    # through the shared app-side validator before it can render: a hostile
+    # email or URL is dropped to empty and its anchor is simply omitted, never
+    # echoed raw. The outbound link carries rel="noopener noreferrer" so the
+    # partner page cannot reach back through window.opener nor read the referrer.
+    from celerp.gateway.state import safe_support_email, safe_support_url
+    support_email = safe_support_email(identity.get("support_email"))
+    support_url = safe_support_url(identity.get("support_url"))
     support_children: list = []
     if support_email:
         support_children.append(A(support_email, href=f"mailto:{support_email}",
@@ -812,7 +818,7 @@ def _partner_claim_preview(identity: dict, claim_token: str, lang: str = "en") -
     if support_url:
         support_children.append(A(
             t("cloud.partner_support", lang),
-            href=support_url, target="_blank", rel="noopener",
+            href=support_url, target="_blank", rel="noopener noreferrer",
             cls="btn btn--outline btn--sm", style="margin-top:4px;"))
     return Div(
         H3(t("settings_cloud.partner_claim_title", lang), cls="settings-section-title"),

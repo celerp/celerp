@@ -95,6 +95,11 @@ def _valid_int(value) -> bool:
 # non-canonical value outright rather than trying to sanitise it.
 MAX_SUPPORT_URL_LEN = 2048
 
+# A support_email is likewise relay-controlled and reaches a mailto: href. The
+# cap is generous but bounds a header-injection payload; the validator below
+# rejects anything but a single clean addr-spec.
+MAX_SUPPORT_EMAIL_LEN = 254
+
 # The maximum retail_amount an offer may carry, in minor units. A value at or
 # above this (or zero, negative, or a bool) is treated as malformed and drops
 # the offer. Cloud is the source of truth for the bound; the app enforces the
@@ -102,7 +107,7 @@ MAX_SUPPORT_URL_LEN = 2048
 _MAX_RETAIL_AMOUNT = 10 ** 12
 
 
-def _safe_support_url(value) -> str:
+def safe_support_url(value) -> str:
     """Return a partner support URL only if it is a canonical, safe https URL;
     otherwise the empty string.
 
@@ -110,6 +115,11 @@ def _safe_support_url(value) -> str:
     urlparse would silently alter (leading/embedded whitespace or C0 control
     characters), embedded userinfo (user:pass@host), any scheme other than
     https, and an empty host. A clean value is returned unchanged.
+
+    The one public support-URL validator: every surface that lets a
+    relay-controlled URL reach an href (ingress normalisation, the health
+    identity, the settings claim preview) routes through this, so there is one
+    source of truth for what counts as a safe support URL.
     """
     from urllib.parse import urlparse
 
@@ -132,6 +142,32 @@ def _safe_support_url(value) -> str:
     if not parsed.hostname:
         return ""
     if parsed.username or parsed.password:
+        return ""
+    return value
+
+
+def safe_support_email(value) -> str:
+    """Return a partner support email only if it is a single clean addr-spec;
+    otherwise the empty string.
+
+    The one public support-email validator, mirroring safe_support_url: every
+    surface that lets a relay-controlled email reach a mailto: href routes
+    through this. Rejects non-strings, anything longer than
+    MAX_SUPPORT_EMAIL_LEN, any whitespace or C0 control character (which blocks
+    header-injection payloads carrying CR/LF), and anything without exactly one
+    '@' separating a non-empty local part from a non-empty host containing a
+    dot. A clean value is returned unchanged.
+    """
+    if not isinstance(value, str):
+        return ""
+    if not value or len(value) > MAX_SUPPORT_EMAIL_LEN:
+        return ""
+    if any(ch.isspace() or ord(ch) < 0x20 for ch in value):
+        return ""
+    local, sep, host = value.partition("@")
+    if not sep or "@" in host:
+        return ""
+    if not local or not host or "." not in host:
         return ""
     return value
 
@@ -218,7 +254,7 @@ def _normalized_implementation(implementation):
             return None
     raw = implementation.get("support_url")
     if raw is not None:
-        safe = _safe_support_url(raw)
+        safe = safe_support_url(raw)
         if not safe:
             return None
         implementation = dict(implementation)
@@ -633,7 +669,7 @@ def build_commercial_handoff(instance_id: str, intent: str, sku: str = "") -> st
         # Egress re-validation: an auto-updated binary may read an on-disk cache
         # written by a prior binary that predates the ingress guard, so trust the
         # stored support_url only after re-checking it here too.
-        support_url = _safe_support_url((get_partner_identity() or {}).get("support_url"))
+        support_url = safe_support_url((get_partner_identity() or {}).get("support_url"))
         if support_url:
             return support_url
         return _enterprise_handoff(instance_id)

@@ -370,11 +370,12 @@ def _partner_identity(data: object) -> dict | None:
     """Presence/type-check a relay resolve response into a display identity.
 
     A 200 with missing or wrong-typed fields is treated as could-not-verify, never
-    partially rendered or fabricated. The support_url is sanitised through the same
-    guard the partner offer uses before it can ever reach an href; a hostile or
-    non-https value is dropped to empty rather than carried through.
+    partially rendered or fabricated. The support_url and support_email are each
+    sanitised through the shared guard the partner offer uses before either can
+    reach an href; a hostile or non-canonical value is dropped to empty rather
+    than carried through.
     """
-    from celerp.gateway.state import _safe_support_url
+    from celerp.gateway.state import safe_support_email, safe_support_url
 
     if not isinstance(data, dict):
         return None
@@ -384,12 +385,11 @@ def _partner_identity(data: object) -> dict | None:
         return None
     if not isinstance(partner_id, str) or not partner_id.strip():
         return None
-    support_email = data.get("support_email")
     return {
         "display_name": name,
         "partner_id": partner_id,
-        "support_email": support_email if isinstance(support_email, str) else "",
-        "support_url": _safe_support_url(data.get("support_url")),
+        "support_email": safe_support_email(data.get("support_email")),
+        "support_url": safe_support_url(data.get("support_url")),
     }
 
 
