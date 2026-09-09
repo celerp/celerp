@@ -17,8 +17,6 @@ Two customer-reported defects, both surfacing in the document/list line editor:
 """
 from __future__ import annotations
 
-import threading
-import time
 import uuid
 
 import pytest
@@ -123,32 +121,14 @@ def test_overlapping_lookup_race_no_duplicate(page, ui_server, api):
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     page.wait_for_selector("#scan-bar-input", timeout=8000)
 
-    # Hold BOTH catalog-lookups until the second one has arrived, then release both
-    # together: the two lookups resolve concurrently, so neither fill runs before the
-    # other's row exists. No "first row already appended" ordering is imposed.
-    lock = threading.Lock()
-    pending: list = []
-
-    def _hold_until_both(route):
-        if "catalog-lookup" not in route.request.url:
-            route.continue_()
-            return
-        with lock:
-            pending.append(route)
-            ready = len(pending) >= 2
-        if ready:
-            for r in pending:
-                r.continue_()
-        else:
-            # Wait for the second lookup to arrive before releasing this one.
-            for _ in range(60):
-                with lock:
-                    if len(pending) >= 2:
-                        break
-                time.sleep(0.05)
-            route.continue_()
-
-    page.route("**/docs/catalog-lookup*", _hold_until_both)
+    # Hold BOTH catalog-lookups open, then release them together: neither fill runs
+    # before the other's row exists, so no "first row already appended" ordering is
+    # imposed and the client-side guard is defeated by construction. The handler only
+    # RECORDS the route and returns (never blocks the single Playwright dispatch loop -
+    # a blocking wait there would stop the partner's handler from ever running); the
+    # main thread below waits for both, then continues each exactly once.
+    held: list = []
+    page.route("**/docs/catalog-lookup*", lambda route: held.append(route))
 
     inp = page.locator("#scan-bar-input")
     # Fire the first scan (its lookup is held), then the second, without waiting for
@@ -159,6 +139,21 @@ def test_overlapping_lookup_race_no_duplicate(page, ui_server, api):
     inp.click()
     inp.fill(item["barcode"])
     inp.press("Enter")
+
+    # Wait for both lookups to be outstanding, then release them concurrently. Release
+    # each before removing the handler; a route the page has already abandoned (e.g. on
+    # teardown) is tolerated so the test fails on its assertion, never on route plumbing.
+    for _ in range(80):
+        if len(held) >= 2:
+            break
+        page.wait_for_timeout(50)
+    assert len(held) >= 2, f"expected both catalog-lookups in flight, held {len(held)}"
+    for route in held:
+        try:
+            route.continue_()
+        except Exception:
+            pass
+    page.unroute("**/docs/catalog-lookup*")
 
     page.wait_for_timeout(2000)
 
@@ -176,12 +171,16 @@ def _seed_list_with_line(api, tag: str, quantity) -> tuple[str, str]:
     """Create a quotation list carrying one stock line at the given quantity."""
     sku = f"LQ-{tag}"
     barcode = str(uuid.uuid4().int)[:12]
-    api.post("/items", json={"status": "available", "sku": sku, "name": f"List Widget {tag}",
-             "sell_by": "piece", "quantity": 20, "barcode": barcode})
+    item = api.post("/items", json={"status": "available", "sku": sku, "name": f"List Widget {tag}",
+                    "sell_by": "piece", "quantity": 20, "barcode": barcode}).json()
+    item_id = item.get("id") or item.get("entity_id")
+    # Link the line to the item by id so it is a real stocked line: line units are
+    # resolved by exact item id, never by SKU, so an unlinked line would carry no
+    # unit rule and its quantity would be treated as free-text.
     list_id = api.post("/lists", json={
         "list_type": "quotation",
-        "line_items": [{"sku": sku, "description": f"List Widget {tag}", "quantity": quantity,
-                        "unit_price": 3.0, "barcode": barcode}],
+        "line_items": [{"item_id": item_id, "sku": sku, "description": f"List Widget {tag}",
+                        "quantity": quantity, "unit_price": 3.0, "barcode": barcode}],
     }).json()["id"]
     return list_id, sku
 
