@@ -8,6 +8,7 @@ import csv
 import hashlib
 import io
 import json
+import math
 import uuid
 from datetime import datetime, timezone, date as _date
 from typing import Literal
@@ -401,6 +402,40 @@ async def _get_item_sell_by_map(session: AsyncSession, company_id: str) -> dict[
         if sku and sell_by:
             result[sku] = sell_by
     return result
+
+
+async def _validate_list_line_quantities(
+    line_items: list[dict], session: AsyncSession, company_id: str
+) -> None:
+    """Reject malformed list-line quantities at the function boundary before any list write.
+
+    Applies its own type/finiteness gate first, independent of sell_by: a None, a bool, a value that
+    does not coerce to float, or a non-finite float (NaN/inf) is rejected 422 naming the offending
+    line. This own gate is required because validate_line_quantity skips entirely when sell_by is
+    absent/unknown/service, and its positive check only rejects qty <= 0, so NaN and True slip past it.
+    Only then is the positive/decimal check delegated to validate_line_quantity for the rest. A numeric
+    0 is a legitimate value and is not rejected here.
+    """
+    if not line_items:
+        return
+    unit_map = await _get_unit_map(session, company_id)
+    sell_by_map = await _get_item_sell_by_map(session, company_id)
+    for li in line_items:
+        if not isinstance(li, dict):
+            continue
+        label = li.get("name") or li.get("sku") or "Line item"
+        raw = li.get("quantity")
+        if raw is None or isinstance(raw, bool):
+            raise HTTPException(status_code=422, detail=f"{label}: quantity is required and must be a number")
+        try:
+            qty = float(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail=f"{label}: quantity must be a number, got {raw!r}")
+        if not math.isfinite(qty):
+            raise HTTPException(status_code=422, detail=f"{label}: quantity must be a finite number, got {raw!r}")
+        sku = li.get("sku")
+        resolved_sell_by = li.get("sell_by") or (sell_by_map.get(sku) if sku else None)
+        validate_line_quantity(qty, resolved_sell_by, unit_map, label=label)
 
 
 async def _catalog_unit_price(session: AsyncSession, company_id, line: dict, price_config) -> float:
@@ -4186,6 +4221,7 @@ async def create_list(
         session, company_id,
         (li.get("item_id") or li.get("entity_id") for li in data.get("line_items") or []),
     )
+    await _validate_list_line_quantities(data.get("line_items") or [], session, company_id)
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
     await session.commit()
     return {"event_id": entry.id, "id": entity_id}
@@ -4227,6 +4263,7 @@ async def patch_list(
             session, company_id,
             {li.get("item_id") for li in _new_lines} - _existing,
         )
+        await _validate_list_line_quantities(_new_lines, session, company_id)
     # expected_version is a concurrency guard, not list data - it never enters the event payload.
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
                              payload.model_dump(exclude_none=True, exclude={"expected_version"}),
@@ -4322,6 +4359,7 @@ async def patch_list_line_page(
         session, company_id,
         {_line_identity(li) for li in page} - _existing,
     )
+    await _validate_list_line_quantities(page, session, company_id)
 
     # Slice-splice: replace exactly the originally-loaded window. A shorter page truncates, a longer
     # one inserts; positional overwrite/append could never delete a tail row.
@@ -6300,11 +6338,9 @@ def _scan_line_from_item(item: Projection, list_type: str, price_list: str | Non
     st = item.state
     line = {"item_id": item.entity_id, "sku": st.get("sku"), "name": st.get("name"),
             "description": st.get("name"), "barcode": st.get("barcode")}
-    if list_type == "audit":
-        # System qty snapshot for the Qty column; on_hand is frozen separately at finalize.
-        line["quantity"] = float(st.get("quantity") or 0)
-    else:
-        line["quantity"] = 1
+    # System qty snapshot for the Qty column; on_hand is frozen separately at finalize.
+    line["quantity"] = float(st.get("quantity") or 0)
+    if list_type != "audit":
         if is_money_list(list_type):
             from celerp_inventory.routes import flatten_item
             flat = flatten_item(st, item.entity_id, price_config=price_config)
