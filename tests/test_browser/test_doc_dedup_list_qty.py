@@ -11,8 +11,9 @@ Two customer-reported defects, both surfacing in the document/list line editor:
 
 2. A meaningful list row whose quantity is blank/missing must NOT silently
    coerce to 1 and save. The save aborts before any request, shows a translated
-   error, and persists nothing. A quantity explicitly set to 0 is a real value
-   and must save as 0, not 1.
+   error, and persists nothing. A quantity explicitly set to 0 is sent as 0
+   rather than rewritten to 1; the per-unit quantity rule then decides it, and
+   for a stocked line that rejects zero the stored value is left unchanged.
 """
 from __future__ import annotations
 
@@ -201,8 +202,14 @@ def test_blank_list_quantity_aborts_save(page, ui_server, api):
         f"expected a visible abort error on save-status, got {status!r}"
 
 
-def test_list_quantity_zero_preserved(page, ui_server, api):
-    """A list line quantity explicitly set to 0 saves as 0, never coerced to 1."""
+def test_list_quantity_zero_not_coerced_to_one(page, ui_server, api):
+    """A zero entered on a stocked line is sent as zero, never rewritten to one.
+
+    The client no longer coerces the value to one before saving, so the entry
+    reaches the backend as zero and the existing per-unit quantity rule decides
+    it. For a stocked line that rule rejects zero, so the save does not succeed
+    and the stored quantity is left at its previous value, not one and not zero.
+    """
     tag = uuid.uuid4().hex[:6]
     list_id, sku = _seed_list_with_line(api, tag, quantity=4)
 
@@ -214,15 +221,16 @@ def test_list_quantity_zero_preserved(page, ui_server, api):
     qty.fill("0")
     qty.blur()
 
-    # The save succeeds (0 is a valid quantity).
-    page.wait_for_function(
-        "() => { const s = document.getElementById('save-status'); "
-        "return s && s.textContent && s.textContent.includes('\\u2713'); }",
-        timeout=8000,
-    )
-    page.wait_for_timeout(500)
+    # The save request fires and is rejected by the backend; no success tick.
+    page.wait_for_timeout(2000)
+    status = page.locator("#save-status").text_content() or ""
+    assert "✓" not in status, \
+        f"stocked zero must not save successfully; save-status was {status!r}"
+
+    # Stored state is untouched: still the seeded value, never coerced to one.
     line_items = api.get(f"/lists/{list_id}").json().get("line_items", [])
     matches = [li for li in line_items if li.get("sku") == sku]
     assert len(matches) == 1, f"expected one seeded line, got {line_items}"
-    assert float(matches[0].get("quantity")) == 0.0, \
-        f"quantity 0 must persist as 0, not 1; server qty is {matches[0].get('quantity')}"
+    assert float(matches[0].get("quantity")) == 4.0, \
+        "a rejected zero must leave the stored quantity unchanged, not 1 or 0; " \
+        f"server qty is {matches[0].get('quantity')}"
