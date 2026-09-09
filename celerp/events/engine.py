@@ -11,8 +11,9 @@ from sqlalchemy.exc import IntegrityError
 
 from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
+from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
-from celerp.services.document_lines import assert_outbound_stock_uniqueness
+from celerp.services.document_lines import assert_document_item_uniqueness
 
 
 def apply_event(state: dict, event: LedgerEntry) -> dict:
@@ -132,11 +133,11 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
 
     # Enforce physical-item uniqueness on new OUTBOUND doc writes (invoice, memo).
     # Extract the post-change line set by DATA SHAPE so every doc writer (create,
-    # patch, shared_import, update, conversion, import) is covered by one rule; the
-    # doc-type scope + resolution live in assert_outbound_stock_uniqueness beside the
-    # invariant, so this engine reads no projection and owns no doc-type classification.
-    # Rebuild/replay applies events via apply_event, never emit_event, so historical
-    # events are never re-validated here.
+    # patch, shared_import, update, conversion, import) is covered by one rule,
+    # keyed on entity_type == "doc" rather than an event list. The doc-type scope
+    # lives in assert_document_item_uniqueness beside the invariant; this boundary
+    # only resolves the doc_type to hand it. Rebuild/replay applies events via
+    # apply_event, never emit_event, so historical events are never re-validated.
     if kwargs.get("entity_type") == "doc":
         data = kwargs.get("data") or {}
         line_set = None
@@ -147,9 +148,21 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
             if isinstance(changed, dict):
                 line_set = changed.get("new")
         if line_set is not None:
-            await assert_outbound_stock_uniqueness(
-                session, kwargs.get("company_id"), kwargs.get("entity_id"),
-                data.get("doc_type"), line_set)
+            # Prefer the event's own doc_type (present on doc.created and any update
+            # that carries it - zero query). Otherwise resolve it from the persisted
+            # projection, reading state["doc_type"] only when that projection is a doc
+            # (the Projection PK is (company_id, entity_id) with no type discriminator,
+            # so the entity_type check guards against a same-id non-doc projection).
+            doc_type = data.get("doc_type")
+            if doc_type is None:
+                proj = await session.get(
+                    Projection, (kwargs.get("company_id"), kwargs.get("entity_id"))
+                )
+                if proj is not None and proj.entity_type == "doc":
+                    doc_type = (proj.state or {}).get("doc_type")
+            await assert_document_item_uniqueness(
+                session, kwargs.get("company_id"), doc_type, line_set
+            )
 
     entry = LedgerEntry(**kwargs)
 

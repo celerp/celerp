@@ -1,20 +1,18 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Every OUTBOUND-doc-emitting path inherits the event-boundary uniqueness guard.
+"""Every doc-emitting path inherits the event-boundary uniqueness guard.
 
-The guard lives once in ``emit_event`` (resolving the doc_type and delegating to
-``assert_outbound_stock_uniqueness``, which fires only for the outbound allowlist
-invoice/memo), so the paths that build an outbound document from another source -
-quotation conversion, list materialization to an invoice, subscription generation,
-and batch import of invoices - are covered with no per-path code. These tests drive
-each path through its real entry point (the route handler or its service) and assert
-two things: the duplicate is rejected with the documented status, AND no partial state
-is persisted (the source is unchanged and no target ledger/projection row exists). A
-path whose target is NOT outbound (consignment_in -> bill) proves the scope: the
-duplicate is allowed there. A path that cannot construct a duplicate by its own
-construction is documented in its test docstring and asserts the nearest real invariant
-instead of faking one.
+The guard lives once in ``emit_event`` (keyed on ``entity_type == "doc"``), so
+the paths that build a document from another source - quotation/memo/
+consignment conversion, list materialization, subscription generation, and
+batch import - are covered with no per-path code. These tests drive each path
+through its real entry point (the route handler or its service) and assert two
+things: the duplicate is rejected with the documented status, AND no partial
+state is persisted (the source is unchanged and no target ledger/projection row
+exists). A path that cannot construct a duplicate by its own construction is
+documented in its test docstring and asserts the nearest real invariant instead
+of faking one.
 
 All requests in a test share one uncommitted transaction (the ``session``/
 ``client`` fixtures), so querying the projection after a rejected write sees
@@ -204,23 +202,21 @@ async def test_memo_to_invoice_duplicate_is_atomic(client, session):
     assert not src.get("converted_to")
 
 
-# --- 3. consignment_in -> bill conversion (scope: bill is NOT outbound) -----
+# --- 3. consignment_in -> bill conversion ----------------------------------
 
 
 @pytest.mark.asyncio
-async def test_uniqueness_scoped_to_outbound_doc_types(client, session):
-    """SCOPE: convert_doc on a consignment_in carrying a duplicate non-splittable item
-    SUCCEEDS, because the conversion target (bill) is NOT in the outbound allowlist.
+async def test_consignment_in_to_bill_duplicate_is_atomic(client, session):
+    """convert_doc on a consignment_in carrying the same non-splittable item twice
+    converts successfully: the target doc_type is `bill`, which is NOT one of the
+    governed outbound customer-stock types (invoice, memo), so the uniqueness
+    invariant does not apply.
 
-    Conversion copies the source line_items verbatim into the bill's doc.created; the
-    guard resolves doc_type == "bill", which is out of scope, and short-circuits, so the
-    bill materializes carrying both lines and the consignment is converted.
-
-    This is the cross-workstream half of the scope proof (the enforcement half is at the
-    event boundary in test_document_item_dedup). It has no red assertion of its own: the
-    bill target carries no guard at merge-base (G4) nor at head (out of scope), so it is
-    green at both by design - the discriminating red assertion lives in the invoice arm of
-    test_uniqueness_scoped_to_outbound_doc_types in test_document_item_dedup.py.
+    Conversion copies the source line_items verbatim into the bill's doc.created.
+    An inbound bill legitimately carries the same physical item more than once, so
+    the guard must not fire. Red at the PR head, where emit_event enforces on every
+    entity_type=='doc' and 409s; after the fix the `bill` target is not governed and
+    the conversion succeeds, materializing the bill.
     """
     t = await _register(client)
     cid = await _company_id(session)
@@ -235,16 +231,8 @@ async def test_uniqueness_scoped_to_outbound_doc_types(client, session):
     r = await client.post(f"/docs/{cons_id}/convert", headers=_h(t))
 
     assert r.status_code == 200, r.text
-    new_doc_id = r.json()["target_doc_id"]
-    # The bill materialized with BOTH duplicate lines (guard out of scope for bills).
+    # A bill was materialized (the duplicate is allowed on an inbound type).
     assert await _target_doc_count(session, cid, "bill") == before_bills + 1
-    bill_state = await _doc_state(session, cid, new_doc_id)
-    assert bill_state is not None and bill_state.get("doc_type") == "bill"
-    dup_lines = [li for li in (bill_state.get("line_items") or []) if li.get("item_id") == item]
-    assert len(dup_lines) == 2, f"bill must keep both duplicate lines, got {bill_state.get('line_items')}"
-    # The consignment was converted.
-    src = await _doc_state(session, cid, cons_id)
-    assert src is not None and src.get("doc_type") == "consignment_in"
 
 
 # --- 4. list -> document materialization -----------------------------------

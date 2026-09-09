@@ -3,14 +3,12 @@
 
 """Event-boundary uniqueness guard for physical document items.
 
-A non-splittable physical inventory item must appear at most once on an OUTBOUND
-customer-stock document (invoice, memo). The guard lives in ``emit_event``, which
-resolves the doc_type and delegates to ``assert_outbound_stock_uniqueness`` in
-``celerp.services.document_lines``: the check fires only for the outbound allowlist
-and is a no-op for every other doc_type (bill, novel types) and for a ``doc.updated``
-whose entity has no resolvable doc projection. Splittable and unlinked/free-text
-lines may repeat. Historical events replay unchanged because rebuild applies events
-via ``apply_event``, never ``emit_event``.
+A non-splittable physical inventory item must appear at most once on any
+document. The guard lives in ``emit_event`` and keys on ``entity_type == "doc"``
+(never a doc-type list), extracting the post-change line set by DATA SHAPE so
+every current and future doc writer is covered by one rule. Splittable and
+unlinked/free-text lines may repeat. Historical events replay unchanged because
+rebuild applies events via ``apply_event``, never ``emit_event``.
 """
 from __future__ import annotations
 
@@ -100,10 +98,7 @@ async def _ledger_count(session, cid, entity_id) -> int:
 
 @pytest.mark.asyncio
 async def test_doc_created_rejects_duplicate_non_splittable(client, session):
-    """doc.created (invoice) with two identical non-splittable linked ids -> 409, no ledger row.
-
-    RED at merge-base 2e48505: no uniqueness guard exists there (G4), so both lines persist.
-    """
+    """doc.created with two identical non-splittable linked ids -> 409, no ledger row."""
     t = await _register(client)
     cid = await _company_id(session)
     item = await _item(client, t, "NS-1", allow_splitting=False)
@@ -122,16 +117,12 @@ async def test_doc_created_rejects_duplicate_non_splittable(client, session):
 
 @pytest.mark.asyncio
 async def test_doc_updated_rejects_duplicate_in_new_lines(client, session):
-    """doc.updated (invoice) fields_changed.line_items.new with a duplicate non-splittable -> 409.
-
-    RED at merge-base: no guard (G4), so the duplicate persists.
-    """
+    """doc.updated fields_changed.line_items.new with a duplicate non-splittable -> 409."""
     t = await _register(client)
     cid = await _company_id(session)
     item = await _item(client, t, "NS-2", allow_splitting=False)
     doc_id = f"doc:{_uuid.uuid4().hex[:12]}"
-    # Seed a clean invoice draft first (the projection carries doc_type == invoice so the
-    # doc.updated shape, which has no doc_type field, resolves outbound).
+    # Seed a clean draft first.
     await _emit_doc(
         session, cid, event_type="doc.created", entity_id=doc_id,
         data={"doc_type": "invoice", "line_items": [_line(item)]},
@@ -149,10 +140,7 @@ async def test_doc_updated_rejects_duplicate_in_new_lines(client, session):
 
 @pytest.mark.asyncio
 async def test_doc_patched_rejects_duplicate_non_splittable(client, session):
-    """doc.patched (memo) whose data['line_items'] carries a duplicate non-splittable -> 409.
-
-    RED at merge-base: no guard (G4). memo is in the outbound allowlist alongside invoice.
-    """
+    """doc.patched whose data['line_items'] carries a duplicate non-splittable item -> rejected."""
     t = await _register(client)
     cid = await _company_id(session)
     item = await _item(client, t, "NS-3", allow_splitting=False)
@@ -161,7 +149,7 @@ async def test_doc_patched_rejects_duplicate_non_splittable(client, session):
     with pytest.raises(HTTPException) as exc:
         await _emit_doc(
             session, cid, event_type="doc.patched", entity_id=doc_id,
-            data={"doc_type": "memo", "line_items": [_line(item), _line(item)]},
+            data={"doc_type": "invoice", "line_items": [_line(item), _line(item)]},
         )
     assert exc.value.status_code == 409
     assert await _ledger_count(session, cid, doc_id) == 0
@@ -169,10 +157,7 @@ async def test_doc_patched_rejects_duplicate_non_splittable(client, session):
 
 @pytest.mark.asyncio
 async def test_shared_import_rejects_duplicate_non_splittable(client, session):
-    """doc.shared_import (invoice) bundle with a duplicate non-splittable item -> 409.
-
-    RED at merge-base: no guard (G4).
-    """
+    """doc.shared_import bundle with a duplicate non-splittable item -> rejected."""
     t = await _register(client)
     cid = await _company_id(session)
     item = await _item(client, t, "NS-4", allow_splitting=False)
@@ -191,7 +176,7 @@ async def test_shared_import_rejects_duplicate_non_splittable(client, session):
 
 @pytest.mark.asyncio
 async def test_splittable_items_may_repeat(client, session):
-    """Two lines of a splittable item on an invoice -> accepted (guard must not over-reject)."""
+    """Two lines of a splittable item -> accepted (guard must not over-reject)."""
     t = await _register(client)
     cid = await _company_id(session)
     item = await _item(client, t, "SP-1", allow_splitting=True)
@@ -206,7 +191,7 @@ async def test_splittable_items_may_repeat(client, session):
 
 @pytest.mark.asyncio
 async def test_unlinked_freetext_lines_may_repeat(client, session):
-    """Two unlinked/free-text lines (no item_id/entity_id) on an invoice -> accepted."""
+    """Two unlinked/free-text lines (no item_id/entity_id) -> accepted."""
     t = await _register(client)
     cid = await _company_id(session)
     doc_id = f"doc:{_uuid.uuid4().hex[:12]}"
@@ -228,10 +213,7 @@ async def test_unlinked_freetext_lines_may_repeat(client, session):
 
 @pytest.mark.asyncio
 async def test_duplicate_linked_ref_unresolvable_is_422(client, session):
-    """A repeated id on an invoice that resolves to no item projection -> 422 invalid reference.
-
-    RED at merge-base: no guard (G4), so the invalid duplicate persists.
-    """
+    """A repeated id that resolves to no item projection -> 422 invalid reference."""
     t = await _register(client)
     cid = await _company_id(session)
     ghost = f"item:{_uuid.uuid4().hex}"  # never created
@@ -246,61 +228,26 @@ async def test_duplicate_linked_ref_unresolvable_is_422(client, session):
     assert await _ledger_count(session, cid, doc_id) == 0
 
 
-# --- scope: only the outbound allowlist is enforced ----------------------
+# --- future / non-governed doc type --------------------------------------
 
 @pytest.mark.asyncio
-async def test_uniqueness_scoped_to_outbound_doc_types(client, session):
-    """B4 scoping: the guard fires ONLY for the outbound allowlist (invoice, memo). A
-    non-outbound doc keeps its duplicate.
+async def test_future_doc_type_not_governed(client, session):
+    """A doc of a novel doc_type with duplicate non-splittable items is NOT governed by the
+    outbound-only uniqueness invariant: the guard returns early and the event persists.
 
-    RED-CARRYING at merge-base 2e48505 (no guard at all, G4): the invoice arm's 409 assertion
-    fails there because merge-base persists both invoice lines.
-    COMPANION (green at both): a non-outbound doc (bill) with the same repeated non-splittable
-    item persists - the guard short-circuits outside the allowlist.
+    The invariant governs only outbound customer-stock docs (invoice, memo). A novel type - like
+    every inbound/internal type - legitimately allows the same physical item to appear more than
+    once, so the guard must not reject it. Red at the PR head, where emit_event enforces on every
+    entity_type=='doc' and raises 409; after the fix the guard is scoped and the write succeeds.
     """
     t = await _register(client)
     cid = await _company_id(session)
-    item = await _item(client, t, "NS-SCOPE", allow_splitting=False)
-
-    # RED-CARRYING arm: an invoice rejects the duplicate (409).
-    inv_id = f"doc:{_uuid.uuid4().hex[:12]}"
-    with pytest.raises(HTTPException) as exc:
-        await _emit_doc(
-            session, cid, event_type="doc.created", entity_id=inv_id,
-            data={"doc_type": "invoice", "line_items": [_line(item), _line(item)]},
-        )
-    assert exc.value.status_code == 409
-    assert await _ledger_count(session, cid, inv_id) == 0
-
-    # COMPANION arm: a non-outbound bill accepts the same repeated item (out of scope).
-    bill_id = f"doc:{_uuid.uuid4().hex[:12]}"
-    await _emit_doc(
-        session, cid, event_type="doc.created", entity_id=bill_id,
-        data={"doc_type": "bill", "line_items": [_line(item), _line(item)]},
-    )
-    assert await _ledger_count(session, cid, bill_id) == 1
-
-
-@pytest.mark.asyncio
-async def test_doc_updated_unresolvable_doc_type_allows_duplicate(client, session):
-    """B4 fail-open on scope: a doc.updated whose entity has NO doc projection (doc_type
-    unresolvable, and the doc.updated shape carries no doc_type field) falls through the
-    allowlist short-circuit and persists its duplicate.
-
-    Green at both merge-base and head: merge-base has no guard (G4); at head the wrapper
-    resolves no projection, so doc_type is None -> not in allowlist -> skip. Provably safe:
-    every outbound doc is created through a required doc_type and writes its projection at
-    doc.created before any doc.updated can fire, so this set is disjoint from the guarded set.
-    """
-    t = await _register(client)
-    cid = await _company_id(session)
-    item = await _item(client, t, "NS-UNRES", allow_splitting=False)
-    # A doc.updated for an entity that was never created: no projection to resolve doc_type from.
+    item = await _item(client, t, "NS-FUT", allow_splitting=False)
     doc_id = f"doc:{_uuid.uuid4().hex[:12]}"
 
     await _emit_doc(
-        session, cid, event_type="doc.updated", entity_id=doc_id,
-        data={"fields_changed": {"line_items": {"new": [_line(item), _line(item)]}}},
+        session, cid, event_type="doc.created", entity_id=doc_id,
+        data={"doc_type": "totally_new_doc_type_2099", "line_items": [_line(item), _line(item)]},
     )
     assert await _ledger_count(session, cid, doc_id) == 1
 
@@ -311,9 +258,9 @@ async def test_doc_updated_unresolvable_doc_type_allows_duplicate(client, sessio
 async def test_rebuild_replays_historical_duplicate_unchanged(client, session):
     """A pre-existing duplicate event rebuilds byte-for-byte via apply_event.
 
-    Inserts a duplicate doc.created (invoice) directly into the ledger (bypassing the
-    emit_event guard), then runs ProjectionEngine.rebuild and asserts it replays without
-    raising. Proves the guard is new-write-only (apply_event never calls emit_event).
+    Inserts a duplicate doc.created directly into the ledger (bypassing the
+    emit_event guard), then runs ProjectionEngine.rebuild and asserts it
+    replays without raising. Proves the guard is new-write-only.
     """
     t = await _register(client)
     cid = await _company_id(session)

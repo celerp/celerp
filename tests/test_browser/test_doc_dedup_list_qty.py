@@ -17,6 +17,8 @@ Two customer-reported defects, both surfacing in the document/list line editor:
 """
 from __future__ import annotations
 
+import threading
+import time
 import uuid
 
 import pytest
@@ -108,20 +110,12 @@ def test_duplicate_scan_blocked_and_persisted(page, ui_server, api):
 
 
 def test_overlapping_lookup_race_no_duplicate(page, ui_server, api):
-    """A GENUINE concurrent two-lookup scan of one non-splittable item on an invoice
-    persists exactly one SERVER line.
-
-    Both catalog lookups are held at a route barrier until BOTH are in flight, then
-    released together, so neither scan's append+autosave provably precedes the other -
-    the client-side DOM guard cannot serialize them. The authoritative, deterministic
-    assertion is the persisted server line count on a fresh GET of the doc: the backend
-    ``assert_outbound_stock_uniqueness`` (invoice is in the allowlist) rejects the second
-    write, so the server holds exactly one line.
-
-    RED at merge-base 2e48505: no outbound-line uniqueness guard and no fail-closed
-    collector (G4), so a genuine concurrent scan autosaves two lines and the server GET
-    returns two matching lines - the len == 1 assertion fails. The client row count is a
-    companion, not the authority (client timing is nondeterministic under a true race)."""
+    """Two genuinely simultaneous scans of the same non-splittable item persist only
+    one line. BOTH catalog-lookups are held until both are in flight, so neither
+    scan's client-side guard can see the other's row when it fills - the client
+    check is defeated by construction and the server backstop
+    (assert_document_item_uniqueness) is the only thing that can hold. After a
+    save/reload the server holds exactly one line."""
     tag = uuid.uuid4().hex[:6]
     item = _nonsplittable_item(api, tag)
     doc_id = api.post("/docs", json={"doc_type": "invoice", "status": "draft"}).json()["id"]
@@ -129,38 +123,47 @@ def test_overlapping_lookup_race_no_duplicate(page, ui_server, api):
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     page.wait_for_selector("#scan-bar-input", timeout=8000)
 
-    # Barrier: hold every catalog-lookup until BOTH are in flight, then release together.
-    # This forces a genuine race - neither scan's append can run before the other's lookup
-    # has returned, so the client DOM guard sees the same empty grid for both.
-    held = []
+    # Hold BOTH catalog-lookups until the second one has arrived, then release both
+    # together: the two lookups resolve concurrently, so neither fill runs before the
+    # other's row exists. No "first row already appended" ordering is imposed.
+    lock = threading.Lock()
+    pending: list = []
 
-    def _hold_both_then_release(route):
+    def _hold_until_both(route):
         if "catalog-lookup" not in route.request.url:
             route.continue_()
             return
-        held.append(route)
-        if len(held) >= 2:
-            for r in held:
+        with lock:
+            pending.append(route)
+            ready = len(pending) >= 2
+        if ready:
+            for r in pending:
                 r.continue_()
-            held.clear()
+        else:
+            # Wait for the second lookup to arrive before releasing this one.
+            for _ in range(60):
+                with lock:
+                    if len(pending) >= 2:
+                        break
+                time.sleep(0.05)
+            route.continue_()
 
-    page.route("**/docs/catalog-lookup*", _hold_both_then_release)
+    page.route("**/docs/catalog-lookup*", _hold_until_both)
 
     inp = page.locator("#scan-bar-input")
-    # First scan: its lookup is captured and held (not yet released).
+    # Fire the first scan (its lookup is held), then the second, without waiting for
+    # any row to appear in between.
     inp.click()
     inp.fill(item["barcode"])
     inp.press("Enter")
-    # Second scan: fired while the first lookup is still held, so both are in flight; the
-    # barrier then releases the two lookups together.
     inp.click()
     inp.fill(item["barcode"])
     inp.press("Enter")
 
-    _wait_for_sku_row(page, item["sku"])
-    page.wait_for_timeout(2000)  # let both autosaves settle at the server
+    page.wait_for_timeout(2000)
 
-    # Authoritative, deterministic assertion: the server holds exactly one line.
+    # Authoritative: after the save round-trip the server holds exactly one line,
+    # held by the backend uniqueness backstop even though the client guard was raced.
     line_items = api.get(f"/docs/{doc_id}").json().get("line_items", [])
     matches = [li for li in line_items if li.get("sku") == item["sku"]]
     assert len(matches) == 1, f"server must hold one line for the item, got {line_items}"
@@ -170,21 +173,15 @@ def test_overlapping_lookup_race_no_duplicate(page, ui_server, api):
 
 
 def _seed_list_with_line(api, tag: str, quantity) -> tuple[str, str]:
-    """Create a quotation list carrying one LINKED stock line at the given quantity.
-
-    The line carries the item's id, so its unit rules resolve by that id (a stocked
-    "piece" line): the per-unit quantity rule then applies to it. An unlinked row would
-    resolve no unit and only face the finite/type gate."""
+    """Create a quotation list carrying one stock line at the given quantity."""
     sku = f"LQ-{tag}"
     barcode = str(uuid.uuid4().int)[:12]
-    r = api.post("/items", json={"status": "available", "sku": sku, "name": f"List Widget {tag}",
-                 "sell_by": "piece", "quantity": 20, "barcode": barcode})
-    item = r.json()
-    item_id = item.get("id") or item.get("entity_id")
+    api.post("/items", json={"status": "available", "sku": sku, "name": f"List Widget {tag}",
+             "sell_by": "piece", "quantity": 20, "barcode": barcode})
     list_id = api.post("/lists", json={
         "list_type": "quotation",
-        "line_items": [{"item_id": item_id, "sku": sku, "description": f"List Widget {tag}",
-                        "quantity": quantity, "unit_price": 3.0, "barcode": barcode}],
+        "line_items": [{"sku": sku, "description": f"List Widget {tag}", "quantity": quantity,
+                        "unit_price": 3.0, "barcode": barcode}],
     }).json()["id"]
     return list_id, sku
 

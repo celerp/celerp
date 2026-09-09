@@ -101,19 +101,17 @@ def validate_positive(qty: float, *, label: str = "Quantity") -> None:
         )
 
 
-def validate_line_quantity(qty: float, sell_by: str | None, unit_map: dict[str, dict], *, label: str = "Quantity", require_positive: bool = True) -> None:
+def validate_line_quantity(qty: float, sell_by: str | None, unit_map: dict[str, dict], *, label: str = "Quantity") -> None:
     """Validate a single line quantity against its sell_by unit.
 
     - Skips all validation when sell_by is absent, unknown, or a service type
       (legacy lines and free-text items are not constrained).
-    - Enforces positive value when sell_by is a known stocked unit, unless
-      ``require_positive`` is False (an audit line may legitimately be zero on-hand).
+    - Enforces positive value when sell_by is a known stocked unit.
     - Enforces decimal precision according to the unit config.
     """
     if not sell_by or sell_by in SERVICE_SELL_BY or sell_by not in unit_map:
         return
-    if require_positive:
-        validate_positive(qty, label=label)
+    validate_positive(qty, label=label)
     validate_quantity(qty, unit_map[sell_by]["decimals"], label=label)
 
 

@@ -3,10 +3,11 @@
 
 """Document-line identity and the physical-item uniqueness invariant.
 
-A non-splittable physical inventory item must appear at most once on any
-document. The rule is enforced once, at the event boundary, so every current
-and future document writer inherits it. Splittable items and unlinked /
-free-text lines may repeat.
+A non-splittable physical inventory item must appear at most once on an outbound
+customer-stock document (invoice, memo). The rule is enforced once, at the event
+boundary, so every current and future outbound document writer inherits it.
+Inbound and internal documents (bill, consignment_in, novel types), splittable
+items, and unlinked / free-text lines may repeat.
 """
 from __future__ import annotations
 
@@ -18,13 +19,13 @@ from sqlalchemy import select
 from celerp.models.projections import Projection
 from celerp.services.line_measures import splitting_allowed
 
-# Physical-item uniqueness is an OUTBOUND customer-stock rule, not a universal document
-# invariant: a customer-facing invoice or memo must not list the same non-splittable
-# physical lot twice. Inbound and internal docs (bill, consignment_in, novel types) may.
-# This is the single authoritative source; it mirrors the two existing synced outbound
-# copies (ui.routes.documents._FULFILLABLE_DOC_TYPES and
-# celerp_docs.doc_constants.FULFILLABLE_STATUSES) and must stay in lockstep with them.
-OUTBOUND_LINE_UNIQUENESS_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo"})
+# The uniqueness invariant is an OUTBOUND customer-stock rule: a customer-facing
+# invoice or memo must not list the same non-splittable physical lot twice.
+# Inbound and internal documents (bill, consignment_in, novel types) legitimately
+# may, so they are not governed. This mirrors the outbound set the codebase already
+# names in celerp_docs.doc_constants.FULFILLABLE_STATUSES and must stay in lockstep
+# with it.
+DOCUMENT_ITEM_UNIQUE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo"})
 
 
 def line_item_id(line: dict) -> str | None:
@@ -37,8 +38,12 @@ def line_item_id(line: dict) -> str | None:
     return line.get("item_id") or line.get("entity_id")
 
 
-async def assert_document_item_uniqueness(session, company_id, line_items) -> None:
-    """Reject a document line set that repeats a non-splittable physical item.
+async def assert_document_item_uniqueness(session, company_id, doc_type, line_items) -> None:
+    """Reject an OUTBOUND document line set that repeats a non-splittable physical item.
+
+    Only invoice and memo are governed (``DOCUMENT_ITEM_UNIQUE_DOC_TYPES``); any other
+    ``doc_type`` returns early, so inbound/internal and novel document types may repeat
+    the same physical item freely.
 
     Fast path: if no linked id repeats, return without touching the database.
     Otherwise resolve the repeated ids in one company-scoped query:
@@ -46,6 +51,8 @@ async def assert_document_item_uniqueness(session, company_id, line_items) -> No
       - a repeated id that resolves to a non-splittable item -> 409 duplicate;
       - a repeated id that resolves to a splittable item -> allowed.
     """
+    if doc_type not in DOCUMENT_ITEM_UNIQUE_DOC_TYPES:
+        return
     if not line_items:
         return
 
@@ -93,27 +100,3 @@ async def assert_document_item_uniqueness(session, company_id, line_items) -> No
                     "item_id": ident,
                 },
             )
-
-
-async def assert_outbound_stock_uniqueness(
-    session, company_id, entity_id, doc_type, line_items
-) -> None:
-    """Enforce physical-item uniqueness only for OUTBOUND docs (invoice, memo).
-
-    The doc.updated event shape carries no ``doc_type``, so when ``doc_type`` is None it is
-    resolved from the persisted projection by ``(company_id, entity_id)``. This keeps the
-    doc-type scope and its resolution beside the invariant, so the event engine stays thin
-    and gains no projection-reading responsibility.
-
-    Fail-open on scope: an unresolvable doc_type (no projection, or absent field) is skipped.
-    This is provably safe rather than permissive - every outbound doc is created through a
-    required ``doc_type`` and writes its projection at ``doc.created`` before any ``doc.updated``
-    can fire, so the set of docs with an unresolvable doc_type is disjoint from the invoice/memo
-    set this guard protects, and that set was already validated at ``doc.created``.
-    """
-    if doc_type is None:
-        row = await session.get(Projection, (company_id, entity_id))
-        doc_type = row.state.get("doc_type") if row else None
-    if doc_type not in OUTBOUND_LINE_UNIQUENESS_DOC_TYPES:
-        return
-    await assert_document_item_uniqueness(session, company_id, line_items)
