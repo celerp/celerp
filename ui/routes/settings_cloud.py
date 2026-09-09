@@ -56,6 +56,19 @@ def _has_team_features(state: dict) -> bool:
     )
 
 
+def _active_team_entitlement(state: dict) -> bool:
+    """Whether the install currently holds an ACTIVE external-infra entitlement.
+
+    The ACTIVE clause only: one of the live feature flags (external_db or
+    external_storage) grants it. Unlike the lenient _has_team_features, this
+    does NOT pass a lapsed-but-configured install, so it is the predicate that
+    authorizes a write which ESTABLISHES external infra. Fail-closed on a
+    neutral state.
+    """
+    flags = state.get("feature_flags") or {}
+    return bool(flags.get("external_db") or flags.get("external_storage"))
+
+
 async def _commercial_state(request: Request) -> dict:
     """Fetch the live commercial state from the API once per request, memoized on
     request.state so both the tab decision and any consumer share one call.
@@ -995,6 +1008,12 @@ def setup_routes(app):
         # page is role-gated, so its fragments must be too.
         if await _check_permission(request, "manage_integrations"):
             return Div()
+        # RBAC alone is not enough: probing an external target establishes/
+        # re-probes external infra, which requires a live Team entitlement.
+        # A lapsed-but-configured install is rejected with the same neutral
+        # fragment as the permission gate.
+        if not _active_team_entitlement(await _commercial_state(request)):
+            return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
 
@@ -1050,6 +1069,10 @@ def setup_routes(app):
         # Infra changes (DB/storage endpoints) are admin/owner actions - the
         # page is role-gated, so its fragments must be too.
         if await _check_permission(request, "manage_integrations"):
+            return Div()
+        # As with test-db, probing external storage requires a live Team
+        # entitlement, not RBAC alone; a lapsed install gets the neutral gate.
+        if not _active_team_entitlement(await _commercial_state(request)):
             return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")
@@ -1107,6 +1130,12 @@ def setup_routes(app):
         # Infra changes (DB/storage endpoints) are admin/owner actions - the
         # page is role-gated, so its fragments must be too.
         if await _check_permission(request, "manage_integrations"):
+            return Div()
+        # Saving external infra ESTABLISHES it, so it requires a live Team
+        # entitlement, not RBAC alone. A lapsed-but-configured caller is
+        # rejected before any config write or relaunch (restore-db, the undo
+        # path, deliberately keeps the lenient gate below).
+        if not _active_team_entitlement(await _commercial_state(request)):
             return Div()
         if not token:
             return P(t("error.unauthorized"), cls="infra-test-result infra-test-result--err")

@@ -100,6 +100,14 @@ async def client(monkeypatch):
     permission gate opened and a token present so handlers run their bodies."""
     monkeypatch.setattr(sc, "_check_permission", AsyncMock(return_value=None), raising=False)
     monkeypatch.setattr(sc, "_token", lambda req: "tok", raising=False)
+    # These infra flows exercise the authenticated, ACTIVE-entitled admin path;
+    # grant a live Team entitlement so the server-side entitlement guard passes
+    # and the test reaches the behavior it is asserting.
+    monkeypatch.setattr(
+        sc, "_commercial_state",
+        AsyncMock(return_value={"feature_flags": {"external_db": True, "external_storage": True}}),
+        raising=False,
+    )
     app = FastHTML()
     sc.setup_routes(app)
     transport = ASGITransport(app=app)
