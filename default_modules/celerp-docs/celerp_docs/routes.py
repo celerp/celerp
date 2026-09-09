@@ -31,6 +31,7 @@ from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
+from celerp.services.document_lines import line_item_id
 from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
@@ -4283,7 +4284,7 @@ class ListLinePagePatch(BaseModel):
 
 def _line_identity(li: dict) -> str | None:
     """The stable identity of a catalog-backed line, or None for a free-text line that carries none."""
-    return li.get("item_id") or li.get("entity_id")
+    return line_item_id(li)
 
 
 @lists_router.patch("/{entity_id}/line-page")
