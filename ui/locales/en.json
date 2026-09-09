@@ -2240,6 +2240,7 @@
   "documents.email_body": "Here is {type} #{number}.",
   "documents.email_subject": "{type} #{number} from {company}",
   "documents.enter_a_number": "Enter a number",
+  "documents.duplicate_item_on_document": "Item is already on this document.",
   "documents.error_detail": "Error: {detail}",
   "documents.failed_to_create_document": "Failed to create document.",
   "documents.finalize_label_consignment_in": "Issue Consignment In",

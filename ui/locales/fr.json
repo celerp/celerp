@@ -2138,6 +2138,7 @@
   "documents.email_body": "Voici {type} n° {number}.",
   "documents.email_subject": "{type} #{number} de {company}",
   "documents.enter_a_number": "Saisissez un nombre",
+  "documents.duplicate_item_on_document": "L'article est déjà sur ce document.",
   "documents.error_detail": "Erreur : {detail}",
   "documents.failed_to_create_document": "Échec de la création du document.",
   "documents.finalize_label_consignment_in": "Émettre une expédition",

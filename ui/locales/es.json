@@ -2137,6 +2137,7 @@
   "documents.email_body": "Aquí está {type} n.º {number}.",
   "documents.email_subject": "{type} #{number} de {company}",
   "documents.enter_a_number": "Introduce un número",
+  "documents.duplicate_item_on_document": "El artículo ya está en este documento.",
   "documents.error_detail": "Error: {detail}",
   "documents.failed_to_create_document": "No se ha podido crear el documento.",
   "documents.finalize_label_consignment_in": "Emitir albarán de entrada",

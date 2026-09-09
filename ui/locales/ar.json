@@ -2137,6 +2137,7 @@
   "documents.email_body": "ها هو {type} #{number}.",
   "documents.email_subject": "{type} #{number} من {company}",
   "documents.enter_a_number": "أدخل رقمًا",
+  "documents.duplicate_item_on_document": "العنصر موجود بالفعل في هذا المستند.",
   "documents.error_detail": "خطأ: {detail}",
   "documents.failed_to_create_document": "فشل إنشاء المستند.",
   "documents.finalize_label_consignment_in": "إصدار شحنة واردة",

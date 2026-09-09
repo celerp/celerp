@@ -2138,6 +2138,7 @@
   "documents.email_body": "Ecco {type} n. {number}.",
   "documents.email_subject": "{type} #{number} da {company}",
   "documents.enter_a_number": "Inserire un numero",
+  "documents.duplicate_item_on_document": "L'articolo è già presente in questo documento.",
   "documents.error_detail": "Errore: {detail}",
   "documents.failed_to_create_document": "Impossibile creare il documento.",
   "documents.finalize_label_consignment_in": "Emissione bolla di consegna",

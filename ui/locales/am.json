@@ -2240,6 +2240,7 @@
   "documents.email_body": "እነሆ {type} #{number}።",
   "documents.email_subject": "{type} #{number} ከ{company}",
   "documents.enter_a_number": "ቁጥር አስገባ",
+  "documents.duplicate_item_on_document": "ዕቃው አስቀድሞ በዚህ ሰነድ ላይ ነው።",
   "documents.error_detail": "ስህተት: {detail}",
   "documents.failed_to_create_document": "ሰነድ መፍጠር አልተሳካም።",
   "documents.finalize_label_consignment_in": "እትም ማጓጓዣ ውስጥ",

@@ -2137,6 +2137,7 @@
   "documents.email_body": "こちらは {type} #{number} です。",
   "documents.email_subject": "{type} #{number} は {company} から",
   "documents.enter_a_number": "数値を入力してください",
+  "documents.duplicate_item_on_document": "この商品はすでにこのドキュメントにあります。",
   "documents.error_detail": "エラー：{detail}",
   "documents.failed_to_create_document": "書類の作成に失敗しました。",
   "documents.finalize_label_consignment_in": "委託出荷を発行",

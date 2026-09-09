@@ -2137,6 +2137,7 @@
   "documents.email_body": "นี่คือ{type} #{number}",
   "documents.email_subject": "{type} #{number} จาก {company}",
   "documents.enter_a_number": "กรอกตัวเลข",
+  "documents.duplicate_item_on_document": "รายการนี้อยู่ในเอกสารนี้แล้ว",
   "documents.error_detail": "ข้อผิดพลาด: {detail}",
   "documents.failed_to_create_document": "สร้างเอกสารไม่สำเร็จ",
   "documents.finalize_label_consignment_in": "ออกใบรับฝากขาย",

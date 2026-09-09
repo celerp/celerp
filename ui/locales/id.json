@@ -2137,6 +2137,7 @@
   "documents.email_body": "Berikut ini adalah {type} #{number}.",
   "documents.email_subject": "{type} #{number} dari {company}",
   "documents.enter_a_number": "Masukkan angka",
+  "documents.duplicate_item_on_document": "Item sudah ada di dokumen ini.",
   "documents.error_detail": "Kesalahan: {detail}",
   "documents.failed_to_create_document": "Gagal membuat dokumen.",
   "documents.finalize_label_consignment_in": "Terbitkan Surat Pengiriman Masuk",
