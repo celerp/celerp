@@ -88,7 +88,7 @@ async def resolve_scan(code: str, company_id=Depends(get_current_company_id), se
     from celerp_inventory.routes import duplicate_barcode_detail, resolve_item_by_code
 
     res = await resolve_item_by_code(session, company_id, code)
-    if res.duplicate_barcode:
+    if res.duplicate_physical:
         raise HTTPException(status_code=409, detail=duplicate_barcode_detail(code))
     if res.ambiguous:
         loc_rows = (await session.execute(select(Location).where(Location.company_id == company_id))).scalars().all()

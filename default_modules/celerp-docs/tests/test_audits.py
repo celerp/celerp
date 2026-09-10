@@ -248,7 +248,7 @@ async def test_scan_duplicate_barcode_is_reported_not_silently_picked(client, mo
     fail = body["failed"][0]
     assert fail["code"] == "880001"
     assert fail["reason"] == "duplicate_barcode"
-    assert fail["label"] == "Duplicate barcode '880001' exists on multiple inventory items"
+    assert fail["label"] == "Duplicate physical code '880001' exists on multiple inventory items"
     assert (await _state(client, t, q))["line_items"] == []  # nothing appended
 
 

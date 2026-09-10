@@ -6523,8 +6523,10 @@ async def scan_list(
     for code in codes:
         res = resolved.get(code)
         reason = detail = None
-        if res is not None and res.duplicate_barcode:
+        if res is not None and res.duplicate_physical:
             item = None
+            # The reason code "duplicate_barcode" is a stable external/audit contract; only
+            # the resolver property generalized to cover barcode + RFID EPC.
             reason, detail = "duplicate_barcode", duplicate_barcode_detail(code)
         elif res is not None and res.ambiguous:
             item = None

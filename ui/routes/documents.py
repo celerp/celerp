@@ -1465,7 +1465,7 @@ def setup_routes(app):
         return _send_to_option_list(docs, "doc")
     @app.get("/docs/catalog-lookup")
     async def doc_catalog_lookup(request: Request):
-        """Lookup item by SKU or barcode. Returns {sku, description, unit_price} or {}."""
+        """Lookup item by barcode, RFID/EPC, GTIN, or SKU. Returns {sku, description, unit_price} or {}."""
         from starlette.responses import JSONResponse
         token = _token(request)
         if not token:
@@ -1509,6 +1509,30 @@ def setup_routes(app):
                 items = await _first({"barcode": code, "limit": 1})
             if items:
                 return JSONResponse(_extract(items[0]))
+
+            # RFID/EPC (unique physical lot) resolves the same as a barcode; the API
+            # normalizes the exact filter (trim + upper) so a typed lowercase tag matches.
+            epc_status = ({"rfid_epc": code, "limit": 1, "status": "sold"} if is_credit_note
+                          else {"rfid_epc": code, "limit": 1})
+            epc_items = await _first(epc_status)
+            if not epc_items and is_credit_note:
+                epc_items = await _first({"rfid_epc": code, "limit": 1})
+            if epc_items:
+                return JSONResponse(_extract(epc_items[0]))
+
+            # GTIN identifies a product, not a physical lot, so it behaves like a SKU:
+            # forward sales consolidate splittable lots; >1 remaining -> chooser.
+            gtin_params = ({"gtin": code, "limit": 20, "status": "sold"} if is_credit_note
+                           else {"gtin": code, "limit": 20})
+            gtin_items = await _first(gtin_params)
+            if not gtin_items and is_credit_note:
+                gtin_items = await _first({"gtin": code, "limit": 20})
+            if not is_credit_note:
+                gtin_items = _consolidate_sales_lots(gtin_items, _company_settings)
+            if len(gtin_items) > 1:
+                return JSONResponse(_ambiguous(code, gtin_items))
+            if gtin_items:
+                return JSONResponse(_extract(gtin_items[0]))
 
             # Exact SKU: forward sales consolidate splittable lots into one option (the
             # pick-order-first lot); non-splittable / credit notes keep per-lot -> chooser.

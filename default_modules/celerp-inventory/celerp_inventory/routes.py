@@ -23,6 +23,7 @@ from celerp.events.schemas import reject_comma_sku
 from celerp.inventory_codes import (
     BarcodeConflictError,
     RfidEpcConflictError,
+    normalize_rfid_epc,
     validate_barcode,
 )
 from celerp.models.projections import Projection
@@ -511,8 +512,8 @@ async def assert_not_draft(session: AsyncSession, company_id, entity_id: str, ac
 # left off are genuine bookkeeping (idempotency_key, id/lineage refs like parent_id and
 # status_doc_id, internal classifications) and are deliberately unsearchable (#306);
 # numeric columns match only through the explicit numeric path.
-_SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category",
-                  "short_description", "notes", "hs_code", "batch_no",
+_SEARCH_FIELDS = ("name", "sku", "barcode", "gtin", "rfid_epc", "description",
+                  "category", "short_description", "notes", "hs_code", "batch_no",
                   "purchase_name", "purchase_sku", "location_name",
                   "sell_by", "unit", "weight_unit", "gross_weight_unit",
                   "purchase_unit", "inventory_type", "status_doc_number", "lot")
@@ -752,6 +753,8 @@ async def list_items(
     sku: str | None = None,
     skus: str | None = None,  # comma-separated exact SKU list
     barcode: str | None = None,
+    gtin: str | None = None,
+    rfid_epc: str | None = None,
     status: str | None = None,
     category: str | None = None,
     inventory_type: str | None = None,
@@ -949,6 +952,15 @@ async def list_items(
 
     if barcode:
         result = [r for r in result if str(r.get("barcode", "")) == barcode]
+
+    if gtin:
+        result = [r for r in result if str(r.get("gtin", "")) == gtin]
+
+    if rfid_epc:
+        # EPC is stored normalized (upper-cased); normalize the filter so a lower-case
+        # query matches the stored value.
+        _epc = normalize_rfid_epc(rfid_epc)
+        result = [r for r in result if str(r.get("rfid_epc", "")) == _epc]
 
     # Semantic "low stock" filter: at or below reorder point (backs the dashboard
     # cards' /inventory?filter=low_stock link and the reorder alert action_url).
@@ -1420,13 +1432,19 @@ async def get_reorder_suggestion(entity_id: str, company_id=Depends(get_current_
 class ResolveResult:
     """Result of resolving a scanned/typed code to item(s).
 
-    ``kind`` is "barcode" (matched a unique physical-lot barcode), "sku" (matched
-    a product-type SKU, which may map to N physical lots), or "none". ``matches``
-    is the list of matching item Projections (0, 1, or - for sku - N).
-    ``ambiguous`` is True only when a SKU matched more than one lot: the caller
-    must disambiguate (scan a barcode or pick a lot), never silently pick one.
+    ``kind`` is one of: "barcode" or "rfid_epc" (each matched a unique physical-lot
+    identifier), "gtin" or "sku" (each matched a product identifier, which may map to
+    N physical lots), or "none". ``matches`` is the list of matching item Projections
+    (0, 1, or - for a product identifier - N). ``ambiguous`` is True only when a
+    product identifier matched more than one lot: the caller must disambiguate (scan a
+    physical code or pick a lot), never silently pick one.
     """
     __slots__ = ("kind", "matches")
+
+    # A physical identifier resolves to exactly one physical lot; a product identifier
+    # (gtin/sku) may legitimately map to many lots.
+    _PHYSICAL_KINDS = frozenset({"barcode", "rfid_epc"})
+    _PRODUCT_KINDS = frozenset({"gtin", "sku"})
 
     def __init__(self, kind: str, matches: list):
         self.kind = kind
@@ -1434,15 +1452,16 @@ class ResolveResult:
 
     @property
     def ambiguous(self) -> bool:
-        return self.kind == "sku" and len(self.matches) > 1
+        return self.kind in self._PRODUCT_KINDS and len(self.matches) > 1
 
     @property
-    def duplicate_barcode(self) -> bool:
-        """True when one barcode matched more than one lot. The per-company barcode unique index
-        makes this impossible for new data; it only surfaces for legacy rows written before the
-        index. Distinct from ``ambiguous`` (the SKU-only concept): a duplicate barcode must be
+    def duplicate_physical(self) -> bool:
+        """True when one physical identifier (barcode or RFID EPC) matched more than one
+        lot. The per-company unique indexes make this impossible for new data; it only
+        surfaces for legacy rows written before an index existed. Distinct from
+        ``ambiguous`` (the product-identifier concept): a duplicate physical code must be
         reported, never silently resolved to one lot."""
-        return self.kind == "barcode" and len(self.matches) > 1
+        return self.kind in self._PHYSICAL_KINDS and len(self.matches) > 1
 
     @property
     def one(self):
@@ -1451,53 +1470,59 @@ class ResolveResult:
 
 
 def duplicate_barcode_detail(code: str) -> str:
-    """The single operator-facing message for a barcode that resolves to more than one lot, shared
-    by every scan surface so the wording is sourced in one place."""
-    return f"Duplicate barcode '{code}' exists on multiple inventory items"
+    """The single operator-facing message for a physical code that resolves to more than
+    one lot, shared by every scan surface so the wording is sourced in one place."""
+    return f"Duplicate physical code '{code}' exists on multiple inventory items"
 
 
 # Statuses whose items are retained for history but are no longer a current physical
 # lot, so they must not participate in operational resolution. A `merged` source keeps
 # its original barcode AND sku (item.source_deactivated sets status only), so an
 # unfiltered candidate set counts it as live: by barcode it falsely trips
-# `duplicate_barcode`, and by sku (a numeric sku may equal a barcode) it re-enters
+# `duplicate_physical`, and by sku (a numeric sku may equal a barcode) it re-enters
 # resolution through the fallback. Scope is `merged` ONLY: reserved/memo_out/sold/
-# archived/expired must still resolve. Applied to BOTH the barcode and sku candidate
-# sets, in both resolvers.
+# archived/expired must still resolve. Applied to every identifier candidate set, in
+# both resolvers.
 _RESOLVE_EXCLUDED_STATUSES = frozenset({"merged"})
 
 
 async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> ResolveResult:
-    """Canonical code -> item(s) resolver. Barcode (unique) wins; SKU may be N.
+    """Canonical code -> item(s) resolver. A physical identifier (barcode, RFID EPC) wins
+    and resolves to one lot; a product identifier (GTIN, SKU) may resolve to N.
 
-    This is the single disambiguation rule shared by every scan/lookup surface so
-    they behave identically: an exact barcode match resolves to one physical lot;
-    otherwise an exact SKU match may resolve to many lots (the caller then either
-    acts on a single match, or - when ``ambiguous`` - asks the user to pick).
+    This is the single disambiguation rule shared by every scan/lookup surface so they
+    behave identically. Resolution order: barcode, RFID EPC, GTIN, SKU, none. An RFID
+    reader emitting an EPC feeds this same path as a barcode scanner; the EPC is
+    normalized (trimmed + upper-cased) before compare so a scan resolves regardless of
+    the reader's case. A physical identifier matching more than one lot is reported via
+    ``duplicate_physical`` (fail-closed), never silently resolved to one.
     """
     code = (code or "").strip()
     if not code:
         return ResolveResult("none", [])
+    epc_code = normalize_rfid_epc(code)
     rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
             Projection.entity_type == "item",
         )
     )).scalars().all()
-    barcode_matches = [
-        r for r in rows
-        if str((r.state or {}).get("barcode") or "") == code
-        and str((r.state or {}).get("status") or "").lower() not in _RESOLVE_EXCLUDED_STATUSES
-    ]
-    if barcode_matches:
-        return ResolveResult("barcode", barcode_matches)
-    sku_matches = [
-        r for r in rows
-        if str((r.state or {}).get("sku") or "") == code
-        and str((r.state or {}).get("status") or "").lower() not in _RESOLVE_EXCLUDED_STATUSES
-    ]
-    if sku_matches:
-        return ResolveResult("sku", sku_matches)
+
+    def _live(r) -> bool:
+        return str((r.state or {}).get("status") or "").lower() not in _RESOLVE_EXCLUDED_STATUSES
+
+    for kind, key, wanted in (
+        ("barcode", "barcode", code),
+        ("rfid_epc", "rfid_epc", epc_code),
+        ("gtin", "gtin", code),
+        ("sku", "sku", code),
+    ):
+        matches = [
+            r for r in rows
+            if str((r.state or {}).get(key) or "") == wanted and _live(r)
+        ]
+        if matches:
+            return ResolveResult(kind, matches)
     return ResolveResult("none", [])
 
 
@@ -1505,9 +1530,10 @@ async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> di
     """Batch form of :func:`resolve_item_by_code`: resolve many codes against ONE inventory load.
 
     A per-code caller (a 200-code scan run) would otherwise load every item projection once per
-    code. This loads them once, indexes by barcode and SKU, and returns one ResolveResult per
-    distinct code - the SAME disambiguation rule (barcode wins; a SKU may map to N lots, then
-    ``ambiguous``), so callers behave identically to the single-code path.
+    code. This loads them once, indexes by every identifier, and returns one ResolveResult per
+    distinct code - the SAME disambiguation rule and order (barcode, RFID EPC, GTIN, SKU, none)
+    as the single-code path, so callers behave identically. EPC is indexed and looked up in its
+    normalized (upper-cased) form.
     """
     wanted = {(c or "").strip() for c in codes if (c or "").strip()}
     if not wanted:
@@ -1519,21 +1545,34 @@ async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> di
         )
     )).scalars().all()
     by_barcode: dict[str, list] = {}
+    by_rfid_epc: dict[str, list] = {}
+    by_gtin: dict[str, list] = {}
     by_sku: dict[str, list] = {}
     for r in rows:
         st = r.state or {}
         if str(st.get("status") or "").lower() in _RESOLVE_EXCLUDED_STATUSES:
             continue
         bc = str(st.get("barcode") or "")
+        epc = str(st.get("rfid_epc") or "")
+        gtin = str(st.get("gtin") or "")
         sku = str(st.get("sku") or "")
         if bc:
             by_barcode.setdefault(bc, []).append(r)
+        if epc:
+            by_rfid_epc.setdefault(epc, []).append(r)
+        if gtin:
+            by_gtin.setdefault(gtin, []).append(r)
         if sku:
             by_sku.setdefault(sku, []).append(r)
     out: dict[str, ResolveResult] = {}
     for code in wanted:
+        epc_code = normalize_rfid_epc(code)
         if code in by_barcode:
             out[code] = ResolveResult("barcode", by_barcode[code])
+        elif epc_code in by_rfid_epc:
+            out[code] = ResolveResult("rfid_epc", by_rfid_epc[epc_code])
+        elif code in by_gtin:
+            out[code] = ResolveResult("gtin", by_gtin[code])
         elif code in by_sku:
             out[code] = ResolveResult("sku", by_sku[code])
         else:
@@ -3961,7 +4000,7 @@ async def export_items_csv(
         if pl.get("name") and (can_see_costs or not is_cost_list_name(pl["name"]))
     ]
 
-    _COLS = ["id", "sku", "name", "category", "quantity", "status"] + price_cols + ["weight", "weight_unit", "pieces", "sell_by", "barcode", "hs_code", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor", "created_at", "updated_at"]
+    _COLS = ["id", "sku", "name", "category", "quantity", "status"] + price_cols + ["weight", "weight_unit", "pieces", "sell_by", "barcode", "gtin", "rfid_epc", "hs_code", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor", "created_at", "updated_at"]
 
     def _fmt_ts(val) -> str:
         """Ensure timestamps are ISO 8601 UTC with Z suffix."""
