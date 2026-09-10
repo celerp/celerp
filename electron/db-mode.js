@@ -137,6 +137,16 @@ function preflightGate(cfg, dbDecision, storageDecision, exitCode) {
   return { action: "confirm" };
 }
 
+// The human-readable list of resources whose subscription lapsed, for the
+// unreachable-check dialog. Named here (not inline in the dialog) so the "the
+// user is told every affected resource" rule has one source and a unit test.
+function affectedResources(dbLapsed, storageLapsed) {
+  const affected = [];
+  if (dbLapsed) affected.push("external database");
+  if (storageLapsed) affected.push("external file storage");
+  return affected.join(" and ");
+}
+
 module.exports = {
   isInGrace,
   dbModeDecision,
@@ -144,6 +154,7 @@ module.exports = {
   storageModeDecision,
   applyStoragePersist,
   preflightGate,
+  affectedResources,
   PREFLIGHT_RENEWED,
   PREFLIGHT_EXPIRED,
   PREFLIGHT_UNREACHABLE,

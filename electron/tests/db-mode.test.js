@@ -9,6 +9,7 @@ const {
   storageModeDecision,
   applyStoragePersist,
   preflightGate,
+  affectedResources,
 } = require("../db-mode");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -240,5 +241,23 @@ describe("applyStoragePersist storage fallback", () => {
     const writeConfigFn = jest.fn();
     expect(applyStoragePersist({}, { persistLocal: false }, writeConfigFn)).toBe(false);
     expect(writeConfigFn).not.toHaveBeenCalled();
+  });
+});
+
+describe("affectedResources", () => {
+  // check_js_preflight_dialog_names_all_resources: when both the database and
+  // S3 lapse, the unreachable-check dialog names both, so the user cannot miss
+  // that both will diverge under a local fallback.
+  test("check_js_preflight_dialog_names_all_resources: both lapsed names both", () => {
+    expect(affectedResources(true, true))
+      .toBe("external database and external file storage");
+  });
+
+  test("only the database lapsed names the database alone", () => {
+    expect(affectedResources(true, false)).toBe("external database");
+  });
+
+  test("only S3 lapsed names external file storage alone", () => {
+    expect(affectedResources(false, true)).toBe("external file storage");
   });
 });

@@ -176,6 +176,7 @@ const {
   storageModeDecision,
   applyStoragePersist,
   preflightGate,
+  affectedResources,
   PREFLIGHT_RENEWED,
   PREFLIGHT_UNREACHABLE,
 } = require("./db-mode");
@@ -1281,10 +1282,7 @@ app.whenReady().then(async () => {
           // UNREACHABLE: never switch a resource silently. Ask, with no timer
           // default and exactly three choices. The detail names every affected
           // resource so the user cannot miss what will diverge.
-          const affected = [];
-          if (dbLapsed) affected.push("external database");
-          if (storageLapsed) affected.push("external file storage");
-          const affectedText = affected.join(" and ");
+          const affectedText = affectedResources(dbLapsed, storageLapsed);
           const choice = dialog.showMessageBoxSync({
             type: "warning",
             title: "Subscription Check Failed",
