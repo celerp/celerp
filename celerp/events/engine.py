@@ -128,6 +128,15 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
 
     schema(**kwargs["data"])
 
+    # The schema validates a Pydantic-made copy, so any code canonicalization it applies
+    # (rfid_epc -> trimmed upper-case, gtin -> validated form) never reaches the raw dict
+    # persisted below. Apply the same normalization to the dict that is actually stored, so
+    # the stored value equals what the availability check and the partial unique index
+    # compare against - otherwise a case-variant identifier is stored raw and never collides.
+    _normalize = getattr(schema, "normalize_for_storage", None)
+    if _normalize is not None:
+        _normalize(kwargs["data"])
+
     # Enforce period lock
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))
 
