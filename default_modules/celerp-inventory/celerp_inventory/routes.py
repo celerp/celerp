@@ -20,12 +20,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.events.schemas import reject_comma_sku
-from celerp.inventory_codes import BarcodeConflictError, validate_barcode
+from celerp.inventory_codes import (
+    BarcodeConflictError,
+    RfidEpcConflictError,
+    normalize_rfid_epc,
+    validate_barcode,
+    validate_gtin,
+    validate_rfid_epc,
+)
 from celerp.models.projections import Projection
 from .services import (
-    _next_seq,
+    _code_in_use,
     allocate_internal_codes,
     assert_barcode_available,
+    assert_rfid_epc_available,
     lock_item_code_namespace,
 )
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
@@ -133,6 +141,7 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
     # Identity — always overridden explicitly
     "sku",
     "barcode",      # recalculated: new entity needs a new unique barcode
+    "rfid_epc",     # physical RFID/EPC tag: bound to one physical unit, never inherited by a new one
     # Quantity / cost — set by split math or pricing events
     "quantity",
     "weight",
@@ -243,6 +252,8 @@ class ItemCreate(BaseModel):
     unit: str | None = None
     barcode: str | None = None             # digits only if provided
     auto_barcode: bool = False             # duplicate/clone: mint a fresh unique barcode from the shared sequence, never inherit one
+    gtin: str | None = None                # product GTIN/UPC/EAN (digits, {8,12,13,14}); identifies a product, not a lot; not unique
+    rfid_epc: str | None = None            # RFID/EPC physical-tag code; company-unique, normalized upper-case
     hs_code: str | None = None             # Harmonized System code for trade/customs
     tax_codes: list[str] = Field(default_factory=list)
     purchase_sku: str | None = None        # vendor's SKU / part number
@@ -504,8 +515,8 @@ async def assert_not_draft(session: AsyncSession, company_id, entity_id: str, ac
 # left off are genuine bookkeeping (idempotency_key, id/lineage refs like parent_id and
 # status_doc_id, internal classifications) and are deliberately unsearchable (#306);
 # numeric columns match only through the explicit numeric path.
-_SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category",
-                  "short_description", "notes", "hs_code", "batch_no",
+_SEARCH_FIELDS = ("name", "sku", "barcode", "gtin", "rfid_epc", "description",
+                  "category", "short_description", "notes", "hs_code", "batch_no",
                   "purchase_name", "purchase_sku", "location_name",
                   "sell_by", "unit", "weight_unit", "gross_weight_unit",
                   "purchase_unit", "inventory_type", "status_doc_number", "lot")
@@ -745,6 +756,8 @@ async def list_items(
     sku: str | None = None,
     skus: str | None = None,  # comma-separated exact SKU list
     barcode: str | None = None,
+    gtin: str | None = None,
+    rfid_epc: str | None = None,
     status: str | None = None,
     category: str | None = None,
     inventory_type: str | None = None,
@@ -942,6 +955,15 @@ async def list_items(
 
     if barcode:
         result = [r for r in result if str(r.get("barcode", "")) == barcode]
+
+    if gtin:
+        result = [r for r in result if str(r.get("gtin", "")) == gtin]
+
+    if rfid_epc:
+        # EPC is stored normalized (upper-cased); normalize the filter so a lower-case
+        # query matches the stored value.
+        _epc = normalize_rfid_epc(rfid_epc)
+        result = [r for r in result if str(r.get("rfid_epc", "")) == _epc]
 
     # Semantic "low stock" filter: at or below reorder point (backs the dashboard
     # cards' /inventory?filter=low_stock link and the reorder alert action_url).
@@ -1413,13 +1435,19 @@ async def get_reorder_suggestion(entity_id: str, company_id=Depends(get_current_
 class ResolveResult:
     """Result of resolving a scanned/typed code to item(s).
 
-    ``kind`` is "barcode" (matched a unique physical-lot barcode), "sku" (matched
-    a product-type SKU, which may map to N physical lots), or "none". ``matches``
-    is the list of matching item Projections (0, 1, or - for sku - N).
-    ``ambiguous`` is True only when a SKU matched more than one lot: the caller
-    must disambiguate (scan a barcode or pick a lot), never silently pick one.
+    ``kind`` is one of: "barcode" or "rfid_epc" (each matched a unique physical-lot
+    identifier), "gtin" or "sku" (each matched a product identifier, which may map to
+    N physical lots), or "none". ``matches`` is the list of matching item Projections
+    (0, 1, or - for a product identifier - N). ``ambiguous`` is True only when a
+    product identifier matched more than one lot: the caller must disambiguate (scan a
+    physical code or pick a lot), never silently pick one.
     """
     __slots__ = ("kind", "matches")
+
+    # A physical identifier resolves to exactly one physical lot; a product identifier
+    # (gtin/sku) may legitimately map to many lots.
+    _PHYSICAL_KINDS = frozenset({"barcode", "rfid_epc"})
+    _PRODUCT_KINDS = frozenset({"gtin", "sku"})
 
     def __init__(self, kind: str, matches: list):
         self.kind = kind
@@ -1427,15 +1455,18 @@ class ResolveResult:
 
     @property
     def ambiguous(self) -> bool:
-        return self.kind == "sku" and len(self.matches) > 1
+        return self.kind in self._PRODUCT_KINDS and len(self.matches) > 1
 
     @property
-    def duplicate_barcode(self) -> bool:
-        """True when one barcode matched more than one lot. The per-company barcode unique index
-        makes this impossible for new data; it only surfaces for legacy rows written before the
-        index. Distinct from ``ambiguous`` (the SKU-only concept): a duplicate barcode must be
-        reported, never silently resolved to one lot."""
-        return self.kind == "barcode" and len(self.matches) > 1
+    def duplicate_physical(self) -> bool:
+        """True when a code resolves to more than one distinct physical item. Barcode and
+        RFID EPC are ONE physical namespace, so this covers both a single field matching
+        two lots (legacy rows written before a per-company unique index) AND a value held
+        as one item's barcode and another item's rfid_epc (a cross-field collision no
+        single-field index catches). Distinct from ``ambiguous`` (the product-identifier
+        concept): a duplicate physical code must be reported, never silently resolved to
+        one lot."""
+        return self.kind in self._PHYSICAL_KINDS and len(self.matches) > 1
 
     @property
     def one(self):
@@ -1443,64 +1474,97 @@ class ResolveResult:
         return self.matches[0] if len(self.matches) == 1 else None
 
 
+def _resolve_from_candidates(barcode_matches, rfid_matches, gtin_matches, sku_matches) -> "ResolveResult":
+    """Choose a ResolveResult from the per-field candidate lists, enforcing the shared
+    physical namespace. Barcode and RFID EPC are one namespace: a code matching EITHER
+    field is a physical match, gathered BEFORE any product identifier is considered. The
+    physical union is deduped by ``entity_id`` (a single item carrying both a barcode and
+    an EPC is ONE item, not a duplicate). If the union spans more than one distinct item
+    the resolver fails closed (``duplicate_physical`` True, ``one`` None), never silently
+    picking one; a single physical item resolves (kind "barcode" when a barcode matched,
+    else "rfid_epc"). Only with NO physical match do the product identifiers resolve -
+    gtin then sku - each to its N lots. Shared by both the single and the batch resolver
+    so they disambiguate identically."""
+    physical: dict = {}
+    for r in barcode_matches:
+        physical.setdefault(r.entity_id, r)
+    for r in rfid_matches:
+        physical.setdefault(r.entity_id, r)
+    if physical:
+        kind = "barcode" if barcode_matches else "rfid_epc"
+        return ResolveResult(kind, list(physical.values()))
+    if gtin_matches:
+        return ResolveResult("gtin", gtin_matches)
+    if sku_matches:
+        return ResolveResult("sku", sku_matches)
+    return ResolveResult("none", [])
+
+
 def duplicate_barcode_detail(code: str) -> str:
-    """The single operator-facing message for a barcode that resolves to more than one lot, shared
-    by every scan surface so the wording is sourced in one place."""
-    return f"Duplicate barcode '{code}' exists on multiple inventory items"
+    """The single operator-facing message for a physical code that resolves to more than
+    one lot, shared by every scan surface so the wording is sourced in one place."""
+    return f"Duplicate physical code '{code}' exists on multiple inventory items"
 
 
 # Statuses whose items are retained for history but are no longer a current physical
 # lot, so they must not participate in operational resolution. A `merged` source keeps
 # its original barcode AND sku (item.source_deactivated sets status only), so an
 # unfiltered candidate set counts it as live: by barcode it falsely trips
-# `duplicate_barcode`, and by sku (a numeric sku may equal a barcode) it re-enters
+# `duplicate_physical`, and by sku (a numeric sku may equal a barcode) it re-enters
 # resolution through the fallback. Scope is `merged` ONLY: reserved/memo_out/sold/
-# archived/expired must still resolve. Applied to BOTH the barcode and sku candidate
-# sets, in both resolvers.
+# archived/expired must still resolve. Applied to every identifier candidate set, in
+# both resolvers.
 _RESOLVE_EXCLUDED_STATUSES = frozenset({"merged"})
 
 
 async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> ResolveResult:
-    """Canonical code -> item(s) resolver. Barcode (unique) wins; SKU may be N.
+    """Canonical code -> item(s) resolver. A physical identifier (barcode, RFID EPC) wins
+    and resolves to one lot; a product identifier (GTIN, SKU) may resolve to N.
 
-    This is the single disambiguation rule shared by every scan/lookup surface so
-    they behave identically: an exact barcode match resolves to one physical lot;
-    otherwise an exact SKU match may resolve to many lots (the caller then either
-    acts on a single match, or - when ``ambiguous`` - asks the user to pick).
+    This is the single disambiguation rule shared by every scan/lookup surface so they
+    behave identically. Physical identifiers (barcode + RFID EPC) share one namespace and
+    are gathered together before the product identifiers (GTIN, SKU) are considered: a
+    value held as one item's barcode and another's rfid_epc spans two physical items and
+    fails closed rather than resolving barcode-first. An RFID reader emitting an EPC feeds
+    this same path as a barcode scanner; the EPC is normalized (trimmed + upper-cased)
+    before compare so a scan resolves regardless of the reader's case. A physical code
+    matching more than one distinct item is reported via ``duplicate_physical``
+    (fail-closed), never silently resolved to one.
     """
     code = (code or "").strip()
     if not code:
         return ResolveResult("none", [])
+    epc_code = normalize_rfid_epc(code)
     rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
             Projection.entity_type == "item",
         )
     )).scalars().all()
-    barcode_matches = [
-        r for r in rows
-        if str((r.state or {}).get("barcode") or "") == code
-        and str((r.state or {}).get("status") or "").lower() not in _RESOLVE_EXCLUDED_STATUSES
-    ]
-    if barcode_matches:
-        return ResolveResult("barcode", barcode_matches)
-    sku_matches = [
-        r for r in rows
-        if str((r.state or {}).get("sku") or "") == code
-        and str((r.state or {}).get("status") or "").lower() not in _RESOLVE_EXCLUDED_STATUSES
-    ]
-    if sku_matches:
-        return ResolveResult("sku", sku_matches)
-    return ResolveResult("none", [])
+
+    def _live(r) -> bool:
+        return str((r.state or {}).get("status") or "").lower() not in _RESOLVE_EXCLUDED_STATUSES
+
+    def _by(key, wanted):
+        return [r for r in rows if str((r.state or {}).get(key) or "") == wanted and _live(r)]
+
+    return _resolve_from_candidates(
+        _by("barcode", code),
+        _by("rfid_epc", epc_code),
+        _by("gtin", code),
+        _by("sku", code),
+    )
 
 
 async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> dict[str, "ResolveResult"]:
     """Batch form of :func:`resolve_item_by_code`: resolve many codes against ONE inventory load.
 
     A per-code caller (a 200-code scan run) would otherwise load every item projection once per
-    code. This loads them once, indexes by barcode and SKU, and returns one ResolveResult per
-    distinct code - the SAME disambiguation rule (barcode wins; a SKU may map to N lots, then
-    ``ambiguous``), so callers behave identically to the single-code path.
+    code. This loads them once, indexes by every identifier, and returns one ResolveResult per
+    distinct code - the SAME shared-namespace disambiguation rule as the single-code path
+    (physical barcode + RFID EPC gathered before product GTIN/SKU, fail-closed on a cross-field
+    or multi-lot physical collision), so callers behave identically. EPC is indexed and looked
+    up in its normalized (upper-cased) form.
     """
     wanted = {(c or "").strip() for c in codes if (c or "").strip()}
     if not wanted:
@@ -1512,25 +1576,34 @@ async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> di
         )
     )).scalars().all()
     by_barcode: dict[str, list] = {}
+    by_rfid_epc: dict[str, list] = {}
+    by_gtin: dict[str, list] = {}
     by_sku: dict[str, list] = {}
     for r in rows:
         st = r.state or {}
         if str(st.get("status") or "").lower() in _RESOLVE_EXCLUDED_STATUSES:
             continue
         bc = str(st.get("barcode") or "")
+        epc = str(st.get("rfid_epc") or "")
+        gtin = str(st.get("gtin") or "")
         sku = str(st.get("sku") or "")
         if bc:
             by_barcode.setdefault(bc, []).append(r)
+        if epc:
+            by_rfid_epc.setdefault(epc, []).append(r)
+        if gtin:
+            by_gtin.setdefault(gtin, []).append(r)
         if sku:
             by_sku.setdefault(sku, []).append(r)
     out: dict[str, ResolveResult] = {}
     for code in wanted:
-        if code in by_barcode:
-            out[code] = ResolveResult("barcode", by_barcode[code])
-        elif code in by_sku:
-            out[code] = ResolveResult("sku", by_sku[code])
-        else:
-            out[code] = ResolveResult("none", [])
+        epc_code = normalize_rfid_epc(code)
+        out[code] = _resolve_from_candidates(
+            by_barcode.get(code, []),
+            by_rfid_epc.get(epc_code, []),
+            by_gtin.get(code, []),
+            by_sku.get(code, []),
+        )
     return out
 
 
@@ -1539,6 +1612,23 @@ def _validate_sku(sku: str | None) -> None:
     interactive route surfaces a clear message instead of the raw write-time rejection."""
     try:
         reject_comma_sku(sku)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+def _validate_gtin(gtin) -> None:
+    """Friendly-422 wrapper over validate_gtin: an interactive route surfaces the format
+    message instead of the raw ValueError falling through to a 500."""
+    try:
+        validate_gtin(gtin)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+def _validate_rfid_epc(rfid_epc) -> None:
+    """Friendly-422 wrapper over validate_rfid_epc (same reason as _validate_gtin)."""
+    try:
+        validate_rfid_epc(rfid_epc)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -1574,6 +1664,8 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         raise HTTPException(status_code=422, detail="Barcode must contain digits only")
 
     _validate_sku(payload.sku)
+    _validate_gtin(payload.gtin)
+    _validate_rfid_epc(payload.rfid_epc)
 
     # Serialize all SKU/barcode allocation and the barcode-uniqueness check for this
     # company: two concurrent creates must not mint the same code or both pass the
@@ -1586,35 +1678,40 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
 
     # Duplicate/clone: mint a fresh unique barcode and discard any inherited one.
     # Mirrors the split child - a new entity needs a new unique barcode (barcode is
-    # globally unique, so a copy must never carry the source's).
+    # globally unique, so a copy must never carry the source's). The physical RFID/EPC
+    # tag is bound to one physical unit, so a clone must never inherit it either; the
+    # product GTIN is kept (a clone is the same product).
     if payload.auto_barcode:
-        payload = payload.model_copy(update={"barcode": (await allocate_internal_codes(session, company_id))[0]})
+        payload = payload.model_copy(update={
+            "barcode": (await allocate_internal_codes(session, company_id))[0],
+            "rfid_epc": None,
+        })
     # Auto-copy SKU to barcode when barcode omitted and SKU is purely numeric.
-    # SKU is now a (possibly repeated) product-type, so gate the copy on collision:
-    # if another item already uses that barcode (e.g. a second item deliberately
-    # sharing a numeric SKU), assign a fresh sequential barcode instead so the
-    # duplicate-SKU create does not 409 on barcode. Single-SKU behaviour is
-    # unchanged (the first/only item still gets barcode == sku).
+    # SKU is a (possibly repeated) product-type, so gate the copy on the shared
+    # Barcode/EPC physical namespace: if that value is already in use as another
+    # item's barcode OR rfid_epc, assign a fresh sequential barcode instead so the
+    # create does not 409 on the final physical check (a second item sharing a
+    # numeric SKU, or a value held as another item's EPC, must not block it). A SKU
+    # is a product identifier and never inherits physical-code uniqueness.
+    # Single-SKU behaviour is unchanged (the first/only item still gets barcode == sku).
     elif payload.barcode is None and payload.sku.isdigit():
-        clash = (await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "item",
-                Projection.state["barcode"].as_string() == payload.sku,
-            )
-        )).scalars().first()
-        new_barcode = (await allocate_internal_codes(session, company_id))[0] if clash else payload.sku
+        if await _code_in_use(session, company_id, payload.sku):
+            new_barcode = (await allocate_internal_codes(session, company_id))[0]
+        else:
+            new_barcode = payload.sku
         payload = payload.model_copy(update={"barcode": new_barcode})
 
     # SKU uniqueness is intentionally NOT enforced: `sku` is a product-type that may
     # repeat across physical lots. Physical-lot uniqueness is carried by `barcode`
     # (below) and the immutable `entity_id`. See the 2026-06-17 sku/batch plan.
 
-    # Barcode uniqueness (final application check under the lock; the DB unique index
-    # is the backstop for any writer that bypasses this path).
+    # Physical-code uniqueness (final application check under the lock; the DB unique
+    # indexes are the backstop for any writer that bypasses this path). Both checks share
+    # one namespace, so a barcode may not collide with an existing EPC or vice versa.
     try:
         await assert_barcode_available(session, company_id, payload.barcode)
-    except BarcodeConflictError as exc:
+        await assert_rfid_epc_available(session, company_id, payload.rfid_epc)
+    except (BarcodeConflictError, RfidEpcConflictError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     entity_id = f"item:{uuid.uuid4()}"
@@ -1842,6 +1939,23 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             try:
                 await assert_barcode_available(session, company_id, new_barcode, exclude_entity_id=entity_id)
             except BarcodeConflictError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+
+    # Validate gtin format if changing (a product identifier: format only, not unique).
+    if "gtin" in changed_keys:
+        _validate_gtin((payload.fields_changed["gtin"] or {}).get("new"))
+
+    # Validate rfid_epc format + uniqueness if changing, mirroring barcode: it shares the
+    # physical-code namespace, so it takes the same lock and availability check. The stored
+    # value is canonicalized at the event boundary, so a case-variant tag collides here.
+    if "rfid_epc" in changed_keys:
+        new_epc = (payload.fields_changed["rfid_epc"] or {}).get("new")
+        if new_epc is not None:
+            _validate_rfid_epc(new_epc)
+            await lock_item_code_namespace(session, company_id)
+            try:
+                await assert_rfid_epc_available(session, company_id, new_epc, exclude_entity_id=entity_id)
+            except RfidEpcConflictError as exc:
                 raise HTTPException(status_code=409, detail=str(exc))
 
     # Validate inventory_type if changing
@@ -2333,10 +2447,22 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     # Create child items
     child_eids: list[str] = []
     child_qty_list: list[float] = []
-    # Lock the code namespace before the scan so concurrent splits/creates cannot
-    # mint the same child barcodes; incremented in-memory per child under the lock.
-    await lock_item_code_namespace(session, company_id)
-    next_barcode_seq = await _next_seq(session, company_id)
+    # Mint one fresh free barcode per child that did not supply its own. The hardened
+    # allocator takes the code-namespace lock (held to commit) and skips any value already
+    # held as a barcode OR rfid_epc, so a minted child barcode can never collide with an
+    # existing physical tag. A caller-supplied child barcode is then checked against the
+    # same shared namespace under that lock and rejected with a clean 409 on conflict.
+    _minted_barcodes = iter(
+        await allocate_internal_codes(
+            session, company_id, sum(1 for c in children if c.barcode is None)
+        )
+    )
+    try:
+        for child in children:
+            if child.barcode is not None:
+                await assert_barcode_available(session, company_id, child.barcode)
+    except BarcodeConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Pre-compute child cost_totals using unit cost invariant: cost_price is the same for
     # parent and child, so child_cost_total = (parent_cost_total / parent_qty) * child_qty.
@@ -2383,11 +2509,10 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             "quantity": child.quantity,
             "status": "available",
             "attributes": _child_attrs,
-            "barcode": child.barcode if child.barcode is not None else str(next_barcode_seq).zfill(6),
+            "barcode": child.barcode if child.barcode is not None else next(_minted_barcodes),
         })
         if child.weight is not None:
             child_data["weight"] = child.weight
-        next_barcode_seq += 1
         await emit_event(
             session,
             company_id=company_id,
@@ -2727,9 +2852,10 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
 
     # --- create the child ---
     child_eid = f"item:{uuid.uuid4()}"
-    # Lock the code namespace so a concurrent split/create cannot mint the same barcode.
-    await lock_item_code_namespace(session, company_id)
-    next_barcode_seq = await _next_seq(session, company_id)
+    # Mint a fresh free barcode through the hardened allocator, which skips any value
+    # already held as a barcode OR rfid_epc so this new physical lot never collides with
+    # an existing tag.
+    child_barcode = (await allocate_internal_codes(session, company_id))[0]
     child_attrs = dict(parent_attrs)
     if ch_pieces is not None:
         child_attrs["pieces"] = ch_pieces
@@ -2740,7 +2866,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
         "quantity": child_qty,
         "status": "available",
         "attributes": child_attrs,
-        "barcode": str(next_barcode_seq).zfill(6),
+        "barcode": child_barcode,
         # Resolve a possibly-unset parent default to a concrete bool: a None parent
         # (splittable by default) must not emit a None the item.created schema rejects.
         "allow_splitting": splitting_allowed(parent.state),
@@ -2884,6 +3010,9 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         "attributes": {**parent_attrs},
         "barcode": child_barcode,
     })
+    # A transform yields a DIFFERENT product, so the parent's product GTIN must not carry
+    # over (rfid_epc is already dropped via _CHILD_RESET_FIELDS, as it is a physical tag).
+    child_data.pop("gtin", None)
     if payload.child_weight is not None:
         child_data["weight"] = payload.child_weight
     if payload.child_weight_unit:
@@ -3229,7 +3358,10 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         "attributes": resolved_attrs,
         "barcode": merged_barcode,
     }
-    for field in ("category", "location_id", "description", "unit", "tax_codes"):
+    # The merged item is the same product as the target, so carry the target's product
+    # GTIN. The physical RFID/EPC tag is NOT carried: the merged item is a new physical
+    # unit (a fresh barcode is minted above), so it starts with no physical tag.
+    for field in ("category", "location_id", "description", "unit", "tax_codes", "gtin"):
         val = target_state.get(field)
         if val is not None:
             create_data[field] = str(val) if field == "location_id" else val
@@ -3636,6 +3768,33 @@ async def batch_import_items(
             skipped += 1
             continue
 
+        # Barcode and RFID EPC share one physical-code namespace: a value already held in
+        # EITHER slot by another item cannot be imported into either slot of this one.
+        # Interactive create/patch enforce this via assert_barcode_available /
+        # assert_rfid_epc_available; the import writer emits rec.data verbatim, so without
+        # this guard a row could set rfid_epc to a value another item holds as its barcode
+        # (a cross-field collision no single-field unique index catches). Run the same
+        # check under the company code lock so the read-then-write is serialized and
+        # earlier rows in this batch are seen (emit_event flushes projections in-session).
+        # exclude_entity_id is harmless on create and correct on upsert (re-asserting the
+        # item's own value is not a self-collision). A colliding row is skipped, never a 500.
+        _row_barcode = rec.data.get("barcode")
+        _row_epc = rec.data.get("rfid_epc")
+        if _row_barcode or _row_epc:
+            _code_err = None
+            try:
+                validate_barcode(_row_barcode)
+                validate_rfid_epc(_row_epc)
+                await lock_item_code_namespace(session, company_id)
+                await assert_barcode_available(session, company_id, _row_barcode, exclude_entity_id=rec.entity_id)
+                await assert_rfid_epc_available(session, company_id, _row_epc, exclude_entity_id=rec.entity_id)
+            except (ValueError, BarcodeConflictError, RfidEpcConflictError) as exc:
+                _code_err = str(exc)
+            if _code_err is not None:
+                errors.append(f"Row (SKU={rec.data.get('sku', '?')}): {_code_err}")
+                skipped += 1
+                continue
+
         scoped_key = f"{company_id}:{rec.idempotency_key}"
         if scoped_key in existing:
             if body.upsert:
@@ -3952,7 +4111,7 @@ async def export_items_csv(
         if pl.get("name") and (can_see_costs or not is_cost_list_name(pl["name"]))
     ]
 
-    _COLS = ["id", "sku", "name", "category", "quantity", "status"] + price_cols + ["weight", "weight_unit", "pieces", "sell_by", "barcode", "hs_code", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor", "created_at", "updated_at"]
+    _COLS = ["id", "sku", "name", "category", "quantity", "status"] + price_cols + ["weight", "weight_unit", "pieces", "sell_by", "barcode", "gtin", "rfid_epc", "hs_code", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor", "created_at", "updated_at"]
 
     def _fmt_ts(val) -> str:
         """Ensure timestamps are ISO 8601 UTC with Z suffix."""

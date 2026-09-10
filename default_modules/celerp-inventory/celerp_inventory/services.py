@@ -3,11 +3,15 @@
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event
-from celerp.inventory_codes import BarcodeConflictError
+from celerp.inventory_codes import (
+    BarcodeConflictError,
+    RfidEpcConflictError,
+    normalize_rfid_epc,
+)
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 
@@ -67,15 +71,54 @@ async def _next_seq(session: AsyncSession, company_id) -> int:
 
 
 async def allocate_internal_codes(session: AsyncSession, company_id, count: int = 1) -> list[str]:
-    """Lock the company's code namespace and return ``count`` fresh sequential codes.
+    """Lock the company's code namespace and return ``count`` fresh codes, each free.
 
-    The lock makes the scan-then-mint atomic against concurrent allocators. Codes
-    are zero-padded to the standard internal width and are guaranteed distinct
-    within the returned batch.
+    The lock makes the scan-then-mint atomic against concurrent allocators. Codes are
+    zero-padded to the standard internal width and are guaranteed distinct within the
+    returned batch. Starting from the next sequential value, any candidate already held
+    as a barcode OR an rfid_epc is skipped: the two fields share one physical-code
+    namespace, and the sequence scan counts integer SKUs and barcodes only, so a numeric
+    EPC can equal the next sequential code. Skipping here is the single guard every
+    internal-mint path inherits, so no caller re-implements the availability check.
     """
     await lock_item_code_namespace(session, company_id)
-    start = await _next_seq(session, company_id)
-    return [str(start + i).zfill(_SEQ_WIDTH) for i in range(count)]
+    codes: list[str] = []
+    candidate = await _next_seq(session, company_id)
+    while len(codes) < count:
+        code = str(candidate).zfill(_SEQ_WIDTH)
+        if not await _code_in_use(session, company_id, code):
+            codes.append(code)
+        candidate += 1
+    return codes
+
+
+async def _code_in_use(
+    session: AsyncSession, company_id, code, *, exclude_entity_id=None
+) -> bool:
+    """True when ``code`` already occupies EITHER physical-code slot of another item.
+
+    A barcode and an RFID / EPC are both physical-code identifiers drawn from one
+    namespace, so a value in use as a barcode is not free to reuse as an EPC and vice
+    versa. This single query over BOTH ``state ->> 'barcode'`` and
+    ``state ->> 'rfid_epc'`` is the sole cross-field collision check; both writers call
+    it under ``lock_item_code_namespace`` so the read-then-write is serialized.
+    ``exclude_entity_id`` skips one item's own row so re-asserting an item's current
+    value is not read as a self-collision.
+    """
+    if not code:
+        return False
+    value = str(code)
+    query = select(Projection.entity_id).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "item",
+        or_(
+            Projection.state["barcode"].as_string() == value,
+            Projection.state["rfid_epc"].as_string() == value,
+        ),
+    )
+    if exclude_entity_id is not None:
+        query = query.where(Projection.entity_id != exclude_entity_id)
+    return (await session.execute(query)).first() is not None
 
 
 async def assert_barcode_available(
@@ -91,16 +134,25 @@ async def assert_barcode_available(
     """
     if not barcode:
         return
-    query = select(Projection.entity_id).where(
-        Projection.company_id == company_id,
-        Projection.entity_type == "item",
-        Projection.state["barcode"].as_string() == str(barcode),
-    )
-    if exclude_entity_id is not None:
-        query = query.where(Projection.entity_id != exclude_entity_id)
-    existing = (await session.execute(query)).first()
-    if existing:
+    if await _code_in_use(session, company_id, barcode, exclude_entity_id=exclude_entity_id):
         raise BarcodeConflictError(barcode)
+
+
+async def assert_rfid_epc_available(
+    session: AsyncSession, company_id, rfid_epc, *, exclude_entity_id=None
+) -> None:
+    """Raise RfidEpcConflictError if another item in the company already holds ``rfid_epc``.
+
+    Mirrors ``assert_barcode_available``: an empty or absent value is always available,
+    the value is normalized (trimmed + upper-cased) before the check so lookup matches
+    storage, and the shared ``_code_in_use`` query catches a collision against either
+    physical-code slot. The DB unique index is the final backstop.
+    """
+    normalized = normalize_rfid_epc(rfid_epc)
+    if not normalized:
+        return
+    if await _code_in_use(session, company_id, normalized, exclude_entity_id=exclude_entity_id):
+        raise RfidEpcConflictError(normalized)
 
 
 async def create_item(session, company_id: str, data: dict, actor_id: str | None = None):

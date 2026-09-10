@@ -213,6 +213,19 @@ def test_bell_badge_counts_downloaded_update(page, ui_server):
     update-downloaded callback, fire it as the main process would, and require the
     bell badge to show a count.
     """
+    # The badge count is the shared company's unread notifications plus one for a
+    # ready update. This test asserts only the update's contribution, so pin the
+    # inbox to empty; otherwise ambient notifications left by earlier tests on the
+    # shared session company make the count non-deterministic.
+    page.route(
+        "**/notifications*",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"items": [], "unread_count": 0}',
+        ),
+    )
+
     # Define the preload stub before page scripts run so initUpdateCard takes the
     # Electron path and registers against it. The stub stores the downloaded
     # callback so the test can fire it deterministically (no real download).

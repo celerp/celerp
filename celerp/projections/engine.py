@@ -9,7 +9,12 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
-from celerp.inventory_codes import BarcodeConflictError, is_barcode_unique_violation
+from celerp.inventory_codes import (
+    BarcodeConflictError,
+    RfidEpcConflictError,
+    is_barcode_unique_violation,
+    is_rfid_epc_unique_violation,
+)
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
@@ -137,10 +142,13 @@ class ProjectionEngine:
             except IntegrityError as exc:
                 # Only the (company_id, entity_id) primary-key race is a benign
                 # concurrent-first-insert to retry as an update on the winner's row.
-                # A barcode unique-index violation is a real conflict - surface it so
-                # the API maps it to 409 rather than swallowing it as a PK race.
+                # A physical-code unique-index violation (barcode or RFID / EPC) is a real
+                # conflict - surface it so the API maps it to 409 rather than swallowing it
+                # as a PK race.
                 if is_barcode_unique_violation(exc):
                     raise BarcodeConflictError((fields.get("state") or {}).get("barcode")) from exc
+                if is_rfid_epc_unique_violation(exc):
+                    raise RfidEpcConflictError((fields.get("state") or {}).get("rfid_epc")) from exc
                 constraint = getattr(getattr(exc, "orig", None), "constraint_name", None)
                 if constraint not in (None, "projections_pkey"):
                     raise
@@ -150,9 +158,9 @@ class ProjectionEngine:
         fields = ProjectionEngine._next_fields(projection.state, entry, projection.version)
         for column, value in fields.items():
             setattr(projection, column, value)
-        # Flush inside a SAVEPOINT so a barcode unique-index violation on an UPDATE
-        # (not only a first insert) surfaces as BarcodeConflictError -> 409 instead
-        # of escaping to the outer commit masked as a 500. Unrelated integrity errors
+        # Flush inside a SAVEPOINT so a physical-code unique-index violation on an UPDATE
+        # (not only a first insert) surfaces as a CodeConflictError -> 409 instead of
+        # escaping to the outer commit masked as a 500. Unrelated integrity errors
         # re-raise unchanged.
         try:
             async with session.begin_nested():
@@ -160,6 +168,8 @@ class ProjectionEngine:
         except IntegrityError as exc:
             if is_barcode_unique_violation(exc):
                 raise BarcodeConflictError((fields.get("state") or {}).get("barcode")) from exc
+            if is_rfid_epc_unique_violation(exc):
+                raise RfidEpcConflictError((fields.get("state") or {}).get("rfid_epc")) from exc
             raise
 
     @staticmethod

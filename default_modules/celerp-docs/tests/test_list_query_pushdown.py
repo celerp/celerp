@@ -85,7 +85,10 @@ async def _set_lines(client, t, list_id, lines: list[dict]) -> int:
 
 
 def _lines(n: int, *, start: int = 0) -> list[dict]:
-    return [{"item_id": f"item:{i}", "sku": f"SKU{i}", "description": f"Item {i}",
+    # Id-less free-text lines: these tests pin paging/version/total behaviour and never
+    # inspect a line's item identity, so a realistic free-text line (no item_id/entity_id)
+    # is the correct shape. A synthetic item_id would be rejected as an unknown reference.
+    return [{"sku": f"SKU{i}", "description": f"Item {i}",
              "quantity": 1, "unit_price": 1.0} for i in range(start, start + n)]
 
 
@@ -223,10 +226,13 @@ async def test_list_index_counts_and_weights_utf8(client):
     and never loads the whole array to do it."""
     t = await _register(client)
     q = await _quotation(client, t, ref_id="WT-001")
+    # Id-less free-text lines: this test pins item_count and total_weight over UTF-8
+    # descriptions and never inspects line identity, so the realistic free-text shape (no
+    # item_id) is correct - a synthetic item_id would be rejected as an unknown reference.
     lines = [
-        {"item_id": "item:1", "sku": "S1", "description": "Rubĩes \U0001F48E ê",
+        {"sku": "S1", "description": "Rubĩes \U0001F48E ê",
          "quantity": 1, "unit_price": 1.0, "weight_ct": "2.5"},
-        {"item_id": "item:2", "sku": "S2", "description": "钻石 gems",
+        {"sku": "S2", "description": "钻石 gems",
          "quantity": 1, "unit_price": 1.0, "weight_ct": "3.5"},
         {"description": "Free 문자열", "quantity": 1, "unit_price": 1.0, "weight": "4"},
     ]
@@ -311,12 +317,15 @@ async def test_line_page_patch_preserves_offpage(client):
     off-page rows byte-identical, including duplicate and id-less free-text rows."""
     t = await _register(client)
     q = await _quotation(client, t)
+    # Id-less free-text lines throughout: this test asserts off-page rows survive
+    # byte-identical and never inspects line identity, so the realistic free-text shape
+    # (no item_id) is correct - a synthetic item_id would be rejected as an unknown reference.
     lines = [
-        {"item_id": "item:a", "sku": "A", "description": "Alpha", "quantity": 1, "unit_price": 1.0},
+        {"sku": "A", "description": "Alpha", "quantity": 1, "unit_price": 1.0},
         {"description": "Free text one", "quantity": 1, "unit_price": 2.0},   # id-less free text
         {"description": "Dup", "quantity": 1, "unit_price": 3.0},             # duplicate desc
         {"description": "Dup", "quantity": 1, "unit_price": 3.0},             # duplicate desc
-        {"item_id": "item:e", "sku": "E", "description": "Echo", "quantity": 1, "unit_price": 5.0},
+        {"sku": "E", "description": "Echo", "quantity": 1, "unit_price": 5.0},
     ]
     v = await _set_lines(client, t, q, lines)
     before = (await _state(client, t, q))["line_items"]
@@ -346,7 +355,7 @@ async def test_line_page_patch_stale_version_409(client):
     await _set_lines(client, t, q, _lines(4))
     before = (await _state(client, t, q))["line_items"]
 
-    page = [{"item_id": "item:0", "sku": "SKU0", "description": "CLOBBER",
+    page = [{"sku": "SKU0", "description": "CLOBBER",
              "quantity": 9, "unit_price": 9.0}]
     r = await client.patch(f"/lists/{q}/line-page", headers=_h(t),
                            json={"line_items": page, "offset": 0, "expected_version": stale})
@@ -364,7 +373,7 @@ async def test_line_page_patch_rejects_non_draft(client, session):
     q = await _quotation(client, t)
     v = await _set_lines(client, t, q, _lines(3))
     assert (await client.post(f"/lists/{q}/finalize", headers=_h(t))).status_code == 200
-    page = [{"item_id": "item:0", "sku": "SKU0", "description": "X", "quantity": 1, "unit_price": 1.0}]
+    page = [{"sku": "SKU0", "description": "X", "quantity": 1, "unit_price": 1.0}]
     r_nondraft = await client.patch(f"/lists/{q}/line-page", headers=_h(t),
                                     json={"line_items": page, "offset": 0, "expected_version": v})
     assert r_nondraft.status_code == 409, r_nondraft.text
@@ -384,13 +393,15 @@ async def test_line_page_patch_recomputes_totals_from_full_array(client):
     saved page."""
     t = await _register(client)
     q = await _quotation(client, t)
-    # 5 lines, each qty*unit_price = 10 -> full-array total 50.
-    lines = [{"item_id": f"item:{i}", "sku": f"S{i}", "description": f"Item {i}",
+    # 5 id-less free-text lines, each qty*unit_price = 10 -> full-array total 50. This test
+    # pins total recomputation and never inspects line identity, so free-text lines are the
+    # correct shape - a synthetic item_id would be rejected as an unknown reference.
+    lines = [{"sku": f"S{i}", "description": f"Item {i}",
               "quantity": 2, "unit_price": 5.0} for i in range(5)]
     v = await _set_lines(client, t, q, lines)
 
     # Edit only page [0:1], raising line 0 to qty*price = 40 (+30). Full total -> 80.
-    page = [{"item_id": "item:0", "sku": "S0", "description": "Item 0",
+    page = [{"sku": "S0", "description": "Item 0",
              "quantity": 4, "unit_price": 10.0}]
     r = await client.patch(f"/lists/{q}/line-page", headers=_h(t),
                            json={"line_items": page, "offset": 0, "expected_version": v})

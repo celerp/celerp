@@ -15,6 +15,8 @@ from celerp.inventory_codes import (  # noqa: F401 - re-exported for celerp_inve
     SKU_COMMA_MESSAGE,
     reject_comma_sku,
     validate_barcode,
+    validate_gtin,
+    validate_rfid_epc,
     validate_sku,
 )
 
@@ -24,23 +26,50 @@ from celerp.inventory_codes import (  # noqa: F401 - re-exported for celerp_inve
 # -----------------
 
 
+def _normalize_item_codes(data: dict) -> None:
+    """Validate and canonicalize an item event's identity codes IN PLACE.
+
+    SKU: no comma (Celerp's OR operator in the SKU/search syntax) and a bounded length.
+    Barcode: digits only and a bounded length. GTIN: digits only, standard length; the
+    validated value replaces the input so the stored form is canonical. rfid_epc trims
+    and upper-cases so the stored value equals what the availability check and the
+    partial unique index compare against - a case-variant EPC then collides. This is the
+    single normalization used both by the schema validator (on the validated copy) and by
+    the event boundary (on the persisted dict), so storage, lookup, and uniqueness agree.
+    """
+    validate_sku(data.get("sku"))
+    validate_barcode(data.get("barcode"))
+    if "gtin" in data:
+        data["gtin"] = validate_gtin(data.get("gtin"))
+    if "rfid_epc" in data:
+        data["rfid_epc"] = validate_rfid_epc(data.get("rfid_epc"))
+
+
 class _SkuGuard(BaseModel):
     """Mixin: enforce the SKU and barcode invariants on any item event that sets them.
 
-    SKU: no comma (Celerp's OR operator in the SKU/search syntax) and a bounded length.
-    Barcode: digits only and a bounded length. These are the canonical write-time
-    predicates; interactive routes wrap them to surface a friendly 422, every other
-    emitter hits them here at the event boundary (imports, connector upserts, document
-    receiving). Replay never runs these schemas (the reducer does), so enforcing here
-    can never brick a historical projection.
+    The canonical write-time predicates live in _normalize_item_codes; interactive routes
+    wrap them to surface a friendly 422, every other emitter hits them here at the event
+    boundary (imports, connector upserts, document receiving). Replay never runs these
+    schemas (the reducer does), so enforcing here can never brick a historical projection.
     """
+
+    @classmethod
+    def normalize_for_storage(cls, data: dict) -> None:
+        """Canonicalize identity codes on the dict that will be persisted (in place).
+
+        The schema validator runs against a Pydantic-made copy, so its normalization
+        never reaches the raw event data the engine stores. The engine calls this on the
+        persisted dict itself so the stored value is the canonical one.
+        """
+        if isinstance(data, dict):
+            _normalize_item_codes(data)
 
     @model_validator(mode="before")
     @classmethod
     def _guard_item_codes(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            validate_sku(data.get("sku"))
-            validate_barcode(data.get("barcode"))
+            _normalize_item_codes(data)
         return data
 
 
@@ -81,15 +110,35 @@ class ItemSnapshot(_SkuGuard):
     model_config = {"extra": "allow"}  # CIF adapters may pass source-specific fields
 
 
+def _normalize_updated_codes(fields_changed: dict) -> None:
+    """Validate and canonicalize the new identity-code values of an item.updated in place."""
+    if "sku" in fields_changed:
+        validate_sku((fields_changed.get("sku") or {}).get("new"))
+    if "barcode" in fields_changed:
+        validate_barcode((fields_changed.get("barcode") or {}).get("new"))
+    if "gtin" in fields_changed:
+        change = fields_changed["gtin"] or {}
+        change["new"] = validate_gtin(change.get("new"))
+        fields_changed["gtin"] = change
+    if "rfid_epc" in fields_changed:
+        change = fields_changed["rfid_epc"] or {}
+        # Canonicalize the new value so the stored/looked-up form matches.
+        change["new"] = validate_rfid_epc(change.get("new"))
+        fields_changed["rfid_epc"] = change
+
+
 class ItemUpdated(BaseModel):
     fields_changed: dict[str, dict[str, Any]]
 
+    @classmethod
+    def normalize_for_storage(cls, data: dict) -> None:
+        """Canonicalize the persisted item.updated data's new identity values (in place)."""
+        if isinstance(data, dict) and isinstance(data.get("fields_changed"), dict):
+            _normalize_updated_codes(data["fields_changed"])
+
     @model_validator(mode="after")
     def _guard_item_codes(self) -> "ItemUpdated":
-        if "sku" in self.fields_changed:
-            validate_sku((self.fields_changed.get("sku") or {}).get("new"))
-        if "barcode" in self.fields_changed:
-            validate_barcode((self.fields_changed.get("barcode") or {}).get("new"))
+        _normalize_updated_codes(self.fields_changed)
         return self
 
 

@@ -33,18 +33,39 @@ async def _company_id(session):
     return (await session.execute(select(Company.id).where(Company.name == "WC Co"))).scalars().first()
 
 
-@pytest.fixture()
-def mfg_provision_slots():
-    """Register the manufacturing lifecycle hooks for the duration of a test.
+@pytest.fixture(autouse=True)
+def no_mfg_provision_slot():
+    """Neutralise the process-global manufacturing provisioning hooks per test.
 
-    Under the httpx ASGI harness the module loader (which registers these slots
-    from PLUGIN_MANIFEST in production) never runs, so the hooks are registered
-    here and the exact prior slot lists restored on teardown so nothing leaks
-    into other tests.
+    The slot registry is process-global, so a test that ran the real module loader
+    earlier on this worker can leave the manufacturing on_company_created and
+    on_modules_ready hooks registered. Every test here controls provisioning
+    explicitly (mfg_provision_slots re-adds the hooks when a test wants them), so
+    the baseline is a clean slot with no manufacturing lifecycle contribution, and
+    the exact prior slot lists are restored on teardown so nothing leaks onward.
     """
     from celerp.modules import slots
-    before_cc = slots.get("on_company_created")
-    before_mr = slots.get("on_modules_ready")
+    saved_cc = slots.get("on_company_created")
+    saved_mr = slots.get("on_modules_ready")
+    slots._slots["on_company_created"] = [
+        c for c in saved_cc if c.get("_module") != "celerp-manufacturing"]
+    slots._slots["on_modules_ready"] = [
+        c for c in saved_mr if c.get("_module") != "celerp-manufacturing"]
+    yield
+    slots._slots["on_company_created"] = saved_cc
+    slots._slots["on_modules_ready"] = saved_mr
+
+
+@pytest.fixture()
+def mfg_provision_slots(no_mfg_provision_slot):
+    """Register the manufacturing lifecycle hooks for the duration of a test.
+
+    In production the module loader registers these from PLUGIN_MANIFEST; under the
+    httpx ASGI harness it never runs. Depends on no_mfg_provision_slot so the hooks
+    are added onto a known-clean baseline, and that fixture's teardown restores the
+    exact prior slot lists so nothing leaks into other tests.
+    """
+    from celerp.modules import slots
     slots.register("on_company_created", {
         "handler": "celerp_manufacturing.routes:provision_default_work_center_hook",
         "_module": "celerp-manufacturing"})
@@ -52,8 +73,6 @@ def mfg_provision_slots():
         "handler": "celerp_manufacturing.routes:backfill_default_work_center_hook",
         "_module": "celerp-manufacturing"})
     yield
-    slots._slots["on_company_created"] = before_cc
-    slots._slots["on_modules_ready"] = before_mr
 
 
 # --- Work Centers CRUD ------------------------------------------------------

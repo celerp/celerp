@@ -8,6 +8,7 @@ import csv
 import hashlib
 import io
 import json
+import math
 import uuid
 from datetime import datetime, timezone, date as _date
 from typing import Literal
@@ -30,6 +31,7 @@ from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
+from celerp.services.document_lines import line_item_id
 from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
@@ -401,6 +403,136 @@ async def _get_item_sell_by_map(session: AsyncSession, company_id: str) -> dict[
         if sku and sell_by:
             result[sku] = sell_by
     return result
+
+
+async def _line_sell_by_map(
+    session: AsyncSession, company_id: str, line_items: list[dict]
+) -> dict[str, str | None]:
+    """Resolve sell_by for exactly the items the submitted lines link to.
+
+    Keyed by the line's authoritative item id (line_item_id), never by SKU: two
+    distinct lots can share a SKU string and a free-text line has none, so a
+    SKU key mis-attributes a unit. Fetches only the linked ids in one bounded
+    query (mirrors the id-scoped pattern in assert_document_item_uniqueness),
+    never the whole inventory.
+
+    Returns every id that RESOLVES to a real item projection (its value may be
+    None when the item carries no sell_by), so a caller can distinguish a linked
+    id that resolves-but-has-no-unit from one that resolves to no item at all.
+    An id absent from the result did not resolve to any item.
+    """
+    ids = {line_item_id(li) for li in line_items if isinstance(li, dict)}
+    ids.discard(None)
+    if not ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+                Projection.entity_id.in_(ids),
+            )
+        )
+    ).scalars().all()
+    return {row.entity_id: row.state.get("sell_by") for row in rows}
+
+
+def _check_line_quantity(
+    qty_raw,
+    sell_by: str | None,
+    unit_map: dict[str, dict],
+    *,
+    require_positive: bool,
+    label: str,
+) -> None:
+    """The shared per-line quantity gate used by every List and document writer.
+
+    Applies its own type/finiteness gate first, independent of sell_by: a None, a
+    bool, a value that does not coerce to float, or a non-finite float (NaN/inf) is
+    rejected 422 naming the offending line. This own gate is required because
+    validate_line_quantity skips entirely when sell_by is absent/unknown/service,
+    and its positive check only rejects qty <= 0, so NaN and True slip past it. Only
+    when a sell_by resolves is the positive/decimal check delegated to
+    validate_line_quantity. A numeric 0 is a legitimate value and is not rejected by
+    the finiteness gate; the per-unit rule decides it (audit lists pass
+    require_positive=False so a real zero on-hand count is allowed).
+    """
+    if qty_raw is None or isinstance(qty_raw, bool):
+        raise HTTPException(status_code=422, detail=f"{label}: quantity is required and must be a number")
+    try:
+        qty = float(qty_raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail=f"{label}: quantity must be a number, got {qty_raw!r}")
+    if not math.isfinite(qty):
+        raise HTTPException(status_code=422, detail=f"{label}: quantity must be a finite number, got {qty_raw!r}")
+    validate_line_quantity(qty, sell_by, unit_map, label=label, require_positive=require_positive)
+
+
+async def _validate_document_line_quantities(
+    line_items: list[dict], session: AsyncSession, company_id: str, *, require_positive: bool = True
+) -> None:
+    """Reject malformed document line quantities at the function boundary before a write.
+
+    Documents preserve the unit captured on the line at the time it was added, so the
+    submitted sell_by wins and the linked item's stored unit is only a fallback when the
+    line carries none. Delegates each line to the shared _check_line_quantity gate. An
+    unlinked / free-text line (no id, no line-supplied sell_by) gets only the finiteness
+    gate.
+    """
+    if not line_items:
+        return
+    unit_map = await _get_unit_map(session, company_id)
+    id_sell_by = await _line_sell_by_map(session, company_id, line_items)
+    for li in line_items:
+        if not isinstance(li, dict):
+            continue
+        label = li.get("name") or li.get("sku") or "Line item"
+        resolved_sell_by = li.get("sell_by") or id_sell_by.get(line_item_id(li))
+        _check_line_quantity(
+            li.get("quantity"), resolved_sell_by, unit_map,
+            require_positive=require_positive, label=label,
+        )
+
+
+async def _validate_list_line_quantities(
+    line_items: list[dict], session: AsyncSession, company_id: str, *, require_positive: bool = True
+) -> None:
+    """Reject malformed List line quantities at the function boundary before a write.
+
+    A List line linked by item_id takes the item's STORED unit, never the submitted one:
+    a stocked piece cannot be smuggled past the positive/decimal rule by submitting a
+    service unit. A linked item_id that resolves to no real item is rejected 422 with an
+    invalid_reference body rather than silently dropping to the free-text finiteness gate.
+    Delegates each line to the shared _check_line_quantity gate; an unlinked / free-text
+    line (no id) uses its own submitted sell_by.
+    """
+    if not line_items:
+        return
+    unit_map = await _get_unit_map(session, company_id)
+    id_sell_by = await _line_sell_by_map(session, company_id, line_items)
+    for li in line_items:
+        if not isinstance(li, dict):
+            continue
+        label = li.get("name") or li.get("sku") or "Line item"
+        lid = line_item_id(li)
+        if lid is not None:
+            if lid not in id_sell_by:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "invalid_reference",
+                        "message": f"Line references an unknown item: {lid}",
+                        "item_id": lid,
+                    },
+                )
+            # Linked line: the stored unit governs; a submitted sell_by is ignored.
+            resolved_sell_by = id_sell_by.get(lid)
+        else:
+            resolved_sell_by = li.get("sell_by")
+        _check_line_quantity(
+            li.get("quantity"), resolved_sell_by, unit_map,
+            require_positive=require_positive, label=label,
+        )
 
 
 async def _catalog_unit_price(session: AsyncSession, company_id, line: dict, price_config) -> float:
@@ -1251,17 +1383,11 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     # Validate patched line items when present
     new_line_items = (payload.fields_changed.get("line_items") or {}).get("new")
     if new_line_items is not None and isinstance(new_line_items, list):
-        unit_map = await _get_unit_map(session, company_id)
-        sell_by_map = await _get_item_sell_by_map(session, company_id)
-        for li in new_line_items:
-            sku = li.get("sku")
-            resolved_sell_by = li.get("sell_by") or (sell_by_map.get(sku) if sku else None)
-            validate_line_quantity(
-                float(li.get("quantity", 0) or 0),
-                resolved_sell_by,
-                unit_map,
-                label=li.get("name") or sku or "Line item",
-            )
+        # Documents are never audits: the positive rule always applies. The document validator
+        # preserves the unit captured on each line (submitted sell_by wins, stored is the
+        # fallback) and applies the own finiteness gate, so a NaN/inf/bool quantity can no
+        # longer be persisted onto a document.
+        await _validate_document_line_quantities(new_line_items, session, company_id)
 
         # Fix 3: guard against deleting fulfilled line items via the patch endpoint.
         # Compare the current doc's entity_ids against the incoming list; any entity_id
@@ -2847,14 +2973,17 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 {},
             )
 
-            # Fields to inherit from existing item; barcode excluded (unique per physical item)
+            # Fields to inherit from existing item; barcode and rfid_epc excluded (both are
+            # per-physical-unit: a received parcel is a new unit, so it mints a fresh barcode
+            # and carries no physical RFID/EPC tag). gtin is a product identifier and IS
+            # inherited from the catalog template.
             _INHERIT = (
                 "category", "unit", "sell_by", "description",
                 "cost_price", "wholesale_price", "retail_price",
                 "tax_codes", "hs_code", "weight", "weight_unit",
                 "dimensions", "dimensions_unit", "purchase_sku",
                 "purchase_name", "purchase_unit", "purchase_conversion_factor",
-                "allow_splitting", "pick_method",
+                "allow_splitting", "pick_method", "gtin",
             )
             item_data: dict = {k: sku_ref[k] for k in _INHERIT if k in sku_ref and sku_ref[k] is not None}
             # Copy dynamic category-specific attributes (measurements, shape/cut, etc.)
@@ -4186,6 +4315,10 @@ async def create_list(
         session, company_id,
         (li.get("item_id") or li.get("entity_id") for li in data.get("line_items") or []),
     )
+    await _validate_list_line_quantities(
+        data.get("line_items") or [], session, company_id,
+        require_positive=(payload.list_type != "audit"),
+    )
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
     await session.commit()
     return {"event_id": entry.id, "id": entity_id}
@@ -4227,6 +4360,10 @@ async def patch_list(
             session, company_id,
             {li.get("item_id") for li in _new_lines} - _existing,
         )
+        await _validate_list_line_quantities(
+            _new_lines, session, company_id,
+            require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
+        )
     # expected_version is a concurrency guard, not list data - it never enters the event payload.
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
                              payload.model_dump(exclude_none=True, exclude={"expected_version"}),
@@ -4246,7 +4383,7 @@ class ListLinePagePatch(BaseModel):
 
 def _line_identity(li: dict) -> str | None:
     """The stable identity of a catalog-backed line, or None for a free-text line that carries none."""
-    return li.get("item_id") or li.get("entity_id")
+    return line_item_id(li)
 
 
 @lists_router.patch("/{entity_id}/line-page")
@@ -4321,6 +4458,10 @@ async def patch_list_line_page(
     await _assert_no_draft_items(
         session, company_id,
         {_line_identity(li) for li in page} - _existing,
+    )
+    await _validate_list_line_quantities(
+        page, session, company_id,
+        require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
     )
 
     # Slice-splice: replace exactly the originally-loaded window. A shorter page truncates, a longer
@@ -5757,6 +5898,10 @@ async def receive_return(
             "wholesale_price": float(ref.get("wholesale_price") or li_fallback.get("wholesale_price") or 0) or None,
             "retail_price": float(ref.get("retail_price") or li_fallback.get("retail_price") or 0) or None,
             "barcode": _return_barcodes[_ridx],
+            # A returned parcel is a NEW physical lot of the SAME product, so the trade
+            # identifier (GTIN) travels with it; the physical tag (rfid_epc) does not and
+            # the barcode is freshly minted above.
+            "gtin": ref.get("gtin") or li_fallback.get("gtin") or None,
             "description": ref.get("description") or li_fallback.get("description") or "",
             "category": ref.get("category") or li_fallback.get("category") or "",
             "attributes": ref.get("attributes") or li_fallback.get("attributes") or {},
@@ -6300,11 +6445,13 @@ def _scan_line_from_item(item: Projection, list_type: str, price_list: str | Non
     st = item.state
     line = {"item_id": item.entity_id, "sku": st.get("sku"), "name": st.get("name"),
             "description": st.get("name"), "barcode": st.get("barcode")}
-    if list_type == "audit":
-        # System qty snapshot for the Qty column; on_hand is frozen separately at finalize.
-        line["quantity"] = float(st.get("quantity") or 0)
-    else:
-        line["quantity"] = 1
+    # Carry the item's unit so the stored line renders with it (a 650 gram scan stays 650 gram, not a
+    # bare 650). unit and sell_by are the same value; the line row reads either.
+    line["unit"] = st.get("sell_by")
+    line["sell_by"] = st.get("sell_by")
+    # System qty snapshot for the Qty column; on_hand is frozen separately at finalize.
+    line["quantity"] = float(st.get("quantity") or 0)
+    if list_type != "audit":
         if is_money_list(list_type):
             from celerp_inventory.routes import flatten_item
             flat = flatten_item(st, item.entity_id, price_config=price_config)
@@ -6419,6 +6566,7 @@ async def scan_list(
     _normalize_line_item_ids(lines)  # heal any legacy lines stored with only entity_id so matching works
     now = datetime.now(timezone.utc).isoformat()
     price_config = None  # money lists price new lines; fetched once for the whole batch, lazily
+    unit_map = None      # unit rules for scan-line validation; fetched once, lazily, only if needed
     results: list[dict] = []
     failed: list[dict] = []
     changed = False
@@ -6430,8 +6578,10 @@ async def scan_list(
     for code in codes:
         res = resolved.get(code)
         reason = detail = None
-        if res is not None and res.duplicate_barcode:
+        if res is not None and res.duplicate_physical:
             item = None
+            # The reason code "duplicate_barcode" is a stable external/audit contract; only
+            # the resolver property generalized to cover barcode + RFID EPC.
             reason, detail = "duplicate_barcode", duplicate_barcode_detail(code)
         elif res is not None and res.ambiguous:
             item = None
@@ -6467,6 +6617,22 @@ async def scan_list(
                     detail = f"{item.state.get('sku') or code}: already on the list"
                     failed.append({"code": code, "reason": "duplicate_scan", "label": detail})
                     results.append({"code": code, "state": "error", "reason": "duplicate_scan", "label": detail})
+                    continue
+                # Scan runs through the SAME per-line rule as an ordinary writer: a stocked line's
+                # snapshot must satisfy its unit rule (a zero-on-hand non-audit line is invalid). A
+                # failure is reported per-code and skipped, never persisted. sell_by is already in the
+                # item's own state, so no per-item query is needed.
+                if unit_map is None:
+                    unit_map = await _get_unit_map(session, company_id)
+                try:
+                    _check_line_quantity(
+                        item.state.get("quantity"), item.state.get("sell_by"), unit_map,
+                        require_positive=(lt != "audit"),
+                        label=item.state.get("sku") or code,
+                    )
+                except HTTPException as exc:
+                    failed.append({"code": code, "reason": "invalid_quantity", "label": exc.detail})
+                    results.append({"code": code, "state": "error", "reason": "invalid_quantity", "label": exc.detail})
                     continue
                 if price_config is None:
                     price_config = await get_price_config(session, company_id)

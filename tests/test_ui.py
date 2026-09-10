@@ -1562,6 +1562,30 @@ class TestDocCatalogLookup:
         data = r.json()
         assert data["sell_by"] is None
 
+    @pytest.mark.asyncio
+    async def test_catalog_lookup_fails_closed_on_cross_field_physical_collision(self, ui_client):
+        """RED at head: the document scanner resolves a barcode match first and returns
+        it immediately, bypassing the canonical shared Barcode/EPC namespace contract. A
+        code held as item A's barcode and item B's rfid_epc spans two distinct physical
+        items; the scanner must fail closed (409) exactly as /scanning/resolve does, never
+        silently select A."""
+        item_a = {"entity_id": "item:a", "sku": "AAA", "name": "Alpha", "retail_price": 10, "barcode": "123456"}
+        item_b = {"entity_id": "item:b", "sku": "BBB", "name": "Beta", "retail_price": 20, "rfid_epc": "123456"}
+
+        async def _list(_t, params=None):
+            params = params or {}
+            if params.get("barcode") == "123456":
+                return {"items": [item_a], "total": 1}
+            if params.get("rfid_epc") == "123456":
+                return {"items": [item_b], "total": 1}
+            return {"items": [], "total": 0}
+
+        with patch("ui.api_client.list_items", new=AsyncMock(side_effect=_list)):
+            r = await ui_client.get("/docs/catalog-lookup?sku=123456", cookies=_authed())
+        assert r.status_code == 409, (
+            f"a code on two physical items must fail closed, got {r.status_code}: {r.text}"
+        )
+
 
 class TestAccountingPage:
     @pytest.mark.asyncio

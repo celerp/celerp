@@ -1465,8 +1465,9 @@ def setup_routes(app):
         return _send_to_option_list(docs, "doc")
     @app.get("/docs/catalog-lookup")
     async def doc_catalog_lookup(request: Request):
-        """Lookup item by SKU or barcode. Returns {sku, description, unit_price} or {}."""
+        """Lookup item by barcode, RFID/EPC, GTIN, or SKU. Returns {sku, description, unit_price} or {}."""
         from starlette.responses import JSONResponse
+        from celerp_inventory.routes import duplicate_barcode_detail
         token = _token(request)
         if not token:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -1500,15 +1501,45 @@ def setup_routes(app):
             # picking items[0]. Candidates carry batch_no/entity_id so the user picks a lot.
             return {"ambiguous": True, "code": code, "candidates": [_extract(i) for i in items]}
 
+        async def _physical(field: str) -> list:
+            # Exact matches on one physical field, honoring the credit-note sold-first
+            # fallback. limit 20 (not 1) so a cross-field collision stays visible to the
+            # union below instead of being truncated to the first hit. The API normalizes
+            # the rfid_epc filter (trim + upper) so a typed lowercase tag still matches.
+            if is_credit_note:
+                return (await _first({field: code, "limit": 20, "status": "sold"})
+                        or await _first({field: code, "limit": 20}))
+            return await _first({field: code, "limit": 20})
+
         try:
-            # Barcode (unique physical lot) always wins and is unambiguous.
-            barcode_status = ({"barcode": code, "limit": 1, "status": "sold"} if is_credit_note
-                              else {"barcode": code, "limit": 1})
-            items = await _first(barcode_status)
-            if not items and is_credit_note:
-                items = await _first({"barcode": code, "limit": 1})
-            if items:
-                return JSONResponse(_extract(items[0]))
+            # Physical namespace: Barcode and RFID/EPC are ONE physical identity namespace.
+            # Gather exact matches on BOTH fields before returning either and dedup by
+            # physical item (entity_id). A value held as one item's barcode and another's
+            # rfid_epc spans two distinct lots: fail closed (409) exactly as the canonical
+            # resolver (/scanning/resolve) does, never silently selecting the first hit.
+            # Zero physical matches fall through to the product identifiers; exactly one
+            # resolves to that lot.
+            physical: dict = {}
+            for it in (await _physical("barcode")) + (await _physical("rfid_epc")):
+                physical.setdefault(it.get("entity_id") or it.get("id"), it)
+            if len(physical) > 1:
+                return JSONResponse({"error": duplicate_barcode_detail(code)}, status_code=409)
+            if len(physical) == 1:
+                return JSONResponse(_extract(next(iter(physical.values()))))
+
+            # GTIN identifies a product, not a physical lot, so it behaves like a SKU:
+            # forward sales consolidate splittable lots; >1 remaining -> chooser.
+            gtin_params = ({"gtin": code, "limit": 20, "status": "sold"} if is_credit_note
+                           else {"gtin": code, "limit": 20})
+            gtin_items = await _first(gtin_params)
+            if not gtin_items and is_credit_note:
+                gtin_items = await _first({"gtin": code, "limit": 20})
+            if not is_credit_note:
+                gtin_items = _consolidate_sales_lots(gtin_items, _company_settings)
+            if len(gtin_items) > 1:
+                return JSONResponse(_ambiguous(code, gtin_items))
+            if gtin_items:
+                return JSONResponse(_extract(gtin_items[0]))
 
             # Exact SKU: forward sales consolidate splittable lots into one option (the
             # pick-order-first lot); non-splittable / credit notes keep per-lot -> chooser.
@@ -7290,6 +7321,8 @@ window._L = {_json.dumps({
     "double_click_rename": t("documents.double_click_rename"),
     "save_failed": t("documents.save_failed"),
     "save_reload_action": t("documents.save_reload_action"),
+    "invalid_qty": t("documents.enter_a_number"),
+    "dup_on_doc": t("documents.duplicate_item_on_document"),
     "reprice_failed": t("documents.reprice_failed"),
     "import_failed": t("documents.import_failed"),
     "allow_split_warn": t("documents.allow_split_warn"),
@@ -7484,9 +7517,17 @@ function _celerpDocTypeParam() {{
             if (data.description || data.sku) {{
                 const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
                 const row = tpl.querySelector('tr') || tpl.children[0];
-                if (row) {{
-                    const d = {{...data, sku: data.sku || code}};
-                    celerpFillRow(row, d);
+                const d = {{...data, sku: data.sku || code}};
+                // Fill the detached row first; a false return means the item is a
+                // non-splittable duplicate already on the doc, so do NOT append the
+                // row and do NOT autosave - just show the message.
+                if (row && !celerpFillRow(row, d)) {{
+                    scanStatus.textContent = '✗ ' + _L.dup_on_doc;
+                    scanStatus.className = 'scan-bar-status scan-bar-status--err';
+                    scanInput.value = '';
+                    scanInput.focus();
+                    _clearStatusSoon();
+                    return;
                 }}
                 const tbody2 = document.getElementById('{line_body_id}');
                 tbody2.appendChild(tpl);
@@ -7509,7 +7550,41 @@ function _celerpDocTypeParam() {{
         setTimeout(() => {{ scanStatus.textContent = ''; }}, 3000);
     }});
 }})();
+function celerpFindPhysicalDuplicate(row, data) {{
+    // Return an existing line row that is a PHYSICAL DUPLICATE of `data`, or null.
+    // A physical duplicate is a non-splittable item (strict allow_splitting ===
+    // false) already present on another row: such an item may appear at most once.
+    // Match on the item id (entity_id) primarily; fall back to barcode only when
+    // no id is present (free-text lines carry no id). The row being edited is
+    // excluded so re-picking the same item on its own row is never a duplicate.
+    //
+    // The single-occurrence rule is scoped to the outbound customer-stock documents
+    // the backend enforces it on (invoice, memo); on every other document type
+    // (bills and other inbound/expense docs) the same physical item may repeat, so
+    // the guard is a no-op there. Mirrors DOCUMENT_ITEM_UNIQUE_DOC_TYPES.
+    if (_CELERP_DOC_TYPE !== 'invoice' && _CELERP_DOC_TYPE !== 'memo') return null;
+    if (data.allow_splitting !== false) return null;
+    const id = data.entity_id || null;
+    const barcode = data.barcode || null;
+    if (!id && !barcode) return null;
+    const rows = document.querySelectorAll('#{line_body_id} tr');
+    for (const other of rows) {{
+        if (other === row) continue;
+        if (id) {{
+            const otherId = other.querySelector('[data-name="entity_id"]')?.value || null;
+            if (otherId && otherId === id) return other;
+        }} else if (barcode) {{
+            const otherBc = other.querySelector('[data-name="barcode"]')?.value || null;
+            if (otherBc && otherBc === barcode) return other;
+        }}
+    }}
+    return null;
+}}
 function celerpFillRow(row, data) {{
+    // Reject a non-splittable item that is already on another line: leave this row
+    // untouched and report failure so the caller can surface the message and not
+    // append/autosave. Returns true on a successful fill, false when rejected.
+    if (celerpFindPhysicalDuplicate(row, data)) return false;
     // Picking a catalog item resets this row to a derived total (drops any user-typed override).
     const _ltEl = row.querySelector('.line-total');
     if (_ltEl) delete _ltEl.dataset.userset;
@@ -7669,7 +7744,8 @@ function celerpFillRow(row, data) {{
             cb.value = data.entity_id || '';
         }
     }
-""" if _draft_show_item_status else "") + f"""}}
+""" if _draft_show_item_status else "") + f"""    return true;
+}}
 /* ── Catalog autocomplete ── */
 window._celerpAcTimer = null;
 async function celerpAcSearch(input, field) {{
@@ -7694,8 +7770,14 @@ async function celerpAcSearch(input, field) {{
             opt.addEventListener('mousedown', e => {{
                 e.preventDefault();
                 const row = input.closest('tr');
-                celerpFillRow(row, {{...item, description: item.description}});
                 list.style.display = 'none';
+                // Reject a non-splittable item already on another line: leave this
+                // row as the operator left it and show the message, no autosave.
+                if (row && !celerpFillRow(row, {{...item, description: item.description}})) {{
+                    const statusEl = document.getElementById('save-status');
+                    if (statusEl) {{ statusEl.textContent = '\\u2717 ' + _L.dup_on_doc; statusEl.style.color = 'red'; }}
+                    return;
+                }}
                 celerpUpdateTotals();
                 celerpAutoSave();
             }});
@@ -7734,7 +7816,9 @@ function celerpAcBlur(input) {{
     const list = input.parentElement.querySelector('.catalog-ac-list');
     // If cursor moved to a dropdown option (mousedown), let that handler fire first
     setTimeout(() => {{ list.style.display = 'none'; }}, 200);
-    // If this is the SKU field and no entity_id linked yet, attempt a silent exact lookup
+    // If this is the SKU field and no entity_id linked yet, attempt a silent exact lookup.
+    // The fill (and its autosave) happen inside the async resolution, so that branch owns
+    // its own save: a rejected non-splittable duplicate must not be saved.
     if (input.dataset.name === 'sku') {{
         const row = input.closest('tr');
         const eidEl = row ? row.querySelector('[data-name="entity_id"]') : null;
@@ -7745,7 +7829,14 @@ function celerpAcBlur(input) {{
               .then(r => r.ok ? r.json() : [])
               .then(items => {{
                 const exact = items.find(i => i.sku && i.sku.toLowerCase() === sku.toLowerCase());
-                if (exact && exact.entity_id) celerpFillRow(row, exact);
+                if (exact && exact.entity_id) {{
+                    if (celerpFillRow(row, exact)) {{
+                        celerpAutoSave();
+                    }} else {{
+                        const statusEl = document.getElementById('save-status');
+                        if (statusEl) {{ statusEl.textContent = '\\u2717 ' + _L.dup_on_doc; statusEl.style.color = 'red'; }}
+                    }}
+                }}
               }});
         }}
     }}
@@ -8148,12 +8239,25 @@ document.addEventListener('click', function(e) {{
     if (pop.contains(e.target) || (e.target.closest && e.target.closest('.btn-disc-edit'))) return;
     pop.classList.remove('disc-popover--open');
 }});
+function _celerpReadQuantity(row) {{
+    // Read a line's quantity, failing closed: a missing, blank, or non-finite
+    // (NaN/Infinity) value returns null so the caller can abort the whole save
+    // rather than silently coerce it. A numeric 0 is a real value and is kept.
+    const el = row.querySelector('[data-name="quantity"]');
+    const raw = el ? el.value : null;
+    if (raw == null || String(raw).trim() === '') return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+}}
 function _celerpCollectLines() {{
+    // Returns the serialized lines, or null when a meaningful row carries an
+    // invalid quantity - the caller aborts the whole save and sends nothing.
     const lines = [];
-    document.querySelectorAll('#{line_body_id} tr').forEach(row => {{
+    const rows = document.querySelectorAll('#{line_body_id} tr');
+    for (const row of rows) {{
         const desc = row.querySelector('[data-name="description"]')?.value;
         const sku = row.querySelector('[data-name="sku"]')?.value;
-        const qty = parseFloat(row.querySelector('[data-name="quantity"]')?.value || 0);
+        const qty = _celerpReadQuantity(row);
         const unitEl = row.querySelector('[data-name="unit"]'); const unit = unitEl ? (unitEl.value || unitEl.textContent || '').trim() : '';
         const price = parseFloat(row.querySelector('[data-name="unit_price"]')?.value || 0);
         const discPct = parseFloat(row.querySelector('[data-name="discount_pct"]')?.value || 0);
@@ -8175,10 +8279,21 @@ function _celerpCollectLines() {{
         const weightEl = row.querySelector('[data-name="weight"]');
         const weight = weightEl && weightEl.value !== '' ? parseFloat(weightEl.value) : null;
         if (desc || sku || price || entityId || barcode) {{
+            // A meaningful row with no usable quantity fails the whole save closed:
+            // surface the error on the save-status element and send nothing, rather
+            // than coerce a blank/NaN quantity to 1 and persist corrupt data.
+            if (qty === null) {{
+                const statusEl = document.getElementById('save-status');
+                if (statusEl) {{
+                    statusEl.textContent = '\\u2717 ' + _L.invalid_qty;
+                    statusEl.style.color = 'red';
+                }}
+                return null;
+            }}
             const lineTotalEl = row.querySelector('.line-total');
             const discounted = lineTotalEl ? (parseFloat(lineTotalEl.value) || 0) : qty * price * (1 - discPct / 100);
             const taxList = rate !== 0 ? [{{code: code, rate: rate, amount: 0, order: 0, is_compound: false, label: taxLabel}}] : [];
-            lines.push({{description: desc || '', sku: sku || '', quantity: qty || 1, unit,
+            lines.push({{description: desc || '', sku: sku || '', quantity: qty, unit,
                          unit_price: price, discount_pct: discPct, tax_rate: rate, taxes: taxList,
                          line_total: discounted, hs_code: hsCode || undefined,
                          country_of_origin: countryOfOrigin || undefined,
@@ -8191,11 +8306,15 @@ function _celerpCollectLines() {{
                          ...(weight !== null ? {{weight}} : {{}}),
                          allow_splitting: allowSplitting}});
         }}
-    }});
+    }}
     return lines;
 }}
 async function _celerpPersist() {{
     const lines = _celerpCollectLines();
+    // A null return means the collector aborted on an invalid quantity and has
+    // already shown the error: send no request and report the save as failed so
+    // callers that gate on a clean save hold position.
+    if (lines === null) return false;
     // Persist even when empty if the doc had lines - deleting the last line must stick.
     // Skip only a blank doc that never had any lines (avoids a spurious empty save).
     // Return value: true when nothing needed saving or the save succeeded, false when a

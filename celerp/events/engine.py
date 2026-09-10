@@ -11,7 +11,9 @@ from sqlalchemy.exc import IntegrityError
 
 from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
+from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
+from celerp.services.document_lines import assert_document_item_uniqueness
 
 
 def apply_event(state: dict, event: LedgerEntry) -> dict:
@@ -126,8 +128,50 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
 
     schema(**kwargs["data"])
 
+    # The schema validates a Pydantic-made copy, so any code canonicalization it applies
+    # (rfid_epc -> trimmed upper-case, gtin -> validated form) never reaches the raw dict
+    # persisted below. Apply the same normalization to the dict that is actually stored, so
+    # the stored value equals what the availability check and the partial unique index
+    # compare against - otherwise a case-variant identifier is stored raw and never collides.
+    _normalize = getattr(schema, "normalize_for_storage", None)
+    if _normalize is not None:
+        _normalize(kwargs["data"])
+
     # Enforce period lock
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))
+
+    # Enforce physical-item uniqueness on new OUTBOUND doc writes (invoice, memo).
+    # Extract the post-change line set by DATA SHAPE so every doc writer (create,
+    # patch, shared_import, update, conversion, import) is covered by one rule,
+    # keyed on entity_type == "doc" rather than an event list. The doc-type scope
+    # lives in assert_document_item_uniqueness beside the invariant; this boundary
+    # only resolves the doc_type to hand it. Rebuild/replay applies events via
+    # apply_event, never emit_event, so historical events are never re-validated.
+    if kwargs.get("entity_type") == "doc":
+        data = kwargs.get("data") or {}
+        line_set = None
+        if isinstance(data.get("line_items"), list):
+            line_set = data["line_items"]
+        elif isinstance(data.get("fields_changed"), dict):
+            changed = data["fields_changed"].get("line_items")
+            if isinstance(changed, dict):
+                line_set = changed.get("new")
+        if line_set is not None:
+            # Prefer the event's own doc_type (present on doc.created and any update
+            # that carries it - zero query). Otherwise resolve it from the persisted
+            # projection, reading state["doc_type"] only when that projection is a doc
+            # (the Projection PK is (company_id, entity_id) with no type discriminator,
+            # so the entity_type check guards against a same-id non-doc projection).
+            doc_type = data.get("doc_type")
+            if doc_type is None:
+                proj = await session.get(
+                    Projection, (kwargs.get("company_id"), kwargs.get("entity_id"))
+                )
+                if proj is not None and proj.entity_type == "doc":
+                    doc_type = (proj.state or {}).get("doc_type")
+            await assert_document_item_uniqueness(
+                session, kwargs.get("company_id"), doc_type, line_set
+            )
 
     entry = LedgerEntry(**kwargs)
 

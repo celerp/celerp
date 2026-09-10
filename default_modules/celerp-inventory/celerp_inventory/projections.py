@@ -34,7 +34,8 @@ _CORE_ITEM_KEYS: frozenset[str] = frozenset({
     # replace it wholesale via fields_changed["attributes"], so it must NOT be treated as an attribute
     "attributes",
     # identity / system
-    "id", "entity_id", "company_id", "sku", "name", "barcode", "category", "status",
+    "id", "entity_id", "company_id", "sku", "name", "barcode", "gtin", "rfid_epc",
+    "category", "status",
     "created_at", "updated_at", "location_id", "location_name", "idempotency_key",
     # quantities / measures  (NOTE: `pieces` is intentionally NOT core — it lives under attributes)
     "quantity", "sell_by", "unit", "weight", "weight_unit", "gross_weight", "gross_weight_unit",

@@ -70,12 +70,12 @@ def test_duplicate_barcode_result_is_flagged_and_never_first_picked():
     from celerp_inventory.routes import ResolveResult, duplicate_barcode_detail
 
     dup = ResolveResult("barcode", ["m1", "m2"])
-    assert dup.duplicate_barcode is True
+    assert dup.duplicate_physical is True
     assert dup.one is None            # never silently picks a lot
     assert dup.ambiguous is False     # ambiguity is the SKU-only concept, distinct from this
     solo = ResolveResult("barcode", ["m1"])
-    assert solo.duplicate_barcode is False and solo.one == "m1"
-    assert duplicate_barcode_detail("900001") == "Duplicate barcode '900001' exists on multiple inventory items"
+    assert solo.duplicate_physical is False and solo.one == "m1"
+    assert duplicate_barcode_detail("900001") == "Duplicate physical code '900001' exists on multiple inventory items"
 
 
 async def _deactivate(session, cid, eid, into):
@@ -114,7 +114,7 @@ async def test_resolve_barcode_excludes_merged_source(session):
 
     res = await resolve_item_by_code(session, cid, "700001")
     assert res.kind == "barcode"
-    assert not res.duplicate_barcode           # the merged source no longer inflates the count
+    assert not res.duplicate_physical          # the merged source no longer inflates the count
     assert res.one is not None and res.one.entity_id == "item:live"
 
 
@@ -134,7 +134,7 @@ async def test_resolve_batch_barcode_excludes_merged_source(session):
     out = await resolve_items_by_codes(session, cid, ["700002"])
     res = out["700002"]
     assert res.kind == "barcode"
-    assert not res.duplicate_barcode
+    assert not res.duplicate_physical
     assert res.one is not None and res.one.entity_id == "item:live"
 
 
@@ -165,7 +165,7 @@ async def test_resolve_two_live_barcodes_still_duplicate(session):
 
     res = await resolve_item_by_code(session, cid, "700004")
     assert res.kind == "barcode"
-    assert res.duplicate_barcode is True
+    assert res.duplicate_physical is True
     assert res.one is None                     # never silently picks one live lot
 
 
