@@ -346,6 +346,92 @@ async def test_rfid_epc_case_variant_duplicate_rejected_409(client):
 
 
 @pytest.mark.asyncio
+async def test_import_cross_field_barcode_epc_collision_skipped(client):
+    """A batch-import row may not claim, as its rfid_epc, a value already held as
+    another item's barcode within the company: the row is skipped with an error and
+    never created, so the barcode's owner stays the only holder of the code.
+
+    Red at head b764c0da: batch_import_items emits rec.data verbatim with no shared
+    namespace check, so the colliding row is created and the code then belongs to two
+    items."""
+    t = await _register(client)
+
+    a = await client.post(
+        "/items",
+        headers=_h(t),
+        json={"status": "available", "sku": "IMP-A", "name": "IMP-A", "quantity": 1,
+              "sell_by": "piece", "inventory_type": "stocked", "barcode": "5901299"},
+    )
+    assert a.status_code == 200, a.text
+
+    rec = {
+        "entity_id": f"item:imp-{uuid.uuid4()}",
+        "entity_type": "item",
+        "event_type": "item.created",
+        "data": {"sku": "IMP-B", "name": "IMP-B", "quantity": 1,
+                 "sell_by": "piece", "rfid_epc": "5901299"},
+        "idempotency_key": f"test:impcf:{uuid.uuid4()}",
+        "source": "csv_import",
+        "source_ts": None,
+    }
+    r = await client.post(
+        "/items/import/batch",
+        headers=_h(t),
+        json={"records": [rec], "filename": "cross_field.csv"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["created"] == 0, body
+    assert body["skipped"] == 1, body
+    assert body["errors"], body
+
+    # The barcode still belongs only to item A; nothing holds it as an rfid_epc.
+    by_barcode = await client.get("/items", headers=_h(t), params={"barcode": "5901299"})
+    assert by_barcode.status_code == 200, by_barcode.text
+    assert {i["sku"] for i in by_barcode.json()["items"]} == {"IMP-A"}, by_barcode.json()
+
+    by_epc = await client.get("/items", headers=_h(t), params={"rfid_epc": "5901299"})
+    assert by_epc.status_code == 200, by_epc.text
+    assert by_epc.json()["items"] == [], by_epc.json()
+
+
+@pytest.mark.asyncio
+async def test_patch_rfid_epc_stored_upper_cased_and_resolvable(client):
+    """PATCH of an item's rfid_epc to a mixed-case, whitespace-padded value stores the
+    canonical trimmed upper-case form, and the item then resolves by a lowercase lookup.
+
+    Red at merge-base 2e48505 (pre-#326: patch has no rfid_epc handling and the event
+    boundary does not normalize it); green at head b764c0da, where patch validates +
+    locks + asserts availability and emit_event normalizes the persisted value. This is
+    the PATCH-path coverage of the corrected storage/lookup behavior."""
+    t = await _register(client)
+
+    r = await client.post(
+        "/items",
+        headers=_h(t),
+        json={"status": "available", "sku": "PU-1", "name": "PU-1", "quantity": 1,
+              "sell_by": "piece", "inventory_type": "stocked"},
+    )
+    assert r.status_code == 200, r.text
+    entity_id = r.json()["id"]
+
+    p = await client.patch(
+        f"/items/{entity_id}",
+        headers=_h(t),
+        json={"fields_changed": {"rfid_epc": {"old": None, "new": "  abcXYZ12  "}}},
+    )
+    assert p.status_code == 200, p.text
+
+    got = await client.get(f"/items/{entity_id}", headers=_h(t))
+    assert got.status_code == 200, got.text
+    assert got.json()["rfid_epc"] == "ABCXYZ12", got.json().get("rfid_epc")
+
+    lookup = await client.get("/items", headers=_h(t), params={"rfid_epc": "abcxyz12"})
+    assert lookup.status_code == 200, lookup.text
+    assert "PU-1" in {i["sku"] for i in lookup.json()["items"]}, lookup.json()
+
+
+@pytest.mark.asyncio
 async def test_invalid_gtin_returns_422_not_500(client):
     """A non-digit or wrong-length gtin on create returns 422 with the format
     message, never a 500 from an unhandled ValueError.
