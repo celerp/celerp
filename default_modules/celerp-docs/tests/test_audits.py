@@ -656,7 +656,10 @@ async def test_list_patch_line_items_replacement_requires_version(client):
     q = await _quotation(client, t)
     v0 = (await client.get(f"/lists/{q}", headers=_h(t))).json()["version"]
 
-    new_lines = [{"item_id": "item:zz", "sku": "ZZ", "quantity": 2}]
+    # Id-less free-text line: this test pins the version-pin requirement on a line_items
+    # replacement and asserts on the line's sku, never its item identity, so a realistic
+    # free-text line (no item_id) is correct - a synthetic item_id would be rejected 422.
+    new_lines = [{"sku": "ZZ", "quantity": 2}]
     # Replacement without a version pin -> rejected before it can clobber a concurrent write.
     r_missing = await client.patch(f"/lists/{q}", headers=_h(t),
                                    json={"fields_changed": {"line_items": {"new": new_lines}}})

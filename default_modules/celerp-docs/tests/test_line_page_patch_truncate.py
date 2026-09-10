@@ -35,6 +35,20 @@ async def _quotation(client, t) -> str:
     return r.json()["id"]
 
 
+async def _real_items(client, t, n: int) -> list[str]:
+    """Create n real inventory items and return their entity_ids, in order. A saved List line
+    that carries an item_id must reference a real item; these ids are the resolvable identities
+    the lines link to (so the truncation/delete assertions read a genuine item identity)."""
+    ids: list[str] = []
+    for i in range(n):
+        r = await client.post("/items", headers=_h(t), json={
+            "status": "available", "sku": f"TRUNC-{uuid.uuid4().hex[:10]}-{i}",
+            "name": f"Item {i}", "quantity": 5, "sell_by": "piece"})
+        assert r.status_code == 200, r.text
+        ids.append(r.json()["id"])
+    return ids
+
+
 async def _state(client, t, list_id) -> dict:
     return (await client.get(f"/lists/{list_id}", headers=_h(t))).json()
 
@@ -69,15 +83,16 @@ async def test_line_page_patch_truncates_on_shorter_page(client):
     behaviour, not a schema or version error."""
     t = await _register(client)
     q = await _quotation(client, t)
-    lines = [{"item_id": f"item:{i}", "sku": f"SKU{i}", "description": f"Item {i}",
+    items = await _real_items(client, t, 3)  # each line links a real inventory item
+    lines = [{"item_id": items[i], "sku": f"SKU{i}", "description": f"Item {i}",
               "quantity": 1, "unit_price": 1.0} for i in range(3)]
     v = await _set_lines(client, t, q, lines)
     before = (await _state(client, t, q))["line_items"]
     assert len(before) == 3
 
-    # The whole list is one page; the user deletes item:2 (the tail). The autosave resubmits the
-    # surviving rows [item:0, item:1] and, as the real editor does, the length of the window it
-    # loaded (original_count == 3) so the server knows the page shrank by one and truncates the tail.
+    # The whole list is one page; the user deletes the tail row (items[2]). The autosave resubmits
+    # the surviving rows [items[0], items[1]] and, as the real editor does, the length of the window
+    # it loaded (original_count == 3) so the server knows the page shrank by one and truncates the tail.
     page = [dict(before[0]), dict(before[1])]
     r = await client.patch(f"/lists/{q}/line-page", headers=_h(t),
                            json={"line_items": page, "offset": 0,
@@ -87,10 +102,10 @@ async def test_line_page_patch_truncates_on_shorter_page(client):
     after = (await _state(client, t, q))["line_items"]
     assert len(after) == 2, (
         f"deleting a line must shrink the persisted array to 2, got {len(after)}; "
-        f"identities {_ids(after)} (the deleted item:2 survived as a phantom row)")
-    assert _ids(after) == ["item:0", "item:1"], (
+        f"identities {_ids(after)} (the deleted tail row survived as a phantom row)")
+    assert _ids(after) == [items[0], items[1]], (
         f"surviving rows must be exactly the post-delete set; got {_ids(after)}")
-    assert "item:2" not in _ids(after), "the deleted row's identity must be gone"
+    assert items[2] not in _ids(after), "the deleted row's identity must be gone"
 
 
 @pytest.mark.asyncio
@@ -138,8 +153,8 @@ async def test_line_page_patch_rejects_draft_item(client):
 async def test_line_page_patch_deletes_middle_row(client):
     """Delete a row in the MIDDLE of the covered window. After the delete the surviving
     tail rows shift up one position, so the incoming page no longer sits id-for-id over
-    the stored rows: incoming[1] carries item:2 while stored[1] still holds item:2's
-    old neighbour item:1. A positional id comparison reads that legitimate shift as a
+    the stored rows: incoming[1] carries items[2]'s id while stored[1] still holds items[2]'s
+    old neighbour items[1]. A positional id comparison reads that legitimate shift as a
     concurrent edit and rejects the save 409; the slice-splice must accept it, because
     the window it replaces is the whole loaded slice, not a row-by-row overwrite.
 
@@ -147,14 +162,15 @@ async def test_line_page_patch_deletes_middle_row(client):
     set, read back through the real API - never a status-code-only assertion."""
     t = await _register(client)
     q = await _quotation(client, t)
-    lines = [{"item_id": f"item:{i}", "sku": f"SKU{i}", "description": f"Item {i}",
+    items = await _real_items(client, t, 3)  # each line links a real inventory item
+    lines = [{"item_id": items[i], "sku": f"SKU{i}", "description": f"Item {i}",
               "quantity": 1, "unit_price": 1.0} for i in range(3)]
     v = await _set_lines(client, t, q, lines)
     before = (await _state(client, t, q))["line_items"]
     assert len(before) == 3
 
-    # The user deletes item:1 (the middle row). The editor resubmits the surviving rows
-    # [item:0, item:2] and the loaded window length (original_count == 3).
+    # The user deletes the middle row (items[1]). The editor resubmits the surviving rows
+    # [items[0], items[2]] and the loaded window length (original_count == 3).
     page = [dict(before[0]), dict(before[2])]
     r = await client.patch(f"/lists/{q}/line-page", headers=_h(t),
                            json={"line_items": page, "offset": 0,
@@ -164,9 +180,9 @@ async def test_line_page_patch_deletes_middle_row(client):
         f"concurrent-edit conflict; got {r.status_code}: {r.text}")
 
     after = (await _state(client, t, q))["line_items"]
-    assert _ids(after) == ["item:0", "item:2"], (
+    assert _ids(after) == [items[0], items[2]], (
         f"the persisted array must be exactly the post-delete set; got {_ids(after)}")
-    assert "item:1" not in _ids(after), "the deleted middle row's identity must be gone"
+    assert items[1] not in _ids(after), "the deleted middle row's identity must be gone"
 
 
 @pytest.mark.asyncio
@@ -183,7 +199,8 @@ async def test_line_page_patch_window_cannot_exceed_loaded_array(client):
     API."""
     t = await _register(client)
     q = await _quotation(client, t)
-    lines = [{"item_id": f"item:{i}", "sku": f"SKU{i}", "description": f"Item {i}",
+    items = await _real_items(client, t, 3)  # each line links a real inventory item
+    lines = [{"item_id": items[i], "sku": f"SKU{i}", "description": f"Item {i}",
               "quantity": 1, "unit_price": 1.0} for i in range(3)]
     v = await _set_lines(client, t, q, lines)
     before = (await _state(client, t, q))["line_items"]
@@ -197,7 +214,7 @@ async def test_line_page_patch_window_cannot_exceed_loaded_array(client):
 
     after = (await _state(client, t, q))["line_items"]
     if r.status_code == 200:
-        assert _ids(after) == ["item:0", "item:1", "item:2"], (
+        assert _ids(after) == [items[0], items[1], items[2]], (
             f"a window past the loaded array must not drop rows the client never "
             f"loaded; persisted identities were {_ids(after)}")
     else:
@@ -221,7 +238,8 @@ async def test_line_page_patch_window_cannot_exceed_page_limit(client):
     Observable: all 150 rows survive, read back through the real API."""
     t = await _register(client)
     q = await _quotation(client, t)
-    lines = [{"item_id": f"item:{i}", "sku": f"SKU{i}", "description": f"Item {i}",
+    items = await _real_items(client, t, 150)  # each line links a real inventory item
+    lines = [{"item_id": items[i], "sku": f"SKU{i}", "description": f"Item {i}",
               "quantity": 1, "unit_price": 1.0} for i in range(150)]
     v = await _set_lines(client, t, q, lines)
     before = (await _state(client, t, q))["line_items"]

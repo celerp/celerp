@@ -48,7 +48,10 @@ async def _quotation(client, t) -> str:
 
 
 def _lines(n: int) -> list[dict]:
-    return [{"item_id": f"item:{i}", "sku": f"SKU{i}", "description": f"Item {i}",
+    # Id-less free-text lines: this test pins the paged-read DB traffic and never inspects a
+    # line's item identity, so a realistic free-text line (no item_id/entity_id) is the correct
+    # shape - a synthetic item_id would be rejected as an unknown reference.
+    return [{"sku": f"SKU{i}", "description": f"Item {i}",
              "quantity": 1, "unit_price": 1.0} for i in range(n)]
 
 
