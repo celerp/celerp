@@ -22,6 +22,7 @@ import uuid
 from typing import Any
 from urllib.parse import unquote
 
+import httpx
 import websockets
 from websockets.exceptions import ConnectionClosed
 
@@ -41,6 +42,31 @@ _REAP_GRACE = 5 * 60       # seconds
 # socket is wedged (a stalled or backpressured peer). Bound every send so it surfaces as an
 # error instead of pinning the proxy task holding a relay slot forever.
 _SEND_DEADLINE = 30        # seconds
+
+
+class _SharedProxyTransport(httpx.AsyncHTTPTransport):
+    """A shared bounded transport reused by a fresh AsyncClient per proxied request.
+
+    Each proxied browser request gets its own cheap AsyncClient so no cookie state
+    carries between visitors, but they all drive requests through this one
+    transport, whose Limits cap how many connections the gateway opens into the
+    local app. httpx.AsyncClient.__aexit__ (and aclose) unconditionally closes its
+    transport, so a per-request client leaving its `async with` block would tear
+    the shared pool out from under a sibling request. The per-client close is
+    therefore a no-op here: the pool outlives every client and is torn down only
+    by shutdown_pool(), called once from GatewayClient.close(). This mirrors the
+    UI's own shared-transport pattern; a local copy avoids the gateway layer
+    depending on the UI layer.
+    """
+
+    async def aclose(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc_info) -> None:
+        return None
+
+    async def shutdown_pool(self) -> None:
+        await super().aclose()
 
 
 def _shop_key(handle: str | None) -> str:
@@ -96,10 +122,12 @@ class GatewayClient:
         # request that outlived its socket can be recognised as stale and dropped
         # rather than sent on the freshly rebuilt connection.
         self._generation: int = 0
-        # One shared httpx client for all proxied requests, built lazily with bounded
-        # connection limits. A fresh client per request opened an unbounded number of
-        # pools under load; one bounded client caps the concurrency into the local app.
-        self._http_client: Any = None
+        # One shared bounded transport for all proxied requests, built lazily. Each
+        # proxied request opens its own cheap AsyncClient over this transport, so no
+        # cookie state carries between visitors, while the transport's Limits cap how
+        # many connections the gateway opens into the local app (a fresh full client
+        # per request opened an unbounded number of pools under load).
+        self._http_transport: _SharedProxyTransport | None = None
         # Observability counters for the proxy path, surfaced when the connection ends.
         self._proxied_count = 0
         self._cancelled_count = 0
@@ -234,7 +262,7 @@ class GatewayClient:
                 await ws.close()
             except Exception:
                 pass
-        await self._close_http_client()
+        await self._close_http_transport()
 
     async def _should_reap(self) -> bool:
         """A free instance with no live share and no recent proxied request should
@@ -597,28 +625,28 @@ class GatewayClient:
         except Exception as exc:
             log.warning("invoice.payment handling failed (entity=%s): %s", entity_id, exc)
 
-    def _get_http_client(self):
-        """Return the one shared httpx client used for every proxied request, building
-        it lazily on first use. A bounded connection pool caps how many concurrent
-        requests this client can drive into the local app, so a burst of relayed
-        requests can no longer open an unbounded number of pools. The default timeout
-        is the fixed cap; a per-request timeout_ms tightens it further."""
-        import httpx
-
-        if self._http_client is None:
-            self._http_client = httpx.AsyncClient(
-                timeout=180.0,
+    def _get_http_transport(self) -> _SharedProxyTransport:
+        """Return the one shared bounded transport that every per-request proxy client
+        drives, building it lazily on first use. The bounded connection pool caps how
+        many concurrent requests the gateway can drive into the local app, so a burst
+        of relayed requests can no longer open an unbounded number of pools. The
+        per-request AsyncClient wrapper carries the timeout (the fixed cap, tightened
+        further by a per-request timeout_ms)."""
+        if self._http_transport is None:
+            self._http_transport = _SharedProxyTransport(
                 limits=httpx.Limits(max_connections=32, max_keepalive_connections=8),
             )
-        return self._http_client
+        return self._http_transport
 
-    async def _close_http_client(self) -> None:
-        """Close the shared httpx client if one was built. Safe to call when none was."""
-        client = self._http_client
-        self._http_client = None
-        if client is not None:
+    async def _close_http_transport(self) -> None:
+        """Shut the shared transport's pool down if one was built. Safe to call when
+        none was; nulling first makes a second close() a no-op, so the pool is torn
+        down exactly once."""
+        transport = self._http_transport
+        self._http_transport = None
+        if transport is not None:
             try:
-                await client.aclose()
+                await transport.shutdown_pool()
             except Exception:
                 pass
 
@@ -639,8 +667,6 @@ class GatewayClient:
         non-absolute, carrying a fragment or control character, or not decodable);
         the caller refuses those with a neutral 400.
         """
-        import httpx
-
         if not isinstance(raw_path, str) or not raw_path.startswith("/"):
             return None
         if "#" in raw_path or any(ord(c) < 0x20 or ord(c) == 0x7f for c in raw_path):
@@ -780,29 +806,40 @@ class GatewayClient:
         if query:
             url = f"{url}?{query}"
 
-        client = self._get_http_client()
         try:
-            if deadline_s is not None:
-                # asyncio.wait_for, not asyncio.timeout: the latter is 3.11+, and this package
-                # supports Python >=3.10 where it does not exist. wait_for cancels the request and
-                # raises TimeoutError on the deadline, which the handler below turns into an error
-                # response.
-                resp = await asyncio.wait_for(
-                    client.request(
+            # A fresh client per request over the shared bounded transport: the
+            # wrapper's cookie jar exists only for this one request and is discarded
+            # on block exit, so no auth state carries between visitors, while the
+            # transport's pool stays shared and bounded. follow_redirects=False is
+            # explicit so the local app's redirect and cookies go back to the real
+            # browser rather than being followed internally. Opened inside the try so
+            # any construction error routes to the except Exception -> 502 below.
+            async with httpx.AsyncClient(
+                transport=self._get_http_transport(),
+                timeout=180.0,
+                follow_redirects=False,
+            ) as client:
+                if deadline_s is not None:
+                    # asyncio.wait_for, not asyncio.timeout: the latter is 3.11+, and this package
+                    # supports Python >=3.10 where it does not exist. wait_for cancels the request and
+                    # raises TimeoutError on the deadline, which the handler below turns into an error
+                    # response.
+                    resp = await asyncio.wait_for(
+                        client.request(
+                            method=method,
+                            url=url,
+                            headers=headers,
+                            content=body,
+                        ),
+                        deadline_s,
+                    )
+                else:
+                    resp = await client.request(
                         method=method,
                         url=url,
                         headers=headers,
                         content=body,
-                    ),
-                    deadline_s,
-                )
-            else:
-                resp = await client.request(
-                    method=method,
-                    url=url,
-                    headers=headers,
-                    content=body,
-                )
+                    )
         except asyncio.CancelledError:
             # http.cancel aborted this request: emit nothing and let the cancellation
             # propagate so the task is recorded cancelled.
