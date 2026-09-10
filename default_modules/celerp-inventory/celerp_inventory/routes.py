@@ -139,6 +139,7 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
     # Identity — always overridden explicitly
     "sku",
     "barcode",      # recalculated: new entity needs a new unique barcode
+    "rfid_epc",     # physical RFID/EPC tag: bound to one physical unit, never inherited by a new one
     # Quantity / cost — set by split math or pricing events
     "quantity",
     "weight",
@@ -1632,9 +1633,14 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
 
     # Duplicate/clone: mint a fresh unique barcode and discard any inherited one.
     # Mirrors the split child - a new entity needs a new unique barcode (barcode is
-    # globally unique, so a copy must never carry the source's).
+    # globally unique, so a copy must never carry the source's). The physical RFID/EPC
+    # tag is bound to one physical unit, so a clone must never inherit it either; the
+    # product GTIN is kept (a clone is the same product).
     if payload.auto_barcode:
-        payload = payload.model_copy(update={"barcode": (await allocate_internal_codes(session, company_id))[0]})
+        payload = payload.model_copy(update={
+            "barcode": (await allocate_internal_codes(session, company_id))[0],
+            "rfid_epc": None,
+        })
     # Auto-copy SKU to barcode when barcode omitted and SKU is purely numeric.
     # SKU is now a (possibly repeated) product-type, so gate the copy on collision:
     # if another item already uses that barcode (e.g. a second item deliberately
@@ -2932,6 +2938,9 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         "attributes": {**parent_attrs},
         "barcode": child_barcode,
     })
+    # A transform yields a DIFFERENT product, so the parent's product GTIN must not carry
+    # over (rfid_epc is already dropped via _CHILD_RESET_FIELDS, as it is a physical tag).
+    child_data.pop("gtin", None)
     if payload.child_weight is not None:
         child_data["weight"] = payload.child_weight
     if payload.child_weight_unit:
@@ -3277,7 +3286,10 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         "attributes": resolved_attrs,
         "barcode": merged_barcode,
     }
-    for field in ("category", "location_id", "description", "unit", "tax_codes"):
+    # The merged item is the same product as the target, so carry the target's product
+    # GTIN. The physical RFID/EPC tag is NOT carried: the merged item is a new physical
+    # unit (a fresh barcode is minted above), so it starts with no physical tag.
+    for field in ("category", "location_id", "description", "unit", "tax_codes", "gtin"):
         val = target_state.get(field)
         if val is not None:
             create_data[field] = str(val) if field == "location_id" else val

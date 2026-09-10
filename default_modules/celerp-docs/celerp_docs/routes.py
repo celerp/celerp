@@ -2925,14 +2925,17 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 {},
             )
 
-            # Fields to inherit from existing item; barcode excluded (unique per physical item)
+            # Fields to inherit from existing item; barcode and rfid_epc excluded (both are
+            # per-physical-unit: a received parcel is a new unit, so it mints a fresh barcode
+            # and carries no physical RFID/EPC tag). gtin is a product identifier and IS
+            # inherited from the catalog template.
             _INHERIT = (
                 "category", "unit", "sell_by", "description",
                 "cost_price", "wholesale_price", "retail_price",
                 "tax_codes", "hs_code", "weight", "weight_unit",
                 "dimensions", "dimensions_unit", "purchase_sku",
                 "purchase_name", "purchase_unit", "purchase_conversion_factor",
-                "allow_splitting", "pick_method",
+                "allow_splitting", "pick_method", "gtin",
             )
             item_data: dict = {k: sku_ref[k] for k in _INHERIT if k in sku_ref and sku_ref[k] is not None}
             # Copy dynamic category-specific attributes (measurements, shape/cut, etc.)
