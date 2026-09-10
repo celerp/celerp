@@ -280,3 +280,118 @@ async def test_cross_field_barcode_epc_collision_409(client):
               "sell_by": "piece", "inventory_type": "stocked", "rfid_epc": "5901234"},
     )
     assert b.status_code == 409, b.text
+
+
+# --- stored-value canonicalization + case-insensitive identity (HTTP) --------
+
+
+@pytest.mark.asyncio
+async def test_rfid_epc_stored_upper_cased_on_create(client):
+    """A mixed-case rfid_epc supplied on create is STORED upper-cased, not raw.
+
+    Red at merge-base and on the pre-normalization branch: the event boundary
+    persists the raw request value, so the stored projection state carries the
+    original case ('aBcd12ef') and this assertion fails."""
+    t = await _register(client)
+
+    r = await client.post(
+        "/items",
+        headers=_h(t),
+        json={"status": "available", "sku": "UC-1", "name": "UC-1", "quantity": 1,
+              "sell_by": "piece", "inventory_type": "stocked", "rfid_epc": "  aBcd12ef  "},
+    )
+    assert r.status_code == 200, r.text
+    entity_id = r.json()["id"]
+
+    got = await client.get(f"/items/{entity_id}", headers=_h(t))
+    assert got.status_code == 200, got.text
+    assert got.json()["rfid_epc"] == "ABCD12EF", got.json().get("rfid_epc")
+
+
+@pytest.mark.asyncio
+async def test_rfid_epc_case_variant_duplicate_rejected_409(client):
+    """A second item whose rfid_epc differs only in case from an existing one is a
+    physical-identity collision: it is rejected 409, and the original resolves by
+    either case.
+
+    Red at merge-base and on the pre-normalization branch: the first EPC is stored
+    raw-case, so the availability check (which normalizes the second input) compares
+    'ABC123' against the stored 'abc123' and finds no match, wrongly accepting 200."""
+    t = await _register(client)
+
+    a = await client.post(
+        "/items",
+        headers=_h(t),
+        json={"status": "available", "sku": "CV-A", "name": "CV-A", "quantity": 1,
+              "sell_by": "piece", "inventory_type": "stocked", "rfid_epc": "abc123"},
+    )
+    assert a.status_code == 200, a.text
+
+    b = await client.post(
+        "/items",
+        headers=_h(t),
+        json={"status": "available", "sku": "CV-B", "name": "CV-B", "quantity": 1,
+              "sell_by": "piece", "inventory_type": "stocked", "rfid_epc": "ABC123"},
+    )
+    assert b.status_code == 409, b.text
+
+    # The stored item resolves by either case through the normalizing list filter.
+    lower = await client.get("/items", headers=_h(t), params={"rfid_epc": "abc123"})
+    upper = await client.get("/items", headers=_h(t), params={"rfid_epc": "ABC123"})
+    assert lower.status_code == 200 and upper.status_code == 200
+    lower_skus = {i["sku"] for i in lower.json()["items"]}
+    upper_skus = {i["sku"] for i in upper.json()["items"]}
+    assert "CV-A" in lower_skus, lower.json()
+    assert "CV-A" in upper_skus, upper.json()
+
+
+@pytest.mark.asyncio
+async def test_invalid_gtin_returns_422_not_500(client):
+    """A non-digit or wrong-length gtin on create returns 422 with the format
+    message, never a 500 from an unhandled ValueError.
+
+    Red at merge-base and on the pre-fix branch: post_item has no gtin friendly-422
+    wrapper, so validate_gtin's ValueError falls through the global handler as 500."""
+    t = await _register(client)
+
+    non_digit = await client.post(
+        "/items",
+        headers=_h(t),
+        json={"status": "available", "sku": "G-1", "name": "G-1", "quantity": 1,
+              "sell_by": "piece", "inventory_type": "stocked", "gtin": "12A45678"},
+    )
+    assert non_digit.status_code == 422, non_digit.text
+    assert "digit" in non_digit.text.lower()
+
+    wrong_len = await client.post(
+        "/items",
+        headers=_h(t),
+        json={"status": "available", "sku": "G-2", "name": "G-2", "quantity": 1,
+              "sell_by": "piece", "inventory_type": "stocked", "gtin": "12345"},
+    )
+    assert wrong_len.status_code == 422, wrong_len.text
+
+
+@pytest.mark.asyncio
+async def test_invalid_rfid_epc_returns_422_not_500(client):
+    """An over-long or non-alphanumeric rfid_epc on create returns 422, never a 500.
+
+    Red at merge-base and on the pre-fix branch: post_item has no rfid_epc
+    friendly-422 wrapper, so validate_rfid_epc's ValueError falls through as 500."""
+    t = await _register(client)
+
+    too_long = await client.post(
+        "/items",
+        headers=_h(t),
+        json={"status": "available", "sku": "E-1", "name": "E-1", "quantity": 1,
+              "sell_by": "piece", "inventory_type": "stocked", "rfid_epc": "A" * 300},
+    )
+    assert too_long.status_code == 422, too_long.text
+
+    non_alnum = await client.post(
+        "/items",
+        headers=_h(t),
+        json={"status": "available", "sku": "E-2", "name": "E-2", "quantity": 1,
+              "sell_by": "piece", "inventory_type": "stocked", "rfid_epc": "abc-123!"},
+    )
+    assert non_alnum.status_code == 422, non_alnum.text
