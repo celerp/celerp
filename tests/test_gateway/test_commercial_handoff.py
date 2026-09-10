@@ -180,7 +180,7 @@ def test_safe_support_email_validates_address():
     from celerp.gateway.state import safe_support_email
     assert safe_support_email("help@partner.example.com") == "help@partner.example.com"
     assert safe_support_email("not-an-email") == ""
-    assert safe_support_email("a@b@c.com") == ""
+    assert safe_support_email("a@b@example.com") == ""
     assert safe_support_email("user@exa mple.com") == ""
     assert safe_support_email("user@example.com\r\nBcc: x@y.com") == ""
     assert safe_support_email("@nolocal.com") == ""
