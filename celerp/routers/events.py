@@ -22,6 +22,11 @@ router = APIRouter(tags=["events"])
 
 _TICK = object()  # sentinel: asyncio.TimeoutError path
 
+# Seconds the stream waits for a queued event before running the periodic
+# session-watch poll (nonce eviction, drain, keepalive). A module constant so the
+# poll cadence has one source of truth and tests can drive it deterministically.
+_STREAM_TICK_SECONDS = 10.0
+
 
 @router.get("/events/stream")
 async def events_stream(token: str = Depends(oauth2_scheme)):
@@ -55,14 +60,25 @@ async def events_stream(token: str = Depends(oauth2_scheme)):
     async def _stream():
         q = subscribe(company_id, user_id)
         keepalive_tick = 0
+        loop = asyncio.get_event_loop()
+        # Absolute deadline for the next session-watch poll. The poll runs on this
+        # deadline, not "10 seconds since the last notification", so a steady stream
+        # of notifications cannot starve eviction/drain detection.
+        next_tick = loop.time() + _STREAM_TICK_SECONDS
         try:
             while True:
-                try:
-                    event = await asyncio.wait_for(q.get(), timeout=10.0)
-                except asyncio.TimeoutError:
+                timeout = next_tick - loop.time()
+                if timeout > 0:
+                    try:
+                        event = await asyncio.wait_for(q.get(), timeout=timeout)
+                    except asyncio.TimeoutError:
+                        event = _TICK
+                    except asyncio.CancelledError:
+                        return
+                else:
+                    # Deadline already reached; run the poll without waiting on the
+                    # queue (which never blocks while notifications are flooding in).
                     event = _TICK
-                except asyncio.CancelledError:
-                    return
 
                 if event is None:
                     # Eviction/shutdown sentinel from sse.subscribe - close cleanly.
@@ -71,9 +87,15 @@ async def events_stream(token: str = Depends(oauth2_scheme)):
                 if event is not _TICK:
                     # Notification payload
                     yield f"event: notification\ndata: {json.dumps(event)}\n\n"
-                    continue
+                    if loop.time() < next_tick:
+                        continue
+                    # Deadline reached while draining the queue - fall through to the
+                    # poll before waiting on the next notification.
 
-                # Timeout path: poll nonce (same cache-first logic as auth.py session_watch)
+                # Poll path: re-arm the deadline, then poll nonce (cache-first, DB
+                # only on a miss). Re-arming here covers both the cache-hit keepalive
+                # continue and the bottom fall-through, avoiding a busy poll loop.
+                next_tick = loop.time() + _STREAM_TICK_SECONDS
                 # Skip nonce checks for legacy tokens that have no snonce claim - consistent
                 # with get_current_user which allows missing snonce for backward compatibility.
                 if token_nonce:

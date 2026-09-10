@@ -20,7 +20,9 @@ import os
 import time
 import uuid
 from typing import Any
+from urllib.parse import unquote
 
+import httpx
 import websockets
 from websockets.exceptions import ConnectionClosed
 
@@ -40,6 +42,31 @@ _REAP_GRACE = 5 * 60       # seconds
 # socket is wedged (a stalled or backpressured peer). Bound every send so it surfaces as an
 # error instead of pinning the proxy task holding a relay slot forever.
 _SEND_DEADLINE = 30        # seconds
+
+
+class _SharedProxyTransport(httpx.AsyncHTTPTransport):
+    """A shared bounded transport reused by a fresh AsyncClient per proxied request.
+
+    Each proxied browser request gets its own cheap AsyncClient so no cookie state
+    carries between visitors, but they all drive requests through this one
+    transport, whose Limits cap how many connections the gateway opens into the
+    local app. httpx.AsyncClient.__aexit__ (and aclose) unconditionally closes its
+    transport, so a per-request client leaving its `async with` block would tear
+    the shared pool out from under a sibling request. The per-client close is
+    therefore a no-op here: the pool outlives every client and is torn down only
+    by shutdown_pool(), called once from GatewayClient.close(). This mirrors the
+    UI's own shared-transport pattern; a local copy avoids the gateway layer
+    depending on the UI layer.
+    """
+
+    async def aclose(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc_info) -> None:
+        return None
+
+    async def shutdown_pool(self) -> None:
+        await super().aclose()
 
 
 def _shop_key(handle: str | None) -> str:
@@ -95,10 +122,12 @@ class GatewayClient:
         # request that outlived its socket can be recognised as stale and dropped
         # rather than sent on the freshly rebuilt connection.
         self._generation: int = 0
-        # One shared httpx client for all proxied requests, built lazily with bounded
-        # connection limits. A fresh client per request opened an unbounded number of
-        # pools under load; one bounded client caps the concurrency into the local app.
-        self._http_client: Any = None
+        # One shared bounded transport for all proxied requests, built lazily. Each
+        # proxied request opens its own cheap AsyncClient over this transport, so no
+        # cookie state carries between visitors, while the transport's Limits cap how
+        # many connections the gateway opens into the local app (a fresh full client
+        # per request opened an unbounded number of pools under load).
+        self._http_transport: _SharedProxyTransport | None = None
         # Observability counters for the proxy path, surfaced when the connection ends.
         self._proxied_count = 0
         self._cancelled_count = 0
@@ -233,7 +262,7 @@ class GatewayClient:
                 await ws.close()
             except Exception:
                 pass
-        await self._close_http_client()
+        await self._close_http_transport()
 
     async def _should_reap(self) -> bool:
         """A free instance with no live share and no recent proxied request should
@@ -596,30 +625,63 @@ class GatewayClient:
         except Exception as exc:
             log.warning("invoice.payment handling failed (entity=%s): %s", entity_id, exc)
 
-    def _get_http_client(self):
-        """Return the one shared httpx client used for every proxied request, building
-        it lazily on first use. A bounded connection pool caps how many concurrent
-        requests this client can drive into the local app, so a burst of relayed
-        requests can no longer open an unbounded number of pools. The default timeout
-        is the fixed cap; a per-request timeout_ms tightens it further."""
-        import httpx
-
-        if self._http_client is None:
-            self._http_client = httpx.AsyncClient(
-                timeout=180.0,
+    def _get_http_transport(self) -> _SharedProxyTransport:
+        """Return the one shared bounded transport that every per-request proxy client
+        drives, building it lazily on first use. The bounded connection pool caps how
+        many concurrent requests the gateway can drive into the local app, so a burst
+        of relayed requests can no longer open an unbounded number of pools. The
+        per-request AsyncClient wrapper carries the timeout (the fixed cap, tightened
+        further by a per-request timeout_ms)."""
+        if self._http_transport is None:
+            self._http_transport = _SharedProxyTransport(
                 limits=httpx.Limits(max_connections=32, max_keepalive_connections=8),
             )
-        return self._http_client
+        return self._http_transport
 
-    async def _close_http_client(self) -> None:
-        """Close the shared httpx client if one was built. Safe to call when none was."""
-        client = self._http_client
-        self._http_client = None
-        if client is not None:
+    async def _close_http_transport(self) -> None:
+        """Shut the shared transport's pool down if one was built. Safe to call when
+        none was; nulling first makes a second close() a no-op, so the pool is torn
+        down exactly once."""
+        transport = self._http_transport
+        self._http_transport = None
+        if transport is not None:
             try:
-                await client.aclose()
+                await transport.shutdown_pool()
             except Exception:
                 pass
+
+    @staticmethod
+    def _policy_path(raw_path: Any) -> str | None:
+        """Return the canonical local route a relay-supplied path resolves to.
+
+        httpx removes dot segments ('/x/../settings' -> '/settings') before it puts
+        the request on the wire, the local ASGI server then splits the target on the
+        first '?', percent-decodes the path once, and routes on the result; a browser
+        never sends a fragment. Classification and the local-only guard must run on
+        that same canonical value, not the raw wire string, or an encoded
+        ('/settings/%66actory-reset'), dot-segment ('/x/../settings/factory-reset'),
+        or fragmented ('/settings/factory-reset#x') variant would slip past a raw
+        match yet still route to the blocked handler locally. The canonical path is
+        derived from httpx itself so it can never diverge from what httpx transmits.
+        Returns None for any path that cannot address a local route (non-string,
+        non-absolute, carrying a fragment or control character, or not decodable);
+        the caller refuses those with a neutral 400.
+        """
+        if not isinstance(raw_path, str) or not raw_path.startswith("/"):
+            return None
+        if "#" in raw_path or any(ord(c) < 0x20 or ord(c) == 0x7f for c in raw_path):
+            return None
+        path_part = raw_path.split("?", 1)[0]
+        try:
+            transmitted = httpx.URL("http://127.0.0.1" + path_part).raw_path.split(b"?", 1)[0]
+            decoded = unquote(transmitted.decode("ascii"), errors="strict")
+        except (UnicodeDecodeError, ValueError, httpx.InvalidURL):
+            return None
+        if not decoded.startswith("/"):
+            return None
+        if "#" in decoded or any(ord(c) < 0x20 or ord(c) == 0x7f for c in decoded):
+            return None
+        return decoded
 
     async def _handle_proxy_request(self, payload: dict) -> None:
         """Handle a proxied HTTP request from the relay.
@@ -644,11 +706,10 @@ class GatewayClient:
 
         request_id = payload.get("id", "")
         method = payload.get("method", "GET")
-        path = payload.get("path", "/")
+        raw_path = payload.get("path")
         query = payload.get("query", "")
         headers = payload.get("headers", {})
         body_b64 = payload.get("body_b64", "")
-        body = base64.b64decode(body_b64) if body_b64 else None
         # Additive per-request deadline: a numeric timeout_ms bounds this request below
         # the fixed cap so a single slow local handler can't pin a relay slot for 180s.
         # Absent or non-numeric leaves the default cap in force.
@@ -657,17 +718,61 @@ class GatewayClient:
         if isinstance(timeout_ms, (int, float)) and not isinstance(timeout_ms, bool) and timeout_ms > 0:
             deadline_s = timeout_ms / 1000.0
 
+        # Validate the relay-supplied path before decoding the body or any
+        # classification, port selection, or local forwarding. Classification and
+        # the local-only guard run on the CANONICAL path the local server would
+        # route to (percent-decoded once, fragment stripped), so an encoded or
+        # fragmented variant of a blocked route cannot slip past a raw string
+        # match. A path that cannot address a local route is refused with a neutral
+        # 400 that echoes nothing back to the caller.
+        policy_path = self._policy_path(raw_path)
+        if policy_path is None:
+            await self._send(self._ws, {
+                "type": "http.response",
+                "payload": {
+                    "id": request_id,
+                    "status": 400,
+                    "headers": [["content-type", "text/plain"]],
+                    "body_b64": base64.b64encode(b"Invalid request path").decode(),
+                },
+            })
+            return
+
+        # Decode the body only after the path is known good. A malformed base64
+        # payload is contained with a neutral 400 rather than raising. validate=True
+        # rejects non-alphabet characters outright: the permissive default silently
+        # drops them, turning a malformed relay payload into a different request body
+        # instead of the intended containment.
+        try:
+            body = base64.b64decode(body_b64, validate=True) if body_b64 else None
+        except (ValueError, TypeError):
+            await self._send(self._ws, {
+                "type": "http.response",
+                "payload": {
+                    "id": request_id,
+                    "status": 400,
+                    "headers": [["content-type", "text/plain"]],
+                    "body_b64": base64.b64encode(b"Invalid request body").decode(),
+                },
+            })
+            return
+
         # SSE / long-poll paths cannot be proxied over the WS request/response
-        # protocol. Return an empty stream so the browser doesn't 500.
-        _streaming_paths = ("/notifications/stream",)
-        if any(path == p or path.startswith(p) for p in _streaming_paths):
+        # protocol. Answer with an immediate stub carrying a long retry: directive
+        # so the browser's EventSource backs off instead of reconnecting in a tight
+        # loop; real-time updates only work on direct local access. Mirrors the
+        # relay's own SSE suppression stub.
+        _streaming_paths = ("/events/stream",)
+        if any(policy_path == p or policy_path.startswith(p + "/") for p in _streaming_paths):
             await self._send(self._ws, {
                 "type": "http.response",
                 "payload": {
                     "id": request_id,
                     "status": 200,
                     "headers": [["content-type", "text/event-stream"], ["cache-control", "no-cache"]],
-                    "body_b64": base64.b64encode(b"data: {}\n\n").decode(),
+                    "body_b64": base64.b64encode(
+                        b"retry: 3600000\n: sse not supported over relay\n\n"
+                    ).decode(),
                 },
             })
             return
@@ -678,7 +783,7 @@ class GatewayClient:
         # setup is intentionally NOT blocked here - a headless cloud instance is provisioned
         # through this same proxy, so blocking it would break cloud onboarding.
         _local_only_paths = ("/settings/factory-reset",)
-        if any(path == p or path.startswith(p + "/") or path.startswith(p + "?") for p in _local_only_paths):
+        if any(policy_path == p or policy_path.startswith(p + "/") for p in _local_only_paths):
             await self._send(self._ws, {
                 "type": "http.response",
                 "payload": {
@@ -692,35 +797,49 @@ class GatewayClient:
             })
             return
 
-        port = self._local_port_for(path)
+        # Port is chosen from the canonical path (an encoded variant must map to
+        # the same local app), but the original path is forwarded verbatim so the
+        # local server performs its own decoding.
+        port = self._local_port_for(policy_path)
 
-        url = f"http://127.0.0.1:{port}{path}"
+        url = f"http://127.0.0.1:{port}{raw_path}"
         if query:
             url = f"{url}?{query}"
 
-        client = self._get_http_client()
         try:
-            if deadline_s is not None:
-                # asyncio.wait_for, not asyncio.timeout: the latter is 3.11+, and this package
-                # supports Python >=3.10 where it does not exist. wait_for cancels the request and
-                # raises TimeoutError on the deadline, which the handler below turns into an error
-                # response.
-                resp = await asyncio.wait_for(
-                    client.request(
+            # A fresh client per request over the shared bounded transport: the
+            # wrapper's cookie jar exists only for this one request and is discarded
+            # on block exit, so no auth state carries between visitors, while the
+            # transport's pool stays shared and bounded. follow_redirects=False is
+            # explicit so the local app's redirect and cookies go back to the real
+            # browser rather than being followed internally. Opened inside the try so
+            # any construction error routes to the except Exception -> 502 below.
+            async with httpx.AsyncClient(
+                transport=self._get_http_transport(),
+                timeout=180.0,
+                follow_redirects=False,
+            ) as client:
+                if deadline_s is not None:
+                    # asyncio.wait_for, not asyncio.timeout: the latter is 3.11+, and this package
+                    # supports Python >=3.10 where it does not exist. wait_for cancels the request and
+                    # raises TimeoutError on the deadline, which the handler below turns into an error
+                    # response.
+                    resp = await asyncio.wait_for(
+                        client.request(
+                            method=method,
+                            url=url,
+                            headers=headers,
+                            content=body,
+                        ),
+                        deadline_s,
+                    )
+                else:
+                    resp = await client.request(
                         method=method,
                         url=url,
                         headers=headers,
                         content=body,
-                    ),
-                    deadline_s,
-                )
-            else:
-                resp = await client.request(
-                    method=method,
-                    url=url,
-                    headers=headers,
-                    content=body,
-                )
+                    )
         except asyncio.CancelledError:
             # http.cancel aborted this request: emit nothing and let the cancellation
             # propagate so the task is recorded cancelled.
@@ -730,7 +849,7 @@ class GatewayClient:
             # The per-request deadline elapsed before the local handler answered. Surface
             # it as an error response instead of hanging to the fixed cap.
             self._timeout_count += 1
-            log.warning("Proxy request timed out after %sms for %s %s", timeout_ms, method, path)
+            log.warning("Proxy request timed out after %sms for %s %s", timeout_ms, method, raw_path)
             if generation == self._generation:
                 await self._send(self._ws, {
                     "type": "http.response",
@@ -745,7 +864,7 @@ class GatewayClient:
                 self._stale_dropped_count += 1
             return
         except Exception as exc:
-            log.warning("Proxy request failed for %s %s: %s", method, path, exc)
+            log.warning("Proxy request failed for %s %s: %s", method, raw_path, exc)
             if generation == self._generation:
                 await self._send(self._ws, {
                     "type": "http.response",

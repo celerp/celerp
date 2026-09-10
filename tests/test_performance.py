@@ -365,13 +365,13 @@ class TestListDocsCorrectness:
 # ---------------------------------------------------------------------------
 # SSE DB session leak tests
 # ---------------------------------------------------------------------------
-# The /notifications/stream SSE endpoint uses Depends(get_current_user), which
-# in turn calls Depends(get_session). FastAPI holds the yielded session alive
-# for the entire request lifetime - for StreamingResponse that means until the
-# stream is closed or the client disconnects. Each open browser tab holds one
-# DB connection permanently, exhausting the pool under normal multi-tab usage.
+# The muxed /events/stream SSE endpoint must not use Depends(get_session),
+# directly or via get_current_user. FastAPI holds a yielded session alive for the
+# entire request lifetime - for StreamingResponse that means until the stream is
+# closed or the client disconnects. Each open browser tab would hold one DB
+# connection permanently, exhausting the pool under normal multi-tab usage.
 #
-# Fix: do auth manually inside the handler body (decode token claims, no
+# The route decodes token claims manually inside the handler body (no
 # Depends(get_session)), so no session is retained after the StreamingResponse
 # is returned.
 
@@ -387,51 +387,30 @@ class TestSSESessionLeak:
         return result
 
     @pytest.mark.asyncio
-    async def test_notifications_stream_holds_no_db_session_dependency(self):
-        """The /notifications/stream route must not use Depends(get_session) directly
+    async def test_events_stream_holds_no_request_scoped_db_session_dependency(self):
+        """The muxed /events/stream route must not use Depends(get_session) directly
         or transitively via get_current_user. FastAPI keeps Depends-yielded sessions
         alive for the entire StreamingResponse lifetime, one DB connection per open tab.
         """
         from fastapi.routing import APIRoute
-        from celerp.routers.notifications import router as notifications_router
+        from celerp.routers.events import router as events_router
         from celerp.db import get_session
 
         # Inspect the route on its OWNING router (the source of truth), not the process-global
         # celerp.main.app, whose route table is not stable across an xdist worker's test sequence.
         stream_route = next(
-            (r for r in notifications_router.routes if isinstance(r, APIRoute) and r.path == "/notifications/stream"),
+            (r for r in events_router.routes if isinstance(r, APIRoute) and r.path == "/events/stream"),
             None,
         )
-        assert stream_route is not None, "/notifications/stream route not found"
+        assert stream_route is not None, "/events/stream route not found"
 
         all_calls = self._collect_dep_calls(stream_route.dependant)
         assert get_session not in all_calls, (
-            "/notifications/stream holds a DB session via Depends(get_session) (directly or via "
+            "/events/stream holds a DB session via Depends(get_session) (directly or via "
             "get_current_user). FastAPI keeps Depends-yielded sessions alive for the entire "
             "StreamingResponse lifetime - one DB connection per open browser tab causes pool "
-            "exhaustion. Fix: decode the token manually inside the handler, without Depends(get_session)."
-        )
-
-    @pytest.mark.asyncio
-    async def test_session_watch_holds_no_db_session_dependency(self):
-        """The /auth/session-watch route must not use Depends(get_session) at handler level.
-        Per-tick nonce checks use manual SessionLocal() context managers, not DI sessions.
-        """
-        from fastapi.routing import APIRoute
-        from celerp.routers.auth import router as auth_router
-        from celerp.db import get_session
-
-        # On the auth router the path is "/session-watch" ("/auth" prefix is applied at include time).
-        watch_route = next(
-            (r for r in auth_router.routes if isinstance(r, APIRoute) and r.path == "/session-watch"),
-            None,
-        )
-        assert watch_route is not None, "/auth/session-watch route not found"
-
-        all_calls = self._collect_dep_calls(watch_route.dependant)
-        assert get_session not in all_calls, (
-            "/auth/session-watch holds a DB session via Depends(get_session). "
-            "This leaks a connection for the entire SSE stream lifetime."
+            "exhaustion. The route decodes the token manually inside the handler, without "
+            "Depends(get_session)."
         )
 
 

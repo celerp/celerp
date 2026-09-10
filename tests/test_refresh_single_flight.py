@@ -103,6 +103,19 @@ async def test_refresh_success_grace_then_expiry(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bad_token", [None, "", "   ", "\t\n", 12345])
+async def test_refresh_rejects_empty_or_nonstring_token_locally(monkeypatch, bad_token):
+    """A non-string, empty, or whitespace-only refresh token is rejected at the top of
+    refresh_access_token with an authentication-shaped APIError, before any hashing or
+    upstream POST. Zero upstream calls occur."""
+    state = _install_counting_upstream(monkeypatch, result=("acc", "ref"))
+    with pytest.raises(api.APIError) as exc:
+        await api.refresh_access_token(bad_token)
+    assert exc.value.status == 401
+    assert state["calls"] == 0
+
+
+@pytest.mark.asyncio
 async def test_refresh_no_raw_token_retained_as_key(monkeypatch):
     """The in-process key is the SHA-256 digest of the token, never the raw token."""
     _install_counting_upstream(monkeypatch, result=("acc", "ref"), delay=0.05)

@@ -13,11 +13,10 @@ Subscribers are keyed by "company_id:user_id". Company-wide notifications
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
 from collections import defaultdict
-from typing import Any, AsyncGenerator
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -103,37 +102,3 @@ def shutdown_all() -> None:
             except asyncio.QueueFull:
                 pass
     _subscribers.clear()
-
-
-async def event_stream(
-    company_id: uuid.UUID,
-    user_id: uuid.UUID,
-) -> AsyncGenerator[str, None]:
-    """SSE event generator. Yields formatted SSE strings.
-
-    Yields a keepalive comment every 30s to prevent connection timeout.
-    Terminates when None is received (eviction or shutdown) or when the
-    request is cancelled (client disconnect or server shutdown).
-    """
-    q = subscribe(company_id, user_id)
-    try:
-        while True:
-            try:
-                event = await asyncio.wait_for(q.get(), timeout=30.0)
-            except asyncio.TimeoutError:
-                yield ": keepalive\n\n"
-                continue
-            except asyncio.CancelledError:
-                # Request cancelled — client disconnected or server shutting down.
-                return
-
-            if event is None:
-                # Eviction or shutdown signal
-                return
-
-            yield f"data: {json.dumps(event)}\n\n"
-    except asyncio.CancelledError:
-        # Catch CancelledError raised outside the inner try (e.g. during yield)
-        return
-    finally:
-        unsubscribe(company_id, user_id, q)

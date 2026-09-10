@@ -157,10 +157,6 @@ class TokenRefreshMiddleware:
         if any(path == p or path.startswith(p + "/") for p in _PUBLIC):
             await self._app(scope, receive, send)
             return
-        # SSE streaming routes must bypass the refresh middleware (it buffers responses)
-        if path == "/auth/session-watch":
-            await self._app(scope, receive, send)
-            return
 
         access_token = request.cookies.get(COOKIE_NAME)
         refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)

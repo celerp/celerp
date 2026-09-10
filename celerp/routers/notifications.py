@@ -7,7 +7,6 @@ Endpoints:
   GET    /notifications              List notifications (X-Unread-Count header)
   POST   /notifications/{id}/read    Mark one read
   POST   /notifications/read-all     Mark all read
-  GET    /notifications/stream       SSE endpoint for real-time push
 """
 
 from __future__ import annotations
@@ -15,14 +14,12 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.notifications import service as notif_svc
-from celerp.notifications.sse import event_stream
-from celerp.services.auth import get_current_company_id, get_current_user, oauth2_scheme
+from celerp.services.auth import get_current_company_id, get_current_user
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
@@ -100,35 +97,3 @@ async def mark_all_read(
     """Mark all notifications as read for the current user."""
     await notif_svc.mark_all_read(session, company_id, user.id)
     await session.commit()
-
-
-@router.get("/stream")
-async def notification_stream(token: str = Depends(oauth2_scheme)):
-    """SSE endpoint for real-time notification push.
-
-    Auth uses manual token decode (no Depends(get_session)) so FastAPI does NOT
-    hold a DB connection open for the stream lifetime. Using Depends(get_session)
-    here leaks one DB connection per open browser tab, exhausting the pool.
-
-    Sends keepalive comments every 30s. Events are JSON-encoded.
-    Max 5 concurrent connections per user (oldest evicted).
-    """
-    from celerp.services.auth import get_token_claims
-    import uuid as _uuid
-
-    claims = get_token_claims(token)
-    if claims is None:
-        raise HTTPException(status_code=401, detail="Session expired")
-    user_id_str = claims.get("sub", "")
-    company_id_str = claims.get("company_id", "")
-    if not user_id_str or not company_id_str:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    return StreamingResponse(
-        event_stream(_uuid.UUID(company_id_str), _uuid.UUID(user_id_str)),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
