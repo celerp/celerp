@@ -71,15 +71,25 @@ async def _next_seq(session: AsyncSession, company_id) -> int:
 
 
 async def allocate_internal_codes(session: AsyncSession, company_id, count: int = 1) -> list[str]:
-    """Lock the company's code namespace and return ``count`` fresh sequential codes.
+    """Lock the company's code namespace and return ``count`` fresh codes, each free.
 
-    The lock makes the scan-then-mint atomic against concurrent allocators. Codes
-    are zero-padded to the standard internal width and are guaranteed distinct
-    within the returned batch.
+    The lock makes the scan-then-mint atomic against concurrent allocators. Codes are
+    zero-padded to the standard internal width and are guaranteed distinct within the
+    returned batch. Starting from the next sequential value, any candidate already held
+    as a barcode OR an rfid_epc is skipped: the two fields share one physical-code
+    namespace, and the sequence scan counts integer SKUs and barcodes only, so a numeric
+    EPC can equal the next sequential code. Skipping here is the single guard every
+    internal-mint path inherits, so no caller re-implements the availability check.
     """
     await lock_item_code_namespace(session, company_id)
-    start = await _next_seq(session, company_id)
-    return [str(start + i).zfill(_SEQ_WIDTH) for i in range(count)]
+    codes: list[str] = []
+    candidate = await _next_seq(session, company_id)
+    while len(codes) < count:
+        code = str(candidate).zfill(_SEQ_WIDTH)
+        if not await _code_in_use(session, company_id, code):
+            codes.append(code)
+        candidate += 1
+    return codes
 
 
 async def _code_in_use(

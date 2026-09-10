@@ -5898,6 +5898,10 @@ async def receive_return(
             "wholesale_price": float(ref.get("wholesale_price") or li_fallback.get("wholesale_price") or 0) or None,
             "retail_price": float(ref.get("retail_price") or li_fallback.get("retail_price") or 0) or None,
             "barcode": _return_barcodes[_ridx],
+            # A returned parcel is a NEW physical lot of the SAME product, so the trade
+            # identifier (GTIN) travels with it; the physical tag (rfid_epc) does not and
+            # the barcode is freshly minted above.
+            "gtin": ref.get("gtin") or li_fallback.get("gtin") or None,
             "description": ref.get("description") or li_fallback.get("description") or "",
             "category": ref.get("category") or li_fallback.get("category") or "",
             "attributes": ref.get("attributes") or li_fallback.get("attributes") or {},

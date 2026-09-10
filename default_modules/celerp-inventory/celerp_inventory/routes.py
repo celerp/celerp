@@ -30,7 +30,6 @@ from celerp.inventory_codes import (
 )
 from celerp.models.projections import Projection
 from .services import (
-    _next_seq,
     allocate_internal_codes,
     assert_barcode_available,
     assert_rfid_epc_available,
@@ -2449,10 +2448,22 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     # Create child items
     child_eids: list[str] = []
     child_qty_list: list[float] = []
-    # Lock the code namespace before the scan so concurrent splits/creates cannot
-    # mint the same child barcodes; incremented in-memory per child under the lock.
-    await lock_item_code_namespace(session, company_id)
-    next_barcode_seq = await _next_seq(session, company_id)
+    # Mint one fresh free barcode per child that did not supply its own. The hardened
+    # allocator takes the code-namespace lock (held to commit) and skips any value already
+    # held as a barcode OR rfid_epc, so a minted child barcode can never collide with an
+    # existing physical tag. A caller-supplied child barcode is then checked against the
+    # same shared namespace under that lock and rejected with a clean 409 on conflict.
+    _minted_barcodes = iter(
+        await allocate_internal_codes(
+            session, company_id, sum(1 for c in children if c.barcode is None)
+        )
+    )
+    try:
+        for child in children:
+            if child.barcode is not None:
+                await assert_barcode_available(session, company_id, child.barcode)
+    except BarcodeConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Pre-compute child cost_totals using unit cost invariant: cost_price is the same for
     # parent and child, so child_cost_total = (parent_cost_total / parent_qty) * child_qty.
@@ -2499,11 +2510,10 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             "quantity": child.quantity,
             "status": "available",
             "attributes": _child_attrs,
-            "barcode": child.barcode if child.barcode is not None else str(next_barcode_seq).zfill(6),
+            "barcode": child.barcode if child.barcode is not None else next(_minted_barcodes),
         })
         if child.weight is not None:
             child_data["weight"] = child.weight
-        next_barcode_seq += 1
         await emit_event(
             session,
             company_id=company_id,
@@ -2843,9 +2853,10 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
 
     # --- create the child ---
     child_eid = f"item:{uuid.uuid4()}"
-    # Lock the code namespace so a concurrent split/create cannot mint the same barcode.
-    await lock_item_code_namespace(session, company_id)
-    next_barcode_seq = await _next_seq(session, company_id)
+    # Mint a fresh free barcode through the hardened allocator, which skips any value
+    # already held as a barcode OR rfid_epc so this new physical lot never collides with
+    # an existing tag.
+    child_barcode = (await allocate_internal_codes(session, company_id))[0]
     child_attrs = dict(parent_attrs)
     if ch_pieces is not None:
         child_attrs["pieces"] = ch_pieces
@@ -2856,7 +2867,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
         "quantity": child_qty,
         "status": "available",
         "attributes": child_attrs,
-        "barcode": str(next_barcode_seq).zfill(6),
+        "barcode": child_barcode,
         # Resolve a possibly-unset parent default to a concrete bool: a None parent
         # (splittable by default) must not emit a None the item.created schema rejects.
         "allow_splitting": splitting_allowed(parent.state),
