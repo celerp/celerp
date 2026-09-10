@@ -867,6 +867,64 @@ async def test_proxy_forwards_valid_encoded_path_verbatim(client, monkeypatch):
     assert captured["url"].endswith("/items/a%20b"), captured
 
 
+@pytest.mark.asyncio
+async def test_proxy_classification_ignores_accept_header(client, monkeypatch):
+    """Stream classification is path-based only; the Accept header never changes it.
+
+    Green at head, not red-first: no Accept logic exists, so this locks the path-only
+    design against a plausible regression. Adding Accept-based SSE detection would
+    short-circuit a normal request carrying Accept: text/event-stream into the empty
+    stub instead of its real response (and would misroute a future local SSE path). Both
+    directions are asserted with one shared local client: /events/stream stays the stub
+    under a non-SSE Accept, and a normal path under an SSE Accept still forwards.
+    """
+    import base64 as _b64
+    captured = {}
+    sent = []
+
+    class FakeResp:
+        status_code = 200
+        content = b"ok"
+        headers = httpx.Headers([("content-type", "text/plain")])
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+        async def request(self, method, url, headers=None, content=None):
+            captured["url"] = url
+            return FakeResp()
+
+    monkeypatch.setattr("httpx.AsyncClient", FakeClient)
+
+    async def fake_send(ws, msg):
+        sent.append(msg)
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
+    client._ws = object()
+
+    # Direction 1: /events/stream is classified as the SSE stub even with a non-SSE
+    # Accept, so the local client's "ok" is never used.
+    await client._handle_proxy_request({
+        "id": "r1", "method": "GET", "path": "/events/stream",
+        "query": "", "headers": {"accept": "application/json"}, "body_b64": "",
+    })
+    assert len(sent) == 1, sent
+    stub = sent[0]["payload"]
+    assert stub["status"] == 200
+    assert _b64.b64decode(stub["body_b64"]).startswith(b"retry: 3600000\n")
+    assert "url" not in captured, "the SSE stub must short-circuit before the local client"
+
+    # Direction 2: a normal path carrying Accept: text/event-stream is NOT classified as
+    # a stream - it is forwarded to the local server like any other request.
+    sent.clear()
+    await client._handle_proxy_request({
+        "id": "r2", "method": "GET", "path": "/x",
+        "query": "", "headers": {"accept": "text/event-stream"}, "body_b64": "",
+    })
+    assert captured.get("url", "").endswith("/x"), captured
+    assert sent[-1]["payload"]["status"] == 200
+    assert _b64.b64decode(sent[-1]["payload"]["body_b64"]) == b"ok"
+
+
 # ── reconnect loop console noise ──────────────────────────────────────────────
 # The relay being down must not spam the console: one line when the connection
 # is lost, silence during retries, one line when it comes back.

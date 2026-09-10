@@ -181,3 +181,44 @@ async def test_events_stream_closes_on_shutdown_sentinel():
         await asyncio.wait_for(task, timeout=5.0)
 
     assert not _subscribers.get(key)
+
+
+@pytest.mark.asyncio
+async def test_events_stream_releases_subscription_on_normal_completion(session, monkeypatch):
+    """A stream that ends by returning from its loop (normal completion, not a client
+    disconnect) releases its subscriber queue through the same teardown.
+
+    Green at merge-base by design: subscribe/unsubscribe and the stream's
+    finally-clause unsubscribe are unchanged on this branch, so this characterizes
+    pre-existing handling rather than a behavior change - it claims no red-first
+    evidence. It complements test_events_stream_unsubscribes_on_disconnect, which
+    exercises the GeneratorExit teardown via aclose(); here the generator instead
+    reaches a return on the evicted path and runs on to StopAsyncIteration, proving the
+    normal-completion control path also releases the queue. A leak here would exhaust
+    MAX_SUBSCRIBERS_PER_USER and start evicting live sessions.
+    """
+    monkeypatch.setattr(events_mod, "_STREAM_TICK_SECONDS", 0.02)
+    token, company_id, user_id, user_id_str = _bearer(snonce="client-nonce")
+    key = f"{company_id}:{user_id}"
+    _subscribers.pop(key, None)
+    # Cached server-side nonce differs from the token's - the eviction condition that
+    # makes the stream return on its next tick.
+    _nonce_cache_set(user_id_str, "server-nonce")
+
+    resp = await events_mod.events_stream(token=token)
+    agen = resp.body_iterator
+
+    chunk = await _next_event(agen)
+    assert chunk.startswith("event: evicted")
+    # The queue is still registered here: the generator is suspended right after the
+    # yield, before it executes the return that follows.
+    assert _subscribers.get(key)
+
+    # Advancing past the yield runs the return, its finally clause, and raises
+    # StopAsyncIteration - WITHOUT aclose(). That is the normal-completion release path
+    # under test.
+    task = asyncio.create_task(agen.__anext__())
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(task, timeout=5.0)
+
+    assert not _subscribers.get(key)
