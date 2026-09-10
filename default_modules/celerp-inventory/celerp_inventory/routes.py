@@ -30,6 +30,7 @@ from celerp.inventory_codes import (
 )
 from celerp.models.projections import Projection
 from .services import (
+    _code_in_use,
     allocate_internal_codes,
     assert_barcode_available,
     assert_rfid_epc_available,
@@ -1686,20 +1687,18 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
             "rfid_epc": None,
         })
     # Auto-copy SKU to barcode when barcode omitted and SKU is purely numeric.
-    # SKU is now a (possibly repeated) product-type, so gate the copy on collision:
-    # if another item already uses that barcode (e.g. a second item deliberately
-    # sharing a numeric SKU), assign a fresh sequential barcode instead so the
-    # duplicate-SKU create does not 409 on barcode. Single-SKU behaviour is
-    # unchanged (the first/only item still gets barcode == sku).
+    # SKU is a (possibly repeated) product-type, so gate the copy on the shared
+    # Barcode/EPC physical namespace: if that value is already in use as another
+    # item's barcode OR rfid_epc, assign a fresh sequential barcode instead so the
+    # create does not 409 on the final physical check (a second item sharing a
+    # numeric SKU, or a value held as another item's EPC, must not block it). A SKU
+    # is a product identifier and never inherits physical-code uniqueness.
+    # Single-SKU behaviour is unchanged (the first/only item still gets barcode == sku).
     elif payload.barcode is None and payload.sku.isdigit():
-        clash = (await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "item",
-                Projection.state["barcode"].as_string() == payload.sku,
-            )
-        )).scalars().first()
-        new_barcode = (await allocate_internal_codes(session, company_id))[0] if clash else payload.sku
+        if await _code_in_use(session, company_id, payload.sku):
+            new_barcode = (await allocate_internal_codes(session, company_id))[0]
+        else:
+            new_barcode = payload.sku
         payload = payload.model_copy(update={"barcode": new_barcode})
 
     # SKU uniqueness is intentionally NOT enforced: `sku` is a product-type that may

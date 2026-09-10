@@ -442,3 +442,63 @@ async def test_customer_return_parcel_inherits_gtin_fresh_barcode_no_epc(client,
     res = await resolve_item_by_code(session, cid, "12345670")
     assert returned_id in {m.entity_id for m in res.matches}, \
         "the product gtin must resolve to the returned parcel"
+
+
+# --- B8: numeric-SKU automatic barcode assignment checks the shared Barcode/EPC
+# namespace, not only the barcode slot. SKU is a (possibly repeated) product identifier
+# and must not inherit the physical-code uniqueness constraint; when its value is already
+# held as a physical code, the create mints a fresh barcode rather than 409.
+
+
+@pytest.mark.asyncio
+async def test_numeric_sku_create_skips_value_held_as_epc(client, session):
+    """RED at head: on create, the numeric-SKU barcode auto-copy pre-checks only the
+    barcode slot. An existing item holding the SKU value as its rfid_epc makes
+    `barcode = sku` collide on the final shared physical check and 409s the create. SKU is
+    a non-unique product identifier, so the create must mint a fresh sequential barcode
+    instead, exactly as it does when the numeric SKU collides with an existing barcode."""
+    h = _h(await _token(client))
+    # Existing item carrying the numeric value "000123" as its physical EPC tag.
+    epc_holder = (await client.post(
+        "/items",
+        json={"status": "available", "sku": "EPC-HOLDER-N", "name": "EpcHolderN",
+              "quantity": 1.0, "sell_by": "piece", "rfid_epc": "000123"},
+        headers=h,
+    )).json()["id"]
+
+    # New item with a numeric SKU equal to that EPC value and no barcode supplied.
+    r = await client.post(
+        "/items",
+        json={"status": "available", "sku": "000123", "name": "Numeric",
+              "quantity": 1.0, "sell_by": "piece"},
+        headers=h,
+    )
+    assert r.status_code == 200, \
+        f"numeric-SKU create must not 409 on the shared-namespace EPC, got {r.status_code}: {r.text}"
+    created = await _item(client, h, r.json()["id"])
+    assert created.get("barcode") and created.get("barcode") != "000123", \
+        f"numeric-SKU create colliding with an EPC must mint a fresh barcode, got {created.get('barcode')!r}"
+
+    # The EPC still resolves to exactly its original holder: nothing else took "000123".
+    cid = await _company_id(session, epc_holder)
+    res = await resolve_item_by_code(session, cid, "000123")
+    assert res.duplicate_physical is False, "value 000123 now spans two physical items"
+    assert res.one is not None and res.one.entity_id == epc_holder, \
+        f"000123 must still resolve to its original EPC holder, got {res.one}"
+
+
+@pytest.mark.asyncio
+async def test_numeric_sku_create_without_collision_still_copies_to_barcode(client, session):
+    """Green guard: the single-item numeric-SKU behaviour is unchanged - with no barcode
+    or EPC already holding the value, a numeric SKU is still copied verbatim to barcode."""
+    h = _h(await _token(client))
+    r = await client.post(
+        "/items",
+        json={"status": "available", "sku": "778899", "name": "Solo",
+              "quantity": 1.0, "sell_by": "piece"},
+        headers=h,
+    )
+    assert r.status_code == 200, r.text
+    created = await _item(client, h, r.json()["id"])
+    assert created.get("barcode") == "778899", \
+        f"a free numeric SKU must still copy to barcode, got {created.get('barcode')!r}"

@@ -1467,6 +1467,7 @@ def setup_routes(app):
     async def doc_catalog_lookup(request: Request):
         """Lookup item by barcode, RFID/EPC, GTIN, or SKU. Returns {sku, description, unit_price} or {}."""
         from starlette.responses import JSONResponse
+        from celerp_inventory.routes import duplicate_barcode_detail
         token = _token(request)
         if not token:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -1500,25 +1501,31 @@ def setup_routes(app):
             # picking items[0]. Candidates carry batch_no/entity_id so the user picks a lot.
             return {"ambiguous": True, "code": code, "candidates": [_extract(i) for i in items]}
 
-        try:
-            # Barcode (unique physical lot) always wins and is unambiguous.
-            barcode_status = ({"barcode": code, "limit": 1, "status": "sold"} if is_credit_note
-                              else {"barcode": code, "limit": 1})
-            items = await _first(barcode_status)
-            if not items and is_credit_note:
-                items = await _first({"barcode": code, "limit": 1})
-            if items:
-                return JSONResponse(_extract(items[0]))
+        async def _physical(field: str) -> list:
+            # Exact matches on one physical field, honoring the credit-note sold-first
+            # fallback. limit 20 (not 1) so a cross-field collision stays visible to the
+            # union below instead of being truncated to the first hit. The API normalizes
+            # the rfid_epc filter (trim + upper) so a typed lowercase tag still matches.
+            if is_credit_note:
+                return (await _first({field: code, "limit": 20, "status": "sold"})
+                        or await _first({field: code, "limit": 20}))
+            return await _first({field: code, "limit": 20})
 
-            # RFID/EPC (unique physical lot) resolves the same as a barcode; the API
-            # normalizes the exact filter (trim + upper) so a typed lowercase tag matches.
-            epc_status = ({"rfid_epc": code, "limit": 1, "status": "sold"} if is_credit_note
-                          else {"rfid_epc": code, "limit": 1})
-            epc_items = await _first(epc_status)
-            if not epc_items and is_credit_note:
-                epc_items = await _first({"rfid_epc": code, "limit": 1})
-            if epc_items:
-                return JSONResponse(_extract(epc_items[0]))
+        try:
+            # Physical namespace: Barcode and RFID/EPC are ONE physical identity namespace.
+            # Gather exact matches on BOTH fields before returning either and dedup by
+            # physical item (entity_id). A value held as one item's barcode and another's
+            # rfid_epc spans two distinct lots: fail closed (409) exactly as the canonical
+            # resolver (/scanning/resolve) does, never silently selecting the first hit.
+            # Zero physical matches fall through to the product identifiers; exactly one
+            # resolves to that lot.
+            physical: dict = {}
+            for it in (await _physical("barcode")) + (await _physical("rfid_epc")):
+                physical.setdefault(it.get("entity_id") or it.get("id"), it)
+            if len(physical) > 1:
+                return JSONResponse({"error": duplicate_barcode_detail(code)}, status_code=409)
+            if len(physical) == 1:
+                return JSONResponse(_extract(next(iter(physical.values()))))
 
             # GTIN identifies a product, not a physical lot, so it behaves like a SKU:
             # forward sales consolidate splittable lots; >1 remaining -> chooser.
