@@ -115,6 +115,11 @@ describe("config-writer single-writer owner token", () => {
 describe("config-writer directory fsync", () => {
   test("check_js_config_dir_fsync: the parent directory is fsynced after rename", () => {
     const { dir, cfg } = sandbox();
+    // Capture the real implementations before spying: spyOn mutates fs in place,
+    // and for a core module jest.requireActual("fs") returns that same spied
+    // object, so calling through it would re-enter the mock and recurse.
+    const realOpenSync = fs.openSync;
+    const realFsyncSync = fs.fsyncSync;
     const openSpy = jest.spyOn(fs, "openSync");
     const fsyncSpy = jest.spyOn(fs, "fsyncSync");
     let dirFsynced = false;
@@ -123,13 +128,13 @@ describe("config-writer directory fsync", () => {
       // them is fsynced.
       const dirFds = new Set();
       openSpy.mockImplementation((p, ...rest) => {
-        const fd = jest.requireActual("fs").openSync(p, ...rest);
+        const fd = realOpenSync(p, ...rest);
         if (p === dir) dirFds.add(fd);
         return fd;
       });
       fsyncSpy.mockImplementation((fd) => {
         if (dirFds.has(fd)) dirFsynced = true;
-        return jest.requireActual("fs").fsyncSync(fd);
+        return realFsyncSync(fd);
       });
       writeConfig(cfg, { durable: true });
     } finally {
