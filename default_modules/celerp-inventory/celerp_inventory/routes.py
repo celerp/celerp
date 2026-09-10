@@ -20,12 +20,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.events.schemas import reject_comma_sku
-from celerp.inventory_codes import BarcodeConflictError, validate_barcode
+from celerp.inventory_codes import (
+    BarcodeConflictError,
+    RfidEpcConflictError,
+    validate_barcode,
+)
 from celerp.models.projections import Projection
 from .services import (
     _next_seq,
     allocate_internal_codes,
     assert_barcode_available,
+    assert_rfid_epc_available,
     lock_item_code_namespace,
 )
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
@@ -243,6 +248,8 @@ class ItemCreate(BaseModel):
     unit: str | None = None
     barcode: str | None = None             # digits only if provided
     auto_barcode: bool = False             # duplicate/clone: mint a fresh unique barcode from the shared sequence, never inherit one
+    gtin: str | None = None                # product GTIN/UPC/EAN (digits, {8,12,13,14}); identifies a product, not a lot; not unique
+    rfid_epc: str | None = None            # RFID/EPC physical-tag code; company-unique, normalized upper-case
     hs_code: str | None = None             # Harmonized System code for trade/customs
     tax_codes: list[str] = Field(default_factory=list)
     purchase_sku: str | None = None        # vendor's SKU / part number
@@ -1610,11 +1617,13 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     # repeat across physical lots. Physical-lot uniqueness is carried by `barcode`
     # (below) and the immutable `entity_id`. See the 2026-06-17 sku/batch plan.
 
-    # Barcode uniqueness (final application check under the lock; the DB unique index
-    # is the backstop for any writer that bypasses this path).
+    # Physical-code uniqueness (final application check under the lock; the DB unique
+    # indexes are the backstop for any writer that bypasses this path). Both checks share
+    # one namespace, so a barcode may not collide with an existing EPC or vice versa.
     try:
         await assert_barcode_available(session, company_id, payload.barcode)
-    except BarcodeConflictError as exc:
+        await assert_rfid_epc_available(session, company_id, payload.rfid_epc)
+    except (BarcodeConflictError, RfidEpcConflictError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     entity_id = f"item:{uuid.uuid4()}"

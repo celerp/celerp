@@ -13,7 +13,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from celerp.db import engine, lifecycle_engine, mask_db_credentials
-from celerp.inventory_codes import BarcodeConflictError
+from celerp.inventory_codes import CodeConflictError
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 load_cloud_config()
 load_backup_config()
@@ -450,11 +450,12 @@ async def rate_limit_handler(_request: Request, _exc: RateLimitExceeded):
     return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
 
 
-@app.exception_handler(BarcodeConflictError)
-async def barcode_conflict_handler(_request: Request, exc: BarcodeConflictError):
-    # The projection applier raises this when the barcode unique index rejects a write
-    # that bypassed the allocation lock (imports, connectors). A more specific handler
-    # than the Exception catch-all, so it maps to 409 instead of a masked 500.
+@app.exception_handler(CodeConflictError)
+async def code_conflict_handler(_request: Request, exc: CodeConflictError):
+    # The projection applier raises a CodeConflictError (barcode or RFID / EPC) when a
+    # physical-code unique index rejects a write that bypassed the allocation lock
+    # (imports, connectors). One handler on the shared base maps every physical-code
+    # collision to 409 instead of a masked 500.
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 

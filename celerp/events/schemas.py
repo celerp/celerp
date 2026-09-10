@@ -15,6 +15,8 @@ from celerp.inventory_codes import (  # noqa: F401 - re-exported for celerp_inve
     SKU_COMMA_MESSAGE,
     reject_comma_sku,
     validate_barcode,
+    validate_gtin,
+    validate_rfid_epc,
     validate_sku,
 )
 
@@ -41,6 +43,11 @@ class _SkuGuard(BaseModel):
         if isinstance(data, dict):
             validate_sku(data.get("sku"))
             validate_barcode(data.get("barcode"))
+            validate_gtin(data.get("gtin"))
+            # rfid_epc validates AND normalizes (trim + upper-case); store the canonical
+            # form so lookups match regardless of the case the reader emitted.
+            if "rfid_epc" in data:
+                data["rfid_epc"] = validate_rfid_epc(data.get("rfid_epc"))
         return data
 
 
@@ -90,6 +97,12 @@ class ItemUpdated(BaseModel):
             validate_sku((self.fields_changed.get("sku") or {}).get("new"))
         if "barcode" in self.fields_changed:
             validate_barcode((self.fields_changed.get("barcode") or {}).get("new"))
+        if "gtin" in self.fields_changed:
+            validate_gtin((self.fields_changed.get("gtin") or {}).get("new"))
+        if "rfid_epc" in self.fields_changed:
+            change = self.fields_changed["rfid_epc"] or {}
+            # Normalize the new value in place so the stored/looked-up form is canonical.
+            change["new"] = validate_rfid_epc(change.get("new"))
         return self
 
 
