@@ -7550,6 +7550,12 @@ function celerpFindPhysicalDuplicate(row, data) {{
     // Match on the item id (entity_id) primarily; fall back to barcode only when
     // no id is present (free-text lines carry no id). The row being edited is
     // excluded so re-picking the same item on its own row is never a duplicate.
+    //
+    // The single-occurrence rule is scoped to the outbound customer-stock documents
+    // the backend enforces it on (invoice, memo); on every other document type
+    // (bills and other inbound/expense docs) the same physical item may repeat, so
+    // the guard is a no-op there. Mirrors DOCUMENT_ITEM_UNIQUE_DOC_TYPES.
+    if (_CELERP_DOC_TYPE !== 'invoice' && _CELERP_DOC_TYPE !== 'memo') return null;
     if (data.allow_splitting !== false) return null;
     const id = data.entity_id || null;
     const barcode = data.barcode || null;
