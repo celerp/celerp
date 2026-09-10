@@ -46,10 +46,15 @@ async def _seed(session, name):
 
 @pytest.mark.asyncio
 async def test_resolve_precedence_barcode_epc_gtin_sku(session):
-    """Precedence barcode > rfid_epc > gtin > sku. RED at merge base: there is no
-    rfid_epc or gtin branch, so "66601066" and "77701077" resolve to kind "none"
-    (or "77701077" resolves as sku, never gtin), and the epc/gtin precedence
-    asserts fail. GTIN values are 8 digits (a valid GTIN length)."""
+    """Physical (barcode/rfid_epc) beats product (gtin/sku), and a code held as one
+    item's barcode AND another item's rfid_epc fails closed: barcode and rfid_epc are
+    ONE physical namespace, so a value spanning two distinct items resolves to neither.
+
+    RED at head b764c0da: the resolver iterates the barcode field first and returns the
+    first field with any match, so "55501" (item:x barcode, item:y rfid_epc) resolves to
+    kind "barcode"/item:x instead of failing closed. The legitimate precedence with
+    non-colliding values still holds: physical(epc) beats product(gtin) and gtin beats
+    sku. GTIN values are 8 digits (a valid GTIN length)."""
     cid = await _seed(session, "PrecedenceCo")
     await _emit(session, cid, "item:x", {"sku": "X", "name": "X", "quantity": 1, "barcode": "55501"})
     await _emit(session, cid, "item:y", {"sku": "Y", "name": "Y", "quantity": 1, "barcode": "55502", "rfid_epc": "55501"})
@@ -59,12 +64,18 @@ async def test_resolve_precedence_barcode_epc_gtin_sku(session):
     await _emit(session, cid, "item:s", {"sku": "77701077", "name": "S", "quantity": 1, "barcode": "77709"})
     await ProjectionEngine.rebuild(session)
 
-    # barcode beats rfid_epc
+    # A code that is item:x's barcode AND item:y's rfid_epc spans two physical items:
+    # fail closed, never a silent barcode-first pick.
     res = await resolve_item_by_code(session, cid, "55501")
-    assert res.kind == "barcode"
-    assert res.one is not None and res.one.entity_id == "item:x"
+    assert res.duplicate_physical is True
+    assert res.one is None
 
-    # rfid_epc beats gtin
+    # barcode-only resolution: 55502 is item:y's barcode and no one's epc.
+    res = await resolve_item_by_code(session, cid, "55502")
+    assert res.kind == "barcode"
+    assert res.one is not None and res.one.entity_id == "item:y"
+
+    # physical (epc) beats product (gtin)
     res = await resolve_item_by_code(session, cid, "66601066")
     assert res.kind == "rfid_epc"
     assert res.one is not None and res.one.entity_id == "item:p"
@@ -73,6 +84,32 @@ async def test_resolve_precedence_barcode_epc_gtin_sku(session):
     res = await resolve_item_by_code(session, cid, "77701077")
     assert res.kind == "gtin"
     assert res.one is not None and res.one.entity_id == "item:r"
+
+
+@pytest.mark.asyncio
+async def test_resolve_cross_field_barcode_epc_fails_closed(session):
+    """A code held as item A's barcode and item B's rfid_epc resolves to TWO distinct
+    physical items, so both the single and the batch resolver fail closed rather than
+    silently return the barcode holder. Seeded via direct events (the interactive create
+    guard refuses this cross-field shape), mirroring an import or legacy row.
+
+    RED at head b764c0da: both resolvers iterate the barcode field first and return
+    item:A, so duplicate_physical is False and one is item:A."""
+    cid = await _seed(session, "CrossFieldCo")
+    await _emit(session, cid, "item:A", {"sku": "CA", "name": "CA", "quantity": 1, "barcode": "70707070"})
+    await _emit(session, cid, "item:B", {"sku": "CB", "name": "CB", "quantity": 1, "rfid_epc": "70707070"})
+    await ProjectionEngine.rebuild(session)
+
+    single = await resolve_item_by_code(session, cid, "70707070")
+    assert single.duplicate_physical is True
+    assert single.one is None
+    assert {r.entity_id for r in single.matches} == {"item:A", "item:B"}
+
+    batch = await resolve_items_by_codes(session, cid, ["70707070"])
+    res = batch["70707070"]
+    assert res.duplicate_physical is True
+    assert res.one is None
+    assert {r.entity_id for r in res.matches} == {"item:A", "item:B"}
 
 
 @pytest.mark.asyncio

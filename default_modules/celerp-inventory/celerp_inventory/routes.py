@@ -1459,17 +1459,45 @@ class ResolveResult:
 
     @property
     def duplicate_physical(self) -> bool:
-        """True when one physical identifier (barcode or RFID EPC) matched more than one
-        lot. The per-company unique indexes make this impossible for new data; it only
-        surfaces for legacy rows written before an index existed. Distinct from
-        ``ambiguous`` (the product-identifier concept): a duplicate physical code must be
-        reported, never silently resolved to one lot."""
+        """True when a code resolves to more than one distinct physical item. Barcode and
+        RFID EPC are ONE physical namespace, so this covers both a single field matching
+        two lots (legacy rows written before a per-company unique index) AND a value held
+        as one item's barcode and another item's rfid_epc (a cross-field collision no
+        single-field index catches). Distinct from ``ambiguous`` (the product-identifier
+        concept): a duplicate physical code must be reported, never silently resolved to
+        one lot."""
         return self.kind in self._PHYSICAL_KINDS and len(self.matches) > 1
 
     @property
     def one(self):
         """The single match, or None when there are zero or (ambiguously) many."""
         return self.matches[0] if len(self.matches) == 1 else None
+
+
+def _resolve_from_candidates(barcode_matches, rfid_matches, gtin_matches, sku_matches) -> "ResolveResult":
+    """Choose a ResolveResult from the per-field candidate lists, enforcing the shared
+    physical namespace. Barcode and RFID EPC are one namespace: a code matching EITHER
+    field is a physical match, gathered BEFORE any product identifier is considered. The
+    physical union is deduped by ``entity_id`` (a single item carrying both a barcode and
+    an EPC is ONE item, not a duplicate). If the union spans more than one distinct item
+    the resolver fails closed (``duplicate_physical`` True, ``one`` None), never silently
+    picking one; a single physical item resolves (kind "barcode" when a barcode matched,
+    else "rfid_epc"). Only with NO physical match do the product identifiers resolve -
+    gtin then sku - each to its N lots. Shared by both the single and the batch resolver
+    so they disambiguate identically."""
+    physical: dict = {}
+    for r in barcode_matches:
+        physical.setdefault(r.entity_id, r)
+    for r in rfid_matches:
+        physical.setdefault(r.entity_id, r)
+    if physical:
+        kind = "barcode" if barcode_matches else "rfid_epc"
+        return ResolveResult(kind, list(physical.values()))
+    if gtin_matches:
+        return ResolveResult("gtin", gtin_matches)
+    if sku_matches:
+        return ResolveResult("sku", sku_matches)
+    return ResolveResult("none", [])
 
 
 def duplicate_barcode_detail(code: str) -> str:
@@ -1494,11 +1522,14 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
     and resolves to one lot; a product identifier (GTIN, SKU) may resolve to N.
 
     This is the single disambiguation rule shared by every scan/lookup surface so they
-    behave identically. Resolution order: barcode, RFID EPC, GTIN, SKU, none. An RFID
-    reader emitting an EPC feeds this same path as a barcode scanner; the EPC is
-    normalized (trimmed + upper-cased) before compare so a scan resolves regardless of
-    the reader's case. A physical identifier matching more than one lot is reported via
-    ``duplicate_physical`` (fail-closed), never silently resolved to one.
+    behave identically. Physical identifiers (barcode + RFID EPC) share one namespace and
+    are gathered together before the product identifiers (GTIN, SKU) are considered: a
+    value held as one item's barcode and another's rfid_epc spans two physical items and
+    fails closed rather than resolving barcode-first. An RFID reader emitting an EPC feeds
+    this same path as a barcode scanner; the EPC is normalized (trimmed + upper-cased)
+    before compare so a scan resolves regardless of the reader's case. A physical code
+    matching more than one distinct item is reported via ``duplicate_physical``
+    (fail-closed), never silently resolved to one.
     """
     code = (code or "").strip()
     if not code:
@@ -1514,19 +1545,15 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
     def _live(r) -> bool:
         return str((r.state or {}).get("status") or "").lower() not in _RESOLVE_EXCLUDED_STATUSES
 
-    for kind, key, wanted in (
-        ("barcode", "barcode", code),
-        ("rfid_epc", "rfid_epc", epc_code),
-        ("gtin", "gtin", code),
-        ("sku", "sku", code),
-    ):
-        matches = [
-            r for r in rows
-            if str((r.state or {}).get(key) or "") == wanted and _live(r)
-        ]
-        if matches:
-            return ResolveResult(kind, matches)
-    return ResolveResult("none", [])
+    def _by(key, wanted):
+        return [r for r in rows if str((r.state or {}).get(key) or "") == wanted and _live(r)]
+
+    return _resolve_from_candidates(
+        _by("barcode", code),
+        _by("rfid_epc", epc_code),
+        _by("gtin", code),
+        _by("sku", code),
+    )
 
 
 async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> dict[str, "ResolveResult"]:
@@ -1534,9 +1561,10 @@ async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> di
 
     A per-code caller (a 200-code scan run) would otherwise load every item projection once per
     code. This loads them once, indexes by every identifier, and returns one ResolveResult per
-    distinct code - the SAME disambiguation rule and order (barcode, RFID EPC, GTIN, SKU, none)
-    as the single-code path, so callers behave identically. EPC is indexed and looked up in its
-    normalized (upper-cased) form.
+    distinct code - the SAME shared-namespace disambiguation rule as the single-code path
+    (physical barcode + RFID EPC gathered before product GTIN/SKU, fail-closed on a cross-field
+    or multi-lot physical collision), so callers behave identically. EPC is indexed and looked
+    up in its normalized (upper-cased) form.
     """
     wanted = {(c or "").strip() for c in codes if (c or "").strip()}
     if not wanted:
@@ -1570,16 +1598,12 @@ async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> di
     out: dict[str, ResolveResult] = {}
     for code in wanted:
         epc_code = normalize_rfid_epc(code)
-        if code in by_barcode:
-            out[code] = ResolveResult("barcode", by_barcode[code])
-        elif epc_code in by_rfid_epc:
-            out[code] = ResolveResult("rfid_epc", by_rfid_epc[epc_code])
-        elif code in by_gtin:
-            out[code] = ResolveResult("gtin", by_gtin[code])
-        elif code in by_sku:
-            out[code] = ResolveResult("sku", by_sku[code])
-        else:
-            out[code] = ResolveResult("none", [])
+        out[code] = _resolve_from_candidates(
+            by_barcode.get(code, []),
+            by_rfid_epc.get(epc_code, []),
+            by_gtin.get(code, []),
+            by_sku.get(code, []),
+        )
     return out
 
 
@@ -3733,6 +3757,33 @@ async def batch_import_items(
             errors.append(f"Row (SKU={rec.data.get('sku', '?')}): {_neg_amt} cannot be negative")
             skipped += 1
             continue
+
+        # Barcode and RFID EPC share one physical-code namespace: a value already held in
+        # EITHER slot by another item cannot be imported into either slot of this one.
+        # Interactive create/patch enforce this via assert_barcode_available /
+        # assert_rfid_epc_available; the import writer emits rec.data verbatim, so without
+        # this guard a row could set rfid_epc to a value another item holds as its barcode
+        # (a cross-field collision no single-field unique index catches). Run the same
+        # check under the company code lock so the read-then-write is serialized and
+        # earlier rows in this batch are seen (emit_event flushes projections in-session).
+        # exclude_entity_id is harmless on create and correct on upsert (re-asserting the
+        # item's own value is not a self-collision). A colliding row is skipped, never a 500.
+        _row_barcode = rec.data.get("barcode")
+        _row_epc = rec.data.get("rfid_epc")
+        if _row_barcode or _row_epc:
+            _code_err = None
+            try:
+                validate_barcode(_row_barcode)
+                validate_rfid_epc(_row_epc)
+                await lock_item_code_namespace(session, company_id)
+                await assert_barcode_available(session, company_id, _row_barcode, exclude_entity_id=rec.entity_id)
+                await assert_rfid_epc_available(session, company_id, _row_epc, exclude_entity_id=rec.entity_id)
+            except (ValueError, BarcodeConflictError, RfidEpcConflictError) as exc:
+                _code_err = str(exc)
+            if _code_err is not None:
+                errors.append(f"Row (SKU={rec.data.get('sku', '?')}): {_code_err}")
+                skipped += 1
+                continue
 
         scoped_key = f"{company_id}:{rec.idempotency_key}"
         if scoped_key in existing:
