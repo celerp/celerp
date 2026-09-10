@@ -13,29 +13,44 @@ from fasthtml.common import *
 from ui.i18n import t, get_lang
 
 
-def subscribe_url(plan: str = "") -> str:
-    """Build subscribe URL with instance_id passthrough if available.
+def _commercial_route(intent: str, sku: str = "") -> str:
+    """The in-app mint route that resolves this CTA's destination at click time.
 
-    ``plan`` is passed as a query param (not a fragment) so the website can
-    attribute which in-app CTA drove the click server-side; its JS also uses
-    it to scroll to the matching plan card.
+    Every subscribe/top-up CTA points here rather than straight at celerp.com: the
+    route runs the same commercial policy (``build_commercial_handoff``), and for a
+    direct celerp_direct checkout it mints a single-use handoff token on the relay
+    and 302-bounces the browser to the checkout URL with that token appended. The
+    token clock therefore starts at click, and no relay round-trip happens on
+    render. ``intent`` and ``sku`` ride as query params so the route can rebuild
+    the destination for the authenticated instance server-side.
     """
-    from celerp.config import ensure_instance_id
-    from celerp.gateway.state import build_commercial_handoff
-    return build_commercial_handoff(ensure_instance_id(), "subscribe", plan or "")
+    from urllib.parse import urlencode
+    params = {"intent": intent}
+    if sku:
+        params["sku"] = sku
+    return f"/commercial/checkout?{urlencode(params)}"
+
+
+def subscribe_url(plan: str = "") -> str:
+    """Build the in-app subscribe CTA URL.
+
+    Points at the commercial mint route (not celerp.com directly): the route
+    resolves the destination for the authenticated instance and mints a handoff
+    token at click. ``plan`` rides as the ``sku`` query param so the route can
+    resolve the correct plan destination.
+    """
+    return _commercial_route("subscribe", plan or "")
 
 
 def topup_url() -> str:
-    """Build the credit top-up URL through the commercial policy.
+    """Build the credit top-up CTA URL.
 
-    Mirrors ``subscribe_url`` for the top-up intent: on a celerp_direct install
-    it yields the direct /subscribe/topup URL; on a partner-managed install it
-    routes to the partner support or Enterprise route, never a direct top-up
-    checkout.
+    Mirrors ``subscribe_url`` for the top-up intent: it points at the commercial
+    mint route, which on a celerp_direct install mints a handoff token and bounces
+    to the direct /subscribe/topup checkout, and on a partner-managed install
+    routes to the partner support or Enterprise destination with no token minted.
     """
-    from celerp.config import ensure_instance_id
-    from celerp.gateway.state import build_commercial_handoff
-    return build_commercial_handoff(ensure_instance_id(), "topup", "ai")
+    return _commercial_route("topup", "ai")
 
 
 def is_partner_managed() -> bool:

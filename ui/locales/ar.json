@@ -415,6 +415,8 @@
   "cloud.tab_infrastructure": "البنية التحتية",
   "cloud.trial_head": "تجربة مجانية لمدة 14 يومًا لجميع الخطط",
   "cloud.trial_sub": "البطاقة مطلوبة، لكن لن يتم خصم أي مبلغ لمدة 14 يومًا. ألغِ خلال الفترة التجريبية ولن تدفع شيئًا - سنرسل لك بريدًا إلكترونيًا قبل انتهائها.",
+  "commercial.checkout_unavailable_body": "تعذّر بدء الدفع. يرجى إعادة فتحه من التطبيق والمحاولة مرة أخرى.",
+  "commercial.checkout_unavailable_title": "الدفع غير متاح",
   "connectors.authorize_error": "تعذّر الحصول على رابط التفويض. يرجى المحاولة مرة أخرى.",
   "connectors.coming_soon": "قريبًا",
   "connectors.connect": "ربط",

@@ -415,6 +415,8 @@
   "cloud.tab_infrastructure": "Infrastructure",
   "cloud.trial_head": "Essai gratuit de 14 jours sur tous les forfaits",
   "cloud.trial_sub": "Une carte est requise, mais rien n'est débité pendant 14 jours. Annulez pendant l'essai et ne payez rien - nous vous enverrons un e-mail avant la fin.",
+  "commercial.checkout_unavailable_body": "Impossible de démarrer le paiement. Veuillez le rouvrir depuis l'application et réessayer.",
+  "commercial.checkout_unavailable_title": "Paiement indisponible",
   "connectors.authorize_error": "Impossible d'obtenir l'URL d'autorisation. Veuillez réessayer.",
   "connectors.coming_soon": "Bientôt disponible",
   "connectors.connect": "Connecter",

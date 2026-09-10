@@ -424,6 +424,8 @@
   "cloud.tab_infrastructure": "መሠረተ ልማት",
   "cloud.trial_head": "በሁሉም ዕቅዶች ላይ የ14 ቀናት ነጻ ሙከራ",
   "cloud.trial_sub": "ካርድ ያስፈልጋል፣ ነገር ግን ለ14 ቀናት ምንም ክፍያ አይኖርም። በሙከራው ወቅት ይሰርዙ እና ምንም አይክፈሉ - ከማብቃቱ በፊት በኢሜይል እናሳውቅዎታለን።",
+  "commercial.checkout_unavailable_body": "ክፍያ መጀመር አልተቻለም። እባክዎ ከመተግበሪያው ውስጥ እንደገና ይክፈቱት እና እንደገና ይሞክሩ።",
+  "commercial.checkout_unavailable_title": "ክፍያ አይገኝም",
   "connectors.authorize_error": "የፈቃድ URL ማግኘት አልተቻለም። እባክዎ እንደገና ይሞክሩ።",
   "connectors.authorize_link": "ምንም ካልተከፈተ፣ ለማፍቀድ እዚህ ጠቅ ያድርጉ",
   "connectors.authorize_opened": "ፈቃድ በአዲስ ትር እየተከፈተ ነው። እዚያ ያጠናቅቁ፣ ከዚያም ወደዚህ ይመለሱ።",

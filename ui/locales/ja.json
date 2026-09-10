@@ -415,6 +415,8 @@
   "cloud.tab_infrastructure": "インフラ",
   "cloud.trial_head": "全プラン14日間無料トライアル",
   "cloud.trial_sub": "カードの登録が必要ですが、14日間は請求されません。試用期間中に解約すれば料金はかかりません。終了前にメールでお知らせします。",
+  "commercial.checkout_unavailable_body": "決済を開始できませんでした。アプリから開き直して、もう一度お試しください。",
+  "commercial.checkout_unavailable_title": "決済を利用できません",
   "connectors.authorize_error": "認証URLを取得できませんでした。もう一度お試しください。",
   "connectors.coming_soon": "近日公開",
   "connectors.connect": "接続",

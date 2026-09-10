@@ -10,9 +10,10 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 from ui.components.cloud_gate import cloud_gate, upgrade_banner
 
-# The subscribe URL base — the helper now lives in celerp.gateway.state and the link
-# carries instance_id + UTM params, but the href still starts with this base.
-_SUBSCRIBE_BASE = "https://celerp.com/subscribe"
+# The subscribe CTA now points at the in-app commercial mint route (which mints a
+# handoff token and bounces to the real checkout at click), not at celerp.com
+# directly; the plan travels as the ``sku`` query param.
+_MINT_ROUTE = "/commercial/checkout?intent=subscribe"
 
 
 def _render(ft) -> str:
@@ -43,17 +44,17 @@ def test_upgrade_banner_custom_price():
 
 def test_upgrade_banner_no_plan():
     html = _render(upgrade_banner("Feature", "desc"))
-    assert _SUBSCRIBE_BASE in html
-    href_tail = html.split(_SUBSCRIBE_BASE)[1].split('"')[0]
-    assert "#" not in href_tail and "plan=" not in href_tail
+    assert _MINT_ROUTE in html
+    href_tail = html.split(_MINT_ROUTE)[1].split('"')[0]
+    assert "#" not in href_tail and "sku=" not in href_tail
 
 
 def test_upgrade_banner_with_plan():
     html = _render(upgrade_banner("Feature", "desc", plan="ai"))
-    assert _SUBSCRIBE_BASE in html
-    # plan travels as a query param (server-visible), never a fragment
-    href_tail = html.split(_SUBSCRIBE_BASE)[1].split('"')[0]
-    assert "plan=ai" in href_tail and "#" not in href_tail
+    assert _MINT_ROUTE in html
+    # plan travels as the sku query param (server-visible), never a fragment
+    href_tail = html.split(_MINT_ROUTE)[1].split('"')[0]
+    assert "sku=ai" in href_tail and "#" not in href_tail
 
 
 def test_cloud_gate_not_connected_returns_banner():

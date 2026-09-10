@@ -415,6 +415,8 @@
   "cloud.tab_infrastructure": "โครงสร้างพื้นฐาน",
   "cloud.trial_head": "ทดลองใช้ฟรี 14 วันทุกแพ็กเกจ",
   "cloud.trial_sub": "ต้องใช้บัตร แต่จะไม่มีการเรียกเก็บเงินเป็นเวลา 14 วัน ยกเลิกระหว่างช่วงทดลองใช้โดยไม่ต้องจ่ายอะไรเลย - เราจะส่งอีเมลแจ้งก่อนสิ้นสุด",
+  "commercial.checkout_unavailable_body": "ไม่สามารถเริ่มการชำระเงินได้ กรุณาเปิดใหม่จากแอปแล้วลองอีกครั้ง",
+  "commercial.checkout_unavailable_title": "ไม่สามารถใช้การชำระเงินได้",
   "connectors.authorize_error": "ไม่สามารถรับ URL การอนุญาต กรุณาลองอีกครั้ง",
   "connectors.coming_soon": "เร็วๆ นี้",
   "connectors.connect": "เชื่อมต่อ",

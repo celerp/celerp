@@ -415,6 +415,8 @@
   "cloud.tab_infrastructure": "Cơ sở hạ tầng",
   "cloud.trial_head": "Dùng thử miễn phí 14 ngày cho mọi gói",
   "cloud.trial_sub": "Cần có thẻ, nhưng sẽ không bị tính phí trong 14 ngày. Hủy trong thời gian dùng thử và không phải trả gì - chúng tôi sẽ gửi email trước khi kết thúc.",
+  "commercial.checkout_unavailable_body": "Không thể bắt đầu thanh toán. Vui lòng mở lại từ ứng dụng và thử lại.",
+  "commercial.checkout_unavailable_title": "Thanh toán không khả dụng",
   "connectors.authorize_error": "Không thể lấy URL ủy quyền. Vui lòng thử lại.",
   "connectors.coming_soon": "Sắp ra mắt",
   "connectors.connect": "Kết nối",

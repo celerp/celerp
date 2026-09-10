@@ -415,6 +415,8 @@
   "cloud.tab_infrastructure": "Infraestructura",
   "cloud.trial_head": "Prueba gratuita de 14 días en todos los planes",
   "cloud.trial_sub": "Se requiere una tarjeta, pero no se cobra nada durante 14 días. Cancela durante la prueba y no pagas nada - te enviaremos un correo antes de que termine.",
+  "commercial.checkout_unavailable_body": "No se pudo iniciar el pago. Vuelve a abrirlo desde la aplicación e inténtalo de nuevo.",
+  "commercial.checkout_unavailable_title": "Pago no disponible",
   "connectors.authorize_error": "No se pudo obtener la URL de autorización. Inténtalo de nuevo.",
   "connectors.coming_soon": "Próximamente",
   "connectors.connect": "Conectar",

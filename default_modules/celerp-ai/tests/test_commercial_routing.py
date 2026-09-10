@@ -56,12 +56,13 @@ def test_ai_topup_card_routes_through_policy():
 
 
 def test_ai_topup_card_direct_unchanged():
-    """celerp_direct: the topup card still points at the direct topup URL
+    """celerp_direct: the topup card points at the in-app commercial mint route,
+    which resolves the direct topup destination and mints a handoff token at click
     (positive control)."""
     from celerp_ai.ui_routes import _quota_exceeded_card
     detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai"}
     html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
-    assert "/subscribe/topup" in html
+    assert "/commercial/checkout?intent=topup" in html
 
 
 def test_ai_upgrade_url_not_preferred():
@@ -160,15 +161,15 @@ async def test_ai_quota_status_topup_url_policy(auth_client):
 
 @pytest.mark.asyncio
 async def test_ai_quota_status_topup_url_direct(auth_client):
-    """celerp_direct: the injected topup_url is the direct topup URL (positive
-    control)."""
+    """celerp_direct: the injected topup_url is the in-app commercial mint route,
+    which resolves the direct topup destination at click (positive control)."""
     mock_status = {"used": 15, "limit": 200, "topup_credits": 0,
                    "resets_at": "", "tier": "ai"}
     with patch("celerp_ai.ui_routes.api.ai_quota_status",
                AsyncMock(return_value=mock_status | {"instance_id": "inst-1"})):
         r = await auth_client.get("/ai/quota-status", cookies=authed_cookies())
     data = r.json()
-    assert "/subscribe/topup" in data["topup_url"]
+    assert "/commercial/checkout?intent=topup" in data["topup_url"]
 
 
 # ── AI-api 401 body (celerp/modules/api.py) ─────────────────────────────────

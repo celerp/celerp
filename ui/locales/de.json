@@ -415,6 +415,8 @@
   "cloud.tab_infrastructure": "Infrastruktur",
   "cloud.trial_head": "14 Tage kostenlos testen, alle Pläne",
   "cloud.trial_sub": "Eine Karte ist erforderlich, aber 14 Tage lang wird nichts abgebucht. Kündigen Sie während der Testphase und zahlen Sie nichts - wir benachrichtigen Sie per E-Mail, bevor sie endet.",
+  "commercial.checkout_unavailable_body": "Bezahlvorgang konnte nicht gestartet werden. Bitte öffnen Sie ihn erneut aus der App und versuchen Sie es noch einmal.",
+  "commercial.checkout_unavailable_title": "Bezahlvorgang nicht verfügbar",
   "connectors.authorize_error": "Autorisierungs-URL konnte nicht abgerufen werden. Bitte versuchen Sie es erneut.",
   "connectors.coming_soon": "Demnächst verfügbar",
   "connectors.connect": "Verbinden",

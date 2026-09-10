@@ -434,6 +434,8 @@
   "cloud.tab_infrastructure": "Infrastructure",
   "cloud.trial_head": "14-day free trial on all plans",
   "cloud.trial_sub": "A card is required, but nothing is charged for 14 days. Cancel during the trial and pay nothing - we'll email you before it ends.",
+  "commercial.checkout_unavailable_body": "Couldn't start checkout. Please reopen it from the app and try again.",
+  "commercial.checkout_unavailable_title": "Checkout unavailable",
   "connectors.authorize_error": "Could not get authorization URL. Please try again.",
   "connectors.authorize_link": "If nothing opened, click here to authorize",
   "connectors.authorize_opened": "Opening authorization in a new tab. Complete it there, then return here.",

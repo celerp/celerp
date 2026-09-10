@@ -415,6 +415,8 @@
   "cloud.tab_infrastructure": "Infrastruktur",
   "cloud.trial_head": "Uji coba gratis 14 hari untuk semua paket",
   "cloud.trial_sub": "Kartu diperlukan, tetapi tidak ada biaya selama 14 hari. Batalkan selama masa uji coba dan tidak membayar apa pun - kami akan mengirim email sebelum masa uji coba berakhir.",
+  "commercial.checkout_unavailable_body": "Tidak dapat memulai pembayaran. Silakan buka kembali dari aplikasi dan coba lagi.",
+  "commercial.checkout_unavailable_title": "Pembayaran tidak tersedia",
   "connectors.authorize_error": "Tidak dapat memperoleh URL otorisasi. Silakan coba lagi.",
   "connectors.coming_soon": "Segera hadir",
   "connectors.connect": "Hubungkan",
