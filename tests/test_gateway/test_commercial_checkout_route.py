@@ -111,6 +111,30 @@ async def test_commercial_checkout_handoff_mint_failure_degrades(client):
 
 
 @pytest.mark.asyncio
+async def test_commercial_checkout_partner_support_url_with_subscribe_in_path(client):
+    """A partner support URL that happens to contain "/subscribe" in its path
+    (e.g. a help article) is not a Celerp direct checkout: no handoff token is
+    minted and no relay call is made, even though the substring "/subscribe"
+    appears in the destination."""
+    gw_state._commercial_context = {
+        "commercial_mode": "partner_managed",
+        "implementation": {
+            "display_name": "Partner Co",
+            "support_url": "https://partner.example/subscribe/help",
+        },
+    }
+    with patch("ui.routes.commercial._mint_handoff_token",
+               AsyncMock(return_value="ht_should_not_be_used")) as mint:
+        r = await client.get("/commercial/checkout?intent=subscribe&sku=cloud",
+                             cookies=authed_cookies())
+    assert r.status_code == 302
+    location = r.headers["location"]
+    assert location == "https://partner.example/subscribe/help"
+    assert "handoff_token=" not in location
+    mint.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_commercial_checkout_requires_auth(client):
     """No app session bounces to /login, never minting a token."""
     with patch("ui.routes.commercial._mint_handoff_token",

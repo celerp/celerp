@@ -16,6 +16,7 @@ JWT and every long-lived instance credential stay server-side.
 from __future__ import annotations
 
 import html
+from urllib.parse import urlparse
 
 import httpx
 from starlette.requests import Request
@@ -24,12 +25,33 @@ from starlette.responses import HTMLResponse, RedirectResponse
 from ui.config import get_token as _token
 from ui.i18n import t
 
-# The direct-checkout paths on the handoff base that take a handoff token. A
-# destination outside these (the Enterprise route, a partner support URL) is not a
-# self-serve checkout, so no token is minted for it.
-_DIRECT_CHECKOUT_MARK = "/subscribe"
+# The direct-checkout paths on the trusted Celerp handoff host that take a
+# handoff token. A destination outside these (the Enterprise route, a partner
+# support URL that happens to contain "/subscribe" in its own path) is not a
+# self-serve Celerp checkout, so no token is minted for it.
+_DIRECT_CHECKOUT_PATHS = ("/subscribe", "/subscribe/topup")
 
 _MINT_TIMEOUT_S = 8.0
+
+
+def _is_direct_checkout(destination: str) -> bool:
+    """True only for a destination on the trusted Celerp handoff host at one of
+    the allowed direct-checkout paths.
+
+    Parses the URL rather than substring-matching it: a partner support URL such
+    as ``https://partner.example/subscribe/help`` contains "/subscribe" but is not
+    on the Celerp host, so it must never be classified as a direct checkout.
+    ``HANDOFF_BASE`` (``celerp.gateway.state``) is the single source of truth for
+    the trusted host, reused here rather than duplicated.
+    """
+    from celerp.gateway.state import HANDOFF_BASE
+
+    trusted_host = urlparse(HANDOFF_BASE).hostname
+    try:
+        parsed = urlparse(destination)
+    except ValueError:
+        return False
+    return parsed.hostname == trusted_host and parsed.path in _DIRECT_CHECKOUT_PATHS
 
 
 def _mint_failed_page() -> str:
@@ -103,7 +125,7 @@ def setup_routes(app):
 
         # A partner support URL or the Enterprise route is not a self-serve
         # checkout, so no token is minted: bounce straight through.
-        if _DIRECT_CHECKOUT_MARK not in destination:
+        if not _is_direct_checkout(destination):
             return RedirectResponse(destination, status_code=302)
 
         try:
