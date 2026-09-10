@@ -18,6 +18,7 @@ or a tick and the read that observes it interleave deterministically.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 
 import pytest
@@ -134,6 +135,100 @@ async def test_events_stream_emits_drain_when_draining(monkeypatch):
         await agen.aclose()
 
     assert chunk.startswith("event: drain")
+
+
+def _start_flood(company_id: uuid.UUID, user_id: uuid.UUID, stop: asyncio.Event) -> asyncio.Task:
+    """Publish notifications to the user as fast as the loop allows until stop is set,
+    keeping the subscriber queue continuously non-empty."""
+
+    async def _flood() -> None:
+        while not stop.is_set():
+            await publish(company_id, user_id, {"kind": "noise"})
+            await asyncio.sleep(0)
+
+    return asyncio.create_task(_flood())
+
+
+async def _drain_until(agen, prefix: str, kick: asyncio.Task, deadline_s: float = 4.0) -> bool:
+    """Read stream chunks (beginning with the already-scheduled kick read) until one
+    starts with prefix or a wall-clock deadline passes. Returns whether it was seen.
+
+    The bound is wall-clock, not a chunk count: the poll fires on an absolute time
+    deadline, so the proof is that eviction/drain arrives within a bounded window of
+    continuous flooding, never that it arrives within N reads (a tight read loop can
+    drain thousands of notifications in well under one poll interval)."""
+    loop = asyncio.get_event_loop()
+    stop_at = loop.time() + deadline_s
+    chunk = await asyncio.wait_for(kick, timeout=2.0)
+    if chunk.startswith(prefix):
+        return True
+    while loop.time() < stop_at:
+        chunk = await _next_event(agen, timeout=2.0)
+        if chunk.startswith(prefix):
+            return True
+    return False
+
+
+@pytest.mark.asyncio
+async def test_events_stream_evicts_under_notification_flood(session, monkeypatch):
+    """A forced-login eviction must reach an already-open tab even while notifications
+    stream in faster than the security tick. The nonce poll runs on an absolute
+    deadline, so a steady notification flow cannot starve it."""
+    monkeypatch.setattr(events_mod, "_STREAM_TICK_SECONDS", 0.05)
+    token, company_id, user_id, user_id_str = _bearer(snonce="client-nonce")
+    _subscribers.pop(f"{company_id}:{user_id}", None)
+    # Eviction condition already true: the cached server nonce differs from the token's.
+    _nonce_cache_set(user_id_str, "server-nonce")
+
+    resp = await events_mod.events_stream(token=token)
+    agen = resp.body_iterator
+    kick = asyncio.create_task(agen.__anext__())
+    stop = asyncio.Event()
+    try:
+        await _await_subscription(company_id, user_id)
+        for _ in range(20):
+            await publish(company_id, user_id, {"kind": "noise"})
+        flood = _start_flood(company_id, user_id, stop)
+        try:
+            assert await _drain_until(agen, "event: evicted", kick), \
+                "eviction starved by a steady notification stream"
+        finally:
+            stop.set()
+            flood.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await flood
+    finally:
+        await agen.aclose()
+
+
+@pytest.mark.asyncio
+async def test_events_stream_drains_under_notification_flood(monkeypatch):
+    """Drain must reach an open tab under a notification flood too, so a deploy can move
+    streaming clients rather than being starved by their own event traffic."""
+    monkeypatch.setattr(events_mod, "_STREAM_TICK_SECONDS", 0.05)
+    token, company_id, user_id, _ = _bearer(snonce="")  # no nonce -> drain-only tick path
+    _subscribers.pop(f"{company_id}:{user_id}", None)
+    runtime_state._drain_cache_set({"draining": True})
+
+    resp = await events_mod.events_stream(token=token)
+    agen = resp.body_iterator
+    kick = asyncio.create_task(agen.__anext__())
+    stop = asyncio.Event()
+    try:
+        await _await_subscription(company_id, user_id)
+        for _ in range(20):
+            await publish(company_id, user_id, {"kind": "noise"})
+        flood = _start_flood(company_id, user_id, stop)
+        try:
+            assert await _drain_until(agen, "event: drain", kick), \
+                "drain starved by a steady notification stream"
+        finally:
+            stop.set()
+            flood.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await flood
+    finally:
+        await agen.aclose()
 
 
 @pytest.mark.asyncio
