@@ -25,6 +25,8 @@ from celerp.inventory_codes import (
     RfidEpcConflictError,
     normalize_rfid_epc,
     validate_barcode,
+    validate_gtin,
+    validate_rfid_epc,
 )
 from celerp.models.projections import Projection
 from .services import (
@@ -1590,6 +1592,23 @@ def _validate_sku(sku: str | None) -> None:
         raise HTTPException(status_code=422, detail=str(e))
 
 
+def _validate_gtin(gtin) -> None:
+    """Friendly-422 wrapper over validate_gtin: an interactive route surfaces the format
+    message instead of the raw ValueError falling through to a 500."""
+    try:
+        validate_gtin(gtin)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+def _validate_rfid_epc(rfid_epc) -> None:
+    """Friendly-422 wrapper over validate_rfid_epc (same reason as _validate_gtin)."""
+    try:
+        validate_rfid_epc(rfid_epc)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
 @router.post("")
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     # Guard: setting cost fields on creation requires set_inventory_prices, except that a
@@ -1621,6 +1640,8 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         raise HTTPException(status_code=422, detail="Barcode must contain digits only")
 
     _validate_sku(payload.sku)
+    _validate_gtin(payload.gtin)
+    _validate_rfid_epc(payload.rfid_epc)
 
     # Serialize all SKU/barcode allocation and the barcode-uniqueness check for this
     # company: two concurrent creates must not mint the same code or both pass the
@@ -1896,6 +1917,23 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             try:
                 await assert_barcode_available(session, company_id, new_barcode, exclude_entity_id=entity_id)
             except BarcodeConflictError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+
+    # Validate gtin format if changing (a product identifier: format only, not unique).
+    if "gtin" in changed_keys:
+        _validate_gtin((payload.fields_changed["gtin"] or {}).get("new"))
+
+    # Validate rfid_epc format + uniqueness if changing, mirroring barcode: it shares the
+    # physical-code namespace, so it takes the same lock and availability check. The stored
+    # value is canonicalized at the event boundary, so a case-variant tag collides here.
+    if "rfid_epc" in changed_keys:
+        new_epc = (payload.fields_changed["rfid_epc"] or {}).get("new")
+        if new_epc is not None:
+            _validate_rfid_epc(new_epc)
+            await lock_item_code_namespace(session, company_id)
+            try:
+                await assert_rfid_epc_available(session, company_id, new_epc, exclude_entity_id=entity_id)
+            except RfidEpcConflictError as exc:
                 raise HTTPException(status_code=409, detail=str(exc))
 
     # Validate inventory_type if changing
