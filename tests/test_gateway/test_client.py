@@ -574,10 +574,10 @@ async def test_events_stream_is_short_circuited_before_local_proxy(client, monke
 
     monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
 
-    def _fatal_client(self):
-        raise AssertionError("local HTTP client must not be built for /events/stream")
+    def _fatal_transport(self):
+        raise AssertionError("local HTTP transport must not be built for /events/stream")
 
-    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    monkeypatch.setattr(client.__class__, "_get_http_transport", _fatal_transport)
     client._ws = object()
 
     await client._handle_proxy_request(
@@ -611,10 +611,10 @@ async def test_proxy_rejects_invalid_path_before_classification(client, monkeypa
 
     monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
 
-    def _fatal_client(self):
-        raise AssertionError("local HTTP client must not be built for an invalid path")
+    def _fatal_transport(self):
+        raise AssertionError("local HTTP transport must not be built for an invalid path")
 
-    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    monkeypatch.setattr(client.__class__, "_get_http_transport", _fatal_transport)
     client._ws = object()
 
     await client._handle_proxy_request(
@@ -641,10 +641,10 @@ async def test_proxy_rejects_absent_path(client, monkeypatch):
 
     monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
 
-    def _fatal_client(self):
-        raise AssertionError("local HTTP client must not be built for an absent path")
+    def _fatal_transport(self):
+        raise AssertionError("local HTTP transport must not be built for an absent path")
 
-    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    monkeypatch.setattr(client.__class__, "_get_http_transport", _fatal_transport)
     client._ws = object()
 
     # No "path" key at all - previously defaulted to "/" and was forwarded.
@@ -674,10 +674,10 @@ async def test_proxy_blocks_percent_encoded_local_only_route(client, monkeypatch
 
     monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
 
-    def _fatal_client(self):
-        raise AssertionError("local HTTP client must not be built for a blocked route")
+    def _fatal_transport(self):
+        raise AssertionError("local HTTP transport must not be built for a blocked route")
 
-    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    monkeypatch.setattr(client.__class__, "_get_http_transport", _fatal_transport)
     client._ws = object()
 
     await client._handle_proxy_request(
@@ -711,10 +711,10 @@ async def test_proxy_blocks_dot_segment_local_only_route(client, monkeypatch, do
 
     monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
 
-    def _fatal_client(self):
-        raise AssertionError("local HTTP client must not be built for a blocked route")
+    def _fatal_transport(self):
+        raise AssertionError("local HTTP transport must not be built for a blocked route")
 
-    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    monkeypatch.setattr(client.__class__, "_get_http_transport", _fatal_transport)
     client._ws = object()
 
     await client._handle_proxy_request(
@@ -742,10 +742,10 @@ async def test_proxy_classifies_dot_segment_events_stream_as_sse(client, monkeyp
 
     monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
 
-    def _fatal_client(self):
-        raise AssertionError("local HTTP client must not be built for an SSE path")
+    def _fatal_transport(self):
+        raise AssertionError("local HTTP transport must not be built for an SSE path")
 
-    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    monkeypatch.setattr(client.__class__, "_get_http_transport", _fatal_transport)
     client._ws = object()
 
     await client._handle_proxy_request(
@@ -782,10 +782,10 @@ async def test_proxy_rejects_fragment_control_and_malformed_paths(client, monkey
 
     monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
 
-    def _fatal_client(self):
-        raise AssertionError("local HTTP client must not be built for a rejected path")
+    def _fatal_transport(self):
+        raise AssertionError("local HTTP transport must not be built for a rejected path")
 
-    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    monkeypatch.setattr(client.__class__, "_get_http_transport", _fatal_transport)
     client._ws = object()
 
     await client._handle_proxy_request(
@@ -815,10 +815,10 @@ async def test_proxy_rejects_malformed_body_before_forwarding(client, monkeypatc
 
     monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
 
-    def _fatal_client(self):
-        raise AssertionError("local HTTP client must not be built for a malformed body")
+    def _fatal_transport(self):
+        raise AssertionError("local HTTP transport must not be built for a malformed body")
 
-    monkeypatch.setattr(client.__class__, "_get_http_client", _fatal_client)
+    monkeypatch.setattr(client.__class__, "_get_http_transport", _fatal_transport)
     client._ws = object()
 
     await client._handle_proxy_request(
@@ -890,6 +890,10 @@ async def test_proxy_classification_ignores_accept_header(client, monkeypatch):
     class FakeClient:
         def __init__(self, *a, **k):
             pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
         async def request(self, method, url, headers=None, content=None):
             captured["url"] = url
             return FakeResp()

@@ -2,20 +2,22 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
 """Proxied-request lifecycle on the gateway client: cancel, deadline, generation
-fencing, and one bounded shared httpx client.
+fencing, and per-request client isolation over one shared bounded transport.
 
-A relayed request was fire-and-forget with a fixed 180s timeout, a fresh httpx
-client per request, and no way to abort an in-flight proxy task or to drop a
-response that arrived after the connection had already been rebuilt. These tests
-pin the bounded contract:
+A relayed request is fire-and-forget with a fixed 180s cap, no way to abort an
+in-flight proxy task, and no way to drop a response that arrived after the
+connection had already been rebuilt. Each request also gets its own httpx client
+wrapper so no cookie state carries between visitors, while the underlying
+connection pool is shared and bounded. These tests pin that contract:
 
   * `http.cancel` cancels the keyed in-flight proxy task for that request id.
   * `http.request` carrying `timeout_ms` cancels past that deadline and emits an
     error response rather than hanging to the fixed cap.
   * a response tagged with a prior connection generation is ignored after a
     reconnect, so a slow response from a dead socket can't clobber the live one.
-  * the client forwards through one shared httpx client with explicit connection
-    limits, not a new client constructed per request.
+  * each proxied request constructs its own AsyncClient, but they all drive the
+    one shared bounded transport, whose per-request __aexit__ never tears the
+    pool down; the transport is closed exactly once on shutdown.
 """
 
 from __future__ import annotations
@@ -167,18 +169,20 @@ async def test_gateway_stale_generation_dropped(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gateway_shared_client_bounded(client, monkeypatch):
-    """Two proxied requests forward through ONE shared httpx client with explicit
-    connection limits, not a fresh client constructed per request."""
+async def test_gateway_shared_transport_isolates_each_request(client, monkeypatch):
+    """Two proxied requests each construct their OWN AsyncClient (so no cookie
+    state carries between visitors), but both drive the IDENTICAL shared bounded
+    transport. A per-request client's __aexit__ must not tear the shared pool
+    down, and close() must close the transport exactly once."""
     import httpx
 
     constructed = []
-    seen_limits = []
+    transports = []
 
     class _CountingClient:
         def __init__(self, *a, **k):
             constructed.append(self)
-            seen_limits.append(k.get("limits"))
+            transports.append(k.get("transport"))
         async def __aenter__(self):
             return self
         async def __aexit__(self, *a):
@@ -203,10 +207,53 @@ async def test_gateway_shared_client_bounded(client, monkeypatch):
             "query": "", "headers": {}, "body_b64": "",
         })
 
-    assert len(constructed) == 1, (
-        f"the gateway must reuse one shared httpx client, constructed {len(constructed)}")
-    assert any(isinstance(lim, httpx.Limits) for lim in seen_limits), (
-        "the shared client must be built with explicit httpx.Limits")
+    # A fresh client per request: no shared cookie jar can survive between visitors.
+    assert len(constructed) == 2, (
+        f"the gateway must build one AsyncClient per request, built {len(constructed)}")
+
+    # Both requests drove the one shared, bounded transport (identity, not equality).
+    assert transports[0] is transports[1], (
+        "both per-request clients must drive the identical shared transport object")
+    shared = transports[0]
+    assert isinstance(shared, httpx.AsyncHTTPTransport), (
+        f"the shared transport must be an httpx transport, got {type(shared)}")
+    assert shared is client._http_transport, (
+        "the transport passed to each client must be the gateway's shared transport")
+
+    # The shared transport carries the explicit 32/8 connection bounds. httpx
+    # folds Limits into the transport's pool, so read the pool back.
+    pool = shared._pool
+    assert pool._max_connections == 32, (
+        f"the shared transport must cap at 32 connections, got {pool._max_connections}")
+    assert pool._max_keepalive_connections == 8, (
+        f"the shared transport must keep 8 connections alive, got "
+        f"{pool._max_keepalive_connections}")
+
+    # A per-request client's __aexit__ must NOT close the shared pool: the no-op
+    # aclose/__aexit__ on the transport is what guarantees the pool outlives it.
+    closed = {"n": 0}
+    orig_shutdown = shared.shutdown_pool
+
+    async def _counting_shutdown():
+        closed["n"] += 1
+        await orig_shutdown()
+    monkeypatch.setattr(shared, "shutdown_pool", _counting_shutdown)
+
+    async with httpx.AsyncClient(transport=shared) as _c:
+        pass
+    # httpx.AsyncClient.__aexit__ calls transport.aclose(), which is a no-op here;
+    # it must never route to shutdown_pool.
+    assert closed["n"] == 0, (
+        "a per-request client leaving its context must not shut the shared pool down")
+
+    # close() shuts the shared transport down exactly once, and a second close()
+    # is a harmless no-op (the field is nulled first).
+    await client.close()
+    assert closed["n"] == 1, (
+        f"close() must shut the shared transport down exactly once, did {closed['n']}")
+    await client.close()
+    assert closed["n"] == 1, (
+        f"a second close() must not shut the transport down again, did {closed['n']}")
 
 
 class _AbnormalWS:
