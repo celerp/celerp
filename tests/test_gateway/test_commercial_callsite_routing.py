@@ -128,14 +128,17 @@ def test_setup_cloud_form_points_at_mint_route():
     assert "celerp.com/subscribe" not in html
 
 
-def test_setup_cloud_form_partner_mode_still_uses_mint_route():
-    """Partner mode resolves through the same click-time mint route: /commercial/
-    checkout applies the commercial policy at click, so no separate partner-aware
-    href is needed here (the label already omits the direct price)."""
+def test_setup_cloud_form_partner_mode_routes_to_partner_support():
+    """Partner mode resolves the setup CTA through commercial_cta, so its href and
+    label track a partner-managed destination: the partner support URL with the
+    partner-support label, never the direct mint route and never a $29 figure."""
     from ui.routes.setup import _cloud_form
+    from ui.i18n import t
     _partner(support_url="https://partner.example.com/support")
     html = to_xml(_cloud_form())
-    assert "/commercial/checkout?intent=subscribe&amp;sku=cloud" in html
+    assert "https://partner.example.com/support" in html
+    assert t("cloud.partner_support", "en") in html
+    assert "/commercial/checkout" not in html
     assert "$29" not in html
 
 
@@ -162,3 +165,129 @@ def test_direct_connection_gate_unknown_mode_fails_closed_to_enterprise():
     html = to_xml(_direct_connection_gate("user@example.com", "pw"))
     assert "/enterprise" in html
     assert "celerp.com/subscribe" not in html
+
+
+# ── #2: CTA labels track their destination (no direct label on partner) ────────
+#
+# A partner-managed install must never show a direct-Celerp label ("Start free
+# trial" / price / "Get Connect") on a CTA whose click opens partner support or
+# Enterprise. These assert the (label, href) PAIR on the shared upgrade_banner
+# funnel, one surface that bypasses it (connector entitlement CTA), and the
+# pre-auth connection gate, across every commercial mode.
+
+
+def _direct() -> None:
+    gw_state._commercial_context = {"commercial_mode": "celerp_direct"}
+
+
+def _anchor(html: str) -> str:
+    """The single CTA anchor's opening tag + text (last <a> in the fragment)."""
+    import re
+    m = re.findall(r"<a\b[^>]*>.*?</a>", html, flags=re.S)
+    assert m, f"no anchor in {html!r}"
+    return m[-1]
+
+
+# upgrade_banner - the shared funnel every gated settings tab renders through.
+
+def test_upgrade_banner_direct_shows_trial_label_and_mint_route():
+    from ui.components.cloud_gate import upgrade_banner
+    from ui.i18n import t
+    _direct()
+    html = to_xml(upgrade_banner("Encrypted Backup", "desc", plan="cloud", lang="en"))
+    assert "/commercial/checkout?intent=subscribe&amp;sku=cloud" in html
+    assert t("cloud.start_trial", "en") in html
+
+
+def test_upgrade_banner_partner_url_shows_support_label_not_trial():
+    from ui.components.cloud_gate import upgrade_banner
+    from ui.i18n import t
+    _partner(support_url="https://partner.example.com/support")
+    tag = _anchor(to_xml(upgrade_banner("Encrypted Backup", "desc", plan="cloud", lang="en")))
+    assert 'href="https://partner.example.com/support"' in tag
+    assert t("cloud.partner_support", "en") in tag
+    assert t("cloud.start_trial", "en") not in tag
+    assert "/commercial/checkout" not in tag
+
+
+def test_upgrade_banner_partner_email_shows_support_label():
+    from ui.components.cloud_gate import upgrade_banner
+    from ui.i18n import t
+    _partner(support_url="", support_email="help@partner.example.com")
+    tag = _anchor(to_xml(upgrade_banner("Encrypted Backup", "desc", plan="cloud", lang="en")))
+    assert 'href="mailto:help@partner.example.com"' in tag
+    assert t("cloud.partner_support", "en") in tag
+
+
+def test_upgrade_banner_partner_neither_fails_closed_to_contact_celerp():
+    from ui.components.cloud_gate import upgrade_banner
+    from ui.i18n import t
+    _partner(support_url="", support_email="")
+    tag = _anchor(to_xml(upgrade_banner("Encrypted Backup", "desc", plan="cloud", lang="en")))
+    assert "/enterprise" in tag
+    assert t("cloud.contact_celerp", "en") in tag
+    assert t("cloud.start_trial", "en") not in tag
+
+
+def test_upgrade_banner_unknown_mode_fails_closed_to_contact_celerp():
+    from ui.components.cloud_gate import upgrade_banner
+    from ui.i18n import t
+    gw_state._commercial_context = {"commercial_mode": "something_unexpected"}
+    tag = _anchor(to_xml(upgrade_banner("Encrypted Backup", "desc", plan="cloud", lang="en")))
+    assert "/enterprise" in tag
+    assert t("cloud.contact_celerp", "en") in tag
+    assert "/commercial/checkout" not in tag
+
+
+# _entitlement_cta - a surface that bypasses upgrade_banner.
+
+def test_entitlement_cta_direct_shows_trial_label():
+    from ui.routes.settings_connectors import _entitlement_cta
+    from ui.i18n import t
+    _direct()
+    html = to_xml(_entitlement_cta(lang="en"))
+    assert "/commercial/checkout?intent=subscribe&amp;sku=cloud" in html
+    assert t("connectors.start_trial", "en") in html
+
+
+def test_entitlement_cta_partner_url_shows_support_label_not_trial():
+    from ui.routes.settings_connectors import _entitlement_cta
+    from ui.i18n import t
+    _partner(support_url="https://partner.example.com/support")
+    tag = _anchor(to_xml(_entitlement_cta(lang="en")))
+    assert 'href="https://partner.example.com/support"' in tag
+    assert t("cloud.partner_support", "en") in tag
+    assert t("connectors.start_trial", "en") not in tag
+    assert "/commercial/checkout" not in tag
+
+
+def test_entitlement_cta_unknown_mode_fails_closed():
+    from ui.routes.settings_connectors import _entitlement_cta
+    from ui.i18n import t
+    gw_state._commercial_context = {"commercial_mode": "something_unexpected"}
+    tag = _anchor(to_xml(_entitlement_cta(lang="en")))
+    assert "/enterprise" in tag
+    assert t("cloud.contact_celerp", "en") in tag
+
+
+# _direct_connection_gate - the pre-auth surface. href already tracks the mode
+# (build_public_acquisition_url); #2 fixes only its LABEL under partner/unknown.
+
+def test_direct_connection_gate_partner_label_is_support_not_direct():
+    from ui.routes.auth import _direct_connection_gate
+    from ui.i18n import t
+    _partner(support_url="https://partner.example.com/support")
+    tag = _anchor(to_xml(_direct_connection_gate("user@example.com", "pw")))
+    assert 'href="https://partner.example.com/support"' in tag
+    assert t("cloud.partner_support", "en") in tag
+    assert t("btn.get_connect", "en") not in tag
+
+
+def test_direct_connection_gate_unknown_label_is_contact_celerp():
+    from ui.routes.auth import _direct_connection_gate
+    from ui.i18n import t
+    gw_state._commercial_context = {"commercial_mode": "something_unexpected"}
+    tag = _anchor(to_xml(_direct_connection_gate("user@example.com", "pw")))
+    assert "/enterprise" in tag
+    assert t("cloud.contact_celerp", "en") in tag
+    assert t("btn.get_connect", "en") not in tag

@@ -709,7 +709,13 @@ def _onboarding_view() -> FT:
 
 def _direct_connection_gate(email: str, password: str) -> FT:
     """Shown when a second user tries to log in without relay connected."""
-    from celerp.gateway.state import build_public_acquisition_url
+    from celerp.gateway.state import (
+        build_public_acquisition_url,
+        get_commercial_mode,
+        get_partner_identity,
+        safe_support_email,
+        safe_support_url,
+    )
     from ui.components.cloud_gate import direct_price
     # Pre-auth surface: no authenticated app session is guaranteed here, so this
     # resolves through the public acquisition resolver rather than the in-app
@@ -718,8 +724,24 @@ def _direct_connection_gate(email: str, password: str) -> FT:
     # returns the anonymous celerp.com/subscribe URL with no instance_id, since
     # this pre-auth path can never mint the handoff token a named checkout needs.
     handoff_url = build_public_acquisition_url("cloud")
-    cta_label = direct_price(t("auth.get_celerp_cloud_usd_29mo")) \
-        or t("btn.get_connect")
+    # Keep the label in lockstep with that destination: the direct price/trial
+    # label only when the URL is the direct subscribe page, a partner-support
+    # label when it resolves to a partner support URL or mailto, and a
+    # Contact-Celerp label on the Enterprise fallback (partner with no contact,
+    # or any unknown mode). Mirrors build_public_acquisition_url's own ladder.
+    _mode = get_commercial_mode()
+    if _mode == "partner_managed":
+        _identity = get_partner_identity() or {}
+        if safe_support_url(_identity.get("support_url")) \
+                or safe_support_email(_identity.get("support_email")):
+            cta_label = t("cloud.partner_support")
+        else:
+            cta_label = t("cloud.contact_celerp")
+    elif _mode == "celerp_direct":
+        cta_label = direct_price(t("auth.get_celerp_cloud_usd_29mo")) \
+            or t("btn.get_connect")
+    else:
+        cta_label = t("cloud.contact_celerp")
 
     return Div(
         Div(

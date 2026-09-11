@@ -714,11 +714,11 @@ def _entitlement_cta(lang: str = "en") -> FT:
     the commercial handoff resolved for this install (same policy used on the
     status/plans pages) rather than back to /settings/cloud, which would cost the user
     an extra click to find the actual subscribe button."""
-    from ui.components.cloud_gate import subscribe_url
-    href = subscribe_url("cloud")
+    from ui.components.cloud_gate import commercial_cta
+    href, label = commercial_cta("subscribe", "cloud", t("connectors.start_trial", lang), lang)
     return Div(
         P(t("connectors.no_subscription", lang), cls="settings-hint"),
-        A(t("connectors.start_trial", lang), href=href, target="_blank", cls="btn btn--sm btn--primary"),
+        A(label, href=href, target="_blank", cls="btn btn--sm btn--primary"),
         cls="flash flash--warning connector-entitlement-cta",
     )
 

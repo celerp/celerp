@@ -597,10 +597,18 @@ def _activating_form(lang: str = "en") -> FT:
 
 
 def _cloud_form() -> FT:
-    from ui.components.cloud_gate import is_partner_managed, direct_price
-    from ui.components.cloud_gate import subscribe_url as _subscribe_url
-    subscribe_url = _subscribe_url("cloud")
+    from ui.components.cloud_gate import is_partner_managed, direct_price, commercial_cta
+    from ui.i18n import current_lang
     partner = is_partner_managed()
+    # Keep the CTA label in lockstep with its click destination: the direct
+    # price/trial label only on a celerp_direct install, and a partner-support /
+    # Contact-Celerp label with the matching href on a partner-managed or unknown
+    # install, so this setup card never shows a direct label that opens partner
+    # support or Enterprise.
+    cloud_href, cloud_cta_label = commercial_cta(
+        "subscribe", "cloud",
+        direct_price(t("setup.subscribe_29mo")) or t("btn.get_connect"),
+        current_lang())
 
     _features = [
         ("🔗", t("setup.feature_connectors_title"), t("setup.feature_connectors_desc")),
@@ -649,8 +657,8 @@ def _cloud_form() -> FT:
             cls="cloud-upsell-wrap",
         ),
         Div(
-            A(direct_price(t("setup.subscribe_29mo")) or t("btn.get_connect"),
-                href=subscribe_url,
+            A(cloud_cta_label,
+                href=cloud_href,
                 target="_blank",
                 cls="btn btn--primary btn--full",
             ),

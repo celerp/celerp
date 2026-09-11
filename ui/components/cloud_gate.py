@@ -144,13 +144,16 @@ def upgrade_banner(
         plan: Plan key for the /subscribe CTA, e.g. "cloud" or "ai".
         lang: UI language code.
     """
-    href = subscribe_url(plan)
-    # Suppress the direct price under partner_managed even when a caller passes an
-    # explicit price string: the partner sets its own price, so the CTA reads as a
-    # plain action with no direct figure.
+    # Compose the direct-install label (trial + price); commercial_cta keeps the
+    # visible label in lockstep with the destination, so on a partner_managed or
+    # unknown-mode install it returns a partner-support / Contact-Celerp label and
+    # href instead of this direct label, and no surface funnelling through here can
+    # show a direct-price CTA that opens partner support. direct_price still
+    # suppresses the figure on the direct label for the same-mode belt-and-braces.
     price_text = direct_price(price if price is not None else t("msg.29mo", lang))
-    cta_label = f"{t('cloud.start_trial', lang)} - {price_text}" if price_text \
+    direct_label = f"{t('cloud.start_trial', lang)} - {price_text}" if price_text \
         else t("cloud.start_trial", lang)
+    href, cta_label = commercial_cta("subscribe", plan, direct_label, lang)
     return Div(
         Div(
             Span(t("msg.u0001f512", lang), cls="upgrade-banner__icon"),
