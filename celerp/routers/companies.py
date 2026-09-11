@@ -638,6 +638,11 @@ async def patch_user(
     # A holder of manage_users may not modify a user whose role outranks their own.
     if ROLE_LEVELS.get(link.role, 0) > ROLE_LEVELS[caller_role]:
         raise HTTPException(status_code=403, detail="You cannot modify a user whose role is above your own.")
+    # Track whether any security-sensitive field actually changes. A role change,
+    # a membership active-state change, or a password change must rotate the
+    # target's session state so their existing access AND refresh tokens are
+    # rejected on next use; a plain name edit must not force a logout.
+    security_change = False
     if payload.name is not None:
         user.name = payload.name
     if payload.role is not None:
@@ -660,12 +665,22 @@ async def patch_user(
             ).scalar()
             if owner_count <= 1:
                 raise HTTPException(status_code=400, detail="Cannot demote the last owner. Assign another owner first.")
+        if payload.role != link.role:
+            security_change = True
         link.role = payload.role
     if payload.is_active is not None:
+        if payload.is_active != link.is_active:
+            security_change = True
         link.is_active = payload.is_active
     if payload.password is not None:
         user.auth_hash = hash_password(payload.password)
+        security_change = True
     await session.commit()
+    if security_change:
+        # Rotates the target user's nonce (commits itself), so every existing
+        # access and refresh token for them is rejected on next use.
+        from celerp.services.session_tracker import invalidate_sessions
+        await invalidate_sessions(session, str(user_id))
     return {"ok": True}
 
 
