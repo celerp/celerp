@@ -758,14 +758,10 @@ class TestRefreshJtiExpiry:
 
         now = _time.time()
         total_ttl = int(settings.access_token_expire_minutes) * 60
-        stale_payload = {
-            "sub": original_claims["sub"],
-            "company_id": original_claims["company_id"],
-            "role": original_claims["role"],
-            "jti": jti,
-            "snonce": original_claims.get("snonce", ""),
-            "exp": int(now + total_ttl * 0.49),
-        }
+        # A genuinely valid, past-half-life v2 token: keep the full claim set
+        # (auth_ver, type, snonce) and only shorten the expiry.
+        stale_payload = dict(original_claims)
+        stale_payload["exp"] = int(now + total_ttl * 0.49)
         stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
         with patch("celerp.middleware.get_session_ctx", return_value=_test_session_ctx()):
