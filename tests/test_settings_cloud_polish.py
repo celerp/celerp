@@ -18,7 +18,11 @@ import re
 
 from fasthtml.common import to_xml
 
-from ui.routes.settings_cloud import _partner_claim_card, _partner_claim_preview
+from ui.routes.settings_cloud import (
+    _backup_summary_card,
+    _partner_claim_card,
+    _partner_claim_preview,
+)
 
 _APP_CSS = pathlib.Path(__file__).resolve().parents[1] / "ui" / "static" / "app.css"
 
@@ -105,3 +109,22 @@ def test_text_error_style_defined():
     html = to_xml(_partner_claim_card(lang="en", error="Invalid claim code"))
     assert 'class="text-error"' in html
     assert "Invalid claim code" in html
+
+
+# ── U5: no empty backup-summary card ─────────────────────────────────────────
+
+def test_backup_summary_card_empty_renders_nothing():
+    """When there is nothing to show (not connected, or no backup data yet),
+    _backup_summary_card returns None so no empty .settings-card renders -
+    pre-U5 it returned a blank Div, leaving a visible empty box on the page."""
+    assert _backup_summary_card(gw_ok=False, backup_data=None) is None
+    assert _backup_summary_card(gw_ok=True, backup_data=None) is None
+    assert _backup_summary_card(gw_ok=False, backup_data={"db": {}}) is None
+
+
+def test_backup_summary_card_populated_still_renders():
+    """Positive control: a populated call still renders the real card (no
+    over-suppression from the U5 fix)."""
+    backup_data = {"db": {"last_run": None, "ok": None}, "next_db_utc": None}
+    html = to_xml(_backup_summary_card(gw_ok=True, backup_data=backup_data))
+    assert "settings-card" in html

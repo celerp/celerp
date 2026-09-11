@@ -9499,7 +9499,9 @@ class TestModulesUI:
         assert r.status_code == 200
         assert b"module-license-upsell" in r.content        # the upsell block
         assert b"Get Celerp Connect" in r.content           # the CTA
-        assert b"/subscribe" in r.content                   # links to the Connect flow
+        # Links through the in-app mint route, which resolves the destination
+        # at click time rather than baking a website URL in at render time.
+        assert b"/commercial/checkout?intent=subscribe" in r.content
         assert b"badge--danger" not in r.content            # not framed as a hard failure
         assert b"no valid license" not in r.content         # raw error text is replaced
 
@@ -10923,8 +10925,8 @@ class TestWebAccessPlansAd:
         assert r.status_code == 200
         assert "settings-tabs" in r.text          # free keeps its tab bar
         assert "cloud-plans" in r.text            # the plan cards render
-        assert "plan=ai" in r.text                # subscribe links present
-        assert "plan=team" not in r.text          # Team is not self-service sold
+        assert "sku=ai" in r.text                 # subscribe links present (in-app mint route)
+        assert "sku=team" not in r.text           # Team is not self-service sold
 
     @pytest.mark.asyncio
     async def test_paid_tier_sees_no_plans_ad(self, ui_client):

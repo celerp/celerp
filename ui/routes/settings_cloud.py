@@ -38,21 +38,23 @@ def _has_team_features(state: dict) -> bool:
 
     Active entitlement comes from the fetched commercial state's feature flags.
     During grace and after grace those flags are false, so also consult the
-    on-disk packaged db-state: infrastructure stays reachable while grace is
+    cross-build local infra state: infrastructure stays reachable while grace is
     open, and after grace (an external database still configured on a lapsed
     install) so the user can read the fallback notice and restore a backup.
-    Fail-closed on a neutral state.
+    get_local_infra_state serves both the packaged (Electron) and self-hosted
+    builds, so Team infra visibility is not packaged-only. Fail-closed on a
+    neutral state.
     """
-    from celerp.gateway.state import get_packaged_db_state
+    from celerp.gateway.state import get_local_infra_state
     flags = state.get("feature_flags") or {}
     if flags.get("external_db") or flags.get("external_storage"):
         return True
-    db_state = get_packaged_db_state()
+    infra = get_local_infra_state()
     return bool(
-        db_state["in_grace"]
-        or (db_state["has_external_url"] and not db_state["external_db_entitled"])
-        or db_state["storage_in_grace"]
-        or (db_state["has_external_storage"] and not db_state["external_storage_entitled"])
+        infra["in_grace"]
+        or (infra["has_external_url"] and not infra["external_db_entitled"])
+        or infra["storage_in_grace"]
+        or (infra["has_external_storage"] and not infra["external_storage_entitled"])
     )
 
 
@@ -642,30 +644,54 @@ def _append_renewal(children: list, partner: dict | None, lang: str) -> None:
 def _grace_notice(state: dict, partner: dict | None, lang: str = "en") -> FT | None:
     """Grace-period banner (during grace) or the after-grace persistent notice.
 
-    During grace: the renewal deadline, that the external database stays
-    customer-owned, and the renewal affordance. After grace: that the app has
-    fallen back to the local database, that the external database is still
-    available to reselect, and a warning that reselecting risks divergence.
-    Returns None when neither state applies.
+    Branched by which resource has lapsed - database, storage, or both - so the
+    copy names the resource that is actually affected rather than always
+    reading as a database notice when only storage lapsed. During grace: the
+    renewal deadline, that the external resource stays customer-owned, and the
+    renewal affordance. After grace: that the app has fallen back to local, that
+    the external resource is still available to reselect, and a warning that
+    reselecting risks divergence. Returns None when neither state applies.
     """
-    if state.get("in_grace") or state.get("storage_in_grace"):
+    db_in_grace = bool(state.get("in_grace"))
+    storage_in_grace = bool(state.get("storage_in_grace"))
+    db_lapsed = bool(state.get("has_external_url") and not state.get("external_db_entitled"))
+    storage_lapsed = bool(
+        state.get("has_external_storage") and not state.get("external_storage_entitled"))
+
+    if db_in_grace and storage_in_grace:
+        prefix = "both"
+    elif storage_in_grace:
+        prefix = "storage"
+    elif db_in_grace:
+        prefix = ""
+    elif db_lapsed and storage_lapsed:
+        prefix = "both"
+    elif storage_lapsed and not db_lapsed:
+        prefix = "storage"
+    elif db_lapsed:
+        prefix = ""
+    else:
+        return None
+
+    def key(default_name: str, resource_name: str) -> str:
+        return f"grace.{prefix}_{resource_name}" if prefix else f"grace.{default_name}"
+
+    if db_in_grace or storage_in_grace:
         children = [
-            P(t("grace.deadline", lang, deadline=_format_deadline(state.get("grace_period_ends")))),
-            P(t("grace.external_owned", lang), cls="settings-hint"),
+            P(t(key("deadline", "deadline"), lang,
+                deadline=_format_deadline(state.get("grace_period_ends")))),
+            P(t(key("external_owned", "owned"), lang), cls="settings-hint"),
         ]
         _append_renewal(children, partner, lang)
         return Div(*children, cls="flash flash--warning", style="margin-bottom:12px;")
-    if (state.get("has_external_url") and not state.get("external_db_entitled")) or (
-        state.get("has_external_storage") and not state.get("external_storage_entitled")
-    ):
-        children = [
-            P(t("grace.local_now", lang)),
-            P(t("grace.external_available", lang), cls="settings-hint"),
-            P(t("grace.divergence_warning", lang), cls="settings-hint"),
-        ]
-        _append_renewal(children, partner, lang)
-        return Div(*children, cls="flash flash--warning", style="margin-bottom:12px;")
-    return None
+
+    children = [
+        P(t(key("local_now", "local_now"), lang)),
+        P(t(key("external_available", "available"), lang), cls="settings-hint"),
+        P(t(key("divergence_warning", "divergence_warning"), lang), cls="settings-hint"),
+    ]
+    _append_renewal(children, partner, lang)
+    return Div(*children, cls="flash flash--warning", style="margin-bottom:12px;")
 
 
 def _infrastructure_tab(grace_notice: FT | None = None) -> FT:
@@ -679,11 +705,15 @@ def _infrastructure_tab(grace_notice: FT | None = None) -> FT:
     return Div(*children, cls="settings-card")
 
 
-def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -> FT:
-    """Compact backup status card for the cloud settings page."""
+def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -> FT | None:
+    """Compact backup status card for the cloud settings page.
+
+    Returns None when there is nothing to show (not connected, or no backup
+    data yet) so the caller renders no empty card, rather than an empty
+    .settings-card box."""
 
     if not gw_ok or backup_data is None:
-        return Div(cls="settings-card")  # nothing to show when not connected
+        return None
 
     def _last_run(entry: dict) -> str:
         last = entry.get("last_run")
@@ -914,8 +944,8 @@ def setup_routes(app):
         # Connected or connecting - show tabs
         tab = request.query_params.get("tab", "status")
         has_team = _has_team_features(await _commercial_state(request))
-        from celerp.gateway.state import get_packaged_db_state, get_partner_identity
-        grace_notice = _grace_notice(get_packaged_db_state(), get_partner_identity(), lang=lang)
+        from celerp.gateway.state import get_local_infra_state, get_partner_identity
+        grace_notice = _grace_notice(get_local_infra_state(), get_partner_identity(), lang=lang)
 
         if tab == "infrastructure" and has_team:
             content = _infrastructure_tab(grace_notice=grace_notice)
@@ -935,8 +965,10 @@ def setup_routes(app):
             parts = []
             if grace_notice is not None:
                 parts.append(grace_notice)
-            parts.extend([_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier, token_bound=token_bound),
-                          _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)])
+            parts.append(_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier, token_bound=token_bound))
+            backup_card = _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)
+            if backup_card is not None:
+                parts.append(backup_card)
             # A connected free-tier account keeps its free tabs but still sees
             # the paid-plan advertisement the not-connected page carries - the
             # plans are exactly what the free tier is missing. An unknown tier

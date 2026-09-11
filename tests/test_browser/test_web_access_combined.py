@@ -23,19 +23,18 @@ pytestmark = pytest.mark.browser
 _CARD = "#partner-claim-card"
 
 
-def _grace_db_state() -> dict:
-    """A packaged-db state that is in grace with an external DB configured.
+def _grace_infra_state() -> dict:
+    """A local-infra state that is in grace with an external DB configured.
 
     Drives both _grace_notice (in_grace -> flash--warning banner) and
     _has_team_features (in_grace -> the Team-infrastructure tab is offered).
+    Matches the get_local_infra_state() shape (the getter both consume).
     """
     return {
-        "db_mode": "external",
         "has_external_url": True,
         "external_db_entitled": False,
         "in_grace": True,
         "grace_period_ends": "2099-01-01T00:00:00+00:00",
-        "storage_mode": "local",
         "has_external_storage": False,
         "external_storage_entitled": True,
         "storage_in_grace": False,
@@ -55,8 +54,8 @@ def test_web_access_combined_sections(page, ui_server, monkeypatch):
         return ("connecting", "https://demo.celerp.com", "team", False, True)
 
     monkeypatch.setattr(sc, "_relay_state", _fake_relay_state)
-    monkeypatch.setattr(gw_state, "get_packaged_db_state", _grace_db_state)
-    monkeypatch.setattr(gw_state, "get_commercial_mode", lambda: "direct")
+    monkeypatch.setattr(gw_state, "get_local_infra_state", _grace_infra_state)
+    monkeypatch.setattr(gw_state, "get_commercial_mode", lambda: "celerp_direct")
 
     # ── Status tab: the three surfaces coexist ────────────────────────────────
     page.goto(f"{ui_server}/settings/cloud", wait_until="domcontentloaded")
