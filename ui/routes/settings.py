@@ -764,7 +764,14 @@ def setup_routes(app):
             await api.change_password(token, current, new_pw)
         except APIError as e:
             return _password_form(error=e.detail, lang=lang)
-        return _password_form(success=t("settings.password_changed", lang), lang=lang)
+        # A successful change rotates the user's session on the server, so the
+        # current cookie is now dead. Clear both cookies and redirect to login
+        # with a clear reason rather than leaving the user on a settings page
+        # with a silently revoked session.
+        from ui.config import clear_session_cookies
+        resp = Response("", status_code=204, headers={"HX-Redirect": "/login?reason=password-changed"})
+        clear_session_cookies(resp, request)
+        return resp
 
     @app.get("/settings/company/companies-list")
     async def company_settings_companies_list(request: Request):

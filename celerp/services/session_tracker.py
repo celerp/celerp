@@ -15,11 +15,11 @@ production so only one worker runs the cleanup at a time.
 
 Per-user nonce
 --------------
-Each user has a nonce stored in ``user_auth_state``.  Access tokens embed it
-at issuance (``snonce`` claim).  ``get_current_user`` rejects any token whose
-snonce doesn't match the current DB value - this invalidates all previously
-issued tokens for that user immediately when ``invalidate_sessions`` is called,
-regardless of expiry.
+Each user has a nonce stored in ``user_auth_state``.  Both access and refresh
+tokens embed it at issuance (``snonce`` claim).  ``validate_access_token``
+rejects any token whose snonce doesn't match the current DB value - this
+invalidates all previously issued access AND refresh tokens for that user
+immediately when ``invalidate_sessions`` is called, regardless of expiry.
 
 Per-user (not global) nonce means logout/force-login only affects the evicted
 user; other users remain logged in.
@@ -102,11 +102,17 @@ def get_nonce_from_cache(user_id: str) -> str | None:
 async def register_token(
     session: AsyncSession, jti: str, user_id: str, expiry: datetime
 ) -> None:
-    """Record a newly-issued access token.  No-op if JTI already exists."""
+    """Record a newly-issued access token, extending the stored expiry when the
+    JTI is re-minted.  Sliding refresh reuses the original JTI, so its registry
+    slot must slide forward to match the refreshed token's expiry; otherwise a
+    continuously active session would fall out of the registry at its original
+    expiry while the holder still carries a valid token."""
     existing = await session.get(SessionRegistry, jti)
     if existing is None:
         session.add(SessionRegistry(jti=jti, user_id=_uuid_mod.UUID(user_id), expiry=expiry))
-        await session.commit()
+    else:
+        existing.expiry = expiry
+    await session.commit()
 
 
 async def active_user_ids(session: AsyncSession) -> set[str]:
@@ -156,9 +162,11 @@ async def invalidate_sessions(
 ) -> None:
     """Wipe all JTIs for *user_id* and rotate their nonce.
 
-    Called by logout and force-login.  After this call every existing access
-    token for this user is immediately rejected (snonce mismatch), regardless
-    of expiry.  Other users are unaffected.
+    Called by logout, force-login and every security-sensitive account change
+    (password change/reset, admin password change, role change, membership
+    state change).  After this call every existing access AND refresh token for
+    this user is immediately rejected (snonce mismatch), regardless of expiry.
+    Other users are unaffected.
     """
     uid = _uuid_mod.UUID(user_id)
     new_nonce = str(_uuid_mod.uuid4())

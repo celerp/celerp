@@ -16,7 +16,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
-from celerp.services.auth import create_access_token, create_refresh_token, get_current_company_id, get_current_user, get_current_role, hash_password, ROLE_LEVELS
+from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, hash_password, issue_token_pair, ROLE_LEVELS
 from celerp.services.permissions import (
     PERMISSIONS,
     ROLES,
@@ -251,19 +251,7 @@ async def create_company(
         await session.rollback()
         logger.error("create_company failed: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=f"Could not create company: {e}") from e
-    from celerp.services.session_tracker import register_token as _reg_token, get_nonce as _get_nonce
-    from celerp.config import settings as _cfg
-    from datetime import datetime, timedelta, timezone as _tz
-    snonce = await _get_nonce(session, str(user.id))
-    access_token, token_jti = create_access_token(str(user.id), str(company.id), "owner", user.email, snonce=snonce)
-    # Cap at 24h to match create_access_token's internal cap so DB expiry = JWT exp
-    capped_minutes = min(int(_cfg.access_token_expire_minutes), 24 * 60)
-    expiry = datetime.now(_tz.utc) + timedelta(minutes=capped_minutes)
-    await _reg_token(session, token_jti, str(user.id), expiry)
-    return {
-        "access_token": access_token,
-        "refresh_token": create_refresh_token(str(user.id), str(company.id), "owner", user.email),
-    }
+    return await issue_token_pair(session, user=user, company=company, role="owner")
 
 
 @router.get("/me")
@@ -650,6 +638,11 @@ async def patch_user(
     # A holder of manage_users may not modify a user whose role outranks their own.
     if ROLE_LEVELS.get(link.role, 0) > ROLE_LEVELS[caller_role]:
         raise HTTPException(status_code=403, detail="You cannot modify a user whose role is above your own.")
+    # Track whether any security-sensitive field actually changes. A role change,
+    # a membership active-state change, or a password change must rotate the
+    # target's session state so their existing access AND refresh tokens are
+    # rejected on next use; a plain name edit must not force a logout.
+    security_change = False
     if payload.name is not None:
         user.name = payload.name
     if payload.role is not None:
@@ -672,12 +665,22 @@ async def patch_user(
             ).scalar()
             if owner_count <= 1:
                 raise HTTPException(status_code=400, detail="Cannot demote the last owner. Assign another owner first.")
+        if payload.role != link.role:
+            security_change = True
         link.role = payload.role
     if payload.is_active is not None:
+        if payload.is_active != link.is_active:
+            security_change = True
         link.is_active = payload.is_active
     if payload.password is not None:
         user.auth_hash = hash_password(payload.password)
+        security_change = True
     await session.commit()
+    if security_change:
+        # Rotates the target user's nonce (commits itself), so every existing
+        # access and refresh token for them is rejected on next use.
+        from celerp.services.session_tracker import invalidate_sessions
+        await invalidate_sessions(session, str(user_id))
     return {"ok": True}
 
 

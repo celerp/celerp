@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Tests for SlidingTokenRefreshMiddleware and _maybe_refresh_bearer."""
+"""Tests for SlidingTokenRefreshMiddleware."""
 
 from __future__ import annotations
 
@@ -47,21 +47,17 @@ async def test_refresh_header_set_when_token_past_half_life(client):
         json={"company_name": "SlideHalf", "email": "half@half.com", "name": "Admin", "password": "pw"},
     )
     data = reg.json()
-    # Manually craft a token that was issued 61 minutes ago (past half of 120-min TTL)
-    # by setting exp = now + 59 min (120 - 61 = 59 remaining)
+    # Craft a token that is past half of its TTL by copying the freshly issued
+    # v2 token's full claim set and only shortening its expiry. Preserving
+    # auth_ver, type, jti and snonce is required now: the request path validates
+    # the whole v2 contract and the per-user nonce before any sliding re-mint, so
+    # a token that dropped those fields would be rejected 401, not refreshed.
     from celerp.config import settings
     now = time.time()
     total_ttl = int(settings.access_token_expire_minutes) * 60
-    # Decode original to get sub/company_id/role
     claims = _jwt.decode(data["access_token"], settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-    stale_payload = {
-        "sub": claims["sub"],
-        "company_id": claims["company_id"],
-        "role": claims["role"],
-        "jti": claims.get("jti", str(uuid.uuid4())),  # preserve jti so refresh can update expiry
-        "snonce": claims.get("snonce", ""),  # preserve nonce so token passes session validation
-        "exp": int(now + total_ttl * 0.49),  # only 49% TTL remaining => past half-life
-    }
+    stale_payload = dict(claims)
+    stale_payload["exp"] = int(now + total_ttl * 0.49)  # only 49% TTL remaining => past half-life
     stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
     r = await client.get("/items", headers={"Authorization": f"Bearer {stale_token}"})
@@ -88,73 +84,6 @@ async def test_no_refresh_header_without_auth(client):
     """X-Refreshed-Token must NOT be set when no Authorization header."""
     r = await client.get("/health")
     assert "X-Refreshed-Token" not in r.headers
-
-
-def test_maybe_refresh_bearer_returns_none_for_fresh_token():
-    from celerp.middleware import _maybe_refresh_bearer
-    from celerp.config import settings
-    from celerp.services.auth import create_access_token
-    token, _ = create_access_token("user-1", "company-1", "admin")
-    # Fresh token: should not refresh
-    result = _maybe_refresh_bearer(token)
-    assert result is None
-
-
-def test_maybe_refresh_bearer_returns_none_for_garbage():
-    from celerp.middleware import _maybe_refresh_bearer
-    assert _maybe_refresh_bearer("not.a.jwt") is None
-    assert _maybe_refresh_bearer("") is None
-    assert _maybe_refresh_bearer("x.y.z") is None
-
-
-def test_maybe_refresh_bearer_issues_new_token_when_stale():
-    from celerp.middleware import _maybe_refresh_bearer
-    from celerp.config import settings
-    from jose import jwt as _jwt
-    import uuid
-
-    now = time.time()
-    total_ttl = int(settings.access_token_expire_minutes) * 60
-    stale_jti = str(uuid.uuid4())
-    stale_payload = {
-        "sub": "user-abc",
-        "company_id": "company-xyz",
-        "role": "admin",
-        "jti": stale_jti,
-        "snonce": "test-nonce-value",  # arbitrary; refresh copies it forward as-is
-        "exp": int(now + total_ttl * 0.49),
-    }
-    stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
-    result = _maybe_refresh_bearer(stale_token)
-    assert result is not None, "Stale token should trigger a refresh"
-    new_token, returned_jti, new_expiry = result
-    assert returned_jti == stale_jti, "Refresh must reuse the original JTI"
-    new_claims = _jwt.decode(new_token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-    assert new_claims["sub"] == "user-abc"
-    assert new_claims["company_id"] == "company-xyz"
-    assert new_claims["role"] == "admin"
-    assert new_claims["jti"] == stale_jti, "Refreshed token must carry the same JTI"
-    # New token should have a longer remaining TTL
-    assert new_claims["exp"] > now + total_ttl * 0.49
-
-
-def test_maybe_refresh_bearer_returns_none_for_token_without_jti():
-    """Token without jti cannot be refreshed (no registry row to update)."""
-    from celerp.middleware import _maybe_refresh_bearer
-    from celerp.config import settings
-    from jose import jwt as _jwt
-
-    now = time.time()
-    total_ttl = int(settings.access_token_expire_minutes) * 60
-    payload = {
-        "sub": "user-abc",
-        "company_id": "company-xyz",
-        "role": "admin",
-        # no jti
-        "exp": int(now + total_ttl * 0.49),
-    }
-    token = _jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
-    assert _maybe_refresh_bearer(token) is None
 
 
 @pytest.mark.asyncio
@@ -194,38 +123,120 @@ async def test_switch_company_updates_refresh_token():
     assert new_refresh in cookies_header
 
 
-def test_maybe_refresh_bearer_preserves_email_and_modules():
-    """The Bearer sliding re-mint must carry the source token's email and modules
-    claims through, not drop them.
+# ---------------------------------------------------------------------------
+# A7 sliding-bearer security matrix (section 7 rows 24, 25, 27)
+#
+# These pin the sliding re-mint to the same validation the request path uses:
+# it must never re-sign a token it would not itself accept. The re-mint becoming
+# signature/session/DB-validating is workstream-2 work (A7); until it lands the
+# refresh token, revoked nonce, and stale-role cases below are RED by design.
+# Row 23 (signature-tampered) lives in tests/test_routers/test_auth.py.
+# ---------------------------------------------------------------------------
 
-    Regression: _maybe_refresh_bearer re-minted via create_access_token without
-    email or modules, so the refreshed token decoded to email == "" and
-    modules == []. An empty modules claim makes the UI sidebar fall back to
-    showing every nav entry, and a dropped email loses identity for the session.
-    """
-    from celerp.middleware import _maybe_refresh_bearer
-    from celerp.config import settings
-    from jose import jwt as _jwt
+
+@pytest.mark.asyncio
+async def test_refresh_token_as_bearer_never_refreshed(client):
+    """A v2 refresh token presented as a bearer never receives an X-Refreshed-Token.
+
+    It is the wrong token type for the bearer path; a validating re-mint refuses
+    to re-sign it. DEFERRED (A7): the current claims-only re-mint may still stamp
+    a header, so this is RED until the helper validates the token type."""
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "SlideRefB", "email": "sliderefb@example.com", "name": "Admin", "password": "pw"},
+    )
+    refresh = reg.json()["refresh_token"]
+    r = await client.get("/items", headers={"Authorization": f"Bearer {refresh}"})
+    assert "X-Refreshed-Token" not in r.headers
+
+
+@pytest.mark.asyncio
+async def test_revoked_nonce_never_refreshed(client, session):
+    """A past-half-life access token whose nonce was rotated (logout) never receives
+    an X-Refreshed-Token. DEFERRED (A7): the current re-mint does not check the
+    session nonce, so it may re-sign a dead token; RED until it validates."""
+    import time as _time
     import uuid
+    from jose import jwt as _jwt
+    from celerp.config import settings
+    from celerp.services.session_tracker import clear as _clear_tracker
 
-    now = time.time()
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "SlideRev", "email": "sliderev@example.com", "name": "Admin", "password": "pw"},
+    )
+    claims = _jwt.decode(reg.json()["access_token"], settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+
+    now = _time.time()
     total_ttl = int(settings.access_token_expire_minutes) * 60
-    stale_jti = str(uuid.uuid4())
     stale_payload = {
-        "sub": "user-abc",
-        "email": "admin@example.com",
-        "company_id": "company-xyz",
-        "role": "admin",
-        "jti": stale_jti,
-        "snonce": "test-nonce-value",
-        "modules": ["acme-maintenance", "acme-crm"],
+        "auth_ver": claims["auth_ver"],
+        "type": "access",
+        "sub": claims["sub"],
+        "company_id": claims["company_id"],
+        "role": claims["role"],
+        "jti": claims["jti"],
+        "snonce": claims["snonce"],
         "exp": int(now + total_ttl * 0.49),  # past half-life
     }
-    stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    stale = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
-    result = _maybe_refresh_bearer(stale_token)
-    assert result is not None, "Stale token should trigger a refresh"
-    new_token, _returned_jti, _new_expiry = result
-    new_claims = _jwt.decode(new_token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-    assert new_claims["email"] == "admin@example.com", "email claim must survive the re-mint"
-    assert new_claims["modules"] == ["acme-maintenance", "acme-crm"], "modules claim must survive the re-mint"
+    # Revoke: log out so the user's nonce rotates and the stale token's snonce is dead.
+    r_logout = await client.post(
+        "/auth/logout", headers={"Authorization": f"Bearer {reg.json()['access_token']}"}
+    )
+    assert r_logout.status_code == 200
+
+    r = await client.get("/items", headers={"Authorization": f"Bearer {stale}"})
+    assert "X-Refreshed-Token" not in r.headers
+
+
+@pytest.mark.asyncio
+async def test_refreshed_token_uses_current_db_role(client, session):
+    """When a past-half-life token is refreshed, the new token carries the current DB
+    role, not the stale role claim. DEFERRED (A7): the current re-mint copies the
+    role claim forward verbatim, so a demoted user keeps the old role; RED until the
+    re-mint derives the role from DB membership."""
+    import time as _time
+    import uuid as _uuid
+    from jose import jwt as _jwt
+    from sqlalchemy import select
+    from celerp.config import settings
+    from celerp.models.accounting import UserCompany
+    from celerp.services.session_tracker import clear as _clear_tracker
+
+    owner_reg = await client.post(
+        "/auth/register",
+        json={"company_name": "SlideRole", "email": "slideowner@example.com", "name": "Owner", "password": "pw"},
+    )
+    owner_h = {"Authorization": f"Bearer {owner_reg.json()['access_token']}"}
+    await client.post(
+        "/companies/me/users",
+        json={"email": "slidetarget@example.com", "name": "Target", "role": "manager", "password": "pw123"},
+        headers=owner_h,
+    )
+    await _clear_tracker(session)
+    r_login = await client.post("/auth/login", json={"email": "slidetarget@example.com", "password": "pw123"})
+    claims = _jwt.decode(r_login.json()["access_token"], settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+
+    # Demote the target in DB.
+    link = await session.scalar(
+        select(UserCompany).where(
+            UserCompany.user_id == _uuid.UUID(claims["sub"]),
+            UserCompany.company_id == _uuid.UUID(claims["company_id"]),
+        )
+    )
+    link.role = "operator"
+    await session.commit()
+
+    now = _time.time()
+    total_ttl = int(settings.access_token_expire_minutes) * 60
+    stale_payload = dict(claims)
+    stale_payload["exp"] = int(now + total_ttl * 0.49)  # past half-life, still valid nonce
+    stale = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+    r = await client.get("/items", headers={"Authorization": f"Bearer {stale}"})
+    assert r.status_code == 200
+    assert "X-Refreshed-Token" in r.headers, "a valid near-half-life token must still be refreshed"
+    new_claims = _jwt.decode(r.headers["X-Refreshed-Token"], settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    assert new_claims["role"] == "operator", "refreshed token must reflect the current DB role"

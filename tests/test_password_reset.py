@@ -115,6 +115,33 @@ async def test_password_reset_confirm_expired_token(client, session):
 
 
 @pytest.mark.asyncio
+async def test_password_reset_confirm_kills_old_access_and_refresh(client, session):
+    """Completing a reset rotates the nonce, so the pre-reset access and refresh
+    tokens both return 401 afterwards (a reset is a credential change)."""
+    from celerp.models.company import User
+    from sqlalchemy import select
+
+    reg = await _register(client, email="killtok@example.com", password="oldpassword")
+    old_access = reg["access_token"]
+    old_refresh = reg["refresh_token"]
+
+    with patch("celerp.services.email.send_email", new=AsyncMock(return_value=True)):
+        await client.post("/auth/password-reset/request", json={"email": "killtok@example.com"})
+
+    user = (await session.execute(select(User).where(User.email == "killtok@example.com"))).scalar_one()
+    r = await client.post(
+        "/auth/password-reset/confirm",
+        json={"token": user.reset_token, "new_password": "newpassword1"},
+    )
+    assert r.status_code == 200
+
+    r_acc = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {old_access}"})
+    assert r_acc.status_code == 401
+    r_ref = await client.post("/auth/token/refresh", json={"refresh_token": old_refresh})
+    assert r_ref.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_password_reset_confirm_short_password(client, session):
     """Password shorter than 8 chars returns 400."""
     from celerp.models.company import User

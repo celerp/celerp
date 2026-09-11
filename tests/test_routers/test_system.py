@@ -103,6 +103,55 @@ def _mock_session():
     return sess
 
 
+def _reset_session(real):
+    """Session for the factory-reset request: DB-authoritative auth reads delegate to
+    the seeded rollback session ``real``, while the destructive writes are captured
+    instead of run.
+
+    Auth now loads the user, membership and company from the DB, so those reads
+    (``get``/``scalar``/``scalars``) must hit the real seeded session. The endpoint's
+    own ``session.begin()`` cannot open a second transaction on the already-active
+    rollback session and a real TRUNCATE ... CASCADE would fight the outer
+    transaction, so ``begin``/``execute``/``commit`` are captured no-ops. The
+    recorded SQL is exposed on ``recorded_sql`` for the wipe assertion.
+    """
+    class _CapturingSession:
+        """Plain object (not an AsyncMock) so FastAPI never tries to deepcopy mock
+        internals when resolving the session dependency."""
+
+        def __init__(self) -> None:
+            self.recorded_sql: list[str] = []
+
+        # Auth reads delegate straight to the real seeded session.
+        def get(self, *a, **k):
+            return real.get(*a, **k)
+
+        def scalar(self, *a, **k):
+            return real.scalar(*a, **k)
+
+        def scalars(self, *a, **k):
+            return real.scalars(*a, **k)
+
+        # Destructive writes are captured, never executed.
+        async def execute(self, statement, *args, **kwargs):
+            self.recorded_sql.append(str(statement))
+            return MagicMock()
+
+        async def commit(self):
+            return None
+
+        async def rollback(self):
+            return None
+
+        def begin(self):
+            cm = AsyncMock()
+            cm.__aenter__ = AsyncMock(return_value=None)
+            cm.__aexit__ = AsyncMock(return_value=None)
+            return cm
+
+    return _CapturingSession()
+
+
 class TestFactoryReset:
     @pytest.mark.asyncio
     async def test_factory_reset_unauthenticated(self):
@@ -117,11 +166,17 @@ class TestFactoryReset:
             app.dependency_overrides.clear()
 
     @pytest.mark.asyncio
-    async def test_factory_reset_non_owner_forbidden(self, admin_jwt):
-        """Admin role → 403 (below owner threshold)."""
+    async def test_factory_reset_non_owner_forbidden(self, admin_jwt, session):
+        """Admin role → 403 (below owner threshold).
+
+        Auth is DB-authoritative now, so the request must run against the real
+        rollback session that holds the seeded admin user and membership; a mock
+        session would fail the user/membership lookup with 401 before the role
+        check is even reached.
+        """
         jwt, token = admin_jwt
-        mock_sess = _mock_session()
-        app.dependency_overrides[get_session] = lambda: mock_sess
+        reset_sess = _reset_session(session)
+        app.dependency_overrides[get_session] = lambda: reset_sess
         gw_state.set_session_token(token)
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -135,11 +190,11 @@ class TestFactoryReset:
             gw_state.set_session_token("")
 
     @pytest.mark.asyncio
-    async def test_factory_reset_owner_succeeds(self, owner_jwt):
-        """Owner → 200 {"ok": True}."""
+    async def test_factory_reset_owner_succeeds(self, owner_jwt, session):
+        """Owner → 200 {"ok": True}. Auth reads hit the real seeded session."""
         jwt, token = owner_jwt
-        mock_sess = _mock_session()
-        app.dependency_overrides[get_session] = lambda: mock_sess
+        reset_sess = _reset_session(session)
+        app.dependency_overrides[get_session] = lambda: reset_sess
         gw_state.set_session_token(token)
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -154,11 +209,11 @@ class TestFactoryReset:
             gw_state.set_session_token("")
 
     @pytest.mark.asyncio
-    async def test_factory_reset_wipes_data(self, owner_jwt):
+    async def test_factory_reset_wipes_data(self, owner_jwt, session):
         """All expected DELETE/TRUNCATE calls are executed."""
         jwt, token = owner_jwt
-        mock_sess = _mock_session()
-        app.dependency_overrides[get_session] = lambda: mock_sess
+        reset_sess = _reset_session(session)
+        app.dependency_overrides[get_session] = lambda: reset_sess
         gw_state.set_session_token(token)
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
@@ -167,28 +222,27 @@ class TestFactoryReset:
                     headers={"Authorization": f"Bearer {jwt}", "X-Session-Token": token},
                 )
             assert r.status_code == 200
-            # Verify execute was called for DELETE users, companies, user_companies, locations
-            calls = [str(call.args[0]) if call.args else "" for call in mock_sess.execute.call_args_list]
-            assert any("DELETE FROM users" in c for c in calls)
-            assert any("DELETE FROM companies" in c for c in calls)
-            assert any("DELETE FROM user_companies" in c for c in calls)
-            assert any("DELETE FROM locations" in c for c in calls)
+            recorded = reset_sess.recorded_sql
+            assert any("DELETE FROM users" in c for c in recorded)
+            assert any("DELETE FROM companies" in c for c in recorded)
+            assert any("DELETE FROM user_companies" in c for c in recorded)
+            assert any("DELETE FROM locations" in c for c in recorded)
         finally:
             app.dependency_overrides.clear()
             gw_state.set_session_token("")
 
     @pytest.mark.asyncio
-    async def test_factory_reset_idempotent(self, owner_jwt):
-        """Calling factory-reset twice with the same (still-valid) token returns 200 both times."""
+    async def test_factory_reset_idempotent(self, owner_jwt, session):
+        """Calling factory-reset twice with the same (still-valid) token returns 200 both times.
+
+        The captured wipe never mutates the seeded owner or nonce, so the same
+        token authenticates on both calls within this test.
+        """
         jwt, token = owner_jwt
-
-        async def _make_mock():
-            return _mock_session()
-
+        gw_state.set_session_token(token)
         for _ in range(2):
-            mock_sess = _mock_session()
-            app.dependency_overrides[get_session] = lambda s=mock_sess: s
-            gw_state.set_session_token(token)
+            reset_sess = _reset_session(session)
+            app.dependency_overrides[get_session] = lambda s=reset_sess: s
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
                 r = await c.post(
                     "/system/factory-reset",
@@ -199,13 +253,13 @@ class TestFactoryReset:
         gw_state.set_session_token("")
 
     @pytest.mark.asyncio
-    async def test_factory_reset_deletes_attachments(self, owner_jwt, tmp_path):
+    async def test_factory_reset_deletes_attachments(self, owner_jwt, session, tmp_path):
         """When an attachment directory exists, it is removed post-commit."""
         import celerp.routers.system as sys_mod
         jwt, token = owner_jwt
 
-        mock_sess = _mock_session()
-        app.dependency_overrides[get_session] = lambda: mock_sess
+        reset_sess = _reset_session(session)
+        app.dependency_overrides[get_session] = lambda: reset_sess
         gw_state.set_session_token(token)
 
         # Decode company_id from JWT payload to create matching dir

@@ -271,12 +271,22 @@ class TestRoleHierarchy:
 
 class TestLegacyRoleMigration:
 
-    async def _make_salesperson_token(self, client) -> tuple[dict, str]:
-        """Create company, then forge a token with role=salesperson."""
-        from celerp.services.auth import create_access_token
+    async def _make_salesperson_token(self, client, session) -> tuple[dict, str]:
+        """Create a user whose DB membership role is the legacy ``salesperson``, then
+        mint a valid v2 token for them.
+
+        Authorization is DB-authoritative: the token's role claim is never trusted,
+        so the legacy name must live in DB state (``UserCompany.role``). The central
+        validator applies ``_ROLE_MIGRATION`` to that DB role, mapping salesperson to
+        operator for every permission decision.
+        """
+        import uuid as _uuid
+        from sqlalchemy import select
+        from celerp.models.accounting import UserCompany
+        from test_helpers import make_authed_token
+
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
-        # Create a user to get a valid user_id + company_id
         r = await client.post(
             "/companies/me/users",
             json={"email": "legacy@x.com", "name": "Legacy", "role": "operator", "password": "pw"},
@@ -290,13 +300,21 @@ class TestLegacyRoleMigration:
         pad += "=" * (-len(pad) % 4)
         claims = _json.loads(base64.urlsafe_b64decode(pad))
         company_id = claims["company_id"]
-        # Forge old-style token with role=salesperson
-        legacy_tok, _ = create_access_token(user_id, company_id, "salesperson")
+        # Write the legacy role into DB membership state (the authoritative source).
+        link = await session.scalar(
+            select(UserCompany).where(
+                UserCompany.user_id == _uuid.UUID(user_id),
+                UserCompany.company_id == _uuid.UUID(company_id),
+            )
+        )
+        link.role = "salesperson"
+        await session.commit()
+        legacy_tok = await make_authed_token(session, user_id, company_id, "salesperson")
         return admin_h, legacy_tok
 
     async def test_salesperson_token_allowed_as_operator(self, client, session):
         """Legacy salesperson JWT passes operator-level checks."""
-        admin_h, legacy_tok = await self._make_salesperson_token(client)
+        admin_h, legacy_tok = await self._make_salesperson_token(client, session)
         legacy_h = {"Authorization": f"Bearer {legacy_tok}"}
         loc_r = await client.post(
             "/companies/me/locations",
@@ -315,7 +333,7 @@ class TestLegacyRoleMigration:
 
     async def test_salesperson_token_blocked_from_manager_ops(self, client, session):
         """Legacy salesperson JWT is blocked from manager-level operations."""
-        admin_h, legacy_tok = await self._make_salesperson_token(client)
+        admin_h, legacy_tok = await self._make_salesperson_token(client, session)
         legacy_h = {"Authorization": f"Bearer {legacy_tok}"}
         loc_r = await client.post(
             "/companies/me/locations",
@@ -335,7 +353,7 @@ class TestLegacyRoleMigration:
         """Legacy salesperson JWT (migrates to operator) cannot set cost_price on a
         committed item (manager field). A draft is exempt by design, so the guard is
         asserted on an item created as available."""
-        admin_h, legacy_tok = await self._make_salesperson_token(client)
+        admin_h, legacy_tok = await self._make_salesperson_token(client, session)
         legacy_h = {"Authorization": f"Bearer {legacy_tok}"}
         loc_r = await client.post(
             "/companies/me/locations",
