@@ -374,7 +374,6 @@ def test_commercial_context_persist_preserves_0600(gateway_client, tmp_path, mon
     The secrets file (external_db_url, S3 keys) shares this file, so a write that
     broadens its mode to group/world exposes them.
     """
-    import asyncio
     import stat
 
     monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
@@ -383,7 +382,7 @@ def test_commercial_context_persist_preserves_0600(gateway_client, tmp_path, mon
     config_path.write_text(json.dumps({"external_db_url": "postgresql://x"}))
     config_path.chmod(0o600)
 
-    asyncio.run(gateway_client._persist_commercial_context(_ctx()))
+    gw_state._persist_commercial_context(_ctx())
 
     mode = stat.S_IMODE(config_path.stat().st_mode)
     assert mode == 0o600, f"config mode broadened to {oct(mode)}"
@@ -422,13 +421,11 @@ def test_feature_flags_persist_survives_midwrite_failure(gateway_client, tmp_pat
 def test_commercial_context_persist_coerces_non_dict_config(gateway_client, tmp_path, monkeypatch):
     """A valid-but-non-dict top-level config (array/string) is coerced to an
     object before the merge instead of raising."""
-    import asyncio
-
     monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
     config_path = tmp_path / "celerp-config.json"
     config_path.write_text(json.dumps(["not", "a", "dict"]))
 
-    asyncio.run(gateway_client._persist_commercial_context(_ctx()))
+    gw_state._persist_commercial_context(_ctx())
 
     persisted = json.loads(config_path.read_text())
     assert isinstance(persisted, dict)

@@ -389,6 +389,16 @@ def write_config(cfg: dict) -> None:
         # before this shipped), matching the embedded/headless idiom.
         if cloud.get("disconnected"):
             lines.append("disconnected = true")
+        # Self-hosted last-known-good commercial context, compact JSON of the
+        # already-validated envelope, so a partner-managed install presents its
+        # partner identity across an offline restart instead of defaulting to
+        # celerp_direct. Emitted only when set (a direct install that has never
+        # cached one carries no key); serialised through the JSON string encoder
+        # so embedded quotes survive the TOML round-trip.
+        if cloud.get("commercial_context_json"):
+            import json as _json
+            lines.append(
+                f"commercial_context_json = {_json.dumps(cloud['commercial_context_json'])}")
         # Deployment credential survives every [cloud] write until the relay
         # accepts it: emitted only while non-empty, and the association marker
         # only once set. A direct install carries neither key. Without this, the

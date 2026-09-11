@@ -462,10 +462,8 @@ class GatewayClient:
             # leave any cached partner_managed identity intact, so the read is
             # presence-guarded rather than defaulted.
             if "commercial_context" in payload:
-                from celerp.gateway.state import set_commercial_context
-                ctx = payload["commercial_context"]
-                if set_commercial_context(ctx):
-                    await self._persist_commercial_context(ctx)
+                from celerp.gateway.state import apply_commercial_context
+                apply_commercial_context(payload["commercial_context"])
             # tier/status ride hello_ack too (not just subscription_updated): a
             # plain free connection never triggers a Stripe billing event, so
             # that push alone would never tell a free instance its own tier.
@@ -539,10 +537,10 @@ class GatewayClient:
 
         elif msg_type == "commercial_updated":
             # The payload is the context itself (flat, like subscription_updated);
-            # the same acceptance gate and persist path as the hello_ack branch.
-            from celerp.gateway.state import set_commercial_context
-            if set_commercial_context(payload):
-                await self._persist_commercial_context(payload)
+            # the same shared apply/persist seam as the hello_ack branch, so
+            # validation and persistence live in one place (state.apply_commercial_context).
+            from celerp.gateway.state import apply_commercial_context
+            apply_commercial_context(payload)
 
         else:
             log.debug("Unhandled gateway message type: %s", msg_type)
@@ -555,16 +553,6 @@ class GatewayClient:
         writer so the co-resident secrets are never broadened.
         """
         merge_packaged_config({"feature_flags": feature_flags})
-
-    async def _persist_commercial_context(self, ctx: dict) -> None:
-        """Write commercial_context into Electron's celerp-config.json.
-
-        Best-effort: only works inside Electron where CELERP_DATA_DIR is set; a
-        no-op in dev/server mode. Delegates to the shared atomic, 0600-forcing
-        writer so the existing feature_flags entry is preserved and a crash
-        mid-write never leaves a torn config for the next startup read.
-        """
-        merge_packaged_config({"commercial_context": ctx})
 
     async def _handle_shopify_webhook(self, payload: dict) -> None:
         """A Shopify webhook the relay forwarded. Trigger a targeted incremental

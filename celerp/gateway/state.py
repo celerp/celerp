@@ -262,58 +262,52 @@ def _normalized_implementation(implementation):
     return implementation
 
 
-def set_commercial_context(new: dict) -> bool:
-    """Validate a relay-pushed commercial context and, if the WHOLE envelope is
-    valid and strictly newer, replace the held model. Returns whether it was
-    accepted.
+def _validated_commercial_shape(new) -> dict | None:
+    """Return the accepted snapshot (a deep copy with a sanitised
+    implementation) when the WHOLE envelope shape is valid, else None. Judges
+    shape only - it never consults or advances the held version, so it can
+    answer both "would this apply" and "is this a valid already-converged
+    shape".
 
-    This is the single acceptance gate: both inbound branches (hello_ack and
-    commercial_updated) route through it. Acceptance is all-or-nothing. Any
-    invalidity - a bad envelope shape, a partner_managed context without a valid
-    implementation, a supplied offer or subscription that fails validation, or a
-    celerp_direct context carrying an implementation or offer - rejects the whole
-    envelope: the last-known-good model AND its version are preserved unchanged
-    and a single reason line is logged. Nothing is ever partial-applied, so a
-    rejected envelope never advances the held version and a corrected
-    retransmission at the same version is accepted. Called by GatewayClient.
+    Validity is all-or-nothing. Any invalidity - a bad envelope shape, a
+    partner_managed context without a valid implementation, a supplied offer or
+    subscription that fails validation, or a celerp_direct context carrying an
+    implementation or offer - rejects the whole envelope and logs a single
+    reason line. Nothing is ever partial-applied.
     """
-    global _commercial_context
     if not isinstance(new, dict):
         log.warning("Commercial context rejected: payload is not an object.")
-        return False
+        return None
     version = new.get("version")
     if not _valid_int(version):
         log.warning("Commercial context rejected: version missing or not an integer.")
-        return False
+        return None
     schema_version = new.get("schema_version")
     if not _valid_int(schema_version):
         log.warning("Commercial context rejected: schema_version missing or not an integer.")
-        return False
+        return None
     if schema_version > _SUPPORTED_SCHEMA_VERSION:
         log.warning(
             "Commercial context schema_version %s exceeds the supported maximum %s; "
             "this client needs updating. Preserving last-known-good.",
             schema_version, _SUPPORTED_SCHEMA_VERSION)
-        return False
+        return None
     if schema_version < _SUPPORTED_SCHEMA_VERSION:
         log.warning(
             "Commercial context rejected: invalid schema_version %s (below the "
             "supported %s).",
             schema_version, _SUPPORTED_SCHEMA_VERSION)
-        return False
+        return None
     mode = new.get("commercial_mode")
     if mode not in _VALID_COMMERCIAL_MODES:
         log.warning("Commercial context rejected: unrecognised commercial_mode.")
-        return False
+        return None
     for key in ("implementation", "offer", "subscription"):
         value = new.get(key)
         if value is not None and not isinstance(value, dict):
             log.warning("Commercial context rejected: %s is neither null nor an object.", key)
-            return False
+            return None
 
-    # All-or-nothing validation of the whole candidate, BEFORE the version gate,
-    # so a rejected envelope never advances the held version. A malformed
-    # sub-block fails the whole update rather than being dropped and stored.
     raw_impl = new.get("implementation")
     normalized_impl = _normalized_implementation(raw_impl) if raw_impl is not None else None
     if mode == "partner_managed":
@@ -321,33 +315,24 @@ def set_commercial_context(new: dict) -> bool:
             log.warning(
                 "Commercial context rejected: partner_managed requires a valid "
                 "implementation (mode=%s, version=%s).", mode, version)
-            return False
+            return None
     else:  # celerp_direct
         if raw_impl is not None or new.get("offer") is not None:
             log.warning(
                 "Commercial context rejected: celerp_direct must carry no "
                 "implementation or offer (mode=%s, version=%s).", mode, version)
-            return False
+            return None
     raw_offer = new.get("offer")
     if raw_offer is not None and _validated_offer(raw_offer) is None:
         log.warning(
             "Commercial context rejected: offer failed validation (version=%s).", version)
-        return False
+        return None
     raw_subscription = new.get("subscription")
     if raw_subscription is not None and _validated_subscription(raw_subscription) is None:
         log.warning(
             "Commercial context rejected: subscription failed validation (version=%s).",
             version)
-        return False
-
-    # The whole envelope is valid; only now does the strictly-newer version gate
-    # decide whether it supersedes the held snapshot.
-    current = _commercial_context.get("version")
-    if _valid_int(current) and version <= current:
-        log.warning(
-            "Commercial context rejected: version %s is not newer than held %s.",
-            version, current)
-        return False
+        return None
 
     accepted = copy.deepcopy(new)
     # Carry the normalized implementation (a sanitised support_url) into the
@@ -355,8 +340,92 @@ def set_commercial_context(new: dict) -> bool:
     # celerp_direct carries none.
     if normalized_impl is not None:
         accepted["implementation"] = normalized_impl
+    return accepted
+
+
+def set_commercial_context(new: dict) -> bool:
+    """Validate a relay-pushed commercial context and, if the WHOLE envelope is
+    valid and strictly newer, replace the held model. Returns whether it was
+    accepted.
+
+    This is the single acceptance gate: both inbound branches (hello_ack and
+    commercial_updated) route through it. Acceptance is all-or-nothing (see
+    ``_validated_commercial_shape``): the last-known-good model AND its version
+    are preserved unchanged on any invalidity, so a rejected envelope never
+    advances the held version and a corrected retransmission at the same version
+    is accepted. Called by GatewayClient.
+    """
+    global _commercial_context
+    accepted = _validated_commercial_shape(new)
+    if accepted is None:
+        return False
+
+    # The whole envelope is valid; only now does the strictly-newer version gate
+    # decide whether it supersedes the held snapshot.
+    version = accepted["version"]
+    current = _commercial_context.get("version")
+    if _valid_int(current) and version <= current:
+        log.warning(
+            "Commercial context rejected: version %s is not newer than held %s.",
+            version, current)
+        return False
+
     _commercial_context = accepted
     return True
+
+
+def _persist_commercial_context(ctx: dict) -> None:
+    """Write the already-validated commercial context to whichever local store
+    this platform uses, so an offline restart presents the last-known-good
+    partner identity rather than the neutral default.
+
+    Packaged (Electron, CELERP_DATA_DIR set): the 'commercial_context' key of
+    celerp-config.json via the shared atomic writer. Self-hosted (no
+    CELERP_DATA_DIR): the [cloud] commercial_context_json key of config.toml, the
+    only cross-restart store a self-hosted install has. Both are best-effort: a
+    write failure leaves the prior on-disk state untouched and never raises into
+    the acceptance path.
+    """
+    import os
+    if os.environ.get("CELERP_DATA_DIR", ""):
+        from celerp.config_store import merge_packaged_config
+        merge_packaged_config({"commercial_context": ctx})
+        return
+    import json
+    from celerp.config import read_config, write_config
+    try:
+        cfg = read_config()
+        cfg.setdefault("cloud", {})["commercial_context_json"] = json.dumps(
+            ctx, separators=(",", ":"))
+        write_config(cfg)
+    except Exception as exc:
+        log.debug("Gateway: self-hosted commercial-context persist failed: %s", exc)
+
+
+def apply_commercial_context(ctx: dict) -> str:
+    """Validate, apply, and persist a commercial context, returning a status that
+    distinguishes the three outcomes the callers need:
+
+    - ``"applied"``: a valid, strictly-newer context replaced the held model and
+      was persisted;
+    - ``"converged"``: a valid context whose version is not newer than the held
+      one (the benign WS-then-HTTP race). The held state already matches or leads
+      it, so this is success - nothing is written and nothing changes;
+    - ``"rejected"``: a malformed shape. The last-known-good model and its
+      version are preserved; nothing is written.
+
+    The single apply/persist seam every acceptance path shares (hello_ack,
+    commercial_updated, and the synchronous claim-accept HTTP response), so
+    validation and persistence live in one place rather than being duplicated
+    per caller.
+    """
+    if _validated_commercial_shape(ctx) is None:
+        return "rejected"
+    if set_commercial_context(ctx):
+        _persist_commercial_context(get_commercial_context())
+        return "applied"
+    # Valid shape but not newer than the held version: already converged.
+    return "converged"
 
 
 def get_commercial_context() -> dict:
@@ -389,26 +458,42 @@ def load_commercial_context() -> None:
     startup, ungated by the relay connection so an offline restart still
     presents the cached partner_managed identity instead of the neutral default.
 
-    Reads the 'commercial_context' key from <CELERP_DATA_DIR>/celerp-config.json.
-    A missing data dir, missing file, missing key, or corrupt JSON leaves the
+    Packaged (Electron, CELERP_DATA_DIR set): reads the 'commercial_context' key
+    from <CELERP_DATA_DIR>/celerp-config.json. Self-hosted (no CELERP_DATA_DIR):
+    reads and decodes the [cloud] commercial_context_json key from config.toml.
+    Both route the decoded object through set_commercial_context(), so a missing
+    store, missing key, corrupt JSON, or an invalid/stale shape leaves the
     neutral empty model in place; it never fabricates a partner.
     """
     import os
     import json
     data_dir = os.environ.get("CELERP_DATA_DIR", "")
-    if not data_dir:
+    if data_dir:
+        config_path = os.path.join(data_dir, "celerp-config.json")
+        if not os.path.exists(config_path):
+            return
+        try:
+            with open(config_path) as f:
+                existing = json.load(f)
+            cached = existing.get("commercial_context")
+            if isinstance(cached, dict):
+                set_commercial_context(cached)
+        except Exception as exc:
+            log.debug("Gateway: commercial-context cache unreadable; using neutral default: %s", exc)
         return
-    config_path = os.path.join(data_dir, "celerp-config.json")
-    if not os.path.exists(config_path):
-        return
+    # Self-hosted: the durable store is the fixed [cloud] commercial_context_json
+    # config key, serialised as compact JSON of the already-validated context.
     try:
-        with open(config_path) as f:
-            existing = json.load(f)
-        cached = existing.get("commercial_context")
+        from celerp.config import read_config
+        raw = read_config().get("cloud", {}).get("commercial_context_json", "")
+        if not raw:
+            return
+        cached = json.loads(raw)
         if isinstance(cached, dict):
             set_commercial_context(cached)
     except Exception as exc:
-        log.debug("Gateway: commercial-context cache unreadable; using neutral default: %s", exc)
+        log.debug("Gateway: self-hosted commercial-context cache unreadable; "
+                  "using neutral default: %s", exc)
 
 
 def grace_ends_in_future(value) -> bool:
@@ -486,6 +571,64 @@ def get_packaged_db_state() -> dict:
         "storage_mode": storage_mode,
         "has_external_storage": bool(has_external_storage),
         "external_storage_entitled": external_storage_entitled,
+        "storage_in_grace": storage_in_grace,
+    }
+
+
+def get_local_infra_state() -> dict:
+    """Return the non-secret Team infrastructure state for the UI, on both
+    packaged and self-hosted installs, exposing only booleans and dates.
+
+    Keys, and only these keys:
+        has_external_url, has_external_storage, external_db_entitled,
+        external_storage_entitled, grace_period_ends, in_grace, storage_in_grace
+
+    Packaged (Electron, CELERP_DATA_DIR set): projected from
+    get_packaged_db_state(), which reads celerp-config.json straight from disk so
+    the cold-boot and relay-disconnected cases are served without waiting on a
+    relay flag push. Self-hosted (no CELERP_DATA_DIR): the configured external
+    DB/storage booleans come from the runtime Settings object, and the
+    entitlement/grace flags from the same feature-flags cache the packaged branch
+    reads (get_feature_flags()), so there is one entitlement source, not a third.
+
+    Never exposes a DB URL, password, S3 endpoint, access key, or secret key -
+    only whether an external target is configured. This is the visibility/
+    recovery source; establishing or probing paid infra keeps a live-entitlement
+    gate elsewhere.
+    """
+    import os
+    if os.environ.get("CELERP_DATA_DIR", ""):
+        packaged = get_packaged_db_state()
+        return {
+            "has_external_url": packaged["has_external_url"],
+            "has_external_storage": packaged["has_external_storage"],
+            "external_db_entitled": packaged["external_db_entitled"],
+            "external_storage_entitled": packaged["external_storage_entitled"],
+            "grace_period_ends": packaged["grace_period_ends"],
+            "in_grace": packaged["in_grace"],
+            "storage_in_grace": packaged["storage_in_grace"],
+        }
+    # Self-hosted: configured targets from runtime settings (booleans only),
+    # entitlement/grace from the shared feature-flags cache.
+    from celerp.config import settings
+    has_external_url = settings.database_url not in (
+        "", "postgresql+asyncpg://celerp:celerp@localhost:5432/celerp")
+    has_external_storage = settings.storage_backend == "s3" or bool(
+        settings.storage_s3_endpoint or settings.storage_s3_bucket
+        or settings.storage_s3_access_key)
+    flags = get_feature_flags()
+    external_db_entitled = bool(flags.get("external_db"))
+    external_storage_entitled = bool(flags.get("external_storage"))
+    grace_period_ends = flags.get("grace_period_ends")
+    in_grace = grace_ends_in_future(grace_period_ends) and not external_db_entitled
+    storage_in_grace = grace_ends_in_future(grace_period_ends) and not external_storage_entitled
+    return {
+        "has_external_url": bool(has_external_url),
+        "has_external_storage": bool(has_external_storage),
+        "external_db_entitled": external_db_entitled,
+        "external_storage_entitled": external_storage_entitled,
+        "grace_period_ends": grace_period_ends,
+        "in_grace": in_grace,
         "storage_in_grace": storage_in_grace,
     }
 
@@ -693,3 +836,44 @@ def _enterprise_handoff(instance_id: str) -> str:
 def enterprise_url(instance_id: str = "") -> str:
     """Public entry point for the Enterprise/partner acquisition route."""
     return _enterprise_handoff(instance_id)
+
+
+def build_public_acquisition_url(sku: str = "") -> str:
+    """Resolve a pre-auth / external acquisition URL - the destination an
+    unauthenticated screen or a backend API error message points at, where the
+    click-time /commercial/checkout mint route (which needs an authenticated app
+    session) is unavailable.
+
+    Keyed on the install's commercial mode and the requested sku:
+      - partner_managed: the partner support URL, then a mailto: to the support
+        email, then the Enterprise route - never a direct Celerp checkout;
+      - celerp_direct with a cloud/ai sku: the anonymous celerp.com/subscribe URL
+        with NO instance_id, so the website opens an anonymous self-serve
+        purchase and never posts a named instance without a handoff token;
+      - a team sku, a top-up, or any unknown mode: the Enterprise route.
+
+    Fails closed like build_commercial_handoff: only the explicit celerp_direct
+    mode with a cloud/ai sku reaches a direct subscribe URL, and it is always
+    anonymous. A top-up must never resolve here (a named credit purchase needs a
+    handoff token this pre-auth path cannot mint), so it degrades to Enterprise.
+    The returned URL is always non-empty.
+    """
+    mode = get_commercial_mode()
+    if mode == "partner_managed":
+        identity = get_partner_identity() or {}
+        support_url = safe_support_url(identity.get("support_url"))
+        if support_url:
+            return support_url
+        support_email = safe_support_email(identity.get("support_email"))
+        if support_email:
+            return f"mailto:{support_email}"
+        return enterprise_url()
+    if mode != "celerp_direct":
+        return enterprise_url()
+    if sku in ("cloud", "ai"):
+        # Anonymous: no instance_id, so the website never posts a named instance
+        # without a handoff token this pre-auth path cannot mint.
+        return build_subscribe_url("", extra=f"plan={sku}")
+    # Team, top-up, or an empty/unknown sku: Enterprise, never a named or
+    # anonymous direct checkout.
+    return enterprise_url()

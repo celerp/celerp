@@ -53,6 +53,56 @@ def topup_url() -> str:
     return _commercial_route("topup", "ai")
 
 
+def commercial_cta(
+    intent: str,
+    sku: str,
+    direct_label: str,
+    lang: str,
+) -> tuple[str, str]:
+    """Resolve an authenticated commercial CTA to its (href, label) pair, keeping
+    the visible label in lockstep with the destination so a partner-managed
+    surface never reads as a direct Celerp price CTA.
+
+    - celerp_direct: the in-app /commercial/checkout mint route (via
+      subscribe_url/topup_url, which already point there). A subscribe CTA keeps
+      the caller's ``direct_label``; a top-up uses the standard top-up label.
+    - partner_managed: the partner support URL, then a mailto: to the support
+      email, then the Enterprise route, labelled "Contact partner support" while
+      a real partner destination exists and "Contact Celerp" on the Enterprise
+      fallback.
+    - any unknown mode: the Enterprise route labelled "Contact Celerp" (fails
+      closed, never a direct checkout).
+
+    The single semantic resolver every surface uses where the label must match
+    the destination. ``subscribe_url``/``topup_url`` stay thin direct-route
+    helpers for callers whose label is already correct.
+    """
+    from celerp.gateway.state import (
+        enterprise_url,
+        get_commercial_mode,
+        get_partner_identity,
+        safe_support_email,
+        safe_support_url,
+    )
+
+    mode = get_commercial_mode()
+    if mode == "celerp_direct":
+        if intent == "topup":
+            return topup_url(), t("ai.top_up_credits", lang)
+        return subscribe_url(sku), direct_label
+    if mode == "partner_managed":
+        identity = get_partner_identity() or {}
+        support_url = safe_support_url(identity.get("support_url"))
+        if support_url:
+            return support_url, t("cloud.partner_support", lang)
+        support_email = safe_support_email(identity.get("support_email"))
+        if support_email:
+            return f"mailto:{support_email}", t("cloud.partner_support", lang)
+        return enterprise_url(), t("cloud.contact_celerp", lang)
+    # Unknown mode: fail closed to Enterprise, never a direct checkout.
+    return enterprise_url(), t("cloud.contact_celerp", lang)
+
+
 def is_partner_managed() -> bool:
     """Whether this install is partner-managed.
 
