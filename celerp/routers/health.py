@@ -470,7 +470,23 @@ async def partner_claim_accept(payload: dict, role: str = Depends(get_current_ro
     partner_id = data.get("partner_id") if isinstance(data, dict) else None
     if not isinstance(partner_id, str) or not partner_id.strip():
         return {"error": "This claim could not be accepted. It may be invalid, expired, or already used."}
-    return {"partner_id": partner_id}
+
+    # Converge local commercial state synchronously from the authoritative
+    # post-accept context the relay returns, so the UI never redirects to a
+    # stale celerp_direct view when the WS push is offline or reconnecting. The
+    # WS may already have applied the same/newer valid version - that is
+    # converged success, not a failure. A malformed returned context must NOT
+    # overwrite last-known-good and is surfaced to the caller.
+    from celerp.gateway.state import apply_commercial_context, get_commercial_context
+    ctx = data.get("commercial_context")
+    if ctx is not None:
+        if apply_commercial_context(ctx) == "rejected":
+            return {"error": "This claim was accepted but its details could not be applied. "
+                             "Reopen Cloud settings to refresh."}
+    return {
+        "partner_id": partner_id,
+        "commercial_mode": get_commercial_context().get("commercial_mode", "celerp_direct"),
+    }
 
 
 @router.post("/settings/cloud-apply-token")

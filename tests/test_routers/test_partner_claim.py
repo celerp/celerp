@@ -53,6 +53,18 @@ _RESOLVE_OK = {
 _ACCEPT_OK = {"partner_id": "prt_123"}
 
 
+def _accept_with_ctx(version=1, mode="partner_managed"):
+    """An accept 200 that also carries the authoritative post-accept commercial
+    context, as the relay now returns it."""
+    ctx = {"version": version, "schema_version": 1, "commercial_mode": mode}
+    if mode == "partner_managed":
+        ctx["implementation"] = {
+            "partner_id": "prt_123", "display_name": "Acme Partners",
+            "support_url": "https://acme.example.com/support",
+        }
+    return {"partner_id": "prt_123", "commercial_context": ctx}
+
+
 def _relay_post_mock(*results):
     """Build an AsyncMock for the shared relay client's .post that returns the
     bearer exchange first, then each supplied claim response in order.
@@ -380,6 +392,94 @@ async def test_partner_claim_accept_degrades_when_relay_unreachable(client):
     assert "error" in r.json()
     from celerp.gateway.state import get_commercial_mode
     assert get_commercial_mode() == "celerp_direct"
+
+
+# -- accept: synchronous commercial-state convergence ------------------------
+
+@pytest.fixture
+def _reset_ctx():
+    import celerp.gateway.state as gw_state
+    saved = gw_state._commercial_context
+    gw_state._commercial_context = {}
+    yield
+    gw_state._commercial_context = saved
+
+
+@pytest.mark.asyncio
+async def test_partner_claim_accept_converges_without_live_ws(client, _reset_ctx, monkeypatch):
+    """Accept applies the returned commercial_context synchronously, so the local
+    mode is partner_managed on return even with no WS push (self-hosted, so no
+    packaged data dir)."""
+    import celerp.gateway.state as gw_state
+    monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
+    monkeypatch.setenv("CELERP_CONFIG", "/tmp/celerp-claim-accept-test.toml")
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        patch("celerp.config.settings.gateway_token", "api-key-abc"),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
+            _relay_resp(200, _accept_with_ctx(version=2)))
+        r = await client.post(
+            "/settings/partner-claim/accept",
+            headers=_h(_role_token("owner")), json={"claim_token": "tok-accept"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["partner_id"] == "prt_123"
+    # Local state converged before the response was returned.
+    assert gw_state.get_commercial_mode() == "partner_managed"
+
+
+@pytest.mark.asyncio
+async def test_partner_claim_accept_ws_first_then_http_converges(client, _reset_ctx, monkeypatch):
+    """The benign race: the WS already applied the same/newer valid version before
+    the HTTP response. That is converged success, not a failure."""
+    import celerp.gateway.state as gw_state
+    monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
+    monkeypatch.setenv("CELERP_CONFIG", "/tmp/celerp-claim-accept-test2.toml")
+    # Simulate the WS having applied the same version already.
+    gw_state.apply_commercial_context(_accept_with_ctx(version=2)["commercial_context"])
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        patch("celerp.config.settings.gateway_token", "api-key-abc"),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
+            _relay_resp(200, _accept_with_ctx(version=2)))
+        r = await client.post(
+            "/settings/partner-claim/accept",
+            headers=_h(_role_token("owner")), json={"claim_token": "tok-accept"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["partner_id"] == "prt_123"
+    assert "error" not in data
+    assert gw_state.get_commercial_mode() == "partner_managed"
+
+
+@pytest.mark.asyncio
+async def test_partner_claim_accept_malformed_ctx_never_overwrites(client, _reset_ctx, monkeypatch):
+    """A malformed returned context does not overwrite last-known-good and is a
+    failure surfaced to the caller."""
+    import celerp.gateway.state as gw_state
+    monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
+    monkeypatch.setenv("CELERP_CONFIG", "/tmp/celerp-claim-accept-test3.toml")
+    # Last-known-good: an earlier valid partner context at version 5.
+    gw_state.apply_commercial_context(_accept_with_ctx(version=5)["commercial_context"])
+    malformed = {"partner_id": "prt_123", "commercial_context": {
+        "version": 9, "schema_version": 1, "commercial_mode": "partner_managed"}}  # no implementation
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        patch("celerp.config.settings.gateway_token", "api-key-abc"),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
+            _relay_resp(200, malformed))
+        r = await client.post(
+            "/settings/partner-claim/accept",
+            headers=_h(_role_token("owner")), json={"claim_token": "tok-accept"})
+    assert r.status_code == 200
+    data = r.json()
+    assert "error" in data
+    assert "partner_id" not in data
+    # Last-known-good preserved: version unchanged at 5.
+    assert gw_state.get_commercial_context()["version"] == 5
 
 
 # -- decline: binds nothing --------------------------------------------------
