@@ -31,17 +31,22 @@ from celerp.services.auth import create_access_token
 from celerp.services.session_tracker import _nonce_cache_set
 
 
-def _bearer(snonce: str = "") -> tuple[str, uuid.UUID, uuid.UUID, str]:
-    """Return (token, company_id, user_id, user_id_str) for a decodable token.
+def _bearer(snonce: str = "stream-nonce") -> tuple[str, uuid.UUID, uuid.UUID, str]:
+    """Return (token, company_id, user_id, user_id_str) for a valid v2 access token.
 
-    get_token_claims only decodes the JWT (no DB), so a self-minted token with
-    real UUID sub/company_id claims drives the stream without seeding a user row.
+    A v2 access token must carry a non-empty ``snonce`` (missing-nonce tokens fail
+    closed), so the default is a real placeholder nonce and the in-process nonce
+    cache is primed to match it - the stream then authenticates and its nonce poll
+    finds no mismatch, which is what the mechanics tests here need. Tests that want
+    to force an eviction override the cache to a DIFFERENT value after calling this.
     """
     company_id = uuid.uuid4()
     user_id = uuid.uuid4()
     token, _ = create_access_token(
         subject=str(user_id), company_id=str(company_id), role="admin", snonce=snonce
     )
+    if snonce:
+        _nonce_cache_set(str(user_id), snonce)
     return token, company_id, user_id, str(user_id)
 
 
@@ -121,7 +126,10 @@ async def test_events_stream_emits_drain_when_draining(monkeypatch):
     """While the system is draining, the stream emits a drain event and closes so the
     client can reconnect elsewhere during a deploy."""
     monkeypatch.setattr(events_mod, "_STREAM_TICK_SECONDS", 0.02)
-    token, company_id, user_id, _ = _bearer(snonce="")  # no nonce -> drain-only tick path
+    # A validated v2 stream (nonce matches, no eviction) must still surface drain on
+    # its poll tick. After the A9 rewrite the poll checks drain on every tick, not
+    # only on a nonce cache miss, so priming a matching nonce no longer suppresses it.
+    token, company_id, user_id, _ = _bearer()
     _subscribers.pop(f"{company_id}:{user_id}", None)
     # Prime the in-process drain cache so is_draining() reports True on the tick
     # without a DB row.
@@ -206,7 +214,9 @@ async def test_events_stream_drains_under_notification_flood(monkeypatch):
     """Drain must reach an open tab under a notification flood too, so a deploy can move
     streaming clients rather than being starved by their own event traffic."""
     monkeypatch.setattr(events_mod, "_STREAM_TICK_SECONDS", 0.05)
-    token, company_id, user_id, _ = _bearer(snonce="")  # no nonce -> drain-only tick path
+    # Validated stream (nonce matches); drain must reach it under a flood after A9
+    # moves the drain check onto every poll tick, not only the cache-miss path.
+    token, company_id, user_id, _ = _bearer()
     _subscribers.pop(f"{company_id}:{user_id}", None)
     runtime_state._drain_cache_set({"draining": True})
 
@@ -239,7 +249,7 @@ async def test_events_stream_unsubscribes_on_disconnect(monkeypatch):
     # Not draining: the tick path loops and emits a keepalive, proving the stream is
     # subscribed and live before we disconnect it.
     runtime_state._drain_cache_set({"draining": False})
-    token, company_id, user_id, _ = _bearer(snonce="")
+    token, company_id, user_id, _ = _bearer()
     key = f"{company_id}:{user_id}"
     _subscribers.pop(key, None)
 
