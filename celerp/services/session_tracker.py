@@ -102,11 +102,17 @@ def get_nonce_from_cache(user_id: str) -> str | None:
 async def register_token(
     session: AsyncSession, jti: str, user_id: str, expiry: datetime
 ) -> None:
-    """Record a newly-issued access token.  No-op if JTI already exists."""
+    """Record a newly-issued access token, extending the stored expiry when the
+    JTI is re-minted.  Sliding refresh reuses the original JTI, so its registry
+    slot must slide forward to match the refreshed token's expiry; otherwise a
+    continuously active session would fall out of the registry at its original
+    expiry while the holder still carries a valid token."""
     existing = await session.get(SessionRegistry, jti)
     if existing is None:
         session.add(SessionRegistry(jti=jti, user_id=_uuid_mod.UUID(user_id), expiry=expiry))
-        await session.commit()
+    else:
+        existing.expiry = expiry
+    await session.commit()
 
 
 async def active_user_ids(session: AsyncSession) -> set[str]:
