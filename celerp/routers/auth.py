@@ -444,7 +444,11 @@ async def password_reset_confirm(
     user.auth_hash = hash_password(payload.new_password)
     user.reset_token = None
     user.reset_token_expires = None
-    await session.commit()
+    # Rotate the user's nonce so every access and refresh token issued before the
+    # reset dies immediately (a reset is a security-sensitive credential change).
+    # invalidate_sessions commits the session, so no earlier independent commit.
+    from celerp.services.session_tracker import invalidate_sessions as _invalidate
+    await _invalidate(session, str(user.id))
     return {"detail": "Password updated successfully."}
 
 
@@ -465,7 +469,11 @@ async def change_password(
     if len(payload.new_password) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
     user.auth_hash = hash_password(payload.new_password)
-    await session.commit()
+    # Rotate the user's nonce so every access and refresh token minted before the
+    # change dies immediately, including the caller's current session.
+    # invalidate_sessions commits the session, so no earlier independent commit.
+    from celerp.services.session_tracker import invalidate_sessions as _invalidate
+    await _invalidate(session, str(user.id))
     return {"detail": "Password changed successfully."}
 
 
