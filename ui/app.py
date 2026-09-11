@@ -48,7 +48,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.requests import Request
 from starlette.responses import Response
 
-from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, cookie_domain
+from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, clear_session_cookies, cookie_domain, is_stale_cookie
 from ui.routes import (
     auth, setup, search, settings, settings_import,
     settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
@@ -179,13 +179,28 @@ class TokenRefreshMiddleware:
             except Exception:
                 pass
 
-        # Case 2: access token present but past half-life
-        if not new_access and access_token and refresh_token and _token_needs_refresh(access_token):
+        # A pre-v2 / wrong-type access cookie is rejected outright by the API, so
+        # it must converge to login now rather than waiting for its expiry.
+        stale_access = bool(access_token) and is_stale_cookie(request)
+
+        # Case 2: access token present and either past half-life or a stale
+        # pre-v2 token - exchange it for a v2 pair.
+        if not new_access and access_token and refresh_token and (
+            _token_needs_refresh(access_token) or stale_access
+        ):
             from ui.api_client import refresh_access_token, APIError as _APIError
             try:
                 new_access, new_refresh = await refresh_access_token(refresh_token)
             except Exception:
                 pass
+
+        # A stale pre-v2 cookie that could not be exchanged is NOT cleared here:
+        # the route runs with it, the API rejects it, and the 401 handler
+        # (_401_redirect) is the single place that clears the rejected cookies
+        # and redirects to login. Clearing on the response here instead would
+        # clobber the Set-Cookie of any route that legitimately mints fresh
+        # cookies (login, company switch) whenever the incoming cookie happened
+        # to be stale.
 
         if new_access and new_refresh:
             from celerp.config import settings as _settings
@@ -300,11 +315,15 @@ from starlette.responses import RedirectResponse as _RR
 
 
 def _401_redirect(detail: str, request: Request | None = None):
-    """Build a /login redirect from a 401 detail string.
+    """Build a /login redirect from a 401 detail string and clear the rejected
+    session cookies.
 
     detail may be bare 'Session expired' or 'Session expired|<ip>' (force-login).
     Any other detail is treated as a generic expiry. For an HTMX request, return HX-Redirect so the
     browser navigates instead of swapping the login page into the fragment that fired the request.
+
+    The rejected access and refresh cookies are deleted on the response so a
+    stale or pre-v2 token cannot drive an endless refresh/redirect loop.
     """
     if detail.startswith("Session expired"):
         parts = detail.split("|", 1)
@@ -314,8 +333,11 @@ def _401_redirect(detail: str, request: Request | None = None):
         params = "reason=expired"
     url = f"/login?{params}{_next_qs(request) if request is not None else ''}"
     if request is not None and request.headers.get("hx-request"):
-        return Response(status_code=200, headers={"HX-Redirect": url})
-    return _RR(url, status_code=302)
+        resp = Response(status_code=200, headers={"HX-Redirect": url})
+    else:
+        resp = _RR(url, status_code=302)
+    clear_session_cookies(resp, request)
+    return resp
 
 
 async def ui_401_handler(request: Request, exc):

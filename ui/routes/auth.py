@@ -122,6 +122,8 @@ def setup_routes(app):
             notice = flash(t("auth.session_expired_signin"), kind="warning")
         elif reason == "idle":
             notice = flash(t("auth.signed_out_idle"), kind="warning")
+        elif reason == "password-changed":
+            notice = flash(t("settings.password_changed"), kind="success")
         elif (restore_notice := _consume_restore_notice()) is not None:
             notice = flash(_restore_notice_message(restore_notice),
                            kind="warning" if (restore_notice.get("warnings") or restore_notice.get("schema_warning")) else "success")
