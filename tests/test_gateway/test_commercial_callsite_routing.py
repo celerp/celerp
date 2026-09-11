@@ -291,3 +291,62 @@ def test_direct_connection_gate_unknown_label_is_contact_celerp():
     assert "/enterprise" in tag
     assert t("cloud.contact_celerp", "en") in tag
     assert t("btn.get_connect", "en") not in tag
+
+
+# _cloud_relay_unconnected - the Celerp Connect tab CTA. Its Subscribe button must
+# resolve label+href together so a partner-managed or unknown install never shows
+# the direct "Subscribe" label over a partner-support / Enterprise destination.
+# Red at merge-base: the label is always t("settings.subscribe") and the href is
+# always subscribe_url(""), regardless of commercial mode.
+
+
+def test_cloud_relay_unconnected_direct_shows_subscribe_label_and_mint_route():
+    from ui.routes.settings import _cloud_relay_unconnected
+    from ui.i18n import t
+    _direct()
+    tag = _anchor(to_xml(_cloud_relay_unconnected(_IID)))
+    assert "/commercial/checkout?intent=subscribe" in tag
+    assert t("settings.subscribe", "en") in tag
+
+
+def test_cloud_relay_unconnected_partner_url_shows_support_label_not_subscribe():
+    from ui.routes.settings import _cloud_relay_unconnected
+    from ui.i18n import t
+    _partner(support_url="https://partner.example.com/support")
+    tag = _anchor(to_xml(_cloud_relay_unconnected(_IID)))
+    assert 'href="https://partner.example.com/support"' in tag
+    assert t("cloud.partner_support", "en") in tag
+    assert t("settings.subscribe", "en") not in tag
+    assert "/commercial/checkout" not in tag
+
+
+def test_cloud_relay_unconnected_partner_email_shows_support_label():
+    from ui.routes.settings import _cloud_relay_unconnected
+    from ui.i18n import t
+    _partner(support_url="", support_email="help@partner.example.com")
+    tag = _anchor(to_xml(_cloud_relay_unconnected(_IID)))
+    assert 'href="mailto:help@partner.example.com"' in tag
+    assert t("cloud.partner_support", "en") in tag
+    assert t("settings.subscribe", "en") not in tag
+
+
+def test_cloud_relay_unconnected_partner_neither_fails_closed_to_contact_celerp():
+    from ui.routes.settings import _cloud_relay_unconnected
+    from ui.i18n import t
+    _partner(support_url="", support_email="")
+    tag = _anchor(to_xml(_cloud_relay_unconnected(_IID)))
+    assert "/enterprise" in tag
+    assert t("cloud.contact_celerp", "en") in tag
+    assert t("settings.subscribe", "en") not in tag
+    assert "/commercial/checkout" not in tag
+
+
+def test_cloud_relay_unconnected_unknown_mode_fails_closed_to_contact_celerp():
+    from ui.routes.settings import _cloud_relay_unconnected
+    from ui.i18n import t
+    gw_state._commercial_context = {"commercial_mode": "something_unexpected"}
+    tag = _anchor(to_xml(_cloud_relay_unconnected(_IID)))
+    assert "/enterprise" in tag
+    assert t("cloud.contact_celerp", "en") in tag
+    assert t("settings.subscribe", "en") not in tag
+    assert "/commercial/checkout" not in tag

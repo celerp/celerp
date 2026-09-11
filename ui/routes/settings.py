@@ -3650,8 +3650,13 @@ def _cloud_relay_unconnected(
             Connect button stays and reconnects in one click from the preserved
             credential.
     """
-    from ui.components.cloud_gate import subscribe_url as _subscribe_url
-    subscribe_url = _subscribe_url("")
+    from ui.components.cloud_gate import commercial_cta
+    from ui.i18n import current_lang
+    # Resolve label and href together so a partner-managed or unknown install shows
+    # the partner-support / Enterprise destination under its matching label, never
+    # the direct "Subscribe" label over a non-checkout destination.
+    subscribe_href, subscribe_label = commercial_cta(
+        "subscribe", "", t("settings.subscribe"), current_lang())
     children: list = []
     if show_header:
         children += [
@@ -3668,7 +3673,7 @@ def _cloud_relay_unconnected(
     children.append(
         Div(
             *(
-                [A(t("settings.subscribe"), href=subscribe_url, target="_blank", cls="btn btn--primary")]
+                [A(subscribe_label, href=subscribe_href, target="_blank", cls="btn btn--primary")]
                 if show_header else []
             ),
             Button(t("btn.connect_to_cloud"),
