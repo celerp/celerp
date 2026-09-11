@@ -360,3 +360,92 @@ def test_infra_db_section_hides_restore_in_packaged_mode_without_backup(tmp_path
     }))
     html = to_xml(sc._infra_db_section())
     assert 'id="restore-db-result"' not in html
+
+
+# ── #5: self-hosted Team-DB save sets the durable external_db opt-in ─────────
+#
+# Configuring an external Team DB through this UI must record the durable
+# [cloud] external_db opt-in so cross-build Team-infra recovery survives an
+# entitlement lapse. The opt-in is read back by load_cloud_config into
+# settings.external_db, which is the self-hosted visibility source.
+
+def _future() -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(days=10)).isoformat()
+
+
+async def test_save_infra_selfhosted_persists_external_db_optin(client, tmp_path, monkeypatch):
+    """After a self-hosted Team-DB save, the opt-in is durable in config.toml and
+    a fresh config load (not a monkeypatched setting) makes get_local_infra_state
+    report the external DB; a subsequent entitlement lapse still shows Team infra
+    in grace."""
+    import subprocess
+    import tomllib
+    monkeypatch.setattr(subprocess, "Popen", MagicMock())
+    monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
+    _sandbox_toml(monkeypatch, tmp_path,
+                  '[database]\nurl = "postgresql+asyncpg://celerp:old@old:5432/celerp"\n')
+    from celerp.config import settings, load_cloud_config
+    # Establish the pre-state honestly: the opt-in is OFF before the save. The
+    # save (not a monkeypatch) is what must turn it on.
+    monkeypatch.setattr(settings, "external_db", False, raising=False)
+
+    r = await client.post("/settings/cloud/save-infra", data={
+        "db_host": "new.example.com", "db_name": "celerp", "db_user": "celerp",
+        "db_pass": "pw",
+    })
+    assert r.status_code == 200
+    cfg = tomllib.loads((tmp_path / "config.toml").read_text())
+    assert cfg["cloud"]["external_db"] is True
+
+    # A fresh boot re-reads the opt-in from disk into settings.external_db.
+    load_cloud_config()
+    from celerp.gateway.state import get_local_infra_state, set_feature_flags
+    assert get_local_infra_state()["has_external_url"] is True
+
+    # Entitlement lapses (flags carry no external_db) but the window is open:
+    # Team infra stays visible and the DB is in grace, driven by the opt-in.
+    set_feature_flags({"external_db": False, "external_storage": False,
+                       "grace_period_ends": _future()})
+    lapsed = get_local_infra_state()
+    assert lapsed["has_external_url"] is True
+    assert lapsed["in_grace"] is True
+
+
+# ── #6: any effective infra change issues exactly one reload ─────────────────
+
+async def test_save_infra_selfhosted_storage_only_reloads_once(client, tmp_path, monkeypatch):
+    """A storage-only Save & Restart must actually restart: exactly one reload
+    signal, though no DB URL changed."""
+    import subprocess
+    popen = MagicMock()
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
+    _sandbox_toml(monkeypatch, tmp_path, '[storage]\nbackend = "local"\n')
+
+    r = await client.post("/settings/cloud/save-infra", data={
+        "storage_backend": "s3", "s3_endpoint": "https://s3.example.com",
+        "s3_bucket": "bkt", "s3_access_key": "AK", "s3_secret_key": "SK",
+    })
+    assert r.status_code == 200
+    assert popen.call_count == 1
+
+
+async def test_save_infra_selfhosted_db_and_storage_reload_once(client, tmp_path, monkeypatch):
+    """A combined DB + storage save still issues exactly one reload, never two."""
+    import subprocess
+    popen = MagicMock()
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
+    _sandbox_toml(monkeypatch, tmp_path,
+                  '[database]\nurl = "postgresql+asyncpg://celerp:old@old:5432/celerp"\n'
+                  '[storage]\nbackend = "local"\n')
+
+    r = await client.post("/settings/cloud/save-infra", data={
+        "db_host": "new.example.com", "db_name": "celerp", "db_user": "celerp",
+        "db_pass": "pw",
+        "storage_backend": "s3", "s3_endpoint": "https://s3.example.com",
+        "s3_bucket": "bkt", "s3_access_key": "AK", "s3_secret_key": "SK",
+    })
+    assert r.status_code == 200
+    assert popen.call_count == 1

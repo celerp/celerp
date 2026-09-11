@@ -182,20 +182,15 @@ def test_claim_token_field_has_escape_to_blur():
 #
 # Two overlapping requests to a save/restore/test/review endpoint can race (the
 # Restore button swaps current/backup URLs, so two requests can reverse the
-# user's intended restore). KISS fix: hx-disabled-elt="this" on the button,
-# reusing the existing spinner/indicator wiring already present on these forms.
+# user's intended restore). The action buttons carry hx-disabled-elt="this" and
+# disable themselves for the flight; the save/review forms retarget it to their
+# submit button (a <form> has no cascading disabled), whose in-flight single
+# flight is asserted behaviorally in tests/test_browser/test_infra_single_flight.py.
 
 def test_db_test_connection_button_disables_during_request():
     html = to_xml(_infra_db_section())
     m = re.search(r'<button[^>]*hx-post="/settings/cloud/test-db"[^>]*>', html)
     assert m, "DB Test Connection button not found"
-    assert 'hx-disabled-elt="this"' in m.group(0)
-
-
-def test_db_save_form_disables_submit_during_request():
-    html = to_xml(_infra_db_section())
-    m = re.search(r'<form[^>]*hx-post="/settings/cloud/save-infra"[^>]*>', html)
-    assert m, "DB save-infra form not found"
     assert 'hx-disabled-elt="this"' in m.group(0)
 
 
@@ -218,20 +213,6 @@ def test_storage_test_connection_button_disables_during_request():
     html = to_xml(_infra_storage_section())
     m = re.search(r'<button[^>]*hx-post="/settings/cloud/test-storage"[^>]*>', html)
     assert m, "Storage Test Connection button not found"
-    assert 'hx-disabled-elt="this"' in m.group(0)
-
-
-def test_storage_save_form_disables_submit_during_request():
-    html = to_xml(_infra_storage_section())
-    m = re.search(r'<form[^>]*hx-post="/settings/cloud/save-infra"[^>]*>', html)
-    assert m, "Storage save-infra form not found"
-    assert 'hx-disabled-elt="this"' in m.group(0)
-
-
-def test_partner_claim_review_form_disables_submit_during_request():
-    html = to_xml(_partner_claim_card(lang="en"))
-    m = re.search(r'<form[^>]*hx-post="/settings/partner-claim/resolve"[^>]*>', html)
-    assert m, "Partner claim review form not found"
     assert 'hx-disabled-elt="this"' in m.group(0)
 
 

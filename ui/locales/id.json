@@ -630,7 +630,6 @@
   "grace.external_available": "Database eksternal Anda masih dikonfigurasi dan dapat dipilih ulang.",
   "grace.external_owned": "Database eksternal Anda dan datanya tetap milik Anda.",
   "grace.local_now": "Aplikasi sekarang berjalan di database lokal.",
-  "grace.partner_support": "Hubungi {partner} untuk memperbarui atau meminta bantuan.",
   "grace.renew": "Perbarui langganan Team Anda untuk terus menggunakan database eksternal.",
   "grace.storage_available": "Penyimpanan eksternal Anda masih dikonfigurasi dan dapat dipilih ulang.",
   "grace.storage_deadline": "Langganan Team Anda telah berakhir. Penyimpanan eksternal Anda tetap terhubung hingga {deadline}.",

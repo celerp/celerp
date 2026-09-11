@@ -630,7 +630,6 @@
   "grace.external_available": "Tu base de datos externa sigue configurada y puede volver a seleccionarse.",
   "grace.external_owned": "Tu base de datos externa y sus datos siguen siendo tuyos.",
   "grace.local_now": "La aplicación ahora funciona con la base de datos local.",
-  "grace.partner_support": "Ponte en contacto con {partner} para renovar u obtener ayuda.",
   "grace.renew": "Renueva tu suscripción Team para seguir usando la base de datos externa.",
   "grace.storage_available": "Tu almacenamiento externo sigue configurado y puede volver a seleccionarse.",
   "grace.storage_deadline": "Tu suscripción Team ha caducado. Tu almacenamiento externo permanece conectado hasta el {deadline}.",

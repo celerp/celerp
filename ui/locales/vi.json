@@ -630,7 +630,6 @@
   "grace.external_available": "Cơ sở dữ liệu ngoài của bạn vẫn được cấu hình và có thể được chọn lại.",
   "grace.external_owned": "Cơ sở dữ liệu ngoài và dữ liệu của bạn vẫn thuộc về bạn.",
   "grace.local_now": "Ứng dụng hiện đang chạy trên cơ sở dữ liệu cục bộ.",
-  "grace.partner_support": "Liên hệ {partner} để gia hạn hoặc được trợ giúp.",
   "grace.renew": "Gia hạn gói đăng ký Team của bạn để tiếp tục sử dụng cơ sở dữ liệu ngoài.",
   "grace.storage_available": "Bộ nhớ ngoài của bạn vẫn được cấu hình và có thể được chọn lại.",
   "grace.storage_deadline": "Gói đăng ký Team của bạn đã hết hạn. Bộ nhớ ngoài của bạn vẫn kết nối đến {deadline}.",

@@ -525,7 +525,10 @@ def _infra_db_section(packaged=_UNSET) -> FT:
             hx_post="/settings/cloud/save-infra",
             hx_target="#db-test-result",
             cls="infra-form",
-            **{"hx-disabled-elt": "this"},
+            # A <form> has no cascading disabled, so target the submit button
+            # itself: it is disabled for the duration of the request, single-
+            # flighting a rapid second Save & Restart.
+            **{"hx-disabled-elt": "find button[type='submit']"},
         ),
         # Restore previous button (GDR undo support)
         Div(
@@ -626,7 +629,9 @@ def _infra_storage_section(packaged=_UNSET) -> FT:
             hx_post="/settings/cloud/save-infra",
             hx_target="#storage-test-result",
             cls="infra-form",
-            **{"hx-disabled-elt": "this"},
+            # Disable the submit button (not the <form>, which does not cascade)
+            # for the request, single-flighting a rapid second Save & Restart.
+            **{"hx-disabled-elt": "find button[type='submit']"},
         ),
         cls="infra-section",
     )
@@ -644,17 +649,19 @@ def _format_deadline(value) -> str:
         return str(value)
 
 
-def _append_renewal(children: list, partner: dict | None, lang: str) -> None:
-    """Append the renewal affordance: a neutral renewal line always, plus a
-    partner support line only when the install is partner-managed. Never
-    fabricates a partner."""
+def _append_renewal(children: list, lang: str) -> None:
+    """Append the renewal affordance: a neutral renewal hint plus one actionable
+    renewal control. The control's href and label come from commercial_cta, so it
+    tracks the install's commercial mode - the in-app checkout on a direct install,
+    the partner support URL/email (or Enterprise) on a partner-managed one - and
+    never reads as a direct-price CTA that opens partner support."""
+    from ui.components.cloud_gate import commercial_cta
     children.append(P(t("grace.renew", lang), cls="settings-hint"))
-    if partner:
-        name = partner.get("display_name") or ""
-        children.append(P(t("grace.partner_support", lang, partner=name), cls="settings-hint"))
+    href, label = commercial_cta("subscribe", "cloud", t("cloud.start_trial", lang), lang)
+    children.append(A(label, href=href, target="_blank", cls="btn btn--sm btn--primary"))
 
 
-def _grace_notice(state: dict, partner: dict | None, lang: str = "en") -> FT | None:
+def _grace_notice(state: dict, lang: str = "en") -> FT | None:
     """Grace-period banner (during grace) or the after-grace persistent notice.
 
     Branched by which resource has lapsed - database, storage, or both - so the
@@ -695,7 +702,7 @@ def _grace_notice(state: dict, partner: dict | None, lang: str = "en") -> FT | N
                 deadline=_format_deadline(state.get("grace_period_ends")))),
             P(t(key("external_owned", "owned"), lang), cls="settings-hint"),
         ]
-        _append_renewal(children, partner, lang)
+        _append_renewal(children, lang)
         return Div(*children, cls="flash flash--warning", style="margin-bottom:12px;")
 
     children = [
@@ -703,7 +710,7 @@ def _grace_notice(state: dict, partner: dict | None, lang: str = "en") -> FT | N
         P(t(key("external_available", "available"), lang), cls="settings-hint"),
         P(t(key("divergence_warning", "divergence_warning"), lang), cls="settings-hint"),
     ]
-    _append_renewal(children, partner, lang)
+    _append_renewal(children, lang)
     return Div(*children, cls="flash flash--warning", style="margin-bottom:12px;")
 
 
@@ -830,7 +837,9 @@ def _partner_claim_card(lang: str = "en", error: str | None = None) -> FT:
             hx_swap="outerHTML",
             hx_indicator="#partner-claim-spinner",
             style="display:flex;align-items:center;gap:8px;margin-top:8px;",
-            **{"hx-disabled-elt": "this"},
+            # Disable the Review submit button (not the <form>) for the request,
+            # single-flighting a rapid second claim lookup.
+            **{"hx-disabled-elt": "find button[type='submit']"},
         )
     )
     return Div(*children, id="partner-claim-card", cls="settings-card")
@@ -961,8 +970,8 @@ def setup_routes(app):
         # Connected or connecting - show tabs
         tab = request.query_params.get("tab", "status")
         has_team = _has_team_features(await _commercial_state(request))
-        from celerp.gateway.state import get_local_infra_state, get_partner_identity
-        grace_notice = _grace_notice(get_local_infra_state(), get_partner_identity(), lang=lang)
+        from celerp.gateway.state import get_local_infra_state
+        grace_notice = _grace_notice(get_local_infra_state(), lang=lang)
 
         if tab == "infrastructure" and has_team:
             content = _infrastructure_tab(grace_notice=grace_notice)
@@ -1328,6 +1337,8 @@ def _save_infra_selfhosted(form) -> FT:
             return Span(t("settings.no_config_file_found"), cls="infra-test-result--err")
 
         db_url_changed = False
+        storage_changed = False
+        optin_newly_set = False
 
         # DB settings: compose URL when host+name+user are all present
         host = form.get("db_host", "").strip()
@@ -1359,6 +1370,14 @@ def _save_infra_selfhosted(form) -> FT:
                 cfg.setdefault("database", {})["url"] = new_url
                 db_url_changed = True
 
+            # Configuring a Team external DB opts this install into external-DB
+            # infrastructure durably. This opt-in, not the runtime database_url,
+            # is the self-hosted Team-infra visibility source, so cross-build
+            # recovery survives an entitlement lapse (get_local_infra_state reads
+            # settings.external_db, populated from this key by load_cloud_config).
+            optin_newly_set = not bool(cfg.get("cloud", {}).get("external_db"))
+            cfg.setdefault("cloud", {})["external_db"] = True
+
         # Storage settings
         storage_backend = form.get("storage_backend", "")
         if storage_backend:
@@ -1369,6 +1388,20 @@ def _save_infra_selfhosted(form) -> FT:
                 if not _valid_s3_endpoint(endpoint):
                     return Span(t("settings_cloud.invalid_s3_endpoint"), cls="infra-test-result--err")
             prev_storage = cfg.get("storage", {})
+            new_s3_endpoint = form.get("s3_endpoint", "")
+            new_s3_bucket = form.get("s3_bucket", "")
+            new_s3_access_key = form.get("s3_access_key", "")
+            new_s3_secret = form.get("s3_secret_key")
+            # An effective storage change is any differing field, or a newly
+            # supplied secret (the secret is never sourced back into the form, so
+            # a submitted value is always a change).
+            storage_changed = (
+                prev_storage.get("backend", "") != storage_backend
+                or prev_storage.get("s3_endpoint", "") != new_s3_endpoint
+                or prev_storage.get("s3_bucket", "") != new_s3_bucket
+                or prev_storage.get("s3_access_key", "") != new_s3_access_key
+                or bool(new_s3_secret)
+            )
             cfg.setdefault("storage_backup", {}).update({
                 "backend": prev_storage.get("backend", ""),
                 "s3_endpoint": prev_storage.get("s3_endpoint", ""),
@@ -1377,15 +1410,18 @@ def _save_infra_selfhosted(form) -> FT:
                 "s3_secret_key": prev_storage.get("s3_secret_key", ""),
             })
             cfg.setdefault("storage", {})["backend"] = storage_backend
-            cfg["storage"]["s3_endpoint"] = form.get("s3_endpoint", "")
-            cfg["storage"]["s3_bucket"] = form.get("s3_bucket", "")
-            cfg["storage"]["s3_access_key"] = form.get("s3_access_key", "")
-            if form.get("s3_secret_key"):
-                cfg["storage"]["s3_secret_key"] = form.get("s3_secret_key")
+            cfg["storage"]["s3_endpoint"] = new_s3_endpoint
+            cfg["storage"]["s3_bucket"] = new_s3_bucket
+            cfg["storage"]["s3_access_key"] = new_s3_access_key
+            if new_s3_secret:
+                cfg["storage"]["s3_secret_key"] = new_s3_secret
 
         write_config(cfg)
 
-        if db_url_changed:
+        # One reload for any effective infrastructure change: a new DB URL, a
+        # storage change, or a newly set external-DB opt-in. Exactly one SIGHUP
+        # regardless of how many of these changed together.
+        if db_url_changed or storage_changed or optin_newly_set:
             import subprocess
             subprocess.Popen(["pkill", "-HUP", "-f", "uvicorn"])
 

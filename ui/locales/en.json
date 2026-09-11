@@ -734,7 +734,6 @@
   "grace.external_available": "Your external database is still configured and can be reselected.",
   "grace.external_owned": "Your external database and its data remain yours.",
   "grace.local_now": "The app is now running on the local database.",
-  "grace.partner_support": "Contact {partner} to renew or for help.",
   "grace.renew": "Renew your Team subscription to keep using the external database.",
   "grace.storage_available": "Your external storage is still configured and can be reselected.",
   "grace.storage_deadline": "Your Team subscription has lapsed. Your external storage stays connected until {deadline}.",

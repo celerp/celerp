@@ -560,8 +560,13 @@ def get_packaged_db_state() -> dict:
     external_db_entitled = bool(flags.get("external_db"))
     external_storage_entitled = bool(flags.get("external_storage"))
     grace_period_ends = flags.get("grace_period_ends")
-    in_grace = grace_ends_in_future(grace_period_ends) and not external_db_entitled
-    storage_in_grace = grace_ends_in_future(grace_period_ends) and not external_storage_entitled
+    # Grace only applies to a resource this install actually configured: a
+    # DB-only install is never classed as storage grace (and vice versa), and an
+    # install with neither external target never enters grace at all.
+    in_grace = (bool(external_db_url) and grace_ends_in_future(grace_period_ends)
+                and not external_db_entitled)
+    storage_in_grace = (bool(has_external_storage) and grace_ends_in_future(grace_period_ends)
+                        and not external_storage_entitled)
     return {
         "db_mode": db_mode,
         "has_external_url": bool(external_db_url),
@@ -624,8 +629,13 @@ def get_local_infra_state() -> dict:
     external_db_entitled = bool(flags.get("external_db"))
     external_storage_entitled = bool(flags.get("external_storage"))
     grace_period_ends = flags.get("grace_period_ends")
-    in_grace = grace_ends_in_future(grace_period_ends) and not external_db_entitled
-    storage_in_grace = grace_ends_in_future(grace_period_ends) and not external_storage_entitled
+    # Grace only applies to a resource this install actually configured (see the
+    # packaged branch): the external-DB and external-storage windows are
+    # independent, and neither opens for a resource this install never set up.
+    in_grace = (bool(has_external_url) and grace_ends_in_future(grace_period_ends)
+                and not external_db_entitled)
+    storage_in_grace = (bool(has_external_storage) and grace_ends_in_future(grace_period_ends)
+                        and not external_storage_entitled)
     return {
         "has_external_url": bool(has_external_url),
         "has_external_storage": bool(has_external_storage),

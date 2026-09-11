@@ -630,7 +630,6 @@
   "grace.external_available": "Seu banco de dados externo ainda está configurado e pode ser reselecionado.",
   "grace.external_owned": "Seu banco de dados externo e seus dados continuam sendo seus.",
   "grace.local_now": "O aplicativo agora está sendo executado no banco de dados local.",
-  "grace.partner_support": "Entre em contato com {partner} para renovar ou obter ajuda.",
   "grace.renew": "Renove sua assinatura Team para continuar usando o banco de dados externo.",
   "grace.storage_available": "Seu armazenamento externo ainda está configurado e pode ser reselecionado.",
   "grace.storage_deadline": "Sua assinatura Team expirou. Seu armazenamento externo permanece conectado até {deadline}.",

@@ -683,7 +683,6 @@
   "grace.external_available": "የውጫዊ የመረጃ ቋትዎ አሁንም ተዋቅሯል እና እንደገና ሊመረጥ ይችላል።",
   "grace.external_owned": "የውጫዊ የመረጃ ቋትዎ እና መረጃው የእርስዎ ሆነው ይቀጥላሉ።",
   "grace.local_now": "መተግበሪያው አሁን በአካባቢያዊ የመረጃ ቋት ላይ እየሠራ ነው።",
-  "grace.partner_support": "ለማደስ ወይም ለእገዛ {partner}ን ያግኙ።",
   "grace.renew": "ውጫዊ የመረጃ ቋቱን መጠቀም ለመቀጠል የ Team ምዝገባዎን ያድሱ።",
   "grace.storage_available": "የውጫዊ ማከማቻዎ አሁንም ተዋቅሯል እና እንደገና ሊመረጥ ይችላል።",
   "grace.storage_deadline": "የእርስዎ Team ምዝገባ ጊዜው አልፎበታል። የውጫዊ ማከማቻዎ እስከ {deadline} ድረስ ተገናኝቶ ይቆያል።",

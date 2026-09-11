@@ -630,7 +630,6 @@
   "grace.external_available": "外部データベースは引き続き設定されており、再選択できます。",
   "grace.external_owned": "外部データベースとそのデータはお客様のものです。",
   "grace.local_now": "アプリは現在ローカルデータベースで動作しています。",
-  "grace.partner_support": "更新やサポートについては{partner}にお問い合わせください。",
   "grace.renew": "外部データベースを引き続き使用するには、Teamサブスクリプションを更新してください。",
   "grace.storage_available": "外部ストレージは引き続き設定されており、再選択できます。",
   "grace.storage_deadline": "Teamサブスクリプションの有効期限が切れました。外部ストレージは{deadline}まで接続されたままになります。",

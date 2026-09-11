@@ -283,7 +283,7 @@ def test_grace_notice_storage_only_in_grace(tmp_path, monkeypatch):
         "grace_period_ends": _future(),
         "has_external_storage": True, "external_storage_entitled": False,
     }
-    assert sc._grace_notice(state, None, lang="en") is not None
+    assert sc._grace_notice(state, lang="en") is not None
 
 
 def test_grace_notice_storage_only_after_grace(tmp_path, monkeypatch):
@@ -292,7 +292,7 @@ def test_grace_notice_storage_only_after_grace(tmp_path, monkeypatch):
         "has_external_url": False, "external_db_entitled": True,
         "has_external_storage": True, "external_storage_entitled": False,
     }
-    assert sc._grace_notice(state, None, lang="en") is not None
+    assert sc._grace_notice(state, lang="en") is not None
 
 
 # ── S3 signed connectivity test (DECISION 3) ─────────────────────────────────
