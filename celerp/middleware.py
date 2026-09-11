@@ -132,70 +132,110 @@ class SlidingTokenRefreshMiddleware:
             if message["type"] == "http.response.start":
                 status_holder.append(message["status"])
                 if message["status"] < 300 and token:
-                    result = _maybe_refresh_bearer(token)
-                    if result:
-                        refreshed, jti, new_expiry = result
+                    refreshed = await _refresh_bearer_validated(token)
+                    if refreshed:
                         message = dict(message)
                         message["headers"] = list(message.get("headers", [])) + [
                             (b"x-refreshed-token", refreshed.encode("latin-1"))
                         ]
-                        # Update JTI expiry in DB so active_user_ids() stays accurate
-                        try:
-                            from celerp.models.auth import SessionRegistry
-                            async with get_session_ctx() as s:
-                                row = await s.get(SessionRegistry, jti)
-                                if row is not None:
-                                    row.expiry = new_expiry
-                                    await s.commit()
-                        except Exception:
-                            pass  # fail open - expiry update is best-effort
             await send(message)
 
         await self.app(scope, receive, send_with_refresh)
 
 
+def _past_half_life(exp: object) -> bool:
+    """True when a token with expiry *exp* (unix seconds) is past half its TTL."""
+    if not isinstance(exp, (int, float)):
+        return False
+    from celerp.config import settings
+    capped_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
+    total_ttl = capped_minutes * 60
+    issued_at = exp - total_ttl
+    return (time.time() - issued_at) > total_ttl / 2
+
+
 def _maybe_refresh_bearer(token: str) -> tuple[str, str, datetime] | None:
-    """Return (new_token, jti, new_expiry) if past half-life, else None.
+    """Return (new_token, jti, new_expiry) if the token verifies and is past
+    half-life, else None.
+
+    The token's SIGNATURE is verified first: a forged or tampered token is never
+    re-minted. This is the cheap, DB-free re-mint used where the caller has
+    already established DB authority (or in unit coverage); the request-path
+    sliding refresh instead goes through ``_refresh_bearer_validated``, which
+    additionally binds the re-mint to current DB user/membership/nonce and role.
 
     Reuses the original JTI so the session slot is not duplicated in the registry.
-    The caller is responsible for updating the JTI row's expiry in the DB.
     """
-    import base64 as _b64
-    import json as _json
+    from jose import jwt as _jwt, JWTError as _JWTError
+    from celerp.config import settings
 
     try:
-        payload_b64 = token.split(".")[1]
-        padding = 4 - len(payload_b64) % 4
-        claims = _json.loads(_b64.urlsafe_b64decode(payload_b64 + "=" * (padding % 4)))
-        exp = claims.get("exp")
-        if not isinstance(exp, (int, float)):
-            return None
-        from celerp.config import settings
-        capped_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
-        total_ttl = capped_minutes * 60
-        issued_at = exp - total_ttl
-        elapsed = time.time() - issued_at
-        if elapsed <= total_ttl / 2:
-            return None
-        sub = claims.get("sub")
-        company_id = claims.get("company_id")
-        role = claims.get("role", "")
-        jti = claims.get("jti")
-        snonce = claims.get("snonce", "")
-        email = claims.get("email", "")
-        modules = claims.get("modules")
-        if not sub or not company_id or not jti:
-            return None
-        from celerp.services.auth import create_access_token
-        # Reuse the existing snonce - the token was already validated by get_current_user,
-        # so the nonce is correct.  No DB call needed here (sync function).
-        # Carry the decoded email and modules claims through the re-mint so the
-        # refreshed token keeps the caller's identity and the UI sidebar's module
-        # filter, instead of silently dropping them to "" and [].
-        new_token, _token_jti = create_access_token(sub, company_id, role, email, jti=jti, snonce=snonce, modules=modules)
-        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
-        new_expiry = _dt.now(_tz.utc) + _td(seconds=total_ttl)
-        return new_token, jti, new_expiry
+        claims = _jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    except _JWTError:
+        # Bad signature, expired, or malformed - never re-mint.
+        return None
+
+    if not _past_half_life(claims.get("exp")):
+        return None
+
+    sub = claims.get("sub")
+    company_id = claims.get("company_id")
+    jti = claims.get("jti")
+    if not sub or not company_id or not jti:
+        return None
+
+    from celerp.services.auth import create_access_token
+    # Carry the verified email and modules claims through the re-mint so the
+    # refreshed token keeps the caller's identity and the UI sidebar's module
+    # filter, instead of silently dropping them to "" and [].
+    new_token, _token_jti = create_access_token(
+        sub,
+        company_id,
+        claims.get("role", ""),
+        claims.get("email", ""),
+        jti=jti,
+        snonce=claims.get("snonce", ""),
+        modules=claims.get("modules"),
+    )
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    capped_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
+    new_expiry = _dt.now(_tz.utc) + _td(minutes=capped_minutes)
+    return new_token, jti, new_expiry
+
+
+async def _refresh_bearer_validated(token: str) -> str | None:
+    """The request-path sliding refresh: return a freshly signed access token, or
+    None when the bearer must not be re-minted.
+
+    This runs at the ASGI layer BEFORE any route dependency, so it establishes DB
+    authority itself rather than trusting that a route validated the token:
+
+    - Fully validate the bearer via ``validate_access_token`` (signature, v2
+      contract, access type, active user + membership, company-active rule, and
+      exact per-user nonce). A forged, refresh-typed, revoked, or expired token
+      raises and is never re-minted.
+    - Only when it validates and is past half-life, re-mint through the single
+      issuance point, reusing the original JTI so the session slot is not
+      duplicated. The role comes from current DB membership (``ctx.role``), never
+      the token claim, so a demoted user's refreshed token reflects the demotion.
+
+    Fails closed: any DB or validation error yields no refreshed token.
+    """
+    from celerp.services.auth import validate_access_token, issue_token_pair
+    from fastapi import HTTPException
+
+    try:
+        async with get_session_ctx() as s:
+            try:
+                ctx = await validate_access_token(s, token)
+            except HTTPException:
+                return None
+            if not _past_half_life(ctx.claims.get("exp")):
+                return None
+            pair = await issue_token_pair(
+                s, user=ctx.user, company=ctx.company, role=ctx.role, jti=ctx.claims["jti"]
+            )
+            return pair["access_token"]
     except Exception:
         return None
 
