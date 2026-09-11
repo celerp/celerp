@@ -801,41 +801,6 @@ async def test_permission_only_route_rejects_invalid_token(client):
         ]
 
 
-def test_a7_tampered_signature_helper_returns_no_refresh():
-    """Exploit regression (A7): the sliding-refresh helper must not re-mint a token
-    whose signature does not verify against the real secret.
-
-    A forged bearer is built by signing a past-half-life payload with a DIFFERENT
-    secret, so jwt.decode against settings.jwt_secret raises. The current
-    fail-open helper re-signs from unverified claims and returns a token; the
-    fixed helper validates the signature first and returns None. This test is RED
-    on the merge base and only passes once A7 lands (workstream 2)."""
-    import time as _time
-    import uuid as _uuid
-    from jose import jwt as _jwt
-    from celerp.config import settings
-    from celerp.middleware import _maybe_refresh_bearer
-
-    now = _time.time()
-    total_ttl = int(settings.access_token_expire_minutes) * 60
-    forged_payload = {
-        "sub": "attacker",
-        "company_id": "victim-co",
-        "role": "owner",
-        "jti": str(_uuid.uuid4()),
-        "snonce": "anything",
-        "exp": int(now + total_ttl * 0.49),  # past half-life so the old path would re-mint
-    }
-    # Signed with the WRONG secret: verifying against the real secret must fail.
-    forged = _jwt.encode(forged_payload, settings.jwt_secret + "-wrong", algorithm=settings.jwt_algorithm)
-    # Sanity: the forged token does NOT verify against the real secret.
-    with pytest.raises(Exception):
-        _jwt.decode(forged, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-
-    result = _maybe_refresh_bearer(forged)
-    assert result is None, "A tampered-signature bearer must never be re-minted"
-
-
 @pytest.mark.asyncio
 async def test_a7_tampered_signature_no_refresh_header(client):
     """Exploit regression (A7), end to end: a forged bearer (valid-looking claims,

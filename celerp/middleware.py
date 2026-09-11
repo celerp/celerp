@@ -154,55 +154,6 @@ def _past_half_life(exp: object) -> bool:
     return (time.time() - issued_at) > total_ttl / 2
 
 
-def _maybe_refresh_bearer(token: str) -> tuple[str, str, datetime] | None:
-    """Return (new_token, jti, new_expiry) if the token verifies and is past
-    half-life, else None.
-
-    The token's SIGNATURE is verified first: a forged or tampered token is never
-    re-minted. This is the cheap, DB-free re-mint used where the caller has
-    already established DB authority (or in unit coverage); the request-path
-    sliding refresh instead goes through ``_refresh_bearer_validated``, which
-    additionally binds the re-mint to current DB user/membership/nonce and role.
-
-    Reuses the original JTI so the session slot is not duplicated in the registry.
-    """
-    from jose import jwt as _jwt, JWTError as _JWTError
-    from celerp.config import settings
-
-    try:
-        claims = _jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-    except _JWTError:
-        # Bad signature, expired, or malformed - never re-mint.
-        return None
-
-    if not _past_half_life(claims.get("exp")):
-        return None
-
-    sub = claims.get("sub")
-    company_id = claims.get("company_id")
-    jti = claims.get("jti")
-    if not sub or not company_id or not jti:
-        return None
-
-    from celerp.services.auth import create_access_token
-    # Carry the verified email and modules claims through the re-mint so the
-    # refreshed token keeps the caller's identity and the UI sidebar's module
-    # filter, instead of silently dropping them to "" and [].
-    new_token, _token_jti = create_access_token(
-        sub,
-        company_id,
-        claims.get("role", ""),
-        claims.get("email", ""),
-        jti=jti,
-        snonce=claims.get("snonce", ""),
-        modules=claims.get("modules"),
-    )
-    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
-    capped_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
-    new_expiry = _dt.now(_tz.utc) + _td(minutes=capped_minutes)
-    return new_token, jti, new_expiry
-
-
 async def _refresh_bearer_validated(token: str) -> str | None:
     """The request-path sliding refresh: return a freshly signed access token, or
     None when the bearer must not be re-minted.

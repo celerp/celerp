@@ -681,47 +681,11 @@ class TestLoginForceGlobalEviction:
 
 
 # ---------------------------------------------------------------------------
-# Bug fix: _maybe_refresh_bearer updates JTI expiry (gate integrity)
+# Sliding refresh extends the session-registry JTI expiry (gate integrity)
 # ---------------------------------------------------------------------------
 
 class TestRefreshJtiExpiry:
-    """Verify that sliding refresh returns JTI + expiry for the caller to update."""
-
-    def test_maybe_refresh_returns_jti_and_expiry(self):
-        """_maybe_refresh_bearer returns (token, jti, expiry) so caller can update DB row."""
-        from celerp.middleware import _maybe_refresh_bearer
-        from celerp.config import settings
-        from jose import jwt as _jwt
-        import uuid, time as _time
-        from datetime import datetime, timezone
-
-        now = _time.time()
-        total_ttl = int(settings.access_token_expire_minutes) * 60
-        jti = str(uuid.uuid4())
-        stale_payload = {
-            "sub": "user-abc",
-            "company_id": "company-xyz",
-            "role": "admin",
-            "jti": jti,
-            "snonce": "test-nonce",
-            "exp": int(now + total_ttl * 0.49),
-        }
-        stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
-
-        result = _maybe_refresh_bearer(stale_token)
-        assert result is not None
-        new_token, returned_jti, new_expiry = result
-
-        assert returned_jti == jti, "Returned JTI must match the original"
-        assert isinstance(new_expiry, datetime), "Expiry must be a datetime"
-        assert new_expiry.tzinfo is not None, "Expiry must be timezone-aware"
-        # New expiry must be in the future (roughly now + total_ttl)
-        now_dt = datetime.now(timezone.utc)
-        assert new_expiry > now_dt, "New expiry must be in the future"
-
-        # New token must carry the same JTI
-        new_claims = _jwt.decode(new_token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-        assert new_claims["jti"] == jti
+    """Verify that sliding refresh extends the session-registry JTI expiry."""
 
     @pytest.mark.asyncio
     async def test_send_with_refresh_updates_jti_expiry_in_db(self, client, session):

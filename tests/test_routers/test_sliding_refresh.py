@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Tests for SlidingTokenRefreshMiddleware and _maybe_refresh_bearer."""
+"""Tests for SlidingTokenRefreshMiddleware."""
 
 from __future__ import annotations
 
@@ -84,73 +84,6 @@ async def test_no_refresh_header_without_auth(client):
     """X-Refreshed-Token must NOT be set when no Authorization header."""
     r = await client.get("/health")
     assert "X-Refreshed-Token" not in r.headers
-
-
-def test_maybe_refresh_bearer_returns_none_for_fresh_token():
-    from celerp.middleware import _maybe_refresh_bearer
-    from celerp.config import settings
-    from celerp.services.auth import create_access_token
-    token, _ = create_access_token("user-1", "company-1", "admin")
-    # Fresh token: should not refresh
-    result = _maybe_refresh_bearer(token)
-    assert result is None
-
-
-def test_maybe_refresh_bearer_returns_none_for_garbage():
-    from celerp.middleware import _maybe_refresh_bearer
-    assert _maybe_refresh_bearer("not.a.jwt") is None
-    assert _maybe_refresh_bearer("") is None
-    assert _maybe_refresh_bearer("x.y.z") is None
-
-
-def test_maybe_refresh_bearer_issues_new_token_when_stale():
-    from celerp.middleware import _maybe_refresh_bearer
-    from celerp.config import settings
-    from jose import jwt as _jwt
-    import uuid
-
-    now = time.time()
-    total_ttl = int(settings.access_token_expire_minutes) * 60
-    stale_jti = str(uuid.uuid4())
-    stale_payload = {
-        "sub": "user-abc",
-        "company_id": "company-xyz",
-        "role": "admin",
-        "jti": stale_jti,
-        "snonce": "test-nonce-value",  # arbitrary; refresh copies it forward as-is
-        "exp": int(now + total_ttl * 0.49),
-    }
-    stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
-    result = _maybe_refresh_bearer(stale_token)
-    assert result is not None, "Stale token should trigger a refresh"
-    new_token, returned_jti, new_expiry = result
-    assert returned_jti == stale_jti, "Refresh must reuse the original JTI"
-    new_claims = _jwt.decode(new_token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-    assert new_claims["sub"] == "user-abc"
-    assert new_claims["company_id"] == "company-xyz"
-    assert new_claims["role"] == "admin"
-    assert new_claims["jti"] == stale_jti, "Refreshed token must carry the same JTI"
-    # New token should have a longer remaining TTL
-    assert new_claims["exp"] > now + total_ttl * 0.49
-
-
-def test_maybe_refresh_bearer_returns_none_for_token_without_jti():
-    """Token without jti cannot be refreshed (no registry row to update)."""
-    from celerp.middleware import _maybe_refresh_bearer
-    from celerp.config import settings
-    from jose import jwt as _jwt
-
-    now = time.time()
-    total_ttl = int(settings.access_token_expire_minutes) * 60
-    payload = {
-        "sub": "user-abc",
-        "company_id": "company-xyz",
-        "role": "admin",
-        # no jti
-        "exp": int(now + total_ttl * 0.49),
-    }
-    token = _jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
-    assert _maybe_refresh_bearer(token) is None
 
 
 @pytest.mark.asyncio
@@ -307,40 +240,3 @@ async def test_refreshed_token_uses_current_db_role(client, session):
     assert "X-Refreshed-Token" in r.headers, "a valid near-half-life token must still be refreshed"
     new_claims = _jwt.decode(r.headers["X-Refreshed-Token"], settings.jwt_secret, algorithms=[settings.jwt_algorithm])
     assert new_claims["role"] == "operator", "refreshed token must reflect the current DB role"
-
-
-def test_maybe_refresh_bearer_preserves_email_and_modules():
-    """The Bearer sliding re-mint must carry the source token's email and modules
-    claims through, not drop them.
-
-    Regression: _maybe_refresh_bearer re-minted via create_access_token without
-    email or modules, so the refreshed token decoded to email == "" and
-    modules == []. An empty modules claim makes the UI sidebar fall back to
-    showing every nav entry, and a dropped email loses identity for the session.
-    """
-    from celerp.middleware import _maybe_refresh_bearer
-    from celerp.config import settings
-    from jose import jwt as _jwt
-    import uuid
-
-    now = time.time()
-    total_ttl = int(settings.access_token_expire_minutes) * 60
-    stale_jti = str(uuid.uuid4())
-    stale_payload = {
-        "sub": "user-abc",
-        "email": "admin@example.com",
-        "company_id": "company-xyz",
-        "role": "admin",
-        "jti": stale_jti,
-        "snonce": "test-nonce-value",
-        "modules": ["acme-maintenance", "acme-crm"],
-        "exp": int(now + total_ttl * 0.49),  # past half-life
-    }
-    stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
-
-    result = _maybe_refresh_bearer(stale_token)
-    assert result is not None, "Stale token should trigger a refresh"
-    new_token, _returned_jti, _new_expiry = result
-    new_claims = _jwt.decode(new_token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-    assert new_claims["email"] == "admin@example.com", "email claim must survive the re-mint"
-    assert new_claims["modules"] == ["acme-maintenance", "acme-crm"], "modules claim must survive the re-mint"
