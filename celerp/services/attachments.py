@@ -136,6 +136,23 @@ class LocalBackend:
 
 # ── S3Backend ─────────────────────────────────────────────────────────────────
 
+def _s3_client(endpoint: str, access_key: str, secret_key: str):
+    """Single construction point for the aiobotocore S3 client, returning the
+    async context manager that both S3Backend.store and the settings
+    connectivity test consume - one place builds the client (DRY). aiobotocore
+    is imported lazily so a build without it degrades at the call site instead of
+    at import time."""
+    import aiobotocore.session  # type: ignore[import]
+
+    session = aiobotocore.session.get_session()
+    return session.create_client(
+        "s3",
+        endpoint_url=endpoint or None,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+    )
+
+
 class S3Backend:
     """Stores files in S3/R2/DO Spaces/MinIO via aiobotocore."""
 
@@ -152,17 +169,9 @@ class S3Backend:
         content: bytes,
         mime: str,
     ) -> str:
-        import aiobotocore.session  # type: ignore[import]
-
         key = f"attachments/{company_id}/{att_id}{_stored_extension(mime)}"
 
-        session = aiobotocore.session.get_session()
-        async with session.create_client(
-            "s3",
-            endpoint_url=self._endpoint or None,
-            aws_access_key_id=self._access_key,
-            aws_secret_access_key=self._secret_key,
-        ) as client:
+        async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
             await client.put_object(
                 Bucket=self._bucket,
                 Key=key,

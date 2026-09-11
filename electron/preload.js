@@ -56,4 +56,7 @@ contextBridge.exposeInMainWorld("celerp", {
 
   // Quit and install the downloaded update immediately.
   installUpdate: () => ipcRenderer.send("install-update"),
+
+  // Full app relaunch to apply a saved infrastructure change (DB/storage mode).
+  restartApp: () => ipcRenderer.send("restart-app"),
 });

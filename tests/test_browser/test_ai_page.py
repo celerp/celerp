@@ -119,7 +119,7 @@ class TestShowcasePage:
         assert "Cancel anytime" in cloud_card.inner_text()
         btn = cloud_card.locator(".btn")
         expect(btn).to_be_visible()
-        assert btn.get_attribute("href").startswith("https://celerp.com/subscribe")
+        assert btn.get_attribute("href").startswith("/commercial/checkout?intent=subscribe")
 
     def test_showcase_cta_ai_card(self, page, ui_server):
         """Connect + AI card has correct content and featured styling."""

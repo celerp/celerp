@@ -71,15 +71,21 @@ async def ai_query(
             return {"answer": result["answer"]}
     """
     # Validate session token (revenue gate — runs against live gateway token)
-    from celerp.gateway.state import get_session_token, relay_subscribe_url
+    from celerp.gateway.state import build_public_acquisition_url, get_session_token
     from fastapi import HTTPException, status
 
     if not session_token:
+        # No session token by definition (that is why this 401 fires), so this
+        # resolves through the pre-auth public resolver: a partner-managed
+        # install is sent to its partner, and a direct install gets the
+        # anonymous celerp.com/subscribe URL with no instance_id, since this
+        # path can never mint a handoff token for a named checkout.
+        url = build_public_acquisition_url("ai")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=(
                 "AI queries require an active Connect + AI subscription. "
-                f"Subscribe at {relay_subscribe_url(plan='ai')}"
+                f"Subscribe at {url}"
             ),
         )
 

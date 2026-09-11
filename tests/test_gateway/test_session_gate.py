@@ -51,12 +51,16 @@ def reset_session_token():
 
 
 def test_no_header_no_session_returns_401():
-    """No header + no in-process session -> subscription CTA."""
+    """No header + no in-process session -> subscription CTA. The URL comes from
+    build_public_acquisition_url (this is an unauthenticated backend API error
+    message), so it is the anonymous subscribe URL with no instance_id - a named
+    checkout here has no handoff token to redeem it."""
     resp = _client.get("/gated")
     assert resp.status_code == 401
     detail = resp.json()["detail"]
     assert _SUBSCRIBE_BASE in detail
     assert "always free" in detail
+    assert "instance_id=" not in detail
 
 
 def test_no_header_with_session_passes():
@@ -107,3 +111,26 @@ def test_whitespace_header_with_session_passes():
     gw_state.set_session_token("valid-token")
     resp = _client.get("/gated", headers={"X-Session-Token": "   "})
     assert resp.status_code == 200
+
+
+@pytest.fixture
+def _partner_mode():
+    original = dict(gw_state._commercial_context)
+    gw_state._commercial_context = {
+        "commercial_mode": "partner_managed",
+        "implementation": {"display_name": "Partner Co",
+                           "support_url": "https://partner.example.com/support"},
+    }
+    yield
+    gw_state._commercial_context = original
+
+
+def test_session_gate_401_routes_through_policy(_partner_mode):
+    """A partner-managed install's 401 body URL routes through the commercial
+    policy - the partner support URL, never a direct celerp.com/subscribe."""
+    gw_state.set_session_token("")
+    resp = _client.get("/gated")
+    assert resp.status_code == 401
+    detail = resp.json()["detail"]
+    assert "celerp.com/subscribe" not in detail
+    assert "https://partner.example.com/support" in detail

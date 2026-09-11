@@ -169,8 +169,19 @@ let uiPort = null;
 // still pointing at an old port are stale self-references, not external links.
 const formerUiPorts = new Set();
 
-const { watchForRestart, classifyNavigation } = require("./restart");
+const { watchForRestart, classifyNavigation, fullRelaunch } = require("./restart");
+const {
+  dbModeDecision,
+  applyDbModePersist,
+  storageModeDecision,
+  applyStoragePersist,
+  preflightGate,
+  affectedResources,
+  PREFLIGHT_RENEWED,
+  PREFLIGHT_UNREACHABLE,
+} = require("./db-mode");
 const { migrateArgs } = require("./migrate_cmd");
+const { writeConfig: writeLockedConfig } = require("./config-writer");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -339,6 +350,38 @@ function runMigrations(dbUrl) {
     env,
     stdio: "pipe",
   });
+}
+
+/**
+ * Spawn the pre-boot entitlement preflight one-shot and return its tri-state
+ * exit code (RENEWED 0, EXPIRED 2, UNREACHABLE 3). It runs before the external
+ * database is opened, refreshing the subscription from the relay. A crash,
+ * timeout, or killed process maps to UNREACHABLE so a packaging bug asks rather
+ * than silently forking data. The env carries the Python config path and data
+ * dir the one-shot needs to read the token and write the refreshed config; the
+ * migrations env deliberately omits both, so they are set here explicitly.
+ */
+function runEntitlementPreflight() {
+  const env = {
+    ...process.env,
+    PYTHONUTF8: "1",
+    PYTHONPATH: `${APP_DIR}${path.delimiter}${MODULE_DIR}`,
+    CELERP_DATA_DIR: DATA_DIR,
+    CELERP_CONFIG: PYTHON_CONFIG_PATH,
+  };
+  try {
+    execFileSync(pythonBin(), ["-m", "celerp.entitlement_preflight"], {
+      cwd: APP_DIR,
+      env,
+      stdio: "pipe",
+      timeout: 20000,
+    });
+    return PREFLIGHT_RENEWED;
+  } catch (err) {
+    // A non-zero exit carries the tri-state code in err.status; a timeout or
+    // signal leaves it null, which is treated as UNREACHABLE.
+    return typeof err.status === "number" ? err.status : PREFLIGHT_UNREACHABLE;
+  }
 }
 
 /**
@@ -587,46 +630,58 @@ function readConfig() {
   }
 }
 
-/** Persist config changes. */
+/**
+ * Persist config changes atomically. This runs on the boot-critical path that
+ * decides which database opens, so a torn write must never leave a corrupt
+ * config for the next startup read, and a Python writer (config_store) may be
+ * saving the same file at the same moment. Both go through config-writer's
+ * cross-process lock, which re-reads inside the lock, merges, fsyncs a unique
+ * 0600 temp, and renames it in. On failure the error is rethrown after logging
+ * only its message - never the config or patch, which hold external_db_url.
+ */
 function writeConfig(patch) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  const current = readConfig();
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify({ ...current, ...patch }, null, 2), { mode: 0o600 });
-}
-
-/** Returns true if the SaaS grace period is still active. */
-function _isInGrace(flags) {
-  return flags.grace_period_ends
-    ? new Date(flags.grace_period_ends) > new Date()
-    : false;
+  try {
+    writeLockedConfig(CONFIG_PATH, patch);
+  } catch (err) {
+    console.error("[db-mode] config persist failed:", err.message);
+    throw err;
+  }
 }
 
 /**
- * Determine active DATABASE_URL based on config + feature flags.
- * Returns { url, useBundledPg } where useBundledPg drives whether
- * embedded Postgres is started.
+ * Determine the active DATABASE_URL from config + feature flags. The pure
+ * decision lives in dbModeDecision; this maps it onto the boot shape
+ * { url, useBundledPg, gracePeriod, persistLocal }. app-main.js alone builds the
+ * bundled connection string (it owns dbPort and getBundledDbPassword), so the
+ * Electron-free decision module never fabricates one.
  */
 function resolveDatabaseConfig(dbPort, cfg) {
-  const flags = cfg.feature_flags || {};
-  const inGrace = _isInGrace(flags);
-  const externalAllowed = (flags.external_db || inGrace) && cfg.external_db_url;
+  const decision = dbModeDecision(cfg);
 
-  if (externalAllowed && cfg.db_mode === "external") {
-    return { url: cfg.external_db_url, useBundledPg: false, gracePeriod: inGrace && !flags.external_db };
+  if (decision.startExternal) {
+    return {
+      url: cfg.external_db_url,
+      useBundledPg: false,
+      gracePeriod: decision.gracePeriod,
+      persistLocal: decision.persistLocal,
+    };
   }
   return {
     url: `postgresql+asyncpg://celerp:${getBundledDbPassword()}@localhost:${dbPort}/celerp`,
     useBundledPg: true,
     gracePeriod: false,
+    persistLocal: decision.persistLocal,
   };
 }
 
-/** Build storage-related env vars for API and UI processes. */
+/** Build storage-related env vars for API and UI processes. The storage-allowed
+ * rule lives once in storageModeDecision (shared with applyStoragePersist), so
+ * this only maps the decision onto the boot env. */
 function resolveStorageEnv(cfg) {
-  const flags = cfg.feature_flags || {};
-  const storageAllowed = (flags.external_storage || _isInGrace(flags)) && cfg.storage_mode === "s3";
+  const decision = storageModeDecision(cfg);
 
-  if (storageAllowed) {
+  if (decision.startS3) {
     return {
       STORAGE_BACKEND: "s3",
       STORAGE_S3_ENDPOINT: cfg.storage_s3_endpoint || "",
@@ -1045,6 +1100,13 @@ ipcMain.on("install-update", async () => {
   }, 500);
 });
 
+// restart-app: renderer triggers a full relaunch via window.celerp.restartApp()
+// to apply a saved infrastructure change (DB/storage mode). A cold start re-runs
+// resolveDatabaseConfig(readConfig()) against the newly-saved celerp-config.json,
+// which is the only path that opens the new database - the sentinel-recycle path
+// reuses the boot-bound dbUrl and would not apply it.
+ipcMain.on("restart-app", () => fullRelaunch(app));
+
 // get-version: renderer fetches the current app version
 ipcMain.handle("get-version", () => app.getVersion());
 
@@ -1190,8 +1252,72 @@ app.whenReady().then(async () => {
     }
 
     const dbPort = await getFreePort();
-    const cfg = readConfig();
-    const dbConfig = resolveDatabaseConfig(dbPort, cfg);
+    let cfg = readConfig();
+    let dbConfig = resolveDatabaseConfig(dbPort, cfg);
+    let storageDecision = storageModeDecision(cfg);
+
+    // Entitlement preflight: only when the cached decision for EITHER external
+    // resource would fall back to local yet a configured target is still on file
+    // - a previously active external database or S3 store whose grace has
+    // lapsed. Refresh the subscription from the relay before choosing either
+    // resource, so a renewal keeps them external and a relay we cannot reach
+    // asks rather than silently forking data between an external and a local
+    // store.
+    const dbLapsed = dbConfig.persistLocal && cfg.external_db_url;
+    const storageLapsed = storageDecision.persistLocal && cfg.storage_s3_endpoint;
+    if (dbLapsed || storageLapsed) {
+      for (let resolved = false; !resolved; ) {
+        const gate = preflightGate(cfg, dbConfig, storageDecision, runEntitlementPreflight());
+        if (gate.action === "external") {
+          // The refreshed flags were written to disk by the one Python writer;
+          // re-read and recompute both decisions so the external resources open
+          // with the renewed entitlement and nothing is persisted as local.
+          cfg = readConfig();
+          dbConfig = resolveDatabaseConfig(dbPort, cfg);
+          storageDecision = storageModeDecision(cfg);
+          resolved = true;
+        } else if (gate.action === "fallback") {
+          resolved = true; // Falls through to the local-fallback persists below.
+        } else {
+          // UNREACHABLE: never switch a resource silently. Ask, with no timer
+          // default and exactly three choices. The detail names every affected
+          // resource so the user cannot miss what will diverge.
+          const affectedText = affectedResources(dbLapsed, storageLapsed);
+          const choice = dialog.showMessageBoxSync({
+            type: "warning",
+            title: "Subscription Check Failed",
+            message: "Celerp could not confirm your subscription.",
+            detail:
+              `Your ${affectedText} was in use, but the subscription could not be verified right now.\n\n` +
+              `Retry the check, continue with local data (your local and ${affectedText} data will diverge until you reconnect), or quit.`,
+            buttons: ["Retry", "Continue with local data", "Quit"],
+            defaultId: 0,
+            cancelId: 2,
+          });
+          if (choice === 0) {
+            continue; // Loop back and re-run the preflight.
+          } else if (choice === 1) {
+            resolved = true; // Proceed to the local-fallback persists below.
+          } else {
+            app.exit(0);
+            return;
+          }
+        }
+      }
+    }
+
+    // When grace has expired (external was selected but neither entitlement nor
+    // grace remains) persist db_mode=local before the API and gateway start, so
+    // the next boot opens the local database and this write cannot race the
+    // gateway feature-flag persister. external_db_url is preserved untouched.
+    applyDbModePersist(cfg, dbConfig, writeConfig);
+
+    // Same fallback for external storage, off the SAME re-read decision the gate
+    // resolved against (not a fresh recompute of a stale cfg): when grace has
+    // expired, persist storage_mode=local so the next boot uses local storage.
+    // The storage_s3_* settings are preserved so the customer can reselect S3
+    // after renewing.
+    applyStoragePersist(cfg, storageDecision, writeConfig);
 
     // Create the main window immediately so user sees the loading page (no white frame).
     createWindow();

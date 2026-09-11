@@ -21,7 +21,7 @@ from ui.components.shell import base_shell, page_header, page_title, flash
 from ui.components.table import add_new_option, bank_account_options
 from ui.i18n import t
 from ui.routes.settings import _check_permission, _token
-from ui.routes.settings_cloud import _cloud_tabs, _has_team_features
+from ui.routes.settings_cloud import _cloud_tabs, _commercial_state, _has_team_features
 
 
 def _pitch() -> FT:
@@ -79,7 +79,7 @@ def _connected_panel(deposit_account: str, bank_accounts: list[dict], saved: boo
 
 
 def _page(relay_ok: bool, enabled: bool, deposit_account: str,
-          bank_accounts: list[dict], saved: bool = False) -> FT:
+          bank_accounts: list[dict], has_team_features: bool, saved: bool = False) -> FT:
     if not relay_ok:
         body = upgrade_banner(t("nav.payments"), t("pay.upgrade_desc"), plan="cloud")
     elif not enabled:
@@ -88,7 +88,7 @@ def _page(relay_ok: bool, enabled: bool, deposit_account: str,
         body = _connected_panel(deposit_account, bank_accounts, saved=saved)
     return Div(
         page_header(t("nav.payments")),
-        _cloud_tabs("payments", has_team_features=_has_team_features()),
+        _cloud_tabs("payments", has_team_features=has_team_features),
         body,
     )
 
@@ -126,8 +126,9 @@ def setup_routes(app):
         except APIError as e:
             return await base_shell(flash(str(e.detail)), title=page_title("nav.payments"),
                                     nav_active="web-access", request=request)
+        has_team = _has_team_features(await _commercial_state(request))
         return await base_shell(
-            _page(relay_ok, enabled, deposit, banks,
+            _page(relay_ok, enabled, deposit, banks, has_team,
                   saved=request.query_params.get("saved") == "1"),
             title=page_title("nav.payments"), nav_active="web-access", request=request)
 
@@ -144,7 +145,8 @@ def setup_routes(app):
             await api.patch_company(token, {"stripe_deposit_account": str(form.get("stripe_deposit_account", "")).strip()})
         except APIError as e:
             relay_ok, enabled, deposit, banks = await _load(token)
-            return await base_shell(Div(flash(str(e.detail)), _page(relay_ok, enabled, deposit, banks)),
+            has_team = _has_team_features(await _commercial_state(request))
+            return await base_shell(Div(flash(str(e.detail)), _page(relay_ok, enabled, deposit, banks, has_team)),
                               title=page_title("nav.payments"), nav_active="web-access", request=request)
         return RedirectResponse("/settings/payments?saved=1", status_code=302)
 
@@ -160,7 +162,8 @@ def setup_routes(app):
             result = await api.start_payments_connect(token)
         except APIError as e:
             relay_ok, enabled, deposit, banks = await _load(token)
-            return await base_shell(Div(flash(str(e.detail)), _page(relay_ok, enabled, deposit, banks)),
+            has_team = _has_team_features(await _commercial_state(request))
+            return await base_shell(Div(flash(str(e.detail)), _page(relay_ok, enabled, deposit, banks, has_team)),
                               title=page_title("nav.payments"), nav_active="web-access", request=request)
         return RedirectResponse(result.get("url", "/settings/payments"), status_code=302)
 
