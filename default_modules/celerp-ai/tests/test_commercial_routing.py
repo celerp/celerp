@@ -86,10 +86,16 @@ def test_ai_quota_upgrade_label_not_price_in_partner():
 
 
 # ── 403 batch-upgrade body ──────────────────────────────────────────────────
+#
+# A backend API error message with no authenticated app session guaranteed, so
+# it resolves through build_public_acquisition_url rather than
+# build_commercial_handoff: an anonymous celerp.com/subscribe URL carrying no
+# instance_id, since this pre-auth-safe path can never mint the handoff token a
+# named checkout would require.
 
 def test_ai_403_upgrade_routes_through_policy():
-    """partner mode: the 403 batch-upgrade body URL routes through the resolver,
-    never a direct checkout."""
+    """partner mode: the 403 batch-upgrade body URL routes through the public
+    acquisition resolver, never a direct checkout."""
     from celerp_ai.routes import _batch_upgrade_url
     _set_partner()
     url = _batch_upgrade_url()
@@ -101,12 +107,14 @@ def test_ai_403_upgrade_routes_through_policy():
 
 
 def test_ai_403_upgrade_direct_unchanged():
-    """celerp_direct: the 403 body still yields the direct plan=ai subscribe URL
-    (positive control)."""
+    """celerp_direct: the 403 body yields the anonymous plan=ai subscribe URL
+    with no instance_id - a named checkout here has no handoff token to redeem
+    it, so it must never carry one."""
     from celerp_ai.routes import _batch_upgrade_url
     url = _batch_upgrade_url()
     assert "/subscribe" in url
     assert "plan=ai" in url
+    assert "instance_id=" not in url
 
 
 # ── AI showcase ─────────────────────────────────────────────────────────────
@@ -173,11 +181,16 @@ async def test_ai_quota_status_topup_url_direct(auth_client):
 
 
 # ── AI-api 401 body (celerp/modules/api.py) ─────────────────────────────────
+#
+# The caller has no session token by definition (that is why the 401 fires), so
+# this resolves through build_public_acquisition_url - the pre-auth-safe
+# resolver - never build_commercial_handoff: a named checkout URL here would
+# carry no handoff token this path can mint.
 
 @pytest.mark.asyncio
 async def test_ai_api_401_routes_through_policy():
     """partner mode: the AI-api 401 body (no session token) routes its URL
-    through the resolver, never a direct subscribe URL."""
+    through the public acquisition resolver, never a direct subscribe URL."""
     from fastapi import HTTPException
     from celerp.modules.api import ai_query
     _set_partner()
@@ -192,12 +205,15 @@ async def test_ai_api_401_routes_through_policy():
 
 @pytest.mark.asyncio
 async def test_ai_api_401_direct_unchanged():
-    """celerp_direct: the AI-api 401 body still yields a direct subscribe URL
-    (positive control)."""
+    """celerp_direct: the AI-api 401 body yields the anonymous subscribe URL
+    with no instance_id - a named checkout here has no handoff token to redeem
+    it, so it must never carry one."""
     from fastapi import HTTPException
     from celerp.modules.api import ai_query
     with pytest.raises(HTTPException) as exc:
         await ai_query(query="hi", company_id="c1", session_token="",
                        db_session=None)
     assert exc.value.status_code == 401
-    assert "celerp.com/subscribe" in str(exc.value.detail)
+    detail = str(exc.value.detail)
+    assert "celerp.com/subscribe" in detail
+    assert "instance_id=" not in detail

@@ -789,15 +789,16 @@ class TestSettingsSectionTabs:
         assert "tab=infrastructure" in self._xml(_cloud_tabs("status", has_team_features=True))
 
     def test_value_prop_plan_ctas_carry_plan_params(self):
-        """Each direct plan card's subscribe CTA sends its plan as a query param
-        so the website can attribute the click server-side; fragments never
-        reach the server. The Team card routes to the Enterprise handoff, so it
-        carries no direct plan=team checkout."""
+        """Each direct plan card's subscribe CTA sends its plan as a sku query
+        param on the in-app mint route, which resolves the destination (and
+        the website-facing plan= param) at click time; fragments never reach
+        the server. The Team card routes to the Enterprise handoff, so it
+        carries no direct sku=team checkout."""
         from ui.routes.settings_cloud import _value_prop_page
         html = self._xml(_value_prop_page("test-instance"))
         for plan in ("cloud", "ai"):
-            assert f"plan={plan}" in html, f"plan={plan} CTA missing"
-        assert "plan=team" not in html, "Team is not self-service sold"
+            assert f"sku={plan}" in html, f"sku={plan} CTA missing"
+        assert "sku=team" not in html, "Team is not self-service sold"
         for frag in ("#cloud", "#ai", "#team"):
             assert frag + '"' not in html, f"stale {frag} fragment in CTA"
 

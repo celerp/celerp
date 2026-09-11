@@ -3650,8 +3650,8 @@ def _cloud_relay_unconnected(
             Connect button stays and reconnects in one click from the preserved
             credential.
     """
-    from celerp.gateway.state import build_commercial_handoff
-    subscribe_url = build_commercial_handoff(iid, "subscribe", "")
+    from ui.components.cloud_gate import subscribe_url as _subscribe_url
+    subscribe_url = _subscribe_url("")
     children: list = []
     if show_header:
         children += [

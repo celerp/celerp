@@ -245,3 +245,70 @@ def test_handoff_partner_topup_not_direct():
     assert "/subscribe/topup" not in url
     assert "/subscribe" not in url
     assert "/enterprise" in url
+
+
+# -- regression guard: build_commercial_handoff has exactly one presentation caller ---
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
+# ui/routes/commercial.py is the legitimate low-level mint seam: it resolves the
+# destination and, for a direct celerp.com checkout, mints the click-time handoff
+# token before redirecting. Every other ui/routes module must reach the resolved
+# destination through commercial_cta/subscribe_url/topup_url (authenticated) or
+# build_public_acquisition_url (pre-auth/external), never the raw resolver, or a
+# direct install's CTA renders a named checkout URL with no handoff token and the
+# relay's 403 (B1).
+_ALLOWED_DIRECT_CALLERS = {"commercial.py"}
+
+
+def test_no_ui_route_calls_build_commercial_handoff_directly_except_commercial_py():
+    """Every ui/routes/*.py file except commercial.py must be free of a direct
+    build_commercial_handoff( call. A caller needing the resolved destination uses
+    the semantic CTA helper (commercial_cta) or the thin direct-route helpers
+    (subscribe_url/topup_url) so the visible label always matches the destination."""
+    routes_dir = _REPO_ROOT / "ui" / "routes"
+    offenders = []
+    for path in sorted(routes_dir.glob("*.py")):
+        if path.name in _ALLOWED_DIRECT_CALLERS:
+            continue
+        text = path.read_text()
+        if "build_commercial_handoff(" in text:
+            offenders.append(path.name)
+    assert offenders == [], (
+        f"direct build_commercial_handoff() call(s) outside the allowed low-level "
+        f"seam: {offenders}"
+    )
+
+
+def test_no_default_module_ui_route_calls_build_commercial_handoff_directly():
+    """default_modules/*/ui_routes.py (authenticated, in-app UI) must resolve
+    commercial CTAs through subscribe_url/topup_url, never build_commercial_handoff
+    directly - mirrors the ui/routes guard above for module-contributed UI."""
+    modules_dir = _REPO_ROOT / "default_modules"
+    offenders = []
+    for path in sorted(modules_dir.glob("*/*/ui_routes.py")):
+        text = path.read_text()
+        if "build_commercial_handoff(" in text:
+            offenders.append(str(path.relative_to(_REPO_ROOT)))
+    assert offenders == [], (
+        f"direct build_commercial_handoff() call(s) in module UI routes: {offenders}"
+    )
+
+
+def test_no_backend_api_module_calls_build_commercial_handoff_directly():
+    """Backend/API error-message call sites (session_gate, modules/api, and the
+    default AI module's routes.py) must resolve their acquisition URL through
+    build_public_acquisition_url - the pre-auth-safe resolver - never through
+    build_commercial_handoff, which can emit a named instance_id with no handoff
+    token an unauthenticated/external context could ever redeem (B1)."""
+    targets = [
+        _REPO_ROOT / "celerp" / "session_gate.py",
+        _REPO_ROOT / "celerp" / "modules" / "api.py",
+        _REPO_ROOT / "default_modules" / "celerp-ai" / "celerp_ai" / "routes.py",
+    ]
+    offenders = []
+    for path in targets:
+        text = path.read_text()
+        if "build_commercial_handoff(" in text:
+            offenders.append(str(path.relative_to(_REPO_ROOT)))
+    assert offenders == [], f"direct build_commercial_handoff() call(s): {offenders}"

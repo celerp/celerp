@@ -182,14 +182,15 @@ def _partner_offer(iid: str, lang: str = "en") -> FT:
     pushed commercial context, with no direct Celerp price, plus a contact line
     pointing at the implementation partner. A missing or malformed offer degrades
     to the contact line alone rather than a broken or fabricated price card."""
-    from celerp.gateway.state import (
-        build_commercial_handoff, get_offer, get_partner_identity,
-    )
+    from ui.components.cloud_gate import commercial_cta
+    from celerp.gateway.state import get_offer, get_partner_identity
     from ui.components.table import fmt_money
 
     identity = get_partner_identity() or {}
     partner_name = identity.get("display_name") or ""
-    partner_url = build_commercial_handoff(iid, "subscribe", "")
+    partner_url, partner_label = commercial_cta(
+        "subscribe", "", t("cloud.start_trial", lang), lang,
+    )
     offer = get_offer()
 
     children: list = []
@@ -226,15 +227,16 @@ def _partner_offer(iid: str, lang: str = "en") -> FT:
             bullets,
             partner_url,
             interval_label,
-            cta_label=t("cloud.partner_support", lang),
+            cta_label=partner_label,
             lang=lang,
         ))
-    elif partner_url:
-        # Degraded branch: no usable offer, but a valid partner destination
-        # exists, so give the user a real contact CTA rather than a dead-end
-        # text note (BLOCKER 6).
+    else:
+        # Degraded branch: no usable offer, but commercial_cta always resolves
+        # to a real destination (partner support, mailto, or the Enterprise
+        # fallback), so give the user a real contact CTA rather than a
+        # dead-end text note (BLOCKER 6).
         children.append(A(
-            t("cloud.partner_support", lang),
+            partner_label,
             href=partner_url, target="_blank",
             cls="btn btn--primary btn--sm cloud-partner-offer__contact",
         ))
@@ -247,8 +249,9 @@ def _direct_plans(iid: str, lang: str = "en") -> FT:
     """The direct paid-plan advertisement: feature cards, trial banner, plan
     cards. Shown on the not-connected landing page and, below the status tab, to
     connected free-tier accounts (the plans are what they are missing). Every
-    plan CTA resolves through the central handoff policy."""
-    from celerp.gateway.state import build_commercial_handoff
+    plan CTA resolves through the shared in-app mint route, which applies the
+    central handoff policy at click time."""
+    from ui.components.cloud_gate import subscribe_url
 
     return Div(
         # Feature cards - three platform features on top...
@@ -305,7 +308,7 @@ def _direct_plans(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_cloud_b3", lang),
                     t("cloud.plan_cloud_b4", lang),
                 ],
-                build_commercial_handoff(iid, "subscribe", "cloud"),
+                subscribe_url("cloud"),
                 t("settings_cloud.per_mo", lang),
                 lang=lang,
             ),
@@ -317,7 +320,7 @@ def _direct_plans(iid: str, lang: str = "en") -> FT:
                     t("cloud.plan_ai_b2", lang),
                     t("cloud.plan_ai_b3", lang),
                 ],
-                build_commercial_handoff(iid, "subscribe", "ai"),
+                subscribe_url("ai"),
                 t("settings_cloud.per_mo", lang),
                 featured=True,
                 lang=lang,

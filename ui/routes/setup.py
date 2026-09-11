@@ -597,11 +597,9 @@ def _activating_form(lang: str = "en") -> FT:
 
 
 def _cloud_form() -> FT:
-    from celerp.config import settings
-    from celerp.gateway.state import build_commercial_handoff
     from ui.components.cloud_gate import is_partner_managed, direct_price
-    iid = settings.gateway_instance_id
-    subscribe_url = build_commercial_handoff(iid, "subscribe", "cloud")
+    from ui.components.cloud_gate import subscribe_url as _subscribe_url
+    subscribe_url = _subscribe_url("cloud")
     partner = is_partner_managed()
 
     _features = [

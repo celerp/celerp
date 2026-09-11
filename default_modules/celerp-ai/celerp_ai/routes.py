@@ -58,14 +58,15 @@ from celerp.session_gate import require_session_token
 def _batch_upgrade_url() -> str:
     """The AI batch-upgrade destination, resolved through the commercial policy.
 
-    On a celerp_direct install this is the direct plan=ai subscribe URL; on a
-    partner-managed install it routes to the partner support or Enterprise route,
-    never a direct checkout.
+    This is a backend API error body with no authenticated app session
+    guaranteed, so it resolves through the pre-auth public resolver: on a
+    celerp_direct install this is the anonymous plan=ai subscribe URL with no
+    instance_id (this path can never mint a handoff token for a named
+    checkout); on a partner-managed install it routes to the partner support or
+    Enterprise route, never a direct checkout.
     """
-    from celerp.config import settings
-    from celerp.gateway.state import build_commercial_handoff, get_instance_id
-    return build_commercial_handoff(
-        get_instance_id() or settings.gateway_instance_id, "subscribe", "ai")
+    from celerp.gateway.state import build_public_acquisition_url
+    return build_public_acquisition_url("ai")
 _CLOUD_FILE_LIMIT = 1
 
 # AI-specific rate limiter: tighter than the global 60/min default.

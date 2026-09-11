@@ -20,8 +20,7 @@ from __future__ import annotations
 from fastapi import HTTPException, Request, status
 
 from celerp.gateway.state import (
-    build_commercial_handoff,
-    get_instance_id,
+    build_public_acquisition_url,
     get_session_token,
 )
 
@@ -65,12 +64,12 @@ def require_session_token(request: Request) -> None:
     if current:
         return  # Gateway is connected, allow through
 
-    # No session anywhere. Route the acquisition URL through the commercial
-    # policy so a partner-managed install is sent to its partner, never a direct
-    # Celerp checkout.
-    from celerp.config import settings
-    url = build_commercial_handoff(
-        get_instance_id() or settings.gateway_instance_id, "subscribe", "cloud")
+    # No session anywhere. This is an unauthenticated backend API error message,
+    # so the acquisition URL resolves through the pre-auth public resolver: a
+    # partner-managed install is sent to its partner, never a direct Celerp
+    # checkout, and a direct install gets the anonymous celerp.com/subscribe URL
+    # with no instance_id (this path can never mint a handoff token).
+    url = build_public_acquisition_url("cloud")
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=(

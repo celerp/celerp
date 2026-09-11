@@ -709,22 +709,15 @@ def _onboarding_view() -> FT:
 
 def _direct_connection_gate(email: str, password: str) -> FT:
     """Shown when a second user tries to log in without relay connected."""
-    from celerp.config import ensure_instance_id
-    from celerp.gateway.state import (
-        build_commercial_handoff, get_instance_id, enterprise_url,
-    )
+    from celerp.gateway.state import build_public_acquisition_url
     from ui.components.cloud_gate import direct_price
-    try:
-        iid = ensure_instance_id()
-    except Exception:
-        iid = get_instance_id()
-    # Fail closed: resolve through the commercial policy, and on any resolver
-    # failure fall back to the Enterprise contact route, never a hardcoded direct
-    # checkout. A partner-managed install can never be sent to self-serve billing.
-    try:
-        handoff_url = build_commercial_handoff(iid, "subscribe", "cloud")
-    except Exception:
-        handoff_url = enterprise_url(iid)
+    # Pre-auth surface: no authenticated app session is guaranteed here, so this
+    # resolves through the public acquisition resolver rather than the in-app
+    # mint route. It fails closed like the mint route (never a direct checkout
+    # under partner_managed or an unknown mode) and, on a direct install, always
+    # returns the anonymous celerp.com/subscribe URL with no instance_id, since
+    # this pre-auth path can never mint the handoff token a named checkout needs.
+    handoff_url = build_public_acquisition_url("cloud")
     cta_label = direct_price(t("auth.get_celerp_cloud_usd_29mo")) \
         or t("btn.get_connect")
 

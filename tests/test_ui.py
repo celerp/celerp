@@ -20121,12 +20121,13 @@ class TestCommercialRoutingRender:
 
     def test_direct_grid_unchanged_shows_plan_ai(self):
         """A celerp_direct install renders the standard direct grid with the AI
-        plan CTA and no partner offer (#13)."""
+        plan CTA routed through the in-app mint route (which resolves the
+        website-facing plan= param at click time) and no partner offer (#13)."""
         from fasthtml.common import to_xml
         from ui.routes.settings_cloud import _plans_ad
         html = to_xml(_plans_ad("inst-1", lang="en"))
         assert "cloud-plans" in html
-        assert "plan=ai" in html
+        assert "sku=ai" in html
         assert "Managed Plan" not in html
         assert "managed by your implementation partner" not in html
 
@@ -20260,14 +20261,15 @@ class TestCommercialRoutingRender:
         assert "celerp.com/subscribe" not in html
 
     def test_auth_gate_fails_closed_to_enterprise(self):
-        """When the resolver raises inside the sign-in gate, the CTA falls closed
-        to the Enterprise route, never the hardcoded direct literal (BLOCKER 5)."""
-        from unittest.mock import patch
+        """An unrecognized commercial mode inside the sign-in gate falls closed
+        to the Enterprise route, never a direct checkout (BLOCKER 5). The gate
+        resolves through build_public_acquisition_url, which itself fails closed
+        on any mode other than the two it recognizes."""
+        import celerp.gateway.state as gw_state
         from fasthtml.common import to_xml
         from ui.routes import auth as auth_mod
-        with patch("celerp.gateway.state.build_commercial_handoff",
-                   side_effect=RuntimeError("boom")):
-            html = to_xml(auth_mod._direct_connection_gate("a@example.com", "pw"))
+        gw_state._commercial_context = {"commercial_mode": "something_unexpected"}
+        html = to_xml(auth_mod._direct_connection_gate("a@example.com", "pw"))
         assert "celerp.com/subscribe" not in html
         assert "/enterprise" in html
 

@@ -51,12 +51,16 @@ def reset_session_token():
 
 
 def test_no_header_no_session_returns_401():
-    """No header + no in-process session -> subscription CTA."""
+    """No header + no in-process session -> subscription CTA. The URL comes from
+    build_public_acquisition_url (this is an unauthenticated backend API error
+    message), so it is the anonymous subscribe URL with no instance_id - a named
+    checkout here has no handoff token to redeem it."""
     resp = _client.get("/gated")
     assert resp.status_code == 401
     detail = resp.json()["detail"]
     assert _SUBSCRIBE_BASE in detail
     assert "always free" in detail
+    assert "instance_id=" not in detail
 
 
 def test_no_header_with_session_passes():
