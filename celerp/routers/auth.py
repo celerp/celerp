@@ -18,12 +18,11 @@ from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
 from celerp.services.auth import (
-    create_access_token,
-    create_refresh_token,
     decode_refresh_token,
     get_current_company_id,
     get_current_user,
     hash_password,
+    issue_token_pair,
     oauth2_scheme,
     verify_password,
 )
@@ -35,30 +34,18 @@ logger = logging.getLogger(__name__)
 
 async def _issue_tokens(
     session: AsyncSession,
-    user_id: str,
-    company_id: str,
+    user: User,
+    company: Company,
     role: str,
-    email: str,
     jti: str | None = None,
 ) -> dict:
-    """Mint an access+refresh token pair, register the JTI, return response dict."""
-    from datetime import timezone as _tz
-    from celerp.config import settings as _settings
-    from celerp.services.session_tracker import get_nonce as _get_nonce, register_token as _register
-    from celerp.modules.registry import get_enabled as _get_enabled
-    import uuid as _uuid
-    snonce = await _get_nonce(session, user_id)
-    company = await session.get(Company, _uuid.UUID(company_id))
-    enabled_modules = sorted(_get_enabled((company.settings or {}) if company else {}))
-    access_token, token_jti = create_access_token(user_id, company_id, role, email, jti=jti, snonce=snonce, modules=enabled_modules)
-    # Cap at 24h to match create_access_token's internal cap so DB expiry = JWT exp
-    capped_minutes = min(int(_settings.access_token_expire_minutes), 24 * 60)
-    expiry_dt = datetime.now(_tz.utc) + timedelta(minutes=capped_minutes)
-    await _register(session, token_jti, user_id, expiry_dt)
-    return {
-        "access_token": access_token,
-        "refresh_token": create_refresh_token(user_id, company_id, role, email),
-    }
+    """Adapter over the central ``issue_token_pair`` for this router's callers.
+
+    Register, login, force-login and switch-company already hold the ``User``
+    and ``Company`` rows they authenticated against, so they pass them straight
+    through to the one issuance point.
+    """
+    return await issue_token_pair(session, user=user, company=company, role=role, jti=jti)
 
 
 def _slugify(name: str) -> str:
@@ -181,7 +168,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     if required:
         _clear_setup_code()
 
-    return await _issue_tokens(session, str(user.id), str(company.id), link.role, user.email)
+    return await _issue_tokens(session, user, company, link.role)
 
 
 from slowapi import Limiter
@@ -219,7 +206,8 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
     if link is None:
         raise HTTPException(status_code=401, detail="No active company membership")
 
-    return await _issue_tokens(session, str(user.id), str(link.company_id), link.role, user.email)
+    company = await session.get(Company, link.company_id)
+    return await _issue_tokens(session, user, company, link.role)
 
 
 @router.post("/login-force")
@@ -245,7 +233,8 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
     if link is None:
         raise HTTPException(status_code=401, detail="No active company membership")
 
-    return await _issue_tokens(session, str(user.id), str(link.company_id), link.role, user.email)
+    company = await session.get(Company, link.company_id)
+    return await _issue_tokens(session, user, company, link.role)
 
 
 class RefreshRequest(BaseModel):
@@ -254,27 +243,49 @@ class RefreshRequest(BaseModel):
 
 @router.post("/token/refresh")
 async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends(get_session)) -> dict:
-    """Exchange a valid refresh token for a new access token + rotated refresh token."""
-    claims = decode_refresh_token(payload.refresh_token)
-    user_id = claims.get("sub")
-    company_id = claims.get("company_id")
-    role = claims.get("role", "")
+    """Exchange a valid refresh token for a new access token + rotated refresh token.
 
-    user = await session.get(User, uuid.UUID(str(user_id)))
+    Fully DB-authoritative: the refresh token is decoded strictly (v2, type,
+    non-empty snonce), then re-bound to current DB state - active user, active
+    membership, company-validity rule, and exact nonce equality. The new pair's
+    role and email come from current DB membership, never from the refresh JWT.
+    Every failure mode returns the same neutral "Invalid refresh token" so the
+    caller learns nothing about which element failed.
+    """
+    claims = decode_refresh_token(payload.refresh_token)
+
+    try:
+        user_uuid = uuid.UUID(str(claims["sub"]))
+        company_uuid = uuid.UUID(str(claims["company_id"]))
+    except (ValueError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=401, detail="Invalid refresh token") from e
+
+    user = await session.get(User, user_uuid)
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     link = await session.scalar(
         select(UserCompany).where(
             UserCompany.user_id == user.id,
-            UserCompany.company_id == uuid.UUID(str(company_id)),
+            UserCompany.company_id == company_uuid,
             UserCompany.is_active == True,  # noqa: E712
         )
     )
     if link is None:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    return await _issue_tokens(session, user_id, company_id, role, user.email)
+    company = await session.get(Company, company_uuid)
+    if company is None or (not company.is_active and link.role != "owner"):
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    # Nonce equality: a refresh token minted before the last nonce rotation
+    # (logout, force-login, password/role/membership change) is dead.
+    from celerp.services.session_tracker import get_nonce as _get_nonce
+    current_nonce = await _get_nonce(session, str(user.id))
+    if claims.get("snonce", "") != current_nonce:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    return await _issue_tokens(session, user, company, link.role)
 
 
 @router.post("/api-key")
@@ -344,7 +355,7 @@ async def switch_company(
     company = await session.get(Company, company_id)
     if company is None or not company.is_active:
         raise HTTPException(status_code=403, detail="Company is deactivated")
-    return await _issue_tokens(session, str(user.id), str(company_id), link.role, user.email)
+    return await _issue_tokens(session, user, company, link.role)
 
 
 # ── Password Reset ────────────────────────────────────────────────────────────
