@@ -418,6 +418,12 @@ def _valid_s3_endpoint(endpoint: str) -> bool:
 # path can read the packaged config once and pass it to both infra sections.
 _UNSET = object()
 
+# Escape-to-blur for click-to-edit-style fields (GDR 2j: Esc always exits a
+# field). Matches the established convention already used elsewhere in the app
+# (ui/routes/accounting.py, ui/routes/inventory.py) rather than inventing a new
+# pattern for this screen.
+_ESC_BLUR = "if(event.key==='Escape'){this.blur();event.preventDefault();}"
+
 
 def _packaged_infra_or_none() -> dict | None:
     """The Electron-owned packaged config when this build is packaged
@@ -464,24 +470,25 @@ def _infra_db_section(packaged=_UNSET) -> FT:
             Div(
                 Label(t("label.host"), For="db_host"),
                 Input(id="db_host", name="db_host", placeholder="localhost",
-                      value=db["host"], cls="input"),
+                      value=db["host"], cls="input", onkeydown=_ESC_BLUR),
                 cls="form-row",
             ),
             Div(
                 Label(t("label.port"), For="db_port"),
-                Input(id="db_port", name="db_port", type="number", value=db["port"], cls="input"),
+                Input(id="db_port", name="db_port", type="number", value=db["port"], cls="input",
+                      onkeydown=_ESC_BLUR),
                 cls="form-row",
             ),
             Div(
                 Label(t("label.database_name"), For="db_name"),
                 Input(id="db_name", name="db_name", placeholder="celerp",
-                      value=db["name"], cls="input"),
+                      value=db["name"], cls="input", onkeydown=_ESC_BLUR),
                 cls="form-row",
             ),
             Div(
                 Label(t("label.username"), For="db_user"),
                 Input(id="db_user", name="db_user", placeholder="celerp",
-                      value=db["user"], cls="input"),
+                      value=db["user"], cls="input", onkeydown=_ESC_BLUR),
                 cls="form-row",
             ),
             Div(
@@ -489,7 +496,7 @@ def _infra_db_section(packaged=_UNSET) -> FT:
                 Input(id="db_pass", name="db_pass", type="password",
                       placeholder=t("settings_cloud.password_unchanged_placeholder")
                       if db["has_password"] else "••••••••",
-                      cls="input"),
+                      cls="input", onkeydown=_ESC_BLUR),
                 cls="form-row",
             ),
             Div(
@@ -508,6 +515,7 @@ def _infra_db_section(packaged=_UNSET) -> FT:
                     hx_include="closest form",
                     hx_target="#db-test-result",
                     hx_swap="innerHTML",
+                    **{"hx-disabled-elt": "this"},
                 ),
                 Button(t("btn.save_restart"), type="submit", cls="btn btn--primary btn--sm", style="margin-left:8px;",
                        hx_confirm=t("settings_cloud.restart_server_confirm")),
@@ -517,6 +525,7 @@ def _infra_db_section(packaged=_UNSET) -> FT:
             hx_post="/settings/cloud/save-infra",
             hx_target="#db-test-result",
             cls="infra-form",
+            **{"hx-disabled-elt": "this"},
         ),
         # Restore previous button (GDR undo support)
         Div(
@@ -526,6 +535,7 @@ def _infra_db_section(packaged=_UNSET) -> FT:
                 hx_target="#restore-db-result",
                 hx_swap="innerHTML",
                 hx_confirm=t("settings_cloud.restore_db_confirm"),
+                **{"hx-disabled-elt": "this"},
             ),
             Div(id="restore-db-result", cls="infra-test-result"),
             style="margin-top:8px;",
@@ -573,25 +583,26 @@ def _infra_storage_section(packaged=_UNSET) -> FT:
                     Label(t("label.endpoint_url"), For="s3_endpoint"),
                     Input(id="s3_endpoint", name="s3_endpoint",
                           placeholder="https://s3.amazonaws.com", value=s3_endpoint,
-                          cls="input"),
+                          cls="input", onkeydown=_ESC_BLUR),
                     cls="form-row",
                 ),
                 Div(
                     Label(t("label.bucket_name"), For="s3_bucket"),
                     Input(id="s3_bucket", name="s3_bucket", placeholder="my-celerp-bucket",
-                          value=s3_bucket, cls="input"),
+                          value=s3_bucket, cls="input", onkeydown=_ESC_BLUR),
                     cls="form-row",
                 ),
                 Div(
                     Label(t("label.access_key"), For="s3_access_key"),
                     Input(id="s3_access_key", name="s3_access_key", placeholder="AKIAIOSFODNN7EXAMPLE",
-                          value=s3_access_key, cls="input"),
+                          value=s3_access_key, cls="input", onkeydown=_ESC_BLUR),
                     cls="form-row",
                 ),
                 Div(
                     Label(t("label.secret_key"), For="s3_secret_key"),
                     Input(id="s3_secret_key", name="s3_secret_key", type="password",
-                          placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", cls="input"),
+                          placeholder="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", cls="input",
+                          onkeydown=_ESC_BLUR),
                     cls="form-row",
                 ),
                 id="s3-fields",
@@ -605,6 +616,7 @@ def _infra_storage_section(packaged=_UNSET) -> FT:
                     hx_include="closest form",
                     hx_target="#storage-test-result",
                     hx_swap="innerHTML",
+                    **{"hx-disabled-elt": "this"},
                 ),
                 Button(t("btn.save_restart"), type="submit", cls="btn btn--primary btn--sm", style="margin-left:8px;",
                        hx_confirm=t("settings_cloud.restart_server_confirm")),
@@ -614,6 +626,7 @@ def _infra_storage_section(packaged=_UNSET) -> FT:
             hx_post="/settings/cloud/save-infra",
             hx_target="#storage-test-result",
             cls="infra-form",
+            **{"hx-disabled-elt": "this"},
         ),
         cls="infra-section",
     )
@@ -799,13 +812,16 @@ def _partner_claim_card(lang: str = "en", error: str | None = None) -> FT:
         P(t("settings_cloud.partner_claim_desc", lang), cls="settings-hint"),
     ]
     if error:
-        children.append(P(error, cls="text-error", style="margin:8px 0;"))
+        # role="alert" announces the failed lookup to assistive tech, matching
+        # the app's established error/flash semantics rather than a
+        # visual-only paragraph.
+        children.append(P(error, cls="text-error", role="alert", style="margin:8px 0;"))
     children.append(
         Form(
             Label(t("settings_cloud.partner_claim_label", lang), For="claim_token"),
             Input(name="claim_token", id="claim_token", type="text", autocomplete="off",
                   placeholder=t("settings_cloud.partner_claim_token_placeholder", lang),
-                  cls="input", style="max-width:360px;"),
+                  cls="input", style="max-width:360px;", onkeydown=_ESC_BLUR),
             Button(t("settings_cloud.partner_claim_review", lang),
                    type="submit", cls="btn btn--primary"),
             Span(cls="spinner htmx-indicator", id="partner-claim-spinner"),
@@ -814,6 +830,7 @@ def _partner_claim_card(lang: str = "en", error: str | None = None) -> FT:
             hx_swap="outerHTML",
             hx_indicator="#partner-claim-spinner",
             style="display:flex;align-items:center;gap:8px;margin-top:8px;",
+            **{"hx-disabled-elt": "this"},
         )
     )
     return Div(*children, id="partner-claim-card", cls="settings-card")

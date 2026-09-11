@@ -15,13 +15,14 @@ JWT and every long-lived instance credential stay server-side.
 """
 from __future__ import annotations
 
-import html
 from urllib.parse import urlparse
 
 import httpx
+from fasthtml.common import A, Div, H1, P, to_xml
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse
 
+from ui.components.shell import auth_shell, page_title
 from ui.config import get_token as _token
 from ui.i18n import t
 
@@ -56,18 +57,25 @@ def _is_direct_checkout(destination: str) -> bool:
 
 def _mint_failed_page() -> str:
     """Neutral error page shown when the handoff mint could not complete. No
-    redirect and no fabricated checkout URL: the user stays put and can retry."""
-    return (
-        "<!doctype html><meta charset=utf-8><title>Celerp</title>"
-        "<div style='font-family:system-ui,sans-serif;max-width:560px;margin:80px auto;"
-        "text-align:center;line-height:1.5'>"
-        f"<h1>{html.escape(t('commercial.checkout_unavailable_title'))}</h1>"
-        f"<p style='color:#555'>{html.escape(t('commercial.checkout_unavailable_body'))}</p>"
-        "<p><a href='/' style='display:inline-block;margin-top:12px;padding:10px 20px;"
-        "background:#1f883d;color:#fff;border-radius:6px;text-decoration:none'>"
-        f"{html.escape(t('stars.back_to_celerp'))}</a></p>"
-        "</div>"
+    redirect and no fabricated checkout URL: the user stays put and can retry.
+
+    Renders through the standard app shell (auth_shell) and the same auth-card
+    error pattern as ui/routes/auth.py::_api_error_page, rather than a bespoke
+    inline-styled HTML fragment: same wrapper classes, the app stylesheet, and
+    a single clear return action back into Web Access settings."""
+    page = auth_shell(
+        Div(
+            Div(
+                H1(t("commercial.checkout_unavailable_title"), cls="auth-title"),
+                P(t("commercial.checkout_unavailable_body"), cls="auth-subtitle"),
+                A(t("stars.back_to_celerp"), href="/settings/cloud", cls="btn btn--primary mt-md"),
+                cls="auth-header",
+            ),
+            cls="auth-card",
+        ),
+        title=page_title("commercial.checkout_unavailable_title"),
     )
+    return to_xml(page)
 
 
 def _append_token(url: str, token: str) -> str:

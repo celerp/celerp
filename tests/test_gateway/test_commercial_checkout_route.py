@@ -111,6 +111,47 @@ async def test_commercial_checkout_handoff_mint_failure_degrades(client):
 
 
 @pytest.mark.asyncio
+async def test_commercial_checkout_mint_failure_uses_standard_auth_shell(client):
+    """The mint-failure page renders through the standard app shell (auth_shell +
+    the existing auth-card error pattern from ui/routes/auth.py::_api_error_page),
+    not bespoke inline-styled HTML: same wrapper classes, a stylesheet link, and a
+    single clear return action back into the app rather than a dead end."""
+    with patch("ui.routes.commercial._mint_handoff_token",
+               AsyncMock(side_effect=RuntimeError("relay down"))):
+        r = await client.get("/commercial/checkout?intent=subscribe&sku=cloud",
+                             cookies=authed_cookies())
+    assert r.status_code == 200
+    body = r.text
+    # Standard shell markers (ui/components/shell.py::auth_shell), not a bespoke
+    # <!doctype>/inline-style fragment.
+    assert 'class="auth-body"' in body
+    assert 'class="auth-container"' in body
+    assert '/static/app.css' in body
+    # Standard error-card classes (ui/routes/auth.py::_api_error_page), reused
+    # rather than a one-off inline-styled div.
+    assert 'class="auth-card"' in body
+    assert "style=" not in body
+    # A single clear return action back to Web Access/settings, not "/" alone.
+    assert 'href="/settings/cloud"' in body
+
+
+@pytest.mark.asyncio
+async def test_commercial_checkout_mint_failure_localizes_to_request_language(client):
+    """The mint-failure page text resolves in the requester's language, matching
+    every other auth_shell page (get_lang(request)), not a hardcoded English
+    string baked in at import time."""
+    from ui.i18n import t
+    cookies = authed_cookies()
+    cookies["celerp_lang"] = "es"
+    with patch("ui.routes.commercial._mint_handoff_token",
+               AsyncMock(side_effect=RuntimeError("relay down"))):
+        r = await client.get("/commercial/checkout?intent=subscribe&sku=cloud",
+                             cookies=cookies)
+    assert r.status_code == 200
+    assert t("commercial.checkout_unavailable_title", "es") in r.text
+
+
+@pytest.mark.asyncio
 async def test_commercial_checkout_partner_support_url_with_subscribe_in_path(client):
     """A partner support URL that happens to contain "/subscribe" in its path
     (e.g. a help article) is not a Celerp direct checkout: no handoff token is

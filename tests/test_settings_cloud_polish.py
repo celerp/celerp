@@ -13,6 +13,7 @@ rule, so both assertions fail there.
 """
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 
@@ -20,6 +21,8 @@ from fasthtml.common import to_xml
 
 from ui.routes.settings_cloud import (
     _backup_summary_card,
+    _infra_db_section,
+    _infra_storage_section,
     _partner_claim_card,
     _partner_claim_preview,
 )
@@ -128,3 +131,125 @@ def test_backup_summary_card_populated_still_renders():
     backup_data = {"db": {"last_run": None, "ok": None}, "next_db_utc": None}
     html = to_xml(_backup_summary_card(gw_ok=True, backup_data=backup_data))
     assert "settings-card" in html
+
+
+# ── U1: Escape-to-blur on new/edited click-to-edit fields ───────────────────
+#
+# The codebase's established Escape-to-blur convention (ui/routes/accounting.py:442,
+# ui/routes/inventory.py:471) is
+# `"if(event.key==='Escape'){this.blur();event.preventDefault();}"`
+# applied via `onkeydown=`. None of the infra/claim inputs below carried it before
+# Pass 6, so a user editing a DB/S3/claim field could not back out with Escape,
+# unlike every other editable field in the app (GDR 2j).
+
+_ESC_BLUR = "if(event.key==='Escape'){this.blur();event.preventDefault();}"
+
+
+def _find_tag_by_attr(html: str, attr: str, value: str) -> str:
+    """Return the full opening tag containing attr="value", regardless of where
+    that attribute falls in FastHTML's rendered attribute order or whether the
+    tag itself spans a pretty-printed newline."""
+    m = re.search(rf'<[a-zA-Z]+(?:(?!>)[\s\S])*?{re.escape(attr)}="{re.escape(value)}"(?:(?!>)[\s\S])*?>', html)
+    assert m, f'no tag found with {attr}="{value}"'
+    return m.group(0)
+
+
+def test_db_fields_have_escape_to_blur():
+    html = to_xml(_infra_db_section())
+    for field_id in ("db_host", "db_port", "db_name", "db_user", "db_pass"):
+        tag = _find_tag_by_attr(html, "id", field_id)
+        assert f'onkeydown="{_ESC_BLUR}"' in tag, (
+            f"{field_id} missing Escape-to-blur onkeydown"
+        )
+
+
+def test_storage_fields_have_escape_to_blur():
+    html = to_xml(_infra_storage_section())
+    for field_id in ("s3_endpoint", "s3_bucket", "s3_access_key", "s3_secret_key"):
+        tag = _find_tag_by_attr(html, "id", field_id)
+        assert f'onkeydown="{_ESC_BLUR}"' in tag, (
+            f"{field_id} missing Escape-to-blur onkeydown"
+        )
+
+
+def test_claim_token_field_has_escape_to_blur():
+    html = to_xml(_partner_claim_card(lang="en"))
+    tag = _find_tag_by_attr(html, "id", "claim_token")
+    assert f'onkeydown="{_ESC_BLUR}"' in tag
+
+
+# ── B7 / Pass6 item 2: hx-disabled-elt on non-idempotent submit buttons ──────
+#
+# Two overlapping requests to a save/restore/test/review endpoint can race (the
+# Restore button swaps current/backup URLs, so two requests can reverse the
+# user's intended restore). KISS fix: hx-disabled-elt="this" on the button,
+# reusing the existing spinner/indicator wiring already present on these forms.
+
+def test_db_test_connection_button_disables_during_request():
+    html = to_xml(_infra_db_section())
+    m = re.search(r'<button[^>]*hx-post="/settings/cloud/test-db"[^>]*>', html)
+    assert m, "DB Test Connection button not found"
+    assert 'hx-disabled-elt="this"' in m.group(0)
+
+
+def test_db_save_form_disables_submit_during_request():
+    html = to_xml(_infra_db_section())
+    m = re.search(r'<form[^>]*hx-post="/settings/cloud/save-infra"[^>]*>', html)
+    assert m, "DB save-infra form not found"
+    assert 'hx-disabled-elt="this"' in m.group(0)
+
+
+def test_db_restore_button_disables_during_request(tmp_path, monkeypatch):
+    """Highest-priority single-flight target: Restore swaps current/backup URLs,
+    so two in-flight requests can reverse the user's intended restore."""
+    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
+    (tmp_path / "celerp-config.json").write_text(json.dumps({
+        "db_mode": "external",
+        "external_db_url": "postgresql+asyncpg://celerp:new@h:5432/celerp",
+        "external_db_url_backup": "postgresql+asyncpg://celerp:old@old:5432/celerp",
+    }))
+    html = to_xml(_infra_db_section())
+    m = re.search(r'<button[^>]*hx-post="/settings/cloud/restore-db"[^>]*>', html)
+    assert m, "Restore previous DB settings button not found"
+    assert 'hx-disabled-elt="this"' in m.group(0)
+
+
+def test_storage_test_connection_button_disables_during_request():
+    html = to_xml(_infra_storage_section())
+    m = re.search(r'<button[^>]*hx-post="/settings/cloud/test-storage"[^>]*>', html)
+    assert m, "Storage Test Connection button not found"
+    assert 'hx-disabled-elt="this"' in m.group(0)
+
+
+def test_storage_save_form_disables_submit_during_request():
+    html = to_xml(_infra_storage_section())
+    m = re.search(r'<form[^>]*hx-post="/settings/cloud/save-infra"[^>]*>', html)
+    assert m, "Storage save-infra form not found"
+    assert 'hx-disabled-elt="this"' in m.group(0)
+
+
+def test_partner_claim_review_form_disables_submit_during_request():
+    html = to_xml(_partner_claim_card(lang="en"))
+    m = re.search(r'<form[^>]*hx-post="/settings/partner-claim/resolve"[^>]*>', html)
+    assert m, "Partner claim review form not found"
+    assert 'hx-disabled-elt="this"' in m.group(0)
+
+
+# ── U6: standard claim form/error semantics ──────────────────────────────────
+
+def test_claim_error_region_is_a_live_region():
+    """The claim error paragraph is announced to assistive tech (role="alert"),
+    matching the app's established error/flash semantics rather than a silent
+    visual-only .text-error paragraph."""
+    html = to_xml(_partner_claim_card(lang="en", error="Invalid claim code"))
+    m = re.search(r'<p[^>]*class="text-error"[^>]*>', html)
+    assert m, "claim error paragraph not found"
+    assert 'role="alert"' in m.group(0)
+
+
+def test_claim_review_button_present_without_error_state_change():
+    """No error: the review form still renders the same single deliberate
+    Review action (no wizard steps introduced)."""
+    html = to_xml(_partner_claim_card(lang="en"))
+    assert html.count("<form") == 1
+    assert 'role="alert"' not in html  # nothing to announce yet
