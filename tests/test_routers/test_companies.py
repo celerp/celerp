@@ -82,6 +82,88 @@ async def test_patch_user_demote_admin_allowed(client):
     assert r.json()["ok"] is True
 
 
+# ---------------------------------------------------------------------------
+# Admin patch_user session rotation (section 7 test matrix, rows 20-22)
+#
+# When an owner/admin changes a target user's password, role, or membership
+# state through PATCH /companies/me/users/{id}, that target's outstanding tokens
+# must die immediately. patch_user rotating the target's nonce is workstream-2
+# work; until it lands these three tests are RED by design.
+# ---------------------------------------------------------------------------
+
+
+async def _owner_and_target(client, session):
+    """Register an owner, invite a manager target, log the target in, and return
+    (owner_headers, target_user_id, target_access, target_refresh)."""
+    import base64, json as _json, uuid as _uuid
+    from celerp.services.session_tracker import clear as _clear_tracker
+
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "PatchCo", "email": f"owner-{_uuid.uuid4().hex[:8]}@t.com",
+              "name": "Owner", "password": "pw"},
+    )
+    owner_h = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+    target_email = f"target-{_uuid.uuid4().hex[:8]}@t.com"
+    r_new = await client.post(
+        "/companies/me/users",
+        json={"email": target_email, "name": "Target", "role": "manager", "password": "pw123"},
+        headers=owner_h,
+    )
+    assert r_new.status_code == 200
+    target_id = r_new.json()["id"]
+    await _clear_tracker(session)
+    r_login = await client.post("/auth/login", json={"email": target_email, "password": "pw123"})
+    assert r_login.status_code == 200
+    return owner_h, target_id, r_login.json()["access_token"], r_login.json()["refresh_token"]
+
+
+@pytest.mark.asyncio
+async def test_admin_password_change_kills_target_tokens(client, session):
+    """An admin resetting a target user's password kills the target's access and refresh."""
+    owner_h, target_id, access, refresh = await _owner_and_target(client, session)
+    r = await client.patch(
+        f"/companies/me/users/{target_id}", json={"password": "brandnew1"}, headers=owner_h
+    )
+    assert r.status_code == 200
+    r_acc = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {access}"})
+    assert r_acc.status_code == 401
+    r_ref = await client.post("/auth/token/refresh", json={"refresh_token": refresh})
+    assert r_ref.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_role_change_kills_target_tokens(client, session):
+    """Changing a target user's role kills the target's access and refresh."""
+    owner_h, target_id, access, refresh = await _owner_and_target(client, session)
+    r = await client.patch(
+        f"/companies/me/users/{target_id}", json={"role": "operator"}, headers=owner_h
+    )
+    assert r.status_code == 200
+    r_acc = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {access}"})
+    assert r_acc.status_code == 401
+    r_ref = await client.post("/auth/token/refresh", json={"refresh_token": refresh})
+    assert r_ref.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_membership_deactivation_kills_target_tokens(client, session):
+    """Deactivating a target user's membership kills the target's access and refresh.
+
+    Membership deactivation already fails validation (the active-membership check),
+    so access dies through that path; this asserts the same for refresh and pins the
+    behavior once nonce rotation lands too."""
+    owner_h, target_id, access, refresh = await _owner_and_target(client, session)
+    r = await client.patch(
+        f"/companies/me/users/{target_id}", json={"is_active": False}, headers=owner_h
+    )
+    assert r.status_code == 200
+    r_acc = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {access}"})
+    assert r_acc.status_code == 401
+    r_ref = await client.post("/auth/token/refresh", json={"refresh_token": refresh})
+    assert r_ref.status_code == 401
+
+
 @pytest.mark.asyncio
 async def test_demo_reseed_vertical(client):
     """POST /companies/me/demo/reseed seeds vertical-aware items."""

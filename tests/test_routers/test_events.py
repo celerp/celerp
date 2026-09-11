@@ -80,6 +80,54 @@ async def test_events_stream_invalid_bearer_is_401():
 
 
 @pytest.mark.asyncio
+async def test_events_stream_rejects_pre_v2_refresh_and_missing_nonce_at_creation():
+    """A pre-v2 token, a refresh token, and a missing-nonce access token are each
+    rejected 401 before any subscription: get_token_claims runs the strict v2
+    access-token contract, so none of them decodes to usable claims."""
+    from jose import jwt as _jwt
+    from celerp.config import settings
+    from celerp.services.auth import create_refresh_token
+
+    uid, cid = str(uuid.uuid4()), str(uuid.uuid4())
+    # Pre-v2 shape: no auth_ver/type/snonce.
+    pre_v2 = _jwt.encode(
+        {"sub": uid, "company_id": cid, "role": "admin", "jti": uid, "exp": 9999999999},
+        settings.jwt_secret, algorithm=settings.jwt_algorithm,
+    )
+    # A real v2 refresh token (type=refresh) presented as a stream bearer.
+    refresh = create_refresh_token(uid, cid, "admin", snonce="n")
+    # A v2 access token with an empty snonce.
+    missing_nonce, _ = create_access_token(subject=uid, company_id=cid, role="admin", snonce="")
+
+    before = len(_subscribers)
+    for bad in (pre_v2, refresh, missing_nonce):
+        with pytest.raises(HTTPException) as exc:
+            await events_mod.events_stream(token=bad)
+        assert exc.value.status_code == 401
+    assert len(_subscribers) == before
+
+
+@pytest.mark.asyncio
+async def test_events_stream_rejects_revoked_token_before_stream_creation(session, monkeypatch):
+    """A valid v2 access token whose nonce has since been rotated (revoked) must be
+    rejected before the stream is created, not merely evicted on a later poll tick.
+
+    DEFERRED to workstream 2 (A9): the current route decodes claims only and defers
+    the nonce check to the poll loop, so it opens the subscription first. Once the
+    route performs one full DB validation up front, a revoked token yields 401 with
+    no subscriber ever registered. RED until then."""
+    token, company_id, user_id, user_id_str = _bearer(snonce="client-nonce")
+    # Server-side nonce differs from the token's: the token is revoked.
+    _nonce_cache_set(user_id_str, "rotated-different-nonce")
+
+    before = len(_subscribers)
+    with pytest.raises(HTTPException) as exc:
+        await events_mod.events_stream(token=token)
+    assert exc.value.status_code == 401
+    assert len(_subscribers) == before, "a revoked token must not open a subscription"
+
+
+@pytest.mark.asyncio
 async def test_events_stream_delivers_notification():
     """A notification published to the user arrives as an SSE notification event."""
     token, company_id, user_id, _ = _bearer()
