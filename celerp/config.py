@@ -87,6 +87,19 @@ class Settings(BaseSettings):
     storage_s3_bucket: str = ""
     storage_s3_access_key: str = ""
     storage_s3_secret_key: str = ""
+    # Self-hosted only: the operator declares that this install runs on a
+    # customer-owned external database covered by the Team subscription. Default
+    # off; set true via EXTERNAL_DB / [cloud] external_db. It gates Team-infra
+    # visibility and the post-lapse "restore backup" recovery UI, so it is an
+    # explicit, durable opt-in and is never inferred from database_url (every
+    # ordinary self-hosted install points database_url at its own Postgres, which
+    # is not the same as opting into customer-owned Team infrastructure).
+    # Packaged builds detect the external database from celerp-config.json instead
+    # and never read this field.
+    external_db: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("EXTERNAL_DB", "external_db"),
+    )
     # Data directory for runtime artifacts (uploads, caches).
     # Accepts CELERP_DATA_DIR (Electron) or DATA_DIR (legacy). Defaults to ./data.
     data_dir: Path = Field(
@@ -266,6 +279,10 @@ def load_cloud_config() -> None:
     # lost response resolves to the same association rather than minting a new one.
     if cloud.get("deployment_nonce") and not settings.deployment_nonce:
         settings.deployment_nonce = cloud["deployment_nonce"]
+    # Self-hosted external-database opt-in. Durable [cloud] key so the operator's
+    # declaration survives restarts; loads unless the environment already set it.
+    if cloud.get("external_db") and not settings.external_db:
+        settings.external_db = True
     # Auto-enable secure cookies when relay-connected (HTTPS via Caddy/Cloudflare)
     if settings.gateway_token and not os.environ.get("COOKIE_SECURE"):
         settings.cookie_secure = True
@@ -411,6 +428,10 @@ def write_config(cfg: dict) -> None:
             lines.append(f'deployment_nonce = {_str(cloud["deployment_nonce"])}')
         if cloud.get("deployment_associated"):
             lines.append("deployment_associated = true")
+        # Self-hosted external-database opt-in, emitted only when set. A direct
+        # local install carries no key and reads as off.
+        if cloud.get("external_db"):
+            lines.append("external_db = true")
         lines.append("")
 
     if "storage" in cfg:

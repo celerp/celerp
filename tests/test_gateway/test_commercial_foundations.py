@@ -269,14 +269,6 @@ def _future() -> str:
     return (datetime.now(timezone.utc) + timedelta(days=10)).isoformat()
 
 
-def _self_hosted_settings(monkeypatch, *, db_url="", storage_backend="local",
-                          s3_endpoint=""):
-    from celerp.config import settings
-    monkeypatch.setattr(settings, "database_url", db_url or settings.database_url)
-    monkeypatch.setattr(settings, "storage_backend", storage_backend)
-    monkeypatch.setattr(settings, "storage_s3_endpoint", s3_endpoint)
-
-
 def test_local_infra_state_key_set(monkeypatch):
     """The state exposes exactly the seven documented keys and nothing else."""
     monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
@@ -285,9 +277,12 @@ def test_local_infra_state_key_set(monkeypatch):
 
 
 def test_local_infra_state_excludes_secrets(monkeypatch):
-    """Self-hosted state never carries a DB URL, password, or S3 secret."""
+    """Self-hosted state never carries a DB URL, password, or S3 secret. The
+    external-DB signal is the explicit external_db opt-in, so a secret-bearing
+    database_url is never read for it, and none of the storage secrets leak."""
     monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
     from celerp.config import settings
+    monkeypatch.setattr(settings, "external_db", True)
     monkeypatch.setattr(
         settings, "database_url",
         "postgresql+asyncpg://celerp:s3cr3t@db.example.com:5432/celerp")
@@ -304,13 +299,12 @@ def test_local_infra_state_excludes_secrets(monkeypatch):
 
 
 def test_local_infra_active_team_visible(monkeypatch):
-    """Active Team: entitlement flags true -> external infra entitled/visible."""
+    """Active Team: entitlement flags true -> external infra entitled/visible.
+    The self-hosted external-DB signal is the explicit external_db opt-in."""
     monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
     gw_state.set_feature_flags({"external_db": True, "external_storage": True})
     from celerp.config import settings
-    monkeypatch.setattr(
-        settings, "database_url",
-        "postgresql+asyncpg://celerp:x@db.example.com:5432/celerp")
+    monkeypatch.setattr(settings, "external_db", True)
     monkeypatch.setattr(settings, "storage_backend", "s3")
     monkeypatch.setattr(settings, "storage_s3_endpoint", "https://s3.example.com")
     state = get_local_infra_state()
@@ -322,14 +316,13 @@ def test_local_infra_active_team_visible(monkeypatch):
 
 def test_local_infra_grace_and_db(monkeypatch):
     """Grace + external DB configured: entitlement flag false but grace in future
-    -> in_grace true, external url still configured."""
+    -> in_grace true, external DB still configured. The self-hosted external-DB
+    signal is the explicit external_db opt-in, not the runtime database_url."""
     monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
     gw_state.set_feature_flags(
         {"external_db": False, "external_storage": False, "grace_period_ends": _future()})
     from celerp.config import settings
-    monkeypatch.setattr(
-        settings, "database_url",
-        "postgresql+asyncpg://celerp:x@db.example.com:5432/celerp")
+    monkeypatch.setattr(settings, "external_db", True)
     state = get_local_infra_state()
     assert state["has_external_url"] is True
     assert state["in_grace"] is True
@@ -338,14 +331,13 @@ def test_local_infra_grace_and_db(monkeypatch):
 
 def test_local_infra_after_grace_db_still_visible(monkeypatch):
     """After grace + external DB configured: not entitled, not in grace, but the
-    external url stays configured so restore controls remain reachable."""
+    external DB stays configured so restore controls remain reachable. The
+    self-hosted external-DB signal is the explicit external_db opt-in."""
     monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
     gw_state.set_feature_flags(
         {"external_db": False, "external_storage": False, "grace_period_ends": None})
     from celerp.config import settings
-    monkeypatch.setattr(
-        settings, "database_url",
-        "postgresql+asyncpg://celerp:x@db.example.com:5432/celerp")
+    monkeypatch.setattr(settings, "external_db", True)
     state = get_local_infra_state()
     assert state["has_external_url"] is True
     assert state["external_db_entitled"] is False
@@ -353,11 +345,12 @@ def test_local_infra_after_grace_db_still_visible(monkeypatch):
 
 
 def test_local_infra_after_grace_s3_only(monkeypatch):
-    """After grace + S3 only: storage configured/visible, no external DB."""
+    """After grace + S3 only: storage configured/visible, no external DB. The
+    external-DB opt-in is off, so has_external_url is False."""
     monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
     gw_state.set_feature_flags({"external_storage": False, "grace_period_ends": None})
     from celerp.config import settings
-    monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://celerp:celerp@localhost:5432/celerp")
+    monkeypatch.setattr(settings, "external_db", False)
     monkeypatch.setattr(settings, "storage_backend", "s3")
     monkeypatch.setattr(settings, "storage_s3_endpoint", "https://s3.example.com")
     state = get_local_infra_state()
@@ -366,11 +359,12 @@ def test_local_infra_after_grace_s3_only(monkeypatch):
 
 
 def test_local_infra_none_configured(monkeypatch):
-    """No entitlement, no external config -> nothing configured/entitled."""
+    """No entitlement, no external config -> nothing configured/entitled. The
+    external-DB opt-in and S3 storage are both off."""
     monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
     gw_state.set_feature_flags({})
     from celerp.config import settings
-    monkeypatch.setattr(settings, "database_url", "postgresql+asyncpg://celerp:celerp@localhost:5432/celerp")
+    monkeypatch.setattr(settings, "external_db", False)
     monkeypatch.setattr(settings, "storage_backend", "local")
     monkeypatch.setattr(settings, "storage_s3_endpoint", "")
     state = get_local_infra_state()

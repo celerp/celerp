@@ -122,15 +122,13 @@ def test_infra_visible_during_grace(tmp_path, monkeypatch):
 def test_infra_visible_cross_build_self_hosted(monkeypatch):
     """Team infrastructure stays visible on a self-hosted build (no
     CELERP_DATA_DIR): _has_team_features reads get_local_infra_state, whose
-    self-hosted branch derives has_external_url from the runtime database_url
-    setting rather than the Electron-only packaged config file."""
+    self-hosted branch derives has_external_url from the explicit external_db
+    config opt-in rather than the Electron-only packaged config file."""
     monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
     set_feature_flags({"external_db": False, "external_storage": False,
                         "grace_period_ends": _future()})
     from celerp.config import settings
-    monkeypatch.setattr(
-        settings, "database_url",
-        "postgresql+asyncpg://celerp:x@db.example.com:5432/celerp")
+    monkeypatch.setattr(settings, "external_db", True)
     assert _has_team_features({}) is True
 
 

@@ -609,10 +609,14 @@ def get_local_infra_state() -> dict:
             "storage_in_grace": packaged["storage_in_grace"],
         }
     # Self-hosted: configured targets from runtime settings (booleans only),
-    # entitlement/grace from the shared feature-flags cache.
+    # entitlement/grace from the shared feature-flags cache. The external-DB
+    # signal is the explicit, default-off external_db opt-in, never inferred from
+    # database_url: every ordinary install points database_url at its own
+    # Postgres, which is not the same as opting into customer-owned Team
+    # infrastructure, and inferring it there both fabricates Team-infra
+    # visibility and depends on the exact runtime DB URL.
     from celerp.config import settings
-    has_external_url = settings.database_url not in (
-        "", "postgresql+asyncpg://celerp:celerp@localhost:5432/celerp")
+    has_external_url = bool(settings.external_db)
     has_external_storage = settings.storage_backend == "s3" or bool(
         settings.storage_s3_endpoint or settings.storage_s3_bucket
         or settings.storage_s3_access_key)
