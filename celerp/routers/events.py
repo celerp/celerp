@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(tags=["events"])
 
 _TICK = object()  # sentinel: asyncio.TimeoutError path
+_EVICT_NONE = object()  # sentinel: no eviction this tick (distinct from an empty IP string)
 
 # Seconds the stream waits for a queued event before running the periodic
 # session-watch poll (nonce eviction, drain, keepalive). A module constant so the
@@ -92,42 +93,37 @@ async def events_stream(token: str = Depends(oauth2_scheme)):
                     # Deadline reached while draining the queue - fall through to the
                     # poll before waiting on the next notification.
 
-                # Poll path: re-arm the deadline, then poll nonce (cache-first, DB
-                # only on a miss). Re-arming here covers both the cache-hit keepalive
-                # continue and the bottom fall-through, avoiding a busy poll loop.
+                # Poll path: re-arm the deadline, then run the session watch. Every
+                # tick checks both eviction (nonce rotated elsewhere) and drain, so a
+                # deploy can move a stream whose nonce still matches - a matching
+                # nonce must never suppress the drain signal. Re-arming here covers
+                # the eviction/keepalive continues and the bottom fall-through,
+                # avoiding a busy poll loop.
                 next_tick = loop.time() + _STREAM_TICK_SECONDS
-                # Skip nonce checks for legacy tokens that have no snonce claim - consistent
-                # with get_current_user which allows missing snonce for backward compatibility.
+
+                evicted_ip = _EVICT_NONE
+                # Nonce is checked only for tokens that carry one (a v2 access token
+                # always does). Cache-first, DB on a miss: a rotated nonce means the
+                # session was revoked elsewhere and the stream is evicted.
                 if token_nonce:
                     cached_nonce = _get_nonce_from_cache(user_id_str)
                     if cached_nonce is not None:
-                        if cached_nonce != token_nonce:
-                            async with AsyncSessionLocal() as s:
-                                ip = await _pop_ip(s, user_id_str) or ""
-                            yield f"event: evicted\ndata: {json.dumps({'by': ip})}\n\n"
-                            return
-                        keepalive_tick += 1
-                        if keepalive_tick % 3 == 0:
-                            yield ": keepalive\n\n"
-                        continue
+                        current_nonce = cached_nonce
+                    else:
+                        async with AsyncSessionLocal() as s:
+                            current_nonce = await _get_nonce(s, user_id_str)
+                    if current_nonce != token_nonce:
+                        async with AsyncSessionLocal() as s:
+                            evicted_ip = await _pop_ip(s, user_id_str) or ""
 
-                    # Cache miss: hit Postgres
-                    async with AsyncSessionLocal() as s:
-                        current_nonce = await _get_nonce(s, user_id_str)
-                        if current_nonce != token_nonce:
-                            ip = await _pop_ip(s, user_id_str) or ""
-                            yield f"event: evicted\ndata: {json.dumps({'by': ip})}\n\n"
-                            return
-                        if await _is_draining(s):
-                            yield "event: drain\ndata: {}\n\n"
-                            return
-                else:
-                    # No snonce - still check drain (DB already open on cache miss path above
-                    # is skipped, so open a fresh session for drain check only).
-                    async with AsyncSessionLocal() as s:
-                        if await _is_draining(s):
-                            yield "event: drain\ndata: {}\n\n"
-                            return
+                if evicted_ip is not _EVICT_NONE:
+                    yield f"event: evicted\ndata: {json.dumps({'by': evicted_ip})}\n\n"
+                    return
+
+                async with AsyncSessionLocal() as s:
+                    if await _is_draining(s):
+                        yield "event: drain\ndata: {}\n\n"
+                        return
 
                 keepalive_tick += 1
                 if keepalive_tick % 3 == 0:
