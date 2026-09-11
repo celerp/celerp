@@ -125,10 +125,10 @@ async def test_change_password_kills_old_access_and_refresh(client, session):
 
     await client.post(
         "/auth/register",
-        json={"company_name": "PwKill", "email": "pwkill@t.com", "name": "Admin", "password": "oldpass123"},
+        json={"company_name": "PwKill", "email": "pwkill@example.com", "name": "Admin", "password": "oldpass123"},
     )
     await _clear_tracker(session)
-    r = await client.post("/auth/login", json={"email": "pwkill@t.com", "password": "oldpass123"})
+    r = await client.post("/auth/login", json={"email": "pwkill@example.com", "password": "oldpass123"})
     assert r.status_code == 200
     old_access = r.json()["access_token"]
     old_refresh = r.json()["refresh_token"]
@@ -484,7 +484,7 @@ async def test_new_access_token_carries_v2_contract(client):
     from celerp.services.auth import AUTH_TOKEN_VERSION
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "FmtA", "email": "fmta@t.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "FmtA", "email": "fmta@example.com", "name": "Admin", "password": "pw"},
     )
     claims = _decode(reg.json()["access_token"])
     assert claims["auth_ver"] == AUTH_TOKEN_VERSION == 2
@@ -499,7 +499,7 @@ async def test_new_refresh_token_carries_v2_contract(client):
     from celerp.services.auth import AUTH_TOKEN_VERSION
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "FmtR", "email": "fmtr@t.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "FmtR", "email": "fmtr@example.com", "name": "Admin", "password": "pw"},
     )
     claims = _decode(reg.json()["refresh_token"])
     assert claims["auth_ver"] == AUTH_TOKEN_VERSION == 2
@@ -515,7 +515,7 @@ async def test_pre_v2_access_token_rejected(client, session):
     from celerp.config import settings
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "CutA", "email": "cuta@t.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "CutA", "email": "cuta@example.com", "name": "Admin", "password": "pw"},
     )
     good = _decode(reg.json()["access_token"])
     # Same signing secret, same subject/company, but the old claim set: no
@@ -539,7 +539,7 @@ async def test_pre_v2_refresh_token_rejected(client):
     from celerp.config import settings
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "CutR", "email": "cutr@t.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "CutR", "email": "cutr@example.com", "name": "Admin", "password": "pw"},
     )
     good = _decode(reg.json()["refresh_token"])
     legacy_payload = {
@@ -559,7 +559,7 @@ async def test_refresh_token_rejected_as_bearer(client):
     (type separation): it carries type=refresh, which decode_access_token refuses."""
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "SepB", "email": "sepb@t.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "SepB", "email": "sepb@example.com", "name": "Admin", "password": "pw"},
     )
     refresh = reg.json()["refresh_token"]
     r = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {refresh}"})
@@ -576,7 +576,7 @@ async def test_access_token_missing_snonce_rejected(client):
     from celerp.config import settings
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "NonceA", "email": "noncea@t.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "NonceA", "email": "noncea@example.com", "name": "Admin", "password": "pw"},
     )
     good = _decode(reg.json()["access_token"])
     good["snonce"] = ""
@@ -592,7 +592,7 @@ async def test_refresh_token_missing_snonce_rejected(client):
     from celerp.config import settings
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "NonceR", "email": "noncer@t.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "NonceR", "email": "noncer@example.com", "name": "Admin", "password": "pw"},
     )
     good = _decode(reg.json()["refresh_token"])
     good["snonce"] = ""
@@ -606,7 +606,7 @@ async def test_old_refresh_token_rejected_after_logout(client):
     """After logout, a refresh token issued before it is dead (nonce rotated)."""
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "LogoutR", "email": "logoutr@t.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "LogoutR", "email": "logoutr@example.com", "name": "Admin", "password": "pw"},
     )
     access = reg.json()["access_token"]
     refresh = reg.json()["refresh_token"]
@@ -639,16 +639,16 @@ async def test_displaced_user_refresh_token_rejected_after_force_login(client, s
 
     await client.post(
         "/auth/register",
-        json={"company_name": "ForceR", "email": "forcer@t.com", "name": "Owner", "password": "pw123456"},
+        json={"company_name": "ForceR", "email": "forcer@example.com", "name": "Owner", "password": "pw123456"},
     )
     await _clear_tracker(session)
-    r_login = await client.post("/auth/login", json={"email": "forcer@t.com", "password": "pw123456"})
+    r_login = await client.post("/auth/login", json={"email": "forcer@example.com", "password": "pw123456"})
     assert r_login.status_code == 200
     old_refresh = r_login.json()["refresh_token"]
 
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r_force = await client.post(
-            "/auth/login-force", json={"email": "forcer@t.com", "password": "pw123456"}
+            "/auth/login-force", json={"email": "forcer@example.com", "password": "pw123456"}
         )
     assert r_force.status_code == 200
 
@@ -670,17 +670,17 @@ async def test_refresh_uses_current_db_role_not_jwt_claim(client, session):
 
     owner_reg = await client.post(
         "/auth/register",
-        json={"company_name": "RoleCo", "email": "roleowner@t.com", "name": "Owner", "password": "pw"},
+        json={"company_name": "RoleCo", "email": "roleowner@example.com", "name": "Owner", "password": "pw"},
     )
     owner_h = {"Authorization": f"Bearer {owner_reg.json()['access_token']}"}
     # Create a manager user under the same company.
     await client.post(
         "/companies/me/users",
-        json={"email": "target@t.com", "name": "Target", "role": "manager", "password": "pw123"},
+        json={"email": "target@example.com", "name": "Target", "role": "manager", "password": "pw123"},
         headers=owner_h,
     )
     await _clear_tracker(session)
-    r_login = await client.post("/auth/login", json={"email": "target@t.com", "password": "pw123"})
+    r_login = await client.post("/auth/login", json={"email": "target@example.com", "password": "pw123"})
     assert r_login.status_code == 200
     refresh = r_login.json()["refresh_token"]
     access = r_login.json()["access_token"]
@@ -714,7 +714,7 @@ async def test_inactive_user_rejected_on_access_and_refresh(client, session):
 
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "InactCo", "email": "inact@t.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "InactCo", "email": "inact@example.com", "name": "Admin", "password": "pw"},
     )
     access = reg.json()["access_token"]
     refresh = reg.json()["refresh_token"]
@@ -740,16 +740,16 @@ async def test_deactivated_membership_rejected_on_access_and_refresh(client, ses
 
     owner_reg = await client.post(
         "/auth/register",
-        json={"company_name": "MemCo", "email": "memowner@t.com", "name": "Owner", "password": "pw"},
+        json={"company_name": "MemCo", "email": "memowner@example.com", "name": "Owner", "password": "pw"},
     )
     owner_h = {"Authorization": f"Bearer {owner_reg.json()['access_token']}"}
     await client.post(
         "/companies/me/users",
-        json={"email": "member@t.com", "name": "Member", "role": "manager", "password": "pw123"},
+        json={"email": "member@example.com", "name": "Member", "role": "manager", "password": "pw123"},
         headers=owner_h,
     )
     await _clear_tracker(session)
-    r_login = await client.post("/auth/login", json={"email": "member@t.com", "password": "pw123"})
+    r_login = await client.post("/auth/login", json={"email": "member@example.com", "password": "pw123"})
     access = r_login.json()["access_token"]
     refresh = r_login.json()["refresh_token"]
     claims = _decode(access)

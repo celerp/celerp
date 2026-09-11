@@ -210,7 +210,7 @@ async def test_refresh_token_as_bearer_never_refreshed(client):
     a header, so this is RED until the helper validates the token type."""
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "SlideRefB", "email": "sliderefb@t.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "SlideRefB", "email": "sliderefb@example.com", "name": "Admin", "password": "pw"},
     )
     refresh = reg.json()["refresh_token"]
     r = await client.get("/items", headers={"Authorization": f"Bearer {refresh}"})
@@ -230,7 +230,7 @@ async def test_revoked_nonce_never_refreshed(client, session):
 
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "SlideRev", "email": "sliderev@t.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "SlideRev", "email": "sliderev@example.com", "name": "Admin", "password": "pw"},
     )
     claims = _jwt.decode(reg.json()["access_token"], settings.jwt_secret, algorithms=[settings.jwt_algorithm])
 
@@ -274,16 +274,16 @@ async def test_refreshed_token_uses_current_db_role(client, session):
 
     owner_reg = await client.post(
         "/auth/register",
-        json={"company_name": "SlideRole", "email": "slideowner@t.com", "name": "Owner", "password": "pw"},
+        json={"company_name": "SlideRole", "email": "slideowner@example.com", "name": "Owner", "password": "pw"},
     )
     owner_h = {"Authorization": f"Bearer {owner_reg.json()['access_token']}"}
     await client.post(
         "/companies/me/users",
-        json={"email": "slidetarget@t.com", "name": "Target", "role": "manager", "password": "pw123"},
+        json={"email": "slidetarget@example.com", "name": "Target", "role": "manager", "password": "pw123"},
         headers=owner_h,
     )
     await _clear_tracker(session)
-    r_login = await client.post("/auth/login", json={"email": "slidetarget@t.com", "password": "pw123"})
+    r_login = await client.post("/auth/login", json={"email": "slidetarget@example.com", "password": "pw123"})
     claims = _jwt.decode(r_login.json()["access_token"], settings.jwt_secret, algorithms=[settings.jwt_algorithm])
 
     # Demote the target in DB.

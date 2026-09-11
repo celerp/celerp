@@ -100,11 +100,11 @@ async def _owner_and_target(client, session):
 
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "PatchCo", "email": f"owner-{_uuid.uuid4().hex[:8]}@t.com",
+        json={"company_name": "PatchCo", "email": f"owner-{_uuid.uuid4().hex[:8]}@example.com",
               "name": "Owner", "password": "pw"},
     )
     owner_h = {"Authorization": f"Bearer {reg.json()['access_token']}"}
-    target_email = f"target-{_uuid.uuid4().hex[:8]}@t.com"
+    target_email = f"target-{_uuid.uuid4().hex[:8]}@example.com"
     r_new = await client.post(
         "/companies/me/users",
         json={"email": target_email, "name": "Target", "role": "manager", "password": "pw123"},
