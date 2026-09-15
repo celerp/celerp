@@ -323,3 +323,34 @@ def wc_db():
     with admin.connect() as c:
         c.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
     admin.dispose()
+
+
+@pytest.fixture()
+def session_reg_db():
+    """Isolated Postgres schema with a session_registry table (the active-JTI
+    registry), for exercising the one-time registry-cleanup migration."""
+    base_url = os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
+    schema = f"sessreg_{uuid.uuid4().hex[:8]}"
+
+    admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f'CREATE SCHEMA "{schema}"'))
+    admin.dispose()
+
+    engine = create_engine(base_url, connect_args={"options": f"-csearch_path={schema}"})
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE session_registry (
+                jti TEXT PRIMARY KEY,
+                user_id UUID NOT NULL,
+                expiry TIMESTAMPTZ NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+    yield engine
+    engine.dispose()
+
+    admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+    admin.dispose()
