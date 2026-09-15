@@ -11612,7 +11612,8 @@ class TestInventoryItemDetailFixes:
         assert r.status_code == 200
         assert r.content == b"fake-image-bytes"
         assert "image/jpeg" in r.headers.get("content-type", "")
-        assert calls == [f"{_API_BASE}/static/attachments/{_TEST_COMPANY}/att1.jpg"]
+        assert len(calls) == 1
+        assert calls[0][0] == f"{_API_BASE}/static/attachments/{_TEST_COMPANY}/att1.jpg"
 
     @pytest.mark.asyncio
     async def test_actions_panel_removed(self, ui_client):
@@ -19241,71 +19242,70 @@ _TEST_COMPANY = "00000000-0000-0000-0000-000000000002"
 _OTHER_COMPANY = "00000000-0000-0000-0000-000000000009"
 
 
-def _api_get_mock(content: bytes = b"fake-image-bytes", content_type: str = "image/jpeg"):
+def _api_get_mock(content: bytes = b"fake-image-bytes", content_type: str = "image/jpeg", status: int = 200):
     """Patch httpx so ONLY the proxy's outbound API call is faked.
 
     The test client is itself an httpx.AsyncClient, so patching the class method
     outright answers the test's own request and the app never runs. Dispatch on
-    the API base URL instead, and record outbound calls so a test can assert the
-    proxy never reached the API at all.
+    the API base URL instead, and record each outbound call as
+    ``(absolute_url, authorization_header)`` so a test can assert both the path
+    the proxy reached and the bearer token it forwarded. ``status`` lets a test
+    simulate the API's own authorization decision (e.g. a 404 for a cross-tenant
+    path) and check the proxy passes it through.
     """
     import httpx
     from ui.config import API_BASE
 
     original = httpx.AsyncClient.get
-    calls: list[str] = []
+    calls: list[tuple[str, str | None]] = []
 
     async def _dispatch(self, url, *args, **kwargs):
         # The proxy calls a base_url'd client with a relative path, so resolve the
         # request URL against the client's base before matching the API origin.
         absolute = str(self.base_url.join(str(url))) if self.base_url else str(url)
         if absolute.startswith(API_BASE):
-            calls.append(absolute)
-            return httpx.Response(200, content=content, headers={"content-type": content_type})
+            calls.append((absolute, self.headers.get("authorization")))
+            return httpx.Response(status, content=content, headers={"content-type": content_type})
         return await original(self, url, *args, **kwargs)
 
     return patch("httpx.AsyncClient.get", new=_dispatch), calls
 
 
 class TestAttachmentProxyCompanyBoundary:
-    """The attachment proxy serves only the caller's own company's files."""
+    """The attachment proxy forwards the caller's own bearer token to the API and
+    returns the API's answer verbatim. Tenant scoping and traversal defence are
+    enforced by the API route (see test_attachments_pass2.py), not re-implemented
+    here, so a cross-tenant or escaping path comes back as the API's own 404."""
 
     @pytest.mark.asyncio
-    async def test_rejects_other_company_attachment(self, ui_client):
-        """A file under another company id is not found, and the API is never called."""
-        patcher, calls = _api_get_mock()
+    async def test_forwards_bearer_and_passes_api_denial_through(self, ui_client):
+        """A path the API refuses (another company's file) reaches the API with the
+        caller's bearer token, and the API's 404 is returned unchanged."""
+        patcher, calls = _api_get_mock(status=404, content=b"", content_type="application/json")
         with patcher:
             r = await ui_client.get(
                 f"/static/attachments/{_OTHER_COMPANY}/att1.jpg",
-                cookies=_authed(),
+                cookies=_authed(token="tkn-forwarded"),
             )
         assert r.status_code == 404
-        assert calls == []
+        assert len(calls) == 1
+        url, auth = calls[0]
+        assert url == f"{_API_BASE}/static/attachments/{_OTHER_COMPANY}/att1.jpg"
+        assert auth == "Bearer tkn-forwarded"
 
     @pytest.mark.asyncio
-    async def test_rejects_traversal_out_of_own_company(self, ui_client):
-        """A path that starts in the caller's company then climbs out is rejected."""
-        patcher, calls = _api_get_mock()
-        with patcher:
-            r = await ui_client.get(
-                f"/static/attachments/{_TEST_COMPANY}/../{_OTHER_COMPANY}/att1.jpg",
-                cookies=_authed(),
-            )
-        assert r.status_code == 404
-        assert calls == []
-
-    @pytest.mark.asyncio
-    async def test_undecodable_token_goes_to_login(self, ui_client):
-        """A cookie with no readable company claim is an unusable session, not a pass."""
-        patcher, calls = _api_get_mock()
+    async def test_unreadable_token_is_forwarded_not_short_circuited(self, ui_client):
+        """The proxy no longer parses the cookie: any present token is forwarded and
+        the API decides. An unusable token comes back as the API's 401, not a UI guess."""
+        patcher, calls = _api_get_mock(status=401, content=b"", content_type="application/json")
         with patcher:
             r = await ui_client.get(
                 f"/static/attachments/{_TEST_COMPANY}/att1.jpg",
                 cookies={"celerp_token": "not-a-jwt"},
             )
-        assert r.status_code in (302, 303)
-        assert "/login" in r.headers.get("location", "")
-        assert calls == []
+        assert r.status_code == 401
+        assert len(calls) == 1
+        assert calls[0][1] == "Bearer not-a-jwt"
 
 
 class TestBulkToolbarHidesUntilSelection:

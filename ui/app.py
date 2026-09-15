@@ -362,25 +362,18 @@ _static_dir = os.path.join(os.path.dirname(__file__), "static")
 # Proxy /static/attachments/* to the API server (API and UI serve /static from different dirs)
 @app.route("/static/attachments/{path:path}")
 async def proxy_attachment(request: Request, path: str) -> Response:
-    if not request.cookies.get(COOKIE_NAME):
+    # A dumb authenticated byte proxy: it forwards the caller's bearer token to
+    # the API, which scopes the request to the token's own company and refuses
+    # any other tenant's path. Tenant authorization is never decided here off the
+    # unsigned cookie; this route only requires that a session cookie is present.
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
         return RedirectResponse("/login", status_code=302)
-    from ui.config import get_company_id
     import ui.api_client as api
-    company_id = get_company_id(request)
-    if not company_id:
-        # Cookie present but no readable company claim: the session is unusable.
-        return RedirectResponse("/login", status_code=302)
-    # LocalBackend.store writes /static/attachments/<company_id>/<file>, so the
-    # first segment is the owning company. Anything outside it belongs to another
-    # tenant and does not exist as far as this caller is concerned. Rejecting '..'
-    # stops a path that starts inside the company folder and then climbs out.
-    segments = [s for s in path.split("/") if s not in ("", ".")]
-    if ".." in segments or not segments or segments[0] != company_id:
-        return Response(status_code=404)
     # Attachments can be large binaries, so they ride the small bulk transport and
     # never contend with interactive page traffic for a connection.
-    async with api._local_client(timeout=30.0, follow_redirects=False, bulk=True) as c:
-        r = await c.get(f"/static/attachments/{'/'.join(segments)}")
+    async with api._local_client(token=token, timeout=30.0, follow_redirects=False, bulk=True) as c:
+        r = await c.get(f"/static/attachments/{path}")
     return Response(content=r.content, media_type=r.headers.get("content-type", "application/octet-stream"), status_code=r.status_code)
 
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
