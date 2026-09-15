@@ -713,11 +713,16 @@ async def patch_company(token: str, data: dict) -> dict:
     return _flatten_company(raw)
 
 
-async def create_company(token: str, company_name: str) -> str:
-    """Create a new company linked to the current user. Returns new JWT scoped to it."""
+async def create_company(token: str, company_name: str) -> tuple[str, str]:
+    """Create a new company linked to the current user.
+
+    Returns the ``(access_token, refresh_token)`` pair scoped to the new company,
+    so the caller can seat a complete session. Dropping the refresh token here
+    left the new company's session unable to slide and forced a re-login at the
+    access token's first expiry."""
     async with _api_client(token) as c:
-        r = _raise(await c.post("/companies", json={"name": company_name}))
-        return r.json()["access_token"]
+        r = _raise(await c.post("/companies", json={"name": company_name})).json()
+        return r["access_token"], r["refresh_token"]
 
 
 async def patch_role_permission(token: str, perm_key: str, role_key: str, granted: bool) -> dict:

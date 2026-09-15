@@ -2308,7 +2308,6 @@ def setup_routes(app):
         from celerp.services.permissions import role_has_permission
         if not role_has_permission({}, role, "manage_company_lifecycle"):
             return Div(t("settings.owner_role_required"), cls="flash flash--error")
-        from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME
         token = _token(request)
         try:
             async with api._local_client(token, timeout=30.0, follow_redirects=False) as c:
@@ -2319,11 +2318,9 @@ def setup_routes(app):
         except Exception as exc:
             return Div(f"{t('shell.error_prefix')} {exc}", cls="flash flash--error")
         from starlette.responses import Response as _Resp
-        from celerp.config import settings as _celerp_settings
-        _secure = getattr(_celerp_settings, "cookie_secure", False)
+        from ui.config import clear_session_cookies
         resp = _Resp(status_code=200, content='{"ok":true}', media_type="application/json")
-        resp.delete_cookie(COOKIE_NAME, httponly=True, samesite="lax", secure=_secure)
-        resp.delete_cookie(REFRESH_COOKIE_NAME, httponly=True, samesite="lax", secure=_secure)
+        clear_session_cookies(resp, request)
         resp.headers["HX-Redirect"] = "/setup"
         return resp
 
@@ -2354,8 +2351,9 @@ def setup_routes(app):
             # No companies left - keep token so they can create a new one
             return RedirectResponse(url="/setup/new-company?reason=deactivated", status_code=303)
         # Other companies exist - clear session, go to login to pick one
+        from ui.config import clear_session_cookies
         resp = RedirectResponse(url="/login?deactivated=1", status_code=303)
-        resp.delete_cookie("token")
+        clear_session_cookies(resp, request)
         return resp
 
     # ── Backup HTMX handlers ──────────────────────────────────────────────

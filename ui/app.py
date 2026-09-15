@@ -168,6 +168,20 @@ class TokenRefreshMiddleware:
             from ui.api_client import refresh_access_token, APIError as _APIError
             try:
                 new_access, new_refresh = await refresh_access_token(refresh_token)
+            except _APIError as exc:
+                if exc.status == 401:
+                    # The refresh credential is dead or revoked, so no session can
+                    # be minted: converge to login now and drop the rejected
+                    # cookies, rather than letting the route bounce on its own 401.
+                    resp = _401_redirect("Refresh token rejected", request)
+                    await resp(scope, receive, send)
+                    return
+                # A transient upstream failure (5xx) is not a revoked session:
+                # leave the request unauthenticated and let the route's own guard
+                # decide, without discarding a still-usable credential.
+            except Exception:
+                pass
+            else:
                 existing = dict(request.cookies)
                 existing[COOKIE_NAME] = new_access
                 existing[REFRESH_COOKIE_NAME] = new_refresh
@@ -176,8 +190,6 @@ class TokenRefreshMiddleware:
                     (k, v) for k, v in scope.get("headers", [])
                     if k.lower() != b"cookie"
                 ] + [(b"cookie", cookie_header.encode())]
-            except Exception:
-                pass
 
         # A pre-v2 / wrong-type access cookie is rejected outright by the API, so
         # it must converge to login now rather than waiting for its expiry.
@@ -191,6 +203,15 @@ class TokenRefreshMiddleware:
             from ui.api_client import refresh_access_token, APIError as _APIError
             try:
                 new_access, new_refresh = await refresh_access_token(refresh_token)
+            except _APIError as exc:
+                if exc.status == 401:
+                    # A revoked refresh credential means this session is over even
+                    # though the access token has not expired yet: converge to
+                    # login and clear the cookies instead of serving on borrowed
+                    # time. A transient 5xx keeps the still-valid access cookie.
+                    resp = _401_redirect("Refresh token rejected", request)
+                    await resp(scope, receive, send)
+                    return
             except Exception:
                 pass
 
@@ -204,7 +225,7 @@ class TokenRefreshMiddleware:
 
         if new_access and new_refresh:
             from celerp.config import settings as _settings
-            max_age = int(_settings.access_token_expire_minutes) * 60
+            from ui.config import ACCESS_COOKIE_MAX_AGE, REFRESH_COOKIE_MAX_AGE
             domain = cookie_domain(request)
 
             def _make_set_cookie(name, value, http_only, max_age_, secure, samesite):
@@ -218,8 +239,8 @@ class TokenRefreshMiddleware:
                 return "; ".join(parts)
 
             extra_cookies = [
-                _make_set_cookie(COOKIE_NAME, new_access, True, max_age, _settings.cookie_secure, "lax"),
-                _make_set_cookie(REFRESH_COOKIE_NAME, new_refresh, True, 86400 * 30, _settings.cookie_secure, "lax"),
+                _make_set_cookie(COOKIE_NAME, new_access, True, ACCESS_COOKIE_MAX_AGE, _settings.cookie_secure, "lax"),
+                _make_set_cookie(REFRESH_COOKIE_NAME, new_refresh, True, REFRESH_COOKIE_MAX_AGE, _settings.cookie_secure, "lax"),
             ]
 
             async def send_with_cookies(message):

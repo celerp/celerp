@@ -26,7 +26,7 @@ from ui.api_client import login as api_login, login_force as api_login_force, lo
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.components.shell import auth_shell, flash, page_title, star_supporter_card, toast_header
-from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies
+from ui.config import COOKIE_NAME, set_session_cookies, clear_session_cookies
 from ui.i18n import t, get_lang
 from ui.security import is_app_local_path
 from celerp.config import settings as _settings
@@ -137,8 +137,7 @@ def setup_routes(app):
             from starlette.responses import Response as _Resp
             from fasthtml.common import to_xml
             html_resp = _Resp(content=to_xml(resp), media_type="text/html")
-            html_resp.delete_cookie(COOKIE_NAME)
-            html_resp.delete_cookie(REFRESH_COOKIE_NAME)
+            clear_session_cookies(html_resp, request)
             return html_resp
         return resp
 
@@ -336,8 +335,7 @@ def setup_routes(app):
             if e.status == 401:
                 bootstrapped = await bootstrap_status()
                 resp = RedirectResponse("/setup" if not bootstrapped else "/login", status_code=302)
-                resp.delete_cookie(COOKIE_NAME)
-                resp.delete_cookie(REFRESH_COOKIE_NAME)
+                clear_session_cookies(resp, request)
                 return resp
             elif e.status == 404:
                 return RedirectResponse("/setup", status_code=302)

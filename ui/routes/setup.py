@@ -348,14 +348,13 @@ def setup_routes(app):
             return RedirectResponse("/setup/new-company?error=Company+name+required", status_code=302)
         from ui.api_client import create_company as api_create
         try:
-            new_token = await api_create(token, company_name)
+            new_access, new_refresh = await api_create(token, company_name)
         except APIError as e:
             import urllib.parse
             return RedirectResponse(f"/setup/new-company?error={urllib.parse.quote(e.detail)}", status_code=302)
-        from celerp.config import settings as _s
-        from ui.config import cookie_domain
+        from ui.config import set_session_cookies
         resp = RedirectResponse("/setup/company", status_code=302)
-        resp.set_cookie(COOKIE_NAME, new_token, httponly=True, samesite="lax", max_age=900, secure=_s.cookie_secure, domain=cookie_domain(request))
+        set_session_cookies(resp, new_access, new_refresh, request)
         return resp
 
     @app.get("/setup/cloud")

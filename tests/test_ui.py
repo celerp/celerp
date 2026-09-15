@@ -930,18 +930,8 @@ class TestCompanySwitcher:
         assert r.status_code == 200
         assert b"setup/new-company" in r.content
 
-    @pytest.mark.asyncio
-    async def test_create_company_post_redirects_to_setup(self, ui_client):
-        """POST /setup/new-company → creates company, redirects to /setup/company."""
-        with patch("ui.api_client.create_company", new=AsyncMock(return_value="new-co-token")):
-            r = await ui_client.post(
-                "/setup/new-company",
-                data={"company_name": "New Venture Ltd"},
-                cookies=_authed(),
-            )
-        assert r.status_code in (302, 303)
-        assert "/setup/company" in r.headers.get("location", "")
-        assert "new-co-token" in r.headers.get("set-cookie", "")
+    # The new-company happy path (both session cookies seated) is owned by
+    # tests/test_session_cookies_pass2.py::test_new_company_seats_both_session_cookies.
 
     @pytest.mark.asyncio
     async def test_create_company_empty_name_rejected(self, ui_client):
