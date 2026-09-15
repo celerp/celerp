@@ -18,7 +18,7 @@ def _make_token(subject: str, company_id: str, role: str, expire_minutes: int) -
         mock_settings.jwt_secret = "test-secret"
         mock_settings.jwt_algorithm = "HS256"
         mock_settings.access_token_expire_minutes = expire_minutes
-        token, _ = create_access_token(subject, company_id, role)
+        token, _ = create_access_token(subject, company_id, role, snonce="n")
         return token
 
 
@@ -102,8 +102,8 @@ async def test_switch_company_updates_refresh_token():
     from test_helpers import authed_cookies as _authed
 
     company_b_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-    new_access = create_access_token("user-1", company_b_id, "admin")[0]
-    new_refresh = create_refresh_token("user-1", company_b_id, "admin")
+    new_access = create_access_token("user-1", company_b_id, "admin", snonce="n")[0]
+    new_refresh = create_refresh_token("user-1", company_b_id, snonce="n")
 
     # Patch at the api_client module level (where it's imported inside the handler)
     with patch("ui.api_client.switch_company", new=AsyncMock(return_value=(new_access, new_refresh))):

@@ -99,20 +99,45 @@ def get_nonce_from_cache(user_id: str) -> str | None:
 # Public API  (all async, take an AsyncSession)
 # ---------------------------------------------------------------------------
 
+async def lock_auth_state(session: AsyncSession, user_id: str) -> UserAuthState:
+    """Return the ``UserAuthState`` row for *user_id* under a ``SELECT ... FOR
+    UPDATE`` row lock, creating it (fresh nonce) if absent.
+
+    This is the serialization point shared by issuance and revocation: while a
+    caller holds the lock, no other transaction can read-then-write the same
+    user's nonce, which is what closes the issue-vs-revoke TOCTOU window (F2).
+    The row is created-and-flushed (never committed) when absent so a
+    brand-new user's first issuance still holds a lock the concurrent path
+    blocks on.  The caller owns the surrounding transaction and its commit.
+    """
+    uid = _uuid_mod.UUID(user_id)
+    row = await session.get(UserAuthState, uid, with_for_update=True)
+    if row is None:
+        row = UserAuthState(user_id=uid, nonce=str(_uuid_mod.uuid4()))
+        session.add(row)
+        await session.flush()
+    return row
+
+
 async def register_token(
-    session: AsyncSession, jti: str, user_id: str, expiry: datetime
+    session: AsyncSession, jti: str, user_id: str, expiry: datetime, *, commit: bool = True
 ) -> None:
     """Record a newly-issued access token, extending the stored expiry when the
     JTI is re-minted.  Sliding refresh reuses the original JTI, so its registry
     slot must slide forward to match the refreshed token's expiry; otherwise a
     continuously active session would fall out of the registry at its original
-    expiry while the holder still carries a valid token."""
+    expiry while the holder still carries a valid token.
+
+    *commit* is False when the caller (``issue_token_pair``) commits the JTI in
+    the same transaction as the locked-nonce read, so the whole issuance is one
+    atomic unit under the row lock."""
     existing = await session.get(SessionRegistry, jti)
     if existing is None:
         session.add(SessionRegistry(jti=jti, user_id=_uuid_mod.UUID(user_id), expiry=expiry))
     else:
         existing.expiry = expiry
-    await session.commit()
+    if commit:
+        await session.commit()
 
 
 async def active_user_ids(session: AsyncSession) -> set[str]:
@@ -158,22 +183,39 @@ async def get_nonce(session: AsyncSession, user_id: str) -> str:
 
 
 async def invalidate_sessions(
-    session: AsyncSession, user_id: str, evicting_ip: str | None = None
+    session: AsyncSession,
+    user_id: str,
+    *,
+    expected_snonce: str | None = None,
+    evicting_ip: str | None = None,
 ) -> None:
-    """Wipe all JTIs for *user_id* and rotate their nonce.
+    """Wipe all JTIs for *user_id* and rotate their nonce, under a row lock.
 
     Called by logout, force-login and every security-sensitive account change
     (password change/reset, admin password change, role change, membership
     state change).  After this call every existing access AND refresh token for
     this user is immediately rejected (snonce mismatch), regardless of expiry.
     Other users are unaffected.
+
+    *expected_snonce* gates a credential-driven revocation (logout with a
+    presented access/refresh token): the ``UserAuthState`` row is locked FOR
+    UPDATE and, when *expected_snonce* is supplied and no longer equals the
+    locked nonce, the call returns WITHOUT rotating - a stale credential can
+    never revoke a newer session generation (F3).  Authoritative revocations
+    (password/role/membership changes) pass ``expected_snonce=None`` and always
+    rotate.
     """
     uid = _uuid_mod.UUID(user_id)
     new_nonce = str(_uuid_mod.uuid4())
+    row = await session.get(UserAuthState, uid, with_for_update=True)
+    if expected_snonce is not None and (row is None or expected_snonce != row.nonce):
+        # A stale credential authenticated on an older generation (or a user
+        # with no auth state) must not rotate the current one. Do nothing; the
+        # request/session closing releases the row lock.
+        return
     await session.execute(
         delete(SessionRegistry).where(SessionRegistry.user_id == uid)
     )
-    row = await session.get(UserAuthState, uid)
     if row is not None:
         row.nonce = new_nonce
         row.evicted_by_ip = evicting_ip
@@ -191,53 +233,43 @@ async def invalidate_all_sessions(
     """Wipe ALL JTIs globally and rotate nonces for every affected user.
 
     Called by login-force when a user takes over the session slot.
+    - Every existing auth-state nonce is rotated, not merely users with a live
+      access JTI: a user whose access JTI has expired but whose refresh token is
+      still valid (a dormant session) must be rotated too (F4).
     - The force-logging user's nonce is rotated (invalidates their own old tokens).
-    - Every OTHER displaced user gets the evicting_ip stored so they see the
-      eviction message on their next 401.
+    - Every OTHER user gets the evicting_ip stored so they see the eviction
+      message on their next 401.
     - After this call, the global active_user_ids() set is empty.
     """
-    now = datetime.now(timezone.utc)
-    # Collect all users with active JTIs before we wipe them
-    active_rows = await session.execute(
-        select(SessionRegistry.user_id).where(SessionRegistry.expiry > now).distinct()
-    )
-    active_ids: set[_uuid_mod.UUID] = {r[0] for r in active_rows}
+    evicting_uid = _uuid_mod.UUID(evicting_user_id)
 
-    # Wipe all JTIs
+    # Lock every auth-state row in a deterministic order (by user_id) so
+    # concurrent force-logins acquire the rows in the same sequence and cannot
+    # deadlock. This is the durable list of every v2 session (dormant included),
+    # so no refresh-token registry is needed to find users to rotate.
+    rows = (
+        await session.execute(
+            select(UserAuthState).order_by(UserAuthState.user_id).with_for_update()
+        )
+    ).scalars().all()
+
+    # Wipe all JTIs.
     await session.execute(delete(SessionRegistry))
 
-    # Rotate nonce for each previously-active user
-    evicting_uid = _uuid_mod.UUID(evicting_user_id)
-    for uid in active_ids:
-        new_nonce = str(_uuid_mod.uuid4())
-        row = await session.get(UserAuthState, uid)
-        if row is not None:
-            row.nonce = new_nonce
-            # Only store evicting IP for OTHER users (not the one taking over)
-            if uid != evicting_uid:
-                row.evicted_by_ip = evicting_ip
-        else:
-            session.add(UserAuthState(
-                user_id=uid,
-                nonce=new_nonce,
-                evicted_by_ip=evicting_ip if uid != evicting_uid else None,
-            ))
+    seen: set[_uuid_mod.UUID] = set()
+    for row in rows:
+        row.nonce = str(_uuid_mod.uuid4())
+        # Only store evicting IP for OTHER users (not the one taking over).
+        row.evicted_by_ip = evicting_ip if row.user_id != evicting_uid else None
+        seen.add(row.user_id)
 
-    # Ensure the evicting user also has a rotated nonce even if they had no active JTI
-    if evicting_uid not in active_ids:
-        new_nonce = str(_uuid_mod.uuid4())
-        row = await session.get(UserAuthState, evicting_uid)
-        if row is not None:
-            row.nonce = new_nonce
-        else:
-            session.add(UserAuthState(user_id=evicting_uid, nonce=new_nonce))
+    # Ensure the evicting user also has a rotated nonce even with no prior row.
+    if evicting_uid not in seen:
+        session.add(UserAuthState(user_id=evicting_uid, nonce=str(_uuid_mod.uuid4())))
 
     await session.commit()
-    # Bust cache for all affected users
-    for uid in active_ids:
-        _nonce_cache_bust(str(uid))
-    if evicting_uid not in active_ids:
-        _nonce_cache_bust(evicting_user_id)
+    # Every nonce moved: drop the whole in-process cache.
+    _nonce_cache_bust_all()
 
 
 async def pop_evicted_by_ip(session: AsyncSession, user_id: str) -> str | None:

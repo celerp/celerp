@@ -23,11 +23,27 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
+# Non-erroring variant: routes that accept EITHER a Bearer access token or a
+# refresh-token body (logout) read the header without 401ing when it is absent,
+# so a refresh-only credential can still be honored.
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+
 ROLE_LEVELS = {"viewer": 1, "operator": 2, "manager": 3, "admin": 4, "owner": 5}
 
 # Legacy role migration: old roles carried in DB state until they are edited.
 # Applied to the authoritative DB role, never to a JWT claim.
 _ROLE_MIGRATION = {"salesperson": "operator"}
+
+
+def normalize_role(role: str) -> str:
+    """Map a legacy DB role alias to its current name (identity for current names).
+
+    The one public normalization point: every place that compares or surfaces a
+    stored ``UserCompany.role`` routes through here so a legacy value like
+    ``salesperson`` is ranked and displayed as ``operator``. Never applied to a
+    JWT role claim, which is a UI hint and never server authority.
+    """
+    return _ROLE_MIGRATION.get(role, role)
 
 # Token format version. Bumping this rejects every token minted by an older
 # build: the code version itself is the cutover boundary (no DB migration).
@@ -50,7 +66,8 @@ def create_access_token(
     role: str,
     email: str = "",
     jti: str | None = None,
-    snonce: str = "",
+    *,
+    snonce: str,
     modules: list[str] | None = None,
 ) -> tuple[str, str]:
     """Return (encoded_token, jti).
@@ -58,8 +75,10 @@ def create_access_token(
     If *jti* is provided (token refresh path) the same JTI is reused so the
     session slot is not duplicated.  Otherwise a fresh UUID4 is minted.
 
-    *snonce* must be the caller-provided per-user nonce fetched from DB via
+    *snonce* is mandatory and keyword-only: it must be the caller-provided
+    per-user nonce fetched from DB via
     ``session_tracker.get_nonce(session, user_id)`` before calling this function.
+    There is no default - a session-bound token can never be minted without one.
 
     *role*, *email* and *modules* are UI/client hints only - they are NEVER used
     for server authorization, which derives the role from current DB membership.
@@ -85,12 +104,12 @@ def create_access_token(
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm), token_jti
 
 
-def create_refresh_token(subject: str, company_id: str, role: str, email: str = "", snonce: str = "") -> str:
+def create_refresh_token(subject: str, company_id: str, *, snonce: str) -> str:
     """Return an encoded v2 refresh token bound to the per-user *snonce*.
 
     The refresh token carries NO authoritative role or email: on refresh they
-    are read from current DB state.  *role* and *email* are accepted for
-    signature compatibility with callers but are intentionally not embedded.
+    are read from current DB state, so neither is accepted here.  *snonce* is
+    mandatory and keyword-only.
     """
     payload = {
         "auth_ver": AUTH_TOKEN_VERSION,
@@ -225,7 +244,7 @@ async def validate_access_token(session: AsyncSession, token: str) -> AuthContex
         detail = f"Session expired|{evicting_ip}" if evicting_ip else "Session expired"
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
 
-    role = _ROLE_MIGRATION.get(link.role, link.role)
+    role = normalize_role(link.role)
     return AuthContext(
         claims=claims,
         user=user,
@@ -268,22 +287,44 @@ async def issue_token_pair(
     company: Company,
     role: str,
     jti: str | None = None,
+    expected_snonce: str | None = None,
 ) -> dict:
     """The single access+refresh issuance point.
 
-    Obtains the current per-user nonce, builds the enabled-module UI hint list,
-    mints a v2 access token and a v2 refresh token bound to the same nonce,
-    registers the access JTI + expiry in the session registry, and returns
+    Locks the per-user ``UserAuthState`` row FOR UPDATE, reads the current nonce
+    under that lock, builds the enabled-module UI hint list, mints a v2 access
+    token and a v2 refresh token bound to exactly the locked nonce, registers the
+    access JTI + expiry in the same transaction, commits once, and returns
     ``{"access_token", "refresh_token"}``.  Every caller (register, login,
     force-login, refresh, switch-company, create-company) routes through here so
     no path can issue a token that misses the version/type/nonce contract.
+
+    *expected_snonce* distinguishes a continuation from a fresh credential:
+
+    - A continuation (refresh, sliding refresh, switch-company, create-company)
+      passes the snonce it authenticated on.  If it no longer equals the locked
+      nonce, a concurrent revocation advanced the generation, so a neutral 401
+      is raised BEFORE minting or registering any JTI - the continuation can
+      never jump onto the newer generation (F2).
+    - A fresh credential (register, password login, force-login) passes
+      ``expected_snonce=None`` and always mints on whatever the locked row holds.
+
+    Holding the lock across the read-check-mint-register-commit window is what
+    serializes issuance against ``invalidate_sessions``/``invalidate_all_sessions``.
     """
-    from celerp.services.session_tracker import get_nonce as _get_nonce, register_token as _register
+    from celerp.services.session_tracker import (
+        lock_auth_state as _lock,
+        register_token as _register,
+        _nonce_cache_set,
+    )
     from celerp.modules.registry import get_enabled as _get_enabled
 
     user_id = str(user.id)
     company_id = str(company.id)
-    snonce = await _get_nonce(session, user_id)
+    auth_state = await _lock(session, user_id)
+    if expected_snonce is not None and expected_snonce != auth_state.nonce:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
+    snonce = auth_state.nonce
     enabled_modules = sorted(_get_enabled(company.settings or {}))
     access_token, token_jti = create_access_token(
         user_id, company_id, role, user.email, jti=jti, snonce=snonce, modules=enabled_modules
@@ -291,6 +332,8 @@ async def issue_token_pair(
     # Cap at 24h to match create_access_token's internal cap so DB expiry = JWT exp.
     capped_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
     expiry_dt = datetime.now(timezone.utc) + timedelta(minutes=capped_minutes)
-    await _register(session, token_jti, user_id, expiry_dt)
-    refresh_token = create_refresh_token(user_id, company_id, role, user.email, snonce=snonce)
+    await _register(session, token_jti, user_id, expiry_dt, commit=False)
+    await session.commit()
+    _nonce_cache_set(user_id, snonce)
+    refresh_token = create_refresh_token(user_id, company_id, snonce=snonce)
     return {"access_token": access_token, "refresh_token": refresh_token}

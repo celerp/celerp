@@ -148,7 +148,7 @@ async def test_events_stream_rejects_pre_v2_refresh_and_missing_nonce_at_creatio
         settings.jwt_secret, algorithm=settings.jwt_algorithm,
     )
     # A real v2 refresh token (type=refresh) presented as a stream bearer.
-    refresh = create_refresh_token(uid, cid, "admin", snonce="n")
+    refresh = create_refresh_token(uid, cid, snonce="n")
     # A v2 access token with an empty snonce.
     missing_nonce, _ = create_access_token(subject=uid, company_id=cid, role="admin", snonce="")
 

@@ -3346,7 +3346,7 @@ class TestModuleAwareSidebar:
         import base64, json
         from celerp.services.auth import create_access_token
         token, _ = create_access_token(
-            "user-1", "company-1", "owner", modules=["celerp-docs", "celerp-inventory"]
+            "user-1", "company-1", "owner", snonce="n", modules=["celerp-docs", "celerp-inventory"]
         )
         payload_b64 = token.split(".")[1]
         payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
@@ -3356,7 +3356,7 @@ class TestModuleAwareSidebar:
         """create_access_token with no modules arg embeds empty list."""
         import base64, json
         from celerp.services.auth import create_access_token
-        token, _ = create_access_token("user-1", "company-1", "owner")
+        token, _ = create_access_token("user-1", "company-1", "owner", snonce="n")
         payload_b64 = token.split(".")[1]
         payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
         assert payload["modules"] == []

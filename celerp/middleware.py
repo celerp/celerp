@@ -183,8 +183,17 @@ async def _refresh_bearer_validated(token: str) -> str | None:
                 return None
             if not _past_half_life(ctx.claims.get("exp")):
                 return None
+            # Sliding refresh is a continuation of the authenticated session:
+            # pass the snonce it validated on so a concurrent revocation cannot
+            # be jumped over (the reused JTI would otherwise re-register onto the
+            # newer generation).
             pair = await issue_token_pair(
-                s, user=ctx.user, company=ctx.company, role=ctx.role, jti=ctx.claims["jti"]
+                s,
+                user=ctx.user,
+                company=ctx.company,
+                role=ctx.role,
+                jti=ctx.claims["jti"],
+                expected_snonce=ctx.snonce,
             )
             return pair["access_token"]
     except Exception:
