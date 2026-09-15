@@ -16,7 +16,17 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
-from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, hash_password, issue_token_pair, ROLE_LEVELS
+from celerp.services.auth import (
+    AuthContext,
+    get_auth_context,
+    get_current_company_id,
+    get_current_user,
+    get_current_role,
+    hash_password,
+    issue_token_pair,
+    normalize_role,
+    ROLE_LEVELS,
+)
 from celerp.services.permissions import (
     PERMISSIONS,
     ROLES,
@@ -98,10 +108,15 @@ class UserCreate(BaseModel):
 
 
 class UserPatch(BaseModel):
-    name: str | None = None
+    # Only the per-company membership is editable here: role and active flag.
+    # name and password live on the global User row shared across every company
+    # the user belongs to, so a single company's admin must never overwrite them
+    # through a membership patch. extra="forbid" rejects those (and any unknown)
+    # fields with a 422 rather than silently ignoring them.
+    model_config = {"extra": "forbid"}
+
     role: str | None = None
     is_active: bool | None = None
-    password: str | None = None  # if set, re-hashes
 
 
 class ItemSchemaField(BaseModel):
@@ -210,10 +225,11 @@ class CompanyCreate(BaseModel):
 @router.post("")
 async def create_company(
     payload: CompanyCreate,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Create a new company linked to the current user. Returns JWT scoped to new company."""
+    user = ctx.user
     import re
     slug = re.sub(r"[^a-z0-9]+", "-", payload.name.strip().lower()).strip("-") or str(uuid.uuid4())
     company = Company(id=uuid.uuid4(), name=payload.name, slug=slug, settings={})
@@ -251,7 +267,11 @@ async def create_company(
         await session.rollback()
         logger.error("create_company failed: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=f"Could not create company: {e}") from e
-    return await issue_token_pair(session, user=user, company=company, role="owner")
+    # Creating a company is a continuation of the current owner session: pass the
+    # snonce it authenticated on so a concurrent revocation cannot be jumped over.
+    return await issue_token_pair(
+        session, user=user, company=company, role="owner", expected_snonce=ctx.snonce
+    )
 
 
 @router.get("/me")
@@ -552,7 +572,10 @@ async def list_users(company_id=Depends(get_current_company_id), session: AsyncS
             )
         )
     ).all()
-    items = [{"id": str(u.id), "email": u.email, "name": u.name, "role": role, "is_active": uc_active} for u, role, uc_active in rows]
+    items = [
+        {"id": str(u.id), "email": u.email, "name": u.name, "role": normalize_role(role), "is_active": uc_active}
+        for u, role, uc_active in rows
+    ]
     return {"items": items, "total": len(items)}
 
 
@@ -636,22 +659,23 @@ async def patch_user(
     if not user or not link:
         raise HTTPException(status_code=404, detail="User not found")
     # A holder of manage_users may not modify a user whose role outranks their own.
-    if ROLE_LEVELS.get(link.role, 0) > ROLE_LEVELS[caller_role]:
+    # Compare on the normalized role so a legacy membership (e.g. salesperson) is
+    # ranked at its current level (operator) rather than falling to level 0.
+    if ROLE_LEVELS.get(normalize_role(link.role), 0) > ROLE_LEVELS[caller_role]:
         raise HTTPException(status_code=403, detail="You cannot modify a user whose role is above your own.")
-    # Track whether any security-sensitive field actually changes. A role change,
-    # a membership active-state change, or a password change must rotate the
-    # target's session state so their existing access AND refresh tokens are
-    # rejected on next use; a plain name edit must not force a logout.
+    # Track whether any security-sensitive field actually changes. A role change
+    # or a membership active-state change must rotate the target's session state
+    # so their existing access AND refresh tokens are rejected on next use. Only
+    # the membership is editable here: the global User name and password are not,
+    # so a company admin can never overwrite fields shared across tenants.
     security_change = False
-    if payload.name is not None:
-        user.name = payload.name
     if payload.role is not None:
         if payload.role not in ROLE_LEVELS:
             raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
         # Nor may they promote anyone above their own role.
         _assert_role_assignable(caller_role, payload.role)
         # Guard: cannot demote the last active owner
-        old_level = ROLE_LEVELS.get(link.role, 0)
+        old_level = ROLE_LEVELS.get(normalize_role(link.role), 0)
         new_level = ROLE_LEVELS.get(payload.role, 0)
         if old_level >= ROLE_LEVELS["owner"] and new_level < ROLE_LEVELS["owner"]:
             owner_count = (
@@ -672,9 +696,6 @@ async def patch_user(
         if payload.is_active != link.is_active:
             security_change = True
         link.is_active = payload.is_active
-    if payload.password is not None:
-        user.auth_hash = hash_password(payload.password)
-        security_change = True
     await session.commit()
     if security_change:
         # Rotates the target user's nonce (commits itself), so every existing

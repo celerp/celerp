@@ -119,14 +119,20 @@ async def _owner_and_target(client, session):
 
 
 @pytest.mark.asyncio
-async def test_admin_password_change_kills_target_tokens(client, session):
-    """An admin resetting a target user's password kills the target's access and refresh."""
+async def test_self_password_change_kills_own_tokens(client, session):
+    """A user changing their own password via /auth/change-password kills their
+    prior access and refresh. A company admin has no path to overwrite the global
+    password of a user shared across tenants (password is not a UserPatch field),
+    so this self-service route is the only password-change surface."""
     owner_h, target_id, access, refresh = await _owner_and_target(client, session)
-    r = await client.patch(
-        f"/companies/me/users/{target_id}", json={"password": "brandnew1"}, headers=owner_h
+    target_h = {"Authorization": f"Bearer {access}"}
+    r = await client.post(
+        "/auth/change-password",
+        json={"current_password": "pw123", "new_password": "brandnew1"},
+        headers=target_h,
     )
-    assert r.status_code == 200
-    r_acc = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {access}"})
+    assert r.status_code == 200, r.text
+    r_acc = await client.get("/auth/my-companies", headers=target_h)
     assert r_acc.status_code == 401
     r_ref = await client.post("/auth/token/refresh", json={"refresh_token": refresh})
     assert r_ref.status_code == 401
