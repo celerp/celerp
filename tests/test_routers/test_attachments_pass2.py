@@ -6,8 +6,8 @@
 Target (post-fix) behavior:
 - Attachments are served only through an authenticated API route that scopes to
   the caller's own company. At merge-base ea480c48 the API mounts
-  ``data_dir/static`` anonymously at ``/static`` (main.py:514), so an
-  unauthenticated probe or a cross-tenant token retrieves any company's file.
+  ``data_dir/static`` anonymously at ``/static`` via the app's static mount, so
+  an unauthenticated probe or a cross-tenant token retrieves any company's file.
   RED at base (returns 200 instead of 401 / 404).
 - The route resolves only inside ``data_dir/static/attachments/<caller company>``
   and rejects traversal.
