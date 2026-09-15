@@ -49,7 +49,8 @@ def _c(token: str | None = None, role: str = "owner") -> dict:
 
 
 # Shared mock data
-_COMPANY = {"name": "Test Co", "base_currency": "THB", "fiscal_year_start": "01"}
+_COMPANY = {"name": "Test Co", "base_currency": "THB", "fiscal_year_start": "01",
+            "current_role": "owner"}
 _ITEM = {"entity_id": "item:1", "name": "Ruby", "sku": "RB001", "category": "Parcel",
          "status": "available", "quantity": 10, "cost_price": 100, "retail_price": 500,
          "wholesale_price": 300, "total_cost": 1000}

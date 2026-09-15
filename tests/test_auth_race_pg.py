@@ -56,13 +56,70 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 # ---------------------------------------------------------------------------
 
 
+def _admin_conn(dbname: str):
+    """A psycopg2 autocommit connection to an existing database on the same server,
+    for issuing CREATE/DROP DATABASE against a different database."""
+    from urllib.parse import urlsplit
+    import psycopg2
+
+    parts = urlsplit(DATABASE_URL.replace("+asyncpg", ""))
+    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
+                            password=parts.password, dbname=dbname)
+    conn.autocommit = True
+    return conn
+
+
 @pytest_asyncio.fixture
 async def engine():
-    eng = create_async_engine(DATABASE_URL, poolclass=NullPool)
+    # These tests need REAL cross-connection contention, so they COMMIT seed rows
+    # (users, companies, auth state) to disk rather than rolling back like the
+    # shared `session` fixture. Running them against the ambient per-xdist-worker
+    # database would leak that committed state into every other test that shares
+    # the worker DB - e.g. an empty-DB bootstrap or inventory assertion later on
+    # the same worker. Each race test therefore gets its OWN database, created here
+    # and dropped on teardown, so nothing leaks.
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(DATABASE_URL.replace("+asyncpg", ""))
+    base_db = parts.path.lstrip("/") or "postgres"
+    race_db = f"{base_db}_race_{uuid.uuid4().hex[:8]}"
+
+    conn = _admin_conn(base_db)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f'CREATE DATABASE "{race_db}"')
+    finally:
+        conn.close()
+
+    race_url = urlunsplit(parts._replace(path=f"/{race_db}")).replace(
+        "postgresql://", "postgresql+asyncpg://")
+    eng = create_async_engine(race_url, poolclass=NullPool)
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    yield eng
-    await eng.dispose()
+    try:
+        yield eng
+    finally:
+        await eng.dispose()
+        admin = _admin_conn(base_db)
+        try:
+            # dispose() closes the pool, but a session a test left open can outlive
+            # it, and a freshly-created database also briefly attracts an autovacuum
+            # worker. We do NOT use DROP DATABASE ... WITH (FORCE): FORCE terminates
+            # every backend including that autovacuum worker, which is owned by the
+            # bootstrap superuser and cannot be terminated by the unprivileged test
+            # role. Instead we terminate only the client backends this role itself
+            # owns (same-user termination is always permitted) and let the plain
+            # DROP handle the rest.
+            with admin.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = %s AND pid <> pg_backend_pid() "
+                    "AND usename = current_user",
+                    (race_db,),
+                )
+                cur.execute(f'DROP DATABASE IF EXISTS "{race_db}"')
+        finally:
+            admin.close()
 
 
 @pytest_asyncio.fixture

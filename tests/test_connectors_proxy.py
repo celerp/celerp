@@ -140,6 +140,8 @@ async def test_connector_backlinks_target_cloud_tab():
                    AsyncMock(return_value={})), \
              patch("ui.routes.settings_connectors._entity_runs",
                    AsyncMock(return_value={})), \
+             patch("ui.api_client.get_company",
+                   AsyncMock(return_value={"settings": {}, "current_role": "owner"})), \
              patch("celerp.config.ensure_instance_id", return_value="iid-x"):
             r = await ui_client.get("/settings/connectors/woocommerce", cookies=cookies)
             r_invalid = await ui_client.get("/settings/connectors/not-a-platform",
