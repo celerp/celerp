@@ -16,6 +16,18 @@ import pytest
 import celerp.gateway.state as gw_state
 
 
+@pytest.fixture
+async def owner_h(client) -> dict:
+    """A bootstrap owner's bearer header. /settings/* now requires an
+    authenticated user, and the owner holds manage_integrations by default."""
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "FragCo", "email": "frag@example.com", "name": "Admin", "password": "pw"},
+    )
+    assert reg.status_code == 200, reg.text
+    return {"Authorization": f"Bearer {reg.json()['access_token']}"}
+
+
 # ---------------------------------------------------------------------------
 # /settings/email-status removal verification (item 4b)
 # ---------------------------------------------------------------------------
@@ -48,10 +60,10 @@ def test_email_locale_key_removed():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_cloud_status_not_connected(client):
+async def test_cloud_status_not_connected(client, owner_h):
     """Returns connected=False when gateway_token is empty."""
     with patch("celerp.config.settings.gateway_token", ""):
-        r = await client.get("/settings/cloud-status")
+        r = await client.get("/settings/cloud-status", headers=owner_h)
     assert r.status_code == 200
     data = r.json()
     assert data["connected"] is False
@@ -61,14 +73,14 @@ async def test_cloud_status_not_connected(client):
 
 
 @pytest.mark.asyncio
-async def test_cloud_status_reports_disconnected_flag(client):
+async def test_cloud_status_reports_disconnected_flag(client, owner_h):
     """cloud-status carries cloud_disconnected so the UI can withhold auto-connect
     on a sticky-disconnected install."""
     with (
         patch("celerp.config.settings.gateway_token", ""),
         patch("celerp.config.settings.cloud_disconnected", True),
     ):
-        r = await client.get("/settings/cloud-status")
+        r = await client.get("/settings/cloud-status", headers=owner_h)
     assert r.status_code == 200
     assert r.json()["cloud_disconnected"] is True
 
@@ -99,7 +111,7 @@ def test_claim_panel_suppresses_autoconnect_when_disconnected():
 
 
 @pytest.mark.asyncio
-async def test_cloud_status_connected_relay_unreachable(client):
+async def test_cloud_status_connected_relay_unreachable(client, owner_h):
     """Returns connected=True but defaults when relay API times out."""
     import httpx
 
@@ -118,7 +130,7 @@ async def test_cloud_status_connected_relay_unreachable(client):
         patch("httpx.AsyncClient", return_value=mock_inner_client),
         patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
     ):
-        r = await client.get("/settings/cloud-status")
+        r = await client.get("/settings/cloud-status", headers=owner_h)
     assert r.status_code == 200
     data = r.json()
     assert data["connected"] is True
@@ -128,7 +140,7 @@ async def test_cloud_status_connected_relay_unreachable(client):
 
 
 @pytest.mark.asyncio
-async def test_cloud_status_uses_ws_pushed_tier_when_relay_unreachable(client):
+async def test_cloud_status_uses_ws_pushed_tier_when_relay_unreachable(client, owner_h):
     """The gateway's own WS push (subscription_updated) already told us the tier;
     a free instance's session_token may never resolve a live /billing/status call,
     so tier must not silently fall back to None when the WS already supplied it
@@ -142,7 +154,7 @@ async def test_cloud_status_uses_ws_pushed_tier_when_relay_unreachable(client):
         patch.object(gw_state, "_subscription_status", "active"),
         patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
     ):
-        r = await client.get("/settings/cloud-status")
+        r = await client.get("/settings/cloud-status", headers=owner_h)
     assert r.status_code == 200
     data = r.json()
     assert data["connected"] is True
@@ -150,7 +162,7 @@ async def test_cloud_status_uses_ws_pushed_tier_when_relay_unreachable(client):
 
 
 @pytest.mark.asyncio
-async def test_cloud_status_relay_http_tier_overrides_stale_ws_tier(client):
+async def test_cloud_status_relay_http_tier_overrides_stale_ws_tier(client, owner_h):
     """The relay's live /billing/status answer (e.g. after an upgrade) still wins
     over a WS-pushed tier that may be stale until the next subscription_updated push."""
     mock_response = MagicMock()
@@ -172,13 +184,13 @@ async def test_cloud_status_relay_http_tier_overrides_stale_ws_tier(client):
         patch("httpx.AsyncClient", return_value=mock_inner_client),
         patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
     ):
-        r = await client.get("/settings/cloud-status")
+        r = await client.get("/settings/cloud-status", headers=owner_h)
     assert r.status_code == 200
     assert r.json()["tier"] == "team"
 
 
 @pytest.mark.asyncio
-async def test_cloud_status_connected_relay_ok(client):
+async def test_cloud_status_connected_relay_ok(client, owner_h):
     """Returns relay data when relay API responds successfully."""
     mock_response = MagicMock()
     mock_response.status_code = 200
@@ -210,7 +222,7 @@ async def test_cloud_status_connected_relay_ok(client):
         patch("httpx.AsyncClient", return_value=mock_inner_client),
         patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
     ):
-        r = await client.get("/settings/cloud-status")
+        r = await client.get("/settings/cloud-status", headers=owner_h)
     assert r.status_code == 200
     data = r.json()
     assert data["connected"] is True
@@ -229,21 +241,21 @@ async def test_cloud_status_connected_relay_ok(client):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_billing_portal_returns_relay_url(client):
+async def test_billing_portal_returns_relay_url(client, owner_h):
     """Proxies the relay's Stripe Billing Portal session URL to the UI."""
     with patch("celerp.services.payments.billing_portal_url",
                AsyncMock(return_value="https://billing.stripe.com/p/session_x")):
-        r = await client.post("/settings/cloud/billing-portal")
+        r = await client.post("/settings/cloud/billing-portal", headers=owner_h)
     assert r.status_code == 200
     assert r.json()["portal_url"] == "https://billing.stripe.com/p/session_x"
 
 
 @pytest.mark.asyncio
-async def test_billing_portal_unavailable_is_an_error(client):
+async def test_billing_portal_unavailable_is_an_error(client, owner_h):
     """Relay unreachable or no billing account: an explanatory 502, never a
     fabricated URL."""
     with patch("celerp.services.payments.billing_portal_url", AsyncMock(return_value=None)):
-        r = await client.post("/settings/cloud/billing-portal")
+        r = await client.post("/settings/cloud/billing-portal", headers=owner_h)
     assert r.status_code == 502
     assert "subscription management" in r.json()["detail"].lower()
 

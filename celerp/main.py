@@ -461,6 +461,7 @@ async def code_conflict_handler(_request: Request, exc: CodeConflictError):
 
 # Kernel routes — always present regardless of module configuration
 app.include_router(health.router, tags=["system"])
+app.include_router(health.settings_router, tags=["settings"])
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(ledger.router, prefix="/ledger", tags=["ledger"])
 app.include_router(companies.router, prefix="/companies", tags=["companies"])

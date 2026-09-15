@@ -434,11 +434,19 @@ def setup_routes(app):
             return JSONResponse({"status": "degraded", "version": ""}, status_code=503)
 
     @app.get("/health/system")
-    async def health_system_proxy():
-        """Proxy /health/system to the API so the UI health banner works on any port."""
+    async def health_system_proxy(request: Request):
+        """Proxy /health/system to the API so the UI health banner works on any port.
+
+        The API endpoint reports host resources and is authenticated, so forward
+        the caller's session token. Without a token, or on any transient API
+        failure, the banner degrades to a neutral state rather than surfacing an
+        error - it is chrome, and the host data stays protected at the API."""
         from starlette.responses import JSONResponse
+        token = request.cookies.get(COOKIE_NAME)
         try:
-            async with api._local_client(timeout=3.0, follow_redirects=False) as c:
+            if not token:
+                raise RuntimeError("no session token")
+            async with api._api_client(token, timeout=3.0) as c:
                 r = await c.get("/health/system")
                 return JSONResponse(r.json(), status_code=r.status_code)
         except Exception:
