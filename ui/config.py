@@ -108,10 +108,10 @@ def get_role(request) -> str:
 
     Falls back to 'viewer' (least privilege) when the claim is absent or unreadable.
     """
-    from celerp.services.auth import _ROLE_MIGRATION
+    from celerp.services.auth import normalize_role
 
     raw_role = get_claims(request).get("role", "viewer")
-    return _ROLE_MIGRATION.get(raw_role, raw_role)
+    return normalize_role(raw_role)
 
 
 def get_user_email(request) -> str | None:

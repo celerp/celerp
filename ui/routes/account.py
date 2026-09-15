@@ -84,7 +84,7 @@ async def _account_allowed(request: Request) -> bool:
     if not token:
         return False
     try:
-        role = (await api.get_company(token)).get("current_role") or ""
+        role = api.role_from_company(await api.get_company(token))
     except APIError:
         return False
     return _ROLE_LEVELS.get(role, 0) >= _ROLE_LEVELS["admin"]

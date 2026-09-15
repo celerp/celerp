@@ -56,7 +56,7 @@ async def _check_permission(
         if page_view:
             return None
         return RedirectResponse("/dashboard", status_code=302)
-    role = company.get("current_role") or ""
+    role = api.role_from_company(company)
     settings = company.get("settings") or {}
     if not role_has_permission(settings, role, key):
         return RedirectResponse("/dashboard", status_code=302)
@@ -1017,22 +1017,26 @@ def setup_routes(app):
                 ),
                 cls="cell cell--editing",
             )
-        return Td(
-            Input(
-                type="text", name="value", value=val,
-                hx_patch=f"/settings/users/{user_id}/{field}",
-                hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                hx_trigger="blur delay:200ms",
-                cls="cell-input", autofocus=True,
-            ),
-            cls="cell cell--editing",
-        )
+        # Only role and status are editable here. Name and email are set when the
+        # user is invited and the backend user PATCH rejects them, so an edit
+        # request for any other field returns the plain, non-clickable cell.
+        return _user_display_cell(user_id, field, user.get(field))
 
     @app.patch("/settings/users/{user_id}/{field}")
     async def user_field_patch(request: Request, user_id: str, field: str):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        if field not in ("role", "is_active"):
+            # Name and email are not editable here (the backend user PATCH accepts
+            # only role and is_active); ignore a stray patch and re-render the
+            # plain cell rather than sending a request the API would reject.
+            try:
+                users = (await api.get_users(token)).get("items", [])
+            except APIError as e:
+                return P(str(e.detail), cls="cell-error")
+            user = next((u for u in users if u.get("id") == user_id), {})
+            return _user_display_cell(user_id, field, user.get(field))
         form = await request.form()
         value = str(form.get("value", ""))
         patch_data = {field: value}
@@ -2653,7 +2657,13 @@ def _user_display_cell(user_id: str, field: str, value) -> FT:
         inner = Span(t("th.active") if is_active else t("settings.inactive"),
                      cls="badge badge--active" if is_active else "badge badge--inactive")
     else:
-        inner = Span(str(value) if value and str(value).strip() else EMPTY, cls="cell-text")
+        # Name and email are set at invite time and are not editable from this
+        # table (the backend user PATCH accepts only role and is_active), so they
+        # render as plain, non-clickable text.
+        return Td(
+            Span(str(value) if value and str(value).strip() else EMPTY, cls="cell-text"),
+            cls="cell",
+        )
     return Td(
         inner,
         title=t("settings.click_to_edit"),

@@ -683,6 +683,17 @@ async def get_company(token: str) -> dict:
         return _flatten_company(data)
 
 
+def role_from_company(company: dict) -> str:
+    """The one UI read of the DB-authoritative role out of a /companies/me payload.
+
+    Returns the server's ``current_role`` (empty string when absent), so no UI
+    surface re-implements the fetch-and-extract or falls back to the unsigned
+    cookie claim. Callers that also need the company settings (the permission
+    gate) pass the company they already fetched, avoiding a second round trip.
+    """
+    return company.get("current_role") or ""
+
+
 async def patch_company(token: str, data: dict) -> dict:
     """Patch company. Settings sub-fields and dashboard preferences are merged into
     the settings dict; top-level fields (name, slug) are patched directly."""

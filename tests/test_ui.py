@@ -1795,6 +1795,34 @@ class TestSettingsPage:
         assert b"Noah" in r.content
 
     @pytest.mark.asyncio
+    async def test_users_tab_name_email_not_editable(self, ui_client):
+        """Settings > Users renders name and email as plain text, with only role
+        and status click-to-edit - matching the backend user PATCH that accepts
+        role and is_active alone. Red before the fix, where name and email cells
+        carried the click-to-edit hx-get that posts an unsupported field."""
+        admins = [{"id": "u1", "name": "Test User", "email": "user@example.com",
+                   "role": "owner", "is_active": True}]
+        with (
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
+            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
+            patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": admins, "total": len(admins)})),
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/settings/general?tab=users", cookies=_authed())
+        assert r.status_code == 200
+        # Role and status stay click-to-edit.
+        assert b"/settings/users/u1/role/edit" in r.content
+        assert b"/settings/users/u1/is_active/edit" in r.content
+        # Name and email are plain text: no click-to-edit affordance is rendered.
+        assert b"/settings/users/u1/name/edit" not in r.content
+        assert b"/settings/users/u1/email/edit" not in r.content
+
+    @pytest.mark.asyncio
     async def test_settings_taxes_tab(self, ui_client):
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
