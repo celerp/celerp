@@ -275,12 +275,24 @@ async def create_company(
 
 
 @router.get("/me")
-async def me(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+async def me(
+    company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     company = await session.get(Company, company_id)
     if company is None:
         logger.warning("GET /companies/me: company_id %s not found in DB", company_id)
         raise HTTPException(status_code=404, detail="Not found")
-    return {"id": str(company.id), "name": company.name, "slug": company.slug, "settings": company.settings}
+    # current_role is the authoritative DB membership role; the UI gates
+    # permissions on it rather than trusting the client-held token claims.
+    return {
+        "id": str(company.id),
+        "name": company.name,
+        "slug": company.slug,
+        "settings": company.settings,
+        "current_role": role,
+    }
 
 
 @router.patch("/me")

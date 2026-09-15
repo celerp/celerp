@@ -1928,7 +1928,7 @@ def setup_routes(app):
         if not entity_id or entity_id.strip() == "":
             return RedirectResponse("/inventory", status_code=302)
         from ui.routes.settings import _check_permission
-        denied = await _check_permission(request, "view_inventory")
+        denied = await _check_permission(request, "view_inventory", page_view=True)
         if denied:
             return denied
         try:

@@ -13,6 +13,8 @@ Covers:
 
 from __future__ import annotations
 
+import base64
+import json
 import uuid
 
 import pytest
@@ -41,17 +43,40 @@ def _authed(token: str | None = None, role: str = "owner") -> dict:
     return {"celerp_token": token or make_test_token(role=role)}
 
 
+def _role_from_token(token: str | None) -> str:
+    if not token:
+        return "owner"
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        return claims.get("role") or "owner"
+    except Exception:
+        return "owner"
+
+
 _COMPANY = {
     "name": "Test Corp",
     "currency": "USD",
     "timezone": "UTC",
     "fiscal_year_start": "01-01",
     "settings": {},
+    "current_role": "owner",
 }
 _TAXES = [{"name": "VAT", "rate": 7.0, "tax_type": "sales", "is_default": True, "description": ""}]
 _TERMS = [{"name": "Net 30", "days": 30, "description": ""}]
 _USERS = [{"id": "u1", "name": "Alice", "email": "alice@example.com", "role": "admin", "is_active": True}]
 _MODULES = []
+
+
+@pytest.fixture(autouse=True)
+def _auth_company():
+    """The rewritten permission gates read the caller's role from the API's
+    get_company response. Default every settings test to a company whose role
+    matches its own token so authenticated pages render."""
+    async def _get_company(token=None):
+        return {**_COMPANY, "current_role": _role_from_token(token)}
+    with patch("ui.api_client.get_company", new=AsyncMock(side_effect=_get_company)):
+        yield
 
 
 def _common_mocks():

@@ -26,21 +26,38 @@ from ui.i18n import t, get_lang, tier_label
 from ui.routes.documents import _action_error
 
 
-async def _check_permission(request: Request, key: str) -> RedirectResponse | None:
+async def _check_permission(
+    request: Request, key: str, *, page_view: bool = False
+) -> RedirectResponse | None:
     """Return None if the caller holds the named permission, else a redirect.
 
-    Resolves overrides from the company settings, re-read per request so a
-    permission change takes effect on the next page load. Degrades to registry
-    defaults (empty settings) when the company row cannot be fetched."""
+    The role and its permission overrides are read from authenticated API state
+    (``GET /companies/me`` returns the DB-authoritative ``current_role`` and the
+    company settings), never from the client-held cookie, which is unsigned and
+    forgeable.
+
+    Failure handling splits by caller intent:
+    - No token, or the API rejects the token (401): converge to ``/login``.
+    - Any other API failure (transient 5xx / connection error): a mutation or
+      privileged-action gate (the default) hard-denies to ``/dashboard`` because
+      it cannot confirm the permission; a page-view gate (``page_view=True``)
+      returns None so the route renders its own neutral/empty state rather than
+      bouncing a logged-in user off their page.
+    """
     from celerp.services.permissions import role_has_permission
-    role = _get_role(request)
     token = _token(request)
-    settings: dict = {}
-    if token:
-        try:
-            settings = (await api.get_company(token)).get("settings") or {}
-        except APIError:
-            settings = {}
+    if not token:
+        return RedirectResponse("/login", status_code=302)
+    try:
+        company = await api.get_company(token)
+    except APIError as e:
+        if e.status == 401:
+            return RedirectResponse("/login", status_code=302)
+        if page_view:
+            return None
+        return RedirectResponse("/dashboard", status_code=302)
+    role = company.get("current_role") or ""
+    settings = company.get("settings") or {}
     if not role_has_permission(settings, role, key):
         return RedirectResponse("/dashboard", status_code=302)
     return None

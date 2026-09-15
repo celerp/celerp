@@ -41,7 +41,7 @@ _DEALS = [
     {"entity_id": "deal:1", "name": "Ruby Deal", "stage": "lead", "value": 50000.0,
      "contact_id": "contact:1", "currency": "THB"},
 ]
-_COMPANY = {"name": "Test Corp", "currency": "THB", "timezone": "UTC", "settings": {}}
+_COMPANY = {"name": "Test Corp", "currency": "THB", "timezone": "UTC", "settings": {}, "current_role": "owner"}
 
 
 def _crm_mocks():

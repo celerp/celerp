@@ -32,7 +32,7 @@ from starlette.responses import HTMLResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import toast_header
-from ui.config import PRIVACY_POLICY_URL, RELAY_URL, get_role as _get_role
+from ui.config import PRIVACY_POLICY_URL, RELAY_URL
 from ui.i18n import t, get_lang, tier_label
 from ui.routes.settings import _token
 from ui.security import is_safe_authorize_url
@@ -73,11 +73,21 @@ def _next_from(value: str | None) -> str | None:
     return value if any(rx.match(value) for rx in _NEXT_RES) else None
 
 
-def _account_allowed(request: Request) -> bool:
+async def _account_allowed(request: Request) -> bool:
     """Binding the relay account email is a billing-identity action (it decides
     who owns purchases and where subscription control lives) - admin and owner
-    only, same gate as the Settings Connect page and the marketplace."""
-    return _ROLE_LEVELS.get(_get_role(request), 0) >= _ROLE_LEVELS["admin"]
+    only, same gate as the Settings Connect page and the marketplace.
+
+    The role comes from authenticated API state, never the unsigned cookie. This
+    is a privileged action, so any failure to confirm it fails closed."""
+    token = _token(request)
+    if not token:
+        return False
+    try:
+        role = (await api.get_company(token)).get("current_role") or ""
+    except APIError:
+        return False
+    return _ROLE_LEVELS.get(role, 0) >= _ROLE_LEVELS["admin"]
 
 
 def _panel_target(panel_id: str) -> dict:
@@ -468,7 +478,7 @@ def setup_routes(app):
         panel_id = _panel_id_from(request)
         if not token:
             return Div(id=panel_id)
-        if not _account_allowed(request):
+        if not await _account_allowed(request):
             # Below-admin click on an account entry point: say why nothing
             # opens instead of swapping in silence.
             return HTMLResponse(
@@ -496,7 +506,7 @@ def setup_routes(app):
         token = _token(request)
         lang = get_lang(request)
         panel_id = _panel_id_from(request)
-        if not token or not _account_allowed(request):
+        if not token or not await _account_allowed(request):
             return Div(id=panel_id)
         form = await request.form()
         email = str(form.get("email", "")).strip()
@@ -523,7 +533,7 @@ def setup_routes(app):
         token = _token(request)
         lang = get_lang(request)
         panel_id = _panel_id_from(request)
-        if not token or not _account_allowed(request):
+        if not token or not await _account_allowed(request):
             return Div(id=panel_id)
         next_action = _next_from(request.query_params.get("next"))
         try:
@@ -550,7 +560,7 @@ def setup_routes(app):
         token = _token(request)
         lang = get_lang(request)
         panel_id = _panel_id_from(request)
-        if not token or not _account_allowed(request):
+        if not token or not await _account_allowed(request):
             return Div(id=panel_id)
         mode = request.query_params.get("mode", "email")
         next_action = _next_from(request.query_params.get("next"))

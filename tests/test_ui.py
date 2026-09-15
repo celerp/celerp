@@ -21,6 +21,8 @@ Patching rules:
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import pathlib
 from pathlib import Path
@@ -143,12 +145,35 @@ async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url:
     )
 
 
+def _role_from_token(token: str | None) -> str:
+    """The role carried in a test token, the way the real API derives
+    current_role from DB membership for the request's user."""
+    if not token:
+        return "owner"
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        return claims.get("role") or "owner"
+    except Exception:
+        return "owner"
+
+
+def _company_stub(base: dict):
+    """A get_company side_effect that fills current_role from the request token
+    (unless the base fixes one), so role-varying gate tests keep working now
+    that the UI reads the authoritative role from the company payload."""
+    async def _get_company(token=None):
+        role = base.get("current_role") or _role_from_token(token)
+        return {**base, "current_role": role, "settings": base.get("settings", {})}
+    return _get_company
+
+
 @pytest.fixture(autouse=True)
 def _mock_get_company():
     """Default get_company mock for all UI tests."""
     _default = {"name": "Test Corp", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01"}
-    with patch("ui.api_client.get_company", new=AsyncMock(return_value=_default)), \
-         patch("ui.routes.auth.api_get_company", new=AsyncMock(return_value=_default)):
+    with patch("ui.api_client.get_company", new=AsyncMock(side_effect=_company_stub(_default))), \
+         patch("ui.routes.auth.api_get_company", new=AsyncMock(side_effect=_company_stub(_default))):
         yield
 
 
@@ -971,7 +996,7 @@ class TestCompanySwitcher:
 # ── Page rendering (authed) ──────────────────────────────────────────────────
 
 # Shared mock data for page tests
-_COMPANY = {"name": "Test Corp", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01"}
+_COMPANY = {"name": "Test Corp", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01", "current_role": "owner", "settings": {}}
 _VALUATION = {"item_count": 10, "active_item_count": 8, "total_cost": 5000.0, "total_retail": 8000.0,
               "total_wholesale": 6000.0, "cost_total": 5000.0, "retail_total": 8000.0, "wholesale_total": 6000.0}
 _DOC_SUMMARY = {"ar_outstanding": 100.0, "ar_total": 500.0, "ar_gross": 500.0, "invoice_count": 3}
@@ -3552,7 +3577,7 @@ class TestCollapsibleSidebar:
     async def test_sidebar_accounting_settings_highlighted(self, ui_client):
         """Visiting /settings/accounting shows accounting settings link in sidebar group header."""
         with (
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test", "base_currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test", "base_currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_recon_rules", new=AsyncMock(return_value={"rules": []})),
             patch("ui.api_client.get_period_lock", new=AsyncMock(return_value={})),
@@ -3576,7 +3601,7 @@ class TestCollapsibleSidebar:
              patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])), \
-             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}})):
+             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}, "current_role": "owner"})):
             r = await ui_client.get("/inventory?status=sold", cookies=_authed())
         assert r.status_code == 200
         html = r.text
@@ -3593,7 +3618,7 @@ class TestCollapsibleSidebar:
              patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])), \
-             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}})):
+             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}, "current_role": "owner"})):
             r = await ui_client.get("/inventory?status=archived", cookies=_authed())
         assert r.status_code == 200
         html = r.text
@@ -3604,7 +3629,7 @@ class TestCollapsibleSidebar:
     @pytest.mark.asyncio
     async def test_sidebar_highlights_reconcile_entry(self, ui_client):
         with (
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": [{"id": "b1", "bank_name": "Kasikorn", "account_number": "1234", "is_active": True}]})),
         ):
             r = await ui_client.get("/accounting/reconcile/start", cookies=_authed())
@@ -3741,7 +3766,7 @@ class TestManufacturingPage:
                            "shortfall": 2.0, "coverage": "short"}]}]
         with (
             patch("ui.api_client.manufacturing_to_make", new=AsyncMock(return_value={"items": rows, "total": 1})),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"currency": "USD"}})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"currency": "USD"}, "current_role": "owner"})),
         ):
             r = await ui_client.get("/manufacturing", cookies=_authed())
         assert r.status_code == 200
@@ -4027,7 +4052,7 @@ class TestSprint4DocCreation:
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test", "currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test", "currency": "USD", "current_role": "owner"})),
         ):
             r = await ui_client.get("/docs?type=memo", cookies=_authed())
         assert r.status_code == 200
@@ -8948,7 +8973,7 @@ _CAT_FIELDS = [
 _CAT_SCHEMAS = {"Gemstone": _CAT_FIELDS}
 
 _SETTINGS_MOCKS_CAT = {
-    "ui.api_client.get_company": AsyncMock(return_value={"name": "T", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01"}),
+    "ui.api_client.get_company": AsyncMock(return_value={"name": "T", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01", "current_role": "owner"}),
     "ui.api_client.get_taxes": AsyncMock(return_value={"taxes": []}),
     "ui.api_client.get_payment_terms": AsyncMock(return_value={"terms": []}),
     "ui.api_client.get_users": AsyncMock(return_value={"items": [], "total": 0}),
@@ -9138,7 +9163,7 @@ _MODULES_LIST = [
 ]
 
 _SETTINGS_MOCKS_MODULES = {
-    "ui.api_client.get_company": AsyncMock(return_value={"name": "T", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01"}),
+    "ui.api_client.get_company": AsyncMock(return_value={"name": "T", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01", "current_role": "owner"}),
     "ui.api_client.get_taxes": AsyncMock(return_value={"taxes": []}),
     "ui.api_client.get_payment_terms": AsyncMock(return_value={"terms": []}),
     "ui.api_client.get_users": AsyncMock(return_value={"items": [], "total": 0}),
@@ -10782,8 +10807,10 @@ class TestCompanyDetailsPage:
     def _patches(self):
         from contextlib import ExitStack
         stack = ExitStack()
+        stack.enter_context(patch("ui.api_client.get_company",
+                                  new=AsyncMock(side_effect=_company_stub(self._COMPANY))))
         for name, val in (
-            ("get_company", self._COMPANY), ("get_contact", self._SELF),
+            ("get_contact", self._SELF),
             ("list_contacts", {"items": [self._SELF]}), ("list_contact_docs", {"items": []}),
             ("list_items", {"items": []}), ("list_docs", {"items": []}),
         ):
@@ -10993,7 +11020,7 @@ class TestPaymentsSettingsPage:
         for name, val in (
             ("get_relay_status", {"connected": relay}),
             ("get_payments_status", {"enabled": enabled}),
-            ("get_company", {"stripe_deposit_account": deposit}),
+            ("get_company", {"stripe_deposit_account": deposit, "current_role": "admin"}),
             ("get_bank_accounts", {"items": banks or []}),
         ):
             stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
@@ -11513,7 +11540,7 @@ class TestInventoryItemDetailFixes:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -11540,7 +11567,7 @@ class TestInventoryItemDetailFixes:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -11593,7 +11620,7 @@ class TestInventoryItemDetailFixes:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -11700,7 +11727,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.split_preview", new=AsyncMock(return_value=preview)),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -11725,7 +11752,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.split_preview", new=AsyncMock(return_value=preview)),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -13769,7 +13796,7 @@ class TestDocumentsOverhaul:
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_doc_summary", side_effect=_capture_summary),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test", "currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test", "currency": "USD", "current_role": "owner"})),
         ):
             r = await ui_client.get("/docs?type=invoice", cookies=_authed())
         assert captured.get("doc_type") == "invoice"
@@ -14301,7 +14328,7 @@ class TestPriceLists:
             ])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item_after)),
             patch("ui.api_client.set_item_price", new=AsyncMock(return_value={})) as mock_set,
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "current_role": "owner"})),
         ):
             r = await ui_client.post("/api/items/item:1/price",
                                      data={"retail_price": "100"}, cookies=_authed())
@@ -14362,7 +14389,7 @@ class TestPriceLists:
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -14382,7 +14409,7 @@ class TestPriceLists:
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
@@ -14405,7 +14432,7 @@ class TestPriceLists:
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
@@ -14501,7 +14528,7 @@ class TestPriceLists:
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
@@ -16002,7 +16029,7 @@ class TestCategoryDisplayName:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
         ):
@@ -17022,7 +17049,7 @@ class TestItemRowColumnParity:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "current_role": "owner"})),
         ):
             r = await ui_client.get("/api/items/item:1/row", cookies=_authed())
 
@@ -17099,7 +17126,7 @@ class TestItemRowColumnParity:
             patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
             patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "current_role": "owner"})),
             patch("ui.api_client.patch_item", new=AsyncMock(return_value=item)),
         ):
             r = await ui_client.patch(
