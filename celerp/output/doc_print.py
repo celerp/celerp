@@ -58,11 +58,13 @@ def currency_symbol(currency: str | None) -> str:
 
 def fmt_money(value: str | float, currency: str | None = None) -> str:
     """Format a money AMOUNT (total, tax, etc.) at currency precision."""
+    from celerp.services.money import currency_dp as _cdp
     sym = currency_symbol(currency)
     try:
-        return f"{sym}{float(value):,.2f}"
+        v = float(value)
     except (ValueError, TypeError):
         return EMPTY
+    return f"{sym}{v:,.{_cdp(currency or 'USD')}f}"
 
 
 def fmt_rate(value: str | float, currency: str | None = None) -> str:

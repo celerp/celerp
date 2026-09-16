@@ -63,13 +63,49 @@ class TestElectronMainJS:
 
     def test_seed_called_before_migrations(self):
         """seedDefaultModules must appear before runMigrations in boot sequence."""
-        boot_start = self._src.find("const dbConfig = resolveDatabaseConfig")
+        boot_start = self._src.find("dbConfig = resolveDatabaseConfig")
         rest = self._src[boot_start:]
         seed_pos = rest.find("seedDefaultModules()")
         migration_pos = rest.find("runMigrations(dbConfig.url)")
         assert seed_pos >= 0, "seedDefaultModules() call not found in boot sequence"
         assert migration_pos >= 0, "runMigrations(dbConfig.url) call not found in boot sequence"
         assert seed_pos < migration_pos, "seedDefaultModules() must be called before runMigrations()"
+
+    def test_boot_seam_persists_local(self):
+        """At grace expiry the boot must persist db_mode=local: applyDbModePersist
+        is wired between the resolve call and startApi, so the persist happens
+        before the API/gateway process can touch the config."""
+        resolve_pos = self._src.find("dbConfig = resolveDatabaseConfig")
+        persist_pos = self._src.find("applyDbModePersist(")
+        start_api_pos = self._src.find("await startApi(dbConfig.url")
+        assert resolve_pos >= 0, "resolve call not found in boot sequence"
+        assert persist_pos >= 0, "applyDbModePersist() not wired into boot sequence"
+        assert start_api_pos >= 0, "startApi() call not found in boot sequence"
+        assert resolve_pos < persist_pos < start_api_pos, (
+            "applyDbModePersist() must run after the resolve call and before startApi()"
+        )
+
+    def test_writeconfig_atomic_persist(self):
+        """writeConfig is on the boot-critical path deciding which database opens,
+        so a torn write must never leave a corrupt config. The atomic temp-write +
+        fsync + rename + temp-cleanup now lives in config-writer.js's locked
+        writeConfig (shared with the Python writer so the two never race);
+        app-main.js's writeConfig delegates to it and still catches a failure."""
+        start = self._src.find("function writeConfig(")
+        assert start >= 0, "writeConfig() not found"
+        body = self._src[start:start + 800]
+        assert "writeLockedConfig(" in body, (
+            "writeConfig must delegate to config-writer's locked writer"
+        )
+        assert "catch" in body, "writeConfig must catch and handle a persist failure"
+
+        writer_src = (CORE_DIR / "electron" / "config-writer.js").read_text()
+        wstart = writer_src.find("function writeConfig(")
+        assert wstart >= 0, "config-writer.js writeConfig() not found"
+        wbody = writer_src[wstart:wstart + 800]
+        assert "renameSync" in wbody, "locked writer must rename a temp file into place (atomic)"
+        assert "unlinkSync" in wbody, "locked writer must remove the temp file on failure"
+        assert "catch" in wbody, "locked writer must catch and handle a write/rename failure"
 
     def test_module_dir_env_var_in_api_start(self):
         assert "MODULE_DIR: MODULE_DIR" in self._src

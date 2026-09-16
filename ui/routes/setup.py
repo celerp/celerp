@@ -597,12 +597,18 @@ def _activating_form(lang: str = "en") -> FT:
 
 
 def _cloud_form() -> FT:
-    from celerp.config import settings
-    from celerp.gateway.state import build_subscribe_url
-    iid = settings.gateway_instance_id
-    subscribe_url = build_subscribe_url(iid, extra="plan=cloud")
-
-    pricing_url = "https://celerp.com/pricing"
+    from ui.components.cloud_gate import is_partner_managed, direct_price, commercial_cta
+    from ui.i18n import current_lang
+    partner = is_partner_managed()
+    # Keep the CTA label in lockstep with its click destination: the direct
+    # price/trial label only on a celerp_direct install, and a partner-support /
+    # Contact-Celerp label with the matching href on a partner-managed or unknown
+    # install, so this setup card never shows a direct label that opens partner
+    # support or Enterprise.
+    cloud_href, cloud_cta_label = commercial_cta(
+        "subscribe", "cloud",
+        direct_price(t("setup.subscribe_29mo")) or t("btn.get_connect"),
+        current_lang())
 
     _features = [
         ("🔗", t("setup.feature_connectors_title"), t("setup.feature_connectors_desc")),
@@ -624,10 +630,12 @@ def _cloud_form() -> FT:
             Div(
                 Div(
                     Span(t("setup.cloud"), cls="cloud-upsell-plan-name"),
-                    Div(
+                    # Partner-managed: the partner sets its own price, so the
+                    # setup card shows no direct Celerp figure.
+                    (Div(
                         Span("$29", cls="cloud-upsell-price"),
                         Span(t("setup._month"), cls="cloud-upsell-price-unit"),
-                    ),
+                    ) if not partner else None),
                     cls="cloud-upsell-plan-header",
                 ),
                 Ul(
@@ -649,8 +657,8 @@ def _cloud_form() -> FT:
             cls="cloud-upsell-wrap",
         ),
         Div(
-            A(t("setup.subscribe_29mo"),
-                href=subscribe_url,
+            A(cloud_cta_label,
+                href=cloud_href,
                 target="_blank",
                 cls="btn btn--primary btn--full",
             ),
@@ -659,11 +667,13 @@ def _cloud_form() -> FT:
                 href="/settings?setup=done",
                 cls="cloud-upsell-skip",
             ),
-            Div(
-                A(t("setup.see_all_plans"), href=pricing_url, target="_blank",
+            # The see-all-plans link points at direct Celerp pricing, so it is
+            # shown only on a direct install; a partner-managed setup omits it.
+            (Div(
+                A(t("setup.see_all_plans"), href="https://celerp.com/pricing", target="_blank",
                   cls="cloud-upsell-compare"),
                 cls="cloud-upsell-compare-wrap",
-            ),
+            ) if not partner else None),
             cls="cloud-upsell-actions",
         ),
         cls="auth-card",

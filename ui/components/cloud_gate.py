@@ -13,16 +13,117 @@ from fasthtml.common import *
 from ui.i18n import t, get_lang
 
 
-def _subscribe_url(plan: str = "") -> str:
-    """Build subscribe URL with instance_id passthrough if available.
+def _commercial_route(intent: str, sku: str = "") -> str:
+    """The in-app mint route that resolves this CTA's destination at click time.
 
-    ``plan`` is passed as a query param (not a fragment) so the website can
-    attribute which in-app CTA drove the click server-side; its JS also uses
-    it to scroll to the matching plan card.
+    Every subscribe/top-up CTA points here rather than straight at celerp.com: the
+    route runs the same commercial policy (``build_commercial_handoff``), and for a
+    direct celerp_direct checkout it mints a single-use handoff token on the relay
+    and 302-bounces the browser to the checkout URL with that token appended. The
+    token clock therefore starts at click, and no relay round-trip happens on
+    render. ``intent`` and ``sku`` ride as query params so the route can rebuild
+    the destination for the authenticated instance server-side.
     """
-    from celerp.config import ensure_instance_id
-    from celerp.gateway.state import build_subscribe_url
-    return build_subscribe_url(ensure_instance_id(), extra=f"plan={plan}" if plan else "")
+    from urllib.parse import urlencode
+    params = {"intent": intent}
+    if sku:
+        params["sku"] = sku
+    return f"/commercial/checkout?{urlencode(params)}"
+
+
+def subscribe_url(plan: str = "") -> str:
+    """Build the in-app subscribe CTA URL.
+
+    Points at the commercial mint route (not celerp.com directly): the route
+    resolves the destination for the authenticated instance and mints a handoff
+    token at click. ``plan`` rides as the ``sku`` query param so the route can
+    resolve the correct plan destination.
+    """
+    return _commercial_route("subscribe", plan or "")
+
+
+def topup_url() -> str:
+    """Build the credit top-up CTA URL.
+
+    Mirrors ``subscribe_url`` for the top-up intent: it points at the commercial
+    mint route, which on a celerp_direct install mints a handoff token and bounces
+    to the direct /subscribe/topup checkout, and on a partner-managed install
+    routes to the partner support or Enterprise destination with no token minted.
+    """
+    return _commercial_route("topup", "ai")
+
+
+def commercial_cta(
+    intent: str,
+    sku: str,
+    direct_label: str,
+    lang: str,
+) -> tuple[str, str]:
+    """Resolve an authenticated commercial CTA to its (href, label) pair, keeping
+    the visible label in lockstep with the destination so a partner-managed
+    surface never reads as a direct Celerp price CTA.
+
+    - celerp_direct: the in-app /commercial/checkout mint route (via
+      subscribe_url/topup_url, which already point there). A subscribe CTA keeps
+      the caller's ``direct_label``; a top-up uses the standard top-up label.
+    - partner_managed: the partner support URL, then a mailto: to the support
+      email, then the Enterprise route, labelled "Contact partner support" while
+      a real partner destination exists and "Contact Celerp" on the Enterprise
+      fallback.
+    - any unknown mode: the Enterprise route labelled "Contact Celerp" (fails
+      closed, never a direct checkout).
+
+    The single semantic resolver every surface uses where the label must match
+    the destination. ``subscribe_url``/``topup_url`` stay thin direct-route
+    helpers for callers whose label is already correct.
+    """
+    from celerp.gateway.state import (
+        enterprise_url,
+        get_commercial_mode,
+        get_partner_identity,
+        safe_support_email,
+        safe_support_url,
+    )
+
+    mode = get_commercial_mode()
+    if mode == "celerp_direct":
+        if intent == "topup":
+            return topup_url(), t("ai.top_up_credits", lang)
+        return subscribe_url(sku), direct_label
+    if mode == "partner_managed":
+        identity = get_partner_identity() or {}
+        support_url = safe_support_url(identity.get("support_url"))
+        if support_url:
+            return support_url, t("cloud.partner_support", lang)
+        support_email = safe_support_email(identity.get("support_email"))
+        if support_email:
+            return f"mailto:{support_email}", t("cloud.partner_support", lang)
+        return enterprise_url(), t("cloud.contact_celerp", lang)
+    # Unknown mode: fail closed to Enterprise, never a direct checkout.
+    return enterprise_url(), t("cloud.contact_celerp", lang)
+
+
+def is_partner_managed() -> bool:
+    """Whether this install is partner-managed.
+
+    Single predicate every presentation surface uses to decide whether to
+    suppress direct Celerp pricing: a partner-managed install must never show a
+    direct price, because the partner sets and bills its own price.
+    """
+    from celerp.gateway.state import get_commercial_mode
+    return get_commercial_mode() == "partner_managed"
+
+
+def direct_price(text: str) -> str:
+    """Return direct-pricing copy on a celerp_direct install, or the empty string
+    when partner-managed.
+
+    Presentation-side suppressor for any string that names a direct Celerp price
+    ("$29", "USD $49/mo", the see-all-plans price). Callers render the returned
+    value directly; an empty string renders as nothing, so a partner-managed
+    surface simply omits the price rather than showing a wrong one.
+    """
+    return "" if is_partner_managed() else text
 
 
 def upgrade_banner(
@@ -43,8 +144,16 @@ def upgrade_banner(
         plan: Plan key for the /subscribe CTA, e.g. "cloud" or "ai".
         lang: UI language code.
     """
-    href = _subscribe_url(plan)
-    price_text = price if price is not None else t("msg.29mo", lang)
+    # Compose the direct-install label (trial + price); commercial_cta keeps the
+    # visible label in lockstep with the destination, so on a partner_managed or
+    # unknown-mode install it returns a partner-support / Contact-Celerp label and
+    # href instead of this direct label, and no surface funnelling through here can
+    # show a direct-price CTA that opens partner support. direct_price still
+    # suppresses the figure on the direct label for the same-mode belt-and-braces.
+    price_text = direct_price(price if price is not None else t("msg.29mo", lang))
+    direct_label = f"{t('cloud.start_trial', lang)} - {price_text}" if price_text \
+        else t("cloud.start_trial", lang)
+    href, cta_label = commercial_cta("subscribe", plan, direct_label, lang)
     return Div(
         Div(
             Span(t("msg.u0001f512", lang), cls="upgrade-banner__icon"),
@@ -56,7 +165,7 @@ def upgrade_banner(
             cls="upgrade-banner__left",
         ),
         A(
-            f"{t('cloud.start_trial', lang)} - {price_text}",
+            cta_label,
             href=href,
             target="_blank",
             cls="btn btn--primary upgrade-banner__cta",

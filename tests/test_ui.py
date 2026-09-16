@@ -9499,7 +9499,9 @@ class TestModulesUI:
         assert r.status_code == 200
         assert b"module-license-upsell" in r.content        # the upsell block
         assert b"Get Celerp Connect" in r.content           # the CTA
-        assert b"/subscribe" in r.content                   # links to the Connect flow
+        # Links through the in-app mint route, which resolves the destination
+        # at click time rather than baking a website URL in at render time.
+        assert b"/commercial/checkout?intent=subscribe" in r.content
         assert b"badge--danger" not in r.content            # not framed as a hard failure
         assert b"no valid license" not in r.content         # raw error text is replaced
 
@@ -10923,8 +10925,8 @@ class TestWebAccessPlansAd:
         assert r.status_code == 200
         assert "settings-tabs" in r.text          # free keeps its tab bar
         assert "cloud-plans" in r.text            # the plan cards render
-        assert "plan=ai" in r.text                # subscribe links present
-        assert "plan=team" not in r.text          # Team is not self-service sold
+        assert "sku=ai" in r.text                 # subscribe links present (in-app mint route)
+        assert "sku=team" not in r.text           # Team is not self-service sold
 
     @pytest.mark.asyncio
     async def test_paid_tier_sees_no_plans_ad(self, ui_client):
@@ -20059,3 +20061,368 @@ class TestDisposedTab:
             r = await ui_client.get("/inventory?status=disposed", cookies=_authed())
         assert r.status_code == 200
         assert "No disposed items." in r.content.decode()
+
+
+class TestCommercialRoutingRender:
+    """Mode-driven rendering of the /settings/cloud plan area: celerp_direct
+    shows the direct grid, partner_managed shows the partner offer with no
+    direct Celerp price."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_commercial_context(self):
+        import celerp.gateway.state as gw_state
+        gw_state._commercial_context = {}
+        yield
+        gw_state._commercial_context = {}
+
+    @staticmethod
+    def _set_partner(offer="default"):
+        import celerp.gateway.state as gw_state
+        if offer == "default":
+            offer = {
+                "display_name": "Managed Plan",
+                "retail_amount": 4900,
+                "currency": "USD",
+                "currency_exponent": 2,
+                "billing_interval": "month",
+                "service_bullets": ["Setup", "Support"],
+            }
+        ctx = {
+            "commercial_mode": "partner_managed",
+            "implementation": {"display_name": "Partner Co",
+                               "support_url": "https://partner.example.com/support"},
+        }
+        if offer is not None:
+            ctx["offer"] = offer
+        gw_state._commercial_context = ctx
+
+    def test_partner_managed_grid_hides_direct_prices(self):
+        """A partner-managed install shows the partner offer and none of the
+        direct Celerp prices or plan CTAs (#12)."""
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        self._set_partner()
+        html = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "USD $" not in html          # no direct $29/$49/$99 prices
+        assert "plan=cloud" not in html
+        assert "plan=ai" not in html
+        assert "cloud-plans" not in html
+        assert "Managed Plan" in html        # partner offer rendered instead
+
+    def test_partner_managed_offer_null_shows_neutral_contact(self):
+        """Partner-managed with no synced offer degrades to the neutral contact
+        message, still no direct price (#12)."""
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        self._set_partner(offer=None)
+        html = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "managed by your implementation partner" in html
+        assert "USD $" not in html
+        assert "plan=cloud" not in html
+        assert "cloud-plans" not in html
+
+    def test_direct_grid_unchanged_shows_plan_ai(self):
+        """A celerp_direct install renders the standard direct grid with the AI
+        plan CTA routed through the in-app mint route (which resolves the
+        website-facing plan= param at click time) and no partner offer (#13)."""
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        html = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "cloud-plans" in html
+        assert "sku=ai" in html
+        assert "Managed Plan" not in html
+        assert "managed by your implementation partner" not in html
+
+    def test_partner_display_independent_of_tier(self):
+        """The partner display name renders identically regardless of the local
+        billing tier (#14): rendering reads the commercial context, not the
+        tier."""
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        self._set_partner()
+        first = to_xml(_plans_ad("inst-1", lang="en"))
+        second = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "Partner Co" in first
+        assert first == second
+
+    def test_partner_offer_degraded_contact_cta(self):
+        """Offer absent but a valid support_url present: the degraded branch
+        renders a contact CTA whose href is the partner support URL, never a
+        plain-text-only note (BLOCKER 6)."""
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        self._set_partner(offer=None)
+        html = to_xml(_plans_ad("inst-1", lang="en"))
+        assert 'href="https://partner.example.com/support"' in html
+        assert "USD $" not in html
+
+    def test_partner_offer_nonstring_currency_no_crash(self):
+        """A stale cached offer with a non-string currency renders without an
+        AttributeError and shows no direct price (egress guard, BLOCKER 4b)."""
+        import celerp.gateway.state as gw_state
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        # Inject a hostile offer straight into the held model, bypassing the
+        # ingress gate to simulate a cache written by a pre-validator binary.
+        gw_state._commercial_context = {
+            "commercial_mode": "partner_managed",
+            "implementation": {"display_name": "Partner Co",
+                               "support_url": "https://partner.example.com/support"},
+            "offer": {"display_name": "Managed Plan", "retail_amount": 4900,
+                      "currency": 840},
+        }
+        html = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "USD $" not in html
+        assert "840" not in html
+
+    def test_partner_offer_jpy_price(self):
+        """A JPY offer (retail_amount 120000, exponent 0) renders a whole-number
+        price using the context exponent, not a hardcoded /100 at 2dp. A stored
+        offer predating the validators (no exponent/interval) degrades to the
+        partner contact line rather than a mis-scaled price."""
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        self._set_partner(offer={
+            "display_name": "Managed Plan",
+            "retail_amount": 120000,
+            "currency": "JPY",
+            "currency_exponent": 0,
+            "billing_interval": "year",
+            "service_bullets": ["Setup"],
+        })
+        html = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "120,000" in html      # exponent 0 -> whole yen
+        assert ".00" not in html      # no 2dp artifact
+        assert "1,200" not in html    # not the /100 mis-scale
+        # Stored offer missing the exponent/interval fields: the extended priced
+        # guard degrades to the contact CTA, no fabricated price.
+        self._set_partner(offer={
+            "display_name": "Managed Plan",
+            "retail_amount": 120000,
+            "currency": "JPY",
+            "service_bullets": ["Setup"],
+        })
+        degraded = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "120,000" not in degraded
+        assert "1,200" not in degraded
+        assert 'href="https://partner.example.com/support"' in degraded
+
+    def test_partner_offer_annual_interval(self):
+        """billing_interval 'year' renders the per-year label; 'month' renders
+        the per-month label. Read through t() so the test is value-agnostic."""
+        from fasthtml.common import to_xml
+        from ui.i18n import t
+        from ui.routes.settings_cloud import _plans_ad
+        per_year = t("settings_cloud.per_year", "en")
+        per_mo = t("settings_cloud.per_mo", "en")
+        self._set_partner(offer={
+            "display_name": "Managed Plan", "retail_amount": 4900,
+            "currency": "USD", "currency_exponent": 2, "billing_interval": "year",
+            "service_bullets": ["Setup"],
+        })
+        yearly = to_xml(_plans_ad("inst-1", lang="en"))
+        assert per_year in yearly
+        assert per_mo not in yearly
+        self._set_partner(offer={
+            "display_name": "Managed Plan", "retail_amount": 4900,
+            "currency": "USD", "currency_exponent": 2, "billing_interval": "month",
+            "service_bullets": ["Setup"],
+        })
+        monthly = to_xml(_plans_ad("inst-1", lang="en"))
+        assert per_mo in monthly
+        assert per_year not in monthly
+
+    def test_upgrade_banner_partner_suppresses_price(self):
+        """The upgrade banner shows no direct price in partner mode even when an
+        explicit price argument is passed (E2 call site parity)."""
+        from fasthtml.common import to_xml
+        from ui.components.cloud_gate import upgrade_banner
+        self._set_partner()
+        html = to_xml(upgrade_banner("Backup", "desc", price="USD $29/mo",
+                                     plan="cloud", lang="en"))
+        assert "$29" not in html
+        assert "USD $" not in html
+
+    def test_upgrade_banner_direct_keeps_price(self):
+        """In celerp_direct the upgrade banner still shows its price (positive
+        control against over-suppression)."""
+        from fasthtml.common import to_xml
+        from ui.components.cloud_gate import upgrade_banner
+        html = to_xml(upgrade_banner("Backup", "desc", price="USD $29/mo",
+                                     plan="cloud", lang="en"))
+        assert "$29" in html
+
+    def test_auth_gate_partner_no_direct_price(self):
+        """The direct-connection sign-in gate shows no direct price and no direct
+        celerp.com/subscribe href in partner mode (BLOCKER 5)."""
+        from fasthtml.common import to_xml
+        from ui.routes.auth import _direct_connection_gate
+        self._set_partner()
+        html = to_xml(_direct_connection_gate("a@example.com", "pw"))
+        assert "$29" not in html
+        assert "celerp.com/subscribe" not in html
+
+    def test_auth_gate_fails_closed_to_enterprise(self):
+        """An unrecognized commercial mode inside the sign-in gate falls closed
+        to the Enterprise route, never a direct checkout (BLOCKER 5). The gate
+        resolves through build_public_acquisition_url, which itself fails closed
+        on any mode other than the two it recognizes."""
+        import celerp.gateway.state as gw_state
+        from fasthtml.common import to_xml
+        from ui.routes import auth as auth_mod
+        gw_state._commercial_context = {"commercial_mode": "something_unexpected"}
+        html = to_xml(auth_mod._direct_connection_gate("a@example.com", "pw"))
+        assert "celerp.com/subscribe" not in html
+        assert "/enterprise" in html
+
+
+class TestCommercialPartnerManagedInvariant:
+    """One repo-level assertion: no partner-reachable surface emits a direct
+    celerp.com/subscribe(/topup), a celerp.com/pricing link, a direct plan=*
+    checkout, or a direct dollar price under partner_managed. Every surface the
+    plan enumerates is rendered and swept for the forbidden strings."""
+
+    _FORBIDDEN = [
+        "celerp.com/subscribe",
+        "celerp.com/subscribe/topup",
+        "celerp.com/pricing",
+        "plan=cloud",
+        "plan=ai",
+        "plan=team",
+        "$29",
+        "$49",
+        "$99",
+    ]
+
+    @pytest.fixture(autouse=True)
+    def _partner_mode(self):
+        import celerp.gateway.state as gw_state
+        gw_state._commercial_context = {
+            "commercial_mode": "partner_managed",
+            "implementation": {"display_name": "Partner Co",
+                               "support_url": "https://partner.example.com/support"},
+            # A partner price that deliberately does not equal any direct Celerp
+            # sentinel ($29/$49/$99): the invariant sweeps for DIRECT price
+            # leakage, and the partner's own arbitrary price is legitimate.
+            "offer": {"display_name": "Managed Plan", "retail_amount": 7700,
+                      "currency": "USD", "currency_exponent": 2,
+                      "service_bullets": ["Setup", "Support"]},
+        }
+        yield
+        gw_state._commercial_context = {}
+
+    def _assert_clean(self, html: str, surface: str):
+        for bad in self._FORBIDDEN:
+            assert bad not in html, f"{surface} leaked {bad!r}: {html[:400]}"
+
+    def test_settings_cloud_partner_clean(self):
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        self._assert_clean(to_xml(_plans_ad("inst-1", lang="en")), "settings/cloud _plans_ad")
+
+    def test_settings_cloud_partner_degraded_cta(self):
+        """An unpriced/malformed partner offer degrades to a real partner-support
+        contact CTA, never a dead-end note (BLOCKER 6). The pre-change surface
+        rendered only the bare note for this case, giving the partner-managed
+        user no actionable way to reach their partner."""
+        import celerp.gateway.state as gw_state
+        from fasthtml.common import to_xml
+        from ui.routes.settings_cloud import _plans_ad
+        # Partner mode with no usable offer: partner identity + support_url only.
+        gw_state._commercial_context = {
+            "commercial_mode": "partner_managed",
+            "implementation": {"display_name": "Partner Co",
+                               "support_url": "https://partner.example.com/support"},
+        }
+        html = to_xml(_plans_ad("inst-1", lang="en"))
+        assert "cloud-partner-offer__contact" in html, (
+            f"unpriced partner offer did not render a contact CTA: {html[:400]}")
+        assert "https://partner.example.com/support" in html
+        self._assert_clean(html, "settings/cloud degraded partner CTA")
+
+    def test_setup_wizard_partner_clean(self):
+        from fasthtml.common import to_xml
+        from ui.routes.setup import _cloud_form
+        self._assert_clean(to_xml(_cloud_form()), "setup _cloud_form")
+
+    def test_auth_gate_partner_clean(self):
+        from fasthtml.common import to_xml
+        from ui.routes.auth import _direct_connection_gate
+        self._assert_clean(
+            to_xml(_direct_connection_gate("a@example.com", "pw")), "auth sign-in gate")
+
+    def test_upgrade_banner_partner_clean(self):
+        from fasthtml.common import to_xml
+        from ui.components.cloud_gate import upgrade_banner
+        # Default price call site and the explicit-price backup-tab call site.
+        self._assert_clean(
+            to_xml(upgrade_banner("Feature", "desc", plan="cloud", lang="en")),
+            "upgrade_banner default")
+        self._assert_clean(
+            to_xml(upgrade_banner("Backup", "desc", price="USD $29/mo",
+                                  plan="cloud", lang="en")),
+            "upgrade_banner explicit price (settings.py backup tab)")
+
+    def test_ai_showcase_partner_clean(self):
+        from fasthtml.common import to_xml
+        from celerp_ai.ui_routes import _showcase_view
+        self._assert_clean(to_xml(_showcase_view(lang="en")), "AI showcase")
+
+    def test_ai_quota_card_partner_clean(self):
+        from fasthtml.common import to_xml
+        from celerp_ai.ui_routes import _quota_exceeded_card
+        detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai"}
+        html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
+        self._assert_clean(html, "AI quota card (ai tier)")
+        detail_cloud = {"instance_id": "inst-1", "limit": 100, "tier": "cloud"}
+        html2 = to_xml(_quota_exceeded_card(detail_cloud, user_bubble="", lang="en"))
+        self._assert_clean(html2, "AI quota card (cloud tier)")
+
+    def test_ai_quota_card_prefers_relay_url_never(self):
+        """A relay-supplied upgrade_url on the detail is never used in partner
+        mode; the CTA routes through policy."""
+        from fasthtml.common import to_xml
+        from celerp_ai.ui_routes import _quota_exceeded_card
+        detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai",
+                  "upgrade_url": "https://celerp.com/subscribe?plan=ai"}
+        html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
+        self._assert_clean(html, "AI quota card with relay upgrade_url")
+
+    def test_ai_403_body_partner_clean(self):
+        from celerp_ai.routes import _batch_upgrade_url
+        url = _batch_upgrade_url()
+        for bad in self._FORBIDDEN:
+            assert bad not in url, f"AI 403 body leaked {bad!r}: {url}"
+
+    def test_session_gate_401_partner_clean(self):
+        from celerp.gateway.state import build_commercial_handoff
+        from celerp.config import ensure_instance_id
+        url = build_commercial_handoff(ensure_instance_id(), "subscribe", "cloud")
+        for bad in self._FORBIDDEN:
+            assert bad not in url, f"session-gate 401 leaked {bad!r}: {url}"
+
+    def test_ai_api_401_partner_clean(self):
+        from celerp.gateway.state import build_commercial_handoff
+        from celerp.config import ensure_instance_id
+        url = build_commercial_handoff(ensure_instance_id(), "subscribe", "ai")
+        for bad in self._FORBIDDEN:
+            assert bad not in url, f"AI-api 401 leaked {bad!r}: {url}"
+
+    def test_connectors_entitlement_partner_clean(self):
+        from fasthtml.common import to_xml
+        from ui.routes.settings_connectors import _entitlement_cta
+        self._assert_clean(to_xml(_entitlement_cta(lang="en")), "connectors entitlement CTA")
+
+    def test_modules_license_upsell_partner_clean(self):
+        from fasthtml.common import to_xml
+        from ui.routes.modules_page import _license_upsell
+        self._assert_clean(to_xml(_license_upsell(lang="en")), "modules license-move CTA")
+
+    def test_ai_topup_card_routes_through_policy(self):
+        """The partner-mode low-credit topup card href is not a direct
+        /subscribe/topup (BLOCKER 2)."""
+        from fasthtml.common import to_xml
+        from celerp_ai.ui_routes import _quota_exceeded_card
+        detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai"}
+        html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
+        assert "/subscribe/topup" not in html

@@ -336,6 +336,156 @@ class TestFirstBootSequence:
         assert cfg["server"]["api_port"] == 8000
 
 
+# ---------------------------------------------------------------------------
+# Deployment credential ([cloud] deployment_credential / deployment_associated)
+# ---------------------------------------------------------------------------
+
+class TestDeploymentCredential:
+    """The reusable partner deployment credential and its association marker
+    survive [cloud] writes, load into settings, and are removed only through the
+    dedicated association helper."""
+
+    def test_write_config_roundtrips_deployment_credential(self, tmp_path, monkeypatch):
+        """A write that touches only unrelated [cloud] fields must preserve both
+        deployment keys: the not-yet-consumed credential (when non-empty) and the
+        association marker (when true). Without this every [cloud] write would
+        silently erase the credential before the first hello can send it."""
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({
+            "cloud": {
+                "token": "gw-live",
+                "instance_id": "iid-1",
+                "public_url": "",
+                "backup_encryption_key": "",
+                "tos_version": "",
+                "deployment_credential": "deploy-cred-xyz",
+                "deployment_associated": True,
+            },
+        })
+        content = cfg_file.read_text()
+        assert 'deployment_credential = "deploy-cred-xyz"' in content
+        assert "deployment_associated = true" in content
+        cfg = mod.read_config()
+        assert cfg["cloud"]["deployment_credential"] == "deploy-cred-xyz"
+        assert cfg["cloud"]["deployment_associated"] is True
+
+    def test_write_config_omits_empty_deployment_credential(self, tmp_path, monkeypatch):
+        """An empty credential and an unset marker emit neither key (conditional,
+        mirroring the disconnected idiom) so a direct install's config is unchanged."""
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({
+            "cloud": {"token": "gw", "instance_id": "iid", "public_url": "",
+                      "backup_encryption_key": "", "tos_version": ""},
+        })
+        content = cfg_file.read_text()
+        assert "deployment_credential" not in content
+        assert "deployment_associated" not in content
+
+    def test_load_cloud_config_reads_deployment_fields(self, tmp_path, monkeypatch):
+        """Startup load reads both new [cloud] fields into settings."""
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({
+            "cloud": {"token": "", "instance_id": "", "public_url": "",
+                      "backup_encryption_key": "", "tos_version": "",
+                      "deployment_credential": "cred-load", "deployment_associated": True},
+        })
+        mod.settings.deployment_credential = ""
+        mod.settings.deployment_associated = False
+        mod.load_cloud_config()
+        assert mod.settings.deployment_credential == "cred-load"
+        assert mod.settings.deployment_associated is True
+
+    def test_record_deployment_association_persists_identity(self, tmp_path, monkeypatch):
+        """The helper persists the relay-issued gateway_token and instance_id, pops
+        the credential, sets the marker, drops the consumed nonce, and updates the
+        in-memory settings - all in one write."""
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({
+            "cloud": {"token": "", "instance_id": "", "public_url": "",
+                      "backup_encryption_key": "", "tos_version": "",
+                      "deployment_credential": "cred-to-pop",
+                      "deployment_nonce": "nonce-consumed"},
+        })
+        mod.settings.deployment_credential = "cred-to-pop"
+        mod.settings.deployment_associated = False
+        mod.settings.deployment_nonce = "nonce-consumed"
+
+        mod.record_deployment_association(gateway_token="gw-live", instance_id="iid-relay")
+
+        cfg = mod.read_config()
+        cloud = cfg.get("cloud", {})
+        assert cloud["token"] == "gw-live"
+        assert cloud["instance_id"] == "iid-relay"
+        assert cloud["deployment_associated"] is True
+        assert "deployment_credential" not in cloud
+        assert "deployment_nonce" not in cloud
+        assert mod.settings.deployment_credential == ""
+        assert mod.settings.deployment_associated is True
+        assert mod.settings.gateway_token == "gw-live"
+        assert mod.settings.gateway_instance_id == "iid-relay"
+        content = cfg_file.read_text()
+        assert "deployment_credential" not in content
+        assert "deployment_associated = true" in content
+
+    def test_ensure_deployment_nonce_generates_and_persists(self, tmp_path, monkeypatch):
+        """With no nonce set, the helper generates a non-empty value, stores it in
+        settings, and persists it to config."""
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.settings.deployment_nonce = ""
+
+        nonce = mod.ensure_deployment_nonce()
+
+        assert nonce
+        assert mod.settings.deployment_nonce == nonce
+        cfg = mod.read_config()
+        assert cfg["cloud"]["deployment_nonce"] == nonce
+
+    def test_ensure_deployment_nonce_reuses_existing(self, tmp_path, monkeypatch):
+        """An already-set nonce is returned as-is, never regenerated."""
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.settings.deployment_nonce = "existing-nonce"
+
+        nonce = mod.ensure_deployment_nonce()
+
+        assert nonce == "existing-nonce"
+        assert mod.settings.deployment_nonce == "existing-nonce"
+
+    def test_write_config_roundtrips_deployment_nonce(self, tmp_path, monkeypatch):
+        """The serializer emits deployment_nonce when set and re-reads it."""
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({
+            "cloud": {"token": "", "instance_id": "", "public_url": "",
+                      "backup_encryption_key": "", "tos_version": "",
+                      "deployment_nonce": "nonce-abc123"},
+        })
+        content = cfg_file.read_text()
+        assert 'deployment_nonce = "nonce-abc123"' in content
+        cfg = mod.read_config()
+        assert cfg["cloud"]["deployment_nonce"] == "nonce-abc123"
+
+    def test_write_config_omits_empty_deployment_nonce(self, tmp_path, monkeypatch):
+        """An unset nonce emits no key, matching the credential/disconnected idiom."""
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({
+            "cloud": {"token": "gw", "instance_id": "iid", "public_url": "",
+                      "backup_encryption_key": "", "tos_version": ""},
+        })
+        content = cfg_file.read_text()
+        assert "deployment_nonce" not in content
+
+    def test_load_cloud_config_reads_deployment_nonce(self, tmp_path, monkeypatch):
+        """Startup load reads deployment_nonce from [cloud] into settings."""
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({
+            "cloud": {"token": "", "instance_id": "", "public_url": "",
+                      "backup_encryption_key": "", "tos_version": "",
+                      "deployment_nonce": "nonce-load"},
+        })
+        mod.settings.deployment_nonce = ""
+        mod.load_cloud_config()
+        assert mod.settings.deployment_nonce == "nonce-load"
+
+
 def test_tomli_declared_for_pre_311():
     """celerp/config.py falls back to `import tomli as tomllib` on 3.10; the
     fallback only works if packaging declares tomli for those interpreters."""

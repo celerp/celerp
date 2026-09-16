@@ -55,10 +55,18 @@ from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
 from celerp.session_gate import require_session_token
 
-def _upgrade_url() -> str:
-    from celerp.config import settings
-    from celerp.gateway.state import build_subscribe_url
-    return build_subscribe_url(settings.gateway_instance_id, extra="plan=ai")
+def _batch_upgrade_url() -> str:
+    """The AI batch-upgrade destination, resolved through the commercial policy.
+
+    This is a backend API error body with no authenticated app session
+    guaranteed, so it resolves through the pre-auth public resolver: on a
+    celerp_direct install this is the anonymous plan=ai subscribe URL with no
+    instance_id (this path can never mint a handoff token for a named
+    checkout); on a partner-managed install it routes to the partner support or
+    Enterprise route, never a direct checkout.
+    """
+    from celerp.gateway.state import build_public_acquisition_url
+    return build_public_acquisition_url("ai")
 _CLOUD_FILE_LIMIT = 1
 
 # AI-specific rate limiter: tighter than the global 60/min default.
@@ -169,7 +177,7 @@ async def _enforce_cloud_file_limit(file_ids: list[str] | None) -> None:
             detail=(
                 f"Batch file processing requires Connect + AI. "
                 f"You can upload {_CLOUD_FILE_LIMIT} file at a time on your current plan. "
-                f"Upgrade at {_upgrade_url()}"
+                f"Upgrade at {_batch_upgrade_url()}"
             ),
         )
 
