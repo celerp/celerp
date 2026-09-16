@@ -747,18 +747,16 @@ class TestRefreshJtiExpiry:
 # ---------------------------------------------------------------------------
 
 class TestHotPathQueryCount:
-    """Prove that the nonce and drain checks do not issue redundant DB queries.
+    """Prove hot-path state checks issue only the DB queries their trust model requires.
 
-    Baseline (pre-cache): every GET fires an extra SELECT on user_auth_state;
-    every POST fires an additional get_session_ctx() + SELECT on system_runtime_state.
-
-    Post-cache: nonce hit is served from memory; drain flag is served from memory.
-    These tests fail before the cache is added and pass after.
+    Session nonces are authentication state and must be read from Postgres on every
+    validation so committed revocations are immediately visible across workers. Drain
+    state is not authentication state and may continue to use its process-local cache.
     """
 
     @pytest.mark.asyncio
-    async def test_nonce_check_uses_cache_on_repeat_calls(self, session):
-        """get_nonce called twice for the same user should only hit DB once (cache hit)."""
+    async def test_nonce_check_reads_authoritative_db_once_per_call(self, session):
+        """Each get_nonce call performs exactly one authoritative auth-state read."""
         from celerp.services import session_tracker as _st
         import uuid as _uuid
 
@@ -789,13 +787,13 @@ class TestHotPathQueryCount:
         assert n1 == "test-nonce-abc"
         assert call_count == 1, f"First get_nonce must hit DB exactly once, got {call_count}"
 
-        # Second call (same process, same user_id): must use cache, not hit DB again
+        # Every validation must re-read authoritative auth state, but exactly once.
         call_count = 0
         n2 = await _st.get_nonce(session, user_id)
         assert n2 == "test-nonce-abc"
-        assert call_count == 0, (
-            f"Second get_nonce for same user must be served from cache (0 DB hits), got {call_count}. "
-            "This is the hot path regression: every authenticated request fires an extra SELECT."
+        assert call_count == 1, (
+            f"Second get_nonce must perform exactly one UserAuthState read, got {call_count}. "
+            "More than one is redundant hot-path DB work."
         )
 
     @pytest.mark.asyncio
