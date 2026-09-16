@@ -450,3 +450,35 @@ async def test_22_fresh_login_after_revocation_mints_on_current_generation(engin
         "freshly minted post-revocation token is not usable on the current generation"
     assert len(await _registry_jtis(sessionmaker, user_id)) == 1, \
         "fresh login did not register its JTI"
+
+
+
+async def test_23_stale_identity_map_cannot_revoke_newer_generation(engine, seeded, sessionmaker):
+    """A request that loaded N0 before another transaction committed N1 must
+    refresh the auth-state row under FOR UPDATE before comparing expected_snonce.
+    The stale N0 request must not rotate the newer N1 session."""
+    user_id = seeded["user_id"]
+    n0 = seeded["n0"]
+
+    stale = await _fresh_session(engine)
+    try:
+        assert await session_tracker.get_nonce(stale, str(user_id)) == n0
+
+        revoker = await _fresh_session(engine)
+        try:
+            await session_tracker.invalidate_sessions(
+                revoker, str(user_id), expected_snonce=n0
+            )
+        finally:
+            await revoker.close()
+
+        n1 = await _current_nonce(sessionmaker, user_id)
+        assert n1 != n0
+
+        await session_tracker.invalidate_sessions(
+            stale, str(user_id), expected_snonce=n0
+        )
+    finally:
+        await stale.close()
+
+    assert await _current_nonce(sessionmaker, user_id) == n1

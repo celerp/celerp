@@ -26,7 +26,7 @@ from ui.api_client import login as api_login, login_force as api_login_force, lo
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.components.shell import auth_shell, flash, page_title, star_supporter_card, toast_header
-from ui.config import COOKIE_NAME, set_session_cookies, clear_session_cookies
+from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, clear_session_cookies
 from ui.i18n import t, get_lang
 from ui.security import is_app_local_path
 from celerp.config import settings as _settings
@@ -400,24 +400,26 @@ def setup_routes(app):
     @app.post("/logout")
     async def logout(request: Request):
         token = request.cookies.get(COOKIE_NAME)
-        if token:
-            await api_logout(token)
+        refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
+        if token or refresh_token:
+            await api_logout(token, refresh_token)
         resp = RedirectResponse("/login", status_code=302)
-        clear_session_cookies(resp)
+        clear_session_cookies(resp, request)
         return resp
 
     @app.get("/logout")
     async def logout_get(request: Request):
         """GET fallback for no-JS clients and the idle-timer. Clears tokens and redirects."""
         token = request.cookies.get(COOKIE_NAME)
-        if token:
-            await api_logout(token)
+        refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
+        if token or refresh_token:
+            await api_logout(token, refresh_token)
         from urllib.parse import urlencode
         params = {k: v for k, v in (("reason", request.query_params.get("reason", "")),
                                     ("next", request.query_params.get("next", ""))) if v}
         dest = f"/login?{urlencode(params)}" if params else "/login"
         resp = RedirectResponse(dest, status_code=302)
-        clear_session_cookies(resp)
+        clear_session_cookies(resp, request)
         return resp
 
     @app.get("/health")

@@ -708,12 +708,14 @@ async def patch_user(
         if payload.is_active != link.is_active:
             security_change = True
         link.is_active = payload.is_active
-    await session.commit()
     if security_change:
-        # Rotates the target user's nonce (commits itself), so every existing
-        # access and refresh token for them is rejected on next use.
+        # invalidate_sessions commits this same session, so the membership
+        # change and nonce rotation are one transaction: neither can persist
+        # without the other.
         from celerp.services.session_tracker import invalidate_sessions
         await invalidate_sessions(session, str(user_id))
+    else:
+        await session.commit()
     return {"ok": True}
 
 

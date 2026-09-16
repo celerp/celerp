@@ -378,11 +378,18 @@ async def login(email: str, password: str) -> tuple[str, str]:
         return data["access_token"], data["refresh_token"]
 
 
-async def logout(access_token: str) -> None:
-    """Clear all active sessions in the API process (rotates nonce, invalidates all tokens)."""
+async def logout(access_token: str | None, refresh_token: str | None = None) -> None:
+    """Best-effort server-side logout using whichever session credential remains.
+
+    A browser can reach logout after its access cookie expires while its refresh
+    cookie is still valid. Send the refresh credential as a fallback so that case
+    still rotates the server nonce before the browser clears local cookies.
+    """
+    headers = {"Authorization": f"Bearer {access_token}"} if access_token else None
+    payload = {"refresh_token": refresh_token} if refresh_token else None
     try:
         async with _anon_client(timeout=5.0) as c:
-            await c.post("/auth/logout", headers={"Authorization": f"Bearer {access_token}"})
+            await c.post("/auth/logout", headers=headers, json=payload)
     except Exception:
         pass  # best-effort: cookie is cleared regardless
 
