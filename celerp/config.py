@@ -42,6 +42,26 @@ class Settings(BaseSettings):
     # No `[gateway_token]` means no gateway connection, no product telemetry, and
     # no cloud dependency, except a startup subscription check.
     gateway_token: str = ""
+    # Reusable partner deployment credential. A one-time registration input sent
+    # only on the first relay `hello` of a partner-provisioned install, distinct
+    # from the live-session gateway_token: it associates the instance with the
+    # partner and is removed from bootstrap state once the relay accepts it.
+    # Env CELERP_DEPLOYMENT_CREDENTIAL or [cloud] deployment_credential.
+    deployment_credential: str = Field(
+        default="",
+        validation_alias=AliasChoices("CELERP_DEPLOYMENT_CREDENTIAL", "deployment_credential"),
+    )
+    # True once the relay has accepted the deployment credential and associated
+    # this instance. Suppresses any re-send of the credential (an env-sourced
+    # credential cannot be erased from the environment). Persisted as
+    # [cloud] deployment_associated.
+    deployment_associated: bool = False
+    # Idempotency nonce for the partner deployment association. Generated once,
+    # persisted before the first associate call, and reused on every retry and
+    # restart so a lost response cannot create a duplicate association: the relay
+    # keys the relationship on (partner, nonce). Dropped once consumed on a
+    # successful association. Persisted as [cloud] deployment_nonce.
+    deployment_nonce: str = ""
     # True after an explicit Cloud disconnect: the startup probe must not
     # re-link the install. Cleared when the user reconnects (settings or a
     # sign-in flow applies a fresh token). Persisted as [cloud] disconnected.
@@ -67,6 +87,19 @@ class Settings(BaseSettings):
     storage_s3_bucket: str = ""
     storage_s3_access_key: str = ""
     storage_s3_secret_key: str = ""
+    # Self-hosted only: the operator declares that this install runs on a
+    # customer-owned external database covered by the Team subscription. Default
+    # off; set true via EXTERNAL_DB / [cloud] external_db. It gates Team-infra
+    # visibility and the post-lapse "restore backup" recovery UI, so it is an
+    # explicit, durable opt-in and is never inferred from database_url (every
+    # ordinary self-hosted install points database_url at its own Postgres, which
+    # is not the same as opting into customer-owned Team infrastructure).
+    # Packaged builds detect the external database from celerp-config.json instead
+    # and never read this field.
+    external_db: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("EXTERNAL_DB", "external_db"),
+    )
     # Data directory for runtime artifacts (uploads, caches).
     # Accepts CELERP_DATA_DIR (Electron) or DATA_DIR (legacy). Defaults to ./data.
     data_dir: Path = Field(
@@ -152,6 +185,51 @@ def persist_cloud_settings(**values: str) -> None:
     write_config(cfg)
 
 
+def ensure_deployment_nonce() -> str:
+    """Return the deployment association nonce, generating and persisting one when
+    absent.
+
+    The nonce must be persisted before the association call so a lost response
+    plus a retry reuses the same value and resolves to the same association
+    (idempotency keyed on partner + nonce). A persist failure propagates so the
+    caller can abort before any network call rather than send an unpersisted
+    nonce that a later boot could not reproduce.
+    """
+    if settings.deployment_nonce:
+        return settings.deployment_nonce
+    import uuid as _uuid
+    nonce = _uuid.uuid4().hex
+    settings.deployment_nonce = nonce
+    persist_cloud_settings(deployment_nonce=nonce)
+    return nonce
+
+
+def record_deployment_association(gateway_token: str, instance_id: str) -> None:
+    """Record a successful partner deployment association durably in one write.
+
+    Persists the relay-issued gateway_token and instance_id, sets the sticky
+    deployment_associated marker, and removes the now-consumed deployment
+    credential and nonce from [cloud]. persist_cloud_settings never erases a key,
+    so this dedicated helper is what drops them. The disk write precedes the
+    in-memory updates: if the write raises, the caller sees the failure and no
+    live-but-unpersisted identity is carried, so the next boot's idempotent retry
+    can recover.
+    """
+    cfg = read_config()
+    cloud = cfg.setdefault("cloud", {})
+    cloud["token"] = gateway_token
+    cloud["instance_id"] = instance_id
+    cloud["deployment_associated"] = True
+    cloud.pop("deployment_credential", None)
+    cloud.pop("deployment_nonce", None)
+    write_config(cfg)
+    settings.gateway_token = gateway_token
+    settings.gateway_instance_id = instance_id
+    settings.deployment_credential = ""
+    settings.deployment_nonce = ""
+    settings.deployment_associated = True
+
+
 def load_cloud_config() -> None:
     """Load cloud settings from config.toml into the Settings object.
 
@@ -190,6 +268,21 @@ def load_cloud_config() -> None:
         settings.celerp_public_url = cloud["public_url"]
     if cloud.get("backup_encryption_key") and not settings.backup_encryption_key:
         settings.backup_encryption_key = cloud["backup_encryption_key"]
+    # Deployment credential + association marker. The credential is only consumed
+    # on the first hello, so a config value loads unless env already supplied one;
+    # the marker is sticky (an associated install must never re-offer it).
+    if cloud.get("deployment_credential") and not settings.deployment_credential:
+        settings.deployment_credential = cloud["deployment_credential"]
+    if cloud.get("deployment_associated"):
+        settings.deployment_associated = True
+    # The association nonce is reused across boots: reload it so a retry after a
+    # lost response resolves to the same association rather than minting a new one.
+    if cloud.get("deployment_nonce") and not settings.deployment_nonce:
+        settings.deployment_nonce = cloud["deployment_nonce"]
+    # Self-hosted external-database opt-in. Durable [cloud] key so the operator's
+    # declaration survives restarts; loads unless the environment already set it.
+    if cloud.get("external_db") and not settings.external_db:
+        settings.external_db = True
     # Auto-enable secure cookies when relay-connected (HTTPS via Caddy/Cloudflare)
     if settings.gateway_token and not os.environ.get("COOKIE_SECURE"):
         settings.cookie_secure = True
@@ -313,6 +406,32 @@ def write_config(cfg: dict) -> None:
         # before this shipped), matching the embedded/headless idiom.
         if cloud.get("disconnected"):
             lines.append("disconnected = true")
+        # Self-hosted last-known-good commercial context, compact JSON of the
+        # already-validated envelope, so a partner-managed install presents its
+        # partner identity across an offline restart instead of defaulting to
+        # celerp_direct. Emitted only when set (a direct install that has never
+        # cached one carries no key); serialised through the JSON string encoder
+        # so embedded quotes survive the TOML round-trip.
+        if cloud.get("commercial_context_json"):
+            import json as _json
+            lines.append(
+                f"commercial_context_json = {_json.dumps(cloud['commercial_context_json'])}")
+        # Deployment credential survives every [cloud] write until the relay
+        # accepts it: emitted only while non-empty, and the association marker
+        # only once set. A direct install carries neither key. Without this, the
+        # fixed-key serializer would drop the credential before the first hello.
+        if cloud.get("deployment_credential"):
+            lines.append(f'deployment_credential = {_str(cloud["deployment_credential"])}')
+        # The association nonce persists across boots until an association
+        # consumes it, so a retry reuses it; emitted only while set.
+        if cloud.get("deployment_nonce"):
+            lines.append(f'deployment_nonce = {_str(cloud["deployment_nonce"])}')
+        if cloud.get("deployment_associated"):
+            lines.append("deployment_associated = true")
+        # Self-hosted external-database opt-in, emitted only when set. A direct
+        # local install carries no key and reads as off.
+        if cloud.get("external_db"):
+            lines.append("external_db = true")
         lines.append("")
 
     if "storage" in cfg:

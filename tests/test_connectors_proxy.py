@@ -55,7 +55,16 @@ async def test_connectors_tab_shows_trial_cta_when_relay_gates_on_plan():
 
     from fasthtml.common import to_xml
     html = to_xml(panel)
-    assert "celerp.com/subscribe" in html                  # the upgrade CTA link
+    # The CTA points at the same-origin in-app mint route, which resolves the
+    # destination and mints the single-use handoff token server-side at click.
+    assert "/commercial/checkout" in html                  # the same-origin mint route
+    assert "intent=subscribe" in html
+    assert "sku=cloud" in html
+    assert 'target="_blank"' in html
+    # Fail-closed: the pre-click URL carries no named instance and no celerp.com
+    # host - no instance_id leaks and no cross-host handoff is baked in at render.
+    assert "instance_id=" not in html
+    assert "celerp.com" not in html
     assert "connector-entitlement-cta" in html
     assert "Could not load connectors" not in html
 

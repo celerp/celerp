@@ -17,6 +17,7 @@ import pytest
 from fasthtml.common import to_xml
 
 from ui import i18n
+from ui.i18n import t
 from ui.routes.settings_cloud import (
     _plan_card,
     _backup_summary_card,
@@ -45,11 +46,22 @@ def _xx_lang():
     i18n._cached_load.cache_clear()
 
 
-def test_plan_card_price_suffix_translates():
-    """The "/mo" price suffix resolves at render time (module-render label)."""
+def test_plan_card_renders_caller_supplied_interval_label():
+    """The interval suffix is supplied by the caller and rendered verbatim, so a
+    card can show whatever interval the caller resolved rather than a hardcoded
+    per-month suffix. A distinct label the card cannot produce on its own proves
+    the suffix comes from the caller: it is absent on any build that resolves the
+    suffix internally."""
     html = to_xml(_plan_card("Connect", "USD $29", "desc", ["a", "b"],
-                             "https://example.test/subscribe", lang="xx"))
-    assert "XX_PERMO" in html
+                             "https://example.test/subscribe",
+                             "XX_INTERVAL_SENTINEL", lang="xx"))
+    assert "XX_INTERVAL_SENTINEL" in html
+
+    # The common monthly case: the caller passes the language-resolved label.
+    monthly = to_xml(_plan_card("Connect", "USD $29", "desc", ["a", "b"],
+                                "https://example.test/subscribe",
+                                t("settings_cloud.per_mo", "xx"), lang="xx"))
+    assert "XX_PERMO" in monthly
 
 
 def test_backup_countdown_translates():

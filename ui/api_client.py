@@ -691,14 +691,18 @@ async def get_company(token: str) -> dict:
 
 
 def role_from_company(company: dict) -> str:
-    """The one UI read of the DB-authoritative role out of a /companies/me payload.
-
-    Returns the server's ``current_role`` (empty string when absent), so no UI
-    surface re-implements the fetch-and-extract or falls back to the unsigned
-    cookie claim. Callers that also need the company settings (the permission
-    gate) pass the company they already fetched, avoiding a second round trip.
-    """
+    """Return the DB-authoritative current role from /companies/me."""
     return company.get("current_role") or ""
+
+
+async def get_commercial_state(token: str, timeout: float = 3.0) -> dict:
+    """Fetch the live commercial state (feature_flags, commercial_context,
+    partner_identity, commercial_mode) the API process holds from the relay.
+
+    Short timeout so a hung API degrades the settings page to neutral quickly
+    rather than hanging on the render path."""
+    async with _api_client(token, timeout=timeout) as c:
+        return _raise(await c.get("/companies/commercial-state")).json()
 
 
 async def patch_company(token: str, data: dict) -> dict:
@@ -732,12 +736,7 @@ async def patch_company(token: str, data: dict) -> dict:
 
 
 async def create_company(token: str, company_name: str) -> tuple[str, str]:
-    """Create a new company linked to the current user.
-
-    Returns the ``(access_token, refresh_token)`` pair scoped to the new company,
-    so the caller can seat a complete session. Dropping the refresh token here
-    left the new company's session unable to slide and forced a re-login at the
-    access token's first expiry."""
+    """Create a new company linked to the current user and return its token pair."""
     async with _api_client(token) as c:
         r = _raise(await c.post("/companies", json={"name": company_name})).json()
         return r["access_token"], r["refresh_token"]
@@ -3091,6 +3090,22 @@ async def activate_relay(token: str) -> dict:
     """POST /settings/cloud-activate — call relay /auth/activate, start gateway."""
     async with _api_client(token) as c:
         return _raise(await c.post("/settings/cloud-activate")).json()
+
+
+async def resolve_partner_claim(token: str, claim_token: str) -> dict:
+    """POST /settings/partner-claim/resolve - preview the partner behind a claim
+    token. Binds nothing. Returns the identity preview or a neutral error dict."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            "/settings/partner-claim/resolve", json={"claim_token": claim_token})).json()
+
+
+async def accept_partner_claim(token: str, claim_token: str) -> dict:
+    """POST /settings/partner-claim/accept - accept the claim; the relay binds the
+    relationship and pushes the new commercial context."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            "/settings/partner-claim/accept", json={"claim_token": claim_token})).json()
 
 
 async def apply_relay_token(token: str, payload: dict) -> dict:

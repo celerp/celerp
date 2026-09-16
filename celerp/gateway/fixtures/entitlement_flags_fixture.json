@@ -1,0 +1,43 @@
+{
+  "free": {
+    "external_db": false,
+    "external_storage": false,
+    "grace_period_ends": null,
+    "payments_enabled": false
+  },
+  "full_real_shape": {
+    "external_db": true,
+    "external_storage": true,
+    "grace_period_ends": "2026-06-01T00:00:00+00:00",
+    "payments_enabled": true
+  },
+  "malformed_grace": {
+    "external_db": true,
+    "external_storage": true,
+    "grace_period_ends": "2026-06-01T00:00:00",
+    "payments_enabled": false
+  },
+  "missing_flag": {
+    "external_storage": false,
+    "grace_period_ends": null,
+    "payments_enabled": false
+  },
+  "team_active": {
+    "external_db": true,
+    "external_storage": true,
+    "grace_period_ends": null,
+    "payments_enabled": false
+  },
+  "team_expired": {
+    "external_db": false,
+    "external_storage": false,
+    "grace_period_ends": null,
+    "payments_enabled": false
+  },
+  "team_grace": {
+    "external_db": true,
+    "external_storage": true,
+    "grace_period_ends": "2026-06-01T00:00:00+00:00",
+    "payments_enabled": false
+  }
+}
