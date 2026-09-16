@@ -916,7 +916,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         from ui.routes.settings import _check_permission
-        denied = await _check_permission(request, "view_contacts")
+        denied = await _check_permission(request, "view_contacts", page_view=True)
         if denied:
             return denied
         q = request.query_params.get("q", "")
@@ -958,7 +958,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         from ui.routes.settings import _check_permission
-        denied = await _check_permission(request, "view_contacts")
+        denied = await _check_permission(request, "view_contacts", page_view=True)
         if denied:
             return denied
         q = request.query_params.get("q", "")

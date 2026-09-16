@@ -134,6 +134,25 @@ class LocalBackend:
         return f"/static/attachments/{company_id}/{dest_name}"
 
 
+def local_attachment_path(company_id: str, filename: str) -> Path | None:
+    """Resolve a stored attachment to its on-disk path for local delivery.
+
+    Returns the file path only when it exists inside this company's own
+    attachment directory. A name carrying a separator or a parent reference, or
+    a resolved path that escapes the company directory, yields None so the
+    caller serves a 404 rather than another tenant's file. This owns the
+    on-disk layout shared with :class:`LocalBackend`.
+    """
+    if not filename or filename in (".", "..") or "/" in filename or "\\" in filename:
+        return None
+    from celerp.config import settings  # lazy: settings not ready at import time
+    root = (settings.data_dir / "static" / "attachments" / str(company_id)).resolve()
+    target = (root / filename).resolve()
+    if target.parent != root or not target.is_file():
+        return None
+    return target
+
+
 # ── S3Backend ─────────────────────────────────────────────────────────────────
 
 def _s3_client(endpoint: str, access_key: str, secret_key: str):

@@ -225,7 +225,7 @@ def setup_routes(app) -> None:
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        if (r := await _check_permission(request, "view_subscriptions")):
+        if (r := await _check_permission(request, "view_subscriptions", page_view=True)):
             return r
         q = request.query_params.get("q", "")
         page = int(request.query_params.get("page", 1))

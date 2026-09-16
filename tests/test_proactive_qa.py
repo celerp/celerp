@@ -28,7 +28,7 @@ _COMPANY_THB = {
     "name": "Acme Co", "currency": "THB", "timezone": "Asia/Bangkok",
     "fiscal_year_start": "01-01", "slug": "acme-co", "country": "TH",
     "address": "", "phone": "", "email": "", "tax_id": "",
-    "docs_default_preset": "last_12m",
+    "docs_default_preset": "last_12m", "current_role": "owner",
 }
 _COMPANY_USD = {**_COMPANY_THB, "name": "ACME Corp", "currency": "USD", "timezone": "America/New_York"}
 _COMPANY_EUR = {**_COMPANY_THB, "name": "Euro GmbH", "currency": "EUR", "timezone": "Europe/Berlin"}

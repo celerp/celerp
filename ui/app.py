@@ -48,7 +48,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.requests import Request
 from starlette.responses import Response
 
-from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, cookie_domain
+from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, clear_session_cookies, cookie_domain, is_stale_cookie
 from ui.routes import (
     auth, setup, search, settings, settings_import,
     settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
@@ -168,6 +168,20 @@ class TokenRefreshMiddleware:
             from ui.api_client import refresh_access_token, APIError as _APIError
             try:
                 new_access, new_refresh = await refresh_access_token(refresh_token)
+            except _APIError as exc:
+                if exc.status == 401:
+                    # The refresh credential is dead or revoked, so no session can
+                    # be minted: converge to login now and drop the rejected
+                    # cookies, rather than letting the route bounce on its own 401.
+                    resp = _401_redirect("Refresh token rejected", request)
+                    await resp(scope, receive, send)
+                    return
+                # A transient upstream failure (5xx) is not a revoked session:
+                # leave the request unauthenticated and let the route's own guard
+                # decide, without discarding a still-usable credential.
+            except Exception:
+                pass
+            else:
                 existing = dict(request.cookies)
                 existing[COOKIE_NAME] = new_access
                 existing[REFRESH_COOKIE_NAME] = new_refresh
@@ -176,20 +190,42 @@ class TokenRefreshMiddleware:
                     (k, v) for k, v in scope.get("headers", [])
                     if k.lower() != b"cookie"
                 ] + [(b"cookie", cookie_header.encode())]
-            except Exception:
-                pass
 
-        # Case 2: access token present but past half-life
-        if not new_access and access_token and refresh_token and _token_needs_refresh(access_token):
+        # A pre-v2 / wrong-type access cookie is rejected outright by the API, so
+        # it must converge to login now rather than waiting for its expiry.
+        stale_access = bool(access_token) and is_stale_cookie(request)
+
+        # Case 2: access token present and either past half-life or a stale
+        # pre-v2 token - exchange it for a v2 pair.
+        if not new_access and access_token and refresh_token and (
+            _token_needs_refresh(access_token) or stale_access
+        ):
             from ui.api_client import refresh_access_token, APIError as _APIError
             try:
                 new_access, new_refresh = await refresh_access_token(refresh_token)
+            except _APIError as exc:
+                if exc.status == 401:
+                    # A revoked refresh credential means this session is over even
+                    # though the access token has not expired yet: converge to
+                    # login and clear the cookies instead of serving on borrowed
+                    # time. A transient 5xx keeps the still-valid access cookie.
+                    resp = _401_redirect("Refresh token rejected", request)
+                    await resp(scope, receive, send)
+                    return
             except Exception:
                 pass
 
+        # A stale pre-v2 cookie that could not be exchanged is NOT cleared here:
+        # the route runs with it, the API rejects it, and the 401 handler
+        # (_401_redirect) is the single place that clears the rejected cookies
+        # and redirects to login. Clearing on the response here instead would
+        # clobber the Set-Cookie of any route that legitimately mints fresh
+        # cookies (login, company switch) whenever the incoming cookie happened
+        # to be stale.
+
         if new_access and new_refresh:
             from celerp.config import settings as _settings
-            max_age = int(_settings.access_token_expire_minutes) * 60
+            from ui.config import ACCESS_COOKIE_MAX_AGE, REFRESH_COOKIE_MAX_AGE
             domain = cookie_domain(request)
 
             def _make_set_cookie(name, value, http_only, max_age_, secure, samesite):
@@ -203,8 +239,8 @@ class TokenRefreshMiddleware:
                 return "; ".join(parts)
 
             extra_cookies = [
-                _make_set_cookie(COOKIE_NAME, new_access, True, max_age, _settings.cookie_secure, "lax"),
-                _make_set_cookie(REFRESH_COOKIE_NAME, new_refresh, True, 86400 * 30, _settings.cookie_secure, "lax"),
+                _make_set_cookie(COOKIE_NAME, new_access, True, ACCESS_COOKIE_MAX_AGE, _settings.cookie_secure, "lax"),
+                _make_set_cookie(REFRESH_COOKIE_NAME, new_refresh, True, REFRESH_COOKIE_MAX_AGE, _settings.cookie_secure, "lax"),
             ]
 
             async def send_with_cookies(message):
@@ -300,11 +336,15 @@ from starlette.responses import RedirectResponse as _RR
 
 
 def _401_redirect(detail: str, request: Request | None = None):
-    """Build a /login redirect from a 401 detail string.
+    """Build a /login redirect from a 401 detail string and clear the rejected
+    session cookies.
 
     detail may be bare 'Session expired' or 'Session expired|<ip>' (force-login).
     Any other detail is treated as a generic expiry. For an HTMX request, return HX-Redirect so the
     browser navigates instead of swapping the login page into the fragment that fired the request.
+
+    The rejected access and refresh cookies are deleted on the response so a
+    stale or pre-v2 token cannot drive an endless refresh/redirect loop.
     """
     if detail.startswith("Session expired"):
         parts = detail.split("|", 1)
@@ -314,8 +354,11 @@ def _401_redirect(detail: str, request: Request | None = None):
         params = "reason=expired"
     url = f"/login?{params}{_next_qs(request) if request is not None else ''}"
     if request is not None and request.headers.get("hx-request"):
-        return Response(status_code=200, headers={"HX-Redirect": url})
-    return _RR(url, status_code=302)
+        resp = Response(status_code=200, headers={"HX-Redirect": url})
+    else:
+        resp = _RR(url, status_code=302)
+    clear_session_cookies(resp, request)
+    return resp
 
 
 async def ui_401_handler(request: Request, exc):
@@ -340,25 +383,18 @@ _static_dir = os.path.join(os.path.dirname(__file__), "static")
 # Proxy /static/attachments/* to the API server (API and UI serve /static from different dirs)
 @app.route("/static/attachments/{path:path}")
 async def proxy_attachment(request: Request, path: str) -> Response:
-    if not request.cookies.get(COOKIE_NAME):
+    # A dumb authenticated byte proxy: it forwards the caller's bearer token to
+    # the API, which scopes the request to the token's own company and refuses
+    # any other tenant's path. Tenant authorization is never decided here off the
+    # unsigned cookie; this route only requires that a session cookie is present.
+    token = request.cookies.get(COOKIE_NAME)
+    if not token:
         return RedirectResponse("/login", status_code=302)
-    from ui.config import get_company_id
     import ui.api_client as api
-    company_id = get_company_id(request)
-    if not company_id:
-        # Cookie present but no readable company claim: the session is unusable.
-        return RedirectResponse("/login", status_code=302)
-    # LocalBackend.store writes /static/attachments/<company_id>/<file>, so the
-    # first segment is the owning company. Anything outside it belongs to another
-    # tenant and does not exist as far as this caller is concerned. Rejecting '..'
-    # stops a path that starts inside the company folder and then climbs out.
-    segments = [s for s in path.split("/") if s not in ("", ".")]
-    if ".." in segments or not segments or segments[0] != company_id:
-        return Response(status_code=404)
     # Attachments can be large binaries, so they ride the small bulk transport and
     # never contend with interactive page traffic for a connection.
-    async with api._local_client(timeout=30.0, follow_redirects=False, bulk=True) as c:
-        r = await c.get(f"/static/attachments/{'/'.join(segments)}")
+    async with api._local_client(token=token, timeout=30.0, follow_redirects=False, bulk=True) as c:
+        r = await c.get(f"/static/attachments/{path}")
     return Response(content=r.content, media_type=r.headers.get("content-type", "application/octet-stream"), status_code=r.status_code)
 
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")

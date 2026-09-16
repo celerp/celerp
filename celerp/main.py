@@ -23,7 +23,6 @@ assert_secure_jwt()
 ensure_instance_id()
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
-from fastapi.staticfiles import StaticFiles
 
 from celerp.routers import auth, companies, ledger
 from celerp.routers import health, notifications, system, events as events_router_mod
@@ -449,6 +448,7 @@ async def code_conflict_handler(_request: Request, exc: CodeConflictError):
 
 # Kernel routes — always present regardless of module configuration
 app.include_router(health.router, tags=["system"])
+app.include_router(health.settings_router, tags=["settings"])
 app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(ledger.router, prefix="/ledger", tags=["ledger"])
 app.include_router(companies.router, prefix="/companies", tags=["companies"])
@@ -498,4 +498,5 @@ if _os.environ.get("CELERP_DEBUG") == "1":
     app.add_middleware(_debug.DebugMiddleware)
     app.include_router(_debug.router)
 
-app.mount("/static", StaticFiles(directory=str(settings.data_dir / "static"), check_dir=False), name="static")
+from celerp.routers import attachments as _attachments  # noqa: E402
+app.include_router(_attachments.router)

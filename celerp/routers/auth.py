@@ -18,13 +18,15 @@ from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
 from celerp.services.auth import (
-    create_access_token,
-    create_refresh_token,
+    AuthContext,
     decode_refresh_token,
+    get_auth_context,
     get_current_company_id,
     get_current_user,
     hash_password,
-    oauth2_scheme,
+    issue_token_pair,
+    oauth2_scheme_optional,
+    validate_access_token,
     verify_password,
 )
 
@@ -35,30 +37,23 @@ logger = logging.getLogger(__name__)
 
 async def _issue_tokens(
     session: AsyncSession,
-    user_id: str,
-    company_id: str,
+    user: User,
+    company: Company,
     role: str,
-    email: str,
     jti: str | None = None,
+    expected_snonce: str | None = None,
 ) -> dict:
-    """Mint an access+refresh token pair, register the JTI, return response dict."""
-    from datetime import timezone as _tz
-    from celerp.config import settings as _settings
-    from celerp.services.session_tracker import get_nonce as _get_nonce, register_token as _register
-    from celerp.modules.registry import get_enabled as _get_enabled
-    import uuid as _uuid
-    snonce = await _get_nonce(session, user_id)
-    company = await session.get(Company, _uuid.UUID(company_id))
-    enabled_modules = sorted(_get_enabled((company.settings or {}) if company else {}))
-    access_token, token_jti = create_access_token(user_id, company_id, role, email, jti=jti, snonce=snonce, modules=enabled_modules)
-    # Cap at 24h to match create_access_token's internal cap so DB expiry = JWT exp
-    capped_minutes = min(int(_settings.access_token_expire_minutes), 24 * 60)
-    expiry_dt = datetime.now(_tz.utc) + timedelta(minutes=capped_minutes)
-    await _register(session, token_jti, user_id, expiry_dt)
-    return {
-        "access_token": access_token,
-        "refresh_token": create_refresh_token(user_id, company_id, role, email),
-    }
+    """Adapter over the central ``issue_token_pair`` for this router's callers.
+
+    Register, login, force-login and switch-company already hold the ``User``
+    and ``Company`` rows they authenticated against, so they pass them straight
+    through to the one issuance point.  A continuation of an authenticated
+    session (refresh, switch-company) passes *expected_snonce* so it cannot mint
+    onto a generation advanced by a concurrent revocation.
+    """
+    return await issue_token_pair(
+        session, user=user, company=company, role=role, jti=jti, expected_snonce=expected_snonce
+    )
 
 
 def _slugify(name: str) -> str:
@@ -181,7 +176,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     if required:
         _clear_setup_code()
 
-    return await _issue_tokens(session, str(user.id), str(company.id), link.role, user.email)
+    return await _issue_tokens(session, user, company, link.role)
 
 
 from slowapi import Limiter
@@ -219,7 +214,8 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
     if link is None:
         raise HTTPException(status_code=401, detail="No active company membership")
 
-    return await _issue_tokens(session, str(user.id), str(link.company_id), link.role, user.email)
+    company = await session.get(Company, link.company_id)
+    return await _issue_tokens(session, user, company, link.role)
 
 
 @router.post("/login-force")
@@ -245,7 +241,8 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
     if link is None:
         raise HTTPException(status_code=401, detail="No active company membership")
 
-    return await _issue_tokens(session, str(user.id), str(link.company_id), link.role, user.email)
+    company = await session.get(Company, link.company_id)
+    return await _issue_tokens(session, user, company, link.role)
 
 
 class RefreshRequest(BaseModel):
@@ -254,27 +251,48 @@ class RefreshRequest(BaseModel):
 
 @router.post("/token/refresh")
 async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends(get_session)) -> dict:
-    """Exchange a valid refresh token for a new access token + rotated refresh token."""
-    claims = decode_refresh_token(payload.refresh_token)
-    user_id = claims.get("sub")
-    company_id = claims.get("company_id")
-    role = claims.get("role", "")
+    """Exchange a valid refresh token for a new access token + rotated refresh token.
 
-    user = await session.get(User, uuid.UUID(str(user_id)))
+    Fully DB-authoritative: the refresh token is decoded strictly (v2, type,
+    non-empty snonce), then re-bound to current DB state - active user, active
+    membership, company-validity rule, and exact nonce equality. The new pair's
+    role and email come from current DB membership, never from the refresh JWT.
+    Every failure mode returns the same neutral "Invalid refresh token" so the
+    caller learns nothing about which element failed.
+    """
+    claims = decode_refresh_token(payload.refresh_token)
+
+    try:
+        user_uuid = uuid.UUID(str(claims["sub"]))
+        company_uuid = uuid.UUID(str(claims["company_id"]))
+    except (ValueError, AttributeError, KeyError) as e:
+        raise HTTPException(status_code=401, detail="Invalid refresh token") from e
+
+    user = await session.get(User, user_uuid)
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     link = await session.scalar(
         select(UserCompany).where(
             UserCompany.user_id == user.id,
-            UserCompany.company_id == uuid.UUID(str(company_id)),
+            UserCompany.company_id == company_uuid,
             UserCompany.is_active == True,  # noqa: E712
         )
     )
     if link is None:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    return await _issue_tokens(session, user_id, company_id, role, user.email)
+    company = await session.get(Company, company_uuid)
+    if company is None or (not company.is_active and link.role != "owner"):
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    # Nonce equality is enforced once, under the issuance row lock: the refresh
+    # is a continuation, so it presents the snonce it decoded. If a concurrent
+    # revocation advanced the generation, issue_token_pair rejects it (401)
+    # before minting - no separate, unlocked nonce read that could race.
+    return await _issue_tokens(
+        session, user, company, link.role, expected_snonce=claims["snonce"]
+    )
 
 
 @router.post("/api-key")
@@ -323,13 +341,14 @@ async def my_companies(
 @router.post("/switch-company/{company_id}")
 async def switch_company(
     company_id: uuid.UUID,
-    user: User = Depends(get_current_user),
+    ctx: AuthContext = Depends(get_auth_context),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Switch the active company. Returns a new JWT scoped to the target company.
 
     Only succeeds if the user has an active entry in user_companies for that company.
     """
+    user = ctx.user
     link = (
         await session.execute(
             select(UserCompany).where(
@@ -344,7 +363,9 @@ async def switch_company(
     company = await session.get(Company, company_id)
     if company is None or not company.is_active:
         raise HTTPException(status_code=403, detail="Company is deactivated")
-    return await _issue_tokens(session, str(user.id), str(company_id), link.role, user.email)
+    # A company switch is a continuation of the current session: pass the snonce
+    # it authenticated on so a concurrent revocation cannot be jumped over.
+    return await _issue_tokens(session, user, company, link.role, expected_snonce=ctx.snonce)
 
 
 # ── Password Reset ────────────────────────────────────────────────────────────
@@ -433,7 +454,11 @@ async def password_reset_confirm(
     user.auth_hash = hash_password(payload.new_password)
     user.reset_token = None
     user.reset_token_expires = None
-    await session.commit()
+    # Rotate the user's nonce so every access and refresh token issued before the
+    # reset dies immediately (a reset is a security-sensitive credential change).
+    # invalidate_sessions commits the session, so no earlier independent commit.
+    from celerp.services.session_tracker import invalidate_sessions as _invalidate
+    await _invalidate(session, str(user.id))
     return {"detail": "Password updated successfully."}
 
 
@@ -454,26 +479,56 @@ async def change_password(
     if len(payload.new_password) < 8:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
     user.auth_hash = hash_password(payload.new_password)
-    await session.commit()
+    # Rotate the user's nonce so every access and refresh token minted before the
+    # change dies immediately, including the caller's current session.
+    # invalidate_sessions commits the session, so no earlier independent commit.
+    from celerp.services.session_tracker import invalidate_sessions as _invalidate
+    await _invalidate(session, str(user.id))
     return {"detail": "Password changed successfully."}
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str | None = None
 
 
 @router.post("/logout")
 async def logout(
-    token: str = Depends(oauth2_scheme),
+    payload: LogoutRequest | None = None,
+    token: str | None = Depends(oauth2_scheme_optional),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Invalidate all active sessions for the current user by wiping their JTIs
-    and rotating their nonce.
+    """Revoke the caller's session, then rotate their nonce so every existing
+    access AND refresh token for this user is immediately rejected.
 
-    After this call every existing access token for this user is immediately
-    rejected (snonce mismatch) regardless of expiry.
+    Accepts EITHER a current access token (Authorization header) or a current v2
+    refresh token (JSON body), so a browser whose access cookie has expired but
+    whose refresh cookie is still live can still log out server-side (F3).
+    Revocation only happens after the presented credential's snonce is confirmed
+    current under the ``UserAuthState`` row lock: a stale credential cannot
+    rotate a newer session generation, and logout stays idempotent (always 200).
     """
-    from celerp.services.auth import get_token_claims
     from celerp.services.session_tracker import invalidate_sessions as _invalidate
-    claims = get_token_claims(token)
-    if claims:
-        user_id = claims.get("sub", "")
-        if user_id:
-            await _invalidate(session, user_id)
+
+    # Access-token path: validate fully, then revoke on its authenticated snonce.
+    if token:
+        try:
+            ctx = await validate_access_token(session, token)
+        except HTTPException:
+            ctx = None
+        if ctx is not None:
+            await _invalidate(session, str(ctx.user.id), expected_snonce=ctx.snonce)
+            return {"detail": "Logged out."}
+
+    # Refresh-only path: strictly decode the v2 refresh token, then revoke on the
+    # snonce it carries. A stale snonce is skipped by the locked revocation.
+    if payload is not None and payload.refresh_token:
+        try:
+            claims = decode_refresh_token(payload.refresh_token)
+        except HTTPException:
+            claims = None
+        if claims is not None:
+            await _invalidate(
+                session, str(claims["sub"]), expected_snonce=claims["snonce"]
+            )
+
     return {"detail": "Logged out."}

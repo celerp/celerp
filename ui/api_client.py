@@ -378,11 +378,18 @@ async def login(email: str, password: str) -> tuple[str, str]:
         return data["access_token"], data["refresh_token"]
 
 
-async def logout(access_token: str) -> None:
-    """Clear all active sessions in the API process (rotates nonce, invalidates all tokens)."""
+async def logout(access_token: str | None, refresh_token: str | None = None) -> None:
+    """Best-effort server-side logout using whichever session credential remains.
+
+    A browser can reach logout after its access cookie expires while its refresh
+    cookie is still valid. Send the refresh credential as a fallback so that case
+    still rotates the server nonce before the browser clears local cookies.
+    """
+    headers = {"Authorization": f"Bearer {access_token}"} if access_token else None
+    payload = {"refresh_token": refresh_token} if refresh_token else None
     try:
         async with _anon_client(timeout=5.0) as c:
-            await c.post("/auth/logout", headers={"Authorization": f"Bearer {access_token}"})
+            await c.post("/auth/logout", headers=headers, json=payload)
     except Exception:
         pass  # best-effort: cookie is cleared regardless
 
@@ -683,6 +690,11 @@ async def get_company(token: str) -> dict:
         return _flatten_company(data)
 
 
+def role_from_company(company: dict) -> str:
+    """Return the DB-authoritative current role from /companies/me."""
+    return company.get("current_role") or ""
+
+
 async def get_commercial_state(token: str, timeout: float = 3.0) -> dict:
     """Fetch the live commercial state (feature_flags, commercial_context,
     partner_identity, commercial_mode) the API process holds from the relay.
@@ -723,11 +735,11 @@ async def patch_company(token: str, data: dict) -> dict:
     return _flatten_company(raw)
 
 
-async def create_company(token: str, company_name: str) -> str:
-    """Create a new company linked to the current user. Returns new JWT scoped to it."""
+async def create_company(token: str, company_name: str) -> tuple[str, str]:
+    """Create a new company linked to the current user and return its token pair."""
     async with _api_client(token) as c:
-        r = _raise(await c.post("/companies", json={"name": company_name}))
-        return r.json()["access_token"]
+        r = _raise(await c.post("/companies", json={"name": company_name})).json()
+        return r["access_token"], r["refresh_token"]
 
 
 async def patch_role_permission(token: str, perm_key: str, role_key: str, granted: bool) -> dict:

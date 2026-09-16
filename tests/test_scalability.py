@@ -681,47 +681,11 @@ class TestLoginForceGlobalEviction:
 
 
 # ---------------------------------------------------------------------------
-# Bug fix: _maybe_refresh_bearer updates JTI expiry (gate integrity)
+# Sliding refresh extends the session-registry JTI expiry (gate integrity)
 # ---------------------------------------------------------------------------
 
 class TestRefreshJtiExpiry:
-    """Verify that sliding refresh returns JTI + expiry for the caller to update."""
-
-    def test_maybe_refresh_returns_jti_and_expiry(self):
-        """_maybe_refresh_bearer returns (token, jti, expiry) so caller can update DB row."""
-        from celerp.middleware import _maybe_refresh_bearer
-        from celerp.config import settings
-        from jose import jwt as _jwt
-        import uuid, time as _time
-        from datetime import datetime, timezone
-
-        now = _time.time()
-        total_ttl = int(settings.access_token_expire_minutes) * 60
-        jti = str(uuid.uuid4())
-        stale_payload = {
-            "sub": "user-abc",
-            "company_id": "company-xyz",
-            "role": "admin",
-            "jti": jti,
-            "snonce": "test-nonce",
-            "exp": int(now + total_ttl * 0.49),
-        }
-        stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
-
-        result = _maybe_refresh_bearer(stale_token)
-        assert result is not None
-        new_token, returned_jti, new_expiry = result
-
-        assert returned_jti == jti, "Returned JTI must match the original"
-        assert isinstance(new_expiry, datetime), "Expiry must be a datetime"
-        assert new_expiry.tzinfo is not None, "Expiry must be timezone-aware"
-        # New expiry must be in the future (roughly now + total_ttl)
-        now_dt = datetime.now(timezone.utc)
-        assert new_expiry > now_dt, "New expiry must be in the future"
-
-        # New token must carry the same JTI
-        new_claims = _jwt.decode(new_token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
-        assert new_claims["jti"] == jti
+    """Verify that sliding refresh extends the session-registry JTI expiry."""
 
     @pytest.mark.asyncio
     async def test_send_with_refresh_updates_jti_expiry_in_db(self, client, session):
@@ -758,14 +722,10 @@ class TestRefreshJtiExpiry:
 
         now = _time.time()
         total_ttl = int(settings.access_token_expire_minutes) * 60
-        stale_payload = {
-            "sub": original_claims["sub"],
-            "company_id": original_claims["company_id"],
-            "role": original_claims["role"],
-            "jti": jti,
-            "snonce": original_claims.get("snonce", ""),
-            "exp": int(now + total_ttl * 0.49),
-        }
+        # A genuinely valid, past-half-life v2 token: keep the full claim set
+        # (auth_ver, type, snonce) and only shorten the expiry.
+        stale_payload = dict(original_claims)
+        stale_payload["exp"] = int(now + total_ttl * 0.49)
         stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
         with patch("celerp.middleware.get_session_ctx", return_value=_test_session_ctx()):
@@ -787,18 +747,16 @@ class TestRefreshJtiExpiry:
 # ---------------------------------------------------------------------------
 
 class TestHotPathQueryCount:
-    """Prove that the nonce and drain checks do not issue redundant DB queries.
+    """Prove hot-path state checks issue only the DB queries their trust model requires.
 
-    Baseline (pre-cache): every GET fires an extra SELECT on user_auth_state;
-    every POST fires an additional get_session_ctx() + SELECT on system_runtime_state.
-
-    Post-cache: nonce hit is served from memory; drain flag is served from memory.
-    These tests fail before the cache is added and pass after.
+    Session nonces are authentication state and must be read from Postgres on every
+    validation so committed revocations are immediately visible across workers. Drain
+    state is not authentication state and may continue to use its process-local cache.
     """
 
     @pytest.mark.asyncio
-    async def test_nonce_check_uses_cache_on_repeat_calls(self, session):
-        """get_nonce called twice for the same user should only hit DB once (cache hit)."""
+    async def test_nonce_check_reads_authoritative_db_once_per_call(self, session):
+        """Each get_nonce call performs exactly one authoritative auth-state read."""
         from celerp.services import session_tracker as _st
         import uuid as _uuid
 
@@ -829,13 +787,13 @@ class TestHotPathQueryCount:
         assert n1 == "test-nonce-abc"
         assert call_count == 1, f"First get_nonce must hit DB exactly once, got {call_count}"
 
-        # Second call (same process, same user_id): must use cache, not hit DB again
+        # Every validation must re-read authoritative auth state, but exactly once.
         call_count = 0
         n2 = await _st.get_nonce(session, user_id)
         assert n2 == "test-nonce-abc"
-        assert call_count == 0, (
-            f"Second get_nonce for same user must be served from cache (0 DB hits), got {call_count}. "
-            "This is the hot path regression: every authenticated request fires an extra SELECT."
+        assert call_count == 1, (
+            f"Second get_nonce must perform exactly one UserAuthState read, got {call_count}. "
+            "More than one is redundant hot-path DB work."
         )
 
     @pytest.mark.asyncio

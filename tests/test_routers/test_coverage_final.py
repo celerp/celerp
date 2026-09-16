@@ -499,7 +499,11 @@ async def test_health_readiness_db_error(client):
     try:
         r = await client.get("/health/ready")
         assert r.status_code == 503
-        assert "DB not reachable" in r.json()["detail"]
+        # The public readiness probe reports a generic status and never leaks the
+        # internal failure reason (F13); the specific cause goes to the server log.
+        detail = r.json()["detail"]
+        assert detail == "Service not ready."
+        assert "DB" not in detail and "database" not in detail.lower()
     finally:
         del app.dependency_overrides[get_session]
 

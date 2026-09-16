@@ -17,20 +17,39 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from celerp.services.auth import create_access_token
+import uuid
 
 
 def _h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _role_token(role: str) -> str:
-    token, _ = create_access_token(
-        subject="00000000-0000-0000-0000-000000000001",
-        company_id="00000000-0000-0000-0000-000000000002",
-        role=role,
+async def _role_headers(client, role: str) -> dict:
+    """Create a DB-valid v2 session for the requested company role."""
+    suffix = uuid.uuid4().hex
+    owner_email = f"claim-owner-{suffix}@test.local"
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "Claim Test Co", "email": owner_email,
+              "name": "Claim Owner", "password": "pw123456"},
     )
-    return token
+    assert reg.status_code == 200, reg.text
+    owner_headers = _h(reg.json()["access_token"])
+    if role == "owner":
+        return owner_headers
+
+    email = f"claim-{role}-{suffix}@test.local"
+    created = await client.post(
+        "/companies/me/users",
+        headers=owner_headers,
+        json={"email": email, "name": role.title(), "role": role,
+              "password": "pw123456"},
+    )
+    assert created.status_code == 200, created.text
+    login = await client.post(
+        "/auth/login", json={"email": email, "password": "pw123456"})
+    assert login.status_code == 200, login.text
+    return _h(login.json()["access_token"])
 
 
 def _relay_resp(status_code: int, body: dict) -> MagicMock:
@@ -94,7 +113,7 @@ async def test_partner_claim_requires_owner_admin(client, role, path):
     UI render gate, and never reach the relay."""
     with patch("httpx.AsyncClient") as mock_httpx:
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock()
-        r = await client.post(path, headers=_h(_role_token(role)), json={"claim_token": "tok-abc"})
+        r = await client.post(path, headers=await _role_headers(client, role), json={"claim_token": "tok-abc"})
     assert r.status_code == 403
     assert mock_httpx.return_value.__aenter__.return_value.post.await_count == 0
 
@@ -113,7 +132,7 @@ async def test_partner_claim_resolve_maps_contract_identity(client):
             _relay_resp(200, _RESOLVE_OK))
         r = await client.post(
             "/settings/partner-claim/resolve",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
+            headers=await _role_headers(client, "owner"), json={"claim_token": "tok-abc"})
     assert r.status_code == 200
     data = r.json()
     assert data["display_name"] == "Acme Partners"
@@ -138,7 +157,7 @@ async def test_partner_claim_resolve_body_is_token_only_with_bearer(client):
         mock_httpx.return_value.__aenter__.return_value.post = post_mock
         r = await client.post(
             "/settings/partner-claim/resolve",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
+            headers=await _role_headers(client, "owner"), json={"claim_token": "tok-abc"})
     assert r.status_code == 200
     # First call is the /auth/token exchange, second is the claim POST.
     assert post_mock.await_count == 2
@@ -167,7 +186,7 @@ async def test_partner_claim_drops_unsafe_support_url(client):
             _relay_resp(200, hostile))
         r = await client.post(
             "/settings/partner-claim/resolve",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
+            headers=await _role_headers(client, "owner"), json={"claim_token": "tok-abc"})
     assert r.status_code == 200
     data = r.json()
     assert data["display_name"] == "Acme Partners"
@@ -188,7 +207,7 @@ async def test_partner_claim_resolve_rejects_malformed_identity_payload(client):
             _relay_resp(200, {"partner_id": "prt_123", "display_name": 123}))
         r = await client.post(
             "/settings/partner-claim/resolve",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
+            headers=await _role_headers(client, "owner"), json={"claim_token": "tok-abc"})
     assert r.status_code == 200
     data = r.json()
     assert "error" in data
@@ -211,7 +230,7 @@ async def test_partner_claim_resolve_degrades_when_relay_unreachable(client):
             side_effect=httpx.ConnectError("no route"))
         r = await client.post(
             "/settings/partner-claim/resolve",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
+            headers=await _role_headers(client, "owner"), json={"claim_token": "tok-abc"})
     assert r.status_code == 200
     data = r.json()
     assert "error" in data
@@ -233,7 +252,7 @@ async def test_partner_claim_resolve_degrades_on_timeout(client):
             side_effect=httpx.TimeoutException("slow"))
         r = await client.post(
             "/settings/partner-claim/resolve",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
+            headers=await _role_headers(client, "owner"), json={"claim_token": "tok-abc"})
     assert r.status_code == 200
     assert "error" in r.json()
 
@@ -251,7 +270,7 @@ async def test_partner_claim_resolve_rejects_empty_token(client, bad_token):
     ):
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock()
         r = await client.post(
-            "/settings/partner-claim/resolve", headers=_h(_role_token("owner")), json=body)
+            "/settings/partner-claim/resolve", headers=await _role_headers(client, "owner"), json=body)
     assert r.status_code == 200
     assert "error" in r.json()
     assert mock_httpx.return_value.__aenter__.return_value.post.await_count == 0
@@ -269,7 +288,7 @@ async def test_partner_claim_resolve_rejects_oversized_token(client):
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock()
         r = await client.post(
             "/settings/partner-claim/resolve",
-            headers=_h(_role_token("owner")), json={"claim_token": oversized})
+            headers=await _role_headers(client, "owner"), json={"claim_token": oversized})
     assert r.status_code == 200
     assert "error" in r.json()
     assert mock_httpx.return_value.__aenter__.return_value.post.await_count == 0
@@ -292,7 +311,7 @@ async def test_partner_claim_requires_cloud_identity(client, path):
     ):
         mock_httpx.return_value.__aenter__.return_value.post = post_mock
         r = await client.post(
-            path, headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
+            path, headers=await _role_headers(client, "owner"), json={"claim_token": "tok-abc"})
     assert r.status_code == 200
     assert "error" in r.json()
     assert post_mock.await_count == 0
@@ -312,7 +331,7 @@ async def test_partner_claim_bearer_exchange_failure_degrades(client):
         mock_httpx.return_value.__aenter__.return_value.post = post_mock
         r = await client.post(
             "/settings/partner-claim/resolve",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
+            headers=await _role_headers(client, "owner"), json={"claim_token": "tok-abc"})
     assert r.status_code == 200
     assert "error" in r.json()
     # Only the exchange was attempted; no claim POST followed.
@@ -337,7 +356,7 @@ async def test_partner_claim_accept_returns_partner_id(client):
         mock_httpx.return_value.__aenter__.return_value.post = post_mock
         r = await client.post(
             "/settings/partner-claim/accept",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-accept"})
+            headers=await _role_headers(client, "owner"), json={"claim_token": "tok-accept"})
         assert _s.gateway_token == before
     assert r.status_code == 200
     data = r.json()
@@ -364,7 +383,7 @@ async def test_partner_claim_accept_reused_token_not_acceptable(client):
             _relay_resp(409, {"detail": "claim not acceptable"}))
         r = await client.post(
             "/settings/partner-claim/accept",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-dup"})
+            headers=await _role_headers(client, "owner"), json={"claim_token": "tok-dup"})
     assert r.status_code == 200
     data = r.json()
     assert "error" in data
@@ -387,7 +406,7 @@ async def test_partner_claim_accept_degrades_when_relay_unreachable(client):
             side_effect=httpx.ConnectError("no route"))
         r = await client.post(
             "/settings/partner-claim/accept",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-abc"})
+            headers=await _role_headers(client, "owner"), json={"claim_token": "tok-abc"})
     assert r.status_code == 200
     assert "error" in r.json()
     from celerp.gateway.state import get_commercial_mode
@@ -421,7 +440,7 @@ async def test_partner_claim_accept_converges_without_live_ws(client, _reset_ctx
             _relay_resp(200, _accept_with_ctx(version=2)))
         r = await client.post(
             "/settings/partner-claim/accept",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-accept"})
+            headers=await _role_headers(client, "owner"), json={"claim_token": "tok-accept"})
     assert r.status_code == 200
     data = r.json()
     assert data["partner_id"] == "prt_123"
@@ -446,7 +465,7 @@ async def test_partner_claim_accept_ws_first_then_http_converges(client, _reset_
             _relay_resp(200, _accept_with_ctx(version=2)))
         r = await client.post(
             "/settings/partner-claim/accept",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-accept"})
+            headers=await _role_headers(client, "owner"), json={"claim_token": "tok-accept"})
     assert r.status_code == 200
     data = r.json()
     assert data["partner_id"] == "prt_123"
@@ -473,7 +492,7 @@ async def test_partner_claim_accept_malformed_ctx_never_overwrites(client, _rese
             _relay_resp(200, malformed))
         r = await client.post(
             "/settings/partner-claim/accept",
-            headers=_h(_role_token("owner")), json={"claim_token": "tok-accept"})
+            headers=await _role_headers(client, "owner"), json={"claim_token": "tok-accept"})
     assert r.status_code == 200
     data = r.json()
     assert "error" in data
@@ -533,6 +552,8 @@ async def test_partner_claim_hidden_on_partner_managed():
                 "public_url": "https://abc.celerp.com", "tier": "cloud"})),
             patch("ui.api_client.get_backup_status", new=AsyncMock(return_value={
                 "db": {}, "next_db_utc": None, "public_url": "https://abc.celerp.com"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={
+                "current_role": "owner", "settings": {}})),
         ):
             async with AsyncClient(
                 transport=ASGITransport(app=ui_app), base_url="http://ui",

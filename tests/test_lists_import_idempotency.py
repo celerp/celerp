@@ -9,7 +9,7 @@ import pytest
 
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
-from celerp.services.auth import create_access_token
+from test_helpers import make_authed_token
 
 
 @pytest.mark.asyncio
@@ -29,7 +29,7 @@ async def test_lists_import_batch_idempotency(client, session):
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     await session.commit()
 
-    token, _ = create_access_token(subject=str(user_id), company_id=str(company_id), role="admin")
+    token = await make_authed_token(session, str(user_id), str(company_id), "admin")
     headers = {"Authorization": f"Bearer {token}"}
 
     entity_id = "list-test-" + uuid.uuid4().hex[:8]

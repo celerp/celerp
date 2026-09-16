@@ -1110,7 +1110,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         from ui.routes.settings import _check_permission
-        denied = await _check_permission(request, "view_documents")
+        denied = await _check_permission(request, "view_documents", page_view=True)
         if denied:
             return denied
         q = request.query_params.get("q", "")
@@ -2092,7 +2092,7 @@ celerpUpdateBulkAlloc();
         if not token:
             return RedirectResponse("/login", status_code=302)
         from ui.routes.settings import _check_permission
-        denied = await _check_permission(request, "view_documents")
+        denied = await _check_permission(request, "view_documents", page_view=True)
         if denied:
             return denied
         try:
@@ -4071,7 +4071,7 @@ celerpUpdateBulkAlloc();
         if not token:
             return RedirectResponse("/login", status_code=302)
         from ui.routes.settings import _check_permission
-        denied = await _check_permission(request, "view_documents")
+        denied = await _check_permission(request, "view_documents", page_view=True)
         if denied:
             return denied
         q = request.query_params.get("q", "")

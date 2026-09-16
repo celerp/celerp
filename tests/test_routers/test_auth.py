@@ -118,6 +118,35 @@ async def test_change_password(client, session):
 
 
 @pytest.mark.asyncio
+async def test_change_password_kills_old_access_and_refresh(client, session):
+    """A self password change rotates the nonce, so the caller's own pre-change
+    access and refresh tokens both return 401 afterwards."""
+    from celerp.services.session_tracker import clear as _clear_tracker
+
+    await client.post(
+        "/auth/register",
+        json={"company_name": "PwKill", "email": "pwkill@example.com", "name": "Admin", "password": "oldpass123"},
+    )
+    await _clear_tracker(session)
+    r = await client.post("/auth/login", json={"email": "pwkill@example.com", "password": "oldpass123"})
+    assert r.status_code == 200
+    old_access = r.json()["access_token"]
+    old_refresh = r.json()["refresh_token"]
+
+    r2 = await client.post(
+        "/auth/change-password",
+        json={"current_password": "oldpass123", "new_password": "newpass456"},
+        headers={"Authorization": f"Bearer {old_access}"},
+    )
+    assert r2.status_code == 200
+
+    r_acc = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {old_access}"})
+    assert r_acc.status_code == 401
+    r_ref = await client.post("/auth/token/refresh", json={"refresh_token": old_refresh})
+    assert r_ref.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_change_password_wrong_current(client):
     """Change password rejects wrong current password."""
     await client.post(
@@ -431,3 +460,368 @@ def test_401_redirect_expired():
     r = _401_redirect("Invalid token")
     assert r.status_code == 302
     assert "reason=expired" in r.headers["location"]
+
+
+# ---------------------------------------------------------------------------
+# Token-format v2 invariants (section 7 test matrix)
+#
+# These prove the security contract of the v2 cutover directly against the
+# frozen public interface of celerp.services.auth. They do not depend on any
+# workstream-2 surface (middleware sliding-refresh, SSE), so they must be green
+# on this branch.
+# ---------------------------------------------------------------------------
+
+
+def _decode(token: str) -> dict:
+    from jose import jwt as _jwt
+    from celerp.config import settings
+    return _jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+
+
+@pytest.mark.asyncio
+async def test_new_access_token_carries_v2_contract(client):
+    """A freshly issued access token has auth_ver=2, type=access and a non-empty snonce."""
+    from celerp.services.auth import AUTH_TOKEN_VERSION
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "FmtA", "email": "fmta@example.com", "name": "Admin", "password": "pw"},
+    )
+    claims = _decode(reg.json()["access_token"])
+    assert claims["auth_ver"] == AUTH_TOKEN_VERSION == 2
+    assert claims["type"] == "access"
+    assert claims["snonce"], "access token must carry a non-empty snonce"
+
+
+@pytest.mark.asyncio
+async def test_new_refresh_token_carries_v2_contract(client):
+    """A refresh token has auth_ver=2, type=refresh, a non-empty snonce, and no
+    authoritative role claim (the role is read from DB on refresh, never trusted)."""
+    from celerp.services.auth import AUTH_TOKEN_VERSION
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "FmtR", "email": "fmtr@example.com", "name": "Admin", "password": "pw"},
+    )
+    claims = _decode(reg.json()["refresh_token"])
+    assert claims["auth_ver"] == AUTH_TOKEN_VERSION == 2
+    assert claims["type"] == "refresh"
+    assert claims["snonce"], "refresh token must carry a non-empty snonce"
+    assert "role" not in claims, "refresh token must NOT embed an authoritative role"
+
+
+@pytest.mark.asyncio
+async def test_pre_v2_access_token_rejected(client, session):
+    """A token minted in the pre-v2 shape (no auth_ver/type/snonce) is rejected 401."""
+    from jose import jwt as _jwt
+    from celerp.config import settings
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "CutA", "email": "cuta@example.com", "name": "Admin", "password": "pw"},
+    )
+    good = _decode(reg.json()["access_token"])
+    # Same signing secret, same subject/company, but the old claim set: no
+    # auth_ver, no type, no snonce. This is exactly what an old build issued.
+    legacy_payload = {
+        "sub": good["sub"],
+        "company_id": good["company_id"],
+        "role": "owner",
+        "jti": good["jti"],
+        "exp": good["exp"],
+    }
+    legacy = _jwt.encode(legacy_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    r = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {legacy}"})
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_pre_v2_refresh_token_rejected(client):
+    """A pre-v2-shaped refresh token (no auth_ver/type/snonce) is rejected 401."""
+    from jose import jwt as _jwt
+    from celerp.config import settings
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "CutR", "email": "cutr@example.com", "name": "Admin", "password": "pw"},
+    )
+    good = _decode(reg.json()["refresh_token"])
+    legacy_payload = {
+        "sub": good["sub"],
+        "company_id": good["company_id"],
+        "role": "owner",
+        "exp": good["exp"],
+    }
+    legacy = _jwt.encode(legacy_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    r = await client.post("/auth/token/refresh", json={"refresh_token": legacy})
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_rejected_as_bearer(client):
+    """A refresh token presented as a bearer access token is rejected 401
+    (type separation): it carries type=refresh, which decode_access_token refuses."""
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "SepB", "email": "sepb@example.com", "name": "Admin", "password": "pw"},
+    )
+    refresh = reg.json()["refresh_token"]
+    r = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {refresh}"})
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_access_token_missing_snonce_rejected(client):
+    """An otherwise-valid access token with an empty snonce fails closed (401).
+
+    There is no legacy accept path for a missing nonce; every access token must
+    prove per-user nonce equality, and an empty one can never match."""
+    from jose import jwt as _jwt
+    from celerp.config import settings
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "NonceA", "email": "noncea@example.com", "name": "Admin", "password": "pw"},
+    )
+    good = _decode(reg.json()["access_token"])
+    good["snonce"] = ""
+    tampered = _jwt.encode(good, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    r = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {tampered}"})
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_missing_snonce_rejected(client):
+    """A refresh token with an empty snonce is rejected 401 at the refresh endpoint."""
+    from jose import jwt as _jwt
+    from celerp.config import settings
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "NonceR", "email": "noncer@example.com", "name": "Admin", "password": "pw"},
+    )
+    good = _decode(reg.json()["refresh_token"])
+    good["snonce"] = ""
+    tampered = _jwt.encode(good, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    r = await client.post("/auth/token/refresh", json={"refresh_token": tampered})
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_old_refresh_token_rejected_after_logout(client):
+    """After logout, a refresh token issued before it is dead (nonce rotated)."""
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "LogoutR", "email": "logoutr@example.com", "name": "Admin", "password": "pw"},
+    )
+    access = reg.json()["access_token"]
+    refresh = reg.json()["refresh_token"]
+
+    # The refresh token works before logout.
+    r_pre = await client.post("/auth/token/refresh", json={"refresh_token": refresh})
+    assert r_pre.status_code == 200
+    # Refresh rotated the nonce and returned a fresh pair; log out with the fresh access.
+    fresh = r_pre.json()
+    r_logout = await client.post(
+        "/auth/logout", headers={"Authorization": f"Bearer {fresh['access_token']}"}
+    )
+    assert r_logout.status_code == 200
+
+    # Both the original and the just-issued refresh tokens are now dead.
+    r_old = await client.post("/auth/token/refresh", json={"refresh_token": refresh})
+    assert r_old.status_code == 401
+    r_new = await client.post("/auth/token/refresh", json={"refresh_token": fresh["refresh_token"]})
+    assert r_new.status_code == 401
+    # And the pre-logout access token is dead too.
+    r_acc = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {access}"})
+    assert r_acc.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_displaced_user_refresh_token_rejected_after_force_login(client, session):
+    """After a force-login rotates the nonce, the displaced session's refresh token is dead."""
+    from unittest.mock import patch
+    from celerp.services.session_tracker import clear as _clear_tracker
+
+    await client.post(
+        "/auth/register",
+        json={"company_name": "ForceR", "email": "forcer@example.com", "name": "Owner", "password": "pw123456"},
+    )
+    await _clear_tracker(session)
+    r_login = await client.post("/auth/login", json={"email": "forcer@example.com", "password": "pw123456"})
+    assert r_login.status_code == 200
+    old_refresh = r_login.json()["refresh_token"]
+
+    with patch("celerp.gateway.state.get_session_token", return_value=""):
+        r_force = await client.post(
+            "/auth/login-force", json={"email": "forcer@example.com", "password": "pw123456"}
+        )
+    assert r_force.status_code == 200
+
+    r_old = await client.post("/auth/token/refresh", json={"refresh_token": old_refresh})
+    assert r_old.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_refresh_uses_current_db_role_not_jwt_claim(client, session):
+    """Refreshing after a DB role change reflects the new role, never the old JWT.
+
+    The refresh token embeds no role, and the issuer reads the role from the
+    current UserCompany membership, so the reissued access token carries the
+    current DB role."""
+    import base64, json as _json, uuid as _uuid
+    from sqlalchemy import select
+    from celerp.models.accounting import UserCompany
+    from celerp.services.session_tracker import clear as _clear_tracker
+
+    owner_reg = await client.post(
+        "/auth/register",
+        json={"company_name": "RoleCo", "email": "roleowner@example.com", "name": "Owner", "password": "pw"},
+    )
+    owner_h = {"Authorization": f"Bearer {owner_reg.json()['access_token']}"}
+    # Create a manager user under the same company.
+    await client.post(
+        "/companies/me/users",
+        json={"email": "target@example.com", "name": "Target", "role": "manager", "password": "pw123"},
+        headers=owner_h,
+    )
+    await _clear_tracker(session)
+    r_login = await client.post("/auth/login", json={"email": "target@example.com", "password": "pw123"})
+    assert r_login.status_code == 200
+    refresh = r_login.json()["refresh_token"]
+    access = r_login.json()["access_token"]
+    old_claims = _decode(access)
+    assert old_claims["role"] == "manager"
+    user_id = old_claims["sub"]
+    company_id = old_claims["company_id"]
+
+    # Demote the target in DB directly (membership role is authoritative).
+    link = await session.scalar(
+        select(UserCompany).where(
+            UserCompany.user_id == _uuid.UUID(user_id),
+            UserCompany.company_id == _uuid.UUID(company_id),
+        )
+    )
+    link.role = "operator"
+    await session.commit()
+
+    r = await client.post("/auth/token/refresh", json={"refresh_token": refresh})
+    assert r.status_code == 200
+    new_claims = _decode(r.json()["access_token"])
+    assert new_claims["role"] == "operator", "refreshed token must carry the current DB role"
+
+
+@pytest.mark.asyncio
+async def test_inactive_user_rejected_on_access_and_refresh(client, session):
+    """A user marked inactive in DB is rejected on both a bearer access token and refresh."""
+    import uuid as _uuid
+    from celerp.models.company import User
+    from celerp.services.session_tracker import clear as _clear_tracker
+
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "InactCo", "email": "inact@example.com", "name": "Admin", "password": "pw"},
+    )
+    access = reg.json()["access_token"]
+    refresh = reg.json()["refresh_token"]
+    user_id = _decode(access)["sub"]
+
+    user = await session.get(User, _uuid.UUID(user_id))
+    user.is_active = False
+    await session.commit()
+
+    r_acc = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {access}"})
+    assert r_acc.status_code == 401
+    r_ref = await client.post("/auth/token/refresh", json={"refresh_token": refresh})
+    assert r_ref.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_deactivated_membership_rejected_on_access_and_refresh(client, session):
+    """When a user's company membership is deactivated, both access and refresh are rejected."""
+    import base64, json as _json, uuid as _uuid
+    from sqlalchemy import select
+    from celerp.models.accounting import UserCompany
+    from celerp.services.session_tracker import clear as _clear_tracker
+
+    owner_reg = await client.post(
+        "/auth/register",
+        json={"company_name": "MemCo", "email": "memowner@example.com", "name": "Owner", "password": "pw"},
+    )
+    owner_h = {"Authorization": f"Bearer {owner_reg.json()['access_token']}"}
+    await client.post(
+        "/companies/me/users",
+        json={"email": "member@example.com", "name": "Member", "role": "manager", "password": "pw123"},
+        headers=owner_h,
+    )
+    await _clear_tracker(session)
+    r_login = await client.post("/auth/login", json={"email": "member@example.com", "password": "pw123"})
+    access = r_login.json()["access_token"]
+    refresh = r_login.json()["refresh_token"]
+    claims = _decode(access)
+
+    link = await session.scalar(
+        select(UserCompany).where(
+            UserCompany.user_id == _uuid.UUID(claims["sub"]),
+            UserCompany.company_id == _uuid.UUID(claims["company_id"]),
+        )
+    )
+    link.is_active = False
+    await session.commit()
+
+    r_acc = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {access}"})
+    assert r_acc.status_code == 401
+    r_ref = await client.post("/auth/token/refresh", json={"refresh_token": refresh})
+    assert r_ref.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_permission_only_route_rejects_invalid_token(client):
+    """A route guarded solely by require_permission() rejects an unauthenticated or
+    invalid token with 401 - the permission guard resolves the auth context first,
+    so no valid session means no route, before any 403 role decision.
+
+    Registered on the live app as a throwaway route rather than driving a
+    destructive real endpoint (per the test-placement note)."""
+    from fastapi import APIRouter
+    from celerp.main import app
+    from celerp.services.permissions import require_permission
+
+    probe = APIRouter()
+
+    @probe.get("/__perm_probe__", dependencies=[require_permission("manage_company_settings")])
+    async def _probe() -> dict:
+        return {"ok": True}
+
+    app.include_router(probe)
+    try:
+        # No Authorization header at all.
+        r_none = await client.get("/__perm_probe__")
+        assert r_none.status_code == 401
+        # A syntactically invalid bearer.
+        r_bad = await client.get("/__perm_probe__", headers={"Authorization": "Bearer not.a.token"})
+        assert r_bad.status_code == 401
+    finally:
+        app.router.routes = [
+            rt for rt in app.router.routes if getattr(rt, "path", None) != "/__perm_probe__"
+        ]
+
+
+@pytest.mark.asyncio
+async def test_a7_tampered_signature_no_refresh_header(client):
+    """Exploit regression (A7), end to end: a forged bearer (valid-looking claims,
+    invalid signature) sent to a harmless path never comes back with an
+    X-Refreshed-Token header. RED on merge base; green once A7 validates the
+    signature before re-signing."""
+    import time as _time
+    import uuid as _uuid
+    from jose import jwt as _jwt
+    from celerp.config import settings
+
+    now = _time.time()
+    total_ttl = int(settings.access_token_expire_minutes) * 60
+    forged_payload = {
+        "sub": str(_uuid.uuid4()),
+        "company_id": str(_uuid.uuid4()),
+        "role": "owner",
+        "jti": str(_uuid.uuid4()),
+        "snonce": "anything",
+        "exp": int(now + total_ttl * 0.49),
+    }
+    forged = _jwt.encode(forged_payload, settings.jwt_secret + "-wrong", algorithm=settings.jwt_algorithm)
+    r = await client.get("/health", headers={"Authorization": f"Bearer {forged}"})
+    assert "X-Refreshed-Token" not in r.headers

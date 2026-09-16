@@ -16,7 +16,8 @@ import pytest
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.models.projections import Projection
-from celerp.services.auth import create_access_token
+
+from test_helpers import make_authed_token
 
 
 async def _company_admin(session):
@@ -33,7 +34,7 @@ async def _company_admin(session):
     await session.flush()  # parents before membership for Postgres FK checks
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     await session.commit()
-    token, _ = create_access_token(subject=str(user_id), company_id=str(company_id), role="admin")
+    token = await make_authed_token(session, str(user_id), str(company_id), "admin")
     return company_id, {"Authorization": f"Bearer {token}"}
 
 

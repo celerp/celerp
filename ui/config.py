@@ -14,6 +14,13 @@ COOKIE_NAME = "celerp_token"
 REFRESH_COOKIE_NAME = "celerp_refresh"
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
+# The one source for each session cookie's lifetime, derived from the token TTLs
+# the API signs with so a cookie never outlives, or expires before, its token.
+# Every writer (set_session_cookies and the refresh middleware's raw Set-Cookie
+# builder) reads these instead of hardcoding its own seconds.
+ACCESS_COOKIE_MAX_AGE = int(_settings.access_token_expire_minutes) * 60
+REFRESH_COOKIE_MAX_AGE = int(_settings.refresh_token_expire_days) * 86400
+
 
 def get_token(request) -> str | None:
     """Extract the auth token from a request's cookies. DRY helper used by all UI routes."""
@@ -38,14 +45,20 @@ def set_session_cookies(resp, access_token: str, refresh_token: str, request=Non
     session-cookie writer, reused by login, company switch, and the modules
     restart flow."""
     domain = cookie_domain(request) if request is not None else None
-    resp.set_cookie(COOKIE_NAME, access_token, httponly=True, samesite="lax", max_age=900, secure=_settings.cookie_secure, domain=domain)
-    resp.set_cookie(REFRESH_COOKIE_NAME, refresh_token, httponly=True, samesite="lax", max_age=86400 * 30, secure=_settings.cookie_secure, domain=domain)
+    resp.set_cookie(COOKIE_NAME, access_token, httponly=True, samesite="lax", max_age=ACCESS_COOKIE_MAX_AGE, secure=_settings.cookie_secure, domain=domain)
+    resp.set_cookie(REFRESH_COOKIE_NAME, refresh_token, httponly=True, samesite="lax", max_age=REFRESH_COOKIE_MAX_AGE, secure=_settings.cookie_secure, domain=domain)
 
 
-def clear_session_cookies(resp) -> None:
-    """Delete the auth + refresh cookies from a response."""
-    resp.delete_cookie(COOKIE_NAME)
-    resp.delete_cookie(REFRESH_COOKIE_NAME)
+def clear_session_cookies(resp, request=None) -> None:
+    """Delete the auth + refresh cookies from a response.
+
+    The one authoritative session-cookie clearer, mirroring set_session_cookies.
+    When *request* is given the cookies are deleted with the same domain they
+    were set with, so the browser actually drops them behind a tunnel subdomain.
+    """
+    domain = cookie_domain(request) if request is not None else None
+    resp.delete_cookie(COOKIE_NAME, path="/", domain=domain)
+    resp.delete_cookie(REFRESH_COOKIE_NAME, path="/", domain=domain)
 
 
 def get_claims(request) -> dict:
@@ -71,15 +84,34 @@ def get_claims(request) -> dict:
         return {}
 
 
+def is_stale_cookie(request) -> bool:
+    """Return True when the access cookie is a pre-v2 or wrong-type token that the
+    API will reject outright.
+
+    Non-authoritative cutover/cleanup logic only: it inspects the unverified
+    payload to decide whether ``auth_ver == AUTH_TOKEN_VERSION`` and
+    ``type == "access"``. It is NEVER proof that a token is valid - the API is
+    the only authority for that. A missing cookie is not stale (there is nothing
+    to clear); a present cookie that fails the version/type shape is stale so the
+    UI can clear it and force one clean login instead of retrying a dead token.
+    """
+    from celerp.services.auth import AUTH_TOKEN_VERSION
+
+    if not get_token(request):
+        return False
+    claims = get_claims(request)
+    return claims.get("auth_ver") != AUTH_TOKEN_VERSION or claims.get("type") != "access"
+
+
 def get_role(request) -> str:
     """Return the role claim (e.g. 'viewer', 'operator', 'manager', 'admin', 'owner').
 
     Falls back to 'viewer' (least privilege) when the claim is absent or unreadable.
     """
-    from celerp.services.auth import _ROLE_MIGRATION
+    from celerp.services.auth import normalize_role
 
     raw_role = get_claims(request).get("role", "viewer")
-    return _ROLE_MIGRATION.get(raw_role, raw_role)
+    return normalize_role(raw_role)
 
 
 def get_user_email(request) -> str | None:

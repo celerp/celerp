@@ -275,7 +275,16 @@ async def test_health_ready(client):
 
 @pytest.mark.asyncio
 async def test_health_system(client):
-    r = await client.get("/health/system")
+    # /health/system reports host RAM/CPU/disk and is authenticated.
+    r_anon = await client.get("/health/system")
+    assert r_anon.status_code == 401
+    reg = await client.post(
+        "/auth/register",
+        json={"company_name": "SysCo", "email": "sys@example.com", "name": "Admin", "password": "pw"},
+    )
+    r = await client.get(
+        "/health/system", headers={"Authorization": f"Bearer {reg.json()['access_token']}"}
+    )
     assert r.status_code == 200
     assert isinstance(r.json(), dict)
 

@@ -26,21 +26,38 @@ from ui.i18n import t, get_lang, tier_label
 from ui.routes.documents import _action_error
 
 
-async def _check_permission(request: Request, key: str) -> RedirectResponse | None:
+async def _check_permission(
+    request: Request, key: str, *, page_view: bool = False
+) -> RedirectResponse | None:
     """Return None if the caller holds the named permission, else a redirect.
 
-    Resolves overrides from the company settings, re-read per request so a
-    permission change takes effect on the next page load. Degrades to registry
-    defaults (empty settings) when the company row cannot be fetched."""
+    The role and its permission overrides are read from authenticated API state
+    (``GET /companies/me`` returns the DB-authoritative ``current_role`` and the
+    company settings), never from the client-held cookie, which is unsigned and
+    forgeable.
+
+    Failure handling splits by caller intent:
+    - No token, or the API rejects the token (401): converge to ``/login``.
+    - Any other API failure (transient 5xx / connection error): a mutation or
+      privileged-action gate (the default) hard-denies to ``/dashboard`` because
+      it cannot confirm the permission; a page-view gate (``page_view=True``)
+      returns None so the route renders its own neutral/empty state rather than
+      bouncing a logged-in user off their page.
+    """
     from celerp.services.permissions import role_has_permission
-    role = _get_role(request)
     token = _token(request)
-    settings: dict = {}
-    if token:
-        try:
-            settings = (await api.get_company(token)).get("settings") or {}
-        except APIError:
-            settings = {}
+    if not token:
+        return RedirectResponse("/login", status_code=302)
+    try:
+        company = await api.get_company(token)
+    except APIError as e:
+        if e.status == 401:
+            return RedirectResponse("/login", status_code=302)
+        if page_view:
+            return None
+        return RedirectResponse("/dashboard", status_code=302)
+    role = api.role_from_company(company)
+    settings = company.get("settings") or {}
     if not role_has_permission(settings, role, key):
         return RedirectResponse("/dashboard", status_code=302)
     return None
@@ -764,7 +781,14 @@ def setup_routes(app):
             await api.change_password(token, current, new_pw)
         except APIError as e:
             return _password_form(error=e.detail, lang=lang)
-        return _password_form(success=t("settings.password_changed", lang), lang=lang)
+        # A successful change rotates the user's session on the server, so the
+        # current cookie is now dead. Clear both cookies and redirect to login
+        # with a clear reason rather than leaving the user on a settings page
+        # with a silently revoked session.
+        from ui.config import clear_session_cookies
+        resp = Response("", status_code=204, headers={"HX-Redirect": "/login?reason=password-changed"})
+        clear_session_cookies(resp, request)
+        return resp
 
     @app.get("/settings/company/companies-list")
     async def company_settings_companies_list(request: Request):
@@ -993,22 +1017,26 @@ def setup_routes(app):
                 ),
                 cls="cell cell--editing",
             )
-        return Td(
-            Input(
-                type="text", name="value", value=val,
-                hx_patch=f"/settings/users/{user_id}/{field}",
-                hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                hx_trigger="blur delay:200ms",
-                cls="cell-input", autofocus=True,
-            ),
-            cls="cell cell--editing",
-        )
+        # Only role and status are editable here. Name and email are set when the
+        # user is invited and the backend user PATCH rejects them, so an edit
+        # request for any other field returns the plain, non-clickable cell.
+        return _user_display_cell(user_id, field, user.get(field))
 
     @app.patch("/settings/users/{user_id}/{field}")
     async def user_field_patch(request: Request, user_id: str, field: str):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        if field not in ("role", "is_active"):
+            # Name and email are not editable here (the backend user PATCH accepts
+            # only role and is_active); ignore a stray patch and re-render the
+            # plain cell rather than sending a request the API would reject.
+            try:
+                users = (await api.get_users(token)).get("items", [])
+            except APIError as e:
+                return P(str(e.detail), cls="cell-error")
+            user = next((u for u in users if u.get("id") == user_id), {})
+            return _user_display_cell(user_id, field, user.get(field))
         form = await request.form()
         value = str(form.get("value", ""))
         patch_data = {field: value}
@@ -2284,7 +2312,6 @@ def setup_routes(app):
         from celerp.services.permissions import role_has_permission
         if not role_has_permission({}, role, "manage_company_lifecycle"):
             return Div(t("settings.owner_role_required"), cls="flash flash--error")
-        from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME
         token = _token(request)
         try:
             async with api._local_client(token, timeout=30.0, follow_redirects=False) as c:
@@ -2295,11 +2322,9 @@ def setup_routes(app):
         except Exception as exc:
             return Div(f"{t('shell.error_prefix')} {exc}", cls="flash flash--error")
         from starlette.responses import Response as _Resp
-        from celerp.config import settings as _celerp_settings
-        _secure = getattr(_celerp_settings, "cookie_secure", False)
+        from ui.config import clear_session_cookies
         resp = _Resp(status_code=200, content='{"ok":true}', media_type="application/json")
-        resp.delete_cookie(COOKIE_NAME, httponly=True, samesite="lax", secure=_secure)
-        resp.delete_cookie(REFRESH_COOKIE_NAME, httponly=True, samesite="lax", secure=_secure)
+        clear_session_cookies(resp, request)
         resp.headers["HX-Redirect"] = "/setup"
         return resp
 
@@ -2330,8 +2355,9 @@ def setup_routes(app):
             # No companies left - keep token so they can create a new one
             return RedirectResponse(url="/setup/new-company?reason=deactivated", status_code=303)
         # Other companies exist - clear session, go to login to pick one
+        from ui.config import clear_session_cookies
         resp = RedirectResponse(url="/login?deactivated=1", status_code=303)
-        resp.delete_cookie("token")
+        clear_session_cookies(resp, request)
         return resp
 
     # ── Backup HTMX handlers ──────────────────────────────────────────────
@@ -2631,7 +2657,13 @@ def _user_display_cell(user_id: str, field: str, value) -> FT:
         inner = Span(t("th.active") if is_active else t("settings.inactive"),
                      cls="badge badge--active" if is_active else "badge badge--inactive")
     else:
-        inner = Span(str(value) if value and str(value).strip() else EMPTY, cls="cell-text")
+        # Name and email are set at invite time and are not editable from this
+        # table (the backend user PATCH accepts only role and is_active), so they
+        # render as plain, non-clickable text.
+        return Td(
+            Span(str(value) if value and str(value).strip() else EMPTY, cls="cell-text"),
+            cls="cell",
+        )
     return Td(
         inner,
         title=t("settings.click_to_edit"),

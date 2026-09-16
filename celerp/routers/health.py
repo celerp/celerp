@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,9 +13,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp import __version__
 from celerp.db import get_session
 from celerp.services.auth import ROLE_LEVELS, get_current_role, get_current_user
+from celerp.services.permissions import require_permission
 from celerp.services.system_health import get_system_health
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# Every /settings/* route requires an authenticated user.
+settings_router = APIRouter(prefix="/settings", dependencies=[Depends(get_current_user)])
 
 
 @router.get("/health")
@@ -37,9 +44,9 @@ async def readiness(session: AsyncSession = Depends(get_session)) -> dict:
     try:
         await session.execute(text("SELECT 1"))
         return {"status": "ok", "db": "ok"}
-    except Exception as e:
-        from fastapi import HTTPException
-        raise HTTPException(503, detail=f"DB not reachable: {e}")
+    except Exception:
+        logger.exception("readiness probe: database not reachable")
+        raise HTTPException(503, detail="Service not ready.")
 
 
 # ── Internal load-balancer probes (bypasses DrainMiddleware) ─────────────────
@@ -56,9 +63,9 @@ async def lb_ready(session: AsyncSession = Depends(get_session)) -> dict:
     try:
         await session.execute(text("SELECT 1"))
         return {"status": "ok", "db": "ok"}
-    except Exception as e:
-        from fastapi import HTTPException
-        raise HTTPException(503, detail=f"DB not reachable: {e}")
+    except Exception:
+        logger.exception("lb readiness probe: database not reachable")
+        raise HTTPException(503, detail="Service not ready.")
 
 
 @router.get("/__celerp/drain")
@@ -69,13 +76,14 @@ async def drain_status(session: AsyncSession = Depends(get_session)) -> dict:
     return {"draining": state.get("draining", False)}
 
 
-@router.get("/health/system")
+@router.get("/health/system", dependencies=[Depends(get_current_user)])
 async def system_health() -> dict:
+    # Host RAM/CPU/disk figures - authenticated only, never anonymous.
     import asyncio
     return await asyncio.to_thread(get_system_health)
 
 
-@router.get("/settings/cloud-status")
+@settings_router.get("/cloud-status")
 async def cloud_status() -> dict:
     """Return cloud connection status, tier, last backup date, and email quota."""
     from celerp.config import settings
@@ -136,7 +144,7 @@ async def cloud_status() -> dict:
     }
 
 
-@router.post("/settings/cloud/billing-portal")
+@settings_router.post("/cloud/billing-portal", dependencies=[require_permission("manage_integrations")])
 async def cloud_billing_portal() -> dict:
     """Create a Stripe Billing Portal session via the relay so the merchant can
     manage their subscription (cancel, change card, download invoices)."""
@@ -149,7 +157,7 @@ async def cloud_billing_portal() -> dict:
     return {"portal_url": url}
 
 
-@router.get("/settings/backup-status")
+@settings_router.get("/backup-status", dependencies=[require_permission("manage_company_settings")])
 async def backup_status() -> dict:
     """Return backup scheduler state: last results and next scheduled run times."""
     from celerp.config import settings
@@ -171,7 +179,7 @@ async def backup_status() -> dict:
     }
 
 
-@router.post("/settings/cloud-disconnect", dependencies=[Depends(get_current_user)])
+@settings_router.post("/cloud-disconnect", dependencies=[require_permission("manage_integrations")])
 async def cloud_disconnect() -> dict:
     """Stop the gateway WebSocket client and record a sticky Cloud disconnect.
 
@@ -280,7 +288,7 @@ async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None 
         backup_scheduler.start()
 
 
-@router.post("/settings/cloud-activate", dependencies=[Depends(get_current_user)])
+@settings_router.post("/cloud-activate", dependencies=[require_permission("manage_integrations")])
 async def cloud_activate_api() -> dict:
     """Reconnect the relay tunnel. Re-activates through the relay to obtain a FRESH
     credential - activate is keyed on the preserved instance_id, so there is no email
@@ -427,7 +435,7 @@ async def _post_partner_claim(path: str, body: dict) -> tuple[dict | None, dict 
     return r.json(), None
 
 
-@router.post("/settings/partner-claim/resolve")
+@settings_router.post("/partner-claim/resolve")
 async def partner_claim_resolve(payload: dict, role: str = Depends(get_current_role)) -> dict:
     """Preview the partner identity behind a claim token. Owner/admin only. Binds
     nothing: a resolve leaves the install celerp_direct."""
@@ -449,7 +457,7 @@ async def partner_claim_resolve(payload: dict, role: str = Depends(get_current_r
     return identity
 
 
-@router.post("/settings/partner-claim/accept")
+@settings_router.post("/partner-claim/accept")
 async def partner_claim_accept(payload: dict, role: str = Depends(get_current_role)) -> dict:
     """Accept a partner claim: the relay binds the relationship and pushes the new
     commercial context. Owner/admin only. Accepting a token that is no longer
@@ -489,7 +497,7 @@ async def partner_claim_accept(payload: dict, role: str = Depends(get_current_ro
     }
 
 
-@router.post("/settings/cloud-apply-token")
+@settings_router.post("/cloud-apply-token", dependencies=[require_permission("manage_integrations")])
 async def cloud_apply_token_api(payload: dict) -> dict:
     """Apply a pre-fetched gateway token (reconnect confirmation flow)."""
     from celerp.config import ensure_instance_id
@@ -505,7 +513,7 @@ async def cloud_apply_token_api(payload: dict) -> dict:
     return {"connected": True, "relay_status": gw.relay_status if gw else "connecting", "public_url": public_url or ""}
 
 
-@router.post("/settings/cloud-accept-tos")
+@settings_router.post("/cloud-accept-tos", dependencies=[require_permission("manage_integrations")])
 async def cloud_accept_tos_api() -> dict:
     """Persist TOS acceptance, restart gateway client with new tos_version."""
     import asyncio
@@ -542,14 +550,14 @@ async def cloud_accept_tos_api() -> dict:
     return {"relay_status": new_gw.relay_status, "public_url": _s.celerp_public_url}
 
 
-@router.get("/settings/cloud-instance-id")
+@settings_router.get("/cloud-instance-id")
 async def cloud_instance_id() -> dict:
     """Return the canonical instance_id from the API process."""
     from celerp.config import ensure_instance_id
     return {"instance_id": ensure_instance_id()}
 
 
-@router.get("/settings/account-methods", dependencies=[Depends(get_current_user)])
+@settings_router.get("/account-methods")
 async def account_methods_api() -> dict:
     """Which optional sign-in methods the relay offers, plus the browser URL for
     the Google flow (started in the system browser, bound to this instance).
@@ -612,7 +620,7 @@ async def account_methods_api() -> dict:
     }
 
 
-@router.post("/settings/account-signup")
+@settings_router.post("/account-signup", dependencies=[require_permission("manage_integrations")])
 async def account_signup_api(payload: dict) -> dict:
     """Proxy the magic-link signup request using the API-process instance_id."""
     import httpx
@@ -637,7 +645,7 @@ async def account_signup_api(payload: dict) -> dict:
     return {"error": str(detail), "status_code": r.status_code}
 
 
-@router.get("/settings/account-status")
+@settings_router.get("/account-status")
 async def account_status_api() -> dict:
     """Proxy the relay account status for the app's post-sign-in polling.
 
@@ -674,7 +682,7 @@ async def account_status_api() -> dict:
     return data if isinstance(data, dict) else {"error": "unexpected response"}
 
 
-@router.post("/settings/cloud-send-otp")
+@settings_router.post("/cloud-send-otp", dependencies=[require_permission("manage_integrations")])
 async def cloud_send_otp_api(payload: dict) -> dict:
     """Proxy /billing/claim/send-otp to relay using API-process instance_id."""
     import httpx
@@ -709,7 +717,7 @@ async def cloud_send_otp_api(payload: dict) -> dict:
     return {"error": str(detail), "status_code": r.status_code, "instance_id": iid}
 
 
-@router.post("/settings/cloud-claim")
+@settings_router.post("/cloud-claim", dependencies=[require_permission("manage_integrations")])
 async def cloud_claim_api(payload: dict) -> dict:
     """Proxy /billing/claim to relay using API-process instance_id, then activate.
 
@@ -807,7 +815,7 @@ async def cloud_claim_api(payload: dict) -> dict:
     return {"linked": True, "instance_id": iid}
 
 
-@router.get("/settings/connectors-catalog")
+@settings_router.get("/connectors-catalog", dependencies=[require_permission("manage_integrations")])
 async def connectors_catalog_api() -> dict:
     """Proxy relay /api/connectors using a fresh relay JWT (API process only)."""
     import httpx
@@ -853,7 +861,7 @@ async def connectors_catalog_api() -> dict:
     return {"error": f"Relay returned {r.status_code}.", "connectors": []}
 
 
-@router.get("/settings/connectors/{platform}/authorize-url")
+@settings_router.get("/connectors/{platform}/authorize-url", dependencies=[require_permission("manage_integrations")])
 async def connector_authorize_url(platform: str, shop: str = "") -> dict:
     """Get OAuth authorize URL for a connector platform via API process (holds gateway token)."""
     import httpx

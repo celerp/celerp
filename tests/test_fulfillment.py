@@ -13,7 +13,6 @@ import pytest_asyncio
 
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
-from celerp.services.auth import create_access_token
 from celerp.services.pick import PickResult, compute_pick_plan
 
 
@@ -285,7 +284,8 @@ async def auth(session, _setup_ids):
     await session.flush()  # parents before membership for Postgres FK checks
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
     await session.commit()
-    token, _ = create_access_token(subject=str(uid), company_id=str(cid), role="admin")
+    from test_helpers import make_authed_token
+    token = await make_authed_token(session, str(uid), str(cid), "admin")
     return {
         "headers": {"Authorization": f"Bearer {token}"},
         "company_id": cid,       # UUID, not string

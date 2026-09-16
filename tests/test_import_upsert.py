@@ -11,18 +11,13 @@ import pytest
 
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
-from celerp.services.auth import create_access_token
+
+from test_helpers import make_authed_token
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _make_user(company_id: uuid.UUID) -> tuple[uuid.UUID, str]:
-    user_id = uuid.uuid4()
-    token, _ = create_access_token(subject=str(user_id), company_id=str(company_id), role="admin")
-    return user_id, token
-
 
 async def _setup(session) -> tuple[uuid.UUID, uuid.UUID, str]:
     company_id = uuid.uuid4()
@@ -37,7 +32,7 @@ async def _setup(session) -> tuple[uuid.UUID, uuid.UUID, str]:
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     await session.commit()
-    token, _ = create_access_token(subject=str(user_id), company_id=str(company_id), role="admin")
+    token = await make_authed_token(session, str(user_id), str(company_id), "admin")
     return company_id, user_id, token
 
 
@@ -239,7 +234,6 @@ async def test_same_idempotency_key_allowed_for_different_companies(client, sess
 
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company, User
-    from celerp.services.auth import create_access_token
 
     for cid, uid, name in [
         (company_a_id, user_a_id, "CompanyA"),
@@ -251,8 +245,8 @@ async def test_same_idempotency_key_allowed_for_different_companies(client, sess
         session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
     await session.commit()
 
-    token_a, _ = create_access_token(subject=str(user_a_id), company_id=str(company_a_id), role="admin")
-    token_b, _ = create_access_token(subject=str(user_b_id), company_id=str(company_b_id), role="admin")
+    token_a = await make_authed_token(session, str(user_a_id), str(company_a_id), "admin")
+    token_b = await make_authed_token(session, str(user_b_id), str(company_b_id), "admin")
 
     shared_idem = f"csv:item:shared-key-{uuid.uuid4().hex[:8]}"
     record = {

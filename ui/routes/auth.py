@@ -122,6 +122,8 @@ def setup_routes(app):
             notice = flash(t("auth.session_expired_signin"), kind="warning")
         elif reason == "idle":
             notice = flash(t("auth.signed_out_idle"), kind="warning")
+        elif reason == "password-changed":
+            notice = flash(t("settings.password_changed"), kind="success")
         elif (restore_notice := _consume_restore_notice()) is not None:
             notice = flash(_restore_notice_message(restore_notice),
                            kind="warning" if (restore_notice.get("warnings") or restore_notice.get("schema_warning")) else "success")
@@ -135,8 +137,7 @@ def setup_routes(app):
             from starlette.responses import Response as _Resp
             from fasthtml.common import to_xml
             html_resp = _Resp(content=to_xml(resp), media_type="text/html")
-            html_resp.delete_cookie(COOKIE_NAME)
-            html_resp.delete_cookie(REFRESH_COOKIE_NAME)
+            clear_session_cookies(html_resp, request)
             return html_resp
         return resp
 
@@ -334,8 +335,7 @@ def setup_routes(app):
             if e.status == 401:
                 bootstrapped = await bootstrap_status()
                 resp = RedirectResponse("/setup" if not bootstrapped else "/login", status_code=302)
-                resp.delete_cookie(COOKIE_NAME)
-                resp.delete_cookie(REFRESH_COOKIE_NAME)
+                clear_session_cookies(resp, request)
                 return resp
             elif e.status == 404:
                 return RedirectResponse("/setup", status_code=302)
@@ -400,24 +400,26 @@ def setup_routes(app):
     @app.post("/logout")
     async def logout(request: Request):
         token = request.cookies.get(COOKIE_NAME)
-        if token:
-            await api_logout(token)
+        refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
+        if token or refresh_token:
+            await api_logout(token, refresh_token)
         resp = RedirectResponse("/login", status_code=302)
-        clear_session_cookies(resp)
+        clear_session_cookies(resp, request)
         return resp
 
     @app.get("/logout")
     async def logout_get(request: Request):
         """GET fallback for no-JS clients and the idle-timer. Clears tokens and redirects."""
         token = request.cookies.get(COOKIE_NAME)
-        if token:
-            await api_logout(token)
+        refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
+        if token or refresh_token:
+            await api_logout(token, refresh_token)
         from urllib.parse import urlencode
         params = {k: v for k, v in (("reason", request.query_params.get("reason", "")),
                                     ("next", request.query_params.get("next", ""))) if v}
         dest = f"/login?{urlencode(params)}" if params else "/login"
         resp = RedirectResponse(dest, status_code=302)
-        clear_session_cookies(resp)
+        clear_session_cookies(resp, request)
         return resp
 
     @app.get("/health")
@@ -432,11 +434,19 @@ def setup_routes(app):
             return JSONResponse({"status": "degraded", "version": ""}, status_code=503)
 
     @app.get("/health/system")
-    async def health_system_proxy():
-        """Proxy /health/system to the API so the UI health banner works on any port."""
+    async def health_system_proxy(request: Request):
+        """Proxy /health/system to the API so the UI health banner works on any port.
+
+        The API endpoint reports host resources and is authenticated, so forward
+        the caller's session token. Without a token, or on any transient API
+        failure, the banner degrades to a neutral state rather than surfacing an
+        error - it is chrome, and the host data stays protected at the API."""
         from starlette.responses import JSONResponse
+        token = request.cookies.get(COOKIE_NAME)
         try:
-            async with api._local_client(timeout=3.0, follow_redirects=False) as c:
+            if not token:
+                raise RuntimeError("no session token")
+            async with api._api_client(token, timeout=3.0) as c:
                 r = await c.get("/health/system")
                 return JSONResponse(r.json(), status_code=r.status_code)
         except Exception:
