@@ -421,7 +421,11 @@ async def test_cloud_claim_otp_invalid(client):
 
 @pytest.mark.asyncio
 async def test_cloud_send_otp_proxies_via_api(client):
-    """send-otp uses canonical instance_id from API process."""
+    """send-otp forwards the entered email plus the canonical instance_id of
+    THIS install from the API process, under the claim-specific relay deadline."""
+    from celerp.config import ensure_instance_id
+    from celerp.routers import health as health_router
+
     token = await _register(client, "otp-send")
 
     mock_resp = MagicMock()
@@ -443,8 +447,65 @@ async def test_cloud_send_otp_proxies_via_api(client):
     assert r.status_code == 200
     data = r.json()
     assert data.get("ok") is True
-    # instance_id in sent payload must match what API process provides
-    assert sent_payload.get("instance_id") == data.get("instance_id")
+    # The relay receives exactly the entered email and this install's instance_id.
+    assert sent_payload == {"email": "user@example.com", "instance_id": ensure_instance_id()}
+    assert sent_payload["instance_id"] == data.get("instance_id")
+    # The relay call runs under the claim deadline, not the generic client default.
+    assert mock_httpx.call_args.kwargs["timeout"] == health_router.RELAY_CLAIM_OTP_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_cloud_send_otp_relay_timeout_is_reported_as_relay_timeout(client):
+    """A relay that stalls past the claim deadline is reported as a relay
+    timeout in the error dict (HTTP 200), never as a local API failure."""
+    import httpx
+
+    token = await _register(client, "otp-send-timeout")
+
+    with patch("httpx.AsyncClient") as mock_httpx:
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
+            side_effect=httpx.ReadTimeout("relay stalled"))
+        r = await client.post(
+            "/settings/cloud-send-otp",
+            headers=_h(token),
+            json={"email": "user@example.com"},
+        )
+
+    assert r.status_code == 200
+    assert "timed out" in r.json()["error"]
+
+
+def test_ui_send_otp_deadline_exceeds_relay_deadline():
+    """The UI's wait on /settings/cloud-send-otp must outlast the local API's
+    own wait on the relay, or a slow relay surfaces as a bogus UI timeout."""
+    from celerp.routers import health as health_router
+    from ui import api_client
+
+    assert api_client.SEND_OTP_TIMEOUT >= health_router.RELAY_CLAIM_OTP_TIMEOUT + 2.0
+
+
+@pytest.mark.asyncio
+async def test_ui_send_otp_uses_its_own_deadline():
+    """ui.api_client.send_otp opens its client with the send-otp deadline."""
+    from contextlib import asynccontextmanager
+
+    import httpx
+    from ui import api_client
+
+    seen = {}
+
+    @asynccontextmanager
+    async def fake_client(token, timeout=None):
+        seen["timeout"] = timeout
+        c = MagicMock()
+        c.post = AsyncMock(return_value=httpx.Response(200, json={"ok": True}))
+        yield c
+
+    with patch.object(api_client, "_api_client", fake_client):
+        data = await api_client.send_otp("tok", "user@example.com")
+
+    assert data == {"ok": True}
+    assert seen["timeout"] == api_client.SEND_OTP_TIMEOUT
 
 
 # ---------------------------------------------------------------------------

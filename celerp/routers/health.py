@@ -682,6 +682,13 @@ async def account_status_api() -> dict:
     return data if isinstance(data, dict) else {"error": "unexpected response"}
 
 
+# Deadline for the relay send-otp call. The relay bounds its own email
+# provider call at 5s, and the UI waits on this endpoint for longer than
+# this (ui.api_client.SEND_OTP_TIMEOUT), so a slow relay is reported as a
+# relay timeout rather than surfacing as a UI timeout.
+RELAY_CLAIM_OTP_TIMEOUT = 8.0
+
+
 @settings_router.post("/cloud-send-otp", dependencies=[require_permission("manage_integrations")])
 async def cloud_send_otp_api(payload: dict) -> dict:
     """Proxy /billing/claim/send-otp to relay using API-process instance_id."""
@@ -696,7 +703,7 @@ async def cloud_send_otp_api(payload: dict) -> dict:
     from celerp.gateway.state import relay_http_url as _rhu; relay_base = _rhu()
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
+        async with httpx.AsyncClient(timeout=RELAY_CLAIM_OTP_TIMEOUT) as c:
             r = await c.post(
                 f"{relay_base}/billing/claim/send-otp",
                 json={"email": email, "instance_id": iid},
