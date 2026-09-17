@@ -1,5 +1,4 @@
 from pathlib import Path
-import runpy
 
 
 def replace_once(path: str, old: str, new: str) -> None:
@@ -52,7 +51,3 @@ def test_activation_verifier_survives_restart_until_credential_is_durable(tmp_pa
     assert "public_url" not in cfg["cloud"]
     assert mod.settings.activation_verifier == ""
 ''')
-
-# The existing temporary validator explicitly invokes patches 0-4. Chain the
-# final durability hardening here so that run exercises the complete source set.
-runpy.run_path("/tmp/tmp_connect_app_patch5.py", run_name="__main__")
