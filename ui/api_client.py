@@ -3144,22 +3144,24 @@ async def account_status(token: str) -> dict:
         return _raise(await c.get("/settings/account-status")).json()
 
 
-# Outer deadline for the send-otp round trip. Must exceed the API process's
-# own wait on the relay (celerp.routers.health.RELAY_CLAIM_OTP_TIMEOUT) plus
-# local overhead, so a slow relay is reported by the API as a relay timeout
-# instead of the UI giving up first.
-SEND_OTP_TIMEOUT = 12.0
+# Deadline for the claim-flow endpoints (send code, claim). Each must outlast
+# the local API's own worst case: its wait on the relay
+# (celerp.routers.health.RELAY_CLAIM_TIMEOUT) plus the inline activation
+# wait (celerp.routers.health.CLAIM_ACTIVATE_WAIT) plus local overhead, so a
+# slow relay is reported by the API as a relay timeout instead of the UI
+# giving up first.
+CLAIM_TIMEOUT = 15.0
 
 
 async def send_otp(token: str, email: str) -> dict:
     """POST /settings/cloud-send-otp - send OTP via API process (correct instance_id)."""
-    async with _api_client(token, timeout=SEND_OTP_TIMEOUT) as c:
+    async with _api_client(token, timeout=CLAIM_TIMEOUT) as c:
         return _raise(await c.post("/settings/cloud-send-otp", json={"email": email})).json()
 
 
 async def cloud_claim(token: str, payload: dict) -> dict:
-    """POST /settings/cloud-claim — claim + activate via API process (correct instance_id)."""
-    async with _api_client(token) as c:
+    """POST /settings/cloud-claim - claim + activate via API process (correct instance_id)."""
+    async with _api_client(token, timeout=CLAIM_TIMEOUT) as c:
         return _raise(await c.post("/settings/cloud-claim", json=payload)).json()
 
 

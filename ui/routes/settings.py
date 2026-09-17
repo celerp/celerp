@@ -1654,6 +1654,27 @@ def setup_routes(app):
         iid = ensure_instance_id()
         return _cloud_relay_unconnected(iid)
 
+    @app.get("/settings/cloud-link-progress")
+    async def cloud_link_progress(request: Request, n: str = "0"):
+        """HTMX poll after a linked claim: reload the page once the relay connects,
+        keep polling through the API's activation retry window, then hand over to
+        the Connect button."""
+        if await _check_permission(request, "manage_integrations"):
+            return Div(id="cloud-relay-tab")
+        import ui.api_client as _api
+        from celerp.config import ensure_instance_id
+        try:
+            status = await _api.get_relay_status(_token(request))
+        except Exception:
+            status = {}
+        if status.get("connected"):
+            return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
+        iid = ensure_instance_id()
+        polls = int(n) if n.isdigit() else LINK_PROGRESS_POLLS
+        if polls >= LINK_PROGRESS_POLLS:
+            return _cloud_link_handover(iid)
+        return _cloud_link_progress(iid, polls + 1)
+
     @app.get("/settings/cloud-status")
     async def cloud_status_fragment(request: Request):
         """HTMX fragment: render cloud connection status card."""
@@ -2064,6 +2085,13 @@ def setup_routes(app):
 
         try:
             data = await _api.cloud_claim(ui_token, claim_payload)
+        except _api.APIError as exc:
+            # A UI-deadline timeout is explained in link terms: the relay may
+            # already have moved the subscription, so the honest advice is to
+            # restart or retry, not the generic busy-server copy.
+            from celerp.config import ensure_instance_id
+            copy = t("settings.link_timed_out") if exc.status == 504 else t("settings.could_not_reach_api", exc=exc)
+            return _cloud_relay_unconnected(ensure_instance_id(), error=copy)
         except Exception as exc:
             from celerp.config import ensure_instance_id
             return _cloud_relay_unconnected(ensure_instance_id(), error=t("settings.could_not_reach_api", exc=exc))
@@ -2093,13 +2121,13 @@ def setup_routes(app):
             # Same as cloud_activate: connecting changes the whole page, reload it.
             return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
 
-        # Claim succeeded but activate pending (rare: relay linkage happened but WS not up yet)
-        return _cloud_relay_unconnected(
-            iid,
-            error=None,
-            info=t("settings.subscription_linked_info"),
-            show_email_form=False,
-        )
+        if data.get("activating"):
+            # Linked; activation is still running in the API process, so the
+            # tab polls for the connection instead of asking for anything.
+            return _cloud_link_progress(iid, 1)
+
+        # Linked, but activation already gave up: the Connect button retries it.
+        return _cloud_link_handover(iid)
 
     @app.post("/settings/cloud-disconnect")
     async def cloud_disconnect(request: Request):
@@ -3662,6 +3690,28 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
     )
 
 
+# Polls of /settings/cloud-link-progress (one every 3s) before the tab stops
+# polling and offers the Connect button; spans the API's post-claim activation
+# retry window.
+LINK_PROGRESS_POLLS = 25
+
+
+def _cloud_link_progress(iid: str, n: int) -> FT:
+    """Linked-and-activating state: the link is done and the tab polls for the tunnel."""
+    return _cloud_relay_unconnected(
+        iid, info=t("settings.subscription_linked_connecting"), show_email_form=False,
+        suppress_autoconnect=True, poll=f"/settings/cloud-link-progress?n={n}",
+    )
+
+
+def _cloud_link_handover(iid: str) -> FT:
+    """Linked, activation not confirmed: the Connect button finishes it on demand."""
+    return _cloud_relay_unconnected(
+        iid, info=t("settings.subscription_linked_info"), show_email_form=False,
+        suppress_autoconnect=True,
+    )
+
+
 def _cloud_relay_unconnected(
     iid: str,
     error: str | None = None,
@@ -3669,6 +3719,7 @@ def _cloud_relay_unconnected(
     show_email_form: bool = True,
     show_header: bool = True,
     suppress_autoconnect: bool = False,
+    poll: str | None = None,
 ) -> FT:
     """Render the unconnected state of the Celerp Connect tab (used by HTMX responses too).
 
@@ -3681,6 +3732,8 @@ def _cloud_relay_unconnected(
             re-fire Connect and undo the disconnect the user just performed; the
             Connect button stays and reconnects in one click from the preserved
             credential.
+        poll: When set, the tab re-fetches this URL every 3s and swaps itself for the
+            response; used while a linked claim's activation is still running.
     """
     from ui.components.cloud_gate import commercial_cta
     from ui.i18n import current_lang
@@ -3760,7 +3813,8 @@ def _cloud_relay_unconnected(
             ),
         ]
 
-    return Div(*children, id="cloud-relay-tab", cls="settings-card")
+    polling = {"hx_get": poll, "hx_trigger": "every 3s", "hx_swap": "outerHTML"} if poll else {}
+    return Div(*children, id="cloud-relay-tab", cls="settings-card", **polling)
 
 
 def _tos_acceptance_card(required_version: str) -> FT:

@@ -17974,6 +17974,74 @@ class TestCelerpAccountSurface:
         assert r.headers["hx-redirect"] == "/settings/cloud"
 
     @pytest.mark.asyncio
+    async def test_claim_timeout_explains_the_link_state(self, ui_client):
+        """A claim that hits the UI deadline is explained in link terms (the
+        link may already be done; restart or retry), never with the generic
+        busy-server and batch-size copy of a data request."""
+        from ui.api_client import APIError, TIMEOUT_MESSAGE
+        with patch("ui.api_client.cloud_claim",
+                   new=AsyncMock(side_effect=APIError(504, TIMEOUT_MESSAGE))):
+            r = await ui_client.post("/settings/cloud-claim",
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"may already have moved to this computer" in r.content
+        assert b"batch size" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_claim_linked_keeps_polling_until_connected(self, ui_client):
+        """A linked claim whose activation is still running shows the link as
+        done and polls for the tunnel instead of asking for the address again;
+        one whose activation already failed hands straight over to Connect."""
+        with patch("ui.api_client.cloud_claim",
+                   new=AsyncMock(return_value={"linked": True, "activating": True,
+                                               "instance_id": "i-1"})):
+            r = await ui_client.post("/settings/cloud-claim",
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"Subscription linked. Connecting to the relay" in r.content
+        assert b'hx-get="/settings/cloud-link-progress?n=1"' in r.content
+        assert b"claim_email" not in r.content
+
+        with patch("ui.api_client.cloud_claim",
+                   new=AsyncMock(return_value={"linked": True, "activating": False,
+                                               "instance_id": "i-1"})):
+            r = await ui_client.post("/settings/cloud-claim",
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
+                                     cookies=_authed())
+        assert b"Click Connect to finish activating" in r.content
+        assert b'hx-get="/settings/cloud-link-progress' not in r.content
+
+    @pytest.mark.asyncio
+    async def test_link_progress_redirects_once_connected(self, ui_client):
+        with patch("ui.api_client.get_relay_status",
+                   new=AsyncMock(return_value={"connected": True, "relay_status": "active"})):
+            r = await ui_client.get("/settings/cloud-link-progress?n=3", cookies=_authed())
+        assert r.status_code == 204
+        assert r.headers["hx-redirect"] == "/settings/cloud"
+
+        with patch("ui.api_client.get_relay_status",
+                   new=AsyncMock(return_value={"connected": False, "relay_status": "connecting"})):
+            r = await ui_client.get("/settings/cloud-link-progress?n=3", cookies=_authed())
+        assert r.status_code == 200
+        assert b'hx-get="/settings/cloud-link-progress?n=4"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_link_progress_hands_over_to_connect_after_the_retry_window(self, ui_client):
+        """Past the activation retry window (or on a malformed poll counter)
+        the fragment stops polling and offers the Connect button honestly."""
+        from ui.routes.settings import LINK_PROGRESS_POLLS
+        status = AsyncMock(return_value={"connected": False, "relay_status": "error"})
+        for n in (str(LINK_PROGRESS_POLLS), "abc"):
+            with patch("ui.api_client.get_relay_status", new=status):
+                r = await ui_client.get(f"/settings/cloud-link-progress?n={n}", cookies=_authed())
+            assert r.status_code == 200, n
+            assert b'hx-get="/settings/cloud-link-progress' not in r.content, n
+            assert b"Click Connect to finish activating" in r.content, n
+            assert b"cloud-connect-btn" in r.content, n
+
+    @pytest.mark.asyncio
     async def test_poll_reloads_web_access_page_once_relay_connects(self, ui_client):
         """The signup/poll flow hosted on the Web Access page also lands on
         the connected page once activation brings the relay up."""

@@ -451,7 +451,7 @@ async def test_cloud_send_otp_proxies_via_api(client):
     assert sent_payload == {"email": "user@example.com", "instance_id": ensure_instance_id()}
     assert sent_payload["instance_id"] == data.get("instance_id")
     # The relay call runs under the claim deadline, not the generic client default.
-    assert mock_httpx.call_args.kwargs["timeout"] == health_router.RELAY_CLAIM_OTP_TIMEOUT
+    assert mock_httpx.call_args.kwargs["timeout"] == health_router.RELAY_CLAIM_TIMEOUT
 
 
 @pytest.mark.asyncio
@@ -475,13 +475,15 @@ async def test_cloud_send_otp_relay_timeout_is_reported_as_relay_timeout(client)
     assert "timed out" in r.json()["error"]
 
 
-def test_ui_send_otp_deadline_exceeds_relay_deadline():
-    """The UI's wait on /settings/cloud-send-otp must outlast the local API's
-    own wait on the relay, or a slow relay surfaces as a bogus UI timeout."""
+def test_ui_claim_deadline_exceeds_api_wait():
+    """The UI's wait on the send-code and claim endpoints must outlast the local
+    API's own worst case (its wait on the relay plus the inline activation
+    wait), or a slow relay surfaces as a bogus UI timeout."""
     from celerp.routers import health as health_router
     from ui import api_client
 
-    assert api_client.SEND_OTP_TIMEOUT >= health_router.RELAY_CLAIM_OTP_TIMEOUT + 2.0
+    assert api_client.CLAIM_TIMEOUT >= (
+        health_router.RELAY_CLAIM_TIMEOUT + health_router.CLAIM_ACTIVATE_WAIT + 1.0)
 
 
 @pytest.mark.asyncio
@@ -505,7 +507,170 @@ async def test_ui_send_otp_uses_its_own_deadline():
         data = await api_client.send_otp("tok", "user@example.com")
 
     assert data == {"ok": True}
-    assert seen["timeout"] == api_client.SEND_OTP_TIMEOUT
+    assert seen["timeout"] == api_client.CLAIM_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_ui_cloud_claim_uses_claim_deadline():
+    """ui.api_client.cloud_claim opens its client with the claim deadline."""
+    from contextlib import asynccontextmanager
+
+    import httpx
+    from ui import api_client
+
+    seen = {}
+
+    @asynccontextmanager
+    async def fake_client(token, timeout=None):
+        seen["timeout"] = timeout
+        c = MagicMock()
+        c.post = AsyncMock(return_value=httpx.Response(200, json={"linked": True}))
+        yield c
+
+    with patch.object(api_client, "_api_client", fake_client):
+        data = await api_client.cloud_claim("tok", {"email": "user@example.com", "otp_code": "123456"})
+
+    assert data == {"linked": True}
+    assert seen["timeout"] == api_client.CLAIM_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_cloud_claim_leg_uses_relay_claim_deadline(client):
+    """The claim round trip to the relay runs under the same claim-flow deadline
+    as the send-code leg, so the UI's wait always outlasts it."""
+    from celerp.routers import health as health_router
+
+    token = await _register(client, "claim-deadline")
+
+    resp = MagicMock()
+    resp.status_code = 401
+    resp.json.return_value = {"detail": {"code": "otp_invalid", "attempts_left": 1}}
+
+    with patch("httpx.AsyncClient") as mock_httpx:
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=resp)
+        r = await client.post(
+            "/settings/cloud-claim",
+            headers=_h(token),
+            json={"email": "user@example.com", "otp_code": "000000"},
+        )
+
+    assert r.status_code == 200
+    assert mock_httpx.call_args.kwargs["timeout"] == health_router.RELAY_CLAIM_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_cloud_claim_answers_linked_while_activation_continues(client):
+    """A claim the relay confirmed is reported as linked once the inline
+    activation wait elapses. The activation keeps running in the background
+    under the startup retry policy and applies the credential when the relay
+    finally answers, so a stalled connection never turns a completed link
+    into a timeout."""
+    import asyncio
+
+    from celerp.routers import health as health_router
+
+    token = await _register(client, "claim-slow-activate")
+
+    claim_resp = MagicMock()
+    claim_resp.status_code = 200
+    claim_resp.json.return_value = {"claimed": True}
+
+    relay_answered = asyncio.Event()
+    act_resp = MagicMock()
+    act_resp.status_code = 200
+    act_resp.json.return_value = {
+        "gateway_token": "gw-late",
+        "public_url": "https://late.celerp.app",
+        "tos_version": "2025-01",
+    }
+
+    async def _slow_activate(url, body):
+        await relay_answered.wait()
+        return act_resp
+
+    applied = AsyncMock()
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        patch("celerp.gateway.state.relay_post_with_retry", new=_slow_activate),
+        patch.object(health_router, "_apply_gateway_token_api", applied),
+        patch.object(health_router, "CLAIM_ACTIVATE_WAIT", 0.2),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=claim_resp)
+        r = await client.post(
+            "/settings/cloud-claim",
+            headers=_h(token),
+            json={"email": "user@example.com", "otp_code": "123456"},
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["linked"] is True
+        assert data["activating"] is True
+        assert data["instance_id"]
+        applied.assert_not_awaited()
+
+        relay_answered.set()
+        await asyncio.sleep(0.05)
+
+    applied.assert_awaited_once()
+    assert applied.await_args.args[0] == "gw-late"
+    assert applied.await_args.kwargs["public_url"] == "https://late.celerp.app"
+
+
+@pytest.mark.asyncio
+async def test_cloud_claim_relay_timeout_names_the_restart_path(client):
+    """When the claim leg itself times out, the relay may or may not have
+    completed the link; the error says so and names the recovery (retry, or
+    restart Celerp, which activates on startup)."""
+    import httpx
+
+    token = await _register(client, "claim-timeout")
+
+    with patch("httpx.AsyncClient") as mock_httpx:
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
+            side_effect=httpx.ReadTimeout("relay stalled"))
+        r = await client.post(
+            "/settings/cloud-claim",
+            headers=_h(token),
+            json={"email": "user@example.com", "otp_code": "123456"},
+        )
+
+    assert r.status_code == 200
+    err = r.json()["error"]
+    assert "timed out" in err
+    assert "restart Celerp" in err
+
+
+@pytest.mark.asyncio
+async def test_relay_claim_legs_log_timing_without_the_address(client, caplog):
+    """Every relay round trip on the claim flow logs how long it took and its
+    outcome, so a stalled leg can be diagnosed from the app log. The address
+    and the code never appear in those records."""
+    import logging
+    import re
+
+    token = await _register(client, "claim-timing")
+
+    ok = MagicMock()
+    ok.status_code = 200
+    ok.json.return_value = {"sent": True}
+
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        caplog.at_level(logging.INFO, logger="celerp.routers.health"),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=ok)
+        r = await client.post(
+            "/settings/cloud-send-otp",
+            headers=_h(token),
+            json={"email": "timing@example.com"},
+        )
+
+    assert r.status_code == 200
+    legs = [rec.getMessage() for rec in caplog.records
+            if rec.name == "celerp.routers.health" and "relay send-otp leg" in rec.getMessage()]
+    assert len(legs) == 1, caplog.text
+    assert re.search(r"\d+\.\d+s", legs[0]) and "status 200" in legs[0]
+    assert all("timing@example.com" not in rec.getMessage() for rec in caplog.records)
 
 
 # ---------------------------------------------------------------------------

@@ -2580,6 +2580,8 @@
   "settings.incorrect_code_attempts": "コードが間違っています。残り {n} 回です。",
   "settings.code_expired": "コードの有効期限が切れているか、間違った入力が多すぎます。新しいコードをリクエストしてください。",
   "settings.subscription_linked_info": "サブスクリプションがリンクされました。「接続」をクリックしてアクティベーションを完了してください。",
+  "settings.link_timed_out": "予想より時間がかかっており、リレーがリンクを確認する前にタイムアウトしました。サブスクリプションはすでにこのコンピューターに移動している可能性があります。Celerp を再起動するか、もう一度お試しください。それでも失敗する場合は、このコンピューターからリレーへの接続が遅くなっています。",
+  "settings.subscription_linked_connecting": "サブスクリプションがリンクされました。リレーに接続しています...",
   "settings.otp_sent_hint": "{email} に 6 桁のコードを送信しました。以下に入力してください：",
   "settings.claim_email_hint": "ウェブサイト上で登録したにもかかわらず、支払いが自動的に紐付けられない場合は、チェックアウト時に使用したメールアドレスを入力してください：",
   "settings.establishing_connection": "接続を確立しています...",

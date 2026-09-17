@@ -20,6 +20,7 @@ from ui.routes.settings import _check_permission, _token
 from ui.security import is_safe_authorize_url
 
 from celerp.connectors.base import ConnectorCategory, SyncFrequency
+from celerp.services.background import spawn_background
 
 log = logging.getLogger(__name__)
 
@@ -304,19 +305,6 @@ async def _clear_connector_config(company_id: str, connector: str) -> None:
         log.warning("failed to clear ConnectorConfig (%s)", connector, exc_info=True)
 
 
-_BG_TASKS: set = set()
-
-
-def _spawn(coro) -> None:
-    """Fire-and-forget a coroutine while holding a strong reference to the task
-    (discarded on completion) so the event loop can't garbage-collect it mid-run."""
-    import asyncio
-
-    task = asyncio.create_task(coro)
-    _BG_TASKS.add(task)
-    task.add_done_callback(_BG_TASKS.discard)
-
-
 async def _kickoff_connector_sync(iid: str, platform: str, token: str) -> None:
     """Fetch the live token and start a background sync of all supported entities.
     Raises on setup failure (bad token, unknown connector); per-entity errors are captured
@@ -340,7 +328,7 @@ async def _kickoff_connector_sync(iid: str, platform: str, token: str) -> None:
             except Exception as exc:
                 log.warning("connector sync %s/%s failed: %s", platform, entity_enum.value, exc)
 
-    _spawn(_do_sync())
+    spawn_background(_do_sync())
 
 
 async def _autosync_once(iid: str, platform: str, token: str) -> None:
@@ -768,7 +756,7 @@ async def connectors_tab_content(lang: str, token: str, category: str) -> FT:
     # re-render, and once any run exists this branch no longer fires.
     for c in catalog:
         if c.get("connected") and last_runs.get(c["id"]) is None:
-            _spawn(_autosync_once(iid, c["id"], token))
+            spawn_background(_autosync_once(iid, c["id"], token))
 
     # The tab label already names the category, so the cards render directly.
     cards = [

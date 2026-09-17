@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import os
+import time
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
@@ -682,11 +685,71 @@ async def account_status_api() -> dict:
     return data if isinstance(data, dict) else {"error": "unexpected response"}
 
 
-# Deadline for the relay send-otp call. The relay bounds its own email
-# provider call at 5s, and the UI waits on this endpoint for longer than
-# this (ui.api_client.SEND_OTP_TIMEOUT), so a slow relay is reported as a
-# relay timeout rather than surfacing as a UI timeout.
-RELAY_CLAIM_OTP_TIMEOUT = 8.0
+# Deadline for each relay round trip on the claim flow (send-otp, token
+# exchange, claim). The relay bounds its own email provider call at 5s, and
+# the UI waits on these endpoints for longer than this plus the activation
+# wait below (ui.api_client.CLAIM_TIMEOUT), so a slow relay is reported by
+# the API as a relay timeout rather than surfacing as a UI timeout.
+RELAY_CLAIM_TIMEOUT = 8.0
+
+# How long a claim request waits inline for the post-claim activation before
+# answering. Activation continues in the background past this point under the
+# startup retry policy, so a stalled activation leg never turns a link the
+# relay has already completed into a timeout.
+CLAIM_ACTIVATE_WAIT = 4.0
+
+
+@contextlib.contextmanager
+def _relay_leg(leg: str):
+    """Log how long one relay round trip on the claim flow took and how it ended.
+
+    The record carries the leg name, the elapsed seconds and the HTTP status
+    (or "no response" when the call raised or the retries gave up), never the
+    address or the code, so a stalled leg can be read off the app log.
+    """
+    started = time.monotonic()
+    outcome: dict = {"status": None}
+    try:
+        yield outcome
+    finally:
+        status = outcome["status"]
+        logger.info("relay %s leg: %.2fs %s", leg, time.monotonic() - started,
+                    f"status {status}" if status is not None else "no response")
+
+
+async def _activate_after_claim(iid: str, relay_base: str) -> dict | None:
+    """Activate the relay session for a freshly claimed instance.
+
+    Runs under the same retry policy as the startup activation, so a relay
+    that is slow to answer this one call is retried instead of failed. Returns
+    the connected payload once the credential is applied, or None when no
+    credential was issued within the retry window. The link itself is already
+    done on the relay either way, and the next startup activation picks it up.
+    """
+    from celerp.gateway.state import activate_payload, relay_post_with_retry
+
+    try:
+        with _relay_leg("activate") as leg:
+            resp = await relay_post_with_retry(f"{relay_base}/auth/activate", activate_payload(iid))
+            leg["status"] = resp.status_code if resp is not None else None
+        if resp is None or resp.status_code != 200:
+            return None
+        act_data = resp.json()
+        await _apply_gateway_token_api(
+            act_data["gateway_token"], iid,
+            public_url=act_data.get("public_url"), tos_version=act_data.get("tos_version"),
+        )
+    except Exception as exc:
+        logger.warning("post-claim activation failed: %s: %s", type(exc).__name__, exc)
+        return None
+    import celerp.gateway.client as _gw_mod
+    gw = _gw_mod.get_client()
+    return {
+        "connected": True,
+        "relay_status": gw.relay_status if gw else "connecting",
+        "public_url": act_data.get("public_url", ""),
+        "instance_id": iid,
+    }
 
 
 @settings_router.post("/cloud-send-otp", dependencies=[require_permission("manage_integrations")])
@@ -703,11 +766,13 @@ async def cloud_send_otp_api(payload: dict) -> dict:
     from celerp.gateway.state import relay_http_url as _rhu; relay_base = _rhu()
 
     try:
-        async with httpx.AsyncClient(timeout=RELAY_CLAIM_OTP_TIMEOUT) as c:
-            r = await c.post(
-                f"{relay_base}/billing/claim/send-otp",
-                json={"email": email, "instance_id": iid},
-            )
+        async with httpx.AsyncClient(timeout=RELAY_CLAIM_TIMEOUT) as c:
+            with _relay_leg("send-otp") as leg:
+                r = await c.post(
+                    f"{relay_base}/billing/claim/send-otp",
+                    json={"email": email, "instance_id": iid},
+                )
+                leg["status"] = r.status_code
     except httpx.ConnectError:
         return {"error": f"Cannot reach {relay_base} - check your internet connection."}
     except httpx.TimeoutException:
@@ -754,21 +819,28 @@ async def cloud_claim_api(payload: dict) -> dict:
 
     headers = {"X-Instance-ID": iid}
     try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
+        async with httpx.AsyncClient(timeout=RELAY_CLAIM_TIMEOUT) as c:
             api_key = _s.gateway_token
             if api_key:
-                tok_r = await c.post(f"{relay_base}/auth/token", json={"api_key": api_key})
+                with _relay_leg("token") as leg:
+                    tok_r = await c.post(f"{relay_base}/auth/token", json={"api_key": api_key})
+                    leg["status"] = tok_r.status_code
                 if tok_r.status_code == 200:
                     headers["Authorization"] = f"Bearer {tok_r.json()['access_token']}"
-            r = await c.post(
-                f"{relay_base}/billing/claim",
-                json=claim_payload,
-                headers=headers,
-            )
+            with _relay_leg("claim") as leg:
+                r = await c.post(
+                    f"{relay_base}/billing/claim",
+                    json=claim_payload,
+                    headers=headers,
+                )
+                leg["status"] = r.status_code
     except httpx.ConnectError:
         return {"error": f"Cannot reach {relay_base} - check your internet connection or firewall."}
     except httpx.TimeoutException:
-        return {"error": f"Connection to {relay_base} timed out."}
+        return {"error": (
+            f"Connection to {relay_base} timed out before the relay confirmed the link. "
+            "Try again, or restart Celerp: if the link already went through, it connects on startup."
+        )}
     except Exception as exc:
         return {"error": f"Connection error: {type(exc).__name__}: {exc}"}
 
@@ -804,22 +876,19 @@ async def cloud_claim_api(payload: dict) -> dict:
     if data.get("requires_selection"):
         return {"requires_selection": True, "matches": data["matches"], "instance_id": iid}
 
-    # Claim succeeded — activate immediately (same process, same iid)
-    try:
-        from celerp.gateway.state import activate_payload
-        async with httpx.AsyncClient(timeout=10.0) as ac:
-            act_resp = await ac.post(f"{relay_base}/auth/activate", json=activate_payload(iid))
-        if act_resp.status_code == 200:
-            act_data = act_resp.json()
-            token = act_data["gateway_token"]
-            await _apply_gateway_token_api(token, iid, public_url=act_data.get("public_url"), tos_version=act_data.get("tos_version"))
-            import celerp.gateway.client as _gw_mod
-            gw = _gw_mod.get_client()
-            return {"connected": True, "relay_status": gw.relay_status if gw else "connecting", "public_url": act_data.get("public_url", ""), "instance_id": iid}
-    except Exception:
-        pass
-
-    return {"linked": True, "instance_id": iid}
+    # The relay has moved the subscription to this instance. Activation runs
+    # as a background task (same process, same iid) and the request waits a
+    # short while for it, so the common case lands on the connected page in
+    # one step; past the wait, the link is reported as done while activation
+    # carries on, and the page polls for the connection.
+    from celerp.services.background import spawn_background
+    activation = spawn_background(_activate_after_claim(iid, relay_base))
+    done, _ = await asyncio.wait({activation}, timeout=CLAIM_ACTIVATE_WAIT)
+    if done:
+        connected = activation.result()
+        if connected:
+            return connected
+    return {"linked": True, "activating": not done, "instance_id": iid}
 
 
 @settings_router.get("/connectors-catalog", dependencies=[require_permission("manage_integrations")])
