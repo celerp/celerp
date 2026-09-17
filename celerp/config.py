@@ -284,9 +284,6 @@ def load_cloud_config() -> None:
     # declaration survives restarts; loads unless the environment already set it.
     if cloud.get("external_db") and not settings.external_db:
         settings.external_db = True
-    # Auto-enable secure cookies when relay-connected (HTTPS via Caddy/Cloudflare)
-    if settings.gateway_token and not os.environ.get("COOKIE_SECURE"):
-        settings.cookie_secure = True
 
 
 def load_backup_config() -> None:
