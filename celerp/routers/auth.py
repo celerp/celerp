@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -33,6 +33,10 @@ from celerp.services.auth import (
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
+
+# Fixed key for the transaction-scoped advisory lock that serializes first-admin
+# bootstrap across workers. Distinct from the session-tracker advisory keys.
+_BOOTSTRAP_LOCK_KEY = 0x43454C4552500001
 
 
 async def _issue_tokens(
@@ -106,77 +110,101 @@ async def bootstrap_status(session: AsyncSession = Depends(get_session)) -> dict
 
 @router.post("/register")
 async def register(payload: RegisterRequest, session: AsyncSession = Depends(get_session)) -> dict:
-    """Register first admin. Locked out after bootstrap (any user exists)."""
-    existing = (await session.execute(select(User))).scalars().first()
-    if existing is not None:
-        raise HTTPException(status_code=403, detail="System already bootstrapped. Contact your admin.")
+    """Register first admin. Locked out after bootstrap (any user exists).
 
-    # Headless installs mint a one-time setup code the operator reads off the box,
-    # so a network-exposed first-admin page can't be claimed by a stranger.
-    required = _setup_code_hash()
-    if required:
-        import hashlib
-        import hmac as _hmac
-        provided = (payload.setup_code or "").strip()
-        if not provided or not _hmac.compare_digest(
-            hashlib.sha256(provided.encode()).hexdigest(), required
-        ):
-            raise HTTPException(status_code=403, detail="Invalid or missing setup code.")
-
-    slug = _slugify(payload.company_name)
-    company = Company(id=uuid.uuid4(), name=payload.company_name, slug=slug, settings={"fiscal_year_start": "01-01"})
-    user = User(
-        id=uuid.uuid4(),
-        email=payload.email,
-        name=payload.name,
-        auth_hash=hash_password(payload.password),
-        api_key=None,
-        is_active=True,
-    )
-    session.add(company)
-    session.add(user)
-    await session.flush()  # persist company + user first (Postgres FK enforcement)
-    # Link user to company - UserCompany is the single source of role+company truth
-    link = UserCompany(id=uuid.uuid4(), user_id=user.id, company_id=company.id, role="owner")
-    session.add(link)
-    await session.flush()  # ensure IDs are set before module hooks
-    # Fire module lifecycle hooks (e.g. celerp-accounting seeds chart of accounts)
-    from celerp.modules.slots import fire_lifecycle
-    await fire_lifecycle("on_company_created", session=session, company_id=company.id)
-    # Seed a default "Head Office" location before demo items so items land in it
-    head_office = Location(
-        id=uuid.uuid4(),
-        company_id=company.id,
-        name="Head Office",
-        type="office",
-        address=None,
-        is_default=True,
-    )
-    session.add(head_office)
-    await session.flush()
-    from celerp.services.demo import seed_demo_items
-    await seed_demo_items(session, company.id, user.id, default_location_id=head_office.id)
-    # Seed the company's single self-contact (typed `both`) with company name, owner name + admin email
-    from celerp.services.demo import seed_self_contacts
-    await seed_self_contacts(
-        session,
-        company_id=company.id,
-        actor_id=user.id,
-        person_name=payload.name,
-        company_name=payload.company_name,
-        email=payload.email,
-    )
+    A transaction-scoped advisory lock serializes concurrent first-admin
+    registrations so exactly one wins: the second caller blocks until the first
+    commits, then sees the existing owner and is refused. The whole bootstrap
+    (rows plus module/demo seeding) commits once through the central token issuer,
+    so it is all-or-nothing; the one-time setup code is consumed only afterwards.
+    """
+    required = ""
     try:
-        await session.commit()
-    except Exception as e:
+        # Serialize first-admin bootstrap across workers BEFORE reading user state,
+        # so two callers cannot both observe an empty install and proceed. The lock
+        # is released automatically when this transaction commits or rolls back.
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _BOOTSTRAP_LOCK_KEY})
+
+        existing = (await session.execute(select(User))).scalars().first()
+        if existing is not None:
+            raise HTTPException(status_code=403, detail="System already bootstrapped. Contact your admin.")
+
+        # Headless installs mint a one-time setup code the operator reads off the box,
+        # so a network-exposed first-admin page can't be claimed by a stranger.
+        required = _setup_code_hash()
+        if required:
+            import hashlib
+            import hmac as _hmac
+            provided = (payload.setup_code or "").strip()
+            if not provided or not _hmac.compare_digest(
+                hashlib.sha256(provided.encode()).hexdigest(), required
+            ):
+                raise HTTPException(status_code=403, detail="Invalid or missing setup code.")
+
+        slug = _slugify(payload.company_name)
+        company = Company(id=uuid.uuid4(), name=payload.company_name, slug=slug, settings={"fiscal_year_start": "01-01"})
+        user = User(
+            id=uuid.uuid4(),
+            email=payload.email,
+            name=payload.name,
+            auth_hash=hash_password(payload.password),
+            api_key=None,
+            is_active=True,
+        )
+        session.add(company)
+        session.add(user)
+        await session.flush()  # persist company + user first (Postgres FK enforcement)
+        # Link user to company - UserCompany is the single source of role+company truth
+        link = UserCompany(id=uuid.uuid4(), user_id=user.id, company_id=company.id, role="owner")
+        session.add(link)
+        await session.flush()  # ensure IDs are set before module hooks
+        # Fire module lifecycle hooks (e.g. celerp-accounting seeds chart of accounts)
+        from celerp.modules.slots import fire_lifecycle
+        await fire_lifecycle("on_company_created", session=session, company_id=company.id)
+        # Seed a default "Head Office" location before demo items so items land in it
+        head_office = Location(
+            id=uuid.uuid4(),
+            company_id=company.id,
+            name="Head Office",
+            type="office",
+            address=None,
+            is_default=True,
+        )
+        session.add(head_office)
+        await session.flush()
+        from celerp.services.demo import seed_demo_items
+        await seed_demo_items(session, company.id, user.id, default_location_id=head_office.id)
+        # Seed the company's single self-contact (typed `both`) with company name, owner name + admin email
+        from celerp.services.demo import seed_self_contacts
+        await seed_self_contacts(
+            session,
+            company_id=company.id,
+            actor_id=user.id,
+            person_name=payload.name,
+            company_name=payload.company_name,
+            email=payload.email,
+        )
+        # Single commit point: the central issuer locks the auth state, registers the
+        # initial access JTI, and commits the whole bootstrap as one transaction.
+        tokens = await _issue_tokens(session, user, company, link.role)
+    except HTTPException:
         await session.rollback()
-        logger.error("register failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Registration failed: {e}") from e
+        raise
+    except Exception:
+        await session.rollback()
+        logger.exception("First-admin registration failed")
+        raise HTTPException(status_code=500, detail="Registration failed")
 
+    # Best-effort one-time cleanup AFTER the install has committed. The serialized
+    # "any user exists" check permanently blocks a second bootstrap, so a cleanup
+    # failure cannot claim a second admin: log it and still return the token pair.
     if required:
-        _clear_setup_code()
+        try:
+            _clear_setup_code()
+        except Exception:
+            logger.warning("Setup-code cleanup failed after first-admin bootstrap", exc_info=True)
 
-    return await _issue_tokens(session, user, company, link.role)
+    return tokens
 
 
 from slowapi import Limiter
