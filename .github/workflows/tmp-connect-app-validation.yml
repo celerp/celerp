@@ -62,6 +62,7 @@ jobs:
           python /tmp/tmp_connect_app_patch12.py
           python /tmp/tmp_connect_app_patch13.py
           python /tmp/tmp_connect_app_patch14.py
+          python /tmp/tmp_connect_app_patch15.py
           git status --short
           python -m compileall -q celerp ui tests
           git diff --check
