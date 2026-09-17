@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from fasthtml.common import *
@@ -1091,8 +1092,30 @@ document.addEventListener('DOMContentLoaded', function() {
 """
 
 _STAR_CTA_JS = """
+// Decorative supporter chrome shares one request queue. Starting it after load keeps
+// these best-effort calls out of the page's interactive relay fan-out, while the cache
+// deduplicates /stars/badge when both the footer and supporter card need it.
+window.celerpStarFetch = window.celerpStarFetch || (function(){
+  var cache = {};
+  var queue = new Promise(function(resolve){
+    if (document.readyState === 'complete') resolve();
+    else window.addEventListener('load', resolve, {once:true});
+  });
+  return function(url){
+    if (cache[url]) return cache[url];
+    var request = queue.catch(function(){}).then(function(){
+      return fetch(url).then(function(r){
+        if (!r.ok) throw new Error('star request failed: ' + r.status);
+        return r.json();
+      });
+    });
+    queue = request.catch(function(){});
+    cache[url] = request;
+    return request;
+  };
+})();
 (function(){
-  fetch('/stars/cta?medium=footer').then(function(r){return r.json()}).then(function(d){
+  window.celerpStarFetch('/stars/cta?medium=footer').then(function(d){
     var el = document.getElementById('star-cta');
     if (!el || !d || !d.url) return;
     var label = '\\u2605 ' + window.__shellI18n.starOnGithub;
@@ -1102,7 +1125,7 @@ _STAR_CTA_JS = """
     el.title = d.tooltip || window.__shellI18n.appreciateSupport;
     el.style.display = '';
   }).catch(function(){});
-  fetch('/stars/badge').then(function(r){return r.json()}).then(function(d){
+  window.celerpStarFetch('/stars/badge').then(function(d){
     var el = document.getElementById('supporter-badge');
     if (!el || !d || !d.badge) return;
     el.textContent = '\\u2605';            // just the gold star
@@ -1124,8 +1147,8 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
     js = (
         "(function(){"
         "Promise.all(["
-        "fetch('/stars/cta?medium=" + medium + "').then(function(r){return r.json()}).catch(function(){return null}),"
-        "fetch('/stars/badge').then(function(r){return r.json()}).catch(function(){return null})"
+        "window.celerpStarFetch('/stars/cta?medium=" + medium + "').catch(function(){return null}),"
+        "window.celerpStarFetch('/stars/badge').catch(function(){return null})"
         "]).then(function(res){"
         "var d=res[0],bd=res[1];"
         "if(!d||d.dismissed||d.mode==='neutral')return;"
@@ -1137,13 +1160,13 @@ def star_supporter_card(medium: str = "dashboard") -> FT:
         "var wall=document.getElementById('star-card-wall');"
         "var link=document.getElementById('star-card-star');"
         "if(link&&d.url)link.href=d.url;"
-        "if(bd&&bd.badge){"  # claimed -> thank-you (offer the wall, drop the ask)
+        "if(bd&&bd.badge){"
         "if(h)h.textContent=d.thanks_headline||card.dataset.fallbackThanksHeadline;"
         "if(b)b.textContent=(d.thanks_body||'').replace('{badge}',bd.badge.label);"
         "if(b2)b2.style.display='none';"
         "if(actions)actions.style.display='none';"
         "if(wall&&bd.wall_url){wall.href=bd.wall_url;wall.style.display='inline-block';}"
-        "}else{"  # not claimed -> the ask
+        "}else{"
         "if(h)h.textContent=d.headline||card.dataset.fallbackHeadline;"
         "var parts=(d.body||'').split('\\n\\n');"
         "if(b)b.textContent=parts[0]||'';"
@@ -1443,6 +1466,34 @@ def _shell_js_i18n(lang: str = "en") -> dict:
     }
 
 
+_RELAY_CUSTOMER_HOST_RE = re.compile(
+    r"^[a-z0-9][a-z0-9-]*\.celerp\.com(?::\d+)?$", re.IGNORECASE
+)
+_RELAY_RESERVED_HOSTS = frozenset({
+    "relay", "www", "gateway", "api", "mail", "send", "pay", "share",
+})
+
+
+def _relay_info_from_request(request) -> dict | None:
+    """Return known relay state when this page itself arrived through Connect.
+
+    The cloud proxy stamps the original customer host and HTTPS scheme before it
+    forwards the request through the gateway. A page that reached the UI through
+    that path is already proof that the relay tunnel is up for this request, so the
+    shell must not spend a second relay slot asking /topbar-relay-status to prove it.
+    Direct/LAN requests have no such proof and keep the existing lazy local probe.
+    """
+    if request is None:
+        return None
+    host = (request.headers.get("x-forwarded-host") or "").strip().lower()
+    proto = (request.headers.get("x-forwarded-proto") or "").strip().lower()
+    if proto != "https" or not _RELAY_CUSTOMER_HOST_RE.fullmatch(host):
+        return None
+    if host.split(".", 1)[0] in _RELAY_RESERVED_HOSTS:
+        return None
+    return {"connected": True, "public_url": f"https://{host}"}
+
+
 def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """The outer HTML document shared by every full-chrome page: head assets, the
     supplied nav, top bar, banners, main content, and footer.
@@ -1452,6 +1503,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
     without an authorization context. `lang` is already resolved by the caller."""
     from ui.config import get_user_email
     user_email = get_user_email(request) if request is not None else None
+    relay_info = _relay_info_from_request(request)
     head_items = [
         Meta(charset="utf-8"),
         Meta(name="viewport", content="width=device-width, initial-scale=1"),
@@ -1481,7 +1533,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
             Div(
                 nav,
                 Div(
-                    _topbar(companies or [], lang=lang, user_email=user_email, relay_info={}),
+                    _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info),
                     _HEALTH_BANNER_HTML,
                     _backup_banner_html(lang),
                     _GLOBAL_UI_ERROR_HTML,
@@ -1660,6 +1712,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
             hx_get="/topbar-company-switcher",
             hx_trigger="load",
             hx_swap="outerHTML",
+            data_quiet_error="1",
         ),
     )
     # Language switcher: searchable combobox showing each locale's native name.
@@ -1731,6 +1784,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
     )
     # User email + relay indicator + logout dropdown
     if user_email:
+        relay_known = relay_info is not None
         _ri = relay_info or {}
         connected = bool(_ri.get("connected"))
         public_url = _ri.get("public_url") or ""
@@ -1743,6 +1797,21 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
             dot_title = t("msg.relay_not_connected", lang)
             dot_href = "/settings/cloud"
             dot_target = "_self"
+        if relay_known:
+            relay_dot = Span(
+                A(Span(cls=dot_cls, title=dot_title), href=dot_href, target=dot_target,
+                  cls="relay-dot-link", onclick="event.stopPropagation()"),
+                id="relay-dot-wrap",
+            )
+        else:
+            relay_dot = Span(
+                Span(cls="relay-dot relay-dot--off", title=""),
+                id="relay-dot-wrap",
+                hx_get="/topbar-relay-status",
+                hx_trigger="load",
+                hx_swap="outerHTML",
+                data_quiet_error="1",
+            )
         parts.append(
             Div(
                 # Email pill = dropdown trigger
@@ -1789,13 +1858,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                     style="display:none;",
                 ),
                 # Relay dot — separate element to the right of the email pill
-                Span(
-                    Span(cls="relay-dot relay-dot--off", title=""),
-                    id="relay-dot-wrap",
-                    hx_get="/topbar-relay-status",
-                    hx_trigger="load",
-                    hx_swap="outerHTML",
-                ),
+                relay_dot,
                 cls="user-menu",
             )
         )
