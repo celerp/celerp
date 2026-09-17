@@ -53,6 +53,7 @@ jobs:
           git reset --hard "$CLEAN_HEAD"
           python /tmp/tmp_connect_app_patch1.py
           python /tmp/tmp_connect_app_patch2.py
+          python /tmp/tmp_connect_app_patch3.py
           git status --short
           python -m compileall -q celerp ui tests
           git diff --check
