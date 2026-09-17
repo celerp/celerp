@@ -223,6 +223,15 @@ async def cloud_disconnect() -> dict:
 
 
 
+# Connect activation has nested finite waits: relay HTTP first, then a short
+# best-effort wait for the gateway socket. ui.api_client intentionally gives the
+# outer request a larger budget. Keep these named so tests can enforce that
+# ordering whenever either side changes.
+_RELAY_ACTIVATE_TIMEOUT = 10.0
+_GATEWAY_START_ATTEMPTS = 15
+_GATEWAY_START_INTERVAL = 0.2
+
+
 async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None = None, tos_version: str | None = None) -> None:
     """Apply a gateway token in the API process: persist config, start WS client.
 
@@ -277,10 +286,10 @@ async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None 
     if _s.celerp_public_url or await has_active_share():
         ensure_running()
         gw = _gw.get_client()
-        for _ in range(15):
+        for _ in range(_GATEWAY_START_ATTEMPTS):
             if gw and gw.relay_status == "active":
                 break
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(_GATEWAY_START_INTERVAL)
 
     # Backups are a paid-tier feature; public_url is the paid signal.
     if _s.celerp_public_url and _s.backup_enabled and _s.backup_encryption_key:
@@ -310,7 +319,7 @@ async def cloud_activate_api() -> dict:
                 "public_url": public_url or "", "instance_id": iid}
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
+        async with httpx.AsyncClient(timeout=_RELAY_ACTIVATE_TIMEOUT) as c:
             r = await c.post(f"{relay_base}/auth/activate", json=activate_payload(iid))
     except httpx.ConnectError:
         return {"error": f"Cannot reach {relay_base} - check your internet connection or firewall."}

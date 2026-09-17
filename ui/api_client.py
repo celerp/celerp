@@ -3086,9 +3086,17 @@ async def disconnect_relay(token: str) -> dict:
         return _raise(await c.post("/settings/cloud-disconnect")).json()
 
 
+# /settings/cloud-activate may legitimately spend up to 10s reaching the relay
+# and another ~3s waiting for the new gateway connection. Its caller must have a
+# strictly larger deadline or it can manufacture a 504 while activation is still
+# succeeding underneath it. Five seconds of scheduling/network margin keeps the
+# request finite without changing the timeout of ordinary interactive calls.
+_CONNECT_ACTIVATE_TIMEOUT = 18.0
+
+
 async def activate_relay(token: str) -> dict:
     """POST /settings/cloud-activate — call relay /auth/activate, start gateway."""
-    async with _api_client(token) as c:
+    async with _api_client(token, timeout=_CONNECT_ACTIVATE_TIMEOUT) as c:
         return _raise(await c.post("/settings/cloud-activate")).json()
 
 
