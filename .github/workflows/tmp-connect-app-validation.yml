@@ -30,6 +30,7 @@ jobs:
     env:
       ALLOW_INSECURE_JWT: "true"
       DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -58,7 +59,7 @@ jobs:
           git diff --check
 
       - name: Install dependencies
-        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split
+        run: pip install -q uv && uv pip install --quiet --system -e ".[dev]" pytest-xdist pytest-split
 
       - name: Focused Connect contract
         run: |
