@@ -16,7 +16,7 @@ from httpx import AsyncClient
 async def _token(client: AsyncClient) -> str:
     r = await client.post(
         "/auth/register",
-        json={"company_name": "ShareCo", "email": "share@test.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "ShareCo", "email": "share@test.example", "name": "Admin", "password": "pwvalid1"},
     )
     return r.json()["access_token"]
 
@@ -705,7 +705,7 @@ async def test_send_sets_reply_to_so_recipients_can_reply(client: AsyncClient, m
     monkeypatch.setattr(cfg, "celerp_public_url", "https://acme.celerp.com")
     captured, done = await _capture_send(monkeypatch)
 
-    tok = await _token(client)  # registers admin share@test.com
+    tok = await _token(client)  # registers admin share@test.example
     entity_id = await _create_doc(client, tok)
     r = await client.post(f"/docs/{entity_id}/send", json={"sent_to": "cust@shop.example"}, headers=_h(tok))
     assert r.status_code == 200
@@ -713,7 +713,7 @@ async def test_send_sets_reply_to_so_recipients_can_reply(client: AsyncClient, m
     import asyncio
     await asyncio.wait_for(done.wait(), timeout=2)
     # Falls back to the sending user's address when no company email is set.
-    assert captured.get("reply_to") == "share@test.com"
+    assert captured.get("reply_to") == "share@test.example"
     # The sending business is passed for the "{company} via Celerp" From name.
     assert captured.get("from_name") == "ShareCo"
 

@@ -14,7 +14,7 @@ from celerp.models.ledger import LedgerEntry
 
 async def _register(client, email: str | None = None) -> str:
     addr = email or f"admin-{uuid.uuid4().hex[:8]}@docs.test"
-    r = await client.post("/auth/register", json={"company_name": "Docs Co", "email": addr, "name": "Admin", "password": "pw"})
+    r = await client.post("/auth/register", json={"company_name": "Docs Co", "email": addr, "name": "Admin", "password": "pwvalid1"})
     assert r.status_code == 200
     return r.json()["access_token"]
 
@@ -884,7 +884,7 @@ async def test_summary_counters_and_totals_comprehensive(client, session):
 
     # INV-C: finalized then sent (status: sent)
     c = await _invoice(client, token, total=3000)
-    rs = await client.post(f"/docs/{c}/send", headers=_h(token), json={"sent_via": "email", "sent_to": "x@x.com"})
+    rs = await client.post(f"/docs/{c}/send", headers=_h(token), json={"sent_via": "email", "sent_to": "x@x.example"})
     assert rs.status_code == 200, f"Send failed: {rs.json()}"
 
     # INV-D: finalized, partial payment of $1,000 (outstanding = $3,000)
@@ -934,7 +934,7 @@ async def test_summary_sent_total_is_outstanding_not_face_value(client, session)
     await _pay(client, token, doc_id, 400, "PRE-SEND")
     # Send it
     rs = await client.post(f"/docs/{doc_id}/send", headers=_h(token),
-                           json={"sent_via": "email", "sent_to": "a@b.com"})
+                           json={"sent_via": "email", "sent_to": "a@b.example"})
     assert rs.status_code == 200
 
     r = await client.get("/docs/summary?doc_type=invoice", headers=_h(token))

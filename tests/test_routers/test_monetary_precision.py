@@ -15,9 +15,9 @@ def _h(token):
 
 async def _register(client):
     r = await client.post("/auth/register", json={
-        "email": f"money-{uuid.uuid4().hex[:8]}@test.com",
+        "email": f"money-{uuid.uuid4().hex[:8]}@test.example",
         "name": "Money Test",
-        "password": "pw",
+        "password": "pwvalid1",
         "company_name": "MoneyTest",
     })
     assert r.status_code == 200

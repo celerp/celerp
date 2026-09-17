@@ -13,7 +13,7 @@ import pytest
 async def _headers(client) -> dict:
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "FilesCo", "email": "files@test.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "FilesCo", "email": "files@test.example", "name": "Admin", "password": "pwvalid1"},
     )
     token = reg.json()["access_token"]
     companies = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token}"})

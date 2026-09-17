@@ -38,12 +38,12 @@ async def test_login_endpoint_accepts_valid_request(client):
     # Register a user first
     r = await client.post(
         "/auth/register",
-        json={"company_name": "RL Co", "email": "rl@test.com", "name": "RL", "password": "pw"},
+        json={"company_name": "RL Co", "email": "rl@test.example", "name": "RL", "password": "pwvalid1"},
     )
     assert r.status_code == 200
 
     # Login should work
-    r = await client.post("/auth/login", json={"email": "rl@test.com", "password": "pw"})
+    r = await client.post("/auth/login", json={"email": "rl@test.example", "password": "pwvalid1"})
     assert r.status_code == 200
     assert "access_token" in r.json()
 

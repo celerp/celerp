@@ -21,6 +21,7 @@ from ui.components.phone import phone_input_td as _phone_input_td, phone_head_it
 from ui.config import PRIVACY_POLICY_URL
 from ui.config import get_token as _token
 from ui.config import get_role as _get_role
+from celerp.services.auth import MIN_PASSWORD_LENGTH
 from celerp.services.pricing import ROUNDING_CHOICES
 from ui.i18n import t, get_lang, tier_label
 from ui.routes.documents import _action_error
@@ -775,7 +776,7 @@ def setup_routes(app):
             return _password_form(error=t("settings.all_fields_required", lang), lang=lang)
         if new_pw != confirm:
             return _password_form(error=t("settings.passwords_do_not_match", lang), lang=lang)
-        if len(new_pw) < 8:
+        if len(new_pw) < MIN_PASSWORD_LENGTH:
             return _password_form(error=t("settings.password_min_length", lang), lang=lang)
         try:
             await api.change_password(token, current, new_pw)

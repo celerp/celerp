@@ -266,15 +266,25 @@ class TestAuthRouting:
         assert r.status_code == 200
         assert b"inactivity" in r.content.lower()
 
-    def test_idle_logout_js_wired_with_config(self):
-        """The inactivity timer is rendered with the configured minutes and logs out on timeout."""
-        from ui.components.shell import _IDLE_LOGOUT_JS
-        from celerp.config import settings
-        assert "/logout?reason=idle" in _IDLE_LOGOUT_JS
-        assert "addEventListener" in _IDLE_LOGOUT_JS
-        assert f"{int(settings.idle_logout_minutes)} * 60000" in _IDLE_LOGOUT_JS
+    def test_idle_logout_js_wired_through_renderer(self):
+        """The idle timer is a template interpolated per render: the module constant
+        keeps the placeholder, and the renderer substitutes the effective minutes
+        while preserving the logout mechanics. (The deployment-aware minutes matrix
+        lives in test_idle_policy.py.)"""
+        from ui.components.shell import _IDLE_LOGOUT_JS, _idle_logout_js
+        import re
+        # The module-level template is uninterpolated: the placeholder survives and
+        # no concrete "<n> * 60000" is baked in at import time.
+        assert "__IDLE_MIN__" in _IDLE_LOGOUT_JS
+        assert not re.search(r"\d+ \* 60000", _IDLE_LOGOUT_JS)
+        # The renderer fills the placeholder with an integer and keeps the mechanics.
+        js = _idle_logout_js()
+        assert "__IDLE_MIN__" not in js
+        assert re.search(r"\d+ \* 60000", js)
+        assert "/logout?reason=idle" in js
+        assert "addEventListener" in js
         # The timer carries the current page so login can return there
-        assert "next=" in _IDLE_LOGOUT_JS
+        assert "next=" in js
 
     def test_idle_timer_counts_scroll_in_capture_phase(self):
         """Scrolling an inner panel must reset the idle timer. Scroll events do not
@@ -305,7 +315,7 @@ class TestAuthRouting:
         assert 'name="next" value="/docs/doc:INV-1?page=2"' in page.text
         with patch("ui.routes.auth.api_login", new=AsyncMock(return_value=("tok", "ref"))):
             r = await ui_client.post("/login", data={
-                "email": "a@b.c", "password": "pw", "next": "/docs/doc:INV-1?page=2"})
+                "email": "a@b.c", "password": "pwvalid1", "next": "/docs/doc:INV-1?page=2"})
         assert r.status_code in (302, 303)
         assert r.headers["location"] == "/docs/doc:INV-1?page=2"
 
@@ -315,7 +325,7 @@ class TestAuthRouting:
         and auth pages all fall back to the dashboard."""
         with patch("ui.routes.auth.api_login", new=AsyncMock(return_value=("tok", "ref"))):
             for bad in ("https://evil.example", "//evil.example", "/login?x=1", "/logout"):
-                r = await ui_client.post("/login", data={"email": "a@b.c", "password": "pw", "next": bad})
+                r = await ui_client.post("/login", data={"email": "a@b.c", "password": "pwvalid1", "next": bad})
                 assert r.headers["location"] == "/", f"{bad!r} must not be honored"
 
     @pytest.mark.asyncio
@@ -1012,7 +1022,7 @@ _EXPIRING = {"count": 1, "days_threshold": 30, "items": [
     {"sku": "SKU-1", "name": "Ruby", "expiry_date": "2026-03-20", "days_left": 24, "status": "available"}]}
 _TAXES = [{"name": "VAT", "rate": 7, "tax_type": "sales", "is_default": True, "description": "Standard VAT"}]
 _TERMS = [{"name": "Net 30", "days": 30, "description": "Payment due in 30 days"}]
-_USERS = [{"id": "u1", "name": "Noah", "email": "noah@test.com", "role": "owner", "is_active": True}]
+_USERS = [{"id": "u1", "name": "Owner", "email": "owner@test.example", "role": "owner", "is_active": True}]
 
 
 class TestDashboardPage:
@@ -1792,7 +1802,7 @@ class TestSettingsPage:
         ):
             r = await ui_client.get("/settings/general?tab=users", cookies=_authed())
         assert r.status_code == 200
-        assert b"Noah" in r.content
+        assert b"Owner" in r.content
 
     @pytest.mark.asyncio
     async def test_users_tab_name_email_not_editable(self, ui_client):
@@ -3754,7 +3764,7 @@ class TestSortableColumns:
 
     @pytest.mark.asyncio
     async def test_crm_table_has_sort_links(self, ui_client):
-        contacts = [{"entity_id": "c:1", "name": "Acme", "phone": "1", "email": "a@a.com", "tax_id": "", "credit_limit": 1000, "contact_type": "customer"}]
+        contacts = [{"entity_id": "c:1", "name": "Acme", "phone": "1", "email": "a@a.example", "tax_id": "", "credit_limit": 1000, "contact_type": "customer"}]
         with (
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": contacts, "total": len(contacts)})),
         ):
@@ -3891,7 +3901,7 @@ class TestCSVExport:
 
     @pytest.mark.asyncio
     async def test_crm_export_csv_returns_csv(self, ui_client):
-        csv_bytes = b"entity_id,name,email\ncontact:1,Acme,acme@a.com\n"
+        csv_bytes = b"entity_id,name,email\ncontact:1,Acme,acme@a.example\n"
         with patch("ui.api_client.export_contacts_csv", new=AsyncMock(return_value=csv_bytes)):
             r = await ui_client.get("/crm/export/csv", cookies=_authed())
         assert r.status_code == 200
@@ -8423,7 +8433,7 @@ class TestNikolaiFixedBugs:
         with (
             patch("ui.api_client.patch_user", new=AsyncMock(return_value={"ok": True})),
             patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": [
-                {"id": target_user_id, "name": "Other", "email": "o@o.com", "role": "operator", "is_active": False}
+                {"id": target_user_id, "name": "Other", "email": "o@o.example", "role": "operator", "is_active": False}
             ], "total": 1})),
         ):
             r = await ui_client.patch(
@@ -8460,7 +8470,7 @@ class TestInviteUser:
         with patch("ui.api_client.create_user", new=AsyncMock(return_value={"id": "user:1", "name": "Tester"})):
             r = await ui_client.post(
                 "/settings/users/new",
-                data={"name": "Tester", "email": "tester@a.com", "password": "pw123", "role": "operator"},
+                data={"name": "Tester", "email": "tester@a.example", "password": "pw123val", "role": "operator"},
                 cookies=_authed(),
             )
         # 204 with HX-Redirect header on success
@@ -8483,7 +8493,7 @@ class TestInviteUser:
         with patch("ui.api_client.create_user", new=AsyncMock(side_effect=APIError(409, "Email already in use"))):
             r = await ui_client.post(
                 "/settings/users/new",
-                data={"name": "Dup", "email": "dup@a.com", "password": "pw", "role": "operator"},
+                data={"name": "Dup", "email": "dup@a.example", "password": "pwvalid1", "role": "operator"},
                 cookies=_authed(),
             )
         assert r.status_code == 200
@@ -8493,7 +8503,7 @@ class TestInviteUser:
     async def test_invite_user_post_unauthed_returns_error(self, ui_client):
         r = await ui_client.post(
             "/settings/users/new",
-            data={"name": "X", "email": "x@x.com", "password": "pw", "role": "operator"},
+            data={"name": "X", "email": "x@x.example", "password": "pwvalid1", "role": "operator"},
         )
         # No cookie → either redirect or Unauthorized partial (HTMX target)
         assert r.status_code in (200, 302, 303)
@@ -8961,7 +8971,7 @@ class TestCsvImportIdentifierColumnContract:
     def test_email_always_visible_even_when_clean(self):
         """'email' is an identifier col - must appear even if clean."""
         cols = ["email", "phone"]
-        rows = [{"email": "a@b.com", "phone": ""}]
+        rows = [{"email": "a@b.example", "phone": ""}]
         html = self._result_html(cols, rows, required={"phone"})
         assert "email" in html.lower()
 
@@ -11223,7 +11233,7 @@ class TestDocPaymentTermsAutoPopulate:
     @pytest.mark.asyncio
     async def test_contact_with_payment_terms_auto_populates(self, ui_client):
         """Selecting a contact with payment_terms patches doc with terms + computed due_date."""
-        contact = {"entity_id": "ct:1", "name": "Alice", "payment_terms": "Net 30", "email": "alice@test.com", "phone": "555-1234"}
+        contact = {"entity_id": "ct:1", "name": "Alice", "payment_terms": "Net 30", "email": "alice@test.example", "phone": "555-1234"}
         doc_pre = {**_DOC_DETAIL, "status": "draft", "issue_date": "2026-01-01", "payment_terms": None, "due_date": None}
         doc_post = {**doc_pre, "payment_terms": "Net 30", "due_date": "2026-01-31", "contact_id": "ct:1", "price_list": "Retail"}
         with (
@@ -11243,7 +11253,7 @@ class TestDocPaymentTermsAutoPopulate:
         assert called_patch.get("payment_terms") == "Net 30"
         assert called_patch.get("due_date") == "2026-01-31"
         assert called_patch.get("contact_name") == "Alice"
-        assert called_patch.get("contact_email") == "alice@test.com"
+        assert called_patch.get("contact_email") == "alice@test.example"
 
     @pytest.mark.asyncio
     async def test_contact_without_payment_terms_no_auto_populate(self, ui_client):
@@ -11509,7 +11519,7 @@ class TestDocContactBoxLayout:
         """Patching contact_id auto-populates contact_company_name on the doc."""
         contact = {
             "entity_id": "ct:1", "name": "Alice", "company_name": "Acme Corp",
-            "email": "alice@acme.com", "phone": "555-0001",
+            "email": "alice@acme.example", "phone": "555-0001",
         }
         doc = {**_DOC_DETAIL, "contact_id": "ct:1"}
         with (
@@ -12606,7 +12616,7 @@ class TestSendToExistingList:
 async def _api_headers(client) -> dict:
     r = await client.post(
         "/auth/register",
-        json={"company_name": "UnitsTest", "email": "units@test.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "UnitsTest", "email": "units@test.example", "name": "Admin", "password": "pwvalid1"},
     )
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
@@ -13942,7 +13952,7 @@ class TestDocumentsOverhaul:
     async def test_send_modal_notes_30_day_link_and_shows_status_light(self, ui_client):
         """No share opt-out: the modal states the view link is added for 30
         days, and the Share button carries a status dot (green when live)."""
-        doc = dict(_BLANK_DOC, contact_email="c@acme.com", status="sent")
+        doc = dict(_BLANK_DOC, contact_email="c@acme.example", status="sent")
         _relay = AsyncMock(return_value={
             "connected": True, "public_url": "https://x.celerp.com", "gateway_token_set": True})
         _active = AsyncMock(return_value={"active": True})
@@ -13961,7 +13971,7 @@ class TestDocumentsOverhaul:
         sent = AsyncMock(return_value={})
         with patch("ui.api_client.send_doc", new=sent):
             await ui_client.post("/docs/doc:INV-001/action/send", cookies=_authed(), data={
-                "sent_to": "c@x.com", "subject": "Hi", "message": "See attached"})
+                "sent_to": "c@x.example", "subject": "Hi", "message": "See attached"})
         data = sent.call_args[1]["data"]
         assert data["subject"] == "Hi"
         assert data["message"] == "See attached"
@@ -13972,27 +13982,27 @@ class TestDocumentsOverhaul:
         """The Bill To email is an editable cell like its siblings (it used to
         be the only read-only field), and the send modal prefills the To field
         with it while staying replaceable."""
-        doc = dict(_BLANK_DOC, contact_email="billing@acme.com", status="sent")
+        doc = dict(_BLANK_DOC, contact_email="billing@acme.example", status="sent")
         _relay = AsyncMock(return_value={"connected": True, "gateway_token_set": True, "public_url": "https://x.celerp.com"})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_relay_status", new=_relay):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.decode()
         assert "/field/contact_email/edit" in content
-        assert 'name="sent_to" value="billing@acme.com"' in content
+        assert 'name="sent_to" value="billing@acme.example"' in content
 
     @pytest.mark.asyncio
     async def test_doc_detail_backfills_email_from_contact(self, ui_client):
         """Docs that stored a contact name but no email resolve the email from
         the contact record, so Bill To and the send modal are not blank."""
         doc = dict(_BLANK_DOC, contact_id="contact:c1", contact_name="ACME Corp")
-        contact = {"name": "ACME Corp", "email": "billing@acme.com", "addresses": []}
+        contact = {"name": "ACME Corp", "email": "billing@acme.example", "addresses": []}
         _relay = AsyncMock(return_value={"connected": False, "public_url": ""})
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)), \
              patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)), \
              patch("ui.api_client.get_relay_status", new=_relay):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
-        assert "billing@acme.com" in r.content.decode()
+        assert "billing@acme.example" in r.content.decode()
 
     @pytest.mark.asyncio
     async def test_share_panel_forwards_expiry_date(self, ui_client):

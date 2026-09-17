@@ -30,6 +30,7 @@ from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, set_session_cookies, cle
 from ui.i18n import t, get_lang
 from ui.security import is_app_local_path
 from celerp.config import settings as _settings
+from celerp.services.auth import MIN_PASSWORD_LENGTH
 
 
 def _consume_restore_notice() -> dict | None:
@@ -303,7 +304,7 @@ def setup_routes(app):
             return _fail(t("settings.all_fields_required"))
         if password != confirm:
             return _fail(t("settings.passwords_do_not_match"))
-        if len(password) < 8:
+        if len(password) < MIN_PASSWORD_LENGTH:
             return _fail(t("settings.password_min_length"))
         if code_required and not setup_code:
             return _fail(t("auth.setup_code_required"))

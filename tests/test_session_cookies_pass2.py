@@ -98,3 +98,131 @@ async def test_deactivate_with_remaining_companies_clears_session(ui_client):
     blob = _set_cookie_blob(r)
     assert "celerp_token=" in blob
     assert "celerp_refresh=" in blob
+
+
+# ── Transport-aware Secure cookies ────────────────────────────────────────────
+#
+# `Secure` must follow the actual request transport, not a global flag derived
+# from Connect linkage: HTTPS (native or forwarded) is Secure; direct HTTP/LAN
+# stays usable. COOKIE_SECURE=true remains an explicit operator override.
+
+
+def _request(scheme: str = "http", forwarded: str | None = None):
+    from starlette.requests import Request
+    headers = []
+    if forwarded is not None:
+        headers.append((b"x-forwarded-proto", forwarded.encode()))
+    scope = {
+        "type": "http", "method": "GET", "path": "/", "scheme": scheme,
+        "headers": headers, "server": ("host", 80), "query_string": b"",
+    }
+    return Request(scope)
+
+
+@pytest.fixture
+def cookie_env(monkeypatch):
+    """Neutral cookie state: no explicit override, no gateway token forcing Secure."""
+    from celerp.config import settings
+    monkeypatch.setattr(settings, "cookie_secure", False, raising=False)
+    monkeypatch.setattr(settings, "gateway_token", "", raising=False)
+    return monkeypatch
+
+
+def test_secure_native_https(cookie_env):
+    from ui.config import session_cookie_secure
+    assert session_cookie_secure(_request(scheme="https")) is True
+
+
+def test_secure_forwarded_https(cookie_env):
+    from ui.config import session_cookie_secure
+    assert session_cookie_secure(_request(scheme="http", forwarded="https")) is True
+
+
+def test_secure_forwarded_https_multi_value(cookie_env):
+    from ui.config import session_cookie_secure
+    assert session_cookie_secure(_request(scheme="http", forwarded="http, https")) is True
+
+
+def test_not_secure_direct_http(cookie_env):
+    from ui.config import session_cookie_secure
+    assert session_cookie_secure(_request(scheme="http")) is False
+
+
+def test_not_secure_direct_http_with_gateway_token(cookie_env):
+    """A Connect gateway token no longer forces Secure on a direct HTTP request."""
+    from celerp.config import settings
+    from ui.config import session_cookie_secure
+    cookie_env.setattr(settings, "gateway_token", "gw-token-abc", raising=False)
+    assert session_cookie_secure(_request(scheme="http")) is False
+
+
+def test_explicit_cookie_secure_override_forces_secure(cookie_env):
+    """COOKIE_SECURE=true forces Secure even over plain HTTP."""
+    from celerp.config import settings
+    from ui.config import session_cookie_secure
+    cookie_env.setattr(settings, "cookie_secure", True, raising=False)
+    assert session_cookie_secure(_request(scheme="http")) is True
+
+
+def test_set_session_cookies_honors_transport_and_preserves_attributes(cookie_env):
+    """set_session_cookies applies the transport rule and keeps HttpOnly, SameSite,
+    lifetime and domain behavior."""
+    from starlette.responses import Response
+    from ui.config import set_session_cookies, ACCESS_COOKIE_MAX_AGE
+
+    resp = Response()
+    set_session_cookies(resp, "acc", "ref", _request(scheme="https"))
+    blob = " ".join(resp.headers.getlist("set-cookie")).lower()
+    assert "secure" in blob
+    assert "httponly" in blob
+    assert "samesite=lax" in blob
+    assert f"max-age={ACCESS_COOKIE_MAX_AGE}" in blob
+
+    resp2 = Response()
+    set_session_cookies(resp2, "acc", "ref", _request(scheme="http"))
+    blob2 = " ".join(resp2.headers.getlist("set-cookie")).lower()
+    assert "secure" not in blob2
+    assert "httponly" in blob2
+    assert "samesite=lax" in blob2
+
+
+@pytest.mark.asyncio
+async def test_sliding_refresh_uses_same_transport_rule():
+    """The refresh middleware issues cookies through the same transport rule as
+    normal issuance: forwarded HTTPS -> Secure, direct HTTP -> not Secure."""
+    from ui.app import TokenRefreshMiddleware
+
+    async def _dummy_app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    mw = TokenRefreshMiddleware(_dummy_app)
+
+    async def _drive(scheme, forwarded=None):
+        headers = [(b"cookie", b"celerp_refresh=r1")]
+        if forwarded is not None:
+            headers.append((b"x-forwarded-proto", forwarded.encode()))
+        scope = {
+            "type": "http", "method": "GET", "path": "/dashboard", "scheme": scheme,
+            "headers": headers, "server": ("host", 80), "query_string": b"",
+        }
+        sent = []
+
+        async def receive():
+            return {"type": "http.request", "body": b""}
+
+        async def send(m):
+            sent.append(m)
+
+        with patch("ui.api_client.refresh_access_token", new=AsyncMock(return_value=("newacc", "newref"))):
+            await mw(scope, receive, send)
+        start = next(m for m in sent if m["type"] == "http.response.start")
+        return b" ".join(v for k, v in start["headers"] if k == b"set-cookie").lower()
+
+    secure_blob = await _drive("http", forwarded="https")
+    assert b"secure" in secure_blob
+    assert b"newacc" in secure_blob
+
+    plain_blob = await _drive("http")
+    assert b"secure" not in plain_blob
+    assert b"newacc" in plain_blob

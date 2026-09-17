@@ -23,9 +23,9 @@ async def _register(client, suffix: str) -> dict:
         "/auth/register",
         json={
             "company_name": f"Co {suffix}",
-            "email": f"admin_{suffix}@test.com",
+            "email": f"admin_{suffix}@test.example",
             "name": "Admin",
-            "password": "pw123",
+            "password": "pw123val",
         },
     )
     assert r.status_code == 200, r.text
@@ -280,7 +280,7 @@ async def test_health_system(client):
     assert r_anon.status_code == 401
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "SysCo", "email": "sys@example.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "SysCo", "email": "sys@example.com", "name": "Admin", "password": "pwvalid1"},
     )
     r = await client.get(
         "/health/system", headers={"Authorization": f"Bearer {reg.json()['access_token']}"}

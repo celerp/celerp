@@ -443,7 +443,7 @@ async def test_system_commercial_state_endpoint_returns_state(client):
 
     reg = await client.post("/auth/register", json={
         "company_name": "SeamCo", "email": "owner@example.com",
-        "name": "Owner", "password": "pw",
+        "name": "Owner", "password": "pwvalid1",
     })
     assert reg.status_code == 200, reg.text
     jwt = reg.json()["access_token"]

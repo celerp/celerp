@@ -46,7 +46,7 @@ async def test_issued_access_and_refresh_share_current_snonce(client, session):
 
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "SnonceCo", "email": "snonce@example.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "SnonceCo", "email": "snonce@example.com", "name": "Admin", "password": "pwvalid1"},
     )
     assert reg.status_code == 200
     refresh = reg.json()["refresh_token"]
@@ -76,7 +76,7 @@ async def test_logout_with_refresh_only_revokes_server_side(client):
     body revokes the session: the refresh can no longer be exchanged afterwards."""
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "RefLogoutCo", "email": "reflogout@example.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "RefLogoutCo", "email": "reflogout@example.com", "name": "Admin", "password": "pwvalid1"},
     )
     assert reg.status_code == 200
     refresh = reg.json()["refresh_token"]
@@ -152,19 +152,19 @@ async def test_reactivation_does_not_revive_old_tokens(client, session):
 
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "ReactCo", "email": "reactowner@example.com", "name": "Owner", "password": "pw"},
+        json={"company_name": "ReactCo", "email": "reactowner@example.com", "name": "Owner", "password": "pwvalid1"},
     )
     owner_h = {"Authorization": f"Bearer {reg.json()['access_token']}"}
     target_email = "reacttarget@example.com"
     r_new = await client.post(
         "/companies/me/users",
-        json={"email": target_email, "name": "Target", "role": "manager", "password": "pw123"},
+        json={"email": target_email, "name": "Target", "role": "manager", "password": "pw123val"},
         headers=owner_h,
     )
     assert r_new.status_code == 200
     target_id = r_new.json()["id"]
     await _clear_tracker(session)
-    r_login = await client.post("/auth/login", json={"email": target_email, "password": "pw123"})
+    r_login = await client.post("/auth/login", json={"email": target_email, "password": "pw123val"})
     assert r_login.status_code == 200
     old_access = r_login.json()["access_token"]
     old_refresh = r_login.json()["refresh_token"]
@@ -258,7 +258,7 @@ async def test_system_restart_rejects_revoked_access_token(client):
     syntactically valid access token whose session was revoked (nonce rotated)."""
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "RestartCo", "email": "restart@example.com", "name": "Owner", "password": "pw"},
+        json={"company_name": "RestartCo", "email": "restart@example.com", "name": "Owner", "password": "pwvalid1"},
     )
     assert reg.status_code == 200
     access = reg.json()["access_token"]

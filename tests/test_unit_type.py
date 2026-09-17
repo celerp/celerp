@@ -609,7 +609,7 @@ class TestPurchaseConversionFactor:
 async def _make_headers(client) -> dict:
     r = await client.post(
         "/auth/register",
-        json={"company_name": "SchemaTestCo", "email": "admin@schematest.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "SchemaTestCo", "email": "admin@schematest.example", "name": "Admin", "password": "pwvalid1"},
     )
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 

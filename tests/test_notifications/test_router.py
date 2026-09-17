@@ -36,10 +36,10 @@ async def auth_client(session: AsyncSession):
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         await c.post("/auth/register", json={
-            "company_name": "NotifCo", "email": "notif@test.com",
-            "name": "Admin", "password": "pw",
+            "company_name": "NotifCo", "email": "notif@test.example",
+            "name": "Admin", "password": "pwvalid1",
         })
-        r = await c.post("/auth/login", json={"email": "notif@test.com", "password": "pw"})
+        r = await c.post("/auth/login", json={"email": "notif@test.example", "password": "pwvalid1"})
         jwt = r.json()["access_token"]
         headers = {
             "Authorization": f"Bearer {jwt}",
@@ -73,7 +73,7 @@ async def test_list_notifications_with_data(auth_client, session):
 
     # Get user_id and company_id from the registered user
     from celerp.models.accounting import UserCompany
-    user = (await session.execute(select(User).where(User.email == "notif@test.com"))).scalars().first()
+    user = (await session.execute(select(User).where(User.email == "notif@test.example"))).scalars().first()
     uc = (await session.execute(select(UserCompany).where(UserCompany.user_id == user.id))).scalars().first()
 
     n = Notification(
@@ -102,7 +102,7 @@ async def test_unread_only_hides_read_notifications(auth_client, session):
     from celerp.models.accounting import UserCompany
     from sqlalchemy import select
 
-    user = (await session.execute(select(User).where(User.email == "notif@test.com"))).scalars().first()
+    user = (await session.execute(select(User).where(User.email == "notif@test.example"))).scalars().first()
     uc = (await session.execute(select(UserCompany).where(UserCompany.user_id == user.id))).scalars().first()
     keep = Notification(company_id=uc.company_id, user_id=user.id, category="email", title="Keep", body="B")
     dismiss = Notification(company_id=uc.company_id, user_id=user.id, category="email", title="Dismiss", body="B")
@@ -131,7 +131,7 @@ async def test_mark_read_success(auth_client, session):
     from sqlalchemy import select
 
     from celerp.models.accounting import UserCompany
-    user = (await session.execute(select(User).where(User.email == "notif@test.com"))).scalars().first()
+    user = (await session.execute(select(User).where(User.email == "notif@test.example"))).scalars().first()
     uc = (await session.execute(select(UserCompany).where(UserCompany.user_id == user.id))).scalars().first()
     n = Notification(
         company_id=uc.company_id, user_id=user.id,
@@ -166,7 +166,7 @@ async def test_mark_all_read(auth_client, session):
     from sqlalchemy import select
 
     from celerp.models.accounting import UserCompany
-    user = (await session.execute(select(User).where(User.email == "notif@test.com"))).scalars().first()
+    user = (await session.execute(select(User).where(User.email == "notif@test.example"))).scalars().first()
     uc = (await session.execute(select(UserCompany).where(UserCompany.user_id == user.id))).scalars().first()
     for i in range(3):
         session.add(Notification(

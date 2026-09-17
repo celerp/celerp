@@ -22,12 +22,14 @@ from celerp.services.auth import (
     AuthContext,
     decode_refresh_token,
     get_auth_context,
+    MIN_PASSWORD_LENGTH,
     get_current_company_id,
     get_current_user,
     hash_password,
     issue_token_pair,
     oauth2_scheme_optional,
     validate_access_token,
+    validate_password,
     verify_password,
 )
 
@@ -140,6 +142,14 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
                 hashlib.sha256(provided.encode()).hexdigest(), required
             ):
                 raise HTTPException(status_code=403, detail="Invalid or missing setup code.")
+
+        try:
+            validate_password(payload.password)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.",
+            )
 
         slug = _slugify(payload.company_name)
         company = Company(id=uuid.uuid4(), name=payload.company_name, slug=slug, settings={"fiscal_year_start": "01-01"})
@@ -483,7 +493,9 @@ async def password_reset_confirm(
         expires = expires.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) > expires:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
-    if len(payload.new_password) < 8:
+    try:
+        validate_password(payload.new_password)
+    except ValueError:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     user.auth_hash = hash_password(payload.new_password)
     user.reset_token = None
@@ -510,7 +522,9 @@ async def change_password(
     """Change password for the currently authenticated user."""
     if not user.auth_hash or not verify_password(payload.current_password, user.auth_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    if len(payload.new_password) < 8:
+    try:
+        validate_password(payload.new_password)
+    except ValueError:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
     user.auth_hash = hash_password(payload.new_password)
     # Rotate the user's nonce so every access and refresh token minted before the

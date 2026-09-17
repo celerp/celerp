@@ -22,7 +22,7 @@ from ui.components.activity import _fields_changed_summary
 
 async def _register(client) -> str:
     addr = f"admin-{uuid.uuid4().hex[:8]}@money.test"
-    r = await client.post("/auth/register", json={"company_name": "Money Co", "email": addr, "name": "Admin", "password": "pw"})
+    r = await client.post("/auth/register", json={"company_name": "Money Co", "email": addr, "name": "Admin", "password": "pwvalid1"})
     assert r.status_code == 200
     return r.json()["access_token"]
 

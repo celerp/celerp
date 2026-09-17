@@ -78,7 +78,7 @@ async def ensure_user(session, user_id) -> None:
     from celerp.models.company import User
     uid = _uuid.UUID(str(user_id))
     if await session.get(User, uid) is None:
-        session.add(User(id=uid, email=f"u-{uid}@test.local", name="Test User"))
+        session.add(User(id=uid, email=f"u-{uid}@test.example", name="Test User"))
         await session.flush()
 
 
@@ -109,7 +109,7 @@ async def register_admin(client) -> str:
     """Register first-admin (creates owner role) and return access token."""
     r = await client.post(
         "/auth/register",
-        json={"company_name": "Perm Co", "email": "admin@perm.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "Perm Co", "email": "admin@perm.example", "name": "Admin", "password": "adminpw12"},
     )
     assert r.status_code == 200, r.text
     return r.json()["access_token"]
@@ -120,12 +120,12 @@ async def invite_user(client, session, admin_headers: dict, email: str, role: st
     from celerp.services.session_tracker import clear as _clear_tracker
     r = await client.post(
         "/companies/me/users",
-        json={"email": email, "name": role.title(), "role": role, "password": "pw123"},
+        json={"email": email, "name": role.title(), "role": role, "password": "userpw123"},
         headers=admin_headers,
     )
     assert r.status_code == 200, r.text
     await _clear_tracker(session)  # clear so the new user can log in
-    r2 = await client.post("/auth/login", json={"email": email, "password": "pw123"})
+    r2 = await client.post("/auth/login", json={"email": email, "password": "userpw123"})
     assert r2.status_code == 200, r2.text
     return r2.json()["access_token"]
 
@@ -154,8 +154,8 @@ async def perm_setup(client, session):
     location_id = loc_r.json()["id"]
     item_id = await create_item(client, admin_h, location_id)
 
-    manager_tok = await invite_user(client, session, admin_h, "mgr@perm.com", "manager")
-    operator_tok = await invite_user(client, session, admin_h, "operator@perm.com", "operator")
+    manager_tok = await invite_user(client, session, admin_h, "mgr@perm.example", "manager")
+    operator_tok = await invite_user(client, session, admin_h, "operator@perm.example", "operator")
 
     return {
         "admin_h":    {"Authorization": f"Bearer {admin_tok}"},

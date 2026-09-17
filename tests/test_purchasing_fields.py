@@ -12,8 +12,8 @@ _BASE = "/items"
 
 
 async def _register(client) -> str:
-    addr = f"purch-{uuid.uuid4().hex[:8]}@test.local"
-    r = await client.post("/auth/register", json={"company_name": "PurchCo", "email": addr, "name": "Admin", "password": "pw"})
+    addr = f"purch-{uuid.uuid4().hex[:8]}@test.example"
+    r = await client.post("/auth/register", json={"company_name": "PurchCo", "email": addr, "name": "Admin", "password": "pwvalid1"})
     assert r.status_code == 200
     return r.json()["access_token"]
 

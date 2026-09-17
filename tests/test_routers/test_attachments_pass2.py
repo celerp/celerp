@@ -26,7 +26,7 @@ async def _register(client, name: str, email: str) -> tuple[str, str]:
     """Register a company; return (bearer token, company_id)."""
     reg = await client.post(
         "/auth/register",
-        json={"company_name": name, "email": email, "name": "Admin", "password": "pw"},
+        json={"company_name": name, "email": email, "name": "Admin", "password": "pwvalid1"},
     )
     assert reg.status_code == 200, reg.text
     token = reg.json()["access_token"]

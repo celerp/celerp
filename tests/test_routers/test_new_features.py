@@ -10,10 +10,10 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _register(client, email="admin@test.com", company="Test Co"):
+async def _register(client, email="admin@test.example", company="Test Co"):
     r = await client.post(
         "/auth/register",
-        json={"company_name": company, "email": email, "name": "Admin", "password": "pw"},
+        json={"company_name": company, "email": email, "name": "Admin", "password": "pwvalid1"},
     )
     assert r.status_code == 200
     return r.json()["access_token"]
@@ -228,7 +228,7 @@ async def test_create_and_patch_user(client):
     r = await client.post(
         "/companies/me/users",
         headers=_auth(token),
-        json={"email": "sales@test.com", "name": "Sales Person", "role": "operator", "password": "pass"},
+        json={"email": "sales@test.example", "name": "Sales Person", "role": "operator", "password": "passval1"},
     )
     assert r.status_code == 200
     user_id = r.json()["id"]
@@ -243,7 +243,7 @@ async def test_create_and_patch_user(client):
 
     # Verify deactivated
     users = (await client.get("/companies/me/users", headers=_auth(token))).json()["items"]
-    sales_user = next(u for u in users if u["email"] == "sales@test.com")
+    sales_user = next(u for u in users if u["email"] == "sales@test.example")
     assert sales_user["is_active"] is False
 
 
@@ -398,7 +398,7 @@ async def test_expiring_report_empty(client):
 @pytest.mark.asyncio
 async def test_tax_rate_has_new_fields(client):
     """TaxRate model now includes is_compound and default_order."""
-    token = await _register(client, email="taxfields@test.com")
+    token = await _register(client, email="taxfields@test.example")
     new_taxes = [
         {
             "name": "WHT 3%",
@@ -422,7 +422,7 @@ async def test_tax_rate_has_new_fields(client):
 @pytest.mark.asyncio
 async def test_doc_with_line_taxes(client):
     """LineItem accepts taxes list; doc is created successfully."""
-    token = await _register(client, email="linetax@test.com")
+    token = await _register(client, email="linetax@test.example")
     line_taxes = [{"code": "VAT 7%", "rate": 7.0, "amount": 70.0, "order": 0, "is_compound": False}]
     payload = {
         "doc_type": "invoice",
@@ -453,7 +453,7 @@ async def test_doc_with_line_taxes(client):
 @pytest.mark.asyncio
 async def test_doc_with_doc_taxes(client):
     """DocCreatePayload accepts doc_taxes list; total auto-computed from doc_taxes."""
-    token = await _register(client, email="doctax@test.com")
+    token = await _register(client, email="doctax@test.example")
     doc_taxes = [{"code": "VAT 7%", "rate": 7.0, "amount": 70.0, "order": 0, "is_compound": False}]
     payload = {
         "doc_type": "invoice",
@@ -480,7 +480,7 @@ async def test_doc_with_doc_taxes(client):
 @pytest.mark.asyncio
 async def test_item_create_with_tax_codes(client):
     """ItemCreate accepts tax_codes; stored on item state."""
-    token = await _register(client, email="itemtax@test.com")
+    token = await _register(client, email="itemtax@test.example")
     payload = {
         "sku": "TX-001",
         "name": "Taxable Widget",
@@ -500,7 +500,7 @@ async def test_item_create_with_tax_codes(client):
 @pytest.mark.asyncio
 async def test_doc_backward_compat_tax_field(client):
     """Legacy tax field still works; no regressions."""
-    token = await _register(client, email="bctax@test.com")
+    token = await _register(client, email="bctax@test.example")
     payload = {
         "doc_type": "invoice",
         "line_items": [{"description": "Old-style", "quantity": 1, "unit_price": 500.0, "tax_rate": 7.0, "line_total": 500.0}],
@@ -521,7 +521,7 @@ async def test_doc_backward_compat_tax_field(client):
 @pytest.mark.asyncio
 async def test_default_tax_rates_have_new_fields(client):
     """Default tax rates returned by GET /companies/me/taxes include new fields."""
-    token = await _register(client, email="defaulttax2@test.com")
+    token = await _register(client, email="defaulttax2@test.example")
     r = await client.get("/companies/me/taxes", headers=_auth(token))
     assert r.status_code == 200
     taxes = r.json()
@@ -541,7 +541,7 @@ async def test_compound_doc_tax_computed_server_side(client):
     Amounts submitted as 0 so server must compute them.
     Total = 1000 + 50 + 104.74 = 1154.74
     """
-    token = await _register(client, email="compound@test.com")
+    token = await _register(client, email="compound@test.example")
     payload = {
         "doc_type": "invoice",
         "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 1000.0, "line_total": 1000.0}],
@@ -569,7 +569,7 @@ async def test_non_compound_doc_taxes_both_apply_to_base(client):
       Excise 5%: is_compound=False → 50.0
     Total = 1000 + 70 + 50 = 1120
     """
-    token = await _register(client, email="flatstack@test.com")
+    token = await _register(client, email="flatstack@test.example")
     payload = {
         "doc_type": "invoice",
         "line_items": [{"description": "Item", "quantity": 1, "unit_price": 1000.0, "line_total": 1000.0}],
@@ -597,7 +597,7 @@ async def test_negative_wht_doc_tax(client):
       WHT -3%: is_compound=False, amount=0 → server computes -30.0
     Total = 1000 + 70 - 30 = 1040
     """
-    token = await _register(client, email="wht@test.com")
+    token = await _register(client, email="wht@test.example")
     payload = {
         "doc_type": "invoice",
         "line_items": [{"description": "Service", "quantity": 1, "unit_price": 1000.0, "line_total": 1000.0}],
@@ -652,7 +652,7 @@ async def test_caller_provided_amount_not_overridden(client):
 @pytest.mark.asyncio
 async def test_default_location_with_country_seeds_taxes(client):
     """Creating a default location with a known country seeds correct tax regime."""
-    token = await _register(client, email="regime_sg@test.com")
+    token = await _register(client, email="regime_sg@test.example")
     r = await client.post("/companies/me/locations", headers=_auth(token), json={
         "name": "HQ", "type": "warehouse", "is_default": True,
         "address": {"country": "SG", "city": "Singapore"},
@@ -670,7 +670,7 @@ async def test_default_location_with_country_seeds_taxes(client):
 @pytest.mark.asyncio
 async def test_patch_location_country_seeds_taxes(client):
     """Patching an existing default location to add a country triggers re-seed."""
-    token = await _register(client, email="regime_au@test.com")
+    token = await _register(client, email="regime_au@test.example")
     loc_id = (await client.post("/companies/me/locations", headers=_auth(token), json={
         "name": "Warehouse", "type": "warehouse", "is_default": True,
     })).json()["id"]
@@ -688,7 +688,7 @@ async def test_patch_location_country_seeds_taxes(client):
 @pytest.mark.asyncio
 async def test_non_default_location_does_not_seed_taxes(client):
     """A non-default location with a country does NOT trigger re-seed."""
-    token = await _register(client, email="regime_nontrigger@test.com")
+    token = await _register(client, email="regime_nontrigger@test.example")
     await client.post("/companies/me/locations", headers=_auth(token), json={
         "name": "Remote", "type": "warehouse", "is_default": False,
         "address": {"country": "GB"},
@@ -702,7 +702,7 @@ async def test_non_default_location_does_not_seed_taxes(client):
 @pytest.mark.asyncio
 async def test_customised_taxes_not_overwritten_by_location(client):
     """If user already customised taxes, location country change does NOT overwrite."""
-    token = await _register(client, email="regime_custom@test.com")
+    token = await _register(client, email="regime_custom@test.example")
 
     # Customise taxes first
     await client.patch("/companies/me/taxes", headers=_auth(token), json={
@@ -726,7 +726,7 @@ async def test_customised_taxes_not_overwritten_by_location(client):
 @pytest.mark.asyncio
 async def test_unknown_country_falls_back_to_default(client):
     """Unknown country code falls back to _default regime (placeholder tax, USD)."""
-    token = await _register(client, email="regime_unknown@test.com")
+    token = await _register(client, email="regime_unknown@test.example")
     await client.post("/companies/me/locations", headers=_auth(token), json={
         "name": "HQ", "type": "warehouse", "is_default": True,
         "address": {"country": "ZZ"},

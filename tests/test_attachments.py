@@ -14,7 +14,7 @@ from httpx import AsyncClient
 async def _token(client: AsyncClient) -> str:
     r = await client.post(
         "/auth/register",
-        json={"company_name": "AttachCo", "email": "att@test.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "AttachCo", "email": "att@test.example", "name": "Admin", "password": "pwvalid1"},
     )
     return r.json()["access_token"]
 

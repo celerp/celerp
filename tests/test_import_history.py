@@ -21,7 +21,7 @@ async def _register(client) -> str:
     email = f"hist-{uuid.uuid4().hex[:10]}@test.test"
     r = await client.post(
         "/auth/register",
-        json={"company_name": "History Co", "email": email, "name": "Admin", "password": "pw"},
+        json={"company_name": "History Co", "email": email, "name": "Admin", "password": "pwvalid1"},
     )
     assert r.status_code == 200, r.text
     return r.json()["access_token"]
@@ -108,7 +108,7 @@ async def test_list_batches_requires_auth(client):
 async def test_list_batches_isolated_per_company(client):
     # Register first company
     email = f"hist-a-{uuid.uuid4().hex[:8]}@test.test"
-    r = await client.post("/auth/register", json={"company_name": "Hist Co A", "email": email, "name": "Admin", "password": "pw"})
+    r = await client.post("/auth/register", json={"company_name": "Hist Co A", "email": email, "name": "Admin", "password": "pwvalid1"})
     token_a = r.json()["access_token"]
     # Create second company via the API (register is locked after bootstrap)
     r2 = await client.post("/companies", json={"name": "Hist Co B"}, headers=_h(token_a))
@@ -206,7 +206,7 @@ async def test_undo_batch_not_found(client):
 async def test_undo_batch_cross_company_forbidden(client):
     # Register first company
     email = f"hist-x-{uuid.uuid4().hex[:8]}@test.test"
-    r = await client.post("/auth/register", json={"company_name": "Hist X A", "email": email, "name": "Admin", "password": "pw"})
+    r = await client.post("/auth/register", json={"company_name": "Hist X A", "email": email, "name": "Admin", "password": "pwvalid1"})
     token_a = r.json()["access_token"]
     # Create second company via the API
     r2 = await client.post("/companies", json={"name": "Hist X B"}, headers=_h(token_a))

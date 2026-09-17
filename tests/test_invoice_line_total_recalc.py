@@ -400,10 +400,10 @@ class TestLinesTotalAPIPreservation:
     @pytest.mark.asyncio
     async def test_back_calculated_line_preserved_on_patch(self, client):
         """PATCH /docs/{id} with back-calculated unit_price preserves qty, unit_price, line_total."""
-        addr = f"lt-{uuid.uuid4().hex[:8]}@test.com"
+        addr = f"lt-{uuid.uuid4().hex[:8]}@test.example"
         reg = await client.post(
             "/auth/register",
-            json={"company_name": "LT Corp", "email": addr, "name": "Admin", "password": "pw"},
+            json={"company_name": "LT Corp", "email": addr, "name": "Admin", "password": "pwvalid1"},
         )
         assert reg.status_code == 200
         token = reg.json()["access_token"]

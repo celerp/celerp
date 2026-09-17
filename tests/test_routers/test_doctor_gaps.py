@@ -29,7 +29,7 @@ async def _reg(client) -> tuple[str, str]:
     """Register a new company and return (token, company_id)."""
     addr = f"doc-{uuid.uuid4().hex[:8]}@gaps.test"
     r = await client.post("/auth/register", json={
-        "company_name": "DrCo", "email": addr, "name": "Admin", "password": "pw",
+        "company_name": "DrCo", "email": addr, "name": "Admin", "password": "pwvalid1",
     })
     assert r.status_code == 200, r.text
     tok = r.json()["access_token"]

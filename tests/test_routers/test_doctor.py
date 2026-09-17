@@ -15,7 +15,7 @@ from celerp.services.je_keys import je_idempotency_key
 async def _register(client) -> str:
     r = await client.post("/auth/register", json={
         "company_name": "Doctor Co", "email": f"doc-{uuid.uuid4().hex[:8]}@test.test",
-        "name": "Admin", "password": "pw",
+        "name": "Admin", "password": "pwvalid1",
     })
     assert r.status_code == 200
     return r.json()["access_token"]
@@ -726,7 +726,7 @@ async def test_connector_sync_not_implemented(client, patch_connector_session_to
     import celerp.connectors as conn_module
 
     resp = await client.post("/auth/register", json={
-        "email": "connector_notimpl@test.com", "password": "pw",
+        "email": "connector_notimpl@test.example", "password": "pwvalid1",
         "name": "Test", "company_name": "ConnTest",
     })
     headers = {
@@ -754,7 +754,7 @@ async def test_connector_sync_generic_exception(client, patch_connector_session_
     import celerp.connectors as conn_module
 
     resp = await client.post("/auth/register", json={
-        "email": "connector_exc@test.com", "password": "pw",
+        "email": "connector_exc@test.example", "password": "pwvalid1",
         "name": "Test", "company_name": "ConnTest2",
     })
     headers = {
@@ -782,7 +782,7 @@ async def test_connector_sync_contacts(client, patch_connector_session_token):
     from celerp.connectors.base import SyncResult, SyncEntity
 
     resp = await client.post("/auth/register", json={
-        "email": "connector_contacts@test.com", "password": "pw",
+        "email": "connector_contacts@test.example", "password": "pwvalid1",
         "name": "Test", "company_name": "ConnTestContacts",
     })
     headers = {

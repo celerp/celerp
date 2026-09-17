@@ -96,7 +96,7 @@ async def _register(client) -> dict:
     email = f"mp-install-{uuid.uuid4().hex[:8]}@test.test"
     r = await client.post("/auth/register", json={
         "company_name": "MP Install Co", "email": email, "name": "Admin",
-        "password": "pw123"})
+        "password": "pw123val"})
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 

@@ -31,7 +31,7 @@ from celerp.models.company import Company, User
 async def _register_owner(client, company_name: str, email: str) -> dict:
     r = await client.post(
         "/auth/register",
-        json={"company_name": company_name, "email": email, "name": "Owner", "password": "pw"},
+        json={"company_name": company_name, "email": email, "name": "Owner", "password": "pwvalid1"},
     )
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
@@ -40,7 +40,7 @@ async def _register_owner(client, company_name: str, email: str) -> dict:
 async def _create_member(client, admin_h: dict, email: str, role: str, name: str = "Target") -> str:
     r = await client.post(
         "/companies/me/users",
-        json={"email": email, "name": name, "role": role, "password": "pw123"},
+        json={"email": email, "name": name, "role": role, "password": "pw123val"},
         headers=admin_h,
     )
     assert r.status_code == 200, r.text
@@ -161,7 +161,7 @@ async def test_membership_change_invalidates_prior_sessions(client, session):
     target_id = await _create_member(client, admin_a, target_email, "operator")
 
     await _clear_tracker(session)
-    r_login = await client.post("/auth/login", json={"email": target_email, "password": "pw123"})
+    r_login = await client.post("/auth/login", json={"email": target_email, "password": "pw123val"})
     assert r_login.status_code == 200, r_login.text
     target_access = r_login.json()["access_token"]
 
