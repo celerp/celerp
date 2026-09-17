@@ -21,9 +21,9 @@ def regex_once(path: str, pattern: str, replacement: str) -> None:
 
 # Fresh instance identity remains independent from proof creation. The verifier is
 # created only when an account-proof flow starts, under the cross-process lock below.
-replace_once(
+regex_once(
     "celerp/config.py",
-    '''    import secrets as _secrets\n    import uuid as _uuid\n    iid = str(_uuid.uuid4())\n    settings.gateway_instance_id = iid\n    if not settings.activation_verifier:\n        settings.activation_verifier = _secrets.token_urlsafe(32)\n\n    # Persist identity and proof secret together. A fresh install therefore has\n    # one verifier before multiple API workers can serve an account-link request.\n    try:\n        persist_cloud_settings(\n            instance_id=iid, activation_verifier=settings.activation_verifier)\n''',
+    r'''    import secrets as _secrets\n    import uuid as _uuid\n    iid = str\(_uuid\.uuid4\(\)\)\n    settings\.gateway_instance_id = iid\n    if not settings\.activation_verifier:\n        settings\.activation_verifier = _secrets\.token_urlsafe\(32\)\n\n    # Persist identity and proof secret together\..*?    try:\n        persist_cloud_settings\(\n            instance_id=iid, activation_verifier=settings\.activation_verifier\)\n''',
     '''    import uuid as _uuid\n    iid = str(_uuid.uuid4())\n    settings.gateway_instance_id = iid\n\n    # Identity is persisted at boot; an activation verifier is created later,\n    # only when an account-proof flow actually begins.\n    try:\n        persist_cloud_settings(instance_id=iid)\n''',
 )
 
