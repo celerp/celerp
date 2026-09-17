@@ -9,6 +9,15 @@ def replace_once(path: str, old: str, new: str) -> None:
     p.write_text(text.replace(old, new))
 
 
+# Restore the two harness-only import markers introduced by patch0. They exist
+# only to make patch2's account-signup replacement unambiguous.
+p = Path("celerp/routers/health.py")
+text = p.read_text()
+marker = "    from celerp.config import (ensure_instance_id)\n"
+if text.count(marker) != 2:
+    raise RuntimeError(f"health.py: expected 2 harness import markers, got {text.count(marker)}")
+p.write_text(text.replace(marker, "    from celerp.config import ensure_instance_id\n"))
+
 # config.toml uses an explicit cloud-key serializer. Persist the verifier so the
 # proof survives process restart until a credential is durably applied.
 replace_once(
