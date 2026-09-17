@@ -51,6 +51,7 @@ jobs:
           set -euo pipefail
           cp scripts/tmp_connect_app_patch*.py /tmp/
           git reset --hard "$CLEAN_HEAD"
+          python /tmp/tmp_connect_app_patch0.py
           python /tmp/tmp_connect_app_patch1.py
           python /tmp/tmp_connect_app_patch2.py
           python /tmp/tmp_connect_app_patch3.py
