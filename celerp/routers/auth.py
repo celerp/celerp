@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import secrets
@@ -133,7 +134,6 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         # so a network-exposed first-admin page can't be claimed by a stranger.
         required = _setup_code_hash()
         if required:
-            import hashlib
             import hmac as _hmac
             provided = (payload.setup_code or "").strip()
             if not provided or not _hmac.compare_digest(
@@ -422,15 +422,18 @@ async def password_reset_request(
         await session.execute(select(User).where(User.email == payload.email))
     ).scalar_one_or_none()
     if user:
-        token = secrets.token_urlsafe(32)
-        user.reset_token = token
+        # Only the SHA-256 digest is stored, so a database read cannot recover the
+        # reset credential; the raw token lives only in the emailed link.
+        raw_token = secrets.token_urlsafe(32)
+        token_digest = hashlib.sha256(raw_token.encode()).hexdigest()
+        user.reset_token = token_digest
         user.reset_token_expires = datetime.now(timezone.utc) + timedelta(minutes=_RESET_TOKEN_TTL_MINUTES)
         await session.commit()
 
         from celerp.config import settings
         import asyncio
         base = settings.celerp_public_url or ""
-        reset_link = f"{base}/reset-password?token={token}"
+        reset_link = f"{base}/reset-password?token={raw_token}"
         body_html = (
             f"<p>Hi {user.name},</p>"
             f"<p>We received a request to reset the password for your Celerp account "
@@ -467,8 +470,11 @@ async def password_reset_confirm(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Confirm password reset with token and new password."""
+    # The stored value is the SHA-256 digest, so match on the digest of the
+    # presented raw token rather than the raw token itself.
+    token_digest = hashlib.sha256(payload.token.encode()).hexdigest()
     user = (
-        await session.execute(select(User).where(User.reset_token == payload.token))
+        await session.execute(select(User).where(User.reset_token == token_digest))
     ).scalar_one_or_none()
     if not user or not user.reset_token_expires:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
