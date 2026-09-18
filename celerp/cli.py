@@ -989,7 +989,7 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
     setup_code = None
     if no_start:
         import hashlib
-        setup_code = secrets.token_hex(4)
+        setup_code = secrets.token_hex(16)
         cfg["auth"]["setup_code_hash"] = hashlib.sha256(setup_code.encode()).hexdigest()
         cfg["server"]["headless"] = True
 

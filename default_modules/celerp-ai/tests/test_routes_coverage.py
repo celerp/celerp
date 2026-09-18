@@ -58,9 +58,9 @@ async def auth_client(session: AsyncSession):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         await c.post("/auth/register", json={
             "company_name": "RouteCo", "email": "route@test.com",
-            "name": "Admin", "password": "pw",
+            "name": "Admin", "password": "validpass1",
         })
-        r = await c.post("/auth/login", json={"email": "route@test.com", "password": "pw"})
+        r = await c.post("/auth/login", json={"email": "route@test.com", "password": "validpass1"})
         jwt = r.json()["access_token"]
         headers = {
             "Authorization": f"Bearer {jwt}",

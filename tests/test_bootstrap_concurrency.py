@@ -172,6 +172,60 @@ async def test_bootstrap_race_serializes_to_single_owner(real_engine):
 
 
 @pytest.mark.asyncio
+async def test_bootstrapped_register_rejects_before_waiting_on_lock(real_engine):
+    """Once an owner exists, public registration never queues on the bootstrap lock."""
+    from fastapi import HTTPException
+
+    from celerp.routers.auth import register, RegisterRequest, _BOOTSTRAP_LOCK_KEY
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import Company, User
+
+    maker = lambda: AsyncSession(bind=real_engine, expire_on_commit=False)
+    session_a = maker()
+    session_b = maker()
+    try:
+        company = Company(
+            id=uuid.uuid4(), name="ExistingCo", slug=f"existing-{uuid.uuid4().hex[:8]}",
+            settings={"fiscal_year_start": "01-01"},
+        )
+        owner = User(
+            id=uuid.uuid4(), email="existing@example.com", name="Existing Owner",
+            auth_hash="x", api_key=None, is_active=True,
+        )
+        session_a.add_all([company, owner])
+        await session_a.flush()
+        session_a.add(UserCompany(
+            id=uuid.uuid4(), user_id=owner.id, company_id=company.id, role="owner"
+        ))
+        await session_a.commit()
+
+        # Hold the lock after bootstrap. A registration that unnecessarily joins
+        # the queue would block here until production lock_timeout; the fast path
+        # must instead return the established 403 immediately.
+        await session_a.execute(
+            text("SELECT pg_advisory_xact_lock(:k)"), {"k": _BOOTSTRAP_LOCK_KEY}
+        )
+        payload = RegisterRequest(
+            company_name="ShouldNotExist", email="later@example.com",
+            name="Later Owner", password="validpass1",
+        )
+        with pytest.raises(HTTPException) as exc:
+            await asyncio.wait_for(register(payload, session=session_b), timeout=1.0)
+        assert exc.value.status_code == 403
+
+        async with real_engine.connect() as probe:
+            waiting = (await probe.execute(text(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+            ))).scalar_one()
+        assert waiting == 0, "bootstrapped registration attempted to join the lock queue"
+    finally:
+        await session_a.rollback()
+        await session_b.rollback()
+        await session_a.close()
+        await session_b.close()
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_lock_timeout_fails_closed_without_partial_state(real_engine):
     """A holder that outlives production lock_timeout makes the waiter fail closed.
 

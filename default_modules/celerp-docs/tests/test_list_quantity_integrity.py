@@ -19,7 +19,7 @@ import celerp_docs.routes as docs_routes
 
 async def _register(client) -> str:
     addr = f"admin-{uuid.uuid4().hex[:8]}@listqty.test"
-    r = await client.post("/auth/register", json={"company_name": "List Qty Co", "email": addr, "name": "A", "password": "pw"})
+    r = await client.post("/auth/register", json={"company_name": "List Qty Co", "email": addr, "name": "A", "password": "validpass1"})
     assert r.status_code == 200, r.text
     return r.json()["access_token"]
 

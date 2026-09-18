@@ -124,6 +124,13 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     """
     required = ""
     try:
+        # Cheap post-bootstrap fast path. This is only an optimization: the same
+        # check is repeated after the advisory lock and remains authoritative for
+        # two callers racing on a genuinely fresh install.
+        existing = (await session.execute(select(User))).scalars().first()
+        if existing is not None:
+            raise HTTPException(status_code=403, detail="System already bootstrapped. Contact your admin.")
+
         # Authenticate the headless setup capability before joining the bootstrap
         # lock queue. An unauthenticated caller must not be able to consume the one
         # global serialization point simply by submitting an invalid setup code.
