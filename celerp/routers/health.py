@@ -344,8 +344,7 @@ async def cloud_activate_api() -> dict:
             f"{relay_base}/auth/activate", json=body, headers=headers)
 
     try:
-        async with asyncio.timeout(RELAY_CONTROL_TIMEOUT):
-            r = await with_relay_client(RELAY_CONTROL_TIMEOUT, _activate)
+        r = await with_relay_client(RELAY_CONTROL_TIMEOUT, _activate)
     except (httpx.ConnectError, TimeoutError):
         return {"error": f"Connection to {relay_base} timed out or could not be reached. "                "Check your internet connection or firewall and try again."}
     except httpx.TimeoutException:
@@ -632,8 +631,12 @@ async def account_methods_api() -> dict:
     google = False
     free_email_quota = 0
     secure_activation = False
+    needs_activation_challenge = False
     start_url = f"{relay_base}/auth/google/start?instance_id={iid}"
-    try:
+
+    async def _relay_phase():
+        nonlocal google, free_email_quota, secure_activation
+        nonlocal needs_activation_challenge, start_url
         async with httpx.AsyncClient(timeout=RELAY_ACCOUNT_METHODS_TIMEOUT) as c:
             r = await c.get(f"{relay_base}/auth/methods")
             if r.status_code == 200:
@@ -642,26 +645,25 @@ async def account_methods_api() -> dict:
                     google = bool(data.get("google"))
                     free_email_quota = int(data.get("free_email_quota") or 0)
                     secure_activation = bool(data.get("secure_activation", False))
+
             api_key = _s.gateway_token
             if google and not api_key:
                 # A Cloud disconnect clears only the in-memory token; the on-disk
                 # credential and the relay-side link both survive. Read the persisted
                 # token to prove possession rather than calling /auth/activate, which
                 # rotates the relay key on every call and would orphan the stored
-                # credential the next reconnect relies on. A fresh install has no
-                # stored token, so api_key stays empty and the open door below serves it.
+                # credential the next reconnect relies on.
                 from celerp.config import read_config
                 cfg = read_config() or {}
                 api_key = (cfg.get("cloud") or {}).get("token") or ""
+
             if google and not api_key:
-                from celerp.config import ensure_activation_verifier, activation_challenge
-                verifier = await asyncio.to_thread(ensure_activation_verifier)
-                start_url = (
-                    f"{relay_base}/auth/google/start?instance_id={iid}"
-                    f"&activation_challenge={activation_challenge(verifier)}")
+                needs_activation_challenge = True
+                return
+
             if google and api_key:
-                tok_r = await c.post(f"{relay_base}/auth/token",
-                                     json={"api_key": api_key})
+                tok_r = await c.post(
+                    f"{relay_base}/auth/token", json={"api_key": api_key})
                 if tok_r.status_code == 200:
                     su = await c.get(
                         f"{relay_base}/auth/google/start-url",
@@ -674,20 +676,34 @@ async def account_methods_api() -> dict:
                             start_url = str(su_data["url"])
                 elif tok_r.status_code in (401, 403):
                     if secure_activation:
-                        from celerp.config import (
-                            ensure_activation_verifier, activation_challenge)
-                        verifier = await asyncio.to_thread(ensure_activation_verifier)
-                        start_url = (
-                            f"{relay_base}/auth/google/start?instance_id={iid}"
-                            f"&activation_challenge={activation_challenge(verifier)}")
+                        needs_activation_challenge = True
                     # A pre-ratchet relay has been explicitly identified by the
                     # methods response, so its legacy open door remains valid.
                 else:
                     google = False
                     start_url = ""
+
+    try:
+        await asyncio.wait_for(
+            _relay_phase(), timeout=RELAY_ACCOUNT_METHODS_TIMEOUT)
     except Exception:
         google = False
         start_url = ""
+        needs_activation_challenge = False
+
+    # Config persistence is deliberately outside the relay deadline. The UI's
+    # 15s deadline contains the 6s relay phase plus the config lock's 5s budget.
+    if google and needs_activation_challenge:
+        try:
+            from celerp.config import ensure_activation_verifier, activation_challenge
+            verifier = await asyncio.to_thread(ensure_activation_verifier)
+            start_url = (
+                f"{relay_base}/auth/google/start?instance_id={iid}"
+                f"&activation_challenge={activation_challenge(verifier)}")
+        except Exception:
+            google = False
+            start_url = ""
+
     return {
         "google": google,
         "free_email_quota": free_email_quota,
@@ -725,8 +741,7 @@ async def account_signup_api(payload: dict) -> dict:
             })
 
     try:
-        async with asyncio.timeout(RELAY_ACCOUNT_SIGNUP_TIMEOUT):
-            r = await with_relay_client(RELAY_ACCOUNT_SIGNUP_TIMEOUT, _signup)
+        r = await with_relay_client(RELAY_ACCOUNT_SIGNUP_TIMEOUT, _signup)
     except (httpx.HTTPError, TimeoutError):
         return {"error": f"Cannot reach {relay_base} - check your internet connection."}
     if r.status_code == 202:
@@ -780,8 +795,7 @@ async def account_status_api() -> dict:
                            params={"instance_id": iid})
 
     try:
-        async with asyncio.timeout(RELAY_ACCOUNT_STATUS_TIMEOUT):
-            r = await with_relay_client(RELAY_ACCOUNT_STATUS_TIMEOUT, _status)
+        r = await with_relay_client(RELAY_ACCOUNT_STATUS_TIMEOUT, _status)
     except (httpx.HTTPError, TimeoutError):
         return {"error": "unreachable"}
     if r.status_code != 200:
@@ -834,8 +848,7 @@ async def _activate_after_claim(
         return resp
 
     try:
-        async with asyncio.timeout(CLAIM_ACTIVATE_TIMEOUT):
-            resp = await with_relay_client(CLAIM_ACTIVATE_TIMEOUT, _activate)
+        resp = await with_relay_client(CLAIM_ACTIVATE_TIMEOUT, _activate)
     except (httpx.HTTPError, TimeoutError):
         return None
     if resp.status_code != 200:
@@ -886,8 +899,7 @@ async def cloud_send_otp_api(payload: dict) -> dict:
         return r
 
     try:
-        async with asyncio.timeout(RELAY_CLAIM_TIMEOUT):
-            r = await with_relay_client(RELAY_CLAIM_TIMEOUT, _send_otp)
+        r = await with_relay_client(RELAY_CLAIM_TIMEOUT, _send_otp)
     except (httpx.ConnectError, TimeoutError):
         return {"error": f"Connection to {relay_base} timed out or could not be reached. "                "Check your internet connection or firewall and try again."}
     except httpx.TimeoutException:
@@ -944,8 +956,7 @@ async def cloud_claim_api(payload: dict) -> dict:
         return r
 
     try:
-        async with asyncio.timeout(RELAY_CLAIM_TIMEOUT):
-            r = await with_relay_client(RELAY_CLAIM_TIMEOUT, _claim)
+        r = await with_relay_client(RELAY_CLAIM_TIMEOUT, _claim)
     except (httpx.ConnectError, TimeoutError):
         return {"error": (
             f"Connection to {relay_base} timed out before the relay confirmed the link. "

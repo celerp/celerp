@@ -714,7 +714,7 @@ async def with_relay_client(total_s: float, op):
     Only httpx.ConnectError and httpx.ConnectTimeout are retried, and only up to
     RELAY_CONNECT_ATTEMPTS: both are raised before any request bytes leave the
     machine, so a retry can never duplicate a request the relay already saw.
-    The outer asyncio timeout owns the total wall clock; per-attempt httpx
+    The outer asyncio.wait_for owns the total wall clock; per-attempt httpx
     read/write/pool values stay deterministic at total_s while connect gets the
     short retry budget. Every other outcome propagates from the first attempt
     that produced it.
@@ -723,21 +723,23 @@ async def with_relay_client(total_s: float, op):
 
     import httpx
 
+    async def _run():
+        for attempt in range(1, RELAY_CONNECT_ATTEMPTS + 1):
+            connect_s = min(
+                relay_connect_deadline(total_s, attempt), total_s)
+            try:
+                timeout = relay_timeout(total_s, connect_s=connect_s)
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    return await op(client)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                if attempt == RELAY_CONNECT_ATTEMPTS:
+                    raise
+                log.debug("Relay connect attempt %d failed (%s); reopening.",
+                          attempt, type(exc).__name__)
+
     try:
-        async with asyncio.timeout(total_s):
-            for attempt in range(1, RELAY_CONNECT_ATTEMPTS + 1):
-                connect_s = min(
-                    relay_connect_deadline(total_s, attempt), total_s)
-                try:
-                    timeout = relay_timeout(total_s, connect_s=connect_s)
-                    async with httpx.AsyncClient(timeout=timeout) as client:
-                        return await op(client)
-                except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                    if attempt == RELAY_CONNECT_ATTEMPTS:
-                        raise
-                    log.debug("Relay connect attempt %d failed (%s); reopening.",
-                              attempt, type(exc).__name__)
-    except TimeoutError as exc:
+        return await asyncio.wait_for(_run(), timeout=total_s)
+    except asyncio.TimeoutError as exc:
         raise httpx.ReadTimeout(
             f"relay operation exceeded {total_s:.1f}s wall-clock budget") from exc
 

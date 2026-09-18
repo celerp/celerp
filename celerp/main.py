@@ -104,18 +104,22 @@ async def _try_auto_activate() -> None:
             # becomes credential authority there. If and only if that endpoint is
             # absent (404), make one compatibility activation call for an old
             # relay. Never retry this mutating legacy operation after ambiguity.
+            async def _legacy_activate():
+                async with httpx.AsyncClient(timeout=6.0) as c:
+                    checkin = await c.post(
+                        f"{relay_base}/auth/checkin",
+                        json=activate_payload(iid, first_boot=first_boot))
+                    if checkin.status_code != 404:
+                        return None
+                    return await c.post(
+                        f"{relay_base}/auth/activate",
+                        json=activate_payload(iid, first_boot=first_boot))
+
             try:
-                async with asyncio.timeout(6.0):
-                    async with httpx.AsyncClient(timeout=6.0) as c:
-                        checkin = await c.post(
-                            f"{relay_base}/auth/checkin",
-                            json=activate_payload(iid, first_boot=first_boot))
-                        if checkin.status_code != 404:
-                            return
-                        r = await c.post(
-                            f"{relay_base}/auth/activate",
-                            json=activate_payload(iid, first_boot=first_boot))
-            except (httpx.HTTPError, TimeoutError):
+                r = await asyncio.wait_for(_legacy_activate(), timeout=6.0)
+            except (httpx.HTTPError, asyncio.TimeoutError):
+                return
+            if r is None:
                 return
         else:
             # Challenge redemption is idempotent for this verifier, so transient

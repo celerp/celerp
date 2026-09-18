@@ -3086,22 +3086,30 @@ async def disconnect_relay(token: str) -> dict:
         return _raise(await c.post("/settings/cloud-disconnect")).json()
 
 
+async def _with_total_timeout(awaitable, timeout: float):
+    """Run one local API operation under a Python 3.10-compatible total deadline."""
+    try:
+        return await asyncio.wait_for(awaitable, timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise APIError(504, TIMEOUT_MESSAGE) from exc
+
+
 CONTROL_PLANE_TIMEOUT = 20.0
 
 
 async def _control_post(token: str, path: str, payload: dict | None = None) -> dict:
     """POST a relay-backed local control route with UI headroom around its API work."""
     kwargs = {"json": payload} if payload is not None else {}
-    try:
-        async with asyncio.timeout(CONTROL_PLANE_TIMEOUT):
-            async with _api_client(token, timeout=CONTROL_PLANE_TIMEOUT) as c:
-                return _raise(await c.post(path, **kwargs)).json()
-    except TimeoutError as exc:
-        raise APIError(504, TIMEOUT_MESSAGE) from exc
+
+    async def _request():
+        async with _api_client(token, timeout=CONTROL_PLANE_TIMEOUT) as c:
+            return _raise(await c.post(path, **kwargs)).json()
+
+    return await _with_total_timeout(_request(), CONTROL_PLANE_TIMEOUT)
 
 
 async def activate_relay(token: str) -> dict:
-    """POST /settings/cloud-activate — call relay /auth/activate, start gateway."""
+    """POST /settings/cloud-activate - call relay /auth/activate, start gateway."""
     return await _control_post(token, "/settings/cloud-activate")
 
 
@@ -3120,19 +3128,19 @@ async def accept_partner_claim(token: str, claim_token: str) -> dict:
 
 
 async def apply_relay_token(token: str, payload: dict) -> dict:
-    """POST /settings/cloud-apply-token — apply pre-fetched gateway token."""
+    """POST /settings/cloud-apply-token - apply pre-fetched gateway token."""
     async with _api_client(token) as c:
         return _raise(await c.post("/settings/cloud-apply-token", json=payload)).json()
 
 
 async def accept_relay_tos(token: str) -> dict:
-    """POST /settings/cloud-accept-tos — persist TOS, restart gateway client."""
+    """POST /settings/cloud-accept-tos - persist TOS, restart gateway client."""
     async with _api_client(token) as c:
         return _raise(await c.post("/settings/cloud-accept-tos")).json()
 
 
 async def get_instance_id(token: str) -> str:
-    """GET /settings/cloud-instance-id — return canonical instance_id from API process."""
+    """GET /settings/cloud-instance-id - return canonical instance_id from API process."""
     async with _api_client(token) as c:
         return _raise(await c.get("/settings/cloud-instance-id")).json()["instance_id"]
 
@@ -3142,12 +3150,11 @@ ACCOUNT_METHODS_TIMEOUT = 15.0
 
 async def account_methods(token: str) -> dict:
     """GET /settings/account-methods with headroom for config + relay work."""
-    try:
-        async with asyncio.timeout(ACCOUNT_METHODS_TIMEOUT):
-            async with _api_client(token, timeout=ACCOUNT_METHODS_TIMEOUT) as c:
-                return _raise(await c.get("/settings/account-methods")).json()
-    except TimeoutError as exc:
-        raise APIError(504, TIMEOUT_MESSAGE) from exc
+    async def _request():
+        async with _api_client(token, timeout=ACCOUNT_METHODS_TIMEOUT) as c:
+            return _raise(await c.get("/settings/account-methods")).json()
+
+    return await _with_total_timeout(_request(), ACCOUNT_METHODS_TIMEOUT)
 
 
 ACCOUNT_SIGNUP_TIMEOUT = 15.0
@@ -3155,14 +3162,13 @@ ACCOUNT_SIGNUP_TIMEOUT = 15.0
 
 async def account_signup(token: str, email: str) -> dict:
     """POST /settings/account-signup under a true total local-request deadline."""
-    try:
-        async with asyncio.timeout(ACCOUNT_SIGNUP_TIMEOUT):
-            async with _api_client(token, timeout=ACCOUNT_SIGNUP_TIMEOUT) as c:
-                return _raise(
-                    await c.post("/settings/account-signup", json={"email": email})
-                ).json()
-    except TimeoutError as exc:
-        raise APIError(504, TIMEOUT_MESSAGE) from exc
+    async def _request():
+        async with _api_client(token, timeout=ACCOUNT_SIGNUP_TIMEOUT) as c:
+            return _raise(
+                await c.post("/settings/account-signup", json={"email": email})
+            ).json()
+
+    return await _with_total_timeout(_request(), ACCOUNT_SIGNUP_TIMEOUT)
 
 
 async def account_status(token: str) -> dict:
@@ -3179,26 +3185,24 @@ CLAIM_TIMEOUT = 25.0
 
 async def send_otp(token: str, email: str) -> dict:
     """Send claim OTP under a true total local-request deadline."""
-    try:
-        async with asyncio.timeout(OTP_TIMEOUT):
-            async with _api_client(token, timeout=OTP_TIMEOUT) as c:
-                return _raise(
-                    await c.post("/settings/cloud-send-otp", json={"email": email})
-                ).json()
-    except TimeoutError as exc:
-        raise APIError(504, TIMEOUT_MESSAGE) from exc
+    async def _request():
+        async with _api_client(token, timeout=OTP_TIMEOUT) as c:
+            return _raise(
+                await c.post("/settings/cloud-send-otp", json={"email": email})
+            ).json()
+
+    return await _with_total_timeout(_request(), OTP_TIMEOUT)
 
 
 async def cloud_claim(token: str, payload: dict) -> dict:
     """Claim/link under a true total local-request deadline."""
-    try:
-        async with asyncio.timeout(CLAIM_TIMEOUT):
-            async with _api_client(token, timeout=CLAIM_TIMEOUT) as c:
-                return _raise(
-                    await c.post("/settings/cloud-claim", json=payload)
-                ).json()
-    except TimeoutError as exc:
-        raise APIError(504, TIMEOUT_MESSAGE) from exc
+    async def _request():
+        async with _api_client(token, timeout=CLAIM_TIMEOUT) as c:
+            return _raise(
+                await c.post("/settings/cloud-claim", json=payload)
+            ).json()
+
+    return await _with_total_timeout(_request(), CLAIM_TIMEOUT)
 
 
 async def get_connectors_catalog(token: str) -> tuple[list[dict], str, bool]:

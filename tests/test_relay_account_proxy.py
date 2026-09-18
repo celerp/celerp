@@ -11,6 +11,7 @@ exchange fails, the proxy falls back to the unauthenticated GET.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -478,6 +479,45 @@ async def test_account_methods_token_500_never_downgrades_to_open_google_door():
     assert data["google_start_url"] == ""
     assert len(client.post.call_args_list) == 1
     assert client.post.call_args_list[0][0][0].endswith("/auth/token")
+
+
+@pytest.mark.asyncio
+async def test_account_methods_relay_timeout_is_total_across_sequence():
+    """The 6s relay budget is one wall-clock deadline, not 6s per request."""
+    methods = MagicMock()
+    methods.status_code = 200
+    methods.json = MagicMock(return_value={
+        "google": True, "free_email_quota": 0, "secure_activation": True})
+    token = MagicMock()
+    token.status_code = 200
+    token.json = MagicMock(return_value={"access_token": "jwt-abc"})
+    start = MagicMock()
+    start.status_code = 200
+    start.json = MagicMock(return_value={"url": "https://accounts.google.test/start"})
+
+    async def _slow_get(url, **kw):
+        await asyncio.sleep(0.03)
+        return methods if url.endswith("/auth/methods") else start
+
+    async def _slow_post(url, **kw):
+        await asyncio.sleep(0.03)
+        return token
+
+    factory, client = _mock_httpx()
+    client.get = AsyncMock(side_effect=_slow_get)
+    client.post = AsyncMock(side_effect=_slow_post)
+    with (
+        patch("celerp.config.settings.gateway_token", "stored-key"),
+        patch("celerp.config.ensure_instance_id", return_value="i-77"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("celerp.routers.health.RELAY_ACCOUNT_METHODS_TIMEOUT", 0.05),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import account_methods_api
+        data = await account_methods_api()
+
+    assert data["google"] is False
+    assert data["google_start_url"] == ""
 
 
 def test_magic_link_timeout_hierarchy_is_outer_to_inner():
