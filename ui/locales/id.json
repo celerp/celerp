@@ -2580,6 +2580,7 @@
   "settings.incorrect_code_attempts": "Kode salah. Tersisa {n} upaya.",
   "settings.code_expired": "Kode telah kedaluwarsa atau terlalu banyak upaya yang salah. Minta kode baru.",
   "settings.subscription_linked_info": "Langganan telah terhubung. Klik \"Hubungkan\" untuk menyelesaikan aktivasi.",
+  "settings.link_timed_out": "Proses ini memakan waktu lebih lama dari perkiraan dan habis waktu sebelum relay mengonfirmasi tautan. Langganan Anda mungkin sudah dipindahkan ke komputer ini. Mulai ulang Celerp atau coba lagi. Jika terus gagal, koneksi komputer ini ke relay lambat.",
   "settings.otp_sent_hint": "Kami telah mengirimkan kode 6 digit ke {email}. Masukkan kode tersebut di bawah ini:",
   "settings.claim_email_hint": "Jika Anda berlangganan melalui situs web dan pembayaran tidak terhubung secara otomatis, masukkan alamat email yang Anda gunakan saat checkout:",
   "settings.establishing_connection": "Sedang membuat koneksi...",

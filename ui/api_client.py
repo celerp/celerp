@@ -3086,26 +3086,37 @@ async def disconnect_relay(token: str) -> dict:
         return _raise(await c.post("/settings/cloud-disconnect")).json()
 
 
+CONTROL_PLANE_TIMEOUT = 20.0
+
+
+async def _control_post(token: str, path: str, payload: dict | None = None) -> dict:
+    """POST a relay-backed local control route with UI headroom around its API work."""
+    kwargs = {"json": payload} if payload is not None else {}
+    try:
+        async with asyncio.timeout(CONTROL_PLANE_TIMEOUT):
+            async with _api_client(token, timeout=CONTROL_PLANE_TIMEOUT) as c:
+                return _raise(await c.post(path, **kwargs)).json()
+    except TimeoutError as exc:
+        raise APIError(504, TIMEOUT_MESSAGE) from exc
+
+
 async def activate_relay(token: str) -> dict:
     """POST /settings/cloud-activate — call relay /auth/activate, start gateway."""
-    async with _api_client(token) as c:
-        return _raise(await c.post("/settings/cloud-activate")).json()
+    return await _control_post(token, "/settings/cloud-activate")
 
 
 async def resolve_partner_claim(token: str, claim_token: str) -> dict:
     """POST /settings/partner-claim/resolve - preview the partner behind a claim
     token. Binds nothing. Returns the identity preview or a neutral error dict."""
-    async with _api_client(token) as c:
-        return _raise(await c.post(
-            "/settings/partner-claim/resolve", json={"claim_token": claim_token})).json()
+    return await _control_post(
+        token, "/settings/partner-claim/resolve", {"claim_token": claim_token})
 
 
 async def accept_partner_claim(token: str, claim_token: str) -> dict:
     """POST /settings/partner-claim/accept - accept the claim; the relay binds the
     relationship and pushes the new commercial context."""
-    async with _api_client(token) as c:
-        return _raise(await c.post(
-            "/settings/partner-claim/accept", json={"claim_token": claim_token})).json()
+    return await _control_post(
+        token, "/settings/partner-claim/accept", {"claim_token": claim_token})
 
 
 async def apply_relay_token(token: str, payload: dict) -> dict:
@@ -3126,16 +3137,32 @@ async def get_instance_id(token: str) -> str:
         return _raise(await c.get("/settings/cloud-instance-id")).json()["instance_id"]
 
 
+ACCOUNT_METHODS_TIMEOUT = 15.0
+
+
 async def account_methods(token: str) -> dict:
-    """GET /settings/account-methods - optional sign-in methods + Google start URL."""
-    async with _api_client(token) as c:
-        return _raise(await c.get("/settings/account-methods")).json()
+    """GET /settings/account-methods with headroom for config + relay work."""
+    try:
+        async with asyncio.timeout(ACCOUNT_METHODS_TIMEOUT):
+            async with _api_client(token, timeout=ACCOUNT_METHODS_TIMEOUT) as c:
+                return _raise(await c.get("/settings/account-methods")).json()
+    except TimeoutError as exc:
+        raise APIError(504, TIMEOUT_MESSAGE) from exc
+
+
+ACCOUNT_SIGNUP_TIMEOUT = 15.0
 
 
 async def account_signup(token: str, email: str) -> dict:
-    """POST /settings/account-signup - send the magic sign-in link."""
-    async with _api_client(token) as c:
-        return _raise(await c.post("/settings/account-signup", json={"email": email})).json()
+    """POST /settings/account-signup under a true total local-request deadline."""
+    try:
+        async with asyncio.timeout(ACCOUNT_SIGNUP_TIMEOUT):
+            async with _api_client(token, timeout=ACCOUNT_SIGNUP_TIMEOUT) as c:
+                return _raise(
+                    await c.post("/settings/account-signup", json={"email": email})
+                ).json()
+    except TimeoutError as exc:
+        raise APIError(504, TIMEOUT_MESSAGE) from exc
 
 
 async def account_status(token: str) -> dict:
@@ -3144,16 +3171,34 @@ async def account_status(token: str) -> dict:
         return _raise(await c.get("/settings/account-status")).json()
 
 
+# Total UI-to-local-API deadline for one claim-flow request. This is an
+# outer wall-clock bound; httpx.Timeout remains the per-phase guard underneath.
+OTP_TIMEOUT = 15.0
+CLAIM_TIMEOUT = 25.0
+
+
 async def send_otp(token: str, email: str) -> dict:
-    """POST /settings/cloud-send-otp — send OTP via API process (correct instance_id)."""
-    async with _api_client(token) as c:
-        return _raise(await c.post("/settings/cloud-send-otp", json={"email": email})).json()
+    """Send claim OTP under a true total local-request deadline."""
+    try:
+        async with asyncio.timeout(OTP_TIMEOUT):
+            async with _api_client(token, timeout=OTP_TIMEOUT) as c:
+                return _raise(
+                    await c.post("/settings/cloud-send-otp", json={"email": email})
+                ).json()
+    except TimeoutError as exc:
+        raise APIError(504, TIMEOUT_MESSAGE) from exc
 
 
 async def cloud_claim(token: str, payload: dict) -> dict:
-    """POST /settings/cloud-claim — claim + activate via API process (correct instance_id)."""
-    async with _api_client(token) as c:
-        return _raise(await c.post("/settings/cloud-claim", json=payload)).json()
+    """Claim/link under a true total local-request deadline."""
+    try:
+        async with asyncio.timeout(CLAIM_TIMEOUT):
+            async with _api_client(token, timeout=CLAIM_TIMEOUT) as c:
+                return _raise(
+                    await c.post("/settings/cloud-claim", json=payload)
+                ).json()
+    except TimeoutError as exc:
+        raise APIError(504, TIMEOUT_MESSAGE) from exc
 
 
 async def get_connectors_catalog(token: str) -> tuple[list[dict], str, bool]:

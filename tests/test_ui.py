@@ -18007,46 +18007,23 @@ class TestCelerpAccountSurface:
         assert b"Signed in as" in r.content
 
     @pytest.mark.asyncio
-    async def test_poll_reconnect_applies_the_rotated_token(self, ui_client):
-        """The relay rotates the gateway key on every activate, so a reconnect
-        response's token is the only live credential: a sign-in poll must apply
-        it, not drop it and pretend the sign-in worked."""
+    async def test_poll_does_not_reapply_activation_credential(self, ui_client):
+        """Activation owns credential persistence. The UI consumes only the
+        normalized connected result and must never apply a second token itself."""
         status = {"email": "o@shop.example", "email_verified": True, "tier": "free",
                   "pending_selection": False, "linked_elsewhere": False}
-        apply_tok = AsyncMock(return_value={"connected": True, "relay_status": "active"})
+        apply_tok = AsyncMock()
         with (
             patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
             patch("ui.api_client.activate_relay",
-                  new=AsyncMock(return_value={"reconnect": True, "gateway_token": "gt-1",
-                                              "public_url": None, "tos_version": None,
+                  new=AsyncMock(return_value={"connected": True, "relay_status": "active",
                                               "instance_id": "i-1"})),
             patch("ui.api_client.apply_relay_token", new=apply_tok),
         ):
             r = await ui_client.get("/account/poll?n=3&mode=google", cookies=_authed())
-        assert apply_tok.await_count == 1
-        assert apply_tok.await_args.args[1]["gateway_token"] == "gt-1"
+        assert apply_tok.await_count == 0
         assert b"Signed in as" in r.content
         assert b"could not be connected" not in r.content
-
-    @pytest.mark.asyncio
-    async def test_poll_reconnect_on_web_access_page_reloads_it(self, ui_client):
-        """On the Web Access page a reconnect that applies cleanly is a full
-        connect: the page chrome changes, so the poll reloads the page."""
-        status = {"email": "o@shop.example", "email_verified": True, "tier": "cloud",
-                  "pending_selection": False, "linked_elsewhere": False}
-        with (
-            patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
-            patch("ui.api_client.activate_relay",
-                  new=AsyncMock(return_value={"reconnect": True, "gateway_token": "gt-1",
-                                              "public_url": "https://co.celerp.app",
-                                              "tos_version": None, "instance_id": "i-1"})),
-            patch("ui.api_client.apply_relay_token",
-                  new=AsyncMock(return_value={"connected": True, "relay_status": "active"})),
-        ):
-            r = await ui_client.get("/account/poll?panel=cloud-relay-tab&mode=email",
-                                    cookies=_authed())
-        assert r.status_code == 204
-        assert r.headers["hx-redirect"] == "/settings/cloud"
 
     @pytest.mark.asyncio
     async def test_poll_activation_failure_is_shown_not_swallowed(self, ui_client):

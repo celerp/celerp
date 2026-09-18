@@ -501,3 +501,43 @@ def test_tomli_declared_for_pre_311():
     tomli_specs = [d for d in deps if d.split(";")[0].strip().startswith("tomli")]
     assert tomli_specs, "tomli missing from dependencies; 3.10 config read fails"
     assert any('python_version < "3.11"' in d for d in tomli_specs)
+
+
+# ---------------------------------------------------------------------------
+# remove_enabled_module
+# ---------------------------------------------------------------------------
+
+class TestRemoveEnabledModule:
+    def test_drops_only_the_named_module(self, tmp_path, monkeypatch):
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({"modules": {"enabled": ["inventory", "sales", "crm"]}})
+        mod.remove_enabled_module("sales")
+        assert mod.read_config()["modules"]["enabled"] == ["inventory", "crm"]
+
+    def test_unknown_name_leaves_the_file_untouched(self, tmp_path, monkeypatch):
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({"modules": {"enabled": ["inventory"]}})
+        before = cfg_file.read_bytes()
+        mod.remove_enabled_module("missing")
+        assert cfg_file.read_bytes() == before
+
+
+def test_ensure_connect_identity_persists_pair_in_one_rmw(tmp_path, monkeypatch):
+    mod, _ = _reload_config(tmp_path, monkeypatch)
+    calls = 0
+    original = mod._update_cloud_config
+
+    def _counted(mutate):
+        nonlocal calls
+        calls += 1
+        return original(mutate)
+
+    monkeypatch.setattr(mod, "_update_cloud_config", _counted)
+    iid, verifier = mod.ensure_connect_identity()
+
+    assert calls == 1
+    cfg = mod.read_config()
+    assert cfg["cloud"]["instance_id"] == iid
+    assert cfg["cloud"]["activation_verifier"] == verifier
+    assert mod.ensure_connect_identity() == (iid, verifier)
+    assert calls == 1

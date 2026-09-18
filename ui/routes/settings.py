@@ -2064,6 +2064,13 @@ def setup_routes(app):
 
         try:
             data = await _api.cloud_claim(ui_token, claim_payload)
+        except _api.APIError as exc:
+            # A UI-deadline timeout is explained in link terms: the relay may
+            # already have moved the subscription, so the honest advice is to
+            # restart or retry, not the generic busy-server copy.
+            from celerp.config import ensure_instance_id
+            copy = t("settings.link_timed_out") if exc.status == 504 else t("settings.could_not_reach_api", exc=exc)
+            return _cloud_relay_unconnected(ensure_instance_id(), error=copy)
         except Exception as exc:
             from celerp.config import ensure_instance_id
             return _cloud_relay_unconnected(ensure_instance_id(), error=t("settings.could_not_reach_api", exc=exc))
@@ -2093,13 +2100,10 @@ def setup_routes(app):
             # Same as cloud_activate: connecting changes the whole page, reload it.
             return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
 
-        # Claim succeeded but activate pending (rare: relay linkage happened but WS not up yet)
-        return _cloud_relay_unconnected(
-            iid,
-            error=None,
-            info=t("settings.subscription_linked_info"),
-            show_email_form=False,
-        )
+        # The account link is complete. If bounded activation was not
+        # confirmed inline, Connect (or restart) safely redeems the same durable
+        # proof; there is no background mutation to poll.
+        return _cloud_link_handover(iid)
 
     @app.post("/settings/cloud-disconnect")
     async def cloud_disconnect(request: Request):
@@ -3659,6 +3663,15 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
             cls="data-table sticky-head",
         ),
         cls="settings-card",
+    )
+
+
+
+def _cloud_link_handover(iid: str) -> FT:
+    """Linked, activation not confirmed: the Connect button finishes it on demand."""
+    return _cloud_relay_unconnected(
+        iid, info=t("settings.subscription_linked_info"), show_email_form=False,
+        suppress_autoconnect=True,
     )
 
 

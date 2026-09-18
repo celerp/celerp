@@ -308,10 +308,8 @@ _BG_TASKS: set = set()
 
 
 def _spawn(coro) -> None:
-    """Fire-and-forget a coroutine while holding a strong reference to the task
-    (discarded on completion) so the event loop can't garbage-collect it mid-run."""
+    """Fire-and-forget while retaining the task until completion."""
     import asyncio
-
     task = asyncio.create_task(coro)
     _BG_TASKS.add(task)
     task.add_done_callback(_BG_TASKS.discard)

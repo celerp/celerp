@@ -16,6 +16,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -186,7 +187,7 @@ def setup_routes(app):
                 preset = json.loads(preset_file.read_text())
                 preset_modules: list[str] = preset.get("modules") or []
                 if preset_modules:
-                    _set_enabled_modules(preset_modules)
+                    await asyncio.to_thread(_set_enabled_modules, preset_modules)
                     # Sync enabled state into company settings (DB) so the modules tab
                     # shows the correct enabled/disabled badge without a manual toggle.
                     for mod_name in preset_modules:

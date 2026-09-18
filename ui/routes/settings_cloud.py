@@ -1211,7 +1211,7 @@ def setup_routes(app):
         import os
         if os.environ.get("CELERP_DATA_DIR"):
             return _save_infra_packaged(form)
-        return _save_infra_selfhosted(form)
+        return await _save_infra_selfhosted(form)
 
     @app.post("/settings/cloud/restore-db")
     async def cloud_restore_db(request: Request):
@@ -1231,7 +1231,7 @@ def setup_routes(app):
         import os
         if os.environ.get("CELERP_DATA_DIR"):
             return _restore_db_packaged()
-        return _restore_db_selfhosted()
+        return await _restore_db_selfhosted()
 
 
 def _read_packaged_config() -> dict:
@@ -1322,7 +1322,7 @@ def _save_infra_packaged(form) -> FT:
     return _packaged_apply_fragment(t("settings_cloud.saved_restart_to_apply"))
 
 
-def _save_infra_selfhosted(form) -> FT:
+async def _save_infra_selfhosted(form) -> FT:
     """Persist DB/storage config to config.toml and reload the server via
     SIGHUP (self-hosted POSIX build).
 
@@ -1331,19 +1331,14 @@ def _save_infra_selfhosted(form) -> FT:
     it (see _save_infra_packaged).
     """
     try:
-        from celerp.config import read_config, write_config, settings
-        cfg = read_config()
-        if not cfg:
-            return Span(t("settings.no_config_file_found"), cls="infra-test-result--err")
+        from celerp.config import _update_config, settings
 
-        db_url_changed = False
-        storage_changed = False
-        optin_newly_set = False
-
-        # DB settings: compose URL when host+name+user are all present
+        # Validation comes first, on the submitted form alone, so a rejected
+        # submission never takes the config lock.
         host = form.get("db_host", "").strip()
         name = form.get("db_name", "").strip()
         user = form.get("db_user", "").strip()
+        port = 5432
         if host and name and user:
             port_raw = (form.get("db_port", "5432") or "5432").strip()
             try:
@@ -1352,33 +1347,6 @@ def _save_infra_selfhosted(form) -> FT:
                 return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
             if not 1 <= port <= 65535:
                 return Span(t("settings_cloud.invalid_port"), cls="infra-test-result--err")
-
-            previous_url = cfg.get("database", {}).get("url", settings.database_url)
-            submitted_password = form.get("db_pass", "")
-            if form.get("db_clear_password") == "1":
-                effective_password = None
-            elif submitted_password:
-                effective_password = submitted_password
-            else:
-                effective_password = _url_password(previous_url)
-
-            new_url = _build_db_url(host=host, port=port, name=name, user=user,
-                                     password=effective_password)
-            if new_url != previous_url:
-                # Backup previous URL for undo support
-                cfg.setdefault("database_backup", {})["previous_url"] = previous_url
-                cfg.setdefault("database", {})["url"] = new_url
-                db_url_changed = True
-
-            # Configuring a Team external DB opts this install into external-DB
-            # infrastructure durably. This opt-in, not the runtime database_url,
-            # is the self-hosted Team-infra visibility source, so cross-build
-            # recovery survives an entitlement lapse (get_local_infra_state reads
-            # settings.external_db, populated from this key by load_cloud_config).
-            optin_newly_set = not bool(cfg.get("cloud", {}).get("external_db"))
-            cfg.setdefault("cloud", {})["external_db"] = True
-
-        # Storage settings
         storage_backend = form.get("storage_backend", "")
         if storage_backend:
             if storage_backend not in _VALID_STORAGE_BACKENDS:
@@ -1387,41 +1355,84 @@ def _save_infra_selfhosted(form) -> FT:
                 endpoint = form.get("s3_endpoint", "").strip()
                 if not _valid_s3_endpoint(endpoint):
                     return Span(t("settings_cloud.invalid_s3_endpoint"), cls="infra-test-result--err")
-            prev_storage = cfg.get("storage", {})
-            new_s3_endpoint = form.get("s3_endpoint", "")
-            new_s3_bucket = form.get("s3_bucket", "")
-            new_s3_access_key = form.get("s3_access_key", "")
-            new_s3_secret = form.get("s3_secret_key")
-            # An effective storage change is any differing field, or a newly
-            # supplied secret (the secret is never sourced back into the form, so
-            # a submitted value is always a change).
-            storage_changed = (
-                prev_storage.get("backend", "") != storage_backend
-                or prev_storage.get("s3_endpoint", "") != new_s3_endpoint
-                or prev_storage.get("s3_bucket", "") != new_s3_bucket
-                or prev_storage.get("s3_access_key", "") != new_s3_access_key
-                or bool(new_s3_secret)
-            )
-            cfg.setdefault("storage_backup", {}).update({
-                "backend": prev_storage.get("backend", ""),
-                "s3_endpoint": prev_storage.get("s3_endpoint", ""),
-                "s3_bucket": prev_storage.get("s3_bucket", ""),
-                "s3_access_key": prev_storage.get("s3_access_key", ""),
-                "s3_secret_key": prev_storage.get("s3_secret_key", ""),
-            })
-            cfg.setdefault("storage", {})["backend"] = storage_backend
-            cfg["storage"]["s3_endpoint"] = new_s3_endpoint
-            cfg["storage"]["s3_bucket"] = new_s3_bucket
-            cfg["storage"]["s3_access_key"] = new_s3_access_key
-            if new_s3_secret:
-                cfg["storage"]["s3_secret_key"] = new_s3_secret
 
-        write_config(cfg)
+        def _apply(cfg: dict):
+            """Mutate the locked config snapshot. Returns None for a missing
+            file (nothing is written) or the three reload flags."""
+            if not cfg:
+                return None
+            db_url_changed = False
+            storage_changed = False
+            optin_newly_set = False
+
+            # DB settings: compose URL when host+name+user are all present
+            if host and name and user:
+                previous_url = cfg.get("database", {}).get("url", settings.database_url)
+                submitted_password = form.get("db_pass", "")
+                if form.get("db_clear_password") == "1":
+                    effective_password = None
+                elif submitted_password:
+                    effective_password = submitted_password
+                else:
+                    effective_password = _url_password(previous_url)
+
+                new_url = _build_db_url(host=host, port=port, name=name, user=user,
+                                         password=effective_password)
+                if new_url != previous_url:
+                    # Backup previous URL for undo support
+                    cfg.setdefault("database_backup", {})["previous_url"] = previous_url
+                    cfg.setdefault("database", {})["url"] = new_url
+                    db_url_changed = True
+
+                # Configuring a Team external DB opts this install into external-DB
+                # infrastructure durably. This opt-in, not the runtime database_url,
+                # is the self-hosted Team-infra visibility source, so cross-build
+                # recovery survives an entitlement lapse (get_local_infra_state reads
+                # settings.external_db, populated from this key by load_cloud_config).
+                optin_newly_set = not bool(cfg.get("cloud", {}).get("external_db"))
+                cfg.setdefault("cloud", {})["external_db"] = True
+
+            # Storage settings
+            if storage_backend:
+                prev_storage = cfg.get("storage", {})
+                new_s3_endpoint = form.get("s3_endpoint", "")
+                new_s3_bucket = form.get("s3_bucket", "")
+                new_s3_access_key = form.get("s3_access_key", "")
+                new_s3_secret = form.get("s3_secret_key")
+                # An effective storage change is any differing field, or a newly
+                # supplied secret (the secret is never sourced back into the form, so
+                # a submitted value is always a change).
+                storage_changed = (
+                    prev_storage.get("backend", "") != storage_backend
+                    or prev_storage.get("s3_endpoint", "") != new_s3_endpoint
+                    or prev_storage.get("s3_bucket", "") != new_s3_bucket
+                    or prev_storage.get("s3_access_key", "") != new_s3_access_key
+                    or bool(new_s3_secret)
+                )
+                cfg.setdefault("storage_backup", {}).update({
+                    "backend": prev_storage.get("backend", ""),
+                    "s3_endpoint": prev_storage.get("s3_endpoint", ""),
+                    "s3_bucket": prev_storage.get("s3_bucket", ""),
+                    "s3_access_key": prev_storage.get("s3_access_key", ""),
+                    "s3_secret_key": prev_storage.get("s3_secret_key", ""),
+                })
+                cfg.setdefault("storage", {})["backend"] = storage_backend
+                cfg["storage"]["s3_endpoint"] = new_s3_endpoint
+                cfg["storage"]["s3_bucket"] = new_s3_bucket
+                cfg["storage"]["s3_access_key"] = new_s3_access_key
+                if new_s3_secret:
+                    cfg["storage"]["s3_secret_key"] = new_s3_secret
+            return db_url_changed, storage_changed, optin_newly_set
+
+        import asyncio
+        flags = await asyncio.to_thread(_update_config, _apply)
+        if flags is None:
+            return Span(t("settings.no_config_file_found"), cls="infra-test-result--err")
 
         # One reload for any effective infrastructure change: a new DB URL, a
         # storage change, or a newly set external-DB opt-in. Exactly one SIGHUP
         # regardless of how many of these changed together.
-        if db_url_changed or storage_changed or optin_newly_set:
+        if any(flags):
             import subprocess
             subprocess.Popen(["pkill", "-HUP", "-f", "uvicorn"])
 
@@ -1448,22 +1459,29 @@ def _restore_db_packaged() -> FT:
     return _packaged_apply_fragment(t("settings_cloud.restored_restart_to_apply"))
 
 
-def _restore_db_selfhosted() -> FT:
+async def _restore_db_selfhosted() -> FT:
     """Swap config.toml's database URL with its backup and reload via SIGHUP."""
     try:
-        from celerp.config import read_config, write_config
-        cfg = read_config()
-        if not cfg:
-            return Span(t("settings.no_config_file_found"), cls="infra-test-result--err")
+        from celerp.config import _update_config
 
-        prev_url = cfg.get("database_backup", {}).get("previous_url", "")
-        if not prev_url:
-            return Span(t("settings.no_previous_database_url_to_restore"), cls="infra-test-result--err")
+        def _swap(cfg: dict) -> str | None:
+            """Swap the live URL with its backup under the config lock. Returns
+            the error message key when nothing can be restored (and nothing is
+            written), else None."""
+            if not cfg:
+                return "settings.no_config_file_found"
+            prev_url = cfg.get("database_backup", {}).get("previous_url", "")
+            if not prev_url:
+                return "settings.no_previous_database_url_to_restore"
+            current_url = cfg.get("database", {}).get("url", "")
+            cfg.setdefault("database_backup", {})["previous_url"] = current_url
+            cfg.setdefault("database", {})["url"] = prev_url
+            return None
 
-        current_url = cfg.get("database", {}).get("url", "")
-        cfg.setdefault("database_backup", {})["previous_url"] = current_url
-        cfg.setdefault("database", {})["url"] = prev_url
-        write_config(cfg)
+        import asyncio
+        failure = await asyncio.to_thread(_update_config, _swap)
+        if failure:
+            return Span(t(failure), cls="infra-test-result--err")
 
         import subprocess
         subprocess.Popen(["pkill", "-HUP", "-f", "uvicorn"])

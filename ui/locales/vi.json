@@ -2580,6 +2580,7 @@
   "settings.incorrect_code_attempts": "Mã không chính xác. Còn {n} lần thử.",
   "settings.code_expired": "Mã đã hết hạn hoặc đã nhập sai quá nhiều lần. Yêu cầu mã mới.",
   "settings.subscription_linked_info": "Đăng ký đã được liên kết. Nhấp vào “Kết nối” để hoàn tất kích hoạt.",
+  "settings.link_timed_out": "Quá trình này mất nhiều thời gian hơn dự kiến và đã hết hạn trước khi relay xác nhận liên kết. Đăng ký của bạn có thể đã được chuyển sang máy tính này. Khởi động lại Celerp hoặc thử lại. Nếu vẫn thất bại, kết nối từ máy tính này đến relay đang chậm.",
   "settings.otp_sent_hint": "Chúng tôi đã gửi mã gồm 6 chữ số đến {email}. Nhập mã vào ô bên dưới:",
   "settings.claim_email_hint": "Nếu bạn đã đăng ký trên trang web và thanh toán không được liên kết tự động, hãy nhập địa chỉ email bạn đã sử dụng khi thanh toán:",
   "settings.establishing_connection": "Đang thiết lập kết nối...",

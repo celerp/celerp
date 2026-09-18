@@ -2581,6 +2581,7 @@
   "settings.incorrect_code_attempts": "Codice errato. {n} tentativi rimanenti.",
   "settings.code_expired": "Codice scaduto o troppi tentativi errati. Richiedi un nuovo codice.",
   "settings.subscription_linked_info": "Abbonamento collegato. Fai clic su «Connetti» per completare l’attivazione.",
+  "settings.link_timed_out": "L'operazione richiede più tempo del previsto ed è scaduta prima che il relay confermasse il collegamento. L'abbonamento potrebbe essere già stato trasferito su questo computer. Riavvia Celerp o riprova. Se continua a fallire, la connessione di questo computer al relay è lenta.",
   "settings.otp_sent_hint": "Abbiamo inviato un codice a 6 cifre a {email}. Inseriscilo qui sotto:",
   "settings.claim_email_hint": "Se ti sei abbonato sul sito web e il pagamento non viene collegato automaticamente, inserisci l’indirizzo e-mail che hai utilizzato al momento del pagamento:",
   "settings.establishing_connection": "Stabile la connessione...",

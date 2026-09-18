@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 
@@ -1713,7 +1714,7 @@ async def enable_module(
         raise HTTPException(status_code=404, detail="Company not found")
     company.settings = enable(company.settings or {}, module_name)
     await session.commit()
-    set_enabled_modules([module_name])
+    await asyncio.to_thread(set_enabled_modules, [module_name])
     enabled_list = sorted(get_enabled(company.settings))
     return {"ok": True, "name": module_name, "enabled": True, "restart_required": True, "enabled_modules": enabled_list}
 
@@ -1726,19 +1727,16 @@ async def disable_module(
 ) -> dict:
     """Disable a module. Requires admin. A restart is required for changes to take effect."""
     from celerp.modules.registry import disable, get_enabled
-    from celerp.config import read_config, write_config
+    from celerp.config import remove_enabled_module
 
     company = await session.get(Company, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     company.settings = disable(company.settings or {}, module_name)
     await session.commit()
-    # Remove from config file so the next restart honours the disable
-    # (write_config creates the file when missing, keeping DB and file in sync)
-    cfg = read_config()
-    enabled = cfg.get("modules", {}).get("enabled", [])
-    cfg.setdefault("modules", {})["enabled"] = [m for m in enabled if m != module_name]
-    write_config(cfg)
+    # Remove from config file so the next restart honours the disable, keeping
+    # DB and file in sync.
+    await asyncio.to_thread(remove_enabled_module, module_name)
     enabled_list = sorted(get_enabled(company.settings))
     return {"ok": True, "name": module_name, "enabled": False, "restart_required": True, "enabled_modules": enabled_list}
 
@@ -1760,7 +1758,7 @@ async def delete_module(
     from celerp.modules.importer import ModuleImportError, remove_module_dir
     from celerp.modules.loader import is_first_party, is_running, resolve_module_path
     from celerp.modules.registry import disable, get_enabled
-    from celerp.config import read_config, write_config
+    from celerp.config import remove_enabled_module
 
     company = await session.get(Company, company_id)
     if not company:
@@ -1788,10 +1786,7 @@ async def delete_module(
     # clean (mirrors disable's dual-store write: settings + config file).
     company.settings = disable(company.settings or {}, module_name)
     await session.commit()
-    cfg = read_config()
-    enabled = cfg.get("modules", {}).get("enabled", [])
-    cfg.setdefault("modules", {})["enabled"] = [m for m in enabled if m != module_name]
-    write_config(cfg)
+    await asyncio.to_thread(remove_enabled_module, module_name)
     return {"ok": True, "name": module_name}
 
 

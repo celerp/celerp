@@ -462,8 +462,8 @@ class GatewayClient:
             # leave any cached partner_managed identity intact, so the read is
             # presence-guarded rather than defaulted.
             if "commercial_context" in payload:
-                from celerp.gateway.state import apply_commercial_context
-                apply_commercial_context(payload["commercial_context"])
+                from celerp.gateway.state import apply_commercial_context_async
+                await apply_commercial_context_async(payload["commercial_context"])
             # tier/status ride hello_ack too (not just subscription_updated): a
             # plain free connection never triggers a Stripe billing event, so
             # that push alone would never tell a free instance its own tier.
@@ -539,8 +539,8 @@ class GatewayClient:
             # The payload is the context itself (flat, like subscription_updated);
             # the same shared apply/persist seam as the hello_ack branch, so
             # validation and persistence live in one place (state.apply_commercial_context).
-            from celerp.gateway.state import apply_commercial_context
-            apply_commercial_context(payload)
+            from celerp.gateway.state import apply_commercial_context_async
+            await apply_commercial_context_async(payload)
 
         else:
             log.debug("Unhandled gateway message type: %s", msg_type)
