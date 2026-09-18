@@ -9,14 +9,16 @@ Two things must hold for the one-time first-admin registration:
   so the second caller blocks until the first commits and then sees the existing
   owner and is refused. Exactly one company, one owner user, and one owner
   membership survive.
-* Atomicity: the whole bootstrap (rows plus module/demo seeding) commits through
-  the central token issuer as a single transaction. Any failure before that
-  commit rolls back every bootstrap row and returns a generic error; a failure in
-  the best-effort setup-code cleanup after the commit still returns the token pair
-  and cannot permit a second registration.
+* Atomicity: core bootstrap rows and direct demo/self-contact seeding commit
+  through the central token issuer as a single transaction. Any failure before
+  that commit rolls back every core/direct-seed row and returns a generic error.
+  Module lifecycle hooks retain their established best-effort policy. A failure
+  in setup-code cleanup after commit still returns the token pair and cannot
+  permit a second registration.
 
-The concurrency proof uses the real production advisory lock and real independent
-Postgres sessions - never two requests plus sleeps hoping they collide.
+The concurrency proofs use the real production advisory lock, production request
+timeouts, and independent Postgres sessions - never two requests plus sleeps
+hoping they collide.
 """
 from __future__ import annotations
 
@@ -25,7 +27,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -42,7 +44,19 @@ async def real_engine(_db_engine):
     connection and cannot model concurrent backends). Depends on `_db_engine` so
     the schema is already created. Truncates the bootstrap tables before and after
     so the race starts from a genuine first-install state."""
-    engine = create_async_engine(DATABASE_URL, poolclass=NullPool)
+    # Match the production request connection bounds. The bootstrap lock is not
+    # timeout-exempt: ordinary contention should serialize, while an abnormal
+    # holder must fail closed instead of pinning a request connection forever.
+    engine = create_async_engine(
+        DATABASE_URL,
+        poolclass=NullPool,
+        connect_args={
+            "server_settings": {
+                "lock_timeout": "3000",
+                "statement_timeout": "30000",
+            }
+        },
+    )
 
     async def _truncate():
         async with engine.begin() as conn:
@@ -59,6 +73,37 @@ async def real_engine(_db_engine):
 async def _count(engine, table: str) -> int:
     async with engine.connect() as conn:
         return (await conn.execute(text(f"SELECT count(*) FROM {table}"))).scalar_one()
+
+
+async def _wait_for_advisory_wait(engine, task) -> None:
+    """Prove *task* reached the bootstrap lock before the 3s production timeout."""
+    for _ in range(40):
+        await asyncio.sleep(0.05)
+        async with engine.connect() as probe:
+            waiting = (await probe.execute(text(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+            ))).scalar_one()
+        if waiting >= 1:
+            return
+        if task.done():
+            break
+    raise AssertionError("registration never blocked on the bootstrap advisory lock")
+
+
+async def _assert_no_bootstrap_state(session) -> None:
+    """No core, direct-seed, or auth-session row may survive a failed bootstrap."""
+    for table in (
+        "session_registry",
+        "user_auth_state",
+        "ledger",
+        "projections",
+        "locations",
+        "user_companies",
+        "users",
+        "companies",
+    ):
+        count = (await session.execute(text(f"SELECT count(*) FROM {table}"))).scalar_one()
+        assert count == 0, f"{table} retained {count} row(s) after bootstrap rollback"
 
 
 @pytest.mark.asyncio
@@ -87,19 +132,9 @@ async def test_bootstrap_race_serializes_to_single_owner(real_engine):
         )
         task_b = asyncio.create_task(register(payload_b, session=session_b))
 
-        # Prove B is genuinely blocked on the advisory lock (not merely slow): an
-        # ungranted advisory lock is present and no user row exists yet.
-        blocked = False
-        for _ in range(50):
-            await asyncio.sleep(0.1)
-            async with real_engine.connect() as probe:
-                waiting = (await probe.execute(text(
-                    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
-                ))).scalar_one()
-            if waiting >= 1:
-                blocked = True
-                break
-        assert blocked, "session B never blocked on the bootstrap advisory lock"
+        # Prove B is genuinely blocked on the advisory lock (not merely slow)
+        # and reaches it well inside the production 3s lock timeout.
+        await _wait_for_advisory_wait(real_engine, task_b)
         assert not task_b.done(), "session B proceeded past the lock while A held it"
         assert await _count(real_engine, "users") == 0, "a user existed before A committed"
 
@@ -136,6 +171,113 @@ async def test_bootstrap_race_serializes_to_single_owner(real_engine):
     assert owners == 1
 
 
+@pytest.mark.asyncio
+async def test_bootstrap_lock_timeout_fails_closed_without_partial_state(real_engine):
+    """A holder that outlives production lock_timeout makes the waiter fail closed.
+
+    The failed waiter must not create any bootstrap state while it is unable to
+    acquire the serialization lock.
+    """
+    from fastapi import HTTPException
+
+    from celerp.routers.auth import register, RegisterRequest, _BOOTSTRAP_LOCK_KEY
+
+    maker = lambda: AsyncSession(bind=real_engine, expire_on_commit=False)
+    session_a = maker()
+    session_b = maker()
+    try:
+        await session_a.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _BOOTSTRAP_LOCK_KEY})
+        payload = RegisterRequest(
+            company_name="TimeoutCo", email="timeout@example.com", name="Owner", password="validpass1"
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await register(payload, session=session_b)
+        assert exc.value.status_code == 500
+        assert exc.value.detail == "Registration failed"
+        for table in ("user_companies", "users", "companies"):
+            assert await _count(real_engine, table) == 0
+    finally:
+        await session_a.rollback()
+        await session_b.rollback()
+        await session_a.close()
+        await session_b.close()
+
+
+@pytest.mark.asyncio
+async def test_wrong_setup_code_is_rejected_before_bootstrap_lock(real_engine):
+    """An invalid setup code never joins the lock queue, even while it is held."""
+    import hashlib
+    from unittest.mock import patch
+
+    from fastapi import HTTPException
+
+    from celerp.routers.auth import register, RegisterRequest, _BOOTSTRAP_LOCK_KEY
+
+    maker = lambda: AsyncSession(bind=real_engine, expire_on_commit=False)
+    session_a = maker()
+    session_b = maker()
+    try:
+        await session_a.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _BOOTSTRAP_LOCK_KEY})
+        digest = hashlib.sha256(b"correct-code").hexdigest()
+        payload = RegisterRequest(
+            company_name="WrongCodeCo", email="wrong@example.com", name="Owner",
+            password="validpass1", setup_code="wrong-code",
+        )
+        with patch("celerp.routers.auth._setup_code_hash", return_value=digest):
+            task = asyncio.create_task(register(payload, session=session_b))
+            with pytest.raises(HTTPException) as exc:
+                await asyncio.wait_for(task, timeout=1.0)
+        assert exc.value.status_code == 403
+        assert exc.value.detail == "Invalid or missing setup code."
+
+        async with real_engine.connect() as probe:
+            waiting = (await probe.execute(text(
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+            ))).scalar_one()
+        assert waiting == 0, "invalid setup code attempted to acquire the bootstrap lock"
+    finally:
+        await session_a.rollback()
+        await session_b.rollback()
+        await session_a.close()
+        await session_b.close()
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_waiter_succeeds_after_holder_rolls_back(real_engine):
+    """If the current lock holder aborts without bootstrapping, the waiter proceeds."""
+    from celerp.routers.auth import register, RegisterRequest, _BOOTSTRAP_LOCK_KEY
+
+    maker = lambda: AsyncSession(bind=real_engine, expire_on_commit=False)
+    session_a = maker()
+    session_b = maker()
+    task_b = None
+    try:
+        await session_a.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _BOOTSTRAP_LOCK_KEY})
+        payload = RegisterRequest(
+            company_name="RecoveredCo", email="recovered@example.com", name="Owner",
+            password="validpass1",
+        )
+        task_b = asyncio.create_task(register(payload, session=session_b))
+        await _wait_for_advisory_wait(real_engine, task_b)
+
+        await session_a.rollback()
+        tokens = await asyncio.wait_for(task_b, timeout=10)
+        assert tokens["access_token"]
+        assert tokens["refresh_token"]
+    finally:
+        if task_b is not None and not task_b.done():
+            task_b.cancel()
+        await session_a.rollback()
+        await session_b.rollback()
+        await session_a.close()
+        await session_b.close()
+
+    assert await _count(real_engine, "companies") == 1
+    assert await _count(real_engine, "users") == 1
+    assert await _count(real_engine, "user_companies") == 1
+
+
 # ── Atomicity / error-boundary (shared session, mocked failures) ──────────────
 
 
@@ -144,7 +286,6 @@ async def test_seeding_failure_rolls_back_and_returns_generic_error(client, sess
     """A failure during bootstrap seeding rolls back every bootstrap row and returns
     a generic server error, never the raw exception text."""
     from unittest.mock import AsyncMock, patch
-    from celerp.models.company import User
 
     async def _boom(*a, **k):
         raise RuntimeError("SECRET-INTERNAL-DETAIL")
@@ -156,9 +297,7 @@ async def test_seeding_failure_rolls_back_and_returns_generic_error(client, sess
         )
     assert r.status_code == 500
     assert "SECRET-INTERNAL-DETAIL" not in r.text
-    # No bootstrap rows survived the rollback.
-    users = (await session.execute(select(User))).scalars().all()
-    assert users == []
+    await _assert_no_bootstrap_state(session)
 
 
 @pytest.mark.asyncio
@@ -166,7 +305,6 @@ async def test_token_issuance_failure_rolls_back_bootstrap_rows(client, session)
     """A failure inside token issuance (before its commit) rolls back the bootstrap
     rows: the register is all-or-nothing through the single commit point."""
     from unittest.mock import AsyncMock, patch
-    from celerp.models.company import User
 
     with patch("celerp.routers.auth.issue_token_pair", new=AsyncMock(side_effect=RuntimeError("issuer down"))):
         r = await client.post(
@@ -175,8 +313,7 @@ async def test_token_issuance_failure_rolls_back_bootstrap_rows(client, session)
         )
     assert r.status_code == 500
     assert "issuer down" not in r.text
-    users = (await session.execute(select(User))).scalars().all()
-    assert users == []
+    await _assert_no_bootstrap_state(session)
 
 
 @pytest.mark.asyncio

@@ -117,23 +117,16 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
 
     A transaction-scoped advisory lock serializes concurrent first-admin
     registrations so exactly one wins: the second caller blocks until the first
-    commits, then sees the existing owner and is refused. The whole bootstrap
-    (rows plus module/demo seeding) commits once through the central token issuer,
-    so it is all-or-nothing; the one-time setup code is consumed only afterwards.
+    transaction finishes, then re-checks whether an owner exists. Core bootstrap
+    rows and direct seed data commit once through the central token issuer, so
+    those changes are all-or-nothing. Module lifecycle hooks retain their existing
+    best-effort policy; the one-time setup code is consumed only after commit.
     """
     required = ""
     try:
-        # Serialize first-admin bootstrap across workers BEFORE reading user state,
-        # so two callers cannot both observe an empty install and proceed. The lock
-        # is released automatically when this transaction commits or rolls back.
-        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _BOOTSTRAP_LOCK_KEY})
-
-        existing = (await session.execute(select(User))).scalars().first()
-        if existing is not None:
-            raise HTTPException(status_code=403, detail="System already bootstrapped. Contact your admin.")
-
-        # Headless installs mint a one-time setup code the operator reads off the box,
-        # so a network-exposed first-admin page can't be claimed by a stranger.
+        # Authenticate the headless setup capability before joining the bootstrap
+        # lock queue. An unauthenticated caller must not be able to consume the one
+        # global serialization point simply by submitting an invalid setup code.
         required = _setup_code_hash()
         if required:
             import hmac as _hmac
@@ -142,6 +135,16 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
                 hashlib.sha256(provided.encode()).hexdigest(), required
             ):
                 raise HTTPException(status_code=403, detail="Invalid or missing setup code.")
+
+        # Serialize first-admin bootstrap across workers BEFORE reading user state,
+        # so two authenticated callers cannot both observe an empty install and
+        # proceed. The production request lock_timeout bounds abnormal contention;
+        # the lock is released automatically on commit or rollback.
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _BOOTSTRAP_LOCK_KEY})
+
+        existing = (await session.execute(select(User))).scalars().first()
+        if existing is not None:
+            raise HTTPException(status_code=403, detail="System already bootstrapped. Contact your admin.")
 
         try:
             validate_password(payload.password)
@@ -168,7 +171,9 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         link = UserCompany(id=uuid.uuid4(), user_id=user.id, company_id=company.id, role="owner")
         session.add(link)
         await session.flush()  # ensure IDs are set before module hooks
-        # Fire module lifecycle hooks (e.g. celerp-accounting seeds chart of accounts)
+        # Module lifecycle hooks intentionally remain best-effort: a module error is
+        # logged by fire_lifecycle without changing Celerp's established registration
+        # behavior. Core/direct seed failures below still roll back the transaction.
         from celerp.modules.slots import fire_lifecycle
         await fire_lifecycle("on_company_created", session=session, company_id=company.id)
         # Seed a default "Head Office" location before demo items so items land in it
