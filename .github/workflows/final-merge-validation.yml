@@ -1,4 +1,4 @@
-name: Export staged source
+name: Build final app candidate
 
 on:
   push:
@@ -9,20 +9,23 @@ permissions:
   contents: read
 
 jobs:
-  export:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Export exact committed tree
+      - name: Build exact #330 candidate
         shell: bash
         run: |
           set -euo pipefail
-          git archive --format=tar.gz --output=/tmp/app-staged-tree.tar.gz 4e310020efaf5e7d2a2b656940a3d5eb15363f80
-      - uses: actions/upload-artifact@v4
-        with:
-          name: app-staged-tree
-          path: /tmp/app-staged-tree.tar.gz
-          retention-days: 1
+          cp .review/final-app330.patch.xz.b64 /tmp/patch.b64
+          git checkout --detach c3695c8d6197edaa5a75797a592b3eed34512829
+          base64 -d /tmp/patch.b64 | xz -dc | git apply
+          git diff --check
+          git config user.name "Noah Severs"
+          git config user.email "118095044+ngsevers@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix paid Connect entitlement recovery"
+          echo "CANDIDATE_SHA=$(git rev-parse HEAD)"
