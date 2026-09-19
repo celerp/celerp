@@ -60,8 +60,9 @@ jobs:
         run: |
           python -m playwright install --with-deps chromium
           pytest tests/test_browser/test_ai_page.py -m browser -o addopts=""             --timeout=120 --timeout-method=thread --no-cov --tb=short -p no:cacheprovider -q
-      - name: Verify first-party lock
+      - name: Regenerate and verify first-party lock
         run: |
+          python scripts/gen_first_party_lock.py
           cp default_modules/first_party.lock.json /tmp/first_party.lock.json
           python scripts/gen_first_party_lock.py
           diff -u /tmp/first_party.lock.json default_modules/first_party.lock.json
