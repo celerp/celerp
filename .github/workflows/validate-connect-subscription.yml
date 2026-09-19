@@ -1,0 +1,50 @@
+name: Validate durable cloud auth fixes
+on:
+  push:
+    branches: [validation/connect-subscription-contract]
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 1b41f7cb8a33266ba83ba3f1bd93dd75783097ee
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split
+      - name: Regenerate first-party lock
+        run: |
+          python scripts/gen_first_party_lock.py
+          cat default_modules/first_party.lock.json
+      - name: Focused regressions
+        env:
+          ALLOW_INSECURE_JWT: "true"
+          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+        run: >
+          pytest -q --tb=short --no-cov --timeout=30
+          default_modules/celerp-ai/tests/test_quota.py
+          default_modules/celerp-ai/tests/test_coverage_gaps.py::test_get_quota_status_no_instance_id
+          tests/test_relay_account_proxy.py::test_cloud_claim_proves_incumbent_when_gateway_token_present
+          tests/test_routers/test_backup.py::test_list_htmx_with_items
+          tests/test_routers/test_backup.py::test_list_htmx_empty_items
+          tests/test_routers/test_backup.py::test_list_json
+          tests/test_routers/test_backup.py::test_list_relay_error
