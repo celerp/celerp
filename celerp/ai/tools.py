@@ -10,6 +10,7 @@ import json
 from urllib.parse import quote
 from typing import Any
 
+import fastapi.routing
 import httpx
 from fastapi.routing import APIRoute
 
@@ -55,9 +56,30 @@ def _inline_local_refs(value: Any, schemas: dict[str, Any], seen: tuple[str, ...
     return {key: _inline_local_refs(child, schemas, seen) for key, child in value.items()}
 
 
-def _agent_route_owner(route: APIRoute, company_settings: dict[str, Any]) -> str | None:
+def _api_routes(app: Any) -> list[tuple[str, set[str], Any]]:
+    """``(path_format, methods, endpoint)`` for every APIRoute the app serves.
+
+    FastAPI 0.141 stopped flattening included routers into ``app.routes``; the
+    prefixed path then lives on a route context. Earlier releases expose the
+    flattened APIRoute objects directly.
+    """
+    iter_route_contexts = getattr(fastapi.routing, "iter_route_contexts", None)
+    if iter_route_contexts is not None:
+        return [
+            (str(context.path_format or context.path or ""), set(context.methods or ()), context.endpoint)
+            for context in iter_route_contexts(app.routes)
+            if isinstance(context.original_route, APIRoute)
+        ]
+    return [
+        (str(route.path_format or route.path), set(route.methods or ()), route.endpoint)
+        for route in app.routes
+        if isinstance(route, APIRoute)
+    ]
+
+
+def _agent_route_owner(endpoint: Any, company_settings: dict[str, Any]) -> str | None:
     """Return core/module owner when direct agent invocation is allowed, else None."""
-    endpoint_module = str(getattr(route.endpoint, "__module__", "") or "")
+    endpoint_module = str(getattr(endpoint, "__module__", "") or "")
     if endpoint_module == "celerp" or endpoint_module.startswith("celerp."):
         return "celerp"
 
@@ -103,7 +125,7 @@ def compile_agent_capabilities(app: Any, company_settings: dict[str, Any] | None
     settings = company_settings or {}
     openapi = app.openapi()
     schemas = ((openapi.get("components") or {}).get("schemas") or {})
-    routes = [route for route in app.routes if isinstance(route, APIRoute)]
+    routes = _api_routes(app)
     compiled: dict[str, dict[str, Any]] = {}
 
     for path, path_item in (openapi.get("paths") or {}).items():
@@ -119,14 +141,12 @@ def compile_agent_capabilities(app: Any, company_settings: dict[str, Any] | None
                 continue
 
             matching = [
-                route for route in routes
-                if (getattr(route, "path_format", None) or route.path) == path
-                and method in (route.methods or set())
+                endpoint for route_path, methods, endpoint in routes
+                if route_path == path and method in methods
             ]
             if len(matching) != 1:
                 continue
-            route = matching[0]
-            owner = _agent_route_owner(route, settings)
+            owner = _agent_route_owner(matching[0], settings)
             if owner is None:
                 continue
 

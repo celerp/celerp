@@ -100,11 +100,6 @@
       "file": "ui/components/shell.py",
       "text": "Celerp",
       "reason": "brand name in the logo image alt text"
-    },
-    {
-      "file": "default_modules/celerp-ai/celerp_ai/ui_routes.py",
-      "text": "{...}x",
-      "reason": "quantity multiplier format (e.g. 3x), a numeric affix not translatable prose"
     }
   ]
 }

@@ -42,11 +42,13 @@ from celerp.models.company import Company, User
 
 
 @pytest_asyncio.fixture
-async def committed_maker():
+async def committed_maker(_db_engine):
     """A sessionmaker whose commits persist (separate from the rollback fixture).
 
-    NullPool so each session gets its own connection and the event loop stays
-    consistent across the per-test asyncio loop.
+    Depends on the session engine so the schema exists even when this module is
+    the first to run on its worker. NullPool so each session gets its own
+    connection and the event loop stays consistent across the per-test asyncio
+    loop.
     """
     engine = create_async_engine(
         DATABASE_URL, poolclass=NullPool,

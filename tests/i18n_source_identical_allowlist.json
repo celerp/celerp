@@ -135,6 +135,7 @@
     "account.plan",
     "acct.source_manual",
     "activity.total_change",
+    "ai.error_prefix",
     "btn.u00d7",
     "chip.total",
     "cloud.plan_ai_name",

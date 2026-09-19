@@ -30,6 +30,7 @@ from celerp.ai.llm import _build_user_content, call_llm, complete
 from celerp.ai.models import select_model
 from celerp.ai.tools import (
     AGENT_RESULT_MAX_BYTES,
+    _agent_error,
     agent_tool_specs,
     compile_agent_capabilities,
     execute_agent_capability,
@@ -241,10 +242,6 @@ def _parse_call(call: dict, capabilities: dict) -> tuple[str, str, dict | None, 
     if error is None and capability is None:
         error = _agent_error("unknown_capability", f"No capability named {name!r} is available.")
     return call_id, name, capability, arguments, error
-
-
-def _agent_error(code: str, message: str) -> dict:
-    return {"ok": False, "status": 0, "error": {"code": code, "message": message}}
 
 
 async def run_agent(
