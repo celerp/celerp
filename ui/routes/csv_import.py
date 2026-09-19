@@ -23,7 +23,6 @@ import hashlib
 import io
 import json
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -31,8 +30,23 @@ from fasthtml.common import *
 from starlette.responses import StreamingResponse
 from ui.i18n import t, get_lang
 
-
-ValidateFn = Callable[[str, str, dict], bool]
+from celerp.importers import tabular
+from celerp.importers.tabular import (  # re-exported for the existing CSV importers
+    CsvImportSpec,
+    MAPPING_ATTR_PREFIX,
+    MAPPING_ATTRIBUTE,
+    MAPPING_SKIP,
+    ValidateFn,
+    _IDENTIFIER_COLS,
+    _row_errors,
+    _rows_to_csv,
+    apply_column_mapping,
+    apply_fixes_to_rows,
+    error_report_csv,
+    suggest_mapping,
+    validate_cell,
+    validate_column_mapping,
+)
 
 # Server-side CSV stash: store uploaded CSV data in temp files, keyed by hash.
 # Avoids round-tripping large CSV data through hidden form fields (Starlette
@@ -79,181 +93,9 @@ def _resolve_csv_text(form: dict) -> str:
             return text
     return str(form.get("csv_data", "") or "")
 
-# Columns always shown in the error table (identifiers), even if they have no errors.
-_IDENTIFIER_COLS = {"sku", "name", "id", "email", "code"}
-
-
-@dataclass(frozen=True)
-class CsvImportSpec:
-    cols: list[str]
-    required: set[str]
-    type_map: dict[str, Callable[[str], Any]]
-
-
-def validate_cell(spec: CsvImportSpec, col: str, value: str, row: dict | None = None) -> bool:
-    if col in spec.required and not value.strip():
-        return False
-    cast = spec.type_map.get(col)
-    if cast and value.strip():
-        try:
-            cast(value)
-        except (ValueError, TypeError):
-            return False
-    return True
-
-
 # ---------------------------------------------------------------------------
 # Column mapping
 # ---------------------------------------------------------------------------
-
-# Common aliases: CSV header (lowercase) -> Celerp target field.
-# Used to pre-fill the mapping dropdown. Not auto-committed - user always sees
-# and confirms the suggestion.
-_COMMON_ALIASES: dict[str, str] = {
-    "item_type": "category",
-    "type": "category",
-    "product_type": "category",
-    "price": "retail_price",
-    "selling_price": "retail_price",
-    "sale_price": "retail_price",
-    "cost": "cost_price",
-    "unit_cost": "cost_price",
-    "purchase_price": "cost_price",
-    "total_cost": "cost_price_total",
-    "cost_total": "cost_price_total",
-    "total cost": "cost_price_total",
-    "cost total": "cost_price_total",
-    "wholesale": "wholesale_price",
-    "weight_ct": "weight",
-    "weight_g": "weight",
-    "location": "location_name",
-    "warehouse": "location_name",
-    "upc": "barcode",
-    "ean": "barcode",
-    "isbn": "barcode",
-    "code": "sku",
-    "item_code": "sku",
-    "product_code": "sku",
-    "product_name": "name",
-    "item_name": "name",
-    "title": "name",
-    "desc": "description",
-    "qty": "quantity",
-    "stock": "quantity",
-    "on_hand": "quantity",
-    # spaced variants that don't exact-match underscore targets
-    "sell by": "sell_by",
-    "purchase unit": "purchase_unit",
-    "weight unit": "weight_unit",
-    "location name": "location_name",
-    "hs code": "hs_code",
-    "purchase sku": "purchase_sku",
-    "purchase name": "purchase_name",
-    "purchase conversion factor": "purchase_conversion_factor",
-    "short description": "short_description",
-}
-
-# Aliases for category attribute keys (csv_col_lower → attr_key_lower).
-# Used in suggest_mapping Pass 2b to bridge common spreadsheet column names
-# to their canonical category attribute counterparts.
-_COMMON_ATTR_ALIASES: dict[str, str] = {
-    "stone_color": "color",
-    "stone_colour": "color",
-    "stone_shape": "shape",
-    "stone_treatment": "treatment",
-    "stone_origin": "origin",
-    "color_grade": "grade",
-    "colour_grade": "grade",
-    "clarity_grade": "clarity",
-    "certificate_number": "certificate_no",
-    "cert_number": "certificate_no",
-    "cert_no": "certificate_no",
-}
-
-# Columns that should always default to Skip (system-managed; never imported)
-_FORCE_SKIP_COLS: frozenset[str] = frozenset({"created_at", "updated_at", "status"})
-
-# Sentinel values for the mapping dropdown
-MAPPING_ATTRIBUTE = "__attr__"
-MAPPING_SKIP = "__skip__"
-MAPPING_ATTR_PREFIX = "__catattr:"  # Category attribute: "__catattr:stone_type"
-
-
-def suggest_mapping(
-    csv_cols: list[str],
-    target_cols: list[str],
-    category_attrs: list[str] | None = None,
-) -> dict[str, str]:
-    """Return {csv_col: suggested_target} for each CSV column.
-
-    Priority:
-    0. Force-skip columns (created_at, updated_at, status) → always MAPPING_SKIP
-    1. Exact match (case-insensitive) to a core target column
-    2. Known alias match to a core target column
-    2b. Known alias match to a category attribute key
-    3. Exact match to a category attribute key (prefixed with MAPPING_ATTR_PREFIX)
-    4. Default to MAPPING_ATTRIBUTE (import as custom field)
-
-    Each target field is claimed at most once (first match wins).
-    """
-    mapping: dict[str, str] = {}
-    claimed: set[str] = set()
-    target_lower = {item.lower(): item for item in target_cols}
-    attrs = category_attrs or []
-    attr_lower = {a.lower().replace(" ", "_"): a for a in attrs}
-
-    # Pass 0: force-skip system columns
-    for csv_col in csv_cols:
-        if csv_col.lower().strip() in _FORCE_SKIP_COLS:
-            mapping[csv_col] = MAPPING_SKIP
-
-    # Pass 1: exact matches to core fields (also try space→underscore normalization)
-    for csv_col in csv_cols:
-        if csv_col in mapping:
-            continue
-        lc = csv_col.lower().strip()
-        lc_norm = lc.replace(" ", "_")
-        match = target_lower.get(lc) or target_lower.get(lc_norm)
-        if match and match not in claimed:
-            mapping[csv_col] = match
-            claimed.add(match)
-
-    # Pass 2: alias matches to core fields
-    for csv_col in csv_cols:
-        if csv_col in mapping:
-            continue
-        lc = csv_col.lower().strip()
-        alias_target = _COMMON_ALIASES.get(lc)
-        if alias_target and alias_target in target_lower.values() and alias_target not in claimed:
-            mapping[csv_col] = alias_target
-            claimed.add(alias_target)
-
-    # Pass 2b: alias matches to category attribute keys
-    claimed_attrs: set[str] = set()
-    for csv_col in csv_cols:
-        if csv_col in mapping:
-            continue
-        lc = csv_col.lower().strip().replace(" ", "_")
-        alias_attr = _COMMON_ATTR_ALIASES.get(lc)
-        if alias_attr and alias_attr in attr_lower.values() and alias_attr not in claimed_attrs:
-            mapping[csv_col] = f"{MAPPING_ATTR_PREFIX}{alias_attr}"
-            claimed_attrs.add(alias_attr)
-
-    # Pass 3: exact match to category attribute keys
-    for csv_col in csv_cols:
-        if csv_col in mapping:
-            continue
-        lc = csv_col.lower().strip().replace(" ", "_")
-        if lc in attr_lower and attr_lower[lc] not in claimed_attrs:
-            mapping[csv_col] = f"{MAPPING_ATTR_PREFIX}{attr_lower[lc]}"
-            claimed_attrs.add(attr_lower[lc])
-
-    # Pass 4: everything else defaults to custom
-    for csv_col in csv_cols:
-        if csv_col not in mapping:
-            mapping[csv_col] = MAPPING_ATTRIBUTE
-
-    return mapping
 
 
 def _mapping_js_labels() -> dict[str, str]:
@@ -436,124 +278,6 @@ def column_mapping_form(
         id="import-preview",
         cls="import-panel",
     )
-
-
-def validate_column_mapping(
-    form: dict,
-    csv_cols: list[str],
-    core_fields: set[str] | None = None,
-) -> list[str]:
-    """Validate the user's column mapping choices. Returns list of error messages (empty = valid).
-
-    Checks:
-    1. Two CSV columns mapped to the same target field (duplicate targets).
-    2. Attribute names that collide with core/built-in field names.
-    3. Two attribute columns with the same custom name.
-    """
-    errors: list[str] = []
-    core = core_fields or set()
-
-    # Collect all mappings
-    target_sources: dict[str, list[str]] = {}  # target -> [csv_col, ...]
-    attr_names: dict[str, list[str]] = {}  # attr_name -> [csv_col, ...]
-
-    for col in csv_cols:
-        target = str(form.get(f"map__{col}", MAPPING_ATTRIBUTE) or MAPPING_ATTRIBUTE)
-        if target == MAPPING_SKIP:
-            continue
-
-        if target == MAPPING_ATTRIBUTE:
-            # Custom field name (from text input) or original col name
-            attr_name = str(form.get(f"attr_name__{col}", "") or "").strip() or col
-            attr_names.setdefault(attr_name, []).append(col)
-            # Check collision with core field names
-            if attr_name.lower() in {c.lower() for c in core}:
-                errors.append(
-                    t("import.err_custom_name_conflict", name=attr_name, col=col)
-                )
-        elif target.startswith(MAPPING_ATTR_PREFIX):
-            # Category attribute - use the attr key as the attribute name
-            attr_key = target[len(MAPPING_ATTR_PREFIX):]
-            attr_names.setdefault(attr_key, []).append(col)
-        else:
-            target_sources.setdefault(target, []).append(col)
-
-    # Check duplicate target fields
-    for target, sources in target_sources.items():
-        if len(sources) > 1:
-            names = " and ".join(f'"{s}"' for s in sources)
-            errors.append(
-                t(
-                    "import.err_duplicate_target",
-                    cols=names,
-                    target=target.replace("_", " ").title(),
-                )
-            )
-
-    # Check duplicate attribute names
-    for attr_name, sources in attr_names.items():
-        if len(sources) > 1:
-            names = " and ".join(f'"{s}"' for s in sources)
-            errors.append(
-                t("import.err_duplicate_attr", cols=names, name=attr_name)
-            )
-
-    return errors
-
-
-def apply_column_mapping(form: dict, csv_text: str) -> tuple[str, list[str]]:
-    """Apply user's column mapping to CSV data.
-
-    Reads map__<col>=<target> fields from the form.  Renames CSV headers
-    according to the mapping.  Columns mapped to MAPPING_SKIP are dropped.
-    Columns mapped to MAPPING_ATTRIBUTE use the custom name from attr_name__<col>
-    (falling back to the original header).
-
-    Returns (remapped_csv_text, remapped_cols).
-    """
-    reader = csv.DictReader(io.StringIO(csv_text))
-    original_cols = list(reader.fieldnames or [])
-    rows = list(reader)
-
-    # Parse mapping from form
-    mapping: dict[str, str] = {}
-    for col in original_cols:
-        target = str(form.get(f"map__{col}", MAPPING_ATTRIBUTE) or MAPPING_ATTRIBUTE)
-        mapping[col] = target
-
-    # Build new column list and rename map
-    new_cols: list[str] = []
-    rename: dict[str, str] = {}  # original -> new name
-    for col in original_cols:
-        target = mapping[col]
-        if target == MAPPING_SKIP:
-            continue
-        elif target == MAPPING_ATTRIBUTE:
-            attr_name = str(form.get(f"attr_name__{col}", "") or "").strip() or col
-            new_cols.append(attr_name)
-            rename[col] = attr_name
-        elif target.startswith(MAPPING_ATTR_PREFIX):
-            # Category attribute - use the key after the prefix as column name
-            attr_key = target[len(MAPPING_ATTR_PREFIX):]
-            new_cols.append(attr_key)
-            rename[col] = attr_key
-        else:
-            new_cols.append(target)
-            rename[col] = target
-
-    # Write remapped CSV
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=new_cols, extrasaction="ignore")
-    writer.writeheader()
-    for row in rows:
-        new_row = {}
-        for col in original_cols:
-            if col not in rename:
-                continue
-            new_row[rename[col]] = row.get(col, "")
-        writer.writerow(new_row)
-
-    return output.getvalue(), new_cols
 
 
 _MAPPING_JS = """
@@ -989,10 +713,8 @@ async def read_csv_upload(form: Any) -> tuple[list[dict], str | None]:
     except Exception:
         return [], t("import.err_decode")
     try:
-        reader = csv.DictReader(io.StringIO(text))
-        rows = list(reader)
-        fieldnames = reader.fieldnames or []
-    except csv.Error:
+        fieldnames, rows = tabular.read_csv(text)
+    except (csv.Error, tabular.TabularError):
         return [], t("import.err_parse")
     if not fieldnames or any(f is None for f in fieldnames):
         return [], t("import.err_no_header")
@@ -1001,22 +723,6 @@ async def read_csv_upload(form: Any) -> tuple[list[dict], str | None]:
     if not rows:
         return [], t("import.err_empty")
     return rows, None
-
-
-def _row_errors(row: dict, cols: list[str], validate: ValidateFn) -> list[str]:
-    return [col for col in cols if not validate(col, str(row.get(col, "")), row)]
-
-
-def error_report_csv(rows: list[dict], cols: list[str], validate: ValidateFn) -> str:
-    """Return CSV with original columns + an `_errors` column, containing only invalid rows."""
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=cols + ["_errors"], extrasaction="ignore")
-    writer.writeheader()
-    for row in rows:
-        bad = _row_errors(row, cols, validate)
-        if bad:
-            writer.writerow({**{c: row.get(c, "") for c in cols}, "_errors": "; ".join(bad)})
-    return output.getvalue()
 
 
 # ── Inline fix error panel ────────────────────────────────────────────────────
@@ -1328,44 +1034,6 @@ def _fix_errors_panel(
     )
 
 
-def apply_fixes_to_rows(
-    form: dict,
-    rows: list[dict],
-    cols: list[str],
-) -> list[dict]:
-    """Apply inline-fix form values back into the row dicts.
-
-    Reads ``fixes_json``: a JSON object ``{"row__col": value, ...}`` serialized
-    by the fix form's submit handler. One field regardless of error count,
-    so Starlette's max_fields limit is never hit.
-    """
-    import json as _json
-
-    fixes_raw = form.get("fixes_json", "")
-    if not fixes_raw:
-        return rows
-    try:
-        fixes: dict = _json.loads(fixes_raw)
-    except (ValueError, TypeError):
-        return rows
-
-    cols_set = set(cols)
-    for key, value in fixes.items():
-        if not isinstance(key, str):
-            continue
-        parts = key.split("__", 1)
-        if len(parts) != 2:
-            continue
-        ri_str, col = parts
-        try:
-            ri = int(ri_str)
-        except ValueError:
-            continue
-        if 0 <= ri < len(rows) and col in cols_set:
-            rows[ri][col] = str(value)
-    return rows
-
-
 def validation_result(
     *,
     rows: list[dict],
@@ -1502,14 +1170,6 @@ def error_report_response(
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
-
-
-def _rows_to_csv(rows: list[dict], cols: list[str]) -> str:
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=cols, extrasaction="ignore")
-    writer.writeheader()
-    writer.writerows(rows)
-    return output.getvalue()
 
 
 def import_abort_panel(
