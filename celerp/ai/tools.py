@@ -1,15 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""AI tools - ERP-aware callable functions for the AI assistant.
-
-Tools are pure functions that query the database and return structured data.
-The AI service calls these to answer queries about inventory, sales, etc.
-Each tool takes (session, company_id) plus optional parameters.
-
-Tool registry: TOOLS dict maps tool_name -> ToolDef.
-Callers invoke execute_tool(name, params, session, company_id).
-"""
+"""Agent capabilities derived from the live FastAPI app: OpenAPI compiler and in-process executor."""
 
 from __future__ import annotations
 
