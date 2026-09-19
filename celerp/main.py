@@ -80,23 +80,56 @@ _MODULE_DIR = _os.environ["MODULE_DIR"]
 
 
 async def _try_auto_activate() -> None:
-    """Probe the relay for an existing subscription and auto-connect if found.
+    """Recover a challenge-approved activation, otherwise only check in.
 
-    Called at startup when gateway_token is empty. Silent on any failure.
-    Skipped entirely after an explicit Cloud disconnect: staying disconnected
-    is the user's recorded choice, and reconnecting is always explicit.
+    The verifier is durable, so retrying it after response loss returns the same
+    credential. UUID-only activation is intentionally not retried at startup.
     """
     _log = logging.getLogger(__name__)
     try:
-        from celerp.config import settings as _s, ensure_instance_id, config_path, persist_cloud_settings
+        import httpx
+        from celerp.config import (
+            settings as _s, ensure_instance_id, config_path)
         if _s.cloud_disconnected:
             return
         first_boot = not config_path().exists()
-        iid = ensure_instance_id()
-        from celerp.gateway.state import activate_payload, relay_http_url as _rhu, relay_post_with_retry
+        iid = await asyncio.to_thread(ensure_instance_id)
+        from celerp.gateway.state import activate_payload, relay_http_url as _rhu
         relay_base = _rhu()
-        payload = activate_payload(iid, first_boot=first_boot)
-        r = await relay_post_with_retry(f"{relay_base}/auth/activate", payload)
+        verifier = _s.activation_verifier or ""
+
+        if not verifier:
+            # Legacy installations may predate challenge-bound activation. New
+            # relays expose an observation-only check-in, so UUID knowledge never
+            # becomes credential authority there. If and only if that endpoint is
+            # absent (404), make one compatibility activation call for an old
+            # relay. Never retry this mutating legacy operation after ambiguity.
+            async def _legacy_activate():
+                async with httpx.AsyncClient(timeout=6.0) as c:
+                    checkin = await c.post(
+                        f"{relay_base}/auth/checkin",
+                        json=activate_payload(iid, first_boot=first_boot))
+                    if checkin.status_code != 404:
+                        return None
+                    return await c.post(
+                        f"{relay_base}/auth/activate",
+                        json=activate_payload(iid, first_boot=first_boot))
+
+            try:
+                r = await asyncio.wait_for(_legacy_activate(), timeout=6.0)
+            except (httpx.HTTPError, asyncio.TimeoutError):
+                return
+            if r is None:
+                return
+        else:
+            # Challenge redemption is idempotent for this verifier, so transient
+            # transport retries are safe here.
+            from celerp.gateway.state import relay_post_with_retry
+            r = await relay_post_with_retry(
+                f"{relay_base}/auth/activate",
+                activate_payload(
+                    iid, first_boot=first_boot, activation_verifier=verifier))
+
         if r is None or r.status_code != 200:
             return
         data = r.json()
@@ -104,42 +137,16 @@ async def _try_auto_activate() -> None:
         if not token:
             return
         public_url = data.get("public_url")
-        tos_version = data.get("tos_version")
-        # Apply in-process
-        _s.gateway_token = token
-        _s.gateway_instance_id = iid
-        if public_url:
-            _s.celerp_public_url = public_url
-        # Auto-generate backup encryption key
-        if not _s.backup_encryption_key:
-            import base64, secrets as _secrets
-            _s.backup_encryption_key = base64.b64encode(_secrets.token_bytes(32)).decode()
-        # Persist to config.toml (best-effort; the WS client must still start)
-        try:
-            persist_cloud_settings(
-                token=token,
-                instance_id=iid,
-                public_url=public_url,
-                tos_version=tos_version,
-                backup_encryption_key=_s.backup_encryption_key,
-            )
-        except Exception:
-            pass
-        # Start gateway WS client, but only where the tunnel has something to serve:
-        # a paid instance (public_url granted) or a free instance with a live share.
-        # A free instance holds no persistent gateway connection; a later share-create
-        # brings the tunnel up on demand through the relay_share seam.
-        from celerp.gateway import ensure_running, has_active_share
-        if public_url or await has_active_share():
-            ensure_running()
-            _log.info("Auto-activated cloud relay (instance_id=%s)", iid)
-        # Start backup scheduler - paid tiers only (public_url is the paid signal;
-        # a free instance is not entitled to backups at all).
-        if public_url and _s.backup_enabled and _s.backup_encryption_key:
-            from celerp.services import backup_scheduler
-            backup_scheduler.start()
+        from celerp.services.cloud_entitlement import apply_activation_state
+        await apply_activation_state(
+            token, iid, public_url=public_url,
+            tos_version=data.get("tos_version"),
+            backup_encryption_key=data.get("backup_encryption_key"),
+            tier=data.get("tier"), status=data.get("status"))
+        _log.info("Recovered cloud relay activation (instance_id=%s)", iid)
     except Exception as exc:
-        logging.getLogger(__name__).debug("Auto-activate probe failed (expected for self-hosted): %s", exc)
+        logging.getLogger(__name__).debug(
+            "Activation recovery/check-in failed (expected for self-hosted): %s", exc)
 
 
 @asynccontextmanager

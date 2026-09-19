@@ -644,3 +644,25 @@ def test_ingress_rejects_bad_subscription_exponent_interval():
     v5 = _ctx(version=14, offer={**_good_offer(), "billing_interval": "weekly"})
     assert gw_state.set_commercial_context(v5) is False
     assert gw_state.get_commercial_context()["version"] == 10
+
+
+def test_target_tier_offers_are_validated_and_copied():
+    ctx = _ctx(version=1, mode="partner_managed")
+    cloud = _good_offer()
+    cloud["display_name"] = "Partner Cloud"
+    ai = _good_offer()
+    ai["display_name"] = "Partner AI"
+    ai["retail_amount"] = 7300
+    ctx["offers"] = {"cloud": cloud, "ai": ai}
+    assert gw_state.set_commercial_context(ctx) is True
+    assert gw_state.get_offer("cloud")["display_name"] == "Partner Cloud"
+    got = gw_state.get_offer("ai")
+    assert got["retail_amount"] == 7300
+    got["service_bullets"].append("Injected")
+    assert "Injected" not in gw_state.get_offer("ai")["service_bullets"]
+
+
+def test_direct_context_rejects_partner_offer_map():
+    ctx = _ctx(version=1, mode="celerp_direct")
+    ctx["offers"] = {"cloud": _good_offer()}
+    assert gw_state.set_commercial_context(ctx) is False

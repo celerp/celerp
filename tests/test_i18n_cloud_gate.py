@@ -54,11 +54,12 @@ def test_upgrade_banner_translates_title_and_cta():
     assert "XX_START_TRIAL" in html
 
 
-def test_upgrade_banner_default_price_resolves_at_render():
-    """The default price used to be a literal frozen into the function
-    signature at import time; it must now resolve through t() at render."""
+def test_upgrade_banner_default_does_not_invent_a_price():
+    """Generic upgrade banners omit a price unless an authoritative caller
+    supplies one; transactional amounts live on the live-catalog plan grid."""
     html = to_xml(upgrade_banner("Encrypted Backup", "Keeps your data safe.", lang="xx"))
-    assert "XX_29MO" in html
+    assert "XX_START_TRIAL" in html
+    assert "XX_29MO" not in html
 
 
 def test_upgrade_banner_explicit_price_is_not_translated():
@@ -80,4 +81,5 @@ def test_digest_upsell_modal_translates_feature_desc_and_button():
 def test_cloud_gate_passes_lang_through_to_banner():
     html = to_xml(cloud_gate(False, "Encrypted Backup", "Keeps your data safe.", lang="xx"))
     assert "XX_REQUIRES_CONNECT" in html
-    assert "XX_29MO" in html
+    assert "XX_START_TRIAL" in html
+    assert "XX_29MO" not in html

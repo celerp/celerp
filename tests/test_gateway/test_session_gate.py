@@ -51,16 +51,13 @@ def reset_session_token():
 
 
 def test_no_header_no_session_returns_401():
-    """No header + no in-process session -> subscription CTA. The URL comes from
-    build_public_acquisition_url (this is an unauthenticated backend API error
-    message), so it is the anonymous subscribe URL with no instance_id - a named
-    checkout here has no handoff token to redeem it."""
+    """Missing transport is reported as transport state, never as a billing verdict."""
     resp = _client.get("/gated")
     assert resp.status_code == 401
     detail = resp.json()["detail"]
-    assert _SUBSCRIBE_BASE in detail
-    assert "always free" in detail
-    assert "instance_id=" not in detail
+    assert "No active Celerp Connect session" in detail
+    assert "Settings > Web Access" in detail
+    assert _SUBSCRIBE_BASE not in detail
 
 
 def test_no_header_with_session_passes():
@@ -100,10 +97,10 @@ def test_valid_header_passes():
 
 
 def test_whitespace_header_no_session_treated_as_missing():
-    """Whitespace-only header + no session -> subscribe CTA."""
+    """Whitespace-only header follows the same neutral transport path."""
     resp = _client.get("/gated", headers={"X-Session-Token": "   "})
     assert resp.status_code == 401
-    assert _SUBSCRIBE_BASE in resp.json()["detail"]
+    assert _SUBSCRIBE_BASE not in resp.json()["detail"]
 
 
 def test_whitespace_header_with_session_passes():
@@ -125,12 +122,79 @@ def _partner_mode():
     gw_state._commercial_context = original
 
 
-def test_session_gate_401_routes_through_policy(_partner_mode):
-    """A partner-managed install's 401 body URL routes through the commercial
-    policy - the partner support URL, never a direct celerp.com/subscribe."""
+def test_session_gate_401_is_commercially_neutral(_partner_mode):
+    """Transport loss does not manufacture either direct or partner purchase advice."""
     gw_state.set_session_token("")
     resp = _client.get("/gated")
     assert resp.status_code == 401
     detail = resp.json()["detail"]
     assert "celerp.com/subscribe" not in detail
-    assert "https://partner.example.com/support" in detail
+    assert "partner.example.com" not in detail
+    assert "Settings > Web Access" in detail
+
+
+def test_same_origin_request_recovers_session_from_durable_entitlement():
+    async def recover():
+        gw_state.set_session_token("recovered-session")
+        return {}
+    with __import__("unittest.mock", fromlist=["patch"]).patch(
+        "celerp.services.cloud_entitlement.sync_existing_entitlement",
+        side_effect=recover,
+    ):
+        resp = _client.get("/gated")
+    assert resp.status_code == 200
+
+
+def test_same_origin_recovery_local_apply_failure_degrades_to_401(monkeypatch):
+    """Successful relay authority plus failed local persistence must not 500.
+
+    This drives the real shared recovery function used by the session gate. The
+    relay has authenticated the durable instance key and returned active AI
+    entitlement, but applying that state locally fails. The live request should
+    remain a retryable transport problem, not become an application error or a
+    billing verdict.
+    """
+    import httpx
+    from unittest.mock import AsyncMock, patch
+    from celerp.config import settings
+
+    monkeypatch.setattr(settings, "gateway_token", "durable-api-key")
+    monkeypatch.setattr(settings, "gateway_instance_id", "issue-332-iid")
+    monkeypatch.setattr(settings, "cloud_disconnected", False)
+    response = httpx.Response(200, json={
+        "gateway_token": "durable-api-key",
+        "tier": "ai",
+        "status": "active",
+        "public_url": "https://issue332.celerp.com",
+    })
+
+    with (
+        patch(
+            "celerp.services.cloud_entitlement.authenticated_request",
+            new=AsyncMock(return_value=response),
+        ) as relay_read,
+        patch(
+            "celerp.services.cloud_entitlement.apply_activation_state",
+            new=AsyncMock(side_effect=OSError("config write failed")),
+        ) as apply_state,
+        patch("celerp.config.ensure_instance_id", return_value="issue-332-iid"),
+    ):
+        resp = _client.get("/gated")
+
+    assert resp.status_code == 401
+    assert "No active Celerp Connect session" in resp.json()["detail"]
+    relay_read.assert_awaited_once()
+    apply_state.assert_awaited_once()
+
+
+def test_explicit_disconnect_never_auto_recovers(monkeypatch):
+    from unittest.mock import AsyncMock, patch
+    from celerp.config import settings
+    monkeypatch.setattr(settings, "cloud_disconnected", True)
+    with patch(
+        "celerp.services.cloud_entitlement.sync_existing_entitlement",
+        new=AsyncMock(),
+    ) as recover:
+        resp = _client.get("/gated")
+    assert resp.status_code == 401
+    recover.assert_not_awaited()

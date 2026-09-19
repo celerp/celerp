@@ -410,6 +410,8 @@ class GatewayClient:
                 self._proxied_count, self._cancelled_count,
                 self._timeout_count, self._stale_dropped_count,
             )
+            from celerp.gateway.state import set_session_token
+            set_session_token("")
             self._set_status("inactive")
 
     def _build_hello_payload(self, tos_version: str, app_version: str) -> dict:
@@ -462,8 +464,8 @@ class GatewayClient:
             # leave any cached partner_managed identity intact, so the read is
             # presence-guarded rather than defaulted.
             if "commercial_context" in payload:
-                from celerp.gateway.state import apply_commercial_context
-                apply_commercial_context(payload["commercial_context"])
+                from celerp.gateway.state import apply_commercial_context_async
+                await apply_commercial_context_async(payload["commercial_context"])
             # tier/status ride hello_ack too (not just subscription_updated): a
             # plain free connection never triggers a Stripe billing event, so
             # that push alone would never tell a free instance its own tier.
@@ -473,11 +475,13 @@ class GatewayClient:
                 set_subscription_state(tier, payload.get("status", ""))
 
         elif msg_type == "session.refresh":
-            session_token = payload.get("session_token", "")
+            from celerp.gateway.state import set_session_token
+            session_token = payload.get("session_token")
             if session_token:
-                from celerp.gateway.state import set_session_token
                 set_session_token(session_token)
                 log.debug("Gateway session token refreshed.")
+            else:
+                log.debug("Gateway session refresh ignored: no token supplied.")
 
         elif msg_type == "error":
             code = payload.get("code", "")
@@ -539,8 +543,8 @@ class GatewayClient:
             # The payload is the context itself (flat, like subscription_updated);
             # the same shared apply/persist seam as the hello_ack branch, so
             # validation and persistence live in one place (state.apply_commercial_context).
-            from celerp.gateway.state import apply_commercial_context
-            apply_commercial_context(payload)
+            from celerp.gateway.state import apply_commercial_context_async
+            await apply_commercial_context_async(payload)
 
         else:
             log.debug("Unhandled gateway message type: %s", msg_type)

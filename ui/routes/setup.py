@@ -16,6 +16,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -186,7 +187,7 @@ def setup_routes(app):
                 preset = json.loads(preset_file.read_text())
                 preset_modules: list[str] = preset.get("modules") or []
                 if preset_modules:
-                    _set_enabled_modules(preset_modules)
+                    await asyncio.to_thread(_set_enabled_modules, preset_modules)
                     # Sync enabled state into company settings (DB) so the modules tab
                     # shows the correct enabled/disabled badge without a manual toggle.
                     for mod_name in preset_modules:
@@ -606,7 +607,7 @@ def _cloud_form() -> FT:
     # support or Enterprise.
     cloud_href, cloud_cta_label = commercial_cta(
         "subscribe", "cloud",
-        direct_price(t("setup.subscribe_29mo")) or t("btn.get_connect"),
+        t("btn.get_connect"),
         current_lang())
 
     _features = [
@@ -629,12 +630,8 @@ def _cloud_form() -> FT:
             Div(
                 Div(
                     Span(t("setup.cloud"), cls="cloud-upsell-plan-name"),
-                    # Partner-managed: the partner sets its own price, so the
-                    # setup card shows no direct Celerp figure.
-                    (Div(
-                        Span("$29", cls="cloud-upsell-price"),
-                        Span(t("setup._month"), cls="cloud-upsell-price-unit"),
-                    ) if not partner else None),
+                    # Prices are shown only where the app has an authoritative
+                    # live catalog; setup never invents a stale direct amount.
                     cls="cloud-upsell-plan-header",
                 ),
                 Ul(

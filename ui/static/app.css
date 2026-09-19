@@ -2272,6 +2272,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .ai-showcase__cta-actions .btn { width: 100%; text-align: center; }
 .ai-showcase__cta-fine { font-size: 0.75rem; color: var(--c-text2); margin: 0; }
 .ai-showcase__cta-desc { font-size: 0.82rem; color: var(--c-text2); margin: 0; }
+.ai-showcase__restore { margin-top: 1rem; display: flex; align-items: center; justify-content: center; gap: 0.75rem; flex-wrap: wrap; }
+.ai-showcase__restore-label { margin: 0; font-size: 0.85rem; color: var(--c-text2); }
 .btn--accent { background: var(--c-purple, #a855f7); color: #fff; border: none; border-radius: var(--radius); padding: 0.55rem 1.25rem; font-weight: 600; font-size: 0.9rem; cursor: pointer; text-decoration: none; display: inline-block; text-align: center; width: 100%; transition: background 0.15s; }
 .btn--accent:hover { background: var(--c-purple-dark, #6b21a8); }
 .ai-upgrade-cta { padding: 0.75rem 0; display: flex; flex-direction: column; gap: 0.5rem; }

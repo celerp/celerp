@@ -150,7 +150,7 @@ def upgrade_banner(
     # href instead of this direct label, and no surface funnelling through here can
     # show a direct-price CTA that opens partner support. direct_price still
     # suppresses the figure on the direct label for the same-mode belt-and-braces.
-    price_text = direct_price(price if price is not None else t("msg.29mo", lang))
+    price_text = direct_price(price or "")
     direct_label = f"{t('cloud.start_trial', lang)} - {price_text}" if price_text \
         else t("cloud.start_trial", lang)
     href, cta_label = commercial_cta("subscribe", plan, direct_label, lang)

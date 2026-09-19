@@ -379,17 +379,26 @@ async def quota_status() -> dict:
     status = await get_quota_status()
     if not status:
         return {"local": True}
-    used = status.get("used", 0)
-    limit = status.get("limit", 0)
-    topup = status.get("topup_credits", 0)
-    remaining = max(0, (limit + topup) - used)
+    used = int(status.get("used", 0) or 0)
+    legacy_limit = int(status.get("limit", 0) or 0)
+    legacy_topup = int(status.get("topup_credits", 0) or 0)
+    remaining_raw = status.get("remaining")
+    remaining = (
+        int(remaining_raw or 0)
+        if remaining_raw is not None
+        else max(0, legacy_limit + legacy_topup - used)
+    )
     return {
+        "allowed": bool(status.get("allowed", remaining > 0)),
         "used": used,
-        "limit": limit,
-        "topup_credits": topup,
+        "base_limit": int(status.get("base_limit", legacy_limit) or 0),
+        "topup_balance": int(status.get("topup_balance", legacy_topup) or 0),
         "remaining": remaining,
         "resets_at": status.get("resets_at", ""),
         "tier": status.get("tier", ""),
+        # Rolling-deploy compatibility for an older UI process.
+        "limit": legacy_limit,
+        "topup_credits": legacy_topup,
         "instance_id": settings.gateway_instance_id or "",
     }
 

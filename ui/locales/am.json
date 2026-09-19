@@ -2685,7 +2685,6 @@
   "settings.code_expired": "ኮድ ጊዜው አልፎበታል ወይም በጣም ብዙ የተሳሳቱ ሙከራዎች። አዲስ ኮድ ይጠይቁ።",
   "settings.subscription_linked_info": "የደንበኝነት ምዝገባ ተገናኝቷል። ማግበርን ለማጠናቀቅ አገናኝን ጠቅ ያድርጉ።",
   "settings.link_timed_out": "ይህ ከተጠበቀው በላይ ጊዜ እየወሰደ ነው እና ሪሌዩ ማገናኘቱን ከማረጋገጡ በፊት ጊዜው አልፏል። የደንበኝነት ምዝገባዎ አስቀድሞ ወደዚህ ኮምፒውተር ተዛውሮ ሊሆን ይችላል። Celerp ን እንደገና ያስጀምሩ ወይም እንደገና ይሞክሩ። መውደቁን ከቀጠለ የዚህ ኮምፒውተር ከሪሌዩ ጋር ያለው ግንኙነት ቀርፋፋ ነው።",
-  "settings.subscription_linked_connecting": "የደንበኝነት ምዝገባ ተገናኝቷል። ከሪሌዩ ጋር በመገናኘት ላይ...",
   "settings.otp_sent_hint": "ባለ 6 አሃዝ ኮድ ወደ {email} ልከናል። ከታች አስገባ:.",
   "settings.claim_email_hint": "በድረ-ገጹ ላይ ከተመዘገቡ እና ክፍያው በራስ-ሰር ካልተገናኘ፣ ሲወጣ የተጠቀሙበትን የኢሜል አድራሻ ያስገቡ።",
   "settings.establishing_connection": "ግንኙነት በመመሥረት ላይ...",
@@ -3114,5 +3113,6 @@
   "settings_cloud.invalid_port": "ትክክለኛ የፖርት ቁጥር ያስገቡ (1-65535)",
   "settings_cloud.db_connection_failed": "ግንኙነት አልተሳካም። አስተናጋጅ፣ ወደብ እና ማረጋገጫዎችን ያረጋግጡ።",
   "settings_cloud.invalid_storage_backend": "ትክክለኛ የማከማቻ ዓይነት ይምረጡ",
-  "settings_cloud.invalid_s3_endpoint": "ትክክለኛ https:// መድረሻ ያስገቡ"
+  "settings_cloud.invalid_s3_endpoint": "ትክክለኛ https:// መድረሻ ያስገቡ",
+  "settings.subscription_linked_connecting": "የደንበኝነት ምዝገባ ተገናኝቷል። ከሪሌዩ ጋር በመገናኘት ላይ..."
 }

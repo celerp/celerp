@@ -2581,7 +2581,6 @@
   "settings.code_expired": "El código ha caducado o se han realizado demasiados intentos incorrectos. Solicita un nuevo código.",
   "settings.subscription_linked_info": "Suscripción vinculada. Haz clic en «Conectar» para finalizar la activación.",
   "settings.link_timed_out": "Esto está tardando más de lo esperado y se agotó el tiempo antes de que el relay confirmara la vinculación. Es posible que tu suscripción ya se haya movido a este equipo. Reinicia Celerp o inténtalo de nuevo. Si sigue fallando, la conexión de este equipo con el relay es lenta.",
-  "settings.subscription_linked_connecting": "Suscripción vinculada. Conectando con el relay...",
   "settings.otp_sent_hint": "Hemos enviado un código de 6 dígitos a {email}. Introdúcelo a continuación:",
   "settings.claim_email_hint": "Si te has suscrito en la página web y el pago no se vincula automáticamente, introduce la dirección de correo electrónico que utilizaste al realizar el pago:",
   "settings.establishing_connection": "Estableciendo conexión...",
@@ -3114,5 +3113,6 @@
   "settings_cloud.invalid_port": "Introduce un número de puerto válido (1-65535)",
   "settings_cloud.db_connection_failed": "Error de conexión. Verifica el host, el puerto y las credenciales.",
   "settings_cloud.invalid_storage_backend": "Selecciona un backend de almacenamiento válido",
-  "settings_cloud.invalid_s3_endpoint": "Introduce un endpoint https:// válido"
+  "settings_cloud.invalid_s3_endpoint": "Introduce un endpoint https:// válido",
+  "settings.subscription_linked_connecting": "Suscripción vinculada. Conectando con el relay..."
 }

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -88,11 +89,18 @@ def _setup_code_hash() -> str:
 
 
 def _clear_setup_code() -> None:
-    """Consume the setup code once the first admin exists (one-time)."""
-    from celerp.config import read_config, write_config, config_path
-    cfg = read_config()
-    if cfg.get("auth", {}).pop("setup_code_hash", None) is not None:
-        write_config(cfg)
+    """Best-effort cleanup after the first admin has already committed.
+
+    The DB user row is the authoritative one-time registration gate. Config-lock
+    contention here must never turn a successful registration into a 500 that
+    tells the operator to retry an operation that already completed.
+    """
+    from celerp.config import _update_config, config_path
+    try:
+        _update_config(lambda cfg: cfg.get("auth", {}).pop("setup_code_hash", None))
+    except Exception as exc:
+        logger.warning("setup-code config cleanup deferred after registration: %s",
+                       type(exc).__name__)
     try:
         (config_path().parent / "setup-code").unlink()
     except OSError:
@@ -222,7 +230,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     # failure cannot claim a second admin: log it and still return the token pair.
     if required:
         try:
-            _clear_setup_code()
+            await asyncio.to_thread(_clear_setup_code)
         except Exception:
             logger.warning("Setup-code cleanup failed after first-admin bootstrap", exc_info=True)
 

@@ -2582,7 +2582,6 @@
   "settings.code_expired": "Code expiré ou trop de tentatives infructueuses. Demandez un nouveau code.",
   "settings.subscription_linked_info": "Abonnement associé. Cliquez sur « Se connecter » pour terminer l'activation.",
   "settings.link_timed_out": "Cela prend plus de temps que prévu et le délai a expiré avant que le relais ne confirme l'association. Votre abonnement a peut-être déjà été transféré sur cet ordinateur. Redémarrez Celerp ou réessayez. Si l'échec persiste, la connexion de cet ordinateur au relais est lente.",
-  "settings.subscription_linked_connecting": "Abonnement associé. Connexion au relais...",
   "settings.otp_sent_hint": "Nous avons envoyé un code à 6 chiffres à {email}. Saisissez-le ci-dessous :",
   "settings.claim_email_hint": "Si vous vous êtes abonné sur le site web et que le paiement ne s'associe pas automatiquement, saisissez l'adresse e-mail que vous avez utilisée lors du paiement :",
   "settings.establishing_connection": "Établissement de la connexion...",
@@ -3114,5 +3113,6 @@
   "settings_cloud.invalid_port": "Saisissez un numéro de port valide (1-65535)",
   "settings_cloud.db_connection_failed": "Échec de la connexion. Vérifiez l'hôte, le port et les identifiants.",
   "settings_cloud.invalid_storage_backend": "Sélectionnez un backend de stockage valide",
-  "settings_cloud.invalid_s3_endpoint": "Saisissez un point de terminaison https:// valide"
+  "settings_cloud.invalid_s3_endpoint": "Saisissez un point de terminaison https:// valide",
+  "settings.subscription_linked_connecting": "Abonnement associé. Connexion au relais..."
 }
