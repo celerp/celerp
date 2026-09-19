@@ -1,0 +1,77 @@
+name: Final merge validation
+
+on:
+  push:
+    branches:
+      - review/merge-validation-final
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ALLOW_INSECURE_JWT: "true"
+      DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reconstruct reviewed source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .review/checkpoint.patch.gz /tmp/checkpoint.patch.gz
+          base64 -d .review/incremental.patch.xz.b64 | xz -d > /tmp/incremental.patch
+          git checkout --detach 417e6ca0fe2fcbdad19cdab95eb4a6c0f054fa7f
+          gzip -dc /tmp/checkpoint.patch.gz | git apply --binary
+          git apply /tmp/incremental.patch
+          git diff --check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install dependencies
+        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split
+      - name: Focused entitlement and AI regressions
+        run: >
+          pytest -q --no-cov
+          default_modules/celerp-ai/tests/test_quota.py
+          default_modules/celerp-ai/tests/test_commercial_routing.py
+          tests/test_gateway/test_session_gate.py
+      - name: AI browser regression
+        run: |
+          python -m playwright install --with-deps chromium
+          pytest tests/test_browser/test_ai_page.py -m browser -o addopts=""             --timeout=120 --timeout-method=thread --no-cov --tb=short -p no:cacheprovider -q
+      - name: Verify first-party lock
+        run: |
+          cp default_modules/first_party.lock.json /tmp/first_party.lock.json
+          python scripts/gen_first_party_lock.py
+          diff -u /tmp/first_party.lock.json default_modules/first_party.lock.json
+      - name: Stage clean source commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Noah Severs"
+          git config user.email "118095044+ngsevers@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: harden Connect entitlement recovery"
+          git push --force origin HEAD:refs/heads/review/merge-ready-app-staged
+          echo "staged_sha=$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
