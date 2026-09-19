@@ -355,8 +355,6 @@
   "btn.test_connection": "اتصال الاختبار",
   "btn.transfer": "تحويل",
   "btn.u00d7": "×",
-  "btn.u2705_confirm_create": "\\u2705 التأكيد والإنشاء",
-  "btn.u274c_discard": "\\u274c تجاهل",
   "btn.undo": "تراجع",
   "btn.unlock_remove_lock": "فتح (إزالة القفل)",
   "btn.unmark_sent": "قم بإلغاء تحديد المرسلة",
@@ -1534,9 +1532,6 @@
   "th.when": "متى",
   "th.wholesale": "بالجملة",
   "ai.clear_memory_confirm": "هل تريد مسح ذاكرة الذكاء الاصطناعي بالكامل لهذه الشركة؟",
-  "ai.draft_bills_created": "عدد مسودات فواتير الموردين التي تم إنشاؤها: {count}. اعرضها في قسم «المستندات».",
-  "ai.draft_bills_ready_one": "مسودة فاتورة مورد واحدة جاهزة ({n})",
-  "ai.draft_bills_ready_other": "مسودات فواتير الموردين الجاهزة: {n}",
   "ai.memory": "الذاكرة",
   "ai.new_conversation": "محادثة جديدة",
   "ai.toggle_sidebar": "تبديل الشريط الجانبي",
@@ -3112,5 +3107,13 @@
   "settings_cloud.db_connection_failed": "فشل الاتصال. تحقق من المضيف والمنفذ وبيانات الاعتماد.",
   "settings_cloud.invalid_storage_backend": "اختر نوع تخزين صالح",
   "settings_cloud.invalid_s3_endpoint": "أدخل نقطة نهاية https:// صالحة",
-  "settings.subscription_linked_connecting": "تم ربط الاشتراك. جارٍ الاتصال بالمرحّل..."
+  "settings.subscription_linked_connecting": "تم ربط الاشتراك. جارٍ الاتصال بالمرحّل...",
+  "btn.dismiss": "تجاهل",
+  "ai.action_proposal": "إجراء مقترح",
+  "ai.action_expired": "تم التعامل مع هذا الإجراء بالفعل أو انتهت صلاحيته.",
+  "ai.action_done": "تم.",
+  "ai.busy": "المساعد مشغول الآن. يرجى المحاولة مرة أخرى بعد قليل.",
+  "ai.chat_prompt_empty": "يرجى إدخال سؤال أو إرفاق ملف.",
+  "ai.attached_files": "📎 الملفات المرفقة",
+  "ai.error_prefix": "خطأ:"
 }

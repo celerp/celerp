@@ -355,8 +355,6 @@
   "btn.test_connection": "Verbindung testen",
   "btn.transfer": "Übertragen",
   "btn.u00d7": "×",
-  "btn.u2705_confirm_create": "✅ Bestätigen & Erstellen",
-  "btn.u274c_discard": "❌ Verwerfen",
   "btn.undo": "Rückgängig",
   "btn.unlock_remove_lock": "Entsperren (Sperre entfernen)",
   "btn.unmark_sent": "Gesendet-Markierung aufheben",
@@ -1535,9 +1533,6 @@
   "th.when": "Wann",
   "th.wholesale": "Großhandel",
   "ai.clear_memory_confirm": "Den gesamten KI-Speicher für dieses Unternehmen löschen?",
-  "ai.draft_bills_created": "Erstellte Rechnungsentwürfe: {count}. Unter „Dokumente“ anzeigen.",
-  "ai.draft_bills_ready_one": "{n} Rechnungsentwurf bereit",
-  "ai.draft_bills_ready_other": "{n} Rechnungsentwürfe bereit",
   "ai.memory": "Speicher",
   "ai.new_conversation": "Neue Unterhaltung",
   "ai.toggle_sidebar": "Seitenleiste ein-/ausblenden",
@@ -3112,5 +3107,13 @@
   "settings_cloud.db_connection_failed": "Verbindung fehlgeschlagen. Überprüfen Sie Host, Port und Anmeldedaten.",
   "settings_cloud.invalid_storage_backend": "Wählen Sie ein gültiges Speicher-Backend",
   "settings_cloud.invalid_s3_endpoint": "Geben Sie einen gültigen https://-Endpunkt ein",
-  "settings.subscription_linked_connecting": "Abonnement verknüpft. Verbindung zum Relay wird hergestellt..."
+  "settings.subscription_linked_connecting": "Abonnement verknüpft. Verbindung zum Relay wird hergestellt...",
+  "btn.dismiss": "Verwerfen",
+  "ai.action_proposal": "Vorgeschlagene Aktion",
+  "ai.action_expired": "Diese Aktion wurde bereits ausgeführt oder ist abgelaufen.",
+  "ai.action_done": "Erledigt.",
+  "ai.busy": "Der Assistent ist gerade beschäftigt. Bitte versuchen Sie es gleich noch einmal.",
+  "ai.chat_prompt_empty": "Bitte geben Sie eine Frage ein oder hängen Sie eine Datei an.",
+  "ai.attached_files": "📎 Angehängte Datei(en)",
+  "ai.error_prefix": "Fehler:"
 }

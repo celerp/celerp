@@ -143,10 +143,32 @@ def setup_ui_routes(app) -> None:
         except Exception:
             has_cloud = False
 
-        content = _chat_view() if has_cloud else _showcase_view(lang=get_lang(request))
+        lang = get_lang(request)
+        if not has_cloud:
+            content = _showcase_view(lang=lang)
+            return await base_shell(
+                content,
+                title="AI Assistant - Celerp",
+                nav_active="ai",
+                request=request,
+            )
+
+        # A conversation id in the URL opens that thread; an unknown or foreign
+        # id falls back to the empty state rather than surfacing an error.
+        conversation_id = (request.query_params.get("conversation") or "").strip()
+        messages = None
+        if conversation_id:
+            from celerp.gateway.state import get_session_token
+            session_token = get_session_token()
+            try:
+                conv = await api.ai_conversation_get(token, session_token, conversation_id)
+                messages = conv.get("messages") or []
+            except APIError:
+                conversation_id = ""
+                messages = None
 
         return await base_shell(
-            content,
+            _chat_view(messages=messages, conversation_id=conversation_id, lang=lang),
             title="AI Assistant - Celerp",
             nav_active="ai",
             request=request,
@@ -198,46 +220,103 @@ def setup_ui_routes(app) -> None:
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
 
+        lang = get_lang(request)
         form = await request.form()
         query = (form.get("query") or "").strip()
+        conversation_id = (form.get("conversation_id") or "").strip()
         file_ids_str = (form.get("file_ids") or "").strip()
         file_ids = [fid.strip() for fid in file_ids_str.split(",")] if file_ids_str else None
 
         if not query and not file_ids:
-            return _msg_bubble("ai", "Please enter a question or attach a file.")
+            return _msg_bubble("ai", t("ai.chat_prompt_empty", lang))
 
-        user_bubble = _msg_bubble("user", query or "📎 Attached file(s)")
+        user_bubble = _msg_bubble("user", query or t("ai.attached_files", lang))
 
         from celerp.gateway.state import get_session_token
         session_token = get_session_token()
 
-        try:
-            result = await api.ai_query(token, session_token, query, file_ids=file_ids)
-        except APIError as e:
-            detail = e.detail
-            if isinstance(detail, dict):
-                code = detail.get("code", "")
-            else:
-                code = "quota_exceeded" if "quota_exceeded" in str(detail) else ""
+        # An empty conversation id means this is the thread's first message: start
+        # the conversation, then run the query inside it.
+        if not conversation_id:
+            try:
+                conversation_id = (await api.ai_conversation_create(token, session_token))["id"]
+            except APIError as e:
+                return Div(user_bubble, _msg_bubble("ai", t("ai.busy", lang)) if e.status == 429
+                           else _msg_bubble("ai", f"{t('ai.error_prefix', lang)} {e.detail}"))
 
-            if code == "quota_exceeded":
-                card_detail = detail if isinstance(detail, dict) else {}
-                return _quota_exceeded_card(card_detail, user_bubble, get_lang(request))
-            if "subscription" in str(detail).lower() or "subscribe" in str(detail).lower():
-                return Div(
-                    user_bubble,
-                    _msg_bubble("ai", "A Connect + AI subscription is required to use the AI assistant."),
-                    A(t("msg.subscribe_at_celerpcom_u2192"),
-                      href=subscribe_url("ai"),
-                      target="_blank", cls="btn btn--primary mt-sm"),
-                )
-            return Div(user_bubble, _msg_bubble("ai", f"Error: {detail}"))
+        try:
+            result = await api.ai_conversation_query(
+                token, session_token, conversation_id, query, file_ids=file_ids,
+            )
+        except APIError as e:
+            if e.status == 402:
+                card_detail = e.detail if isinstance(e.detail, dict) else {}
+                return _quota_exceeded_card(card_detail, user_bubble, lang)
+            if e.status == 429:
+                return Div(user_bubble, _msg_bubble("ai", t("ai.busy", lang)))
+            return Div(user_bubble, _msg_bubble("ai", f"{t('ai.error_prefix', lang)} {e.detail}"))
 
         answer = result.get("answer", "")
-        pending_bills = result.get("pending_bills")
-        if pending_bills:
-            return Div(user_bubble, _msg_bubble("ai", answer), _bill_preview(pending_bills))
-        return Div(user_bubble, _msg_bubble("ai", answer))
+        cards = [
+            _action_card(conversation_id, str(action.get("message_id", "")), action, lang)
+            for action in (result.get("pending_actions") or [])
+        ]
+        # Out-of-band swaps keep the hidden id and the sidebar list in step with
+        # the (possibly newly created) conversation; HX-Push-Url puts the thread
+        # in the address bar so a reload reopens it.
+        oob_id = Input(type="hidden", name="conversation_id", id="ai-conversation-id",
+                       value=conversation_id, hx_swap_oob="true")
+        oob_history = Div(
+            id="ai-history", hx_swap_oob="true",
+            hx_get="/ai/conversations-list", hx_trigger="load", hx_swap="innerHTML",
+        )
+        html = to_xml(Div(
+            user_bubble, _msg_bubble("ai", answer), *cards, oob_id, oob_history,
+        ))
+        return HTMLResponse(html, headers={"HX-Push-Url": f"/ai?conversation={conversation_id}"})
+
+    @app.post("/ai/conversations")
+    async def ai_conversation_new(request: Request):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        from celerp.gateway.state import get_session_token
+        session_token = get_session_token()
+        try:
+            conv = await api.ai_conversation_create(token, session_token)
+        except APIError as e:
+            return _R("", status_code=e.status or 502)
+        return _R("", headers={"HX-Redirect": f"/ai?conversation={conv['id']}"})
+
+    @app.post("/ai/confirm-action-ui")
+    async def ai_confirm_action_ui(request: Request):
+        token = _token(request)
+        lang = get_lang(request)
+        if not token:
+            return _action_panel(t("msg.not_authenticated", lang), ok=False)
+        form = await request.form()
+        conversation_id = (form.get("conversation_id") or "").strip()
+        message_id = (form.get("message_id") or "").strip()
+        tool_call_id = (form.get("tool_call_id") or "").strip()
+
+        from celerp.gateway.state import get_session_token
+        session_token = get_session_token()
+        try:
+            result = await api.ai_confirm_action(
+                token, session_token, conversation_id, message_id, tool_call_id,
+            )
+        except APIError as e:
+            code = e.detail.get("code") if isinstance(e.detail, dict) else ""
+            if e.status == 409 and code == "action_not_pending":
+                return _action_panel(t("ai.action_expired", lang), ok=False)
+            return _action_panel(f"{t('ai.error_prefix', lang)} {e.detail}", ok=False)
+
+        if result.get("ok"):
+            return _action_panel(_confirm_success_text(result.get("data"), lang), ok=True)
+        error = result.get("error") or {}
+        message = error.get("message") or error.get("code") if isinstance(error, dict) else str(error)
+        return _action_panel(f"{t('ai.error_prefix', lang)} {message}", ok=False)
 
     @app.get("/ai/conversations-list")
     async def ai_conversations_list(request: Request):
@@ -350,34 +429,6 @@ def setup_ui_routes(app) -> None:
             return JSONResponse(result, status_code=201)
         except APIError as e:
             return JSONResponse({"detail": e.detail}, status_code=e.status)
-
-    @app.post("/ai/confirm-bills-ui")
-    async def ai_confirm_bills_ui(request: Request):
-        token = _token(request)
-        if not token:
-            return _msg_bubble("ai", "Not authenticated.")
-        form = await request.form()
-        bills_json = form.get("bills", "")
-        if not bills_json:
-            return _msg_bubble("ai", "No bills to confirm.")
-        try:
-            bills = json.loads(bills_json)
-        except (json.JSONDecodeError, TypeError):
-            return _msg_bubble("ai", "Invalid bill data.")
-
-        from celerp.gateway.state import get_session_token
-        session_token = get_session_token()
-        try:
-            result = await api.ai_confirm_bills(token, session_token, bills)
-            feedback = result.get("feedback", "Bills created.")
-            count = result.get("count", 0)
-            return Div(
-                _msg_bubble("ai", f"\u2705 {feedback}"),
-                P(t("ai.draft_bills_created", count=count), cls="ai-bills__done"),
-                cls="ai-bills__confirmed",
-            )
-        except APIError as e:
-            return _msg_bubble("ai", f"Failed to create bills: {e.detail}")
 
     @app.get("/ai/quota-status")
     async def ai_quota_status_proxy(request: Request):
@@ -521,52 +572,79 @@ def _msg_bubble(role: str, text: str) -> FT:
     return Div(text, cls=cls)
 
 
-def _bill_preview(bills: list[dict]) -> FT:
-    """Render pending bills as a confirmation card with line-item details."""
-    rows = []
-    for i, b in enumerate(bills):
-        lines = b.get("line_items", [])
-        line_els = [
-            Div(
-                Span(li.get("description", "Item"), cls="ai-bills__line-desc"),
-                Span(f'{li.get("quantity", 0)}x', cls="ai-bills__line-qty"),
-                Span(f'${li.get("unit_price", 0):.2f}', cls="ai-bills__line-price"),
-                cls="ai-bills__line",
-            )
-            for li in lines
-        ]
-        rows.append(Div(
-            Div(
-                Span(f'#{i + 1}', cls="ai-bills__num"),
-                Span(b.get("vendor_name", "Unknown"), cls="ai-bills__vendor"),
-                Span(b.get("date", ""), cls="ai-bills__date"),
-                Span(f'${b.get("total", 0):.2f}', cls="ai-bills__total"),
-                cls="ai-bills__header",
-            ),
-            Div(*line_els, cls="ai-bills__lines") if line_els else None,
-            cls="ai-bills__card",
-        ))
-
-    bills_json = json.dumps(bills)
+def _arg_lines(section: dict) -> FT:
+    """A definition-style list of one argument group (body, path, or query)."""
     return Div(
-        H4(t("ai.draft_bills_ready_one" if len(bills) == 1 else "ai.draft_bills_ready_other",
-             n=len(bills)), cls="ai-bills__title"),
-        Div(*rows, cls="ai-bills__list"),
+        *[
+            Div(
+                Span(str(key), cls="ai-action__line-key"),
+                Span(str(value), cls="ai-action__line-val"),
+                cls="ai-action__line",
+            )
+            for key, value in section.items()
+        ],
+        cls="ai-action__lines",
+    )
+
+
+def _action_card(conversation_id: str, message_id: str, action: dict, lang: str = "en") -> FT:
+    """Render one pending mutation the user must confirm before it runs.
+
+    The arguments are shown read-only, grouped by request part; Confirm posts the
+    identifiers only (never the arguments) so the server executes the action it
+    claimed, and Dismiss removes the card client-side without touching state.
+    """
+    name = action.get("name", "")
+    tool_call_id = action.get("id", "")
+    args = action.get("arguments") or {}
+    groups = [
+        _arg_lines(args[part])
+        for part in ("body", "path", "query")
+        if isinstance(args.get(part), dict) and args[part]
+    ]
+    return Div(
+        Div(
+            P(t("ai.action_proposal", lang), cls="ai-action__title"),
+            Span(name, cls="ai-action__meta"),
+            cls="ai-action__header",
+        ),
+        Div(*groups, cls="ai-action__list"),
         Div(
             Form(
-                Input(type="hidden", name="bills", value=bills_json),
-                Button(t("btn.u2705_confirm_create"), type="submit",
-                       cls="btn btn--primary ai-bills__confirm"),
-                hx_post="/ai/confirm-bills-ui",
-                hx_target="closest .ai-bills",
+                Input(type="hidden", name="conversation_id", value=conversation_id),
+                Input(type="hidden", name="message_id", value=message_id),
+                Input(type="hidden", name="tool_call_id", value=tool_call_id),
+                Button(t("btn.confirm", lang), type="submit", cls="btn btn--primary"),
+                hx_post="/ai/confirm-action-ui",
+                hx_target="closest .ai-action__card",
                 hx_swap="outerHTML",
             ),
-            Button(t("btn.u274c_discard"), cls="btn btn--secondary ai-bills__discard",
-                   onclick="this.closest('.ai-bills').remove()"),
-            cls="ai-bills__actions",
+            Button(t("btn.dismiss", lang), cls="btn btn--secondary",
+                   onclick="this.closest('.ai-action__card').remove()"),
+            cls="ai-action__actions",
         ),
-        cls="ai-bills",
+        cls="ai-action ai-action__card",
     )
+
+
+def _confirm_success_text(data, lang: str = "en") -> str:
+    """Success line after a confirmed action, naming the entity when the route
+    returns one so the user sees exactly what was created or changed."""
+    done = t("ai.action_done", lang)
+    if isinstance(data, dict):
+        name = data.get("name") or data.get("sku") or data.get("title")
+        ident = data.get("id") or data.get("entity_id")
+        if name and ident:
+            return f"{done} {name} (#{ident})"
+        if name:
+            return f"{done} {name}"
+    return done
+
+
+def _action_panel(text: str, *, ok: bool) -> FT:
+    """The card is replaced by this line once an action is confirmed or fails."""
+    cls = "ai-action__done" if ok else "ai-action__error"
+    return Div(text, cls=cls)
 
 
 def _empty_state(lang: str = "en") -> FT:
@@ -695,7 +773,23 @@ def _showcase_view(lang: str = "en") -> FT:
     )
 
 
-def _chat_view() -> FT:
+def _thread(messages: list[dict], conversation_id: str, lang: str) -> list[FT]:
+    """Render a stored conversation into message bubbles, with one action card
+    per still-open pending action beneath the assistant turn that proposed it."""
+    out: list[FT] = []
+    for m in messages:
+        role = m.get("role")
+        out.append(_msg_bubble("user" if role == "user" else "ai", m.get("content") or ""))
+        for action in (m.get("pending_actions") or []):
+            out.append(_action_card(conversation_id, str(m.get("id", "")), action, lang))
+    return out
+
+
+def _chat_view(messages: list[dict] | None = None, conversation_id: str = "", lang: str = "en") -> FT:
+    if messages:
+        message_children = _thread(messages, conversation_id, lang)
+    else:
+        message_children = [_empty_state(lang)]
     return Div(
         # Sidebar
         Div(
@@ -704,19 +798,16 @@ def _chat_view() -> FT:
                 "☰",
                 cls="ai-sidebar__toggle",
                 id="ai-sidebar-toggle",
-                title=t("ai.toggle_sidebar"),
+                title=t("ai.toggle_sidebar", lang),
                 onclick="celerpAiToggleSidebar()",
             ),
             # Expanded action buttons (stacked vertically)
             Div(
-                Button(t("btn._new"),
+                Button(t("btn._new", lang),
                     cls="btn btn--secondary ai-sidebar__new",
                     hx_post="/ai/conversations",
-                    hx_target="#ai-history",
-                    hx_swap="afterbegin",
-                    hx_vals='{"title": null}',
                 ),
-                Button(t("btn._memory"),
+                Button(t("btn._memory", lang),
                     cls="btn btn--secondary ai-sidebar__memory-btn",
                     style="width:100%;text-align:left;",
                     hx_get="/ai/memory-panel",
@@ -731,16 +822,13 @@ def _chat_view() -> FT:
                 Button(
                     "+",
                     cls="ai-sidebar__icon-btn",
-                    title=t("ai.new_conversation"),
+                    title=t("ai.new_conversation", lang),
                     hx_post="/ai/conversations",
-                    hx_target="#ai-history",
-                    hx_swap="afterbegin",
-                    hx_vals='{"title": null}',
                 ),
                 Button(
                     "🧠",
                     cls="ai-sidebar__icon-btn",
-                    title=t("ai.memory"),
+                    title=t("ai.memory", lang),
                     hx_get="/ai/memory-panel",
                     hx_target="#ai-memory-content",
                     hx_swap="innerHTML",
@@ -766,13 +854,13 @@ def _chat_view() -> FT:
         Div(
             Div(
                 Span(id="ai-quota-display", cls="ai-quota"),
-                A(t("msg.buy_more_credits"), id="ai-topup-link", href="#",
+                A(t("msg.buy_more_credits", lang), id="ai-topup-link", href="#",
                   target="_blank", cls="ai-topup-link", style="display:none;"),
                 cls="ai-chat__header",
             ),
             # Messages + empty state
             Div(
-                _empty_state(),
+                *message_children,
                 id="ai-messages",
                 cls="ai-messages",
             ),
@@ -783,7 +871,7 @@ def _chat_view() -> FT:
                     id="ai-file-input",
                     multiple=True,
                     style="display: none;",
-                    accept="image/jpeg,image/png,image/gif,image/webp,application/pdf",
+                    accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,.csv,.xlsx",
                     onchange="celerpAiHandleFiles(this)",
                 ),
                 Input(
@@ -792,23 +880,29 @@ def _chat_view() -> FT:
                     id="ai-file-ids",
                     value="",
                 ),
+                Input(
+                    type="hidden",
+                    name="conversation_id",
+                    id="ai-conversation-id",
+                    value=conversation_id,
+                ),
                 # Text input row
                 Div(
                     Input(
                         type="text",
                         name="query",
                         id="ai-query-input",
-                        placeholder=t("msg.ask_anything_about_your_business_data"),
+                        placeholder=t("msg.ask_anything_about_your_business_data", lang),
                         cls="ai-input__field",
                         autocomplete="off",
                     ),
-                    Button(t("btn.send"), type="submit", cls="btn btn--primary ai-input__send"),
+                    Button(t("btn.send", lang), type="submit", cls="btn btn--primary ai-input__send"),
                     cls="ai-input__row",
                 ),
                 # Drop zone
                 Div(
                     Span("📁", cls="ai-chat-dropzone__icon"),
-                    Span(t("msg.drop_files_here_or_click_to_browse"), cls="ai-chat-dropzone__label"),
+                    Span(t("msg.drop_files_here_or_click_to_browse", lang), cls="ai-chat-dropzone__label"),
                     Div(id="ai-file-chips", cls="ai-file-chips"),
                     id="ai-chat-dropzone",
                     cls="ai-chat-dropzone",

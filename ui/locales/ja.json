@@ -355,8 +355,6 @@
   "btn.test_connection": "テスト接続",
   "btn.transfer": "移行",
   "btn.u00d7": "×",
-  "btn.u2705_confirm_create": "\\u2705 確認して作成",
-  "btn.u274c_discard": "\\u274c 破棄",
   "btn.undo": "元に戻す",
   "btn.unlock_remove_lock": "ロックを解除する（ロックを解除する）",
   "btn.unmark_sent": "送信済みのマークを解除する",
@@ -1534,9 +1532,6 @@
   "th.when": "いつ",
   "th.wholesale": "卸売",
   "ai.clear_memory_confirm": "この会社のAIメモリをすべて消去しますか？",
-  "ai.draft_bills_created": "{count}件の請求書下書きを作成しました。「ドキュメント」で確認できます。",
-  "ai.draft_bills_ready_one": "請求書下書きが{n}件準備できました",
-  "ai.draft_bills_ready_other": "請求書下書きが{n}件準備できました",
   "ai.memory": "メモリ",
   "ai.new_conversation": "新しい会話",
   "ai.toggle_sidebar": "サイドバーの表示/非表示を切り替える",
@@ -3112,5 +3107,13 @@
   "settings_cloud.db_connection_failed": "接続に失敗しました。ホスト、ポート、認証情報を確認してください。",
   "settings_cloud.invalid_storage_backend": "有効なストレージバックエンドを選択してください",
   "settings_cloud.invalid_s3_endpoint": "有効な https:// エンドポイントを入力してください",
-  "settings.subscription_linked_connecting": "サブスクリプションがリンクされました。リレーに接続しています..."
+  "settings.subscription_linked_connecting": "サブスクリプションがリンクされました。リレーに接続しています...",
+  "btn.dismiss": "閉じる",
+  "ai.action_proposal": "提案されたアクション",
+  "ai.action_expired": "このアクションはすでに処理されたか、有効期限が切れています。",
+  "ai.action_done": "完了しました。",
+  "ai.busy": "アシスタントは現在混み合っています。少し経ってからもう一度お試しください。",
+  "ai.chat_prompt_empty": "質問を入力するか、ファイルを添付してください。",
+  "ai.attached_files": "📎 添付ファイル",
+  "ai.error_prefix": "エラー:"
 }

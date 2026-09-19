@@ -355,8 +355,6 @@
   "btn.test_connection": "Kiểm tra kết nối",
   "btn.transfer": "Chuyển khoản",
   "btn.u00d7": "×",
-  "btn.u2705_confirm_create": "\\u2705 Xác nhận & Tạo",
-  "btn.u274c_discard": "\\u274c Loại bỏ",
   "btn.undo": "Hoàn tác",
   "btn.unlock_remove_lock": "Mở khóa (bỏ khóa)",
   "btn.unmark_sent": "Bỏ đánh dấu đã gửi",
@@ -1534,9 +1532,6 @@
   "th.when": "Khi",
   "th.wholesale": "Bán buôn",
   "ai.clear_memory_confirm": "Xóa toàn bộ bộ nhớ AI của công ty này?",
-  "ai.draft_bills_created": "Số hóa đơn nháp đã tạo: {count}. Xem trong mục Tài liệu.",
-  "ai.draft_bills_ready_one": "{n} hóa đơn nháp đã sẵn sàng",
-  "ai.draft_bills_ready_other": "{n} hóa đơn nháp đã sẵn sàng",
   "ai.memory": "Bộ nhớ",
   "ai.new_conversation": "Cuộc trò chuyện mới",
   "ai.toggle_sidebar": "Bật/tắt thanh bên",
@@ -3112,5 +3107,13 @@
   "settings_cloud.db_connection_failed": "Kết nối thất bại. Kiểm tra máy chủ, cổng và thông tin xác thực.",
   "settings_cloud.invalid_storage_backend": "Chọn phần phụ trợ lưu trữ hợp lệ",
   "settings_cloud.invalid_s3_endpoint": "Nhập điểm cuối https:// hợp lệ",
-  "settings.subscription_linked_connecting": "Đăng ký đã được liên kết. Đang kết nối đến relay..."
+  "settings.subscription_linked_connecting": "Đăng ký đã được liên kết. Đang kết nối đến relay...",
+  "btn.dismiss": "Bỏ qua",
+  "ai.action_proposal": "Hành động được đề xuất",
+  "ai.action_expired": "Hành động này đã được xử lý hoặc đã hết hạn.",
+  "ai.action_done": "Hoàn tất.",
+  "ai.busy": "Trợ lý hiện đang bận. Vui lòng thử lại sau giây lát.",
+  "ai.chat_prompt_empty": "Vui lòng nhập câu hỏi hoặc đính kèm tệp.",
+  "ai.attached_files": "📎 Tệp đính kèm",
+  "ai.error_prefix": "Lỗi:"
 }

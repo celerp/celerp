@@ -2755,18 +2755,43 @@ async def disconnect_payments(token: str) -> dict:
 # AI assistant
 # ---------------------------------------------------------------------------
 
-async def ai_query(token: str, session_token: str, query: str, file_ids: list[str] | None = None) -> dict:
-    """POST /ai/query — run an AI query against ERP data.
+async def ai_conversation_create(token: str, session_token: str) -> dict:
+    """POST /ai/conversations - start a new conversation. Returns {"id", ...}."""
+    async with _ai_api_client(token, session_token) as c:
+        return _raise(await c.post("/ai/conversations", json={"title": None})).json()
 
-    session_token must be the gateway-issued X-Session-Token.
-    Returns {"answer": str, "model_used": str, "tools_called": list}.
+
+async def ai_conversation_get(token: str, session_token: str, conversation_id: str) -> dict:
+    """GET /ai/conversations/{id} - the conversation with all its messages."""
+    async with _ai_api_client(token, session_token) as c:
+        return _raise(await c.get(f"/ai/conversations/{conversation_id}")).json()
+
+
+async def ai_conversation_query(token: str, session_token: str, conversation_id: str,
+                                query: str, file_ids: list[str] | None = None) -> dict:
+    """POST /ai/conversations/{id}/query - run the agent in a conversation.
+
+    Returns {"answer", "model_used", "tools_called", "pending_actions"}; each
+    pending action carries its own message_id and tool_call_id for confirmation.
     """
-    payload = {"query": query}
+    payload: dict = {"query": query}
     if file_ids:
         payload["file_ids"] = file_ids
-
     async with _ai_api_client(token, session_token, timeout=60.0) as c:
-        return _raise(await c.post("/ai/query", json=payload)).json()
+        return _raise(await c.post(f"/ai/conversations/{conversation_id}/query", json=payload)).json()
+
+
+async def ai_confirm_action(token: str, session_token: str, conversation_id: str,
+                            message_id: str, tool_call_id: str) -> dict:
+    """POST /ai/conversations/{id}/confirm - execute one confirmed pending action.
+
+    Sends IDs only, never business arguments. Returns {"ok", "status", "data", "error"}.
+    """
+    async with _ai_api_client(token, session_token, timeout=60.0) as c:
+        return _raise(await c.post(
+            f"/ai/conversations/{conversation_id}/confirm",
+            json={"message_id": message_id, "tool_call_id": tool_call_id},
+        )).json()
 
 
 async def ai_conversations_list(token: str, session_token: str) -> list[dict]:
@@ -2796,12 +2821,6 @@ async def ai_upload(token: str, session_token: str, files: list[tuple[str, bytes
     multipart = [("files", (name, data, ct)) for name, data, ct in files]
     async with _ai_api_client(token, session_token, timeout=60.0, bulk=True) as c:
         return _raise(await c.post("/ai/upload", files=multipart)).json()
-
-
-async def ai_confirm_bills(token: str, session_token: str, bills: list[dict]) -> dict:
-    """POST /ai/confirm-bills - confirm and create draft bills proposed by AI."""
-    async with _ai_api_client(token, session_token, timeout=60.0) as c:
-        return _raise(await c.post("/ai/confirm-bills", json={"bills": bills})).json()
 
 
 async def ai_usage_stats(token: str, session_token: str = "") -> dict:

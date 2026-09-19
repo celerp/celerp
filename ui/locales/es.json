@@ -355,8 +355,6 @@
   "btn.test_connection": "Conexión de prueba",
   "btn.transfer": "Transferir",
   "btn.u00d7": "×",
-  "btn.u2705_confirm_create": "\\u2705 Confirmar y crear",
-  "btn.u274c_discard": "\\u274c Descartar",
   "btn.undo": "Deshacer",
   "btn.unlock_remove_lock": "Desbloquear (quitar bloqueo)",
   "btn.unmark_sent": "Desmarcar enviado",
@@ -1534,9 +1532,6 @@
   "th.when": "Cuando",
   "th.wholesale": "Al por mayor",
   "ai.clear_memory_confirm": "¿Borrar toda la memoria de IA de esta empresa?",
-  "ai.draft_bills_created": "Borradores de factura creados: {count}. Consúltalos en «Documentos».",
-  "ai.draft_bills_ready_one": "{n} borrador de factura listo",
-  "ai.draft_bills_ready_other": "{n} borradores de factura listos",
   "ai.memory": "Memoria",
   "ai.new_conversation": "Nueva conversación",
   "ai.toggle_sidebar": "Mostrar/ocultar la barra lateral",
@@ -3112,5 +3107,13 @@
   "settings_cloud.db_connection_failed": "Error de conexión. Verifica el host, el puerto y las credenciales.",
   "settings_cloud.invalid_storage_backend": "Selecciona un backend de almacenamiento válido",
   "settings_cloud.invalid_s3_endpoint": "Introduce un endpoint https:// válido",
-  "settings.subscription_linked_connecting": "Suscripción vinculada. Conectando con el relay..."
+  "settings.subscription_linked_connecting": "Suscripción vinculada. Conectando con el relay...",
+  "btn.dismiss": "Descartar",
+  "ai.action_proposal": "Acción propuesta",
+  "ai.action_expired": "Esta acción ya se procesó o ha caducado.",
+  "ai.action_done": "Listo.",
+  "ai.busy": "El asistente está ocupado en este momento. Vuelve a intentarlo en un momento.",
+  "ai.chat_prompt_empty": "Escribe una pregunta o adjunta un archivo.",
+  "ai.attached_files": "📎 Archivo(s) adjunto(s)",
+  "ai.error_prefix": "Error:"
 }
