@@ -342,6 +342,19 @@ async def batch_import(token: str, path: str, records: list[dict], upsert: bool 
         return r.json()
 
 
+async def import_rows(token: str, rows: list[dict], upsert: bool = False) -> dict:
+    """POST mapped inventory CSV rows to the shared import committer.
+
+    Rows are raw column-to-value dicts; the server owns location resolution and
+    creation, unit and quantity derivation, monetary conversion, per-row
+    idempotency, and the category-schema follow-up. Rides the bulk pool for the
+    same reason batch_import does: a large import holds its write connection.
+    """
+    async with _bulk_api_client(token, timeout=300.0) as c:
+        r = _raise(await c.post("/items/import/rows", json={"rows": rows, "upsert": upsert}))
+        return r.json()
+
+
 # ---------------------------------------------------------------------------
 # Auth (no token needed)
 # ---------------------------------------------------------------------------
@@ -790,14 +803,6 @@ async def get_category_schema(token: str, category: str) -> list[dict]:
 async def patch_category_schema(token: str, category: str, fields: list[dict]) -> dict:
     async with _api_client(token) as c:
         result = _raise(await c.patch(f"/companies/me/category-schema/{category}", json={"fields": fields})).json()
-    _invalidate_inventory_metadata()
-    return result
-
-
-async def merge_category_schemas(token: str, schemas: dict[str, list[dict]]) -> dict:
-    """Auto-merge attribute keys from import into category schemas."""
-    async with _api_client(token) as c:
-        result = _raise(await c.post("/companies/me/category-schemas/merge", json={"schemas": schemas})).json()
     _invalidate_inventory_metadata()
     return result
 

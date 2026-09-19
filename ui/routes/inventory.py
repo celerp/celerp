@@ -31,6 +31,7 @@ from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang, is_rtl, field_label
 from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
+from celerp_inventory.services import _CORE_ITEM_COLS
 
 _DEFAULT_PER_PAGE = 50
 
@@ -693,38 +694,6 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
         id=form_id,
         **form_data,
     )
-
-
-def _derive_import_qty(row: dict, sell_by: str, unit_map: dict[str, dict]) -> float:
-    """Derive the stock quantity from a CSV row.
-
-    Priority:
-    1. If the row contains an explicit ``quantity`` or ``qty`` column, trust it
-       unconditionally - the user knows what they're doing.
-    2. Otherwise fall back to the semantic field for the unit type:
-       - pieces-type (e.g. ``piece``) → ``pieces`` column
-       - weight-type (e.g. ``carat``, ``gram``) → ``weight`` or ``weight_ct`` column
-       - other (service, volume, length, unknown) → 0.0
-
-    Returns a float; never raises.
-    """
-    def _to_float(val) -> float | None:
-        s = str(val).strip() if val is not None else ""
-        if not s:
-            return None
-        try:
-            return float(s)
-        except ValueError:
-            return None
-
-    explicit = _to_float(row.get("quantity")) if "quantity" in row else _to_float(row.get("qty"))
-    if explicit is not None:
-        return explicit
-    if is_pieces_unit(sell_by, unit_map):
-        return _to_float(row.get("pieces")) or 0.0
-    if is_weight_unit(sell_by, unit_map):
-        return _to_float(row.get("weight")) or _to_float(row.get("weight_ct")) or 0.0
-    return 0.0
 
 
 def _parse_params(request: Request) -> dict:
@@ -1614,224 +1583,30 @@ def setup_routes(app):
         if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
 
-        import uuid
-
         form = await request.form()
         upsert = form.get("upsert") == "1"
         csv_data = _resolve_csv_text(form)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
 
-        # Build location name→id map.
-        # Rules:
-        # 1. If location_name is empty/absent and there is exactly one location → use it (default).
-        # 2. If location_name is empty/absent and there are multiple locations → abort with clear error.
-        # 3. If location_name is present but not in the map → auto-create it as a warehouse.
+        # Rows arrive mapped and validated by the revalidate cycle. The server owns
+        # location resolution and creation, unit and quantity derivation, monetary
+        # conversion, per-row idempotency, and the category-schema follow-up (one
+        # committer for the browser, the agent, and the raw batch). The browser
+        # transport only chunks to the per-call cap and renders the outcome.
+        _CHUNK = 500
+        merged: dict = {"created": 0, "skipped": 0, "updated": 0, "errors": [], "batch_id": None}
         try:
-            loc_resp = await api.get_locations(token)
-            existing_locs = loc_resp.get("items", [])
-        except APIError:
-            existing_locs = []
-
-        location_map: dict[str, str] = {l["name"]: l["id"] for l in existing_locs}
-
-        # Company currency for unit-price (rate) derivation; fetched once for the whole import.
-        try:
-            _imp_co = await api.get_company(token)
-            _imp_currency = (_imp_co.get("currency") or "").strip() or "USD"
-        except Exception:
-            _imp_currency = "USD"
-
-        # Determine default location (used when location_name is blank/absent)
-        default_location_id: str | None = None
-        if len(existing_locs) == 1:
-            default_location_id = existing_locs[0]["id"]
-        else:
-            # Use the location marked is_default, or the first one if none marked
-            for loc in existing_locs:
-                if loc.get("is_default"):
-                    default_location_id = loc["id"]
-                    break
-
-        # Collect all unique location names used in CSV that need creating
-        loc_names_needed = {
-            str(row.get("location_name", "")).strip()
-            for row in rows
-            if str(row.get("location_name", "")).strip()
-            and str(row.get("location_name", "")).strip() not in location_map
-        }
-        for loc_name_new in loc_names_needed:
-            try:
-                created = await api.create_location(token, {"name": loc_name_new, "type": "warehouse"})
-                location_map[loc_name_new] = created["id"]
-            except APIError:
-                pass  # Will fall back to default; individual row will still try to proceed
-
-        records: list[dict] = []
-
-        # Build category → default_sell_by map for sell_by fallback at import time.
-        _cat_sell_by: dict[str, str] = {}
-        try:
-            vert_cats = await api.list_verticals_categories(token)
-            _cat_sell_by = {
-                c["name"]: c["default_sell_by"]
-                for c in vert_cats
-                if c.get("default_sell_by")
-            }
-        except Exception:
-            pass  # Non-critical; if unavailable, sell_by remains None
-
-        # Build unit maps for sell_by normalization and qty derivation.
-        # Both are derived from a single get_units call to stay DRY.
-        _unit_canonical: dict[str, str] = {}
-        _unit_map: dict[str, dict] = {}
-        try:
-            _units = await api.get_units(token)
-            _unit_canonical = {u["name"].lower(): u["name"] for u in _units}
-            _unit_map = {u["name"]: u for u in _units}
-        except Exception:
-            pass
-
-        # Defensive assertion: sell_by is validated in the revalidate cycle via
-        # _build_item_validator. If any row is still missing it here, the validator
-        # has a bug - this is an internal error, not a user error.
-        missing_sell_by = [
-            str(row.get("sku") or row.get("name") or f"row {i + 1}")
-            for i, row in enumerate(rows)
-            if not (
-                str(row.get("sell_by", "")).strip()
-                or _cat_sell_by.get(str(row.get("category", "")).strip())
-            )
-        ]
-        if missing_sell_by:
-            raise RuntimeError(
-                f"BUG: {len(missing_sell_by)} row(s) reached confirm with missing sell_by "
-                f"({', '.join(missing_sell_by[:5])}). Validator did not catch them."
-            )
-
-        for row in rows:
-            sku = str(row.get("sku", "")).strip()
-            name = str(row.get("name", "")).strip()
-            loc_name = str(row.get("location_name", "")).strip()
-
-            # Resolve location_id: explicit name → map; blank → default
-            if loc_name:
-                location_id = location_map.get(loc_name)
-            else:
-                location_id = default_location_id
-
-            # No guard for sku/name here - the validation pipeline (validate_cell /
-            # _build_item_validator) is the sole authority. sku is optional (auto-assigned);
-            # name is in spec.required and would have been caught at revalidate time.
-            if not location_id:
-                return import_abort_panel(
-                    message=t("inventory.import_no_location"),
-                    import_more_href="/inventory/import",
-                    back_href="/inventory",
-                    has_mapping=True,
-                )
-
-            sell_by = (
-                _unit_canonical.get(str(row.get("sell_by", "")).strip().lower())
-                or str(row.get("sell_by", "")).strip()
-                or _cat_sell_by.get(str(row.get("category", "")).strip())
-                or ""
-            )
-            qty = _derive_import_qty(row, sell_by, _unit_map)
-
-            def _flt(key: str, _row: dict = row) -> float | None:
-                raw = str(_row.get(key, "")).strip()
-                if not raw:
-                    return None
-                try:
-                    return float(raw)
-                except ValueError:
-                    return None
-
-            # All columns not in the core field set are treated as attributes
-            attrs: dict = {}
-            for k, v in row.items():
-                if k not in _CORE_ITEM_COLS and not k.endswith("_price") and not k.endswith("_price_total") and v is not None:
-                    v_str = str(v).strip()
-                    if v_str:
-                        attrs[k] = v_str
-
-            data = {
-                "sku": sku,
-                "name": name,
-                "quantity": qty,
-                "category": str(row.get("category", "")).strip() or None,
-                "weight": _flt("weight") or _flt("weight_ct"),
-                "weight_unit": _unit_canonical.get(str(row.get("weight_unit", "")).strip().lower()) or str(row.get("weight_unit", "")).strip() or None,
-                "gross_weight": _flt("gross_weight"),
-                "gross_weight_unit": _unit_canonical.get(str(row.get("gross_weight_unit", "")).strip().lower()) or str(row.get("gross_weight_unit", "")).strip() or None,
-                "pieces": _flt("pieces"),
-                "sell_by": sell_by or None,
-                "barcode": str(row.get("barcode", "")).strip() or None,
-                "hs_code": str(row.get("hs_code", "")).strip() or None,
-                "short_description": str(row.get("short_description", "")).strip() or None,
-                "description": str(row.get("description", "")).strip() or None,
-                "notes": str(row.get("notes", "")).strip() or None,
-                "location_id": location_id,
-                "attributes": attrs,
-            }
-            # status, created_at, updated_at intentionally omitted:
-            # status is always set to available by the backend on creation.
-            # created_at/updated_at are system-generated; backend enforces this.
-            # Extract price fields dynamically.
-            # _price_total cols: back-calculate unit price = total / qty (Option B).
-            # Only used when the corresponding _price col is not also present.
-            # Requires qty > 0; rows failing this check are hard-errored via records sentinel.
-            _price_errors: list[str] = []
-            for col_key in row:
-                if col_key.endswith("_price_total"):
-                    unit_key = col_key[: -len("_total")]  # e.g. cost_price_total → cost_price
-                    total_val = _flt(col_key)
-                    if total_val is None:
-                        continue
-                    if _flt(unit_key) is not None:
-                        # Unit price already mapped - total is redundant, skip silently
-                        continue
-                    if unit_key == "cost_price":
-                        # cost_total is the primitive; store directly (no back-calculation)
-                        data["cost_total"] = total_val
-                        continue
-                    # Derive the unit price (a rate) at the fewest decimals that reconcile the entered
-                    # total to the cent - same helper as the interactive "set from total" edit (DRY).
-                    # qty=0 or missing: treat as 1 (total = unit price for a single item).
-                    from celerp.services.money import unit_price_from_total, to_stored_float
-                    data[unit_key] = to_stored_float(unit_price_from_total(total_val, qty or 1, _imp_currency))
-                elif col_key.endswith("_price") and _flt(col_key) is not None:
-                    data[col_key] = _flt(col_key)
-            if _price_errors:
-                records.append({"_import_error": "; ".join(_price_errors), "name": name, "sku": sku})
-                continue
-            barcode = data["barcode"]
-            idem = f"csv:item:bc:{barcode}".lower() if barcode else f"csv:item:{sku}".lower()
-            data["idempotency_key"] = idem
-
-            records.append({
-                "entity_id": f"item:{uuid.uuid4()}",
-                "event_type": "item.created",
-                "data": data,
-                "source": "csv_import",
-                "idempotency_key": idem,
-            })
-
-        try:
-            _CHUNK = 500
-            merged: dict = {"created": 0, "skipped": 0, "updated": 0, "errors": [], "batch_id": None}
-            for i in range(0, max(len(records), 1), _CHUNK):
-                chunk = records[i : i + _CHUNK]
+            for i in range(0, max(len(rows), 1), _CHUNK):
+                chunk = rows[i : i + _CHUNK]
                 if not chunk:
                     break
-                r = await api.batch_import(token, "/items/import/batch", chunk, upsert=upsert)
+                r = await api.import_rows(token, chunk, upsert=upsert)
                 merged["created"] += r.get("created", 0)
                 merged["skipped"] += r.get("skipped", 0)
                 merged["updated"] += r.get("updated", 0)
                 merged["errors"].extend(r.get("errors") or [])
                 if r.get("batch_id"):
                     merged["batch_id"] = r["batch_id"]
-            result = merged
         except APIError as e:
             if e.status == 401:
                 return import_abort_panel(
@@ -1847,41 +1622,15 @@ def setup_routes(app):
                 has_mapping=True,
             )
 
-        # Auto-merge discovered attribute keys into category schemas
-        schema_info = ""
-        if records:
-            try:
-                cat_attr_values = _collect_category_attributes(rows)
-                inferred = _infer_category_schemas(cat_attr_values)
-                if inferred:
-                    await api.merge_category_schemas(token, inferred)
-                    total_new = sum(len(fs) for fs in inferred.values())
-                    cat_names = ", ".join(sorted(inferred.keys()))
-                    schema_info = Div(
-                        P(
-                            t("inventory.attrs_added", n=total_new, cats=cat_names),
-                            A(t("inv.review"), href="/settings/inventory?tab=category-library"),
-                            cls="flash flash--info",
-                        ),
-                    )
-            except Exception:
-                pass  # schema merge is best-effort; import already succeeded
-
-        created = int(result.get("created", 0) or 0)
-        skipped = int(result.get("skipped", 0) or 0)
-        updated = int(result.get("updated", 0) or 0)
-        errors = list(result.get("errors", []) or [])
-
         return import_result_panel(
-            created=created,
-            skipped=skipped,
-            updated=updated,
-            errors=errors,
+            created=int(merged.get("created", 0) or 0),
+            skipped=int(merged.get("skipped", 0) or 0),
+            updated=int(merged.get("updated", 0) or 0),
+            errors=list(merged.get("errors", []) or []),
             entity_label="inventory",
             back_href="/inventory",
             import_more_href="/inventory/import",
             has_mapping=True,
-            extra=schema_info,
         )
 
     # ── Blank-create: /inventory/create-blank ──────────────────────────────────
@@ -7616,65 +7365,6 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
             cell_renderers["gross_weight_unit"] = _make_unit_renderer("gross_weight_unit", weight_unit_names)
 
     return _validate, cell_renderers
-
-
-# Core item columns that map to top-level ItemCreate fields (not attributes).
-# Price columns (any key ending in _price) are excluded from attributes separately.
-_CORE_ITEM_COLS: frozenset[str] = frozenset({
-    "sku", "name", "category", "quantity",
-    "weight", "weight_ct", "weight_unit", "gross_weight", "gross_weight_unit",
-    "sell_by", "pieces", "status",
-    "barcode", "hs_code", "short_description", "description", "notes", "location_name",
-    "location_id", "created_at", "updated_at",
-})
-
-# Max distinct values before a column is treated as free-text instead of dropdown
-_DROPDOWN_THRESHOLD = 30
-
-
-def _collect_category_attributes(rows: list[dict]) -> dict[str, dict[str, list[str]]]:
-    """Return {category: {col: [distinct_values]}} for all attribute columns."""
-    result: dict[str, dict[str, list[str]]] = {}
-    for row in rows:
-        cat = str(row.get("category", "") or "").strip() or "_uncategorized"
-        if cat not in result:
-            result[cat] = {}
-        for k, v in row.items():
-            if k in _CORE_ITEM_COLS or k.endswith("_price") or k.endswith("_price_total"):
-                continue
-            v_str = str(v).strip() if v is not None else ""
-            if not v_str:
-                continue
-            if k not in result[cat]:
-                result[cat][k] = []
-            if v_str not in result[cat][k]:
-                result[cat][k].append(v_str)
-    return result
-
-
-def _infer_category_schemas(cat_attr_values: dict[str, dict[str, list[str]]]) -> dict[str, list[dict]]:
-    """Convert collected attribute values into schema field definitions."""
-    schemas: dict[str, list[dict]] = {}
-    for cat, cols in cat_attr_values.items():
-        if cat == "_uncategorized":
-            continue
-        fields = []
-        for key, distinct_vals in cols.items():
-            if len(distinct_vals) <= _DROPDOWN_THRESHOLD:
-                ftype = "select"
-                options = sorted(distinct_vals)
-            else:
-                ftype = "text"
-                options = []
-            fields.append({
-                "key": key,
-                "label": key.replace("_", " ").title(),
-                "type": ftype,
-                "options": options,
-            })
-        if fields:
-            schemas[cat] = fields
-    return schemas
 
 
 def _effective_schema(
