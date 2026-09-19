@@ -15264,8 +15264,8 @@ class TestAIPage:
         assert "Smart Restock" in html
         assert "Discrepancy Audit" in html
         assert "Bulk Catalog Import" in html
-        assert "$29/mo" in html
-        assert "$49/mo" in html
+        assert "$29/mo" not in html
+        assert "$49/mo" not in html
         assert "celerpShowcaseSelect" in html
 
     def test_chat_view_has_sidebar_and_input(self):
@@ -20128,8 +20128,9 @@ class TestCommercialRoutingRender:
         assert "USD $" not in html          # no direct $29/$49/$99 prices
         assert "plan=cloud" not in html
         assert "plan=ai" not in html
-        assert "cloud-plans" not in html
+        assert "cloud-plans" in html         # partner offer cards use the shared grid
         assert "Managed Plan" in html        # partner offer rendered instead
+        assert "$49.00" in html              # partner-controlled offer price
 
     def test_partner_managed_offer_null_shows_neutral_contact(self):
         """Partner-managed with no synced offer degrades to the neutral contact
