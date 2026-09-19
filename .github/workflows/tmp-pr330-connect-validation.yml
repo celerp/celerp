@@ -1,0 +1,106 @@
+name: Temporary validate PR330 Connect integrity
+on:
+  push:
+    branches: [validate/connect-entitlement-integrity]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install deps
+        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split
+      - name: Apply final PR330 corrections
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path("celerp/gateway/client.py")
+          lines = p.read_text().splitlines()
+          start = next(i for i, line in enumerate(lines)
+                       if line == '        elif msg_type == "session.refresh":')
+          end = next(i for i in range(start + 1, len(lines))
+                     if lines[i].startswith("        elif "))
+          lines[start:end] = [
+              '        elif msg_type == "session.refresh":',
+              "            from celerp.gateway.state import set_session_token",
+              '            session_token = payload.get("session_token")',
+              "            if session_token:",
+              "                set_session_token(session_token)",
+              '                log.debug("Gateway session token refreshed.")',
+              "            else:",
+              '                log.debug("Gateway session refresh ignored: no token supplied.")',
+              "",
+          ]
+          p.write_text("\n".join(lines) + "\n")
+
+          # Paid backup route tests must model the durable account credential now
+          # used for retained-backup recovery instead of public_url authority.
+          p = Path("tests/test_routers/test_backup.py")
+          src = p.read_text()
+          if "orig_gateway_token = settings.gateway_token" not in src:
+              src = src.replace(
+                  "    orig_public_url = settings.celerp_public_url\n",
+                  "    orig_public_url = settings.celerp_public_url\n"
+                  "    orig_gateway_token = settings.gateway_token\n", 1)
+              src = src.replace(
+                  "    settings.celerp_public_url = orig_public_url\n",
+                  "    settings.celerp_public_url = orig_public_url\n"
+                  "    settings.gateway_token = orig_gateway_token\n", 1)
+          src = src.replace(
+              '    settings.celerp_public_url = "https://x.celerp.com"\n',
+              '    settings.celerp_public_url = "https://x.celerp.com"\n'
+              '    settings.gateway_token = "stored-api-key"\n')
+          p.write_text(src)
+          PY
+      - name: Regenerate first-party lock
+        run: python scripts/gen_first_party_lock.py
+      - name: Compile
+        run: python -m compileall -q celerp ui default_modules/celerp-backup
+      - name: Focused Connect tests
+        env:
+          ALLOW_INSECURE_JWT: "true"
+          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+        run: >
+          pytest -q --tb=short --no-cov
+          tests/test_routers/test_cloud_relay.py
+          tests/test_routers/test_backup.py
+          tests/test_gateway/test_client.py
+          tests/test_gateway/test_commercial_context.py
+          tests/test_settings_fragments.py
+      - name: Full non-browser suite
+        env:
+          ALLOW_INSECURE_JWT: "true"
+          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+        run: >
+          timeout 900 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
+          --timeout=30 --ignore=tests/test_visual.py --ignore=tests/test_browser
+      - name: Commit validated PR330 source
+        run: |
+          git config user.name "Noah Severs"
+          git config user.email "118095044+ngsevers@users.noreply.github.com"
+          rm .github/workflows/tmp-pr330-connect-validation.yml
+          git add -A
+          git commit -m "Fix Connect entitlement integrity"
+          git push --force origin HEAD:validate/connect-entitlement-integrity
