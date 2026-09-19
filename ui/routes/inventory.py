@@ -31,7 +31,13 @@ from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang, is_rtl, field_label
 from celerp.services.units import is_weight_unit, is_pieces_unit
 from celerp.services.line_measures import splitting_allowed
-from celerp_inventory.services import _CORE_ITEM_COLS
+from celerp_inventory.services import (
+    _CORE_ITEM_COLS,
+    ITEM_IMPORT_BASE_COLS,
+    ITEM_IMPORT_TAIL_COLS,
+    build_item_import_spec,
+    importable_price_lists,
+)
 
 _DEFAULT_PER_PAGE = 50
 
@@ -7207,45 +7213,27 @@ def _union_category_attr_keys(cat_schemas: dict) -> list[str]:
     return list(seen)
 
 
-# Base import columns (without price columns - those are added dynamically)
-_IMPORT_BASE_COLS = ["sku", "name", "sell_by", "category", "quantity"]
-_IMPORT_TAIL_COLS = ["weight", "weight_unit", "gross_weight", "gross_weight_unit", "pieces", "barcode", "hs_code",
-                     "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
-                     "short_description", "description", "notes", "location_name"]
-
+# The dynamic item import spec (with the company's price columns) is built by
+# celerp_inventory.services.build_item_import_spec, the single source shared with
+# the agent preview/commit routes. This default spec (the three built-in price
+# lists) drives the upload form and template before a company's lists are known.
 _IMPORT_SPEC = CsvImportSpec(
-    cols=_IMPORT_BASE_COLS + ["retail_price", "wholesale_price", "cost_price"] + _IMPORT_TAIL_COLS,
+    cols=ITEM_IMPORT_BASE_COLS + ["retail_price", "wholesale_price", "cost_price"] + ITEM_IMPORT_TAIL_COLS,
     required={"name", "sell_by"},
     type_map={"quantity": float, "retail_price": float, "wholesale_price": float,
               "cost_price": float, "weight": float, "purchase_conversion_factor": float},
 )
 
 
-def _importable_price_lists(price_lists: list[dict]) -> list[dict]:
-    """Price lists whose values can be imported. Derived lists are computed from the base
-    price list at read time, so the import mapper never offers their columns."""
-    return [pl for pl in price_lists if pl.get("name") and not is_derived(pl)]
-
-
 def _build_import_spec(price_lists: list[dict]) -> CsvImportSpec:
-    """Build import spec with dynamic price columns from company price lists."""
-    price_cols = [price_key(pl["name"]) for pl in _importable_price_lists(price_lists)]
-    # Add virtual total cols (one per price col) - back-calculated at confirm time
-    price_total_cols = [f"{col}_total" for col in price_cols]
-    type_map = {"quantity": float, "weight": float, "pieces": float}
-    for col in price_cols + price_total_cols:
-        type_map[col] = float
-    return CsvImportSpec(
-        cols=_IMPORT_BASE_COLS + price_cols + price_total_cols + _IMPORT_TAIL_COLS,
-        required={"name", "sell_by"},
-        type_map=type_map,
-    )
+    """Build the item import spec with dynamic price columns from company price lists."""
+    return build_item_import_spec(price_lists)
 
 
 def _import_price_col_labels(price_lists: list[dict]) -> dict[str, str]:
     """Human-readable labels for price columns in the import mapping UI."""
     labels: dict[str, str] = {}
-    for pl in _importable_price_lists(price_lists):
+    for pl in importable_price_lists(price_lists):
         name = pl.get("name", "")
         key = price_key(name)
         labels[key] = t("inventory.import_col_unit_price", name=name)
@@ -7256,7 +7244,7 @@ def _import_price_col_labels(price_lists: list[dict]) -> dict[str, str]:
 def _import_price_mutex_groups(price_lists: list[dict]) -> list[list[str]]:
     """Mutex groups: mapping unit price and total for the same price list is mutually exclusive."""
     groups = []
-    for pl in _importable_price_lists(price_lists):
+    for pl in importable_price_lists(price_lists):
         key = price_key(pl["name"])
         groups.append([key, f"{key}_total"])
     return groups
