@@ -1,4 +1,4 @@
-name: Build final security cleanup
+name: Build final password-fixture correction
 
 on:
   push:
@@ -16,20 +16,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Build cleaned #331 tree
+      - name: Build exact #331 follow-up
         shell: bash
         run: |
           set -euo pipefail
-          cp .review/app331-ci-cleanup.patch.xz.b64 /tmp/p.b64
-          git checkout --detach 654759f4016cde2ae1729e7b7bd9c4e870ce5efc
+          cp .review/app331-password-fixture.patch.xz.b64 /tmp/p.b64
+          git checkout review/final-app331-password
           base64 -d /tmp/p.b64 | xz -dc > /tmp/p.patch
           git apply /tmp/p.patch
           git diff --check
-          python -m py_compile tests/test_ui.py
-          git add tests/test_ui.py
+          python -m py_compile tests/test_routers/test_cloud_relay.py
           git config user.name "Noah Severs"
           git config user.email "118095044+ngsevers@users.noreply.github.com"
-          tree="$(git write-tree)"
-          sha="$(printf '%s\n' 'test: remove obsolete Connect polling regressions' | git commit-tree "$tree" -p 654759f4016cde2ae1729e7b7bd9c4e870ce5efc -p 16b9327f0e083f8d466b8fb6e64bb6ff888dc232)"
-          git push origin "$sha":refs/heads/review/final-app331-cleanup
-          echo "candidate=$sha"
+          git add tests/test_routers/test_cloud_relay.py
+          git commit -m "Test cloud relay with valid password fixtures"
+          git push origin HEAD:refs/heads/review/final-app331-password
+          echo "candidate=$(git rev-parse HEAD)"
