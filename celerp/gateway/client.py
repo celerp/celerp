@@ -476,12 +476,12 @@ class GatewayClient:
 
         elif msg_type == "session.refresh":
             from celerp.gateway.state import set_session_token
-            session_token = payload.get("session_token", "")
-            set_session_token(session_token)
+            session_token = payload.get("session_token")
             if session_token:
+                set_session_token(session_token)
                 log.debug("Gateway session token refreshed.")
             else:
-                log.debug("Gateway session token revoked by relay.")
+                log.debug("Gateway session refresh ignored: no token supplied.")
 
         elif msg_type == "error":
             code = payload.get("code", "")

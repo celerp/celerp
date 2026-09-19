@@ -125,6 +125,7 @@ async def sync_existing_entitlement() -> dict | None:
     tokenless verifier/legacy recovery remains in the explicit activation flow.
     """
     from celerp.config import ensure_instance_id, settings
+    from celerp.gateway.state import activate_payload
     if settings.cloud_disconnected:
         return {"disconnected": True}
     key = await stored_api_key()
