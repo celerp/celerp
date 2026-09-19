@@ -89,7 +89,7 @@ async def _try_auto_activate() -> None:
     try:
         import httpx
         from celerp.config import (
-            settings as _s, ensure_instance_id, config_path, record_cloud_activation)
+            settings as _s, ensure_instance_id, config_path)
         if _s.cloud_disconnected:
             return
         first_boot = not config_path().exists()
@@ -137,30 +137,13 @@ async def _try_auto_activate() -> None:
         if not token:
             return
         public_url = data.get("public_url")
-        tos_version = data.get("tos_version")
-        _s.gateway_token = token
-        _s.gateway_instance_id = iid
-        _s.celerp_public_url = public_url or ""
-        if not _s.backup_encryption_key:
-            import base64, secrets as _secrets
-            _s.backup_encryption_key = base64.b64encode(_secrets.token_bytes(32)).decode()
-        try:
-            await asyncio.to_thread(
-                record_cloud_activation,
-                token, iid, public_url=public_url, tos_version=tos_version,
-                backup_encryption_key=_s.backup_encryption_key)
-        except Exception:
-            # Keep the verifier durable when the credential itself could not be
-            # persisted. A restart can safely redeem the same result again.
-            pass
-
-        from celerp.gateway import ensure_running, has_active_share
-        if public_url or await has_active_share():
-            ensure_running()
-            _log.info("Recovered cloud relay activation (instance_id=%s)", iid)
-        if public_url and _s.backup_enabled and _s.backup_encryption_key:
-            from celerp.services import backup_scheduler
-            backup_scheduler.start()
+        from celerp.services.cloud_entitlement import apply_activation_state
+        await apply_activation_state(
+            token, iid, public_url=public_url,
+            tos_version=data.get("tos_version"),
+            backup_encryption_key=data.get("backup_encryption_key"),
+            tier=data.get("tier"), status=data.get("status"))
+        _log.info("Recovered cloud relay activation (instance_id=%s)", iid)
     except Exception as exc:
         logging.getLogger(__name__).debug(
             "Activation recovery/check-in failed (expected for self-hosted): %s", exc)

@@ -32,7 +32,8 @@ async def authenticated_request(method: str, path: str, *, total_s: float = RELA
                                 json: dict | None = None, params: dict | None = None,
                                 api_key: str | None = None):
     """One bounded relay REST request authenticated by the durable instance key."""
-    from celerp.gateway.state import fetch_relay_bearer, relay_http_url, with_relay_client
+    from celerp.gateway.state import (
+        activate_payload, fetch_relay_bearer, relay_http_url, with_relay_client)
     key = api_key or await stored_api_key()
     if not key:
         return None
@@ -60,9 +61,13 @@ async def subscription_status() -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-async def apply_activation_state(token: str, iid: str, *, public_url: str | None = None,
-                                 tos_version: str | None = None,
-                                 authoritative_public_url: bool = True) -> None:
+async def apply_activation_state(
+    token: str, iid: str, *, public_url: str | None = None,
+    tos_version: str | None = None,
+    backup_encryption_key: str | None = None,
+    tier: str | None = None, status: str | None = None,
+    authoritative_public_url: bool = True,
+) -> None:
     """Persist relay-authoritative activation state and converge local runtime."""
     from celerp.config import record_cloud_activation, settings
     from celerp.gateway import client as gateway_client
@@ -73,9 +78,16 @@ async def apply_activation_state(token: str, iid: str, *, public_url: str | None
     settings.gateway_instance_id = iid
     settings.celerp_public_url = effective_public_url or ""
     settings.cloud_disconnected = False
-    if not settings.backup_encryption_key:
+    if backup_encryption_key:
+        settings.backup_encryption_key = backup_encryption_key
+    elif not settings.backup_encryption_key and effective_public_url:
+        # Compatibility with an older relay that cannot escrow backup keys.
         import base64, secrets
-        settings.backup_encryption_key = base64.b64encode(secrets.token_bytes(32)).decode()
+        settings.backup_encryption_key = base64.b64encode(
+            secrets.token_bytes(32)).decode()
+    if tier:
+        from celerp.gateway.state import set_subscription_state
+        set_subscription_state(tier, status or "")
 
     await asyncio.to_thread(
         record_cloud_activation, token, iid, public_url=effective_public_url,
@@ -113,6 +125,7 @@ async def sync_existing_entitlement() -> dict | None:
     tokenless verifier/legacy recovery remains in the explicit activation flow.
     """
     from celerp.config import ensure_instance_id, settings
+    from celerp.gateway.state import activate_payload
     if settings.cloud_disconnected:
         return {"disconnected": True}
     key = await stored_api_key()
@@ -122,7 +135,7 @@ async def sync_existing_entitlement() -> dict | None:
     try:
         response = await authenticated_request(
             "POST", "/auth/activate", total_s=RELAY_ENTITLEMENT_TIMEOUT,
-            json={"instance_id": iid}, api_key=key)
+            json=activate_payload(iid), api_key=key)
     except Exception as exc:
         log.debug("Relay entitlement sync failed: %s", exc)
         return None
@@ -133,5 +146,8 @@ async def sync_existing_entitlement() -> dict | None:
     if not token:
         return None
     await apply_activation_state(
-        token, iid, public_url=data.get("public_url"), tos_version=data.get("tos_version"))
+        token, iid, public_url=data.get("public_url"),
+        tos_version=data.get("tos_version"),
+        backup_encryption_key=data.get("backup_encryption_key"),
+        tier=data.get("tier"), status=data.get("status"))
     return data if isinstance(data, dict) else {}

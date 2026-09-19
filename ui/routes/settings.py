@@ -3946,12 +3946,18 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     from ui.components.cloud_gate import upgrade_banner
 
     enc_ok = bool(backup_data and backup_data.get("enc_ok")) if backup_data is not None else bool(_cfg.backup_encryption_key)
-    # gw_ok gates on public_url, not just a gateway_token: a free instance now holds
-    # a gateway_token too (marketplace purchases), but backups are a paid-tier
-    # feature and public_url is only granted to paid tiers (mirrors the lazy-tunnel
-    # gate). Derived from the API response - reading get_client()/settings here
-    # would always return the UI process's own state, not the API process's.
-    gw_ok = bool(backup_data and backup_data.get("public_url"))
+    # Backup recovery is account-scoped, not Web-Access-scoped. A canceled paid
+    # account can legitimately have no public_url while its restore window remains
+    # open; the relay enforces the exact retention boundary.
+    _tier = (backup_data or {}).get("subscription_tier")
+    _status = (backup_data or {}).get("subscription_status")
+    gw_ok = bool(
+        backup_data
+        and backup_data.get("gateway_token_set")
+        and enc_ok
+        and _tier not in (None, "", "free")
+        and _status in ("active", "trialing", "canceled")
+    )
 
     if not gw_ok:
         return Div(

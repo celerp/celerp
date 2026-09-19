@@ -64,12 +64,15 @@ async def auth_client(session: AsyncSession):
 def reset_backup_settings():
     orig_key = settings.backup_encryption_key
     orig_public_url = settings.celerp_public_url
+    orig_gateway_token = settings.gateway_token
     yield
     settings.backup_encryption_key = orig_key
     settings.celerp_public_url = orig_public_url
+    settings.gateway_token = orig_gateway_token
 
 
 def _mock_durable_relay_auth(monkeypatch):
+    settings.backup_encryption_key = base64.b64encode(b"k" * 32).decode()
     monkeypatch.setattr(
         "celerp.services.cloud_entitlement.stored_api_key",
         AsyncMock(return_value="api-key"),
@@ -154,6 +157,7 @@ async def test_list_htmx_with_items(auth_client, monkeypatch):
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
     settings.celerp_public_url = "https://x.celerp.com"
+    settings.gateway_token = "stored-api-key"
 
     items = [
         {"id": "bkp-1", "created_at": "2026-05-01T10:00:00Z", "size_bytes": 1048576, "label": "daily"},
@@ -182,6 +186,7 @@ async def test_list_htmx_empty_items(auth_client, monkeypatch):
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
     settings.celerp_public_url = "https://x.celerp.com"
+    settings.gateway_token = "stored-api-key"
 
     with respx.mock:
         respx.get("https://relay.test.com/repo/snapshots").mock(
@@ -203,6 +208,7 @@ async def test_list_json(auth_client, monkeypatch):
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
     settings.celerp_public_url = "https://x.celerp.com"
+    settings.gateway_token = "stored-api-key"
 
     items = [{"id": "bkp-1", "created_at": "2026-05-01T10:00:00Z", "size_bytes": 100, "label": "x"}]
     with respx.mock:
@@ -225,6 +231,7 @@ async def test_list_relay_error(auth_client, monkeypatch):
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
     settings.celerp_public_url = "https://x.celerp.com"
+    settings.gateway_token = "stored-api-key"
 
     with respx.mock:
         respx.get("https://relay.test.com/repo/snapshots").mock(
