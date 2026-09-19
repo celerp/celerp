@@ -22,7 +22,7 @@ async def owner_h(client) -> dict:
     authenticated user, and the owner holds manage_integrations by default."""
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "FragCo", "email": "frag@example.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "FragCo", "email": "frag@example.com", "name": "Admin", "password": "pwvalid1"},
     )
     assert reg.status_code == 200, reg.text
     return {"Authorization": f"Bearer {reg.json()['access_token']}"}

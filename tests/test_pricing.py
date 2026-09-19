@@ -214,7 +214,7 @@ async def _register(client) -> str:
     email = f"pricing-{uuid.uuid4().hex[:8]}@example.com"
     r = await client.post(
         "/auth/register",
-        json={"company_name": "PricingCo", "email": email, "name": "Owner", "password": "pw"},
+        json={"company_name": "PricingCo", "email": email, "name": "Owner", "password": "pwvalid1"},
     )
     assert r.status_code == 200, r.text
     return r.json()["access_token"]
@@ -315,12 +315,12 @@ async def test_get_price_lists_strips_factors_below_manager(client, session):
     email = f"op-{uuid.uuid4().hex[:8]}@example.com"
     r = await client.post(
         "/companies/me/users",
-        json={"email": email, "name": "Operator", "role": "operator", "password": "pw123"},
+        json={"email": email, "name": "Operator", "role": "operator", "password": "pw123val"},
         headers=h,
     )
     assert r.status_code == 200, r.text
     await _clear_tracker(session)
-    r = await client.post("/auth/login", json={"email": email, "password": "pw"[:2] + "123"})
+    r = await client.post("/auth/login", json={"email": email, "password": "pw123val"})
     assert r.status_code == 200, r.text
     op_h = _auth(r.json()["access_token"])
 

@@ -25,8 +25,10 @@ from celerp.services.auth import (
     get_current_role,
     hash_password,
     issue_token_pair,
+    MIN_PASSWORD_LENGTH,
     normalize_role,
     ROLE_LEVELS,
+    validate_password,
 )
 from celerp.services.permissions import (
     PERMISSIONS,
@@ -657,6 +659,16 @@ async def create_user(
             logger.error("create_user link failed: %s", e, exc_info=True)
             raise HTTPException(status_code=400, detail=f"User creation failed: {e}") from e
         return {"id": str(existing_user.id)}
+
+    # Only the branch that actually creates a new password hash enforces the length
+    # policy; linking an existing global user never touches this password field.
+    try:
+        validate_password(payload.password)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.",
+        )
 
     user = User(
         id=uuid.uuid4(),

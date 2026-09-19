@@ -3113,5 +3113,6 @@
   "settings_cloud.invalid_port": "Nhập số cổng hợp lệ (1-65535)",
   "settings_cloud.db_connection_failed": "Kết nối thất bại. Kiểm tra máy chủ, cổng và thông tin xác thực.",
   "settings_cloud.invalid_storage_backend": "Chọn phần phụ trợ lưu trữ hợp lệ",
-  "settings_cloud.invalid_s3_endpoint": "Nhập điểm cuối https:// hợp lệ"
+  "settings_cloud.invalid_s3_endpoint": "Nhập điểm cuối https:// hợp lệ",
+  "settings.subscription_linked_connecting": "Đăng ký đã được liên kết. Đang kết nối đến relay..."
 }

@@ -24,7 +24,7 @@ async def _register(client) -> str:
         "company_name": f"DateVal {uuid.uuid4().hex[:6]}",
         "email": f"dateval-{uuid.uuid4().hex[:8]}@test.test",
         "name": "Admin",
-        "password": "pw",
+        "password": "pwvalid1",
     })
     assert r.status_code == 200
     return r.json()["access_token"]

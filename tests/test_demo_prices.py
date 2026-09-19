@@ -12,7 +12,7 @@ from unittest.mock import patch as mock_patch
 
 async def _headers(client) -> dict:
     r = await client.post("/auth/register", json={
-        "company_name": "Acme", "email": "admin@acme.com", "name": "Admin", "password": "pw"
+        "company_name": "Acme", "email": "admin@acme.example", "name": "Admin", "password": "pwvalid1"
     })
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 

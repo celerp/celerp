@@ -38,12 +38,12 @@ async def owner_jwt(session: AsyncSession) -> str:
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         await c.post("/auth/register", json={
-            "company_name": "TestCo", "email": "owner@test.com",
-            "name": "Owner", "password": "pw",
+            "company_name": "TestCo", "email": "owner@test.example",
+            "name": "Owner", "password": "pwvalid1",
         })
         r = await c.post(
             "/auth/login",
-            json={"email": "owner@test.com", "password": "pw"},
+            json={"email": "owner@test.example", "password": "pwvalid1"},
             headers={"X-Session-Token": token},
         )
         yield r.json()["access_token"], token
@@ -66,23 +66,23 @@ async def admin_jwt(session: AsyncSession) -> str:
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         await c.post("/auth/register", json={
-            "company_name": "TestCo2", "email": "owner2@test.com",
-            "name": "Owner2", "password": "pw",
+            "company_name": "TestCo2", "email": "owner2@test.example",
+            "name": "Owner2", "password": "pwvalid1",
         })
         r_owner = await c.post(
             "/auth/login",
-            json={"email": "owner2@test.com", "password": "pw"},
+            json={"email": "owner2@test.example", "password": "pwvalid1"},
             headers={"X-Session-Token": token},
         )
         owner_jwt = r_owner.json()["access_token"]
         await c.post(
             "/companies/me/users",
-            json={"email": "admin@test.com", "name": "Admin", "role": "admin", "password": "pw"},
+            json={"email": "admin@test.example", "name": "Admin", "role": "admin", "password": "pwvalid1"},
             headers={"Authorization": f"Bearer {owner_jwt}", "X-Session-Token": token},
         )
         r = await c.post(
             "/auth/login",
-            json={"email": "admin@test.com", "password": "pw"},
+            json={"email": "admin@test.example", "password": "pwvalid1"},
             headers={"X-Session-Token": token},
         )
         yield r.json()["access_token"], token

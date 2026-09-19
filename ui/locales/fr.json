@@ -3113,5 +3113,6 @@
   "settings_cloud.invalid_port": "Saisissez un numéro de port valide (1-65535)",
   "settings_cloud.db_connection_failed": "Échec de la connexion. Vérifiez l'hôte, le port et les identifiants.",
   "settings_cloud.invalid_storage_backend": "Sélectionnez un backend de stockage valide",
-  "settings_cloud.invalid_s3_endpoint": "Saisissez un point de terminaison https:// valide"
+  "settings_cloud.invalid_s3_endpoint": "Saisissez un point de terminaison https:// valide",
+  "settings.subscription_linked_connecting": "Abonnement associé. Connexion au relais..."
 }

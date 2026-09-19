@@ -16,7 +16,7 @@ from celerp_contacts.migrations import migrate_self_contacts
 
 async def _register(client) -> None:
     addr = f"admin-{uuid.uuid4().hex[:8]}@selfmig.test"
-    r = await client.post("/auth/register", json={"company_name": "SelfMig Co", "email": addr, "name": "Admin", "password": "pw"})
+    r = await client.post("/auth/register", json={"company_name": "SelfMig Co", "email": addr, "name": "Admin", "password": "pwvalid1"})
     assert r.status_code == 200
 
 

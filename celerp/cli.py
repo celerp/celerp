@@ -16,6 +16,7 @@ from pathlib import Path
 import click
 
 from celerp.config import config_path as _config_path, read_config as _read_config, write_config as _write_config, resolve_install_order as _resolve_install_order, set_enabled_modules as _set_enabled_modules
+from celerp.services.auth import MIN_PASSWORD_LENGTH, validate_password
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 
@@ -988,7 +989,7 @@ def init(db_url, api_port, ui_port, cloud_token, force, assume_yes, no_start, wa
     setup_code = None
     if no_start:
         import hashlib
-        setup_code = secrets.token_hex(4)
+        setup_code = secrets.token_hex(16)
         cfg["auth"]["setup_code_hash"] = hashlib.sha256(setup_code.encode()).hexdigest()
         cfg["server"]["headless"] = True
 
@@ -1171,8 +1172,10 @@ def _start(cfg: dict) -> None:
 @click.option("--password", prompt=True, hide_input=True, confirmation_prompt=True, help="New password.")
 def reset_password(email: str, password: str) -> None:
     """Reset a user's password directly via the database."""
-    if len(password) < 8:
-        click.echo("Error: password must be at least 8 characters.", err=True)
+    try:
+        validate_password(password)
+    except ValueError:
+        click.echo(f"Error: password must be at least {MIN_PASSWORD_LENGTH} characters.", err=True)
         sys.exit(1)
     cfg = _read_config()
     if not cfg:

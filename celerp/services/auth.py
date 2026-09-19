@@ -52,11 +52,30 @@ def normalize_role(role: str) -> str:
 AUTH_TOKEN_VERSION = 2
 
 
+# The one backend password policy: at least this many characters. No composition
+# rules. Every password-setting path validates against this single constant, and
+# the UI preflight reads it too so the client and server never diverge.
+MIN_PASSWORD_LENGTH = 8
+
+
+def validate_password(password: str) -> None:
+    """Raise ValueError('password_too_short') when a password is below policy.
+
+    The single source of the length rule. Callers convert the ValueError into
+    their own user-facing message so copy stays localized at the edge.
+    """
+    if len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError("password_too_short")
+
+
 def verify_password(plain: str, hashed: str) -> bool:
     return pwd_context.verify(plain, hashed)
 
 
 def hash_password(password: str) -> str:
+    # Final backend invariant: no hash is ever produced for a sub-policy password,
+    # so a future caller cannot silently bypass the length rule.
+    validate_password(password)
     return pwd_context.hash(password)
 
 

@@ -60,12 +60,12 @@ def test_partner_claim_card_hidden_from_non_owner_admin(
     tag = uuid.uuid4().hex[:6]
     email = f"viewer-{tag}@celerp.test"
     r = api.post("/companies/me/users",
-                 json={"email": email, "name": "Viewer", "role": "viewer", "password": "pw12345"})
+                 json={"email": email, "name": "Viewer", "role": "viewer", "password": "pw12345a"})
     assert r.status_code == 200, r.text
 
     _clear_session_registry()
     lr = httpx.post(f"{api_server}/auth/login",
-                    json={"email": email, "password": "pw12345"}, timeout=10)
+                    json={"email": email, "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     viewer_token = lr.json()["access_token"]
 

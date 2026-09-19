@@ -10,7 +10,7 @@ import pytest
 async def _token(client) -> str:
     r = await client.post(
         "/auth/register",
-        json={"company_name": "Acme", "email": "admin@acme.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "Acme", "email": "admin@acme.example", "name": "Admin", "password": "pwvalid1"},
     )
     return r.json()["access_token"]
 
@@ -1117,7 +1117,7 @@ async def test_list_items_sort_is_global_before_pagination(client):
 # ---------------------------------------------------------------------------
 
 async def _reg_items(client, company="ItemTypeCo"):
-    r = await client.post("/auth/register", json={"company_name": company, "email": f"{company.lower()}@test.com", "name": "Admin", "password": "pw"})
+    r = await client.post("/auth/register", json={"company_name": company, "email": f"{company.lower()}@test.example", "name": "Admin", "password": "pwvalid1"})
     tok = r.json()["access_token"]
     h = {"Authorization": f"Bearer {tok}"}
     return tok, h
@@ -2779,7 +2779,7 @@ async def test_set_item_status_rejects_disposed(client):
     write-off-specific reason and emits no status event."""
     reg = await client.post("/auth/register", json={
         "company_name": "Items Co", "email": f"admin-{uuid.uuid4().hex[:8]}@items.test",
-        "name": "A", "password": "pw"})
+        "name": "A", "password": "pwvalid1"})
     h = {"Authorization": f"Bearer {reg.json()['access_token']}"}
     iid = (await client.post("/items", json={
         "status": "available", "sku": "ST-DISP", "name": "Thing", "quantity": 3, "sell_by": "piece"},

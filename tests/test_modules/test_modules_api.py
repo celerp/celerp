@@ -26,7 +26,7 @@ async def _register(client, role: str = "admin") -> str:
     email = f"mod-test-{uuid.uuid4().hex[:8]}@test.test"
     r = await client.post(
         "/auth/register",
-        json={"company_name": "Mod Test Co", "email": email, "name": "Admin", "password": "pw123"},
+        json={"company_name": "Mod Test Co", "email": email, "name": "Admin", "password": "pw123val"},
     )
     assert r.status_code == 200, r.text
     return r.json()["access_token"]

@@ -25,7 +25,7 @@ from sqlalchemy import update
 async def _register_a(client) -> tuple[str, dict]:
     r = await client.post(
         "/auth/register",
-        json={"company_name": "Tenant A", "email": "a@cross.test", "name": "Admin A", "password": "pw"},
+        json={"company_name": "Tenant A", "email": "a@cross.test", "name": "Admin A", "password": "pwvalid1"},
     )
     assert r.status_code == 200, r.text
     token = r.json()["access_token"]

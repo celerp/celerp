@@ -15,7 +15,7 @@ import pytest
 
 async def _reg(client) -> str:
     addr = f"crm-{uuid.uuid4().hex[:8]}@gaps.test"
-    r = await client.post("/auth/register", json={"company_name": "CRMCo", "email": addr, "name": "Admin", "password": "pw"})
+    r = await client.post("/auth/register", json={"company_name": "CRMCo", "email": addr, "name": "Admin", "password": "pwvalid1"})
     assert r.status_code == 200, r.text
     return r.json()["access_token"]
 
@@ -27,7 +27,7 @@ def _h(tok: str) -> dict:
 async def _contact(client, tok, name="Alice", email=None) -> str:
     r = await client.post("/crm/contacts", headers=_h(tok), json={
         "name": name,
-        "email": email or f"{name.lower()}@test.com",
+        "email": email or f"{name.lower()}@test.example",
         "phone": "+1234567890",
     })
     assert r.status_code == 200, r.text
@@ -42,8 +42,8 @@ async def _contact(client, tok, name="Alice", email=None) -> str:
 async def test_crm_contacts_list_q_filter(client):
     """q filter on name/email/phone (lines 120-121)."""
     tok = await _reg(client)
-    await _contact(client, tok, name="Findable Bob", email="findable@test.com")
-    await _contact(client, tok, name="Other Carol", email="other@test.com")
+    await _contact(client, tok, name="Findable Bob", email="findable@test.example")
+    await _contact(client, tok, name="Other Carol", email="other@test.example")
 
     r = await client.get("/crm/contacts?q=findable", headers=_h(tok))
     assert r.status_code == 200
@@ -75,7 +75,7 @@ async def test_crm_import_contact_single(client):
     r = await client.post("/crm/contacts/import", headers=_h(tok), json={
         "entity_id": f"contact:{uuid.uuid4()}",
         "event_type": "crm.contact.created",
-        "data": {"name": "Imported Alice", "email": "imported@test.com"},
+        "data": {"name": "Imported Alice", "email": "imported@test.example"},
         "source": "test",
         "idempotency_key": str(uuid.uuid4()),
     })
@@ -120,8 +120,8 @@ async def test_crm_batch_import_contacts_error_path(client):
 async def test_crm_contacts_export_csv_with_q(client):
     """GET /crm/contacts/export/csv with q filter (lines 683-698)."""
     tok = await _reg(client)
-    await _contact(client, tok, name="Export Dave", email="exportdave@test.com")
-    await _contact(client, tok, name="Other Eve", email="otherev@test.com")
+    await _contact(client, tok, name="Export Dave", email="exportdave@test.example")
+    await _contact(client, tok, name="Other Eve", email="otherev@test.example")
 
     # Without filter
     r_all = await client.get("/crm/contacts/export/csv", headers=_h(tok))
@@ -217,7 +217,7 @@ async def test_company_contact_seeded_on_registration(client):
     addr = f"seed-{uuid.uuid4().hex[:8]}@gaps.test"
     r = await client.post(
         "/auth/register",
-        json={"company_name": "SeedCo", "email": addr, "name": "Admin", "password": "pw"},
+        json={"company_name": "SeedCo", "email": addr, "name": "Admin", "password": "pwvalid1"},
     )
     assert r.status_code == 200
     tok = r.json()["access_token"]

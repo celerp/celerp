@@ -14,7 +14,6 @@ from fasthtml.common import *
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs
 from ui.components.table import searchable_select
-from celerp.config import settings as _app_settings
 
 # Cache-bust static assets by hashing app.css content
 def _css_version() -> str:
@@ -39,9 +38,10 @@ _LANG_NATIVE_LABELS: dict[str, str] = {
     "ms": "Bahasa Melayu", "tr": "Türkçe", "pl": "Polski", "sv": "Svenska",
 }
 
-# Idle auto-logout: after N minutes with no user interaction, send the browser to /logout. Uniform
-# across direct and relay access (no token-TTL surgery), and it implements "15 minutes of inactivity"
-# directly. An active user's interactions keep resetting the timer; set idle_logout_minutes=0 to disable.
+# Idle auto-logout: after N minutes with no user interaction, send the browser to /logout. The
+# effective minutes are decided per render by effective_idle_logout_minutes() so the timer is on only
+# when the installation is exposed as a server (no token-TTL surgery); an active user's interactions
+# keep resetting it, and 0 minutes renders a no-op. _idle_logout_js() fills the placeholder below.
 _IDLE_LOGOUT_JS = ("""
 (function(){
   var IDLE_MS = __IDLE_MIN__ * 60000;
@@ -59,7 +59,17 @@ _IDLE_LOGOUT_JS = ("""
   document.addEventListener('htmx:afterRequest', reset);
   reset();
 })();
-""").replace("__IDLE_MIN__", str(int(_app_settings.idle_logout_minutes)))
+""")
+
+
+def _idle_logout_js() -> str:
+    """Render the idle-logout script with the deployment's effective minutes.
+
+    Interpolated per full shell render (not at import) so a Connect/disconnect or
+    headless change is picked up on the next navigation without a process restart.
+    """
+    from celerp.config import effective_idle_logout_minutes
+    return _IDLE_LOGOUT_JS.replace("__IDLE_MIN__", str(effective_idle_logout_minutes()))
 
 # Minimal client-side JS: Esc to cancel edit, row menu toggle, close menus on outside click, searchable combobox
 _CLIENT_JS = """
@@ -1515,7 +1525,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         # before any script that references window.__shellI18n.
         Script(f"window.__shellI18n = {json.dumps(_shell_js_i18n(lang))};"),
         Script(_CLIENT_JS),
-        Script(_IDLE_LOGOUT_JS),
+        Script(_idle_logout_js()),
         Script(_HEALTH_BANNER_JS),
         Script(_POLL_CONTROLLER_JS),
         Script(_BACKUP_BANNER_JS),

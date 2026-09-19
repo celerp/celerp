@@ -72,7 +72,7 @@ def test_draft_amounts_editable_for_restricted_role(page, ui_server, api, api_se
     assert r.status_code == 200, r.text
     r = api.post("/companies/me/users",
                  json={"email": f"op-{tag}@celerp.test", "name": "Operator",
-                       "role": "operator", "password": "pw12345"})
+                       "role": "operator", "password": "pw12345a"})
     assert r.status_code == 200, r.text
 
     for sku, make_available in ((draft_sku, False), (avail_sku, True)):
@@ -85,7 +85,7 @@ def test_draft_amounts_editable_for_restricted_role(page, ui_server, api, api_se
 
     _clear_session_registry()
     lr = httpx.post(f"{api_server}/auth/login",
-                    json={"email": f"op-{tag}@celerp.test", "password": "pw12345"}, timeout=10)
+                    json={"email": f"op-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     try:
         _set_cookie(browser_context, lr.json()["access_token"])
@@ -124,7 +124,7 @@ def test_draft_pieces_editable_on_list_for_restricted_role(page, ui_server, api,
     assert r.status_code == 200, r.text
     r = api.post("/companies/me/users",
                  json={"email": f"opp-{tag}@celerp.test", "name": "Operator",
-                       "role": "operator", "password": "pw12345"})
+                       "role": "operator", "password": "pw12345a"})
     assert r.status_code == 200, r.text
 
     for sku, make_available in ((draft_sku, False), (avail_sku, True)):
@@ -137,7 +137,7 @@ def test_draft_pieces_editable_on_list_for_restricted_role(page, ui_server, api,
 
     _clear_session_registry()
     lr = httpx.post(f"{api_server}/auth/login",
-                    json={"email": f"opp-{tag}@celerp.test", "password": "pw12345"}, timeout=10)
+                    json={"email": f"opp-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     try:
         _set_cookie(browser_context, lr.json()["access_token"])
@@ -172,7 +172,7 @@ def test_draft_amounts_editable_on_detail_page_for_restricted_role(page, ui_serv
     assert r.status_code == 200, r.text
     r = api.post("/companies/me/users",
                  json={"email": f"opd-{tag}@celerp.test", "name": "Operator",
-                       "role": "operator", "password": "pw12345"})
+                       "role": "operator", "password": "pw12345a"})
     assert r.status_code == 200, r.text
 
     item_ids = {}
@@ -187,7 +187,7 @@ def test_draft_amounts_editable_on_detail_page_for_restricted_role(page, ui_serv
 
     _clear_session_registry()
     lr = httpx.post(f"{api_server}/auth/login",
-                    json={"email": f"opd-{tag}@celerp.test", "password": "pw12345"}, timeout=10)
+                    json={"email": f"opd-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     try:
         _set_cookie(browser_context, lr.json()["access_token"])
@@ -221,7 +221,7 @@ def test_draft_cost_edit_on_pricing_tab_persists(page, ui_server, api, api_serve
     sku = f"COSTSV-{tag}"
     r = api.post("/companies/me/users",
                  json={"email": f"op-{tag}@celerp.test", "name": "Operator",
-                       "role": "operator", "password": "pw12345"})
+                       "role": "operator", "password": "pw12345a"})
     assert r.status_code == 200, r.text
     created = api.post("/items", json={"sku": sku, "name": "Cost Save Item", "sell_by": "piece",
                                        "quantity": 1, "cost_price": 33.0})
@@ -230,7 +230,7 @@ def test_draft_cost_edit_on_pricing_tab_persists(page, ui_server, api, api_serve
 
     _clear_session_registry()
     lr = httpx.post(f"{api_server}/auth/login",
-                    json={"email": f"op-{tag}@celerp.test", "password": "pw12345"}, timeout=10)
+                    json={"email": f"op-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     try:
         _set_cookie(browser_context, lr.json()["access_token"])
@@ -257,7 +257,7 @@ def test_draft_cost_enterable_before_any_value_set(page, ui_server, api, api_ser
     sku = f"FRESHCOST-{tag}"
     r = api.post("/companies/me/users",
                  json={"email": f"op2-{tag}@celerp.test", "name": "Operator",
-                       "role": "operator", "password": "pw12345"})
+                       "role": "operator", "password": "pw12345a"})
     assert r.status_code == 200, r.text
     created = api.post("/items", json={"sku": sku, "name": "Fresh Draft", "sell_by": "piece",
                                        "quantity": 1})
@@ -266,7 +266,7 @@ def test_draft_cost_enterable_before_any_value_set(page, ui_server, api, api_ser
 
     _clear_session_registry()
     lr = httpx.post(f"{api_server}/auth/login",
-                    json={"email": f"op2-{tag}@celerp.test", "password": "pw12345"}, timeout=10)
+                    json={"email": f"op2-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     try:
         _set_cookie(browser_context, lr.json()["access_token"])

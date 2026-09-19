@@ -3113,5 +3113,6 @@
   "settings_cloud.invalid_port": "ትክክለኛ የፖርት ቁጥር ያስገቡ (1-65535)",
   "settings_cloud.db_connection_failed": "ግንኙነት አልተሳካም። አስተናጋጅ፣ ወደብ እና ማረጋገጫዎችን ያረጋግጡ።",
   "settings_cloud.invalid_storage_backend": "ትክክለኛ የማከማቻ ዓይነት ይምረጡ",
-  "settings_cloud.invalid_s3_endpoint": "ትክክለኛ https:// መድረሻ ያስገቡ"
+  "settings_cloud.invalid_s3_endpoint": "ትክክለኛ https:// መድረሻ ያስገቡ",
+  "settings.subscription_linked_connecting": "የደንበኝነት ምዝገባ ተገናኝቷል። ከሪሌዩ ጋር በመገናኘት ላይ..."
 }
