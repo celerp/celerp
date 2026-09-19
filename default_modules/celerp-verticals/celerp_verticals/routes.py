@@ -11,6 +11,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -217,7 +218,7 @@ def _build_router() -> APIRouter:
         await session.commit()
 
         # Write to config file so the next restart picks up the module list
-        set_enabled_modules(preset_modules)
+        await asyncio.to_thread(set_enabled_modules, preset_modules)
 
         return {"applied": vertical, "categories": len(applied), "modules": preset_modules, "company_settings": extra}
 

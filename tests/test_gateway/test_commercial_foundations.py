@@ -388,3 +388,109 @@ def test_local_infra_packaged_delegates(monkeypatch, tmp_path):
     assert set(state.keys()) == _KEYS
     assert state["has_external_url"] is True
     assert "s3cr3t" not in json.dumps(state)
+
+
+def test_self_hosted_persist_cannot_overwrite_a_concurrent_verifier_write(monkeypatch, tmp_path):
+    """A commercial-context persist that overlaps an activation-verifier write
+    keeps both values: the persist runs under the config lock, so the verifier
+    writer waits for it instead of landing in a read-then-write gap and being
+    overwritten by the persist's stale snapshot."""
+    import threading
+
+    from celerp.config import _update_cloud_config, read_config
+
+    monkeypatch.delenv("CELERP_DATA_DIR", raising=False)
+    monkeypatch.setenv("CELERP_CONFIG", str(tmp_path / "config.toml"))
+
+    persist_reading = threading.Event()
+    verifier_done = threading.Event()
+
+    def _write_verifier():
+        persist_reading.wait(5)
+        _update_cloud_config(lambda cloud: cloud.__setitem__("activation_verifier", "v1"))
+        verifier_done.set()
+
+    class _CtxDuringPersist(dict):
+        """Serialised inside the persist step; releases the verifier writer
+        and gives it a moment to land before serialisation continues."""
+        def items(self):
+            persist_reading.set()
+            verifier_done.wait(1)
+            return super().items()
+
+    writer = threading.Thread(target=_write_verifier)
+    writer.start()
+    gw_state._persist_commercial_context(_CtxDuringPersist(_direct_ctx(version=5)))
+    writer.join(10)
+    assert not writer.is_alive()
+
+    cloud = read_config().get("cloud", {})
+    assert cloud.get("activation_verifier") == "v1"
+    assert json.loads(cloud.get("commercial_context_json", "{}")).get("version") == 5
+
+
+@pytest.mark.asyncio
+async def test_async_commercial_context_persistence_runs_off_event_loop(monkeypatch):
+    import asyncio
+    import threading
+
+    main_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    started = threading.Event()
+    release = threading.Event()
+    released_while_waiting: list[bool] = []
+
+    def _slow_persist(_ctx):
+        worker_threads.append(threading.get_ident())
+        started.set()
+        released_while_waiting.append(release.wait(timeout=0.5))
+
+    monkeypatch.setattr(gw_state, "_persist_commercial_context", _slow_persist)
+
+    async def _release_from_loop():
+        while not started.is_set():
+            await asyncio.sleep(0)
+        release.set()
+
+    releaser = asyncio.create_task(_release_from_loop())
+    status = await gw_state.apply_commercial_context_async(_partner_ctx(version=99))
+    await releaser
+
+    assert status == "applied"
+    assert released_while_waiting == [True]
+    assert worker_threads and all(tid != main_thread for tid in worker_threads)
+    assert gw_state.get_commercial_context()["version"] == 99
+
+
+@pytest.mark.asyncio
+async def test_async_commercial_context_persistence_preserves_version_order(monkeypatch):
+    import asyncio
+    import threading
+
+    writes: list[int] = []
+    first_started = threading.Event()
+    release_first = threading.Event()
+
+    def _persist(ctx):
+        if ctx["version"] == 1:
+            first_started.set()
+            assert release_first.wait(timeout=0.5)
+        writes.append(ctx["version"])
+
+    monkeypatch.setattr(gw_state, "_persist_commercial_context", _persist)
+
+    first = asyncio.create_task(
+        gw_state.apply_commercial_context_async(_partner_ctx(version=1)))
+    while not first_started.is_set():
+        await asyncio.sleep(0)
+
+    second = asyncio.create_task(
+        gw_state.apply_commercial_context_async(_partner_ctx(version=2)))
+    await asyncio.sleep(0)
+    assert gw_state.get_commercial_context()["version"] == 1
+
+    release_first.set()
+    assert await first == "applied"
+    assert await second == "applied"
+    assert writes == [1, 2]
+    assert gw_state.get_commercial_context()["version"] == 2

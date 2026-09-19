@@ -307,6 +307,22 @@ def _validated_commercial_shape(new) -> dict | None:
         if value is not None and not isinstance(value, dict):
             log.warning("Commercial context rejected: %s is neither null nor an object.", key)
             return None
+    raw_offers = new.get("offers", {})
+    if raw_offers is None:
+        raw_offers = {}
+    if not isinstance(raw_offers, dict):
+        log.warning("Commercial context rejected: offers is not an object.")
+        return None
+    normalized_offers: dict[str, dict] = {}
+    for tier, offer_value in raw_offers.items():
+        if tier not in ("cloud", "ai", "team"):
+            log.warning("Commercial context rejected: unrecognised offer tier.")
+            return None
+        validated = _validated_offer(offer_value)
+        if validated is None:
+            log.warning("Commercial context rejected: target-tier offer failed validation.")
+            return None
+        normalized_offers[tier] = copy.deepcopy(validated)
 
     raw_impl = new.get("implementation")
     normalized_impl = _normalized_implementation(raw_impl) if raw_impl is not None else None
@@ -317,7 +333,7 @@ def _validated_commercial_shape(new) -> dict | None:
                 "implementation (mode=%s, version=%s).", mode, version)
             return None
     else:  # celerp_direct
-        if raw_impl is not None or new.get("offer") is not None:
+        if raw_impl is not None or new.get("offer") is not None or normalized_offers:
             log.warning(
                 "Commercial context rejected: celerp_direct must carry no "
                 "implementation or offer (mode=%s, version=%s).", mode, version)
@@ -340,6 +356,7 @@ def _validated_commercial_shape(new) -> dict | None:
     # celerp_direct carries none.
     if normalized_impl is not None:
         accepted["implementation"] = normalized_impl
+    accepted["offers"] = normalized_offers
     return accepted
 
 
@@ -392,40 +409,54 @@ def _persist_commercial_context(ctx: dict) -> None:
         merge_packaged_config({"commercial_context": ctx})
         return
     import json
-    from celerp.config import read_config, write_config
+    from celerp.config import _update_cloud_config
     try:
-        cfg = read_config()
-        cfg.setdefault("cloud", {})["commercial_context_json"] = json.dumps(
-            ctx, separators=(",", ":"))
-        write_config(cfg)
+        _update_cloud_config(lambda cloud: cloud.__setitem__(
+            "commercial_context_json", json.dumps(ctx, separators=(",", ":"))))
     except Exception as exc:
         log.debug("Gateway: self-hosted commercial-context persist failed: %s", exc)
 
 
-def apply_commercial_context(ctx: dict) -> str:
-    """Validate, apply, and persist a commercial context, returning a status that
-    distinguishes the three outcomes the callers need:
-
-    - ``"applied"``: a valid, strictly-newer context replaced the held model and
-      was persisted;
-    - ``"converged"``: a valid context whose version is not newer than the held
-      one (the benign WS-then-HTTP race). The held state already matches or leads
-      it, so this is success - nothing is written and nothing changes;
-    - ``"rejected"``: a malformed shape. The last-known-good model and its
-      version are preserved; nothing is written.
-
-    The single apply/persist seam every acceptance path shares (hello_ack,
-    commercial_updated, and the synchronous claim-accept HTTP response), so
-    validation and persistence live in one place rather than being duplicated
-    per caller.
-    """
+def _accept_commercial_context(ctx: dict) -> tuple[str, dict | None]:
+    """Apply only in-memory state; return a snapshot when disk persistence is needed."""
     if _validated_commercial_shape(ctx) is None:
-        return "rejected"
+        return "rejected", None
     if set_commercial_context(ctx):
-        _persist_commercial_context(get_commercial_context())
-        return "applied"
-    # Valid shape but not newer than the held version: already converged.
-    return "converged"
+        return "applied", get_commercial_context()
+    return "converged", None
+
+
+def apply_commercial_context(ctx: dict) -> str:
+    """Synchronous adapter for non-async callers and tests."""
+    status, snapshot = _accept_commercial_context(ctx)
+    if snapshot is not None:
+        _persist_commercial_context(snapshot)
+    return status
+
+
+_commercial_apply_lock = None
+_commercial_apply_loop = None
+
+
+def _async_commercial_apply_lock():
+    """One serialization lock per event loop, created lazily for test-loop safety."""
+    import asyncio
+    global _commercial_apply_lock, _commercial_apply_loop
+    loop = asyncio.get_running_loop()
+    if _commercial_apply_loop is not loop:
+        _commercial_apply_loop = loop
+        _commercial_apply_lock = asyncio.Lock()
+    return _commercial_apply_lock
+
+
+async def apply_commercial_context_async(ctx: dict) -> str:
+    """Apply and persist in version order without blocking the event loop."""
+    import asyncio
+    async with _async_commercial_apply_lock():
+        status, snapshot = _accept_commercial_context(ctx)
+        if snapshot is not None:
+            await asyncio.to_thread(_persist_commercial_context, snapshot)
+        return status
 
 
 def get_commercial_context() -> dict:
@@ -447,9 +478,13 @@ def get_partner_identity() -> dict | None:
     return copy.deepcopy(implementation) if isinstance(implementation, dict) else None
 
 
-def get_offer() -> dict | None:
-    """Return a copy of the partner offer object, or None when none is set."""
-    offer = _commercial_context.get("offer")
+def get_offer(tier: str | None = None) -> dict | None:
+    """Return the current or a target-tier partner offer."""
+    if tier is not None:
+        offers = _commercial_context.get("offers")
+        offer = offers.get(tier) if isinstance(offers, dict) else None
+    else:
+        offer = _commercial_context.get("offer")
     return copy.deepcopy(offer) if isinstance(offer, dict) else None
 
 
@@ -666,6 +701,70 @@ def relay_http_url() -> str:
     return url.rstrip("/")
 
 
+# Every relay HTTP leg opens its socket under a short connect deadline and, when
+# the connect phase itself fails, opens a fresh socket and tries again. A lost
+# SYN on a path that never retransmits it (observed on macOS) then costs one
+# connect deadline instead of the whole leg. The last attempt gets whatever the
+# leg has left, so a slow but working path keeps a connect window at least as
+# long as it had before. Retries stop at the connect phase: once a request has
+# been sent, its response (of any status) is final.
+RELAY_CONNECT_TIMEOUT_S = 2.0
+RELAY_CONNECT_ATTEMPTS = 3
+
+
+def relay_timeout(total_s: float, connect_s: float = RELAY_CONNECT_TIMEOUT_S):
+    """httpx timeout for a relay leg: total_s for read/write/pool, a short
+    connect deadline so a silently lost connection attempt fails fast."""
+    import httpx
+
+    return httpx.Timeout(total_s, connect=connect_s)
+
+
+def relay_connect_deadline(total_s: float, attempt: int) -> float:
+    """Connect deadline for one attempt of a leg with total_s seconds: the short
+    deadline for every attempt but the last, which takes the rest of the leg."""
+    if attempt < RELAY_CONNECT_ATTEMPTS:
+        return RELAY_CONNECT_TIMEOUT_S
+    spent = RELAY_CONNECT_TIMEOUT_S * (RELAY_CONNECT_ATTEMPTS - 1)
+    return max(RELAY_CONNECT_TIMEOUT_S, total_s - spent)
+
+
+async def with_relay_client(total_s: float, op):
+    """Run op(client) within one true wall-clock budget, reopening on connect failure.
+
+    Only httpx.ConnectError and httpx.ConnectTimeout are retried, and only up to
+    RELAY_CONNECT_ATTEMPTS: both are raised before any request bytes leave the
+    machine, so a retry can never duplicate a request the relay already saw.
+    The outer asyncio.wait_for owns the total wall clock; per-attempt httpx
+    read/write/pool values stay deterministic at total_s while connect gets the
+    short retry budget. Every other outcome propagates from the first attempt
+    that produced it.
+    """
+    import asyncio
+
+    import httpx
+
+    async def _run():
+        for attempt in range(1, RELAY_CONNECT_ATTEMPTS + 1):
+            connect_s = min(
+                relay_connect_deadline(total_s, attempt), total_s)
+            try:
+                timeout = relay_timeout(total_s, connect_s=connect_s)
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    return await op(client)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                if attempt == RELAY_CONNECT_ATTEMPTS:
+                    raise
+                log.debug("Relay connect attempt %d failed (%s); reopening.",
+                          attempt, type(exc).__name__)
+
+    try:
+        return await asyncio.wait_for(_run(), timeout=total_s)
+    except asyncio.TimeoutError as exc:
+        raise httpx.ReadTimeout(
+            f"relay operation exceeded {total_s:.1f}s wall-clock budget") from exc
+
+
 # Transient transport failures (slow first network, relay restarting) are retried;
 # any HTTP response of any status is final. Single source for every relay POST that
 # needs this shape (auto-activate, deployment association).
@@ -686,6 +785,9 @@ async def relay_post_with_retry(url: str, json_body: dict):
 
     import httpx
 
+    async def _post(client):
+        return await client.post(url, json=json_body)
+
     httpx_log = logging.getLogger("httpx")
     prev_level = httpx_log.level
     httpx_log.setLevel(logging.WARNING)
@@ -694,8 +796,7 @@ async def relay_post_with_retry(url: str, json_body: dict):
             if delay:
                 await asyncio.sleep(delay)
             try:
-                async with httpx.AsyncClient(timeout=_RELAY_POST_TIMEOUT_S) as client:
-                    return await client.post(url, json=json_body)
+                return await with_relay_client(_RELAY_POST_TIMEOUT_S, _post)
             except httpx.HTTPError as exc:
                 log.debug("Relay POST transient transport error (%s); retrying.",
                           type(exc).__name__)
@@ -705,7 +806,7 @@ async def relay_post_with_retry(url: str, json_body: dict):
     return None
 
 
-async def fetch_relay_bearer(http_client) -> str:
+async def fetch_relay_bearer(http_client, api_key: str | None = None) -> str:
     """Exchange the instance API key (gateway_token) for a short-lived relay
     bearer JWT via POST /auth/token.
 
@@ -715,8 +816,11 @@ async def fetch_relay_bearer(http_client) -> str:
     non-200 so each caller degrades in one place.
     """
     from celerp.config import settings
+    key = api_key or settings.gateway_token
+    if not key:
+        raise RuntimeError("relay credential unavailable")
     resp = await http_client.post(
-        f"{relay_http_url()}/auth/token", json={"api_key": settings.gateway_token})
+        f"{relay_http_url()}/auth/token", json={"api_key": key})
     if resp.status_code != 200:
         raise RuntimeError(f"relay auth failed ({resp.status_code})")
     return resp.json()["access_token"]
@@ -731,12 +835,14 @@ def _launch_mode() -> str | None:
     return os.environ.get("CELERP_MODE")
 
 
-def activate_payload(instance_id: str, *, first_boot: bool | None = None) -> dict:
-    """Build the /auth/activate request body.
+def activate_payload(
+    instance_id: str, *, first_boot: bool | None = None,
+    activation_verifier: str | None = None,
+) -> dict:
+    """Build the activation/check-in request metadata.
 
-    Single source of truth for every activation call site (startup probe,
-    Cloud settings, claim-by-email), so the relay always learns version,
-    platform, and launch mode. first_boot is only known by the startup probe.
+    activation_verifier is included only for a challenge-approved recovery. The
+    verifier never appears in email/browser proof requests.
     """
     import platform as _platform
 
@@ -750,6 +856,11 @@ def activate_payload(instance_id: str, *, first_boot: bool | None = None) -> dic
     }
     if first_boot is not None:
         payload["first_boot"] = first_boot
+    if activation_verifier:
+        payload["activation_verifier"] = activation_verifier
+    from celerp.config import settings as _settings
+    if _settings.backup_encryption_key:
+        payload["backup_encryption_key"] = _settings.backup_encryption_key
     return payload
 
 

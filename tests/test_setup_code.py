@@ -125,3 +125,21 @@ def test_init_without_no_start_has_no_setup_code(tmp_config):
     cfg = _read_config()
     assert not cfg["auth"].get("setup_code_hash")
     assert not cfg["server"].get("headless")
+
+
+@pytest.mark.asyncio
+async def test_registration_succeeds_if_post_commit_setup_code_cleanup_is_busy(
+    client, code_config,
+):
+    """The admin row is already authoritative once committed; a config-lock
+    timeout during cleanup must not tell the operator registration failed."""
+    from unittest.mock import patch
+
+    with patch("celerp.config._update_config", side_effect=TimeoutError("busy")):
+        r = await client.post(
+            "/auth/register", json={**_REG, "setup_code": code_config})
+
+    assert r.status_code == 200, r.text
+    assert r.json().get("access_token")
+    status = await client.get("/auth/bootstrap-status")
+    assert status.json()["bootstrapped"] is True

@@ -487,8 +487,9 @@ async def test_health_readiness_db_error(client):
     from sqlalchemy.ext.asyncio import AsyncSession
 
     # Patch the dependency override in the app directly
-    from celerp.main import app
+    app = client._transport.app
     from celerp.db import get_session
+    previous = app.dependency_overrides.get(get_session)
 
     async def _failing_session():
         mock = AsyncMock(spec=AsyncSession)
@@ -505,7 +506,10 @@ async def test_health_readiness_db_error(client):
         assert detail == "Service not ready."
         assert "DB" not in detail and "database" not in detail.lower()
     finally:
-        del app.dependency_overrides[get_session]
+        if previous is None:
+            app.dependency_overrides.pop(get_session, None)
+        else:
+            app.dependency_overrides[get_session] = previous
 
 
 # ---------------------------------------------------------------------------

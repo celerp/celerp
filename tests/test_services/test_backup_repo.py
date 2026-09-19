@@ -103,7 +103,6 @@ def fake_repo(monkeypatch, tmp_path):
                 "company_name": "TestCo", "enabled_modules": []}
     monkeypatch.setattr(backup_repo, "_build_meta", fake_meta)
 
-    monkeypatch.setattr(backup_repo, "get_session_token", lambda: "tok")
     settings.backup_encryption_key = base64.b64encode(secrets.token_bytes(32)).decode()
 
     # data_dir/static/attachments + data_dir/ai_uploads, real files (hashed for real)

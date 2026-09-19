@@ -2581,7 +2581,6 @@
   "settings.code_expired": "انتهت صلاحية الرمز أو تم تجاوز عدد المحاولات الخاطئة. اطلب رمزًا جديدًا.",
   "settings.subscription_linked_info": "تم ربط الاشتراك. انقر فوق «اتصال» لإنهاء التنشيط.",
   "settings.link_timed_out": "يستغرق هذا وقتًا أطول من المتوقع وانتهت المهلة قبل أن يؤكد المرحّل الربط. ربما انتقل اشتراكك بالفعل إلى هذا الكمبيوتر. أعد تشغيل Celerp أو حاول مرة أخرى. إذا استمر الفشل، فإن اتصال هذا الكمبيوتر بالمرحّل بطيء.",
-  "settings.subscription_linked_connecting": "تم ربط الاشتراك. جارٍ الاتصال بالمرحّل...",
   "settings.otp_sent_hint": "أرسلنا رمزًا مكونًا من 6 أرقام إلى {email}. أدخله أدناه:",
   "settings.claim_email_hint": "إذا كنت قد اشتركت عبر الموقع الإلكتروني ولم يتم ربط الدفع تلقائيًا، فأدخل عنوان البريد الإلكتروني الذي استخدمته عند الدفع:",
   "settings.establishing_connection": "جاري إنشاء الاتصال...",
@@ -3114,5 +3113,6 @@
   "settings_cloud.invalid_port": "أدخل رقم منفذ صالح (1-65535)",
   "settings_cloud.db_connection_failed": "فشل الاتصال. تحقق من المضيف والمنفذ وبيانات الاعتماد.",
   "settings_cloud.invalid_storage_backend": "اختر نوع تخزين صالح",
-  "settings_cloud.invalid_s3_endpoint": "أدخل نقطة نهاية https:// صالحة"
+  "settings_cloud.invalid_s3_endpoint": "أدخل نقطة نهاية https:// صالحة",
+  "settings.subscription_linked_connecting": "تم ربط الاشتراك. جارٍ الاتصال بالمرحّل..."
 }

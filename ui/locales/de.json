@@ -2582,7 +2582,6 @@
   "settings.code_expired": "Code abgelaufen oder zu viele falsche Versuche. Fordern Sie einen neuen Code an.",
   "settings.subscription_linked_info": "Abonnement verknüpft. Klicken Sie auf „Verbinden“, um die Aktivierung abzuschließen.",
   "settings.link_timed_out": "Das dauert länger als erwartet und ist abgelaufen, bevor das Relay die Verknüpfung bestätigt hat. Ihr Abonnement ist möglicherweise bereits auf diesen Computer umgezogen. Starten Sie Celerp neu oder versuchen Sie es erneut. Schlägt es weiterhin fehl, ist die Verbindung dieses Computers zum Relay langsam.",
-  "settings.subscription_linked_connecting": "Abonnement verknüpft. Verbindung zum Relay wird hergestellt...",
   "settings.otp_sent_hint": "Wir haben einen 6-stelligen Code an {email} gesendet. Geben Sie ihn unten ein:",
   "settings.claim_email_hint": "Wenn Sie sich auf der Website angemeldet haben und die Zahlung nicht automatisch verknüpft wird, geben Sie bitte die E-Mail-Adresse ein, die Sie beim Bezahlvorgang verwendet haben:",
   "settings.establishing_connection": "Verbindung wird hergestellt...",
@@ -3114,5 +3113,6 @@
   "settings_cloud.invalid_port": "Geben Sie eine gültige Portnummer ein (1-65535)",
   "settings_cloud.db_connection_failed": "Verbindung fehlgeschlagen. Überprüfen Sie Host, Port und Anmeldedaten.",
   "settings_cloud.invalid_storage_backend": "Wählen Sie ein gültiges Speicher-Backend",
-  "settings_cloud.invalid_s3_endpoint": "Geben Sie einen gültigen https://-Endpunkt ein"
+  "settings_cloud.invalid_s3_endpoint": "Geben Sie einen gültigen https://-Endpunkt ein",
+  "settings.subscription_linked_connecting": "Abonnement verknüpft. Verbindung zum Relay wird hergestellt..."
 }

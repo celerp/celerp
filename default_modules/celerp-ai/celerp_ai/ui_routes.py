@@ -82,8 +82,8 @@ def _quota_exceeded_card(detail: dict, user_bubble, lang: str = "en") -> FT:
     direct Celerp checkout. The upgrade label's direct price is suppressed under
     partner_managed.
     """
-    limit = detail.get("limit", 0)
-    is_ai_tier = "ai" in str(detail.get("tier", "")) or "team" in str(detail.get("tier", ""))
+    limit = int(detail.get("base_limit", detail.get("limit", 0)) or 0)
+    is_ai_tier = detail.get("tier") in ("cloud", "ai", "team")
     if is_ai_tier:
         return Div(
             user_bubble,
@@ -96,8 +96,7 @@ def _quota_exceeded_card(detail: dict, user_bubble, lang: str = "en") -> FT:
                 cls="ai-upgrade-cta",
             ),
         )
-    upgrade_label = direct_price(t("msg.upgrade_to_ai_plan_49mo", lang)) \
-        or t("msg.get_the_ai_plan", lang)
+    upgrade_label = t("msg.get_the_ai_plan", lang)
     return Div(
         user_bubble,
         _msg_bubble("ai", f"You've used all {limit} included AI queries."),
@@ -134,7 +133,13 @@ def setup_ui_routes(app) -> None:
         # Check if AI is available by querying the API (which has the gateway state)
         try:
             status = await api.ai_quota_status(token)
-            has_cloud = not status.get("local", False)
+            has_cloud = (
+                isinstance(status, dict)
+                and not status.get("local")
+                and not status.get("unknown")
+                and not status.get("disconnected")
+                and status.get("tier") in ("cloud", "ai", "team")
+            )
         except Exception:
             has_cloud = False
 
@@ -415,12 +420,12 @@ async def _quota_section(token: str, session_token: str) -> FT:
             cls="ai-settings__quota",
         )
 
-    used = status.get("used", 0)
-    limit = status.get("limit", 0)
-    topup = status.get("topup_credits", 0)
-    remaining = status.get("remaining", max(0, (limit + topup) - used))
+    used = int(status.get("used", 0) or 0)
+    limit = int(status.get("base_limit", status.get("limit", 0)) or 0)
+    topup = int(status.get("topup_balance", status.get("topup_credits", 0)) or 0)
+    remaining = int(status.get("remaining", 0) or 0)
     resets_at = status.get("resets_at", "")
-    pct = round(used / limit * 100) if limit else 0
+    pct = min(100, round(used / limit * 100)) if limit else 0
 
     return Div(
         H3(t("page.quota"), cls="ai-settings__section-title"),
@@ -639,7 +644,7 @@ def _showcase_view(lang: str = "en") -> FT:
                     Div(
                         Span(t("msg.start_here"), cls="ai-showcase__cta-badge ai-showcase__cta-badge--default"),
                         P(t("settings.tab_cloud_relay"), cls="ai-showcase__cta-name"),
-                        P(direct_price(t("msg.29mo")), cls="ai-showcase__cta-price ai-showcase__cta-price--default"),
+                        P("", cls="ai-showcase__cta-price ai-showcase__cta-price--default"),
                         P(t("msg.secure_remote_access"), cls="ai-showcase__cta-feature"),
                         P(t("msg.automated_daily_backups"), cls="ai-showcase__cta-feature"),
                         P(t("msg.100_lifetime_ai_queries_included"),
@@ -656,7 +661,7 @@ def _showcase_view(lang: str = "en") -> FT:
                     Div(
                         Span(t("msg.recommended"), cls="ai-showcase__cta-badge ai-showcase__cta-badge--featured"),
                         P(t("msg.celerp_ai_plan"), cls="ai-showcase__cta-name"),
-                        P(direct_price(t("msg.49mo")), cls="ai-showcase__cta-price ai-showcase__cta-price--featured"),
+                        P("", cls="ai-showcase__cta-price ai-showcase__cta-price--featured"),
                         P(t("msg.200_ai_queries_every_month"), cls="ai-showcase__cta-feature"),
                         P(t("msg.batch_invoice_pdf_processing"), cls="ai-showcase__cta-feature"),
                         P(t("msg.agentic_record_creation"), cls="ai-showcase__cta-feature"),
@@ -671,6 +676,15 @@ def _showcase_view(lang: str = "en") -> FT:
                     ),
                     cls="ai-showcase__cta-cards",
                 ),
+                *([] if is_partner_managed() else [
+                    Div(
+                        P(t("page.already_subscribed", lang),
+                          cls="ai-showcase__restore-label"),
+                        A(t("btn.link_by_email", lang), href="/settings/cloud",
+                          cls="btn btn--outline"),
+                        cls="ai-showcase__restore",
+                    )
+                ]),
                 cls="ai-showcase__cta",
             ),
             cls="ai-showcase",
@@ -1104,6 +1118,59 @@ def _showcase_script() -> FT:
     var idx = scenarios.findIndex(function(s) { return s.id === id; });
     if (idx >= 0) { current = idx; playScenario(idx); }
   };
+
+  // A checkout opens in a new tab. When the user returns, re-use the existing
+  // quota/entitlement endpoint to converge the already-open showcase into the
+  // paid chat view. Keep checks bounded and only arm them after a purchase CTA
+  // was actually clicked, so ordinary free users do not poll the relay.
+  var purchasePending = false;
+  var entitlementCheck = null;
+  var entitlementRetry = null;
+
+  document.querySelectorAll('.ai-showcase__cta a').forEach(function(a) {
+    a.addEventListener('click', function() { purchasePending = true; });
+  });
+
+  function paidEntitlement(data) {
+    return data && !data.local && !data.unknown && !data.disconnected &&
+      ['cloud', 'ai', 'team'].indexOf(data.tier) >= 0;
+  }
+
+  function retryEntitlement(attempts) {
+    if (attempts <= 1 || !purchasePending || entitlementRetry) return;
+    entitlementRetry = setTimeout(function() {
+      entitlementRetry = null;
+      checkEntitlement(attempts - 1);
+    }, 1500);
+  }
+
+  function checkEntitlement(attempts) {
+    if (!purchasePending || entitlementCheck) return;
+    entitlementCheck = fetch('/ai/quota-status', {cache: 'no-store'})
+      .then(function(r) {
+        if (!r.ok) throw new Error('quota status failed');
+        return r.json();
+      })
+      .then(function(data) {
+        if (paidEntitlement(data)) {
+          purchasePending = false;
+          window.location.reload();
+          return;
+        }
+        retryEntitlement(attempts);
+      })
+      .catch(function() { retryEntitlement(attempts); })
+      .finally(function() { entitlementCheck = null; });
+  }
+
+  function resumeEntitlementCheck() {
+    if (purchasePending && !entitlementRetry) checkEntitlement(10);
+  }
+
+  window.addEventListener('focus', resumeEntitlementCheck);
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) resumeEntitlementCheck();
+  });
 
   playScenario(0);
 })();

@@ -15,6 +15,7 @@ side effect of an ordinary hello_ack.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from celerp.config import (
@@ -44,7 +45,7 @@ async def associate_partner_deployment() -> bool:
     try:
         # Persist the nonce before any network call: an unpersisted nonce could
         # not be reproduced on a later boot, risking a duplicate association.
-        nonce = ensure_deployment_nonce()
+        nonce = await asyncio.to_thread(ensure_deployment_nonce)
     except Exception as exc:
         log.warning(
             "Deployment association skipped: could not persist the nonce (%s).",
@@ -86,7 +87,9 @@ async def associate_partner_deployment() -> bool:
         return False
 
     try:
-        record_deployment_association(gateway_token=api_key, instance_id=instance_id)
+        await asyncio.to_thread(
+            record_deployment_association,
+            gateway_token=api_key, instance_id=instance_id)
     except Exception as exc:
         # The durable write failed after a positive response. The credential is
         # preserved and no live-but-unpersisted identity is carried; the persisted

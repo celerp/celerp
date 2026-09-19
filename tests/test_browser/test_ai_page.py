@@ -114,7 +114,7 @@ class TestShowcasePage:
         cards = page.locator(".ai-showcase__cta-card")
         cloud_card = cards.first
         assert "Celerp Connect" in cloud_card.inner_text()
-        assert "$29/mo" in cloud_card.inner_text()
+        assert "$29/mo" not in cloud_card.inner_text()
         assert "Start Here" in cloud_card.inner_text()
         assert "Cancel anytime" in cloud_card.inner_text()
         btn = cloud_card.locator(".btn")
@@ -127,12 +127,43 @@ class TestShowcasePage:
         cards = page.locator(".ai-showcase__cta-card")
         ai_card = cards.last
         assert "Celerp Connect + AI" in ai_card.inner_text()
-        assert "$49/mo" in ai_card.inner_text()
+        assert "$49/mo" not in ai_card.inner_text()
         assert "Recommended" in ai_card.inner_text()
         assert "Cancel anytime" in ai_card.inner_text()
         assert "ai-showcase__cta-card--featured" in (ai_card.get_attribute("class") or "")
         btn = ai_card.locator(".btn--accent")
         expect(btn).to_be_visible()
+
+    def test_showcase_rechecks_entitlement_when_checkout_tab_returns(self, page, ui_server):
+        """Returning from checkout reloads the stale showcase once entitlement is paid."""
+        page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
+
+        page.route(
+            "**/ai/quota-status",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"tier":"ai","remaining":200}',
+            ),
+        )
+        page.route(
+            f"{ui_server}/ai",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html",
+                body="<div id='paid-reload'>paid</div>",
+            ),
+        )
+
+        # Arm the real click listener without leaving the test page, then model
+        # the user returning focus from the checkout tab.
+        page.eval_on_selector(
+            ".ai-showcase__cta-card--featured a",
+            "(a) => { a.href = '#'; a.target = '_self'; a.click(); }",
+        )
+        page.evaluate("window.dispatchEvent(new Event('focus'))")
+
+        expect(page.locator("#paid-reload")).to_be_visible(timeout=5000)
 
     def test_showcase_feature_checkmarks(self, page, ui_server):
         """Feature items use CSS checkmark pseudo-elements."""
@@ -179,8 +210,15 @@ class TestChatView:
         from celerp.gateway.state import set_session_token
         set_session_token("test-session-token-for-browser-tests")
         fake_status = {
-            "allowed": True, "used": 0, "limit": 100,
-            "topup_credits": 0, "resets_at": None, "tier": "pro",
+            "allowed": True,
+            "used": 0,
+            "base_limit": 200,
+            "topup_balance": 0,
+            "remaining": 200,
+            "limit": 200,
+            "topup_credits": 0,
+            "resets_at": None,
+            "tier": "ai",
         }
         with patch("celerp_ai.routes.get_quota_status",
                    new=AsyncMock(return_value=fake_status)):

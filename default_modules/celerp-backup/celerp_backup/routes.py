@@ -167,9 +167,11 @@ async def list_backups(request: Request):
     from celerp.gateway.state import get_session_token
     from celerp.services import backup_repo
 
-    # Backups are a paid-tier feature; a free instance holds a gateway_token
-    # (for marketplace purchases) but no public_url, and has no backup entitlement.
-    if not get_session_token() or not settings.celerp_public_url:
+    # Post-cancel restore intentionally outlives public Web Access. The durable
+    # account credential plus recovered encryption key is enough to ask the
+    # relay; the relay remains authoritative for exact backup access.
+    from celerp.services.cloud_entitlement import stored_api_key
+    if not await stored_api_key() or not settings.backup_encryption_key:
         if request.headers.get("HX-Request"):
             from fasthtml.common import Div, to_xml
             return Response(

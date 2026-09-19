@@ -96,7 +96,11 @@ def _page(relay_ok: bool, enabled: bool, deposit_account: str,
 async def _load(token: str) -> tuple[bool, bool, str, list[dict]]:
     relay_ok = False
     try:
-        relay_ok = bool((await api.get_relay_status(token)).get("connected"))
+        relay = await api.get_relay_status(token)
+        if relay.get("entitlement_known"):
+            relay_ok = bool(relay.get("entitled"))
+        else:
+            relay_ok = bool(relay.get("connected") or relay.get("gateway_token_set"))
     except APIError:
         pass
     status = await api.get_payments_status(token)

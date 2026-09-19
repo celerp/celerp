@@ -749,8 +749,7 @@ def _direct_connection_gate(email: str, password: str) -> FT:
         else:
             cta_label = t("cloud.contact_celerp")
     elif _mode == "celerp_direct":
-        cta_label = direct_price(t("auth.get_celerp_cloud_usd_29mo")) \
-            or t("btn.get_connect")
+        cta_label = t("btn.get_connect")
     else:
         cta_label = t("cloud.contact_celerp")
 

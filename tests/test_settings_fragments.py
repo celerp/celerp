@@ -286,9 +286,10 @@ def test_value_prop_messaging():
     assert "cloud-connect-btn" in html
     assert "cloud-activate" in html
 
-    # Plan cards present
-    assert "$29" in html
-    assert "$49" in html
+    # Plan cards are present, but prices are omitted until the live catalog is supplied.
+    assert "cloud-plans" in html
+    assert "$29" not in html
+    assert "$49" not in html
     assert "$99" not in html          # Team card is not self-service sold
 
 

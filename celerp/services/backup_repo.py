@@ -17,6 +17,7 @@ and feeds the canonical ``run_import`` engine — the same importer as a local r
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import hashlib
 import io
 import json
@@ -28,7 +29,7 @@ from pathlib import Path
 import httpx
 
 from celerp.config import settings
-from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
+from celerp.gateway.state import fetch_relay_bearer, relay_http_url
 from celerp.services.backup import BackupResult, _parse_key, decrypt, dump_database, encrypt
 
 log = logging.getLogger(__name__)
@@ -86,10 +87,18 @@ async def _build_meta() -> dict:
 
 # ── Relay API ─────────────────────────────────────────────────────────────────
 
-def _relay() -> httpx.AsyncClient:
-    return httpx.AsyncClient(
-        base_url=relay_http_url(), headers=relay_session_headers(), timeout=60
-    )
+@asynccontextmanager
+async def _relay():
+    from celerp.services.cloud_entitlement import stored_api_key
+    if settings.cloud_disconnected:
+        raise RuntimeError("Cloud is explicitly disconnected")
+    api_key = await stored_api_key()
+    if not api_key:
+        raise RuntimeError("No Celerp cloud credential")
+    async with httpx.AsyncClient(base_url=relay_http_url(), timeout=60) as client:
+        jwt = await fetch_relay_bearer(client, api_key=api_key)
+        client.headers["Authorization"] = f"Bearer {jwt}"
+        yield client
 
 
 async def _missing(client: httpx.AsyncClient, hashes: set[str]) -> set[str]:
@@ -128,8 +137,8 @@ async def run_snapshot(label: str | None = None) -> BackupResult:
     """Back up the database + files as a deduplicated snapshot. Never raises."""
     if not settings.backup_encryption_key:
         return BackupResult(ok=False, size_bytes=0, error="BACKUP_ENCRYPTION_KEY is not configured")
-    if not get_session_token():
-        return BackupResult(ok=False, size_bytes=0, error="Relay not connected - skipping backup")
+    if settings.cloud_disconnected:
+        return BackupResult(ok=False, size_bytes=0, error="Cloud is explicitly disconnected")
 
     try:
         from celerp.services.backup_state import writes_paused

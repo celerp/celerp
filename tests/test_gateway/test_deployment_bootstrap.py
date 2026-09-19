@@ -532,3 +532,33 @@ async def test_hello_ack_still_updates_canonical_instance_id():
     )
     assert client._instance_id == "canonical-relay-id"
     assert gw_state.get_instance_id() == "canonical-relay-id"
+
+
+async def test_bootstrap_nonce_persistence_runs_off_event_loop(monkeypatch):
+    main_thread = threading.get_ident()
+    worker_threads: list[int] = []
+    started = threading.Event()
+    release = threading.Event()
+    released_while_waiting: list[bool] = []
+
+    def _slow_nonce():
+        worker_threads.append(threading.get_ident())
+        started.set()
+        released_while_waiting.append(release.wait(timeout=0.5))
+        return "threaded-nonce"
+
+    monkeypatch.setattr(bootstrap, "ensure_deployment_nonce", _slow_nonce)
+    _install_fake_client(monkeypatch, response=_FakeResponse(500, {"detail": "stop"}))
+
+    async def _release_from_loop():
+        while not started.is_set():
+            await asyncio.sleep(0)
+        release.set()
+
+    releaser = asyncio.create_task(_release_from_loop())
+    result = await bootstrap.associate_partner_deployment()
+    await releaser
+
+    assert result is False
+    assert released_while_waiting == [True]
+    assert worker_threads and all(tid != main_thread for tid in worker_threads)
