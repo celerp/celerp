@@ -72,7 +72,7 @@ def _get_example_queries(lang: str = "en") -> list[dict]:
 # Quota-exceeded upgrade / top-up card
 # ---------------------------------------------------------------------------
 
-def _quota_exceeded_card(detail: dict, user_bubble, lang: str = "en") -> FT:
+def _quota_exceeded_card(detail: dict, user_bubble: FT, lang: str = "en") -> tuple[FT, FT, FT]:
     """The card shown when an AI query is refused for hitting the quota.
 
     Routes both destinations through the commercial policy: the top-up CTA via
@@ -85,7 +85,7 @@ def _quota_exceeded_card(detail: dict, user_bubble, lang: str = "en") -> FT:
     limit = int(detail.get("base_limit", detail.get("limit", 0)) or 0)
     is_ai_tier = detail.get("tier") in ("cloud", "ai", "team")
     if is_ai_tier:
-        return Div(
+        return (
             user_bubble,
             _msg_bubble("ai", f"You've used all {limit} included AI queries this period."),
             Div(
@@ -97,7 +97,7 @@ def _quota_exceeded_card(detail: dict, user_bubble, lang: str = "en") -> FT:
             ),
         )
     upgrade_label = t("msg.get_the_ai_plan", lang)
-    return Div(
+    return (
         user_bubble,
         _msg_bubble("ai", f"You've used all {limit} included AI queries."),
         Div(
@@ -241,8 +241,7 @@ def setup_ui_routes(app) -> None:
             try:
                 conversation_id = (await api.ai_conversation_create(token, session_token))["id"]
             except APIError as e:
-                return Div(user_bubble, _msg_bubble("ai", t("ai.busy", lang)) if e.status == 429
-                           else _msg_bubble("ai", f"{t('ai.error_prefix', lang)} {e.detail}"))
+                return _failed_reply(user_bubble, e, lang)
 
         try:
             result = await api.ai_conversation_query(
@@ -252,9 +251,7 @@ def setup_ui_routes(app) -> None:
             if e.status == 402:
                 card_detail = e.detail if isinstance(e.detail, dict) else {}
                 return _quota_exceeded_card(card_detail, user_bubble, lang)
-            if e.status == 429:
-                return Div(user_bubble, _msg_bubble("ai", t("ai.busy", lang)))
-            return Div(user_bubble, _msg_bubble("ai", f"{t('ai.error_prefix', lang)} {e.detail}"))
+            return _failed_reply(user_bubble, e, lang)
 
         answer = result.get("answer", "")
         cards = [
@@ -270,9 +267,7 @@ def setup_ui_routes(app) -> None:
             id="ai-history", hx_swap_oob="true",
             hx_get="/ai/conversations-list", hx_trigger="load", hx_swap="innerHTML",
         )
-        html = to_xml(Div(
-            user_bubble, _msg_bubble("ai", answer), *cards, oob_id, oob_history,
-        ))
+        html = to_xml((user_bubble, _msg_bubble("ai", answer), *cards, oob_id, oob_history))
         return HTMLResponse(html, headers={"HX-Push-Url": f"/ai?conversation={conversation_id}"})
 
     @app.post("/ai/conversations")
@@ -570,6 +565,17 @@ async def _usage_table(token: str, session_token: str) -> FT:
 def _msg_bubble(role: str, text: str) -> FT:
     cls = "ai-msg ai-msg--user" if role == "user" else "ai-msg ai-msg--ai"
     return Div(text, cls=cls)
+
+
+def _failed_reply(user_bubble: FT, e: APIError, lang: str) -> tuple[FT, FT]:
+    """The user's bubble followed by the assistant's note that the request failed.
+
+    Returned as a fragment, never wrapped: each bubble must be a direct child of
+    the message column so it takes the same alignment as a reloaded thread.
+    """
+    if e.status == 429:
+        return user_bubble, _msg_bubble("ai", t("ai.busy", lang))
+    return user_bubble, _msg_bubble("ai", f"{t('ai.error_prefix', lang)} {e.detail}")
 
 
 def _arg_lines(section: dict) -> FT:
