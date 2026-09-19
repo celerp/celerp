@@ -196,6 +196,8 @@ async def backup_status() -> dict:
     from celerp.config import settings
     from celerp.services import backup_scheduler
     from celerp.services.backup_state import is_active
+    from celerp.gateway.state import get_subscription_state
+    tier, subscription_status = get_subscription_state()
     db = backup_scheduler.last_db_result()
     next_db = backup_scheduler.next_db_run_utc()
     running = bool(backup_scheduler._db_task and not backup_scheduler._db_task.done())
@@ -204,6 +206,8 @@ async def backup_status() -> dict:
         "active": is_active(),
         "gateway_token_set": bool(settings.gateway_token),
         "public_url": settings.celerp_public_url,
+        "subscription_tier": tier,
+        "subscription_status": subscription_status,
         "enc_ok": bool(settings.backup_encryption_key),
         "enc_key": settings.backup_encryption_key or "",
         "db": {"ok": db.ok, "error": db.error, "size_bytes": db.size_bytes,
@@ -257,12 +261,16 @@ async def cloud_disconnect() -> dict:
 async def _apply_gateway_token_api(
     token: str, iid: str, public_url: str | None = None,
     tos_version: str | None = None, *, authoritative_public_url: bool = True,
+    backup_encryption_key: str | None = None,
+    tier: str | None = None, status: str | None = None,
 ) -> None:
     """Compatibility wrapper around the single entitlement apply service."""
     from celerp.services.cloud_entitlement import apply_activation_state
     await apply_activation_state(
         token, iid, public_url=public_url, tos_version=tos_version,
-        authoritative_public_url=authoritative_public_url)
+        authoritative_public_url=authoritative_public_url,
+        backup_encryption_key=backup_encryption_key,
+        tier=tier, status=status)
 
 @settings_router.post("/cloud-activate", dependencies=[require_permission("manage_integrations")])
 async def cloud_activate_api() -> dict:
@@ -366,7 +374,9 @@ async def cloud_activate_api() -> dict:
         return {"error": "Relay did not return an activation credential."}
     public_url = data.get("public_url")
     await _apply_gateway_token_api(
-        token, iid, public_url=public_url, tos_version=data.get("tos_version"))
+        token, iid, public_url=public_url, tos_version=data.get("tos_version"),
+        backup_encryption_key=data.get("backup_encryption_key"),
+        tier=data.get("tier"), status=data.get("status"))
     gw = __import__("celerp.gateway.client", fromlist=["get_client"]).get_client()
     return {
         "connected": True,
@@ -844,7 +854,9 @@ async def _activate_after_claim(
         return None
     await _apply_gateway_token_api(
         token, iid, public_url=data.get("public_url"),
-        tos_version=data.get("tos_version"))
+        tos_version=data.get("tos_version"),
+        backup_encryption_key=data.get("backup_encryption_key"),
+        tier=data.get("tier"), status=data.get("status"))
     import celerp.gateway.client as _gw_mod
     gw = _gw_mod.get_client()
     return {

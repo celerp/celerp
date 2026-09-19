@@ -410,6 +410,8 @@ class GatewayClient:
                 self._proxied_count, self._cancelled_count,
                 self._timeout_count, self._stale_dropped_count,
             )
+            from celerp.gateway.state import set_session_token
+            set_session_token("")
             self._set_status("inactive")
 
     def _build_hello_payload(self, tos_version: str, app_version: str) -> dict:
@@ -473,11 +475,13 @@ class GatewayClient:
                 set_subscription_state(tier, payload.get("status", ""))
 
         elif msg_type == "session.refresh":
+            from celerp.gateway.state import set_session_token
             session_token = payload.get("session_token", "")
+            set_session_token(session_token)
             if session_token:
-                from celerp.gateway.state import set_session_token
-                set_session_token(session_token)
                 log.debug("Gateway session token refreshed.")
+            else:
+                log.debug("Gateway session token revoked by relay.")
 
         elif msg_type == "error":
             code = payload.get("code", "")

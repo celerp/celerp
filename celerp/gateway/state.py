@@ -858,6 +858,9 @@ def activate_payload(
         payload["first_boot"] = first_boot
     if activation_verifier:
         payload["activation_verifier"] = activation_verifier
+    from celerp.config import settings as _settings
+    if _settings.backup_encryption_key:
+        payload["backup_encryption_key"] = _settings.backup_encryption_key
     return payload
 
 
