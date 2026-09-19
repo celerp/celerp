@@ -1,0 +1,6 @@
+{
+  "detail": {
+    "code": "rate_limited",
+    "message": "The AI service is busy. Try again in a moment."
+  }
+}
