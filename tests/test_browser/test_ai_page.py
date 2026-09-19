@@ -114,7 +114,7 @@ class TestShowcasePage:
         cards = page.locator(".ai-showcase__cta-card")
         cloud_card = cards.first
         assert "Celerp Connect" in cloud_card.inner_text()
-        assert "$29/mo" in cloud_card.inner_text()
+        assert "$29/mo" not in cloud_card.inner_text()
         assert "Start Here" in cloud_card.inner_text()
         assert "Cancel anytime" in cloud_card.inner_text()
         btn = cloud_card.locator(".btn")
@@ -127,7 +127,7 @@ class TestShowcasePage:
         cards = page.locator(".ai-showcase__cta-card")
         ai_card = cards.last
         assert "Celerp Connect + AI" in ai_card.inner_text()
-        assert "$49/mo" in ai_card.inner_text()
+        assert "$49/mo" not in ai_card.inner_text()
         assert "Recommended" in ai_card.inner_text()
         assert "Cancel anytime" in ai_card.inner_text()
         assert "ai-showcase__cta-card--featured" in (ai_card.get_attribute("class") or "")
@@ -179,8 +179,15 @@ class TestChatView:
         from celerp.gateway.state import set_session_token
         set_session_token("test-session-token-for-browser-tests")
         fake_status = {
-            "allowed": True, "used": 0, "limit": 100,
-            "topup_credits": 0, "resets_at": None, "tier": "pro",
+            "allowed": True,
+            "used": 0,
+            "base_limit": 200,
+            "topup_balance": 0,
+            "remaining": 200,
+            "limit": 200,
+            "topup_credits": 0,
+            "resets_at": None,
+            "tier": "ai",
         }
         with patch("celerp_ai.routes.get_quota_status",
                    new=AsyncMock(return_value=fake_status)):
