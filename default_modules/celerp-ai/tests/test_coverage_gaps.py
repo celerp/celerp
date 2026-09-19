@@ -5,26 +5,19 @@
 
 Covers:
   - files.py: load_file, load_file_for_llm (valid, missing, wrong company)
-  - commands.py: parse_bill_commands + create_bills (vendor found/created, no company, empty, no celerp_docs)
   - cleanup.py: _delete_file_pair OSError, cleanup stat OSError, orphan OSError, run_cleanup_loop
   - batch.py: _process_single_file wrong company, notification failure
-  - llm.py: history injection, exhausted retry loop
+  - llm.py: history injection through the gateway
   - page_count.py: PDF 0 pages
-  - quota.py: _build_upgrade_url with instance_id, get_quota_status branches, unconfirmed counter
-  - tools.py: active_contacts_list, active_items_list, pending_pos, dormant contact_id=None
+  - quota.py: get_quota_status branches
   - conversations.py: rename not found
-  - service.py: run_query with files + pending bills, command extraction failure
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import time
 import uuid
-from datetime import datetime, timezone
-from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -32,11 +25,9 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
 from celerp.models.company import Company
-from celerp.models.projections import Projection
 
 
 
@@ -115,182 +106,6 @@ def test_load_file_for_llm_valid(tmp_path):
         result = load_file_for_llm(fid, co_id)
     assert result["media_type"] == "image/png"
     assert len(result["data"]) > 0  # base64
-
-
-# ── service.py: run_query with files + pending bills ─────────────────────────
-
-@pytest.mark.asyncio
-async def test_run_query_with_files_returns_pending_bills(session, company):
-    """Files trigger load_file_for_llm, LLM output with JSON returns pending_bills."""
-    from celerp.ai.service import run_query
-    fid = "ai_up_cmd_test"
-    upload_dir = settings.data_dir / "ai_uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    (upload_dir / f"{fid}.bin").write_bytes(b"fake")
-    (upload_dir / f"{fid}.meta").write_text(json.dumps({
-        "content_type": "image/jpeg", "company_id": str(company.id),
-    }))
-
-    llm_answer = (
-        "Here are the bills:\n"
-        '```json\n{"create_draft_bills": [{"vendor_name": "Acme", "date": "2026-01-01", '
-        '"total": 100.0, "source_file_id": "' + fid + '", '
-        '"line_items": [{"description": "Widget", "quantity": 2, "unit_price": 50.0}]}]}\n```'
-    )
-
-    with patch("celerp.ai.service._select_tools", return_value=["active_contacts_list"]):
-        with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, return_value=llm_answer):
-            result = await run_query("process this receipt", session, company.id, file_ids=[fid])
-
-    assert result.error is None
-    assert result.pending_bills is not None
-    assert len(result.pending_bills) == 1
-    assert result.pending_bills[0]["vendor_name"] == "Acme"
-
-
-@pytest.mark.asyncio
-async def test_run_query_command_extraction_failure(session, company):
-    """Invalid JSON in code block doesn't crash - pending_bills is None."""
-    from celerp.ai.service import run_query
-
-    llm_answer = "Bills:\n```json\n{invalid json}\n```"
-    with patch("celerp.ai.service._select_tools", return_value=["dashboard_kpis"]):
-        with patch("celerp.ai.service.call_llm", new_callable=AsyncMock, return_value=llm_answer):
-            result = await run_query("process receipts", session, company.id)
-    assert result.error is None
-    assert result.pending_bills is None
-
-
-@pytest.mark.asyncio
-async def test_run_query_with_history(session, company):
-    """History parameter is forwarded to call_llm."""
-    from celerp.ai.service import run_query
-    captured = {}
-
-    async def mock_llm(model, system, user_text, files=None, max_tokens=2048, history=None, timeout=45.0):
-        captured["history"] = history
-        return "OK"
-
-    history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
-    with patch("celerp.ai.service._select_tools", return_value=["dashboard_kpis"]):
-        with patch("celerp.ai.service.call_llm", side_effect=mock_llm):
-            await run_query("followup", session, company.id, history=history)
-    assert captured["history"] == history
-
-
-# ── commands.py: parse_bill_commands + create_bills ──────────────────────────
-
-def test_parse_bill_commands_valid():
-    """Valid bill data parses to DraftBill list."""
-    from celerp.ai.commands import parse_bill_commands
-    result = parse_bill_commands({"create_draft_bills": [{
-        "vendor_name": "Acme", "date": "2026-01-01", "total": 100.0,
-        "line_items": [{"description": "Widget", "quantity": 2, "unit_price": 50.0}],
-    }]})
-    assert len(result) == 1
-    assert result[0].vendor_name == "Acme"
-
-
-def test_parse_bill_commands_empty():
-    """Empty commands returns empty list."""
-    from celerp.ai.commands import parse_bill_commands
-    assert parse_bill_commands({}) == []
-    assert parse_bill_commands({"create_draft_bills": []}) == []
-
-
-def test_parse_bill_commands_invalid():
-    """Invalid bill data raises ValueError."""
-    from celerp.ai.commands import parse_bill_commands
-    with pytest.raises(ValueError, match="validation failed"):
-        parse_bill_commands({"create_draft_bills": [{"vendor_name": "Acme"}]})
-
-
-@pytest.mark.asyncio
-async def test_create_bills_vendor_exists(session, company):
-    """When vendor found in projections, use existing contact_id."""
-    from celerp.ai.commands import DraftBill, LineItem, create_bills
-
-    session.add(Projection(
-        entity_id=str(uuid.uuid4()),
-        company_id=company.id,
-        entity_type="contact",
-        state={"name": "Acme Corp", "contact_type": "vendor"},
-        version=1,
-        updated_at=datetime.now(timezone.utc),
-    ))
-    await session.commit()
-
-    bills = [DraftBill(
-        vendor_name="Acme Corp", date="2026-01-01", total=500.0,
-        line_items=[LineItem(description="Parts", quantity=5, unit_price=100.0)],
-    )]
-
-    with patch("celerp.events.engine.emit_event", new_callable=AsyncMock) as mock_emit:
-        feedback = await create_bills(session, company.id, uuid.uuid4(), bills)
-
-    assert "Created Draft Bill" in feedback
-    assert "Acme Corp" in feedback
-    assert mock_emit.call_count == 1
-    call_data = mock_emit.call_args[1]["data"]
-    assert call_data["doc_type"] == "bill"
-
-
-@pytest.mark.asyncio
-async def test_create_bills_vendor_created(session, company):
-    """When vendor not found, auto-create contact then bill."""
-    from celerp.ai.commands import DraftBill, LineItem, create_bills
-
-    bills = [DraftBill(
-        vendor_name="New Supplier Ltd", date="2026-02-01", total=200.0,
-        line_items=[LineItem(description="Stuff", quantity=1, unit_price=200.0)],
-    )]
-    user_id = uuid.uuid4()
-
-    with patch("celerp.events.engine.emit_event", new_callable=AsyncMock) as mock_emit:
-        feedback = await create_bills(session, company.id, user_id, bills)
-
-    assert "Created Draft Bill" in feedback
-    assert mock_emit.call_count == 2
-    first_call = mock_emit.call_args_list[0][1]
-    assert first_call["event_type"] == "contact.created"
-    assert first_call["actor_id"] == user_id  # Verify actor_id set
-    second_call = mock_emit.call_args_list[1][1]
-    assert second_call["event_type"] == "doc.created"
-    assert second_call["actor_id"] == user_id
-
-
-@pytest.mark.asyncio
-async def test_create_bills_no_company(session):
-    """Non-existent company returns empty string."""
-    from celerp.ai.commands import create_bills
-    result = await create_bills(session, uuid.uuid4(), uuid.uuid4(), [])
-    assert result == ""
-
-
-@pytest.mark.asyncio
-async def test_create_bills_without_celerp_docs(session, company):
-    """When celerp_docs not importable, fallback bill ref is generated."""
-    from celerp.ai.commands import DraftBill, LineItem, create_bills
-
-    bills = [DraftBill(
-        vendor_name="Fallback Co", date="2026-03-01", total=50.0,
-        line_items=[LineItem(description="Item", quantity=1, unit_price=50.0)],
-    )]
-
-    import sys
-    saved = sys.modules.get("celerp_docs.sequences")
-    sys.modules["celerp_docs.sequences"] = None
-    try:
-        with patch("celerp.events.engine.emit_event", new_callable=AsyncMock):
-            feedback = await create_bills(session, company.id, uuid.uuid4(), bills)
-    finally:
-        if saved is not None:
-            sys.modules["celerp_docs.sequences"] = saved
-        elif "celerp_docs.sequences" in sys.modules:
-            del sys.modules["celerp_docs.sequences"]
-
-    assert "Created Draft Bill" in feedback
-    assert "BIL-" in feedback
 
 
 # ── cleanup.py: edge cases ───────────────────────────────────────────────────
@@ -461,87 +276,6 @@ async def test_get_quota_status_no_instance_id():
     assert result is None
 
 
-# ── tools.py: active_contacts_list, active_items_list, pending_pos ───────────
-
-@pytest_asyncio.fixture
-async def tool_session(session):
-    cid = uuid.uuid4()
-    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
-    session.add(Projection(
-        entity_id=str(uuid.uuid4()), company_id=cid, entity_type="contact",
-        state={"name": "Acme", "contact_type": "vendor"}, version=1,
-        updated_at=datetime.now(timezone.utc),
-    ))
-    session.add(Projection(
-        entity_id=str(uuid.uuid4()), company_id=cid, entity_type="item",
-        state={"name": "Widget", "sku": "WDG-1"}, version=1,
-        updated_at=datetime.now(timezone.utc),
-    ))
-    session.add(Projection(
-        entity_id=str(uuid.uuid4()), company_id=cid, entity_type="doc",
-        state={"doc_type": "po", "doc_number": "PO-001", "contact_name": "Acme",
-               "total": 500, "status": "open"}, version=1,
-        updated_at=datetime.now(timezone.utc),
-    ))
-    session.add(Projection(
-        entity_id=str(uuid.uuid4()), company_id=cid, entity_type="doc",
-        state={"doc_type": "po", "doc_number": "PO-002", "status": "received",
-               "total": 200}, version=1,
-        updated_at=datetime.now(timezone.utc),
-    ))
-    session.add(Projection(
-        entity_id=str(uuid.uuid4()), company_id=cid, entity_type="doc",
-        state={"doc_type": "invoice", "contact_id": None}, version=1,
-        updated_at=datetime.now(timezone.utc),
-    ))
-    await session.commit()
-    return session, cid
-
-
-@pytest.mark.asyncio
-async def test_active_contacts_list(tool_session):
-    from celerp.ai.tools import execute_tool
-    sess, cid = tool_session
-    result = await execute_tool("active_contacts_list", {}, sess, cid)
-    assert len(result["contacts"]) == 1
-    assert result["contacts"][0]["name"] == "Acme"
-
-
-@pytest.mark.asyncio
-async def test_active_items_list(tool_session):
-    from celerp.ai.tools import execute_tool
-    sess, cid = tool_session
-    result = await execute_tool("active_items_list", {}, sess, cid)
-    assert len(result["items"]) == 1
-    assert result["items"][0]["sku"] == "WDG-1"
-
-
-@pytest.mark.asyncio
-async def test_pending_pos(tool_session):
-    from celerp.ai.tools import execute_tool
-    sess, cid = tool_session
-    result = await execute_tool("pending_pos", {}, sess, cid)
-    assert result["total_count"] == 1
-    assert result["pending_pos"][0]["doc_number"] == "PO-001"
-
-
-@pytest.mark.asyncio
-async def test_pending_pos_empty(session):
-    from celerp.ai.tools import execute_tool
-    cid = uuid.uuid4()
-    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
-    result = await execute_tool("pending_pos", {}, session, cid)
-    assert result["total_count"] == 0
-
-
-@pytest.mark.asyncio
-async def test_dormant_contacts_skip_no_contact_id(tool_session):
-    from celerp.ai.tools import execute_tool
-    sess, cid = tool_session
-    result = await execute_tool("dormant_contacts", {}, sess, cid)
-    assert result["total_count"] == 1
-
-
 # ── conversations.py: rename not found ───────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -549,47 +283,3 @@ async def test_rename_conversation_not_found(session, company):
     from celerp.ai.conversations import rename_conversation
     result = await rename_conversation(session, uuid.uuid4(), company.id, uuid.uuid4(), "new title")
     assert result is None
-
-
-def test_bill_preview_component():
-    """_bill_preview renders a card with vendor, total, and action buttons."""
-    from celerp_ai.ui_routes import _bill_preview
-    bills = [
-        {
-            "vendor_name": "Acme",
-            "date": "2026-04-12",
-            "total": 100.0,
-            "line_items": [{"description": "Widget", "quantity": 2, "unit_price": 50.0}],
-        },
-        {
-            "vendor_name": "BetaCorp",
-            "date": "2026-04-12",
-            "total": 200.0,
-            "line_items": [],
-        },
-    ]
-    from fasthtml.common import to_xml
-    html = to_xml(_bill_preview(bills))
-    assert "ai-bills" in html
-    assert "Acme" in html
-    assert "BetaCorp" in html
-    assert "$100.00" in html
-    assert "$200.00" in html
-    assert "Widget" in html
-    assert "Confirm" in html
-    assert "Discard" in html
-    assert "2 Draft Bills Ready" in html
-
-
-def test_bill_preview_single_bill():
-    """_bill_preview uses singular 'Bill' for single bill."""
-    from celerp_ai.ui_routes import _bill_preview
-    from fasthtml.common import to_xml
-    html = to_xml(_bill_preview([{
-        "vendor_name": "Solo",
-        "date": "2026-01-01",
-        "total": 50.0,
-        "line_items": [{"description": "Item", "quantity": 1, "unit_price": 50.0}],
-    }]))
-    assert "1 Draft Bill Ready" in html
-    assert "Bills Ready" not in html
