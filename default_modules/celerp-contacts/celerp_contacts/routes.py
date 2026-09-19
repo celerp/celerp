@@ -151,7 +151,7 @@ async def create_contact(payload: ContactCreate, company_id: str = Depends(get_c
     return {"event_id": entry.id, "id": entity_id}
 
 
-@router.get("/contacts")
+@router.get("/contacts", dependencies=[require_permission("view_contacts")])
 async def list_contacts(
     q: str = "",
     limit: int = 50,
@@ -169,7 +169,7 @@ async def list_contacts(
     return {"items": results[offset:offset + limit], "total": len(results)}
 
 
-@router.get("/contacts/{contact_id}")
+@router.get("/contacts/{contact_id}", dependencies=[require_permission("view_contacts")])
 async def get_contact(contact_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None:

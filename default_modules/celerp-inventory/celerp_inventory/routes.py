@@ -1379,7 +1379,7 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     return {"items": result}
 
 
-@router.get("/{entity_id}")
+@router.get("/{entity_id}", dependencies=[require_permission("view_inventory")])
 async def get_item(entity_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.models.company import Location
     from celerp.services.field_schema import get_effective_field_schema
@@ -1417,7 +1417,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     return result
 
 
-@router.get("/{entity_id}/reorder-suggestion")
+@router.get("/{entity_id}/reorder-suggestion", dependencies=[require_permission("view_inventory")])
 async def get_reorder_suggestion(entity_id: str, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """Suggested reorder_point / reorder_qty from trailing outbound velocity.
 
