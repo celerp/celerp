@@ -3113,5 +3113,6 @@
   "settings_cloud.invalid_port": "Enter a valid port number (1-65535)",
   "settings_cloud.db_connection_failed": "Connection failed. Check the host, port, and credentials.",
   "settings_cloud.invalid_storage_backend": "Select a valid storage backend",
-  "settings_cloud.invalid_s3_endpoint": "Enter a valid https:// endpoint"
+  "settings_cloud.invalid_s3_endpoint": "Enter a valid https:// endpoint",
+  "settings.subscription_linked_connecting": "Subscription linked. Connecting to the relay..."
 }

@@ -3113,5 +3113,6 @@
   "settings_cloud.invalid_port": "กรอกหมายเลขพอร์ตที่ถูกต้อง (1-65535)",
   "settings_cloud.db_connection_failed": "การเชื่อมต่อล้มเหลว ตรวจสอบโฮสต์ พอร์ต และข้อมูลรับรอง",
   "settings_cloud.invalid_storage_backend": "เลือกแบ็กเอนด์พื้นที่จัดเก็บที่ถูกต้อง",
-  "settings_cloud.invalid_s3_endpoint": "กรอกปลายทาง https:// ที่ถูกต้อง"
+  "settings_cloud.invalid_s3_endpoint": "กรอกปลายทาง https:// ที่ถูกต้อง",
+  "settings.subscription_linked_connecting": "เชื่อมโยงการสมัครสมาชิกแล้ว กำลังเชื่อมต่อกับรีเลย์..."
 }

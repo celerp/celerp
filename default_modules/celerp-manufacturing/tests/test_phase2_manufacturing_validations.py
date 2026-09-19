@@ -10,7 +10,7 @@ import pytest
 
 async def _register(client) -> str:
     addr = f"admin-{uuid.uuid4().hex[:8]}@mfgval.test"
-    r = await client.post("/auth/register", json={"company_name": "Mfg Co", "email": addr, "name": "Admin", "password": "pw"})
+    r = await client.post("/auth/register", json={"company_name": "Mfg Co", "email": addr, "name": "Admin", "password": "validpass1"})
     assert r.status_code == 200
     return r.json()["access_token"]
 

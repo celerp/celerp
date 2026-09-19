@@ -11,7 +11,7 @@ import pytest
 
 async def _register(client) -> str:
     addr = f"admin-{uuid.uuid4().hex[:8]}@fulact.test"
-    r = await client.post("/auth/register", json={"company_name": "FulAct Co", "email": addr, "name": "A", "password": "pw"})
+    r = await client.post("/auth/register", json={"company_name": "FulAct Co", "email": addr, "name": "A", "password": "validpass1"})
     assert r.status_code == 200
     return r.json()["access_token"]
 
@@ -94,9 +94,9 @@ async def test_doc_cogs_redacted_for_operator(client, session):
 
     # Operator must not.
     from celerp.services.session_tracker import clear as _clear_tracker
-    await client.post("/companies/me/users", json={"email": "op@fulact.test", "name": "Op", "role": "operator", "password": "pw123"}, headers=h)
+    await client.post("/companies/me/users", json={"email": "op@fulact.test", "name": "Op", "role": "operator", "password": "validpass1"}, headers=h)
     await _clear_tracker(session)
-    op_tok = (await client.post("/auth/login", json={"email": "op@fulact.test", "password": "pw123"})).json()["access_token"]
+    op_tok = (await client.post("/auth/login", json={"email": "op@fulact.test", "password": "validpass1"})).json()["access_token"]
     op_ful = [e for e in await _doc_events(client, _h(op_tok), doc) if e["event_type"] == "doc.fulfilled"][0]
     assert "total_cogs" not in op_ful["data"], "COGS leaked to operator"
     import json as _json

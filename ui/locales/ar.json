@@ -3113,5 +3113,6 @@
   "settings_cloud.invalid_port": "أدخل رقم منفذ صالح (1-65535)",
   "settings_cloud.db_connection_failed": "فشل الاتصال. تحقق من المضيف والمنفذ وبيانات الاعتماد.",
   "settings_cloud.invalid_storage_backend": "اختر نوع تخزين صالح",
-  "settings_cloud.invalid_s3_endpoint": "أدخل نقطة نهاية https:// صالحة"
+  "settings_cloud.invalid_s3_endpoint": "أدخل نقطة نهاية https:// صالحة",
+  "settings.subscription_linked_connecting": "تم ربط الاشتراك. جارٍ الاتصال بالمرحّل..."
 }

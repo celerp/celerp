@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import os
 
+from starlette.requests import Request
+
 from celerp.config import settings as _settings
 
 API_BASE = os.getenv("API_URL", os.getenv("CELERP_API_URL", "http://localhost:8000"))
@@ -40,13 +42,34 @@ def cookie_domain(request) -> str | None:
     return host
 
 
-def set_session_cookies(resp, access_token: str, refresh_token: str, request=None) -> None:
+def session_cookie_secure(request: Request) -> bool:
+    """Decide whether session cookies get the ``Secure`` attribute for this request.
+
+    Secure follows the actual request transport, not Connect linkage: an explicit
+    ``COOKIE_SECURE`` override always wins, then native HTTPS, then a forwarded
+    ``https`` proto from the relay/proxy. Direct HTTP/LAN access stays usable. A
+    direct client can only spoof the forwarded header to make its own cookie
+    stricter; it cannot strip Secure from an HTTPS cookie or gain authorization.
+    """
+    if _settings.cookie_secure:
+        return True
+
+    if request.url.scheme.lower() == "https":
+        return True
+
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    return any(part.strip().lower() == "https" for part in forwarded.split(","))
+
+
+def set_session_cookies(resp, access_token: str, refresh_token: str, request: Request) -> None:
     """Write the auth + refresh cookies onto a response. The one authoritative
     session-cookie writer, reused by login, company switch, and the modules
-    restart flow."""
-    domain = cookie_domain(request) if request is not None else None
-    resp.set_cookie(COOKIE_NAME, access_token, httponly=True, samesite="lax", max_age=ACCESS_COOKIE_MAX_AGE, secure=_settings.cookie_secure, domain=domain)
-    resp.set_cookie(REFRESH_COOKIE_NAME, refresh_token, httponly=True, samesite="lax", max_age=REFRESH_COOKIE_MAX_AGE, secure=_settings.cookie_secure, domain=domain)
+    restart flow. ``request`` is required so every write carries the transport
+    context that decides the Secure attribute."""
+    domain = cookie_domain(request)
+    secure = session_cookie_secure(request)
+    resp.set_cookie(COOKIE_NAME, access_token, httponly=True, samesite="lax", max_age=ACCESS_COOKIE_MAX_AGE, secure=secure, domain=domain)
+    resp.set_cookie(REFRESH_COOKIE_NAME, refresh_token, httponly=True, samesite="lax", max_age=REFRESH_COOKIE_MAX_AGE, secure=secure, domain=domain)
 
 
 def clear_session_cookies(resp, request=None) -> None:

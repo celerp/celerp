@@ -20,7 +20,7 @@ from celerp.models.ledger import LedgerEntry
 
 async def _register(client, email: str | None = None) -> str:
     addr = email or f"admin-{uuid.uuid4().hex[:8]}@mfg.test"
-    r = await client.post("/auth/register", json={"company_name": "Run Co", "email": addr, "name": "Admin", "password": "pw"})
+    r = await client.post("/auth/register", json={"company_name": "Run Co", "email": addr, "name": "Admin", "password": "validpass1"})
     assert r.status_code == 200, r.text
     return r.json()["access_token"]
 

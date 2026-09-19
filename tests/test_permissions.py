@@ -55,7 +55,7 @@ class TestManagerRequiredDocOps:
 
     async def test_viewer_cannot_finalize_doc(self, client, session):
         ctx = await _setup(client, session)
-        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "viewer@perm.com", "viewer")
+        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "viewer@perm.example", "viewer")
         viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(f"/docs/{doc_id}/finalize", headers=viewer_h)
@@ -63,7 +63,7 @@ class TestManagerRequiredDocOps:
 
     async def test_viewer_cannot_record_payment(self, client, session):
         ctx = await _setup(client, session)
-        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "viewer2@perm.com", "viewer")
+        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "viewer2@perm.example", "viewer")
         viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(
@@ -125,7 +125,7 @@ class TestManagerRequiredDocOps:
 
     async def test_viewer_cannot_void_doc(self, client, session):
         ctx = await _setup(client, session)
-        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "viewer3@perm.com", "viewer")
+        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "viewer3@perm.example", "viewer")
         viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         await client.post(f"/docs/{doc_id}/finalize", headers=ctx["admin_h"])
@@ -134,7 +134,7 @@ class TestManagerRequiredDocOps:
 
     async def test_viewer_cannot_refund_payment(self, client, session):
         ctx = await _setup(client, session)
-        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "viewer4@perm.com", "viewer")
+        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "viewer4@perm.example", "viewer")
         viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(
@@ -166,7 +166,7 @@ class TestRoleHierarchy:
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
         r = await client.post(
             "/companies/me/users",
-            json={"email": "newuser@x.com", "name": "New", "role": "operator", "password": "pw123"},
+            json={"email": "newuser@x.example", "name": "New", "role": "operator", "password": "pw123val"},
             headers=admin_h,
         )
         assert r.status_code == 200
@@ -175,7 +175,7 @@ class TestRoleHierarchy:
         """Explicitly created admin (level 4) also meets the admin-default threshold."""
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
-        admin2_tok = await _invite_user(client, session, admin_h, "admin2@x.com", "admin")
+        admin2_tok = await _invite_user(client, session, admin_h, "admin2@x.example", "admin")
         admin2_h = {"Authorization": f"Bearer {admin2_tok}"}
         r = await client.patch(
             "/companies/me",
@@ -195,7 +195,7 @@ class TestRoleHierarchy:
         )
         location_id = loc_r.json()["id"]
         item_id = await _create_item(client, admin_h, location_id, sku="VIEWER-ITEM")
-        viewer_tok = await _invite_user(client, session, admin_h, "viewer@x.com", "viewer")
+        viewer_tok = await _invite_user(client, session, admin_h, "viewer@x.example", "viewer")
         viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
         r = await client.post(
             "/items/bulk/delete",
@@ -207,7 +207,7 @@ class TestRoleHierarchy:
     async def test_viewer_can_access_valuation_without_cost(self, client, session):
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
-        viewer_tok = await _invite_user(client, session, admin_h, "viewer2@x.com", "viewer")
+        viewer_tok = await _invite_user(client, session, admin_h, "viewer2@x.example", "viewer")
         viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
         r = await client.get("/items/valuation", headers=viewer_h)
         assert r.status_code == 200
@@ -235,7 +235,7 @@ class TestRoleHierarchy:
             headers=ctx["admin_h"],
         )
         doc_id = r.json()["id"]
-        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "vhier@perm.com", "viewer")
+        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "vhier@perm.example", "viewer")
         viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
         r2 = await client.post(f"/docs/{doc_id}/finalize", headers=viewer_h)
         assert r2.status_code == 403
@@ -246,7 +246,7 @@ class TestRoleHierarchy:
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
         r = await client.post(
             "/companies/me/users",
-            json={"email": "bad@x.com", "name": "Bad", "role": "superuser", "password": "pw123"},
+            json={"email": "bad@x.example", "name": "Bad", "role": "superuser", "password": "pw123val"},
             headers=admin_h,
         )
         assert r.status_code == 400
@@ -255,10 +255,10 @@ class TestRoleHierarchy:
         """Patching a user to an invalid role returns 400."""
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
-        op_tok = await _invite_user(client, session, admin_h, "patchme@x.com", "operator")
+        op_tok = await _invite_user(client, session, admin_h, "patchme@x.example", "operator")
         # Get user id by listing
         users_r = await client.get("/companies/me/users", headers=admin_h)
-        user_id = next(u["id"] for u in users_r.json()["items"] if u["email"] == "patchme@x.com")
+        user_id = next(u["id"] for u in users_r.json()["items"] if u["email"] == "patchme@x.example")
         r = await client.patch(
             f"/companies/me/users/{user_id}",
             json={"role": "wizard"},
@@ -289,7 +289,7 @@ class TestLegacyRoleMigration:
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
         r = await client.post(
             "/companies/me/users",
-            json={"email": "legacy@x.com", "name": "Legacy", "role": "operator", "password": "pw"},
+            json={"email": "legacy@x.example", "name": "Legacy", "role": "operator", "password": "pwvalid1"},
             headers=admin_h,
         )
         assert r.status_code == 200

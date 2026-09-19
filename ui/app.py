@@ -224,9 +224,11 @@ class TokenRefreshMiddleware:
         # to be stale.
 
         if new_access and new_refresh:
-            from celerp.config import settings as _settings
-            from ui.config import ACCESS_COOKIE_MAX_AGE, REFRESH_COOKIE_MAX_AGE
+            from ui.config import ACCESS_COOKIE_MAX_AGE, REFRESH_COOKIE_MAX_AGE, session_cookie_secure
             domain = cookie_domain(request)
+            # Sliding-refresh cookies follow the same transport rule as normal
+            # issuance, so a refresh over direct HTTP is not silently Secured.
+            secure = session_cookie_secure(request)
 
             def _make_set_cookie(name, value, http_only, max_age_, secure, samesite):
                 parts = [f"{name}={value}", f"Max-Age={max_age_}", f"SameSite={samesite}", "Path=/"]
@@ -239,8 +241,8 @@ class TokenRefreshMiddleware:
                 return "; ".join(parts)
 
             extra_cookies = [
-                _make_set_cookie(COOKIE_NAME, new_access, True, ACCESS_COOKIE_MAX_AGE, _settings.cookie_secure, "lax"),
-                _make_set_cookie(REFRESH_COOKIE_NAME, new_refresh, True, REFRESH_COOKIE_MAX_AGE, _settings.cookie_secure, "lax"),
+                _make_set_cookie(COOKIE_NAME, new_access, True, ACCESS_COOKIE_MAX_AGE, secure, "lax"),
+                _make_set_cookie(REFRESH_COOKIE_NAME, new_refresh, True, REFRESH_COOKIE_MAX_AGE, secure, "lax"),
             ]
 
             async def send_with_cookies(message):

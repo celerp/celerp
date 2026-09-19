@@ -3113,5 +3113,6 @@
   "settings_cloud.invalid_port": "Insira um número de porta válido (1-65535)",
   "settings_cloud.db_connection_failed": "Falha na conexão. Verifique o host, a porta e as credenciais.",
   "settings_cloud.invalid_storage_backend": "Selecione um backend de armazenamento válido",
-  "settings_cloud.invalid_s3_endpoint": "Insira um endpoint https:// válido"
+  "settings_cloud.invalid_s3_endpoint": "Insira um endpoint https:// válido",
+  "settings.subscription_linked_connecting": "Assinatura vinculada. Conectando ao relay..."
 }

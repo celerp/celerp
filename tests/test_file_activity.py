@@ -18,7 +18,7 @@ from ui.components.activity import activity_table
 async def _token(client) -> str:
     r = await client.post(
         "/auth/register",
-        json={"company_name": "Files Co", "email": "files@acme.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "Files Co", "email": "files@acme.example", "name": "Admin", "password": "pwvalid1"},
     )
     return r.json()["access_token"]
 

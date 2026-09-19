@@ -25,7 +25,7 @@ async def test_api_404_handler_returns_json(client):
     # Register + get token first
     r = await client.post(
         "/auth/register",
-        json={"company_name": "ErrCo", "email": "err@test.com", "name": "Err", "password": "pw"},
+        json={"company_name": "ErrCo", "email": "err@test.example", "name": "Err", "password": "pwvalid1"},
     )
     assert r.status_code == 200
     token = r.json()["access_token"]

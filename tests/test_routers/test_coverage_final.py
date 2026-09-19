@@ -37,7 +37,7 @@ async def _reg(client, name=None) -> str:
     cname = name or f"FinalCo-{uuid.uuid4().hex[:6]}"
     r = await client.post(
         "/auth/register",
-        json={"company_name": cname, "email": addr, "name": "Admin", "password": "pw"},
+        json={"company_name": cname, "email": addr, "name": "Admin", "password": "pwvalid1"},
     )
     assert r.status_code == 200, r.text
     return r.json()["access_token"]

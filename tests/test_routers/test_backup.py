@@ -47,10 +47,10 @@ async def auth_client(session: AsyncSession):
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         await c.post("/auth/register", json={
-            "company_name": "BackupCo", "email": "b@test.com",
-            "name": "Admin", "password": "pw",
+            "company_name": "BackupCo", "email": "b@test.example",
+            "name": "Admin", "password": "pwvalid1",
         })
-        r = await c.post("/auth/login", json={"email": "b@test.com", "password": "pw"})
+        r = await c.post("/auth/login", json={"email": "b@test.example", "password": "pwvalid1"})
         jwt = r.json()["access_token"]
         c.headers["Authorization"] = f"Bearer {jwt}"
         c.headers["X-Session-Token"] = token

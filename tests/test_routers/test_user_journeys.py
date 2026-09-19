@@ -39,7 +39,7 @@ async def _reg(client, suffix: str = "") -> str:
     email = f"uj-{uuid.uuid4().hex[:10]}{suffix}@test.test"
     r = await client.post(
         "/auth/register",
-        json={"company_name": f"UJ Co {suffix}", "email": email, "name": "Admin", "password": "pw"},
+        json={"company_name": f"UJ Co {suffix}", "email": email, "name": "Admin", "password": "pwvalid1"},
     )
     assert r.status_code == 200, r.text
     return r.json()["access_token"]
@@ -2251,14 +2251,14 @@ async def test_rpt_sales_daily_period(client):
 
 @pytest.mark.asyncio
 async def test_perm_login_wrong_password_401(client):
-    await client.post("/auth/register", json={"company_name": "Perm Co", "email": "perm@test.test", "name": "Admin", "password": "correct"})
+    await client.post("/auth/register", json={"company_name": "Perm Co", "email": "perm@test.test", "name": "Admin", "password": "correct1"})
     r = await client.post("/auth/login", json={"email": "perm@test.test", "password": "wrong"})
     assert r.status_code == 401
 
 
 @pytest.mark.asyncio
 async def test_perm_login_nonexistent_email_401(client):
-    r = await client.post("/auth/login", json={"email": "nobody@nowhere.test", "password": "pw"})
+    r = await client.post("/auth/login", json={"email": "nobody@nowhere.test", "password": "pwvalid1"})
     assert r.status_code == 401
 
 

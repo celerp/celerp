@@ -17,7 +17,7 @@ from celerp.models.projections import Projection
 async def _register(client) -> str:
     r = await client.post("/auth/register", json={
         "company_name": "Doctor Co", "email": f"doc-{uuid.uuid4().hex[:8]}@test.test",
-        "name": "Admin", "password": "pw",
+        "name": "Admin", "password": "pwvalid1",
     })
     assert r.status_code == 200
     return r.json()["access_token"]

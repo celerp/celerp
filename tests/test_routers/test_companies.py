@@ -9,7 +9,7 @@ import pytest
 async def _headers(client) -> dict:
     r = await client.post(
         "/auth/register",
-        json={"company_name": "Acme", "email": "admin@acme.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "Acme", "email": "admin@acme.example", "name": "Admin", "password": "pwvalid1"},
     )
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
@@ -71,8 +71,8 @@ async def test_patch_user_demote_admin_allowed(client):
 
     # Invite a second user and make them admin
     import uuid as _uuid
-    email2 = f"admin2-{_uuid.uuid4().hex[:8]}@test.com"
-    r = await client.post("/companies/me/users", json={"email": email2, "name": "Admin2", "password": "pw", "role": "admin"}, headers=headers)
+    email2 = f"admin2-{_uuid.uuid4().hex[:8]}@test.example"
+    r = await client.post("/companies/me/users", json={"email": email2, "name": "Admin2", "password": "pwvalid1", "role": "admin"}, headers=headers)
     assert r.status_code == 200
     user2_id = r.json()["id"]
 
@@ -101,19 +101,19 @@ async def _owner_and_target(client, session):
     reg = await client.post(
         "/auth/register",
         json={"company_name": "PatchCo", "email": f"owner-{_uuid.uuid4().hex[:8]}@example.com",
-              "name": "Owner", "password": "pw"},
+              "name": "Owner", "password": "pwvalid1"},
     )
     owner_h = {"Authorization": f"Bearer {reg.json()['access_token']}"}
     target_email = f"target-{_uuid.uuid4().hex[:8]}@example.com"
     r_new = await client.post(
         "/companies/me/users",
-        json={"email": target_email, "name": "Target", "role": "manager", "password": "pw123"},
+        json={"email": target_email, "name": "Target", "role": "manager", "password": "pw123val"},
         headers=owner_h,
     )
     assert r_new.status_code == 200
     target_id = r_new.json()["id"]
     await _clear_tracker(session)
-    r_login = await client.post("/auth/login", json={"email": target_email, "password": "pw123"})
+    r_login = await client.post("/auth/login", json={"email": target_email, "password": "pw123val"})
     assert r_login.status_code == 200
     return owner_h, target_id, r_login.json()["access_token"], r_login.json()["refresh_token"]
 
@@ -128,7 +128,7 @@ async def test_self_password_change_kills_own_tokens(client, session):
     target_h = {"Authorization": f"Bearer {access}"}
     r = await client.post(
         "/auth/change-password",
-        json={"current_password": "pw123", "new_password": "brandnew1"},
+        json={"current_password": "pw123val", "new_password": "brandnew1"},
         headers=target_h,
     )
     assert r.status_code == 200, r.text
@@ -241,7 +241,7 @@ async def test_create_company_seeds_self_contact(client):
     # Register first (to get a user with name + email)
     r = await client.post(
         "/auth/register",
-        json={"company_name": "ContactSeedCo", "email": "owner@seedtest.com", "name": "Seed Owner", "password": "pw"},
+        json={"company_name": "ContactSeedCo", "email": "owner@seedtest.example", "name": "Seed Owner", "password": "pwvalid1"},
     )
     assert r.status_code == 200
     orig_headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
@@ -256,7 +256,7 @@ async def test_create_company_seeds_self_contact(client):
     selfs = [c for c in contacts if c.get("is_self")]
     assert len(selfs) == 1, f"Expected exactly one self-contact, got {selfs}"
     assert selfs[0]["contact_type"] == "both"
-    assert selfs[0].get("email") == "owner@seedtest.com"
+    assert selfs[0].get("email") == "owner@seedtest.example"
 
     # The single record appears under BOTH the customer and vendor filters.
     cust = (await client.get("/crm/contacts?contact_type=customer", headers=new_headers)).json()["items"]
@@ -272,7 +272,7 @@ async def test_create_company_seeds_head_office_location(client):
     """POST /companies seeds a default Head Office location for the new company."""
     r = await client.post(
         "/auth/register",
-        json={"company_name": "LocSeedCo", "email": "owner@locseed.com", "name": "Loc Owner", "password": "pw"},
+        json={"company_name": "LocSeedCo", "email": "owner@locseed.example", "name": "Loc Owner", "password": "pwvalid1"},
     )
     orig_token = r.json()["access_token"]
     orig_headers = {"Authorization": f"Bearer {orig_token}"}
@@ -296,7 +296,7 @@ async def test_deactivate_frees_slug_for_recreate(client):
     """Deactivating a company must free its slug so a new company with the same name can be created."""
     r = await client.post(
         "/auth/register",
-        json={"company_name": "Gems Co", "email": "owner@gemsco.com", "name": "Owner", "password": "pw"},
+        json={"company_name": "Gems Co", "email": "owner@gemsco.example", "name": "Owner", "password": "pwvalid1"},
     )
     assert r.status_code == 200, r.text
     token = r.json()["access_token"]
@@ -321,7 +321,7 @@ async def test_reactivate_restores_slug(client):
     """Reactivating a company must strip the -deactivated-{ts} suffix from the slug."""
     r = await client.post(
         "/auth/register",
-        json={"company_name": "SlugTest Co", "email": "owner@slugtest.com", "name": "Owner", "password": "pw"},
+        json={"company_name": "SlugTest Co", "email": "owner@slugtest.example", "name": "Owner", "password": "pwvalid1"},
     )
     assert r.status_code == 200, r.text
     token = r.json()["access_token"]
@@ -356,7 +356,7 @@ async def test_create_company_token_has_owner_role_and_email(client):
 
     r = await client.post(
         "/auth/register",
-        json={"company_name": "TokenTest", "email": "token@test.com", "name": "Tester", "password": "pw"},
+        json={"company_name": "TokenTest", "email": "token@test.example", "name": "Tester", "password": "pwvalid1"},
     )
     assert r.status_code == 200, r.text
     orig_token = r.json()["access_token"]
@@ -373,7 +373,7 @@ async def test_create_company_token_has_owner_role_and_email(client):
     claims = _json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4)))
 
     assert claims.get("role") == "owner", f"Expected role=owner, got {claims.get('role')!r}"
-    assert claims.get("email") == "token@test.com", f"Expected email in token, got {claims.get('email')!r}"
+    assert claims.get("email") == "token@test.example", f"Expected email in token, got {claims.get('email')!r}"
 
 
 # ── Category CRUD ────────────────────────────────────────────────────────────

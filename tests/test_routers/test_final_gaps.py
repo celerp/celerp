@@ -24,7 +24,7 @@ from test_helpers import default_location_id
 async def _reg(client, name="GapCo") -> str:
     r = await client.post(
         "/auth/register",
-        json={"company_name": name, "email": f"{uuid.uuid4().hex[:8]}@gap.test", "name": "Admin", "password": "pw"},
+        json={"company_name": name, "email": f"{uuid.uuid4().hex[:8]}@gap.test", "name": "Admin", "password": "pwvalid1"},
     )
     return r.json()["access_token"]
 

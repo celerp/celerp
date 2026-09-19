@@ -10,7 +10,7 @@ import pytest
 
 
 async def _register(client):
-    r = await client.post("/auth/register", json={"company_name": "Reports Co", "email": f"x-{uuid.uuid4().hex[:8]}@rep.test", "name": "Admin", "password": "pw"})
+    r = await client.post("/auth/register", json={"company_name": "Reports Co", "email": f"x-{uuid.uuid4().hex[:8]}@rep.test", "name": "Admin", "password": "validpass1"})
     return r.json()["access_token"]
 
 

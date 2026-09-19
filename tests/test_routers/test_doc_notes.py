@@ -19,8 +19,8 @@ import pytest
 
 async def _setup(client):
     """Register user and return (token, company_id)."""
-    addr = f"notes-{uuid.uuid4().hex[:8]}@test.com"
-    r = await client.post("/auth/register", json={"company_name": "Notes Co", "email": addr, "name": "Admin", "password": "pw"})
+    addr = f"notes-{uuid.uuid4().hex[:8]}@test.example"
+    r = await client.post("/auth/register", json={"company_name": "Notes Co", "email": addr, "name": "Admin", "password": "pwvalid1"})
     assert r.status_code == 200
     token = r.json()["access_token"]
     companies = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token}"})

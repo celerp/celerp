@@ -1894,7 +1894,7 @@ async def test_manage_users_holder_cannot_promote_above_own_role(client, session
 
     r = await client.post(
         "/companies/me/users",
-        json={"email": "newowner@perm.example", "name": "NO", "role": "owner", "password": "pw123"},
+        json={"email": "newowner@perm.example", "name": "NO", "role": "owner", "password": "pw123val"},
         headers=admin_h,
     )
     assert r.status_code == 403, r.text
@@ -1940,13 +1940,13 @@ async def test_viewer_granted_manage_users_bounded_to_viewer(client, session):
     viewer_h = {"Authorization": f"Bearer {await invite_user(client, session, ctx['admin_h'], 'vwr@perm.example', 'viewer')}"}
     ok = await client.post(
         "/companies/me/users",
-        json={"email": "v2@perm.example", "name": "V2", "role": "viewer", "password": "pw123"},
+        json={"email": "v2@perm.example", "name": "V2", "role": "viewer", "password": "pw123val"},
         headers=viewer_h,
     )
     assert ok.status_code == 200, ok.text
     denied = await client.post(
         "/companies/me/users",
-        json={"email": "op2@perm.example", "name": "OP2", "role": "operator", "password": "pw123"},
+        json={"email": "op2@perm.example", "name": "OP2", "role": "operator", "password": "pw123val"},
         headers=viewer_h,
     )
     assert denied.status_code == 403, denied.text
@@ -1959,7 +1959,7 @@ async def test_owner_can_still_create_owner(client, session):
     ctx = await perm_setup(client, session)
     r = await client.post(
         "/companies/me/users",
-        json={"email": "co-owner@perm.example", "name": "CoOwner", "role": "owner", "password": "pw123"},
+        json={"email": "co-owner@perm.example", "name": "CoOwner", "role": "owner", "password": "pw123val"},
         headers=ctx["admin_h"],
     )
     assert r.status_code == 200, r.text

@@ -161,7 +161,7 @@ async def test_unmark_sent_uses_revert_to_draft_endpoint(client):
         "company_name": f"SendCo-{uuid.uuid4().hex[:6]}",
         "email": f"s-{uuid.uuid4().hex[:8]}@test.test",
         "name": "Admin",
-        "password": "pw",
+        "password": "validpass1",
     })
     assert token_resp.status_code == 200
     token = token_resp.json()["access_token"]

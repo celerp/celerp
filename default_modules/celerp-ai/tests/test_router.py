@@ -50,9 +50,9 @@ async def auth_client(session: AsyncSession):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         await c.post("/auth/register", json={
             "company_name": "AICo", "email": "ai@test.com",
-            "name": "Admin", "password": "pw",
+            "name": "Admin", "password": "validpass1",
         })
-        r = await c.post("/auth/login", json={"email": "ai@test.com", "password": "pw"})
+        r = await c.post("/auth/login", json={"email": "ai@test.com", "password": "validpass1"})
         jwt = r.json()["access_token"]
         headers = {
             "Authorization": f"Bearer {jwt}",
@@ -88,10 +88,10 @@ async def test_ai_query_requires_session_token(session):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             await c.post("/auth/register", json={
                 "company_name": "Co2", "email": "t2@test.com",
-                "name": "U", "password": "pw",
+                "name": "U", "password": "validpass1",
             })
             await _clear_tracker(session)  # clear JTI registered by /register so /login can proceed
-            r = await c.post("/auth/login", json={"email": "t2@test.com", "password": "pw"})
+            r = await c.post("/auth/login", json={"email": "t2@test.com", "password": "validpass1"})
             jwt = r.json()["access_token"]
             resp = await c.post(
                 "/ai/query",

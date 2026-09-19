@@ -60,7 +60,7 @@ async def test_settings_route_served_when_authenticated(client):
     gates on identity, not that the route is simply broken)."""
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "SplitCo", "email": "split@example.com", "name": "Admin", "password": "pw"},
+        json={"company_name": "SplitCo", "email": "split@example.com", "name": "Admin", "password": "pwvalid1"},
     )
     assert reg.status_code == 200
     h = {"Authorization": f"Bearer {reg.json()['access_token']}"}
@@ -85,17 +85,17 @@ async def test_backup_status_requires_manage_company_settings(client):
 
     reg = await client.post(
         "/auth/register",
-        json={"company_name": "BackupCo", "email": "backupowner@example.com", "name": "Owner", "password": "pw"},
+        json={"company_name": "BackupCo", "email": "backupowner@example.com", "name": "Owner", "password": "pwvalid1"},
     )
     owner_h = {"Authorization": f"Bearer {reg.json()['access_token']}"}
     # A viewer member cannot read the key even though run_backups floors at viewer.
     r_new = await client.post(
         "/companies/me/users",
-        json={"email": "viewer-backup@example.com", "name": "Viewer", "role": "viewer", "password": "pw123"},
+        json={"email": "viewer-backup@example.com", "name": "Viewer", "role": "viewer", "password": "pw123val"},
         headers=owner_h,
     )
     assert r_new.status_code == 200, r_new.text
-    r_login = await client.post("/auth/login", json={"email": "viewer-backup@example.com", "password": "pw123"})
+    r_login = await client.post("/auth/login", json={"email": "viewer-backup@example.com", "password": "pw123val"})
     viewer_h = {"Authorization": f"Bearer {r_login.json()['access_token']}"}
 
     r = await client.get("/settings/backup-status", headers=viewer_h)

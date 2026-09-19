@@ -100,6 +100,8 @@ def test_init_no_start_mints_setup_code(tmp_config):
     code_file = _config_path().parent / "setup-code"
     assert code_file.exists()
     code = code_file.read_text().strip()
+    assert len(code) == 32  # token_hex(16): 128 bits of setup capability entropy
+    int(code, 16)  # and it is entirely hexadecimal
     assert hashlib.sha256(code.encode()).hexdigest() == stored
     assert "Setup code:" in result.output
 

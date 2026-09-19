@@ -21,7 +21,8 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 30
     # Log the UI out after this many minutes of no user interaction (client-side idle timer).
-    # Uniform across direct and relay access; set to 0 to disable.
+    # Applied only when the installation is exposed as a server (headless/service-managed
+    # or reachable at a public URL); see effective_idle_logout_minutes(). Set to 0 to disable.
     idle_logout_minutes: int = 15
     # Set to "true" to allow the default JWT secret (CI only).
     allow_insecure_jwt: str = "false"
@@ -365,9 +366,6 @@ def load_cloud_config() -> None:
     # declaration survives restarts; loads unless the environment already set it.
     if cloud.get("external_db") and not settings.external_db:
         settings.external_db = True
-    # Auto-enable secure cookies when relay-connected (HTTPS via Caddy/Cloudflare)
-    if settings.gateway_token and not os.environ.get("COOKIE_SECURE"):
-        settings.cookie_secure = True
 
 
 def load_backup_config() -> None:
@@ -430,6 +428,51 @@ def read_config() -> dict:
         return {}
     with open(path, "rb") as f:
         return tomllib.load(f)
+
+
+def effective_idle_logout_minutes() -> int:
+    """Idle-logout minutes for the current deployment, or 0 when it must be off.
+
+    Idle logout is an installation-level exposure policy: on when Celerp runs as a
+    server (headless/service-managed, or reachable at a public URL), off for an
+    ordinary local desktop install. Cloud/account linkage or a gateway token alone
+    is not exposure; only an active public URL is. An explicit Cloud disconnect
+    suppresses the Connect-hosting reason but never overrides headless mode or an
+    independently configured public URL. ``idle_logout_minutes <= 0`` is the
+    explicit disable in every mode.
+
+    The durable config is read here because Connect/disconnect state is written by
+    the API process while the UI runs in a separate process, so the UI's in-memory
+    settings can be stale.
+    """
+    minutes = max(0, int(settings.idle_logout_minutes))
+    if minutes == 0:
+        return 0
+
+    cfg = {}
+    try:
+        cfg = read_config() or {}
+    except Exception:
+        pass
+
+    env_headless = os.environ.get("CELERP_MODE", "").strip().lower() == "headless"
+    config_headless = bool((cfg.get("server") or {}).get("headless"))
+    if env_headless or config_headless:
+        return minutes
+
+    # An explicitly configured public URL is independent of Celerp Connect, so a
+    # Cloud disconnect must not suppress a separately self-hosted/public server.
+    explicit_public_url = os.environ.get("CELERP_PUBLIC_URL", "").strip()
+    if explicit_public_url:
+        return minutes
+
+    cloud = cfg.get("cloud") or {}
+    disconnected = bool(cloud.get("disconnected")) or settings.cloud_disconnected
+    if disconnected:
+        return 0
+
+    public_url = str(cloud.get("public_url") or settings.celerp_public_url or "").strip()
+    return minutes if public_url else 0
 
 
 def _write_config_unlocked(cfg: dict) -> None:

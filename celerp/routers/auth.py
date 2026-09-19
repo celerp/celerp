@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import secrets
@@ -12,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -22,18 +23,24 @@ from celerp.services.auth import (
     AuthContext,
     decode_refresh_token,
     get_auth_context,
+    MIN_PASSWORD_LENGTH,
     get_current_company_id,
     get_current_user,
     hash_password,
     issue_token_pair,
     oauth2_scheme_optional,
     validate_access_token,
+    validate_password,
     verify_password,
 )
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
+
+# Fixed key for the transaction-scoped advisory lock that serializes first-admin
+# bootstrap across workers. Distinct from the session-tracker advisory keys.
+_BOOTSTRAP_LOCK_KEY = 0x43454C4552500001
 
 
 async def _issue_tokens(
@@ -114,77 +121,120 @@ async def bootstrap_status(session: AsyncSession = Depends(get_session)) -> dict
 
 @router.post("/register")
 async def register(payload: RegisterRequest, session: AsyncSession = Depends(get_session)) -> dict:
-    """Register first admin. Locked out after bootstrap (any user exists)."""
-    existing = (await session.execute(select(User))).scalars().first()
-    if existing is not None:
-        raise HTTPException(status_code=403, detail="System already bootstrapped. Contact your admin.")
+    """Register first admin. Locked out after bootstrap (any user exists).
 
-    # Headless installs mint a one-time setup code the operator reads off the box,
-    # so a network-exposed first-admin page can't be claimed by a stranger.
-    required = _setup_code_hash()
-    if required:
-        import hashlib
-        import hmac as _hmac
-        provided = (payload.setup_code or "").strip()
-        if not provided or not _hmac.compare_digest(
-            hashlib.sha256(provided.encode()).hexdigest(), required
-        ):
-            raise HTTPException(status_code=403, detail="Invalid or missing setup code.")
-
-    slug = _slugify(payload.company_name)
-    company = Company(id=uuid.uuid4(), name=payload.company_name, slug=slug, settings={"fiscal_year_start": "01-01"})
-    user = User(
-        id=uuid.uuid4(),
-        email=payload.email,
-        name=payload.name,
-        auth_hash=hash_password(payload.password),
-        api_key=None,
-        is_active=True,
-    )
-    session.add(company)
-    session.add(user)
-    await session.flush()  # persist company + user first (Postgres FK enforcement)
-    # Link user to company - UserCompany is the single source of role+company truth
-    link = UserCompany(id=uuid.uuid4(), user_id=user.id, company_id=company.id, role="owner")
-    session.add(link)
-    await session.flush()  # ensure IDs are set before module hooks
-    # Fire module lifecycle hooks (e.g. celerp-accounting seeds chart of accounts)
-    from celerp.modules.slots import fire_lifecycle
-    await fire_lifecycle("on_company_created", session=session, company_id=company.id)
-    # Seed a default "Head Office" location before demo items so items land in it
-    head_office = Location(
-        id=uuid.uuid4(),
-        company_id=company.id,
-        name="Head Office",
-        type="office",
-        address=None,
-        is_default=True,
-    )
-    session.add(head_office)
-    await session.flush()
-    from celerp.services.demo import seed_demo_items
-    await seed_demo_items(session, company.id, user.id, default_location_id=head_office.id)
-    # Seed the company's single self-contact (typed `both`) with company name, owner name + admin email
-    from celerp.services.demo import seed_self_contacts
-    await seed_self_contacts(
-        session,
-        company_id=company.id,
-        actor_id=user.id,
-        person_name=payload.name,
-        company_name=payload.company_name,
-        email=payload.email,
-    )
+    A transaction-scoped advisory lock serializes concurrent first-admin
+    registrations so exactly one wins: the second caller blocks until the first
+    transaction finishes, then re-checks whether an owner exists. Core bootstrap
+    rows and direct seed data commit once through the central token issuer, so
+    those changes are all-or-nothing. Module lifecycle hooks retain their existing
+    best-effort policy; the one-time setup code is consumed only after commit.
+    """
+    required = ""
     try:
-        await session.commit()
-    except Exception as e:
+        # Cheap post-bootstrap fast path. This is only an optimization: the same
+        # check is repeated after the advisory lock and remains authoritative for
+        # two callers racing on a genuinely fresh install.
+        existing = (await session.execute(select(User))).scalars().first()
+        if existing is not None:
+            raise HTTPException(status_code=403, detail="System already bootstrapped. Contact your admin.")
+
+        # Authenticate the headless setup capability before joining the bootstrap
+        # lock queue. An unauthenticated caller must not be able to consume the one
+        # global serialization point simply by submitting an invalid setup code.
+        required = _setup_code_hash()
+        if required:
+            import hmac as _hmac
+            provided = (payload.setup_code or "").strip()
+            if not provided or not _hmac.compare_digest(
+                hashlib.sha256(provided.encode()).hexdigest(), required
+            ):
+                raise HTTPException(status_code=403, detail="Invalid or missing setup code.")
+
+        # Serialize first-admin bootstrap across workers BEFORE reading user state,
+        # so two authenticated callers cannot both observe an empty install and
+        # proceed. The production request lock_timeout bounds abnormal contention;
+        # the lock is released automatically on commit or rollback.
+        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _BOOTSTRAP_LOCK_KEY})
+
+        existing = (await session.execute(select(User))).scalars().first()
+        if existing is not None:
+            raise HTTPException(status_code=403, detail="System already bootstrapped. Contact your admin.")
+
+        try:
+            validate_password(payload.password)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.",
+            )
+
+        slug = _slugify(payload.company_name)
+        company = Company(id=uuid.uuid4(), name=payload.company_name, slug=slug, settings={"fiscal_year_start": "01-01"})
+        user = User(
+            id=uuid.uuid4(),
+            email=payload.email,
+            name=payload.name,
+            auth_hash=hash_password(payload.password),
+            api_key=None,
+            is_active=True,
+        )
+        session.add(company)
+        session.add(user)
+        await session.flush()  # persist company + user first (Postgres FK enforcement)
+        # Link user to company - UserCompany is the single source of role+company truth
+        link = UserCompany(id=uuid.uuid4(), user_id=user.id, company_id=company.id, role="owner")
+        session.add(link)
+        await session.flush()  # ensure IDs are set before module hooks
+        # Module lifecycle hooks intentionally remain best-effort: a module error is
+        # logged by fire_lifecycle without changing Celerp's established registration
+        # behavior. Core/direct seed failures below still roll back the transaction.
+        from celerp.modules.slots import fire_lifecycle
+        await fire_lifecycle("on_company_created", session=session, company_id=company.id)
+        # Seed a default "Head Office" location before demo items so items land in it
+        head_office = Location(
+            id=uuid.uuid4(),
+            company_id=company.id,
+            name="Head Office",
+            type="office",
+            address=None,
+            is_default=True,
+        )
+        session.add(head_office)
+        await session.flush()
+        from celerp.services.demo import seed_demo_items
+        await seed_demo_items(session, company.id, user.id, default_location_id=head_office.id)
+        # Seed the company's single self-contact (typed `both`) with company name, owner name + admin email
+        from celerp.services.demo import seed_self_contacts
+        await seed_self_contacts(
+            session,
+            company_id=company.id,
+            actor_id=user.id,
+            person_name=payload.name,
+            company_name=payload.company_name,
+            email=payload.email,
+        )
+        # Single commit point: the central issuer locks the auth state, registers the
+        # initial access JTI, and commits the whole bootstrap as one transaction.
+        tokens = await _issue_tokens(session, user, company, link.role)
+    except HTTPException:
         await session.rollback()
-        logger.error("register failed: %s", e, exc_info=True)
-        raise HTTPException(status_code=400, detail=f"Registration failed: {e}") from e
+        raise
+    except Exception:
+        await session.rollback()
+        logger.exception("First-admin registration failed")
+        raise HTTPException(status_code=500, detail="Registration failed")
 
+    # Best-effort one-time cleanup AFTER the install has committed. The serialized
+    # "any user exists" check permanently blocks a second bootstrap, so a cleanup
+    # failure cannot claim a second admin: log it and still return the token pair.
     if required:
-        await asyncio.to_thread(_clear_setup_code)
+        try:
+            await asyncio.to_thread(_clear_setup_code)
+        except Exception:
+            logger.warning("Setup-code cleanup failed after first-admin bootstrap", exc_info=True)
 
-    return await _issue_tokens(session, user, company, link.role)
+    return tokens
 
 
 from slowapi import Limiter
@@ -402,15 +452,17 @@ async def password_reset_request(
         await session.execute(select(User).where(User.email == payload.email))
     ).scalar_one_or_none()
     if user:
-        token = secrets.token_urlsafe(32)
-        user.reset_token = token
+        # Only the SHA-256 digest is stored, so a database read cannot recover the
+        # reset credential; the raw token lives only in the emailed link.
+        raw_token = secrets.token_urlsafe(32)
+        token_digest = hashlib.sha256(raw_token.encode()).hexdigest()
+        user.reset_token = token_digest
         user.reset_token_expires = datetime.now(timezone.utc) + timedelta(minutes=_RESET_TOKEN_TTL_MINUTES)
         await session.commit()
 
         from celerp.config import settings
-        import asyncio
         base = settings.celerp_public_url or ""
-        reset_link = f"{base}/reset-password?token={token}"
+        reset_link = f"{base}/reset-password?token={raw_token}"
         body_html = (
             f"<p>Hi {user.name},</p>"
             f"<p>We received a request to reset the password for your Celerp account "
@@ -429,8 +481,9 @@ async def password_reset_request(
             f"This link expires in {_RESET_TOKEN_TTL_MINUTES} minutes.\n\n"
             f"If you didn't request this, ignore this email."
         )
+        from celerp.services.background import spawn_background
         from celerp.services.email import send_email
-        asyncio.create_task(send_email(
+        spawn_background(send_email(
             user.email,
             "Reset your Celerp password",
             body_html,
@@ -447,8 +500,11 @@ async def password_reset_confirm(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Confirm password reset with token and new password."""
+    # The stored value is the SHA-256 digest, so match on the digest of the
+    # presented raw token rather than the raw token itself.
+    token_digest = hashlib.sha256(payload.token.encode()).hexdigest()
     user = (
-        await session.execute(select(User).where(User.reset_token == payload.token))
+        await session.execute(select(User).where(User.reset_token == token_digest))
     ).scalar_one_or_none()
     if not user or not user.reset_token_expires:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
@@ -457,7 +513,9 @@ async def password_reset_confirm(
         expires = expires.replace(tzinfo=timezone.utc)
     if datetime.now(timezone.utc) > expires:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
-    if len(payload.new_password) < 8:
+    try:
+        validate_password(payload.new_password)
+    except ValueError:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     user.auth_hash = hash_password(payload.new_password)
     user.reset_token = None
@@ -484,7 +542,9 @@ async def change_password(
     """Change password for the currently authenticated user."""
     if not user.auth_hash or not verify_password(payload.current_password, user.auth_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
-    if len(payload.new_password) < 8:
+    try:
+        validate_password(payload.new_password)
+    except ValueError:
         raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
     user.auth_hash = hash_password(payload.new_password)
     # Rotate the user's nonce so every access and refresh token minted before the

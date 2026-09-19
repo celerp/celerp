@@ -19,7 +19,7 @@ async def _token(client) -> str:
     email = f"merge-{uuid.uuid4().hex[:8]}@example.com"
     r = await client.post(
         "/auth/register",
-        json={"company_name": "Merge Co", "email": email, "name": "Owner", "password": "pw"},
+        json={"company_name": "Merge Co", "email": email, "name": "Owner", "password": "pwvalid1"},
     )
     assert r.status_code == 200, r.text
     return r.json()["access_token"]

@@ -58,7 +58,7 @@ def _relay(*, token=None, checkout=None, licenses=None):
 async def _register(client) -> dict:
     email = f"mp-buy-{uuid.uuid4().hex[:8]}@test.test"
     r = await client.post("/auth/register", json={
-        "company_name": "MP Buy Co", "email": email, "name": "Admin", "password": "pw123"})
+        "company_name": "MP Buy Co", "email": email, "name": "Admin", "password": "pw123val"})
     assert r.status_code == 200, r.text
     return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
