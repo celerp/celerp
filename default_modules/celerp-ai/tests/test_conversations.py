@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
@@ -17,18 +18,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.models.company import Company, User
 from celerp.models.ai import AIConversation, AIMessage
 from celerp.ai.conversations import (
-    MAX_CONVERSATIONS_PER_COMPANY,
+    MAX_CONVERSATIONS_PER_USER,
     MAX_MESSAGES_PER_CONVERSATION,
     HISTORY_TOKEN_BUDGET,
     _CHARS_PER_TOKEN,
     add_message,
     build_history_context,
+    claim_tool_call,
     create_conversation,
     delete_conversation,
+    finalize_tool_call,
     get_conversation,
     get_messages,
     list_conversations,
+    pending_actions,
     rename_conversation,
+    tool_names,
 )
 
 
@@ -110,13 +115,30 @@ async def test_create_conversation_sets_title_from_query(session, company, user)
 
 
 @pytest.mark.asyncio
-async def test_conversation_limit_per_company(session, company, user):
-    for i in range(MAX_CONVERSATIONS_PER_COMPANY + 5):
+async def test_conversation_limit_per_user(session, company, user):
+    for i in range(MAX_CONVERSATIONS_PER_USER + 5):
         await create_conversation(session, company.id, user.id, title=f"Conv {i}")
     await session.commit()
 
     convs = await list_conversations(session, company.id, user.id, limit=200)
-    assert len(convs) <= MAX_CONVERSATIONS_PER_COMPANY
+    assert len(convs) <= MAX_CONVERSATIONS_PER_USER
+
+
+@pytest.mark.asyncio
+async def test_pruning_is_scoped_per_user(session, company, user, user_b):
+    """One busy user hitting the cap must not delete another user's threads."""
+    keep = await create_conversation(session, company.id, user_b.id, title="B keeps this")
+    await session.commit()
+    keep_id = keep.id
+
+    for i in range(MAX_CONVERSATIONS_PER_USER + 5):
+        await create_conversation(session, company.id, user.id, title=f"A {i}")
+    await session.commit()
+
+    # User A pruned to the cap; user B's single conversation is untouched.
+    a_convs = await list_conversations(session, company.id, user.id, limit=500)
+    assert len(a_convs) <= MAX_CONVERSATIONS_PER_USER
+    assert await get_conversation(session, keep_id, company.id, user_b.id) is not None
 
 
 # ── list ─────────────────────────────────────────────────────────────────────
@@ -292,6 +314,145 @@ async def test_isolation_between_users(session, company, user, user_b):
     # User B sees empty list
     convs = await list_conversations(session, company.id, user_b.id)
     assert len(convs) == 0
+
+
+# ── newest-N messages ────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_get_messages_returns_newest_n_chronological(session, company, user):
+    """get_messages(limit=N) selects the newest N and returns them oldest-first."""
+    conv = await create_conversation(session, company.id, user.id)
+    for i in range(5):
+        await add_message(session, conv.id, "user", f"m{i}")
+    await session.commit()
+
+    msgs = await get_messages(session, conv.id, limit=3)
+    assert [m.content for m in msgs] == ["m2", "m3", "m4"]
+
+
+# ── tool-call record helpers ───────────────────────────────────────────────
+
+def _pending_record(tool_call_id="call_1", name="create_contact", *, minutes=15):
+    now = datetime.now(timezone.utc)
+    return {
+        "id": tool_call_id,
+        "name": name,
+        "arguments": {"body": {"name": "Acme"}},
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=minutes)).isoformat(),
+    }
+
+
+def test_tool_names_mixes_strings_and_records():
+    assert tool_names(None) == []
+    assert tool_names(["list_items", {"id": "c1", "name": "create_contact"}]) == [
+        "list_items", "create_contact",
+    ]
+
+
+def test_pending_actions_filters_status_and_expiry():
+    fresh = _pending_record("keep")
+    executing = {**_pending_record("busy"), "status": "executing"}
+    completed = {"id": "done", "name": "x", "status": "completed"}
+    expired = _pending_record("gone", minutes=-1)
+    result = pending_actions(["list_items", fresh, executing, completed, expired])
+    assert [r["id"] for r in result] == ["keep"]
+
+
+@pytest_asyncio.fixture
+async def assistant_msg(session, company, user):
+    conv = await create_conversation(session, company.id, user.id)
+    msg = await add_message(
+        session, conv.id, "assistant", "I can create that contact.",
+        tools_called=[_pending_record()],
+    )
+    await session.commit()
+    return conv, msg
+
+
+@pytest.mark.asyncio
+async def test_claim_tool_call_moves_pending_to_executing(session, company, user, assistant_msg):
+    conv, msg = assistant_msg
+    claimed = await claim_tool_call(
+        session, conversation_id=conv.id, message_id=msg.id,
+        tool_call_id="call_1", company_id=company.id, user_id=user.id,
+    )
+    assert claimed is not None
+    assert claimed["arguments"] == {"body": {"name": "Acme"}}
+    await session.commit()
+
+    await session.refresh(msg)
+    assert msg.tools_called[0]["status"] == "executing"
+
+    # A second claim of the same action finds nothing pending.
+    again = await claim_tool_call(
+        session, conversation_id=conv.id, message_id=msg.id,
+        tool_call_id="call_1", company_id=company.id, user_id=user.id,
+    )
+    assert again is None
+
+
+@pytest.mark.asyncio
+async def test_claim_tool_call_rejects_wrong_owner(session, company, user, user_b, assistant_msg):
+    conv, msg = assistant_msg
+    claimed = await claim_tool_call(
+        session, conversation_id=conv.id, message_id=msg.id,
+        tool_call_id="call_1", company_id=company.id, user_id=user_b.id,
+    )
+    assert claimed is None
+
+
+@pytest.mark.asyncio
+async def test_claim_tool_call_rejects_expired(session, company, user):
+    conv = await create_conversation(session, company.id, user.id)
+    msg = await add_message(
+        session, conv.id, "assistant", "offer",
+        tools_called=[_pending_record("call_exp", minutes=-1)],
+    )
+    await session.commit()
+    claimed = await claim_tool_call(
+        session, conversation_id=conv.id, message_id=msg.id,
+        tool_call_id="call_exp", company_id=company.id, user_id=user.id,
+    )
+    assert claimed is None
+
+
+@pytest.mark.asyncio
+async def test_finalize_tool_call_records_terminal_state(session, company, user, assistant_msg):
+    conv, msg = assistant_msg
+    await claim_tool_call(
+        session, conversation_id=conv.id, message_id=msg.id,
+        tool_call_id="call_1", company_id=company.id, user_id=user.id,
+    )
+    await finalize_tool_call(
+        session, message_id=msg.id, tool_call_id="call_1",
+        status="completed", result={"ok": True, "status": 201, "data": {"id": "x"}},
+    )
+    await session.commit()
+
+    await session.refresh(msg)
+    record = msg.tools_called[0]
+    assert record["status"] == "completed"
+    assert record["result_status"] == 201
+    assert record["name"] == "create_contact"
+    # No result payload is ever persisted.
+    assert "data" not in record and "arguments" not in record
+    # The name still projects for tool_names.
+    assert tool_names(msg.tools_called) == ["create_contact"]
+
+
+@pytest.mark.asyncio
+async def test_history_appends_proposed_action_lines(session, company, user):
+    conv = await create_conversation(session, company.id, user.id)
+    await add_message(
+        session, conv.id, "assistant", "I can create that contact.",
+        tools_called=[_pending_record()],
+    )
+    await session.commit()
+
+    msgs = await get_messages(session, conv.id)
+    history = build_history_context(msgs)
+    assert "[proposed action: create_contact]" in history[0]["content"]
 
 
 @pytest.mark.asyncio
