@@ -743,7 +743,7 @@ def item_matches_query(record: dict, q: str) -> bool:
     return query_match_reasons(record, q) is not None
 
 
-@router.get("")
+@router.get("", openapi_extra={"x-celerp-agent": True})
 async def list_items(
     request: Request,
     company_id=Depends(get_current_company_id),
@@ -1021,7 +1021,7 @@ async def list_items(
     return resp
 
 
-@router.get("/valuation")
+@router.get("/valuation", openapi_extra={"x-celerp-agent": True})
 async def get_valuation(
     category: str | None = None,
     status: str | None = None,
@@ -1379,7 +1379,7 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     return {"items": result}
 
 
-@router.get("/{entity_id}", dependencies=[require_permission("view_inventory")])
+@router.get("/{entity_id}", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True})
 async def get_item(entity_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.models.company import Location
     from celerp.services.field_schema import get_effective_field_schema
@@ -1417,7 +1417,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     return result
 
 
-@router.get("/{entity_id}/reorder-suggestion", dependencies=[require_permission("view_inventory")])
+@router.get("/{entity_id}/reorder-suggestion", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True})
 async def get_reorder_suggestion(entity_id: str, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """Suggested reorder_point / reorder_qty from trailing outbound velocity.
 
@@ -1633,7 +1633,7 @@ def _validate_rfid_epc(rfid_epc) -> None:
         raise HTTPException(status_code=422, detail=str(e))
 
 
-@router.post("")
+@router.post("", openapi_extra={"x-celerp-agent": True})
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     # Guard: setting cost fields on creation requires set_inventory_prices, except that a
     # draft's creator authors cost with edit_inventory alone (the gate re-arms at commit) -
@@ -1816,7 +1816,7 @@ def is_cost_price_type(price_type: str) -> bool:
     return is_cost_list_name(name)
 
 
-@router.patch("/{entity_id}")
+@router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True})
 async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     # Guard: restricted fields require a role at the schema-configured floor.
     from celerp.services.field_schema import get_effective_field_schema
@@ -3687,7 +3687,7 @@ class BatchImportRequest(BaseModel):
 async def batch_import_items(
     body: BatchImportRequest,
     company_id=Depends(get_current_company_id),
-    _: None = require_permission("edit_inventory"),
+    _: None = require_permission("import_export_data"),
     role: str = Depends(get_current_role),
     settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
@@ -3934,6 +3934,7 @@ async def batch_import_items(
 @router.get("/import/batches")
 async def list_import_batches(
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """List all import batches for this company, newest first."""
@@ -3966,7 +3967,7 @@ async def undo_import_batch(
     batch_id: str,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
-    _: None = require_permission("manage_company_settings"),
+    _: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Undo an import batch: soft-delete all created items, purge idempotency keys."""
