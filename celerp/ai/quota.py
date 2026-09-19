@@ -11,14 +11,8 @@ from __future__ import annotations
 
 import logging
 
-import httpx
-
 from celerp.config import settings
-from celerp.gateway.state import (
-    get_session_token,
-    relay_http_url,
-    relay_session_headers,
-)
+from celerp.gateway.state import get_session_token, relay_http_url
 
 # Alias so tests / internal callers import this from here rather than reaching
 # into celerp.gateway.state directly.
@@ -42,22 +36,31 @@ async def get_subscription_tier() -> str | None:
 
 
 async def get_quota_status() -> dict | None:
-    """Fetch full AI quota status from the relay.
+    """Fetch authoritative AI quota without requiring a live WS session.
 
-    Returns dict with keys: allowed, used, limit, topup_credits, resets_at, tier.
-    Returns None if gateway not configured or relay unreachable.
+    None means this install has no cloud identity. Explicit disconnect and relay
+    ambiguity are returned as distinct sentinels so UI never turns transport
+    state into a purchase decision.
     """
-    if not settings.gateway_token or not get_session_token():
+    from celerp.services.cloud_entitlement import authenticated_request, stored_api_key, sync_existing_entitlement
+    if settings.cloud_disconnected:
+        return {"disconnected": True}
+    if not await stored_api_key():
         return None
-
-    url = f"{relay_http_url()}/quota/ai/status"
-
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(url, headers=relay_session_headers())
-        if r.status_code == 200:
-            return r.json()
-        log.warning("Quota status returned %s", r.status_code)
+        response = await authenticated_request("GET", "/quota/ai/status", total_s=5.0)
     except Exception as exc:
         log.warning("Failed to fetch quota status: %s", exc)
-    return None
+        return {"unknown": True}
+    if response is None:
+        return None
+    if response.status_code != 200:
+        log.warning("Quota status returned %s", response.status_code)
+        return {"unknown": True}
+    data = response.json()
+    if not isinstance(data, dict):
+        return {"unknown": True}
+    tier = str(data.get("tier") or "free")
+    if tier in ("cloud", "ai", "team") and not get_session_token():
+        await sync_existing_entitlement()
+    return data

@@ -32,9 +32,10 @@ def test_upgrade_banner_contains_description():
     assert "Get a public URL." in html
 
 
-def test_upgrade_banner_default_price():
+def test_upgrade_banner_default_has_no_unverified_price():
     html = _render(upgrade_banner("Encrypted Backup", "desc"))
-    assert "$29/mo" in html
+    assert "$29/mo" not in html
+    assert "Start free trial" in html
 
 
 def test_upgrade_banner_custom_price():

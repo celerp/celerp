@@ -19,13 +19,10 @@ from __future__ import annotations
 
 from fastapi import HTTPException, Request, status
 
-from celerp.gateway.state import (
-    build_public_acquisition_url,
-    get_session_token,
-)
+from celerp.gateway.state import get_session_token
 
 
-def require_session_token(request: Request) -> None:
+async def require_session_token(request: Request) -> None:
     """FastAPI dependency - raises 401 if instance has no active Cloud session.
 
     Checks in order:
@@ -60,21 +57,21 @@ def require_session_token(request: Request) -> None:
             )
         return  # Valid header token
 
-    # No header - check in-process gateway state (same-origin UI requests)
+    # No header: same-origin callers may recover transport from durable authority.
     if current:
-        return  # Gateway is connected, allow through
+        return
+    from celerp.config import settings
+    if not settings.cloud_disconnected:
+        from celerp.services.cloud_entitlement import sync_existing_entitlement
+        await sync_existing_entitlement()
+        if get_session_token():
+            return
 
-    # No session anywhere. This is an unauthenticated backend API error message,
-    # so the acquisition URL resolves through the pre-auth public resolver: a
-    # partner-managed install is sent to its partner, never a direct Celerp
-    # checkout, and a direct install gets the anonymous celerp.com/subscribe URL
-    # with no instance_id (this path can never mint a handoff token).
-    url = build_public_acquisition_url("cloud")
+    # Session state is transport/authentication state, never a billing verdict.
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=(
-            f"This endpoint requires an active Celerp Connect subscription. "
-            f"Subscribe at {url} then connect web access under Settings > Web Access. "
-            f"The core ERP API (/inventory, /docs, /crm, etc.) is always free."
+            "No active Celerp Connect session. Connect or reconnect web access "
+            "under Settings > Web Access, then try again."
         ),
     )

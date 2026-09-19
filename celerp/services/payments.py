@@ -23,40 +23,29 @@ def payments_enabled() -> bool:
     return bool(get_feature_flags().get("payments_enabled"))
 
 
-async def _cloud_get(path: str) -> dict | None:
-    import httpx
-
-    from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
-    if not get_session_token():
+async def _cloud_request(method: str, path: str, payload: dict | None = None) -> dict | None:
+    """Use durable instance authority; a live WebSocket is not billing authority."""
+    from celerp.config import settings
+    if settings.cloud_disconnected:
         return None
+    from celerp.services.cloud_entitlement import authenticated_request
     try:
-        async with httpx.AsyncClient(timeout=20.0) as c:
-            r = await c.get(f"{relay_http_url()}{path}", headers=relay_session_headers())
-        if r.status_code != 200:
-            log.debug("cloud GET %s -> %d", path, r.status_code)
+        response = await authenticated_request(method, path, total_s=20.0, json=payload)
+        if response is None or response.status_code != 200:
             return None
-        return r.json()
+        data = response.json()
+        return data if isinstance(data, dict) else None
     except Exception as exc:
-        log.warning("cloud GET %s failed: %s", path, exc)
+        log.warning("cloud %s %s failed: %s", method, path, exc)
         return None
+
+
+async def _cloud_get(path: str) -> dict | None:
+    return await _cloud_request("GET", path)
 
 
 async def _cloud_post(path: str, payload: dict) -> dict | None:
-    import httpx
-
-    from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
-    if not get_session_token():
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as c:
-            r = await c.post(f"{relay_http_url()}{path}", json=payload, headers=relay_session_headers())
-        if r.status_code != 200:
-            log.debug("cloud POST %s -> %d", path, r.status_code)
-            return None
-        return r.json()
-    except Exception as exc:
-        log.warning("cloud POST %s failed: %s", path, exc)
-        return None
+    return await _cloud_request("POST", path, payload)
 
 
 # ── Payment (customer-facing, via the hosted invoice view) ───────────────────
@@ -109,5 +98,13 @@ async def billing_portal_url() -> str | None:
     """Stripe Billing Portal URL for the merchant's Celerp subscription (cancel,
     change card, invoices). None if the relay is unreachable or no billing
     account is linked to this instance."""
-    result = await _cloud_post("/billing/portal", {})
-    return (result or {}).get("portal_url") or None
+    from celerp.services.cloud_entitlement import authenticated_request
+    try:
+        response = await authenticated_request("POST", "/billing/portal", json={})
+    except Exception as exc:
+        log.warning("billing portal request failed: %s", exc)
+        return None
+    if response is None or response.status_code != 200:
+        return None
+    data = response.json()
+    return data.get("portal_url") if isinstance(data, dict) else None

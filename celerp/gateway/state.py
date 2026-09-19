@@ -307,6 +307,22 @@ def _validated_commercial_shape(new) -> dict | None:
         if value is not None and not isinstance(value, dict):
             log.warning("Commercial context rejected: %s is neither null nor an object.", key)
             return None
+    raw_offers = new.get("offers", {})
+    if raw_offers is None:
+        raw_offers = {}
+    if not isinstance(raw_offers, dict):
+        log.warning("Commercial context rejected: offers is not an object.")
+        return None
+    normalized_offers: dict[str, dict] = {}
+    for tier, offer_value in raw_offers.items():
+        if tier not in ("cloud", "ai", "team"):
+            log.warning("Commercial context rejected: unrecognised offer tier.")
+            return None
+        validated = _validated_offer(offer_value)
+        if validated is None:
+            log.warning("Commercial context rejected: target-tier offer failed validation.")
+            return None
+        normalized_offers[tier] = copy.deepcopy(validated)
 
     raw_impl = new.get("implementation")
     normalized_impl = _normalized_implementation(raw_impl) if raw_impl is not None else None
@@ -317,7 +333,7 @@ def _validated_commercial_shape(new) -> dict | None:
                 "implementation (mode=%s, version=%s).", mode, version)
             return None
     else:  # celerp_direct
-        if raw_impl is not None or new.get("offer") is not None:
+        if raw_impl is not None or new.get("offer") is not None or normalized_offers:
             log.warning(
                 "Commercial context rejected: celerp_direct must carry no "
                 "implementation or offer (mode=%s, version=%s).", mode, version)
@@ -340,6 +356,7 @@ def _validated_commercial_shape(new) -> dict | None:
     # celerp_direct carries none.
     if normalized_impl is not None:
         accepted["implementation"] = normalized_impl
+    accepted["offers"] = normalized_offers
     return accepted
 
 
@@ -461,9 +478,13 @@ def get_partner_identity() -> dict | None:
     return copy.deepcopy(implementation) if isinstance(implementation, dict) else None
 
 
-def get_offer() -> dict | None:
-    """Return a copy of the partner offer object, or None when none is set."""
-    offer = _commercial_context.get("offer")
+def get_offer(tier: str | None = None) -> dict | None:
+    """Return the current or a target-tier partner offer."""
+    if tier is not None:
+        offers = _commercial_context.get("offers")
+        offer = offers.get(tier) if isinstance(offers, dict) else None
+    else:
+        offer = _commercial_context.get("offer")
     return copy.deepcopy(offer) if isinstance(offer, dict) else None
 
 
@@ -785,7 +806,7 @@ async def relay_post_with_retry(url: str, json_body: dict):
     return None
 
 
-async def fetch_relay_bearer(http_client) -> str:
+async def fetch_relay_bearer(http_client, api_key: str | None = None) -> str:
     """Exchange the instance API key (gateway_token) for a short-lived relay
     bearer JWT via POST /auth/token.
 
@@ -795,8 +816,11 @@ async def fetch_relay_bearer(http_client) -> str:
     non-200 so each caller degrades in one place.
     """
     from celerp.config import settings
+    key = api_key or settings.gateway_token
+    if not key:
+        raise RuntimeError("relay credential unavailable")
     resp = await http_client.post(
-        f"{relay_http_url()}/auth/token", json={"api_key": settings.gateway_token})
+        f"{relay_http_url()}/auth/token", json={"api_key": key})
     if resp.status_code != 200:
         raise RuntimeError(f"relay auth failed ({resp.status_code})")
     return resp.json()["access_token"]

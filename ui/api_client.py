@@ -3032,6 +3032,13 @@ async def get_relay_status(token: str) -> dict:
         return _raise(await c.get("/settings/cloud-status")).json()
 
 
+async def get_billing_catalog(token: str) -> dict:
+    """Live non-secret subscription display catalog from the relay."""
+    async with _api_client(token) as c:
+        data = _raise(await c.get("/settings/billing-catalog")).json()
+        return data if isinstance(data, dict) else {"plans": {}}
+
+
 async def get_billing_portal_url(token: str) -> str:
     """POST /settings/cloud/billing-portal - Stripe portal URL for managing the
     Celerp subscription (cancel, change card, invoices)."""

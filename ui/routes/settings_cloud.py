@@ -133,7 +133,7 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
     card_cls = "cloud-plan-card cloud-plan-card--featured" if featured else "cloud-plan-card"
     return Div(
         Div(name, cls="cloud-plan-card__name"),
-        Div(price, Span(interval_label), cls="cloud-plan-card__price"),
+        *([Div(price, Span(interval_label), cls="cloud-plan-card__price")] if price else []),
         Div(desc, cls="cloud-plan-card__desc"),
         Ul(*[Li(b) for b in bullets]),
         A(cta_label or t("cloud.start_trial", lang), href=subscribe_url, target="_blank", cls="btn btn--primary btn--sm"),
@@ -142,7 +142,7 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
 
 
 def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False,
-                     show_partner_claim: bool = False) -> FT:
+                     show_partner_claim: bool = False, catalog: dict | None = None) -> FT:
     """Full value-proposition landing page shown when not connected to cloud.
 
     `disconnected` marks a sticky Cloud disconnect: the credential is preserved,
@@ -160,7 +160,7 @@ def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False,
             ),
             cls="cloud-hero",
         ),
-        _plans_ad(iid, lang=lang),
+        _plans_ad(iid, lang=lang, catalog=catalog),
         # Already subscribed / connect section
         _connect_section(iid, lang=lang, disconnected=disconnected),
         *([_partner_claim_card(lang=lang)] if show_partner_claim else []),
@@ -168,22 +168,15 @@ def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False,
     )
 
 
-def _plans_ad(iid: str, lang: str = "en") -> FT:
-    """Dispatch the plan area by commercial mode: a partner-managed install sees
-    its partner's offer (no direct Celerp price), every other install sees the
-    standard direct grid. Signature unchanged, so both call sites (value-prop
-    page, status tab) are untouched."""
+def _plans_ad(iid: str, lang: str = "en", catalog: dict | None = None) -> FT:
+    """Render partner target-tier offers or the direct live-price grid."""
     from celerp.gateway.state import get_commercial_mode
     if get_commercial_mode() == "partner_managed":
         return _partner_offer(iid, lang=lang)
-    return _direct_plans(iid, lang=lang)
+    return _direct_plans(iid, lang=lang, catalog=catalog)
 
 
 def _partner_offer(iid: str, lang: str = "en") -> FT:
-    """Partner-managed plan area: the partner's offer rendered from the relay-
-    pushed commercial context, with no direct Celerp price, plus a contact line
-    pointing at the implementation partner. A missing or malformed offer degrades
-    to the contact line alone rather than a broken or fabricated price card."""
     from ui.components.cloud_gate import commercial_cta
     from celerp.gateway.state import get_offer, get_partner_identity
     from ui.components.table import fmt_money
@@ -191,145 +184,111 @@ def _partner_offer(iid: str, lang: str = "en") -> FT:
     identity = get_partner_identity() or {}
     partner_name = identity.get("display_name") or ""
     partner_url, partner_label = commercial_cta(
-        "subscribe", "", t("cloud.start_trial", lang), lang,
-    )
-    offer = get_offer()
-
+        "subscribe", "", t("cloud.start_trial", lang), lang)
     children: list = []
     if partner_name:
         children.append(Div(partner_name, cls="cloud-partner-offer__partner"))
 
-    amount = offer.get("retail_amount") if offer else None
-    currency = offer.get("currency") if offer else None
-    exponent = offer.get("currency_exponent") if offer else None
-    # Egress guard: render a priced card only when amount, currency, and the
-    # minor-unit exponent are all well-formed. A stale cache from a pre-validator
-    # binary could hold a non-string currency, a bool amount, or no exponent at
-    # all, so re-check here rather than trust the stored offer, and degrade to
-    # the contact line if it fails.
-    priced = (
-        offer
-        and isinstance(amount, int) and not isinstance(amount, bool)
-        and isinstance(currency, str)
-        and isinstance(exponent, int) and not isinstance(exponent, bool)
-        and 0 <= exponent <= 4
-        and offer.get("display_name")
-    )
-    if priced:
+    cards = []
+    target_offers = [(tier, get_offer(tier)) for tier in ("cloud", "ai", "team")]
+    # Rolling-deploy compatibility: an older relay exposes only the legacy
+    # current-tier offer. Use it only when no target-tier map arrived.
+    if not any(offer for _, offer in target_offers):
+        target_offers = [("", get_offer())]
+    for tier, offer in target_offers:
+        if not offer:
+            continue
+        amount = offer.get("retail_amount")
+        currency = offer.get("currency")
+        exponent = offer.get("currency_exponent")
+        if not (
+            isinstance(amount, int) and not isinstance(amount, bool)
+            and isinstance(currency, str)
+            and isinstance(exponent, int) and not isinstance(exponent, bool)
+            and 0 <= exponent <= 4
+            and offer.get("display_name")
+        ):
+            continue
         bullets = [b for b in (offer.get("service_bullets") or []) if isinstance(b, str)]
         interval_label = (
             t("settings_cloud.per_year", lang)
             if offer.get("billing_interval") == "year"
-            else t("settings_cloud.per_mo", lang)
-        )
-        children.append(_plan_card(
+            else t("settings_cloud.per_mo", lang))
+        cards.append(_plan_card(
             offer["display_name"],
             fmt_money(amount / 10 ** exponent, currency),
             offer.get("service_description") or "",
-            bullets,
-            partner_url,
-            interval_label,
-            cta_label=partner_label,
-            lang=lang,
-        ))
+            bullets, partner_url, interval_label,
+            featured=tier == "ai", cta_label=partner_label, lang=lang))
+    if cards:
+        children.append(Div(*cards, cls="cloud-plans"))
     else:
-        # Degraded branch: no usable offer, but commercial_cta always resolves
-        # to a real destination (partner support, mailto, or the Enterprise
-        # fallback), so give the user a real contact CTA rather than a
-        # dead-end text note (BLOCKER 6).
         children.append(A(
-            partner_label,
-            href=partner_url, target="_blank",
-            cls="btn btn--primary btn--sm cloud-partner-offer__contact",
-        ))
-
-    children.append(Div(t("cloud.partner_managed_note", lang), cls="cloud-partner-offer__note"))
+            partner_label, href=partner_url, target="_blank",
+            cls="btn btn--primary btn--sm cloud-partner-offer__contact"))
+    children.append(Div(
+        t("cloud.partner_managed_note", lang), cls="cloud-partner-offer__note"))
     return Div(*children, cls="cloud-partner-offer")
 
 
-def _direct_plans(iid: str, lang: str = "en") -> FT:
-    """The direct paid-plan advertisement: feature cards, trial banner, plan
-    cards. Shown on the not-connected landing page and, below the status tab, to
-    connected free-tier accounts (the plans are what they are missing). Every
-    plan CTA resolves through the shared in-app mint route, which applies the
-    central handoff policy at click time."""
-    from ui.components.cloud_gate import subscribe_url
+def _direct_plan_price(catalog: dict | None, sku: str, lang: str) -> tuple[str, str]:
+    from ui.components.table import fmt_money
+    plans = catalog.get("plans") if isinstance(catalog, dict) else None
+    data = plans.get(sku) if isinstance(plans, dict) else None
+    if not isinstance(data, dict):
+        return "", ""
+    amount = data.get("unit_amount")
+    currency = data.get("currency")
+    exponent = data.get("currency_exponent")
+    interval = data.get("billing_interval")
+    if not (
+        isinstance(amount, int) and not isinstance(amount, bool) and amount >= 0
+        and isinstance(currency, str)
+        and isinstance(exponent, int) and not isinstance(exponent, bool)
+        and 0 <= exponent <= 4 and interval in ("month", "year")
+    ):
+        return "", ""
+    return (
+        fmt_money(amount / 10 ** exponent, currency),
+        t("settings_cloud.per_year", lang)
+        if interval == "year" else t("settings_cloud.per_mo", lang))
 
+
+def _direct_plans(iid: str, lang: str = "en", catalog: dict | None = None) -> FT:
+    from ui.components.cloud_gate import subscribe_url
+    cloud_price, cloud_interval = _direct_plan_price(
+        catalog, "cloud_monthly", lang)
+    ai_price, ai_interval = _direct_plan_price(
+        catalog, "ai_monthly", lang)
     return Div(
-        # Feature cards - three platform features on top...
         Div(
-            _feature_card(
-                "🔗", t("cloud.feature_url_title", lang),
-                t("cloud.feature_url_desc", lang),
-                lang=lang,
-            ),
-            _feature_card(
-                "💾", t("cloud.feature_backup_title", lang),
-                t("cloud.feature_backup_desc", lang),
-                lang=lang,
-            ),
-            _feature_card(
-                "🤖", t("cloud.feature_ai_title", lang),
-                t("cloud.feature_ai_desc", lang),
-                lang=lang,
-            ),
-            cls="cloud-features",
-        ),
-        # ...and the sync + payments features below
+            _feature_card("🔗", t("cloud.feature_url_title", lang), t("cloud.feature_url_desc", lang), lang=lang),
+            _feature_card("💾", t("cloud.feature_backup_title", lang), t("cloud.feature_backup_desc", lang), lang=lang),
+            _feature_card("🤖", t("cloud.feature_ai_title", lang), t("cloud.feature_ai_desc", lang), lang=lang),
+            cls="cloud-features"),
         Div(
-            _feature_card(
-                "🛒", t("cloud.feature_website_title", lang),
-                t("cloud.feature_website_desc", lang),
-                lang=lang,
-            ),
-            _feature_card(
-                "📊", t("cloud.feature_accounting_title", lang),
-                t("cloud.feature_accounting_desc", lang),
-                lang=lang,
-            ),
-            _feature_card(
-                "💳", t("cloud.feature_payments_title", lang),
-                t("cloud.feature_payments_desc", lang),
-                lang=lang,
-            ),
-            cls="cloud-features",
-        ),
-        # Plans - the centred trial banner introduces them; no left-aligned heading needed
+            _feature_card("🛒", t("cloud.feature_website_title", lang), t("cloud.feature_website_desc", lang), lang=lang),
+            _feature_card("📊", t("cloud.feature_accounting_title", lang), t("cloud.feature_accounting_desc", lang), lang=lang),
+            _feature_card("💳", t("cloud.feature_payments_title", lang), t("cloud.feature_payments_desc", lang), lang=lang),
+            cls="cloud-features"),
         Div(
             Div(t("cloud.trial_head", lang), cls="cloud-trial-banner__head"),
             Div(t("cloud.trial_sub", lang), cls="cloud-trial-banner__sub"),
-            cls="cloud-trial-banner",
-        ),
+            cls="cloud-trial-banner"),
         Div(
             _plan_card(
-                t("cloud.plan_cloud_name", lang), "USD $29",
+                t("cloud.plan_cloud_name", lang), cloud_price,
                 t("cloud.plan_cloud_desc", lang),
-                [
-                    t("cloud.plan_cloud_b1", lang),
-                    t("cloud.plan_cloud_b2", lang),
-                    t("cloud.plan_cloud_b3", lang),
-                    t("cloud.plan_cloud_b4", lang),
-                ],
-                subscribe_url("cloud"),
-                t("settings_cloud.per_mo", lang),
-                lang=lang,
-            ),
+                [t("cloud.plan_cloud_b1", lang), t("cloud.plan_cloud_b2", lang),
+                 t("cloud.plan_cloud_b3", lang), t("cloud.plan_cloud_b4", lang)],
+                subscribe_url("cloud"), cloud_interval, lang=lang),
             _plan_card(
-                t("cloud.plan_ai_name", lang), "USD $49",
+                t("cloud.plan_ai_name", lang), ai_price,
                 t("cloud.plan_ai_desc", lang),
-                [
-                    t("cloud.plan_ai_b1", lang),
-                    t("cloud.plan_ai_b2", lang),
-                    t("cloud.plan_ai_b3", lang),
-                ],
-                subscribe_url("ai"),
-                t("settings_cloud.per_mo", lang),
-                featured=True,
-                lang=lang,
-            ),
-            cls="cloud-plans",
-        ),
-    )
+                [t("cloud.plan_ai_b1", lang), t("cloud.plan_ai_b2", lang),
+                 t("cloud.plan_ai_b3", lang)],
+                subscribe_url("ai"), ai_interval, featured=True, lang=lang),
+            cls="cloud-plans"))
 
 
 def _connect_section(iid: str, lang: str = "en", disconnected: bool = False) -> FT:
@@ -951,7 +910,14 @@ def setup_routes(app):
         # partner offer and managed note (via _partner_offer), so the same gate at
         # both render sites (value-prop landing and status tab) mirrors _plans_ad.
         from celerp.gateway.state import get_commercial_mode
-        can_claim = is_owner_admin and get_commercial_mode() != "partner_managed"
+        commercial_mode = get_commercial_mode()
+        can_claim = is_owner_admin and commercial_mode != "partner_managed"
+        catalog: dict = {}
+        if commercial_mode == "celerp_direct":
+            try:
+                catalog = await _api.get_billing_catalog(token)
+            except Exception:
+                catalog = {}
 
         if not gw_ok:
             from celerp.config import ensure_instance_id
@@ -959,8 +925,9 @@ def setup_routes(app):
             return await base_shell(
                 _section_breadcrumb(t("settings_cloud.web_access", lang)),
                 page_header(t("settings_cloud.web_access", lang)),
-                _value_prop_page(iid, lang=lang, disconnected=disconnected,
-                                 show_partner_claim=can_claim),
+                _value_prop_page(
+                    iid, lang=lang, disconnected=disconnected,
+                    show_partner_claim=can_claim, catalog=catalog),
                 title=page_title("settings_cloud.web_access"),
                 nav_active="web-access",
                 lang=lang,
@@ -1002,7 +969,8 @@ def setup_routes(app):
             # never to silently hiding it - only a confirmed paid tier suppresses it.
             if tier not in PAID_TIERS:
                 from celerp.config import ensure_instance_id
-                parts.append(_plans_ad(ensure_instance_id(), lang=lang))
+                parts.append(_plans_ad(
+                    ensure_instance_id(), lang=lang, catalog=catalog))
             if is_owner_admin:
                 parts.append(_partner_claim_card(lang=lang) if can_claim
                              else _partner_managed_note(lang=lang))

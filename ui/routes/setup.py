@@ -607,7 +607,7 @@ def _cloud_form() -> FT:
     # support or Enterprise.
     cloud_href, cloud_cta_label = commercial_cta(
         "subscribe", "cloud",
-        direct_price(t("setup.subscribe_29mo")) or t("btn.get_connect"),
+        t("btn.get_connect"),
         current_lang())
 
     _features = [
@@ -630,12 +630,8 @@ def _cloud_form() -> FT:
             Div(
                 Div(
                     Span(t("setup.cloud"), cls="cloud-upsell-plan-name"),
-                    # Partner-managed: the partner sets its own price, so the
-                    # setup card shows no direct Celerp figure.
-                    (Div(
-                        Span("$29", cls="cloud-upsell-price"),
-                        Span(t("setup._month"), cls="cloud-upsell-price-unit"),
-                    ) if not partner else None),
+                    # Prices are shown only where the app has an authoritative
+                    # live catalog; setup never invents a stale direct amount.
                     cls="cloud-upsell-plan-header",
                 ),
                 Ul(

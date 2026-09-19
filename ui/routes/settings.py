@@ -3959,7 +3959,6 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
             upgrade_banner(
                 t("cloud.backup_feature_name", lang),
                 t("cloud.backup_desc", lang),
-                price="USD $29/mo",
                 plan="cloud",
                 lang=lang,
             ),

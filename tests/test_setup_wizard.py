@@ -1049,11 +1049,24 @@ class TestSetupCloudPartnerManaged:
         # is swapped to a non-price partner label.
         assert "$29" not in html
 
-    def test_setup_wizard_direct_keeps_price(self):
-        """celerp_direct still renders the direct price and see-all-plans link
-        (positive control)."""
+    def test_setup_wizard_direct_omits_unverified_price(self):
+        """Setup keeps the comparison affordance but does not hardcode a price."""
         import celerp.gateway.state as gw_state
         gw_state._commercial_context = {}
         html = self._render()
-        assert "$29" in html
+        assert "$29" not in html
         assert "cloud-upsell-compare" in html
+
+
+def test_direct_plan_price_comes_from_authoritative_catalog():
+    from ui.routes.settings_cloud import _direct_plan_price
+    catalog = {"plans": {
+        "cloud_monthly": {
+            "unit_amount": 3100, "currency": "USD",
+            "currency_exponent": 2, "billing_interval": "month",
+        }
+    }}
+    price, interval = _direct_plan_price(catalog, "cloud_monthly", "en")
+    assert "31" in price
+    assert "29" not in price
+    assert interval

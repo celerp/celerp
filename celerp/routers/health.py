@@ -88,63 +88,93 @@ async def system_health() -> dict:
 
 @settings_router.get("/cloud-status")
 async def cloud_status() -> dict:
-    """Return cloud connection status, tier, last backup date, and email quota."""
+    """Return transport and entitlement independently.
+
+    A missing WS session never means a missing subscription. Durable bearer
+    auth reads entitlement when possible; paid instances self-heal only when
+    the owner has not explicitly disconnected Cloud.
+    """
     from celerp.config import settings
     from celerp.gateway.client import get_client
-    from celerp.gateway.state import get_session_token
+    from celerp.gateway.state import get_session_token, get_subscription_state
+    from celerp.services.cloud_entitlement import subscription_status, sync_existing_entitlement
+
     gw = get_client()
     relay_status = gw.relay_status if gw else "inactive"
-    # Only report "connected" (green dot) when the tunnel is really up. "connecting"
-    # and "error" are transient/failed states — reporting them as connected is the
-    # "green but still 502" the user sees while the relay has no live upstream.
     connected = relay_status in ("active", "tos_required")
-    if not connected:
-        return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0, "email_resets_on": None, "public_url": settings.celerp_public_url, "gateway_token_set": bool(settings.gateway_token), "cloud_disconnected": settings.cloud_disconnected}
+    ws_tier, ws_status = get_subscription_state()
 
-    # Tier comes from the gateway's own WS push (set_subscription_state, on the
-    # "subscription_updated" message) whenever that's arrived - it needs no extra
-    # round trip and is available as soon as the tunnel is up. last_backup/email
-    # quota aren't carried over WS, so those still come from the relay HTTP call.
-    from celerp.gateway.state import get_subscription_state
-    ws_tier, _ws_status = get_subscription_state()
-    tier: str | None = ws_tier or None
-    last_backup: str | None = None
-    email_quota: int = 0
-    email_used: int = 0
-    email_resets_on: str | None = None
-    try:
-        import httpx
-        from celerp.gateway.state import relay_http_url as _relay_http_url
-        instance_id = settings.gateway_instance_id
-        session_token = get_session_token()
-        if instance_id and session_token:
-            async with httpx.AsyncClient(base_url=_relay_http_url(), timeout=3.0) as c:
-                r = await c.get(
-                    "/billing/status",
-                    params={"instance_id": instance_id, "session_token": session_token},
-                )
-                if r.status_code == 200:
-                    data = r.json()
-                    tier = data.get("tier") or tier
-                    last_backup = data.get("last_backup")
-                    email_quota = int(data.get("email_quota", 0))
-                    email_used = int(data.get("email_used", 0))
-                    email_resets_on = data.get("email_resets_on")
-    except Exception:
-        pass
+    if settings.cloud_disconnected:
+        return {
+            "connected": False, "relay_status": relay_status,
+            "tier": ws_tier or None, "subscription_status": ws_status or None,
+            "entitlement_known": False, "entitled": None,
+            "last_backup": None, "email_quota": 0, "email_used": 0,
+            "email_resets_on": None, "public_url": "",
+            "gateway_token_set": bool(await __import__("celerp.services.cloud_entitlement", fromlist=["stored_api_key"]).stored_api_key()),
+            "cloud_disconnected": True,
+        }
+
+    authoritative = await subscription_status()
+    tier = (authoritative or {}).get("tier") or ws_tier or None
+    sub_status = (authoritative or {}).get("status") or ws_status or None
+    known = authoritative is not None
+    entitled = (sub_status in ("active", "trialing") and tier not in (None, "", "free")) if known else None
+
+    if entitled and not connected:
+        await sync_existing_entitlement()
+        gw = get_client()
+        relay_status = gw.relay_status if gw else "inactive"
+        connected = relay_status in ("active", "tos_required")
+
+    last_backup = None
+    email_quota = 0
+    email_used = 0
+    email_resets_on = None
+    session_token = get_session_token()
+    if connected and settings.gateway_instance_id and session_token:
+        try:
+            import httpx
+            from celerp.gateway.state import relay_http_url
+            async with httpx.AsyncClient(base_url=relay_http_url(), timeout=3.0) as c:
+                r = await c.get("/billing/status", params={
+                    "instance_id": settings.gateway_instance_id, "session_token": session_token})
+            if r.status_code == 200:
+                live = r.json()
+                tier = live.get("tier") or tier
+                sub_status = live.get("status") or sub_status
+                last_backup = live.get("last_backup")
+                email_quota = int(live.get("email_quota", 0))
+                email_used = int(live.get("email_used", 0))
+                email_resets_on = live.get("email_resets_on")
+        except Exception:
+            pass
 
     return {
-        "connected": True,
-        "relay_status": relay_status,
-        "tier": tier,
-        "last_backup": last_backup,
-        "email_quota": email_quota,
-        "email_used": email_used,
-        "email_resets_on": email_resets_on,
+        "connected": connected, "relay_status": relay_status,
+        "tier": tier, "subscription_status": sub_status,
+        "entitlement_known": known, "entitled": entitled,
+        "last_backup": last_backup, "email_quota": email_quota,
+        "email_used": email_used, "email_resets_on": email_resets_on,
         "public_url": settings.celerp_public_url,
-        "gateway_token_set": bool(settings.gateway_token),
-        "cloud_disconnected": settings.cloud_disconnected,
+        "gateway_token_set": bool(await __import__("celerp.services.cloud_entitlement", fromlist=["stored_api_key"]).stored_api_key()),
+        "cloud_disconnected": False,
     }
+
+@settings_router.get("/billing-catalog")
+async def billing_catalog_api() -> dict:
+    """Non-secret display catalog. Failure omits prices rather than fabricating them."""
+    from celerp.gateway.state import relay_http_url, with_relay_client
+    async def _fetch(client):
+        return await client.get(f"{relay_http_url()}/billing/catalog")
+    try:
+        response = await with_relay_client(5.0, _fetch)
+        if response.status_code != 200:
+            return {"plans": {}}
+        data = response.json()
+        return data if isinstance(data, dict) else {"plans": {}}
+    except Exception:
+        return {"plans": {}}
 
 
 @settings_router.post("/cloud/billing-portal", dependencies=[require_permission("manage_integrations")])
@@ -228,56 +258,11 @@ async def _apply_gateway_token_api(
     token: str, iid: str, public_url: str | None = None,
     tos_version: str | None = None, *, authoritative_public_url: bool = True,
 ) -> None:
-    """Persist and apply the relay's authoritative connection state."""
-    import asyncio
-    from celerp.config import (
-        record_cloud_activation, settings as _s)
-    from celerp.gateway import client as _gw
-
-    effective_public_url = (
-        public_url if authoritative_public_url else (_s.celerp_public_url or None))
-    _s.gateway_token = token
-    _s.gateway_instance_id = iid
-    _s.celerp_public_url = effective_public_url or ""
-    _s.cloud_disconnected = False
-
-    if not _s.backup_encryption_key:
-        import base64, secrets as _secrets
-        _s.backup_encryption_key = base64.b64encode(_secrets.token_bytes(32)).decode()
-
-    # Credential durability comes before clearing the local verifier. If this
-    # write fails, keep the verifier so a restart can safely redeem the same
-    # server response again rather than losing both recovery paths.
-    await asyncio.to_thread(
-        record_cloud_activation,
-        token, iid, public_url=effective_public_url, tos_version=tos_version,
-        backup_encryption_key=_s.backup_encryption_key)
-
-    from celerp.gateway import ensure_running, has_active_share
-    should_serve = bool(_s.celerp_public_url)
-    if not should_serve:
-        should_serve = await has_active_share()
-    existing = _gw.get_client()
-    if existing is not None and (
-            not existing.is_serving(token) or
-            (authoritative_public_url and not should_serve)):
-        await existing.close()
-        _gw.set_client(None)
-
-    if should_serve:
-        ensure_running()
-        gw = _gw.get_client()
-        for _ in range(15):
-            if gw and gw.relay_status == "active":
-                break
-            await asyncio.sleep(0.2)
-
-    from celerp.services import backup_scheduler
-    if _s.celerp_public_url and _s.backup_enabled and _s.backup_encryption_key:
-        backup_scheduler.start()
-    else:
-        backup_scheduler.stop()
-
+    """Compatibility wrapper around the single entitlement apply service."""
+    from celerp.services.cloud_entitlement import apply_activation_state
+    await apply_activation_state(
+        token, iid, public_url=public_url, tos_version=tos_version,
+        authoritative_public_url=authoritative_public_url)
 
 @settings_router.post("/cloud-activate", dependencies=[require_permission("manage_integrations")])
 async def cloud_activate_api() -> dict:
@@ -875,6 +860,7 @@ async def cloud_send_otp_api(payload: dict) -> dict:
     import httpx
     from celerp.config import (
         ensure_connect_identity, activation_challenge)
+    from celerp.services.cloud_entitlement import stored_api_key
 
     email = str(payload.get("email", "")).strip()
     if not email:
@@ -886,15 +872,23 @@ async def cloud_send_otp_api(payload: dict) -> dict:
     challenge = activation_challenge(verifier)
     from celerp.gateway.state import relay_http_url as _rhu, with_relay_client
     relay_base = _rhu()
+    api_key = await stored_api_key()
 
     async def _send_otp(c):
+        headers = {}
+        if api_key:
+            from celerp.gateway.state import fetch_relay_bearer
+            jwt = await fetch_relay_bearer(c, api_key=api_key)
+            headers["Authorization"] = f"Bearer {jwt}"
         with _relay_leg("send-otp") as leg:
             r = await c.post(
                 f"{relay_base}/billing/claim/send-otp",
                 json={
                     "email": email, "instance_id": iid,
                     "activation_challenge": challenge,
-                })
+                },
+                headers=headers,
+            )
             leg["status"] = r.status_code
         return r
 
@@ -926,6 +920,7 @@ async def cloud_claim_api(payload: dict) -> dict:
     import httpx
     from celerp.config import (
         settings as _s, ensure_connect_identity, activation_challenge)
+    from celerp.services.cloud_entitlement import stored_api_key
 
     email = str(payload.get("email", "")).strip()
     subscription_id = payload.get("subscription_id") or None
@@ -942,16 +937,22 @@ async def cloud_claim_api(payload: dict) -> dict:
     relay_base = _rhu()
     claim_payload: dict = {
         "email": email, "activation_challenge": challenge}
+    api_key = await stored_api_key()
     if subscription_id:
         claim_payload["subscription_id"] = subscription_id
     if otp_code:
         claim_payload["otp_code"] = otp_code
 
     async def _claim(c):
+        headers = {"X-Instance-ID": iid}
+        if api_key:
+            from celerp.gateway.state import fetch_relay_bearer
+            jwt = await fetch_relay_bearer(c, api_key=api_key)
+            headers["Authorization"] = f"Bearer {jwt}"
         with _relay_leg("claim") as leg:
             r = await c.post(
                 f"{relay_base}/billing/claim",
-                json=claim_payload, headers={"X-Instance-ID": iid})
+                json=claim_payload, headers=headers)
             leg["status"] = r.status_code
         return r
 
@@ -1008,7 +1009,7 @@ async def cloud_claim_api(payload: dict) -> dict:
             "instance_id": iid}
 
     connected = await _activate_after_claim(
-        iid, relay_base, verifier, api_key=_s.gateway_token)
+        iid, relay_base, verifier, api_key=api_key)
     if connected:
         return connected
     return {"linked": True, "instance_id": iid}

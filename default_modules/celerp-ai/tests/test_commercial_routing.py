@@ -128,13 +128,12 @@ def test_ai_showcase_partner_no_direct_price():
     assert "$49" not in html
 
 
-def test_ai_showcase_direct_keeps_price():
-    """celerp_direct: the AI showcase still shows the direct prices (positive
-    control)."""
+def test_ai_showcase_direct_does_not_embed_stale_price():
+    """Even direct mode leaves price display to the authoritative plan grid."""
     from celerp_ai.ui_routes import _showcase_view
     html = to_xml(_showcase_view(lang="en"))
-    assert "$29" in html
-    assert "$49" in html
+    assert "$29" not in html
+    assert "$49" not in html
 
 
 # ── quota-status proxy topup_url injection ──────────────────────────────────
@@ -188,9 +187,8 @@ async def test_ai_quota_status_topup_url_direct(auth_client):
 # carry no handoff token this path can mint.
 
 @pytest.mark.asyncio
-async def test_ai_api_401_routes_through_policy():
-    """partner mode: the AI-api 401 body (no session token) routes its URL
-    through the public acquisition resolver, never a direct subscribe URL."""
+async def test_ai_api_401_is_transport_neutral_in_partner_mode():
+    """Missing transport never becomes purchase advice, even in partner mode."""
     from fastapi import HTTPException
     from celerp.modules.api import ai_query
     _set_partner()
@@ -200,14 +198,12 @@ async def test_ai_api_401_routes_through_policy():
     assert exc.value.status_code == 401
     detail = str(exc.value.detail)
     assert "celerp.com/subscribe" not in detail
-    assert "https://partner.example.com/support" in detail
+    assert "partner.example.com" not in detail
+    assert "Settings > Web Access" in detail
 
 
 @pytest.mark.asyncio
-async def test_ai_api_401_direct_unchanged():
-    """celerp_direct: the AI-api 401 body yields the anonymous subscribe URL
-    with no instance_id - a named checkout here has no handoff token to redeem
-    it, so it must never carry one."""
+async def test_ai_api_401_is_transport_neutral_in_direct_mode():
     from fastapi import HTTPException
     from celerp.modules.api import ai_query
     with pytest.raises(HTTPException) as exc:
@@ -215,5 +211,5 @@ async def test_ai_api_401_direct_unchanged():
                        db_session=None)
     assert exc.value.status_code == 401
     detail = str(exc.value.detail)
-    assert "celerp.com/subscribe" in detail
-    assert "instance_id=" not in detail
+    assert "celerp.com/subscribe" not in detail
+    assert "Settings > Web Access" in detail

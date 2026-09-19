@@ -464,6 +464,35 @@ async def test_cloud_send_otp_proxies_via_api(client):
 
 
 @pytest.mark.asyncio
+async def test_cloud_send_otp_proves_incumbent_when_stored_key_exists(client):
+    """Account-switch OTP initiation carries bearer proof for an established app."""
+    token = await _register(client, "otp-send-auth")
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"ok": True}
+    captured = {}
+
+    with (
+        patch("celerp.services.cloud_entitlement.stored_api_key",
+              new=AsyncMock(return_value="persisted-key")),
+        patch("celerp.gateway.state.fetch_relay_bearer",
+              new=AsyncMock(return_value="instance-jwt")),
+        patch("httpx.AsyncClient") as mock_httpx,
+    ):
+        async def capture_post(url, **kwargs):
+            captured.update(kwargs)
+            return mock_resp
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
+            side_effect=capture_post)
+        r = await client.post(
+            "/settings/cloud-send-otp", headers=_h(token),
+            json={"email": "switch@example.com"})
+
+    assert r.status_code == 200
+    assert captured["headers"]["Authorization"] == "Bearer instance-jwt"
+
+
+@pytest.mark.asyncio
 async def test_cloud_send_otp_relay_timeout_is_reported_as_relay_timeout(client):
     """A relay that stalls past the claim deadline is reported as a relay
     timeout in the error dict (HTTP 200), never as a local API failure."""
