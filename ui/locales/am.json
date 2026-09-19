@@ -358,8 +358,6 @@
   "btn.test_connection": "ግንኙነት ሞክር",
   "btn.transfer": "አስተላልፍ",
   "btn.u00d7": "×",
-  "btn.u2705_confirm_create": "\\u2705 አረጋግጥ እና ፍጠር",
-  "btn.u274c_discard": "\\u274c ተወው",
   "btn.undo": "ቀልብስ",
   "btn.unlock_remove_lock": "ክፈት (መቆለፊያ አስወግድ)",
   "btn.unmark_sent": "የተላከ ምልክት አንሳ",
@@ -1638,9 +1636,6 @@
   "recon.book_match_hint": "የባንክ መግለጫ መስመር ይምረጡ፣ ከዚያም ለማዛመድ እዚህ ያለውን የመዝገብ ግቤት ይጫኑ።",
   "recon.select_line_first": "በመጀመሪያ በግራ በኩል ያለውን የባንክ መግለጫ መስመር ይምረጡ፣ ከዚያም ለማዛመድ የመዝገብ ግቤት ይጫኑ።",
   "ai.clear_memory_confirm": "ለዚህ ኩባንያ ሁሉንም AI ማህደረ ትውስታ ያጽዱ?",
-  "ai.draft_bills_created": "የተፈጠሩ ረቂቅ የአቅራቢ ደረሰኞች፦ {count}። በሰነዶች ውስጥ ይመልከቷቸው።",
-  "ai.draft_bills_ready_one": "{n} ረቂቅ የአቅራቢ ደረሰኝ ዝግጁ",
-  "ai.draft_bills_ready_other": "{n} ረቂቅ የአቅራቢ ደረሰኞች ዝግጁ ናቸው",
   "ai.memory": "ማህደረ ትውስታ",
   "ai.new_conversation": "አዲስ ውይይት",
   "ai.toggle_sidebar": "የጎን አሞሌን ቀይር",
@@ -3112,5 +3107,13 @@
   "settings_cloud.db_connection_failed": "ግንኙነት አልተሳካም። አስተናጋጅ፣ ወደብ እና ማረጋገጫዎችን ያረጋግጡ።",
   "settings_cloud.invalid_storage_backend": "ትክክለኛ የማከማቻ ዓይነት ይምረጡ",
   "settings_cloud.invalid_s3_endpoint": "ትክክለኛ https:// መድረሻ ያስገቡ",
-  "settings.subscription_linked_connecting": "የደንበኝነት ምዝገባ ተገናኝቷል። ከሪሌዩ ጋር በመገናኘት ላይ..."
+  "settings.subscription_linked_connecting": "የደንበኝነት ምዝገባ ተገናኝቷል። ከሪሌዩ ጋር በመገናኘት ላይ...",
+  "btn.dismiss": "አሰናብት",
+  "ai.action_proposal": "የቀረበ እርምጃ",
+  "ai.action_expired": "ይህ እርምጃ አስቀድሞ ተከናውኗል ወይም ጊዜው አልፎበታል።",
+  "ai.action_done": "ተከናውኗል።",
+  "ai.busy": "ረዳቱ አሁን ተጠምዷል። እባክዎ ከጥቂት ጊዜ በኋላ እንደገና ይሞክሩ።",
+  "ai.chat_prompt_empty": "እባክዎ ጥያቄ ያስገቡ ወይም ፋይል ያያይዙ።",
+  "ai.attached_files": "📎 የተያያዙ ፋይሎች",
+  "ai.error_prefix": "ስህተት፦"
 }

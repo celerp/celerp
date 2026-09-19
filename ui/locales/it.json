@@ -355,8 +355,6 @@
   "btn.test_connection": "Testa connessione",
   "btn.transfer": "Trasferisci",
   "btn.u00d7": "×",
-  "btn.u2705_confirm_create": "✅ Conferma e crea",
-  "btn.u274c_discard": "❌ Scarta",
   "btn.undo": "Annulla",
   "btn.unlock_remove_lock": "Sblocca (rimuovi blocco)",
   "btn.unmark_sent": "Rimuovi marcatura inviato",
@@ -1535,9 +1533,6 @@
   "th.when": "Quando",
   "th.wholesale": "Ingrosso",
   "ai.clear_memory_confirm": "Cancellare tutta la memoria AI relativa a questa azienda?",
-  "ai.draft_bills_created": "Bozze di fattura create: {count}. Visualizzale in Documenti.",
-  "ai.draft_bills_ready_one": "{n} bozza di fattura pronta",
-  "ai.draft_bills_ready_other": "{n} bozze di fattura pronte",
   "ai.memory": "Memoria",
   "ai.new_conversation": "Nuova conversazione",
   "ai.toggle_sidebar": "Attiva/disattiva barra laterale",
@@ -3112,5 +3107,13 @@
   "settings_cloud.db_connection_failed": "Connessione non riuscita. Controlla host, porta e credenziali.",
   "settings_cloud.invalid_storage_backend": "Seleziona un backend di archiviazione valido",
   "settings_cloud.invalid_s3_endpoint": "Inserisci un endpoint https:// valido",
-  "settings.subscription_linked_connecting": "Abbonamento collegato. Connessione al relay in corso..."
+  "settings.subscription_linked_connecting": "Abbonamento collegato. Connessione al relay in corso...",
+  "btn.dismiss": "Ignora",
+  "ai.action_proposal": "Azione proposta",
+  "ai.action_expired": "Questa azione è già stata gestita o è scaduta.",
+  "ai.action_done": "Fatto.",
+  "ai.busy": "L'assistente è occupato al momento. Riprova tra un istante.",
+  "ai.chat_prompt_empty": "Inserisci una domanda o allega un file.",
+  "ai.attached_files": "📎 File allegati",
+  "ai.error_prefix": "Errore:"
 }

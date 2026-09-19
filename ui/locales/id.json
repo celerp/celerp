@@ -355,8 +355,6 @@
   "btn.test_connection": "Uji Koneksi",
   "btn.transfer": "Transfer",
   "btn.u00d7": "×",
-  "btn.u2705_confirm_create": "\\u2705 Konfirmasi & Buat",
-  "btn.u274c_discard": "\\u274c Buang",
   "btn.undo": "Membuka",
   "btn.unlock_remove_lock": "Buka kunci (hapus kunci)",
   "btn.unmark_sent": "Hapus tanda Terkirim",
@@ -1534,9 +1532,6 @@
   "th.when": "Kapan",
   "th.wholesale": "Grosir",
   "ai.clear_memory_confirm": "Hapus semua memori AI untuk perusahaan ini?",
-  "ai.draft_bills_created": "Draf tagihan yang dibuat: {count}. Lihat di Dokumen.",
-  "ai.draft_bills_ready_one": "{n} draf tagihan siap",
-  "ai.draft_bills_ready_other": "{n} draf tagihan siap",
   "ai.memory": "Memori",
   "ai.new_conversation": "Percakapan Baru",
   "ai.toggle_sidebar": "Aktifkan/nonaktifkan bilah samping",
@@ -3112,5 +3107,13 @@
   "settings_cloud.db_connection_failed": "Koneksi gagal. Periksa host, port, dan kredensial.",
   "settings_cloud.invalid_storage_backend": "Pilih backend penyimpanan yang valid",
   "settings_cloud.invalid_s3_endpoint": "Masukkan endpoint https:// yang valid",
-  "settings.subscription_linked_connecting": "Langganan telah terhubung. Menghubungkan ke relay..."
+  "settings.subscription_linked_connecting": "Langganan telah terhubung. Menghubungkan ke relay...",
+  "btn.dismiss": "Abaikan",
+  "ai.action_proposal": "Tindakan yang diusulkan",
+  "ai.action_expired": "Tindakan ini sudah ditangani atau telah kedaluwarsa.",
+  "ai.action_done": "Selesai.",
+  "ai.busy": "Asisten sedang sibuk saat ini. Silakan coba lagi sebentar lagi.",
+  "ai.chat_prompt_empty": "Silakan masukkan pertanyaan atau lampirkan file.",
+  "ai.attached_files": "📎 File terlampir",
+  "ai.error_prefix": "Kesalahan:"
 }

@@ -355,8 +355,6 @@
   "btn.test_connection": "ทดสอบการเชื่อมต่อ",
   "btn.transfer": "โอนย้าย",
   "btn.u00d7": "×",
-  "btn.u2705_confirm_create": "\\u2705 ยืนยันและสร้าง",
-  "btn.u274c_discard": "\\u274c ทิ้ง",
   "btn.undo": "เลิกทำ",
   "btn.unlock_remove_lock": "ปลดล็อค (ถอดล็อค)",
   "btn.unmark_sent": "ยกเลิกการทำเครื่องหมายว่าส่งแล้ว",
@@ -1534,9 +1532,6 @@
   "th.when": "เมื่อไร",
   "th.wholesale": "ขายส่ง",
   "ai.clear_memory_confirm": "ล้างความจำ AI ทั้งหมดของบริษัทนี้หรือไม่?",
-  "ai.draft_bills_created": "สร้างบิลร่างแล้ว {count} รายการ ดูได้ที่เอกสาร",
-  "ai.draft_bills_ready_one": "บิลร่างพร้อมแล้ว {n} รายการ",
-  "ai.draft_bills_ready_other": "บิลร่างพร้อมแล้ว {n} รายการ",
   "ai.memory": "ความจำ",
   "ai.new_conversation": "การสนทนาใหม่",
   "ai.toggle_sidebar": "เปิด/ปิดแถบด้านข้าง",
@@ -3112,5 +3107,13 @@
   "settings_cloud.db_connection_failed": "การเชื่อมต่อล้มเหลว ตรวจสอบโฮสต์ พอร์ต และข้อมูลรับรอง",
   "settings_cloud.invalid_storage_backend": "เลือกแบ็กเอนด์พื้นที่จัดเก็บที่ถูกต้อง",
   "settings_cloud.invalid_s3_endpoint": "กรอกปลายทาง https:// ที่ถูกต้อง",
-  "settings.subscription_linked_connecting": "เชื่อมโยงการสมัครสมาชิกแล้ว กำลังเชื่อมต่อกับรีเลย์..."
+  "settings.subscription_linked_connecting": "เชื่อมโยงการสมัครสมาชิกแล้ว กำลังเชื่อมต่อกับรีเลย์...",
+  "btn.dismiss": "ยกเลิก",
+  "ai.action_proposal": "การดำเนินการที่เสนอ",
+  "ai.action_expired": "การดำเนินการนี้ได้รับการจัดการแล้วหรือหมดอายุแล้ว",
+  "ai.action_done": "เสร็จสิ้น",
+  "ai.busy": "ผู้ช่วยกำลังไม่ว่างในขณะนี้ โปรดลองอีกครั้งในอีกสักครู่",
+  "ai.chat_prompt_empty": "โปรดพิมพ์คำถามหรือแนบไฟล์",
+  "ai.attached_files": "📎 ไฟล์ที่แนบ",
+  "ai.error_prefix": "ข้อผิดพลาด:"
 }

@@ -355,8 +355,6 @@
   "btn.test_connection": "Tester la connexion",
   "btn.transfer": "Transfert",
   "btn.u00d7": "×",
-  "btn.u2705_confirm_create": "\\u2705 Confirmer et créer",
-  "btn.u274c_discard": "\\u274c Jeter",
   "btn.undo": "Annuler",
   "btn.unlock_remove_lock": "Déverrouiller (supprimer le verrou)",
   "btn.unmark_sent": "Décocher Envoyé",
@@ -1535,9 +1533,6 @@
   "th.when": "Quand",
   "th.wholesale": "Vente en gros",
   "ai.clear_memory_confirm": "Vider toute la mémoire IA pour cette entreprise ?",
-  "ai.draft_bills_created": "Brouillons de facture créés : {count}. Consultez-les dans « Documents ».",
-  "ai.draft_bills_ready_one": "{n} Brouillon de facture prêt",
-  "ai.draft_bills_ready_other": "{n} Brouillons de factures prêts",
   "ai.memory": "Mémoire",
   "ai.new_conversation": "Nouvelle conversation",
   "ai.toggle_sidebar": "Afficher/masquer la barre latérale",
@@ -3112,5 +3107,13 @@
   "settings_cloud.db_connection_failed": "Échec de la connexion. Vérifiez l'hôte, le port et les identifiants.",
   "settings_cloud.invalid_storage_backend": "Sélectionnez un backend de stockage valide",
   "settings_cloud.invalid_s3_endpoint": "Saisissez un point de terminaison https:// valide",
-  "settings.subscription_linked_connecting": "Abonnement associé. Connexion au relais..."
+  "settings.subscription_linked_connecting": "Abonnement associé. Connexion au relais...",
+  "btn.dismiss": "Ignorer",
+  "ai.action_proposal": "Action proposée",
+  "ai.action_expired": "Cette action a déjà été traitée ou a expiré.",
+  "ai.action_done": "Terminé.",
+  "ai.busy": "L'assistant est occupé pour le moment. Veuillez réessayer dans un instant.",
+  "ai.chat_prompt_empty": "Veuillez saisir une question ou joindre un fichier.",
+  "ai.attached_files": "📎 Fichier(s) joint(s)",
+  "ai.error_prefix": "Erreur :"
 }

@@ -355,8 +355,6 @@
   "btn.test_connection": "Conexão de teste",
   "btn.transfer": "Transferir",
   "btn.u00d7": "×",
-  "btn.u2705_confirm_create": "\\u2705 Confirmar e criar",
-  "btn.u274c_discard": "\\u274c Descartar",
   "btn.undo": "Desfazer",
   "btn.unlock_remove_lock": "Desbloquear (remover bloqueio)",
   "btn.unmark_sent": "Desmarcar enviado",
@@ -1534,9 +1532,6 @@
   "th.when": "Quando",
   "th.wholesale": "Atacado",
   "ai.clear_memory_confirm": "Limpar toda a memória de IA desta empresa?",
-  "ai.draft_bills_created": "Rascunhos de fatura criados: {count}. Consulte-os em Documentos.",
-  "ai.draft_bills_ready_one": "{n} rascunho de fatura pronto",
-  "ai.draft_bills_ready_other": "{n} rascunhos de fatura prontos",
   "ai.memory": "Memória",
   "ai.new_conversation": "Nova conversa",
   "ai.toggle_sidebar": "Alternar barra lateral",
@@ -3112,5 +3107,13 @@
   "settings_cloud.db_connection_failed": "Falha na conexão. Verifique o host, a porta e as credenciais.",
   "settings_cloud.invalid_storage_backend": "Selecione um backend de armazenamento válido",
   "settings_cloud.invalid_s3_endpoint": "Insira um endpoint https:// válido",
-  "settings.subscription_linked_connecting": "Assinatura vinculada. Conectando ao relay..."
+  "settings.subscription_linked_connecting": "Assinatura vinculada. Conectando ao relay...",
+  "btn.dismiss": "Descartar",
+  "ai.action_proposal": "Ação proposta",
+  "ai.action_expired": "Esta ação já foi processada ou expirou.",
+  "ai.action_done": "Concluído.",
+  "ai.busy": "O assistente está ocupado no momento. Tente novamente em instantes.",
+  "ai.chat_prompt_empty": "Digite uma pergunta ou anexe um arquivo.",
+  "ai.attached_files": "📎 Arquivo(s) anexado(s)",
+  "ai.error_prefix": "Erro:"
 }
