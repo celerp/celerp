@@ -55,6 +55,18 @@ jobs:
           ]
           p.write_text("\n".join(lines) + "\n")
 
+          # Paid backup route tests must also model the retained encryption key.
+          p = Path("tests/test_routers/test_backup.py")
+          src = p.read_text()
+          helper_anchor = '''def _mock_durable_relay_auth(monkeypatch):
+          '''
+          helper_pos = src.index(helper_anchor)
+          insert_pos = src.index("\n", helper_pos) + 1
+          key_line = '    settings.backup_encryption_key = base64.b64encode(b"k" * 32).decode()\n'
+          if key_line not in src[helper_pos:helper_pos + 600]:
+              src = src[:insert_pos] + key_line + src[insert_pos:]
+          p.write_text(src)
+
           # Paid backup route tests must model the durable account credential now
           # used for retained-backup recovery instead of public_url authority.
           p = Path("tests/test_routers/test_backup.py")
