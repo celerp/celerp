@@ -26,7 +26,7 @@ async def _register(client, suffix: str = "") -> str:
     addr = f"cloud-{suffix or uuid.uuid4().hex[:8]}@test.local"
     r = await client.post(
         "/auth/register",
-        json={"company_name": "CloudCo", "email": addr, "name": "Admin", "password": "pw"},
+        json={"company_name": "CloudCo", "email": addr, "name": "Admin", "password": "pwvalid1"},
     )
     assert r.status_code == 200
     return r.json()["access_token"]
@@ -148,7 +148,7 @@ async def test_cloud_disconnect_clears_session_token(client, session):
     await ensure_user(session, "00000000-0000-0000-0000-000000000099")
     await _register_token(session, str(_uuid.uuid4()), "00000000-0000-0000-0000-000000000099", datetime.now(_tz.utc) + timedelta(seconds=900))
     with patch("celerp.gateway.state.get_session_token", return_value=""):
-        r2 = await client.post("/auth/login", json={"email": "cloud-disc-session@test.local", "password": "pw"})
+        r2 = await client.post("/auth/login", json={"email": "cloud-disc-session@test.local", "password": "pwvalid1"})
     assert r2.status_code == 409, f"Gate should fire after disconnect, got {r2.status_code}"
 
 
