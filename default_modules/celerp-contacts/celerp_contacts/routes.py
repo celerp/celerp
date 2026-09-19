@@ -129,7 +129,7 @@ class CRMBatchImportRequest(BaseModel):
 # ── Contact CRUD ──────────────────────────────────────────────────────────────
 
 
-@router.post("/contacts")
+@router.post("/contacts", openapi_extra={"x-celerp-agent": True})
 async def create_contact(payload: ContactCreate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.name or not payload.name.strip():
         raise HTTPException(status_code=422, detail="Contact name is required and must be non-empty")
@@ -151,7 +151,7 @@ async def create_contact(payload: ContactCreate, company_id: str = Depends(get_c
     return {"event_id": entry.id, "id": entity_id}
 
 
-@router.get("/contacts")
+@router.get("/contacts", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True})
 async def list_contacts(
     q: str = "",
     limit: int = 50,
@@ -169,7 +169,7 @@ async def list_contacts(
     return {"items": results[offset:offset + limit], "total": len(results)}
 
 
-@router.get("/contacts/{contact_id}")
+@router.get("/contacts/{contact_id}", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True})
 async def get_contact(contact_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None:
@@ -177,7 +177,7 @@ async def get_contact(contact_id: str, company_id: str = Depends(get_current_com
     return row.state | {"id": row.entity_id}
 
 
-@router.patch("/contacts/{contact_id}")
+@router.patch("/contacts/{contact_id}", openapi_extra={"x-celerp-agent": True})
 async def update_contact(contact_id: str, payload: ContactUpdate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await emit_event(
         session,

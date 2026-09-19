@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +24,7 @@ from celerp.models.ai import AIConversation, AIMessage
 
 log = logging.getLogger(__name__)
 
-MAX_CONVERSATIONS_PER_COMPANY = 100
+MAX_CONVERSATIONS_PER_USER = 100
 MAX_MESSAGES_PER_CONVERSATION = 200
 HISTORY_TOKEN_BUDGET = 8000
 _CHARS_PER_TOKEN = 4  # conservative estimate
@@ -35,7 +36,7 @@ async def create_conversation(
     user_id: uuid.UUID,
     title: str | None = None,
 ) -> AIConversation:
-    """Create a new conversation. Prunes oldest if limit exceeded."""
+    """Create a new conversation. Prunes the user's oldest if the limit is exceeded."""
     conv = AIConversation(
         company_id=company_id,
         user_id=user_id,
@@ -44,19 +45,23 @@ async def create_conversation(
     session.add(conv)
     await session.flush()
 
-    # Prune: keep only MAX_CONVERSATIONS_PER_COMPANY per company
+    # Prune: keep only MAX_CONVERSATIONS_PER_USER per user (conversations are per user).
     count = (await session.execute(
         select(func.count()).select_from(AIConversation).where(
             AIConversation.company_id == company_id,
+            AIConversation.user_id == user_id,
         )
     )).scalar() or 0
 
-    if count > MAX_CONVERSATIONS_PER_COMPANY:
+    if count > MAX_CONVERSATIONS_PER_USER:
         oldest_q = (
             select(AIConversation.id)
-            .where(AIConversation.company_id == company_id)
+            .where(
+                AIConversation.company_id == company_id,
+                AIConversation.user_id == user_id,
+            )
             .order_by(AIConversation.updated_at.desc())
-            .offset(MAX_CONVERSATIONS_PER_COMPANY)
+            .offset(MAX_CONVERSATIONS_PER_USER)
         )
         old_ids = list((await session.execute(oldest_q)).scalars().all())
         if old_ids:
@@ -141,14 +146,15 @@ async def add_message(
     content: str,
     *,
     model_used: str | None = None,
-    tools_called: list[str] | None = None,
+    tools_called: list | None = None,
     file_ids: list[str] | None = None,
     credits_used: int = 0,
 ) -> AIMessage:
     """Add a message to a conversation. Prunes oldest if limit exceeded.
 
-    Also sets the conversation title from the first user message if not already set,
-    and updates the conversation's updated_at timestamp.
+    ``tools_called`` is stored verbatim: a mix of executed read operation-id
+    strings and pending-action records (dicts). Also sets the conversation title
+    from the first user message if not already set, and bumps ``updated_at``.
     """
     msg = AIMessage(
         conversation_id=conversation_id,
@@ -199,22 +205,159 @@ async def get_messages(
     *,
     limit: int = 50,
 ) -> list[AIMessage]:
-    """Get messages for a conversation, oldest first."""
+    """Get the newest ``limit`` messages, returned oldest-first (chronological)."""
     q = (
         select(AIMessage)
         .where(AIMessage.conversation_id == conversation_id)
-        .order_by(AIMessage.created_at.asc())
+        .order_by(AIMessage.created_at.desc())
         .limit(limit)
     )
-    return list((await session.execute(q)).scalars().all())
+    newest_first = list((await session.execute(q)).scalars().all())
+    newest_first.reverse()
+    return newest_first
+
+
+# -- Tool-call record helpers ------------------------------------------------
+#
+# The assistant message's ``tools_called`` list mixes executed read operation-id
+# strings with pending-action records (dicts). A record carries no status when
+# first stored (the model has only proposed it); it gains a status of
+# "executing" once claimed and "completed"/"failed" once finalized. A record
+# with no explicit status is therefore still pending.
+
+
+def tool_names(tools_called: list | None) -> list[str]:
+    """Operation-id strings from a stored ``tools_called`` list.
+
+    Strings pass through unchanged; dict records yield ``record["name"]``.
+    """
+    if not tools_called:
+        return []
+    names: list[str] = []
+    for item in tools_called:
+        if isinstance(item, str):
+            names.append(item)
+        elif isinstance(item, dict) and item.get("name"):
+            names.append(item["name"])
+    return names
+
+
+def _still_pending(record: object, now: datetime) -> bool:
+    """A dict record is pending when its status is pending and it has not expired."""
+    if not isinstance(record, dict):
+        return False
+    if record.get("status", "pending") != "pending":
+        return False
+    expires_at = record.get("expires_at")
+    if not isinstance(expires_at, str):
+        return False
+    try:
+        return datetime.fromisoformat(expires_at) > now
+    except ValueError:
+        return False
+
+
+def pending_actions(tools_called: list | None) -> list[dict]:
+    """Pending, unexpired action records from a stored ``tools_called`` list."""
+    if not tools_called:
+        return []
+    now = datetime.now(timezone.utc)
+    return [record for record in tools_called if _still_pending(record, now)]
+
+
+async def claim_tool_call(
+    session: AsyncSession,
+    *,
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
+    tool_call_id: str,
+    company_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> dict | None:
+    """Atomically move a pending action to ``executing``; return its copy or None.
+
+    Locks the owning message row (FOR UPDATE) so two confirmations of the same
+    action cannot both claim it. Never mutates the JSON in place: a new list is
+    assigned so SQLAlchemy persists the change.
+    """
+    q = (
+        select(AIMessage)
+        .join(AIConversation, AIMessage.conversation_id == AIConversation.id)
+        .where(
+            AIMessage.id == message_id,
+            AIMessage.conversation_id == conversation_id,
+            AIConversation.company_id == company_id,
+            AIConversation.user_id == user_id,
+        )
+        .with_for_update(of=AIMessage)
+    )
+    msg = (await session.execute(q)).scalars().first()
+    if msg is None or not msg.tools_called:
+        return None
+
+    now = datetime.now(timezone.utc)
+    claimed: dict | None = None
+    new_list: list = []
+    for item in msg.tools_called:
+        if (
+            claimed is None
+            and isinstance(item, dict)
+            and item.get("id") == tool_call_id
+            and _still_pending(item, now)
+        ):
+            claimed = dict(item)
+            new_list.append({**item, "status": "executing"})
+        else:
+            new_list.append(item)
+
+    if claimed is None:
+        return None
+
+    msg.tools_called = new_list
+    session.add(msg)
+    await session.flush()
+    return claimed
+
+
+async def finalize_tool_call(
+    session: AsyncSession,
+    *,
+    message_id: uuid.UUID,
+    tool_call_id: str,
+    status: Literal["completed", "failed"],
+    result: dict | None,
+) -> None:
+    """Record the terminal state of a claimed action; never store result payloads."""
+    msg = await session.get(AIMessage, message_id)
+    if msg is None or not msg.tools_called:
+        return
+
+    new_list: list = []
+    for item in msg.tools_called:
+        if isinstance(item, dict) and item.get("id") == tool_call_id:
+            new_list.append({
+                "id": item.get("id"),
+                "name": item.get("name"),
+                "status": status,
+                "result_status": (result or {}).get("status"),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            })
+        else:
+            new_list.append(item)
+
+    msg.tools_called = new_list
+    session.add(msg)
+    await session.flush()
 
 
 def build_history_context(messages: list[AIMessage]) -> list[dict[str, str]]:
     """Build a token-budgeted history for LLM context.
 
-    Takes messages (oldest first), returns newest-first truncated to
-    HISTORY_TOKEN_BUDGET tokens. Output format: [{"role": "...", "content": "..."}].
-    File content from previous turns is never included (just text).
+    Takes messages (oldest first), returns them chronologically, truncated to
+    HISTORY_TOKEN_BUDGET tokens (newest kept first). An assistant message that
+    still holds pending action records appends "[proposed action: <name>]" lines
+    so the model knows what it offered. File content and tool results from prior
+    turns are never included.
     """
     # Reverse to newest-first for token budgeting
     reversed_msgs = list(reversed(messages))
@@ -223,6 +366,8 @@ def build_history_context(messages: list[AIMessage]) -> list[dict[str, str]]:
 
     for msg in reversed_msgs:
         content = msg.content
+        for record in pending_actions(msg.tools_called):
+            content += f"\n[proposed action: {record.get('name')}]"
         msg_tokens = len(content) // _CHARS_PER_TOKEN
         if tokens_used + msg_tokens > HISTORY_TOKEN_BUDGET:
             break

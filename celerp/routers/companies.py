@@ -872,56 +872,6 @@ async def get_all_category_schemas(company_id=Depends(get_current_company_id), s
     return merged
 
 
-@router.post("/me/category-schemas/merge")
-async def merge_category_schemas(
-    payload: dict,
-    company_id=Depends(get_current_company_id),
-    _: None = require_permission("manage_company_settings"),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Auto-merge attribute keys discovered during import into category schemas.
-
-    payload: {"schemas": {"CategoryName": [{"key": ..., "label": ..., "type": ..., "options": [...]}]}}
-
-    For each category:
-    - Appends new keys not already present in the stored category schema.
-    - Never overwrites existing keys (user customisations preserved).
-    Returns counts of new fields added per category.
-    """
-    incoming: dict[str, list[dict]] = payload.get("schemas") or {}
-    if not incoming:
-        raise HTTPException(status_code=422, detail="schemas required")
-
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
-
-    settings = dict(company.settings)
-    cat_schemas: dict[str, list[dict]] = dict(settings.get("category_schemas") or {})
-    added: dict[str, int] = {}
-
-    for cat, new_fields in incoming.items():
-        existing = cat_schemas.get(cat) or []
-        existing_keys = {f["key"] for f in existing}
-        max_pos = max((f.get("position", 0) for f in existing), default=-1)
-        appended = []
-        for nf in new_fields:
-            if nf["key"] not in existing_keys:
-                max_pos += 1
-                appended.append({**nf, "position": max_pos, "editable": True, "required": False, "visible_to_roles": [], "show_in_table": True})
-                existing_keys.add(nf["key"])
-        if appended:
-            cat_schemas[cat] = existing + appended
-            added[cat] = len(appended)
-
-    if added:
-        settings["category_schemas"] = cat_schemas
-        company.settings = settings
-        await session.commit()
-
-    return {"ok": True, "added": added}
-
-
 # ---------------------------------------------------------------------------
 # Category CRUD
 # ---------------------------------------------------------------------------

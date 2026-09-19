@@ -626,7 +626,7 @@ async def _assert_ref_id_unique(
         raise HTTPException(status_code=409, detail=f"Document number '{ref_id}' already exists")
 
 
-@router.get("")
+@router.get("", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def list_docs(
     doc_type: str | None = None,
     status: str | None = None,
@@ -735,7 +735,7 @@ async def list_docs(
     return {"items": out, "total": total}
 
 
-@router.get("/summary")
+@router.get("/summary", openapi_extra={"x-celerp-agent": True})
 async def get_doc_summary(
     doc_type: str | None = None,
     company_id: str = Depends(get_current_company_id),
@@ -1007,7 +1007,7 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
     return {eid: _label(eid) for eid in item_eids}
 
 
-@router.get("/{entity_id}")
+@router.get("/{entity_id}", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     doc = row.state | {"id": row.entity_id}
@@ -1153,7 +1153,7 @@ async def _assert_no_draft_items(session: AsyncSession, company_id, eids) -> Non
         )
 
 
-@router.post("")
+@router.post("", openapi_extra={"x-celerp-agent": True})
 async def create_doc(
     payload: DocCreatePayload,
     company_id: str = Depends(get_current_company_id),
@@ -1320,7 +1320,7 @@ async def create_doc(
     return {"event_id": entry.id, "id": entity_id}
 
 
-@router.patch("/{entity_id}")
+@router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True})
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
     _FINALIZED_EDITABLE_FIELDS = {

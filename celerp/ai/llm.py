@@ -4,8 +4,9 @@
 """LLM client - single entry point for all model calls.
 
 Calls are served through the cloud gateway, which selects the model and meters
-usage. Supports text-only and multimodal (image/PDF) messages.
-Concurrency-limited via a module-level semaphore.
+usage. Supports text-only and multimodal (image/PDF) messages, plus structured
+tool calling for the agent loop. Concurrency-limited via a module-level
+semaphore.
 """
 
 from __future__ import annotations
@@ -13,15 +14,26 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from dataclasses import dataclass
 
 import httpx
 
+from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.gateway.state import relay_http_url, relay_session_headers
 
 log = logging.getLogger(__name__)
 
 _MAX_CONCURRENT = int(os.getenv("AI_MAX_CONCURRENT", "3"))
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
+
+
+@dataclass
+class ModelResult:
+    message: dict            # full choices[0].message from the gateway
+    model_used: str
+    usage: dict
+    reservation_id: str | None
+    remaining: int | None
 
 
 def _build_user_content(
@@ -31,18 +43,116 @@ def _build_user_content(
     """Build the user message content block.
 
     Text-only: returns a plain string.
-    With files: returns a list of content parts (image_url or text).
-    Each file dict must have keys: media_type (str), data (base64 str).
+    With files: returns a list of content parts. Each file dict has keys
+    media_type, data (base64), filename and file_id.
+
+    - image/* becomes an image_url part;
+    - application/pdf becomes a file part carrying the base64 data-uri;
+    - text/csv and xlsx become a text part naming the file and its file_id so
+      the model can call the import-preview capability - the bytes are never
+      sent to the model;
+    - anything else raises ValueError("unsupported file type").
+
+    Empty text with files is valid: no trailing text part is appended.
     """
     if not files:
         return text
 
     parts: list[dict] = []
     for f in files:
-        data_uri = f"data:{f['media_type']};base64,{f['data']}"
-        parts.append({"type": "image_url", "image_url": {"url": data_uri}})
-    parts.append({"type": "text", "text": text})
+        media_type = f["media_type"]
+        if media_type.startswith("image/"):
+            data_uri = f"data:{media_type};base64,{f['data']}"
+            parts.append({"type": "image_url", "image_url": {"url": data_uri}})
+        elif media_type == "application/pdf":
+            data_uri = f"data:{media_type};base64,{f['data']}"
+            parts.append({
+                "type": "file",
+                "file": {"filename": f.get("filename") or "document.pdf", "file_data": data_uri},
+            })
+        elif media_type in ("text/csv", XLSX_CONTENT_TYPE):
+            parts.append({
+                "type": "text",
+                "text": f"Attached file: {f.get('filename')} (file_id {f.get('file_id')})",
+            })
+        else:
+            raise ValueError("unsupported file type")
+
+    if text:
+        parts.append({"type": "text", "text": text})
     return parts
+
+
+async def complete(
+    messages: list[dict],
+    *,
+    tools: list[dict] | None = None,
+    tool_choice: str | dict | None = None,
+    reservation_id: str | None = None,
+    hints: dict | None = None,
+    max_tokens: int = 2048,
+    timeout: float = 60.0,
+) -> ModelResult:
+    """Run a structured completion through the gateway.
+
+    Posts to {relay}/ai/complete with the session headers. tools, tool_choice
+    and reservation_id are sent only when not None.
+
+    Raises HTTPException(402) when the plan's quota is exhausted.
+    Raises RuntimeError("continuation_expired") on a 409 (expired reservation
+    continuation), or a generic RuntimeError on other gateway failures.
+    """
+    body: dict = {"messages": messages, "max_tokens": max_tokens}
+    if hints is not None:
+        body["hints"] = hints
+    if tools is not None:
+        body["tools"] = tools
+    if tool_choice is not None:
+        body["tool_choice"] = tool_choice
+    if reservation_id is not None:
+        body["reservation_id"] = reservation_id
+
+    headers = relay_session_headers()
+    if not headers.get("X-Session-Token"):
+        raise RuntimeError("The AI service is not available - no active cloud session.")
+
+    url = f"{relay_http_url()}/ai/complete"
+
+    async with _semaphore:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, headers=headers, json=body)
+
+    if resp.status_code == 200:
+        data = resp.json()
+        message = data.get("message")
+        if not isinstance(message, dict):
+            # Older relay without a structured message: fall back to answer.
+            message = {"role": "assistant", "content": data.get("answer", "")}
+        return ModelResult(
+            message=message,
+            model_used=data.get("model_used", ""),
+            usage=data.get("usage") or {},
+            reservation_id=data.get("reservation_id"),
+            remaining=data.get("remaining"),
+        )
+
+    if resp.status_code == 402:
+        from fastapi import HTTPException
+        try:
+            detail = resp.json().get("detail", {})
+        except Exception:
+            detail = {}
+        if not isinstance(detail, dict):
+            detail = {"code": "quota_exceeded", "message": str(detail)}
+        raise HTTPException(status_code=402, detail=detail)
+
+    if resp.status_code == 409:
+        raise RuntimeError("continuation_expired")
+
+    if resp.status_code in (429, 503):
+        raise RuntimeError("The AI service is temporarily busy.")
+
+    raise RuntimeError(f"LLM gateway error {resp.status_code}")
 
 
 async def call_llm(
@@ -54,10 +164,10 @@ async def call_llm(
     history: list[dict[str, str]] | None = None,
     timeout: float = 60.0,
 ) -> str:
-    """Run a completion through the gateway and return the assistant's text.
+    """Run a text completion through the gateway and return the assistant text.
 
     Args:
-        model: advisory only — the gateway selects the served model.
+        model: advisory only - the gateway selects the served model.
         history: Optional prior conversation messages [{"role": ..., "content": ...}].
 
     Raises HTTPException(402) when the plan's quota is exhausted.
@@ -71,40 +181,11 @@ async def call_llm(
     messages.append({"role": "user", "content": user_content})
 
     file_count = len(files) if files else 0
-    body = {
-        "messages": messages,
-        "hints": {
-            "query": user_text[:500],
-            "file_count": file_count,
-            "is_batch": file_count > 1,
-        },
-        "max_tokens": max_tokens,
+    hints = {
+        "query": user_text[:500],
+        "file_count": file_count,
+        "is_batch": file_count > 1,
     }
 
-    headers = relay_session_headers()
-    if not headers.get("X-Session-Token"):
-        raise RuntimeError("The AI service is not available - no active cloud session.")
-
-    url = f"{relay_http_url()}/ai/complete"
-
-    async with _semaphore:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, headers=headers, json=body)
-
-    if resp.status_code == 200:
-        return resp.json().get("answer", "")
-
-    if resp.status_code == 402:
-        from fastapi import HTTPException
-        try:
-            detail = resp.json().get("detail", {})
-        except Exception:
-            detail = {}
-        if not isinstance(detail, dict):
-            detail = {"code": "quota_exceeded", "message": str(detail)}
-        raise HTTPException(status_code=402, detail=detail)
-
-    if resp.status_code in (429, 503):
-        raise RuntimeError("The AI service is temporarily busy.")
-
-    raise RuntimeError(f"LLM gateway error {resp.status_code}")
+    result = await complete(messages, hints=hints, max_tokens=max_tokens, timeout=timeout)
+    return result.message.get("content") or ""

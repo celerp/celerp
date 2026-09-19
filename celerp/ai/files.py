@@ -12,6 +12,16 @@ from pathlib import Path
 
 from celerp.config import settings
 
+XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+AGENT_UPLOAD_TYPES = frozenset({
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "application/pdf",
+    "text/csv",
+    XLSX_CONTENT_TYPE,
+})
+
 
 def upload_dir() -> Path:
     """Return (and lazily create) the AI upload directory."""
@@ -40,10 +50,12 @@ def load_file(file_id: str, company_id: uuid.UUID) -> tuple[bytes, dict]:
 def load_file_for_llm(file_id: str, company_id: uuid.UUID) -> dict:
     """Load file as base64 for LLM consumption.
 
-    Returns {"media_type": str, "data": str}.
+    Returns {"media_type": str, "data": str, "filename": str, "file_id": str}.
     """
     data_bytes, meta = load_file(file_id, company_id)
     return {
         "media_type": meta.get("content_type", "image/jpeg"),
         "data": base64.b64encode(data_bytes).decode("utf-8"),
+        "filename": meta.get("filename", file_id),
+        "file_id": file_id,
     }
