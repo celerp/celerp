@@ -17974,6 +17974,22 @@ class TestCelerpAccountSurface:
         assert r.headers["hx-redirect"] == "/settings/cloud"
 
     @pytest.mark.asyncio
+    async def test_claim_timeout_explains_the_link_state(self, ui_client):
+        """A claim that hits the UI deadline is explained in link terms (the
+        link may already be done; restart or retry), never with the generic
+        busy-server and batch-size copy of a data request."""
+        from ui.api_client import APIError, TIMEOUT_MESSAGE
+        with patch("ui.api_client.cloud_claim",
+                   new=AsyncMock(side_effect=APIError(504, TIMEOUT_MESSAGE))):
+            r = await ui_client.post("/settings/cloud-claim",
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"may already have moved to this computer" in r.content
+        assert b"batch size" not in r.content
+
+
+    @pytest.mark.asyncio
     async def test_poll_reloads_web_access_page_once_relay_connects(self, ui_client):
         """The signup/poll flow hosted on the Web Access page also lands on
         the connected page once activation brings the relay up."""
