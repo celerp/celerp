@@ -3,15 +3,75 @@
 """Generic OpenAPI capability compiler/executor tests."""
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Query
 from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from celerp.ai import tools as ai_tools
+from celerp.modules.loader import _BUNDLED_MODULES_DIRS, is_core_folded, load_all, register_api_routes
+from celerp.routers import search as search_router_mod
 
 
 _bearer = HTTPBearer()
+
+
+# The exact agent allowlist after this pass: one core search route plus the
+# marked read/write routes of contacts, docs, and inventory. Each entry is a
+# (method, path) pair so the assertion pins WHICH operations are agent-callable,
+# not merely how many. Adding or removing a marker changes this set and so
+# forces this test - and therefore review - as the spec requires.
+_EXPECTED_AGENT_ROUTES = {
+    ("GET", "/search"),
+    ("POST", "/crm/contacts"),
+    ("GET", "/crm/contacts"),
+    ("GET", "/crm/contacts/{contact_id}"),
+    ("PATCH", "/crm/contacts/{contact_id}"),
+    ("GET", "/docs"),
+    ("GET", "/docs/summary"),
+    ("GET", "/docs/{entity_id}"),
+    ("POST", "/docs"),
+    ("PATCH", "/docs/{entity_id}"),
+    ("GET", "/items"),
+    ("GET", "/items/valuation"),
+    ("GET", "/items/{entity_id}"),
+    ("GET", "/items/{entity_id}/reorder-suggestion"),
+    ("POST", "/items"),
+    ("PATCH", "/items/{entity_id}"),
+}
+
+
+def _bundled_pluggable_names() -> set[str]:
+    """Every bundled default module the loader actually loads (core-folded
+    ai/backup/connectors are wired at construction, never via load_all)."""
+    root = _BUNDLED_MODULES_DIRS[0]
+    return {
+        p.name for p in root.iterdir()
+        if p.is_dir() and (p / "__init__.py").exists() and not is_core_folded(p.name)
+    }
+
+
+def _real_agent_app() -> FastAPI:
+    """The real Celerp API surface with every first-party module enabled.
+
+    Built the same way `celerp.main` builds the live app: the core search router
+    plus every bundled pluggable module's routes. `docs_url`/`redoc_url` are off
+    exactly as in production, so FastAPI's own `/docs` never shadows the
+    documents module. The autouse loader-reset fixture tears `_loaded` and the
+    slot registry back down after the test.
+    """
+    app = FastAPI(docs_url=None, redoc_url=None)
+    app.include_router(search_router_mod.router, tags=["search"])
+    loaded = load_all(_BUNDLED_MODULES_DIRS[0], _bundled_pluggable_names())
+    register_api_routes(app, loaded)
+    app.openapi_schema = None
+    return app
+
+
+def _real_agent_route_set() -> set[tuple[str, str]]:
+    app = _real_agent_app()
+    compiled = ai_tools.compile_agent_capabilities(app, {})
+    return {(cap["method"], cap["path"]) for cap in compiled.values()}
 
 
 class _WriteBody(BaseModel):
@@ -29,7 +89,7 @@ def _app() -> FastAPI:
     @app.get("/things/{item_id}", openapi_extra={"x-celerp-agent": True})
     async def get_thing(
         item_id: str,
-        q: list[str] | None = None,
+        q: list[str] = Query(default=[]),
         auth: HTTPAuthorizationCredentials = Depends(_bearer),
     ):
         return {"item_id": item_id, "q": q, "token": auth.credentials}
@@ -187,3 +247,33 @@ async def test_executor_bounds_json_result():
         app, "Bearer user-token", cap, {}, "call-big", result_max_bytes=32
     )
     assert result["error"]["code"] == "result_too_large"
+
+
+def test_real_app_agent_allowlist_is_exact():
+    """Compiling the real app with every first-party module enabled yields
+    exactly the approved agent allowlist and nothing else."""
+    assert _real_agent_route_set() == _EXPECTED_AGENT_ROUTES
+
+
+def test_bulk_delete_and_lifecycle_never_compile():
+    """Destructive and lifecycle operations are never agent-callable. Bulk
+    deletes, single-entity deletes, document lifecycle transitions, and the raw
+    envelope import batch stay off the allowlist even though they sit on the same
+    routers as marked reads and writes."""
+    routes = _real_agent_route_set()
+
+    # Specific dangerous operations that must never appear.
+    for forbidden in (
+        ("POST", "/items/bulk/delete"),
+        ("POST", "/items/import/batch"),
+        ("POST", "/docs/{entity_id}/void"),
+        ("POST", "/docs/{entity_id}/finalize"),
+        ("POST", "/docs/{entity_id}/send"),
+    ):
+        assert forbidden not in routes, forbidden
+
+    # No DELETE is ever compiled, and no bulk or raw-import operation leaks in.
+    for method, path in routes:
+        assert method != "DELETE", (method, path)
+        assert "/bulk/" not in path, path
+        assert "/import/" not in path, path

@@ -22,8 +22,8 @@ async def test_agent_candidate_reads_enforce_current_view_permissions(client, se
         ("/items", 403),
         (f"/items/{item_id}", 403),
         (f"/items/{item_id}/reorder-suggestion", 403),
-        ("/contacts", 403),
-        ("/contacts/contact:not-real", 403),
+        ("/crm/contacts", 403),
+        ("/crm/contacts/contact:not-real", 403),
         ("/docs", 403),
         ("/docs/doc:not-real", 403),
     ]
@@ -38,8 +38,8 @@ async def test_agent_candidate_reads_enforce_current_view_permissions(client, se
         ("/items", 200),
         (f"/items/{item_id}", 200),
         (f"/items/{item_id}/reorder-suggestion", 200),
-        ("/contacts", 200),
-        ("/contacts/contact:not-real", 404),
+        ("/crm/contacts", 200),
+        ("/crm/contacts/contact:not-real", 404),
         ("/docs", 200),
         ("/docs/doc:not-real", 404),
     ]

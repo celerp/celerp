@@ -1758,6 +1758,7 @@ async def test_batch_import_amount_denied_without_permission(client, session):
     for a role lacking edit_inventory_amounts; no amount is written."""
     ctx = await perm_setup(client, session)
     await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    await grant_permission(client, ctx["admin_h"], "import_export_data", "operator")
     eid = "item:bi-amt"
     # Seed via a create import (create carries quantity but is not amount-gated).
     r = await client.post("/items/import/batch", json={"records": [
@@ -1784,6 +1785,7 @@ async def test_batch_import_nonamount_allowed_without_permission(client, session
     edit_inventory_amounts."""
     ctx = await perm_setup(client, session)
     await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    await grant_permission(client, ctx["admin_h"], "import_export_data", "operator")
     eid = "item:bi-name"
     r = await client.post("/items/import/batch", json={"records": [
         _import_record(eid, {"sku": "BI-2", "name": "BI 2", "sell_by": "piece", "quantity": 5}, "bi-name")
@@ -1798,6 +1800,7 @@ async def test_bulk_import_sell_by_change_denied_without_permission(client, sess
     diff-based, so re-sending the same sell_by is not blocked (covered separately)."""
     ctx = await perm_setup(client, session)
     await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    await grant_permission(client, ctx["admin_h"], "import_export_data", "operator")
     eid = "item:bi-sb"
     r = await client.post("/items/import/batch", json={"records": [
         _import_record(eid, {"sku": "BI-SB", "name": "BI SB", "sell_by": "piece", "quantity": 5}, "bi-sb")
@@ -1822,6 +1825,7 @@ async def test_bulk_import_non_sellby_change_allowed_without_permission(client, 
     for a role lacking edit_inventory_amounts: the diff carries no gated field."""
     ctx = await perm_setup(client, session)
     await grant_permission(client, ctx["admin_h"], "edit_inventory_amounts", "manager")
+    await grant_permission(client, ctx["admin_h"], "import_export_data", "operator")
     eid = "item:bi-nsb"
     r = await client.post("/items/import/batch", json={"records": [
         _import_record(eid, {"sku": "BI-NSB", "name": "BI NSB", "sell_by": "piece", "quantity": 5}, "bi-nsb")
@@ -1850,6 +1854,18 @@ async def test_batch_import_negative_amount_rejected(client, session):
     result = r.json()
     assert result["created"] == 0
     assert result["errors"]
+
+
+async def test_undo_import_denied_without_import_export_permission(client, session):
+    """Undoing an import batch is gated on import_export_data (manager+). An
+    operator lacking it is refused before the batch is looked up, so the 403 from
+    the gate precedes the 404 for the missing id; a manager holding the permission
+    passes the gate and only then hits the missing batch (404)."""
+    ctx = await perm_setup(client, session)
+    denied = await client.post("/items/import/batches/fake-id/undo", headers=ctx["operator_h"])
+    assert denied.status_code == 403, denied.text
+    allowed = await client.post("/items/import/batches/fake-id/undo", headers=ctx["manager_h"])
+    assert allowed.status_code == 404, allowed.text
 
 
 @pytest.mark.parametrize("field", _AMOUNT_KEYS)
