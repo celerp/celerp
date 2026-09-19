@@ -2064,6 +2064,13 @@ def setup_routes(app):
 
         try:
             data = await _api.cloud_claim(ui_token, claim_payload)
+        except _api.APIError as exc:
+            # A UI-deadline timeout is explained in link terms: the relay may
+            # already have moved the subscription, so the honest advice is to
+            # restart or retry, not the generic busy-server copy.
+            from celerp.config import ensure_instance_id
+            copy = t("settings.link_timed_out") if exc.status == 504 else t("settings.could_not_reach_api", exc=exc)
+            return _cloud_relay_unconnected(ensure_instance_id(), error=copy)
         except Exception as exc:
             from celerp.config import ensure_instance_id
             return _cloud_relay_unconnected(ensure_instance_id(), error=t("settings.could_not_reach_api", exc=exc))
@@ -2093,13 +2100,10 @@ def setup_routes(app):
             # Same as cloud_activate: connecting changes the whole page, reload it.
             return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
 
-        # Claim succeeded but activate pending (rare: relay linkage happened but WS not up yet)
-        return _cloud_relay_unconnected(
-            iid,
-            error=None,
-            info=t("settings.subscription_linked_info"),
-            show_email_form=False,
-        )
+        # The account link is complete. If bounded activation was not
+        # confirmed inline, Connect (or restart) safely redeems the same durable
+        # proof; there is no background mutation to poll.
+        return _cloud_link_handover(iid)
 
     @app.post("/settings/cloud-disconnect")
     async def cloud_disconnect(request: Request):
@@ -3662,6 +3666,15 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
     )
 
 
+
+def _cloud_link_handover(iid: str) -> FT:
+    """Linked, activation not confirmed: the Connect button finishes it on demand."""
+    return _cloud_relay_unconnected(
+        iid, info=t("settings.subscription_linked_info"), show_email_form=False,
+        suppress_autoconnect=True,
+    )
+
+
 def _cloud_relay_unconnected(
     iid: str,
     error: str | None = None,
@@ -3933,12 +3946,18 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     from ui.components.cloud_gate import upgrade_banner
 
     enc_ok = bool(backup_data and backup_data.get("enc_ok")) if backup_data is not None else bool(_cfg.backup_encryption_key)
-    # gw_ok gates on public_url, not just a gateway_token: a free instance now holds
-    # a gateway_token too (marketplace purchases), but backups are a paid-tier
-    # feature and public_url is only granted to paid tiers (mirrors the lazy-tunnel
-    # gate). Derived from the API response - reading get_client()/settings here
-    # would always return the UI process's own state, not the API process's.
-    gw_ok = bool(backup_data and backup_data.get("public_url"))
+    # Backup recovery is account-scoped, not Web-Access-scoped. A canceled paid
+    # account can legitimately have no public_url while its restore window remains
+    # open; the relay enforces the exact retention boundary.
+    _tier = (backup_data or {}).get("subscription_tier")
+    _status = (backup_data or {}).get("subscription_status")
+    gw_ok = bool(
+        backup_data
+        and backup_data.get("gateway_token_set")
+        and enc_ok
+        and _tier not in (None, "", "free")
+        and _status in ("active", "trialing", "canceled")
+    )
 
     if not gw_ok:
         return Div(
@@ -3946,7 +3965,6 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
             upgrade_banner(
                 t("cloud.backup_feature_name", lang),
                 t("cloud.backup_desc", lang),
-                price="USD $29/mo",
                 plan="cloud",
                 lang=lang,
             ),

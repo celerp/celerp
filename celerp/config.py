@@ -69,6 +69,11 @@ class Settings(BaseSettings):
     gateway_url: str = "wss://relay.celerp.com/ws/connect"
     # Unique instance identifier sent to gateway (auto-generated if blank).
     gateway_instance_id: str = ""
+    # Local secret used only to redeem an email/Google-approved activation.
+    # The relay sees SHA-256(verifier), never this value. Persisted until the
+    # returned gateway credential is safely written, so response loss/restart is
+    # retry-safe and API workers converge on one proof.
+    activation_verifier: str = ""
     # HTTP base URL for relay API calls (quota, etc.).
     # Derived from gateway_url by replacing wss->https and stripping /ws/connect.
     # Override with GATEWAY_HTTP_URL if relay is on a different host.
@@ -148,41 +153,117 @@ settings = Settings()
 
 
 def ensure_instance_id() -> str:
-    """Return gateway_instance_id, generating and persisting one if blank.
-
-    Called at startup so every instance has a stable UUID before the user
-    ever visits the Cloud settings page.
-    """
+    """Return one durable instance id shared by every local process."""
     if settings.gateway_instance_id:
         return settings.gateway_instance_id
 
     import uuid as _uuid
-    iid = str(_uuid.uuid4())
+
+    def _ensure(cloud: dict) -> str:
+        stored = cloud.get("instance_id")
+        if isinstance(stored, str) and stored:
+            return stored
+        iid = str(_uuid.uuid4())
+        cloud["instance_id"] = iid
+        return iid
+
+    iid = _update_cloud_config(_ensure)
     settings.gateway_instance_id = iid
-
-    # Persist to config.toml, creating it when missing - the id must survive
-    # restarts (best-effort; silently skip on error)
-    try:
-        persist_cloud_settings(instance_id=iid)
-    except Exception:
-        pass
-
     return iid
 
 
-def persist_cloud_settings(**values: str) -> None:
+def ensure_activation_verifier() -> str:
+    """Return one durable verifier shared by every API worker until activation."""
+    if settings.activation_verifier:
+        return settings.activation_verifier
+
+    import secrets as _secrets
+
+    def _ensure(cloud: dict) -> str:
+        stored = cloud.get("activation_verifier")
+        if isinstance(stored, str) and stored:
+            return stored
+        verifier = _secrets.token_urlsafe(32)
+        cloud["activation_verifier"] = verifier
+        return verifier
+
+    verifier = _update_cloud_config(_ensure)
+    settings.activation_verifier = verifier
+    return verifier
+
+
+def ensure_connect_identity() -> tuple[str, str]:
+    """Return the durable instance id + activation verifier in one locked RMW.
+
+    Fresh account/claim routes need both values together. Creating them under
+    one config lock avoids two sequential writes and, importantly, avoids
+    self-contention when those synchronous helpers are offloaded from asyncio.
+    """
+    if settings.gateway_instance_id and settings.activation_verifier:
+        return settings.gateway_instance_id, settings.activation_verifier
+
+    import secrets as _secrets
+    import uuid as _uuid
+
+    def _ensure(cloud: dict) -> tuple[str, str]:
+        iid = cloud.get("instance_id")
+        if not isinstance(iid, str) or not iid:
+            iid = str(_uuid.uuid4())
+            cloud["instance_id"] = iid
+        verifier = cloud.get("activation_verifier")
+        if not isinstance(verifier, str) or not verifier:
+            verifier = _secrets.token_urlsafe(32)
+            cloud["activation_verifier"] = verifier
+        return iid, verifier
+
+    iid, verifier = _update_cloud_config(_ensure)
+    settings.gateway_instance_id = iid
+    settings.activation_verifier = verifier
+    return iid, verifier
+
+
+def activation_challenge(verifier: str | None = None) -> str:
+    """SHA-256 challenge safe to send through account-proof requests."""
+    import hashlib
+    value = verifier or ensure_activation_verifier()
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def record_cloud_activation(
+    gateway_token: str, instance_id: str, *, public_url: str | None = None,
+    tos_version: str | None = None, backup_encryption_key: str | None = None,
+) -> None:
+    """Atomically persist authoritative activation and consume its verifier."""
+    def _record(cloud: dict) -> None:
+        cloud["token"] = gateway_token
+        cloud["instance_id"] = instance_id
+        if public_url:
+            cloud["public_url"] = public_url
+        else:
+            cloud.pop("public_url", None)
+        if tos_version:
+            cloud["tos_version"] = tos_version
+        if backup_encryption_key:
+            cloud["backup_encryption_key"] = backup_encryption_key
+        cloud.pop("disconnected", None)
+        cloud.pop("activation_verifier", None)
+
+    _update_cloud_config(_record)
+    settings.activation_verifier = ""
+
+
+def persist_cloud_settings(**values: object) -> None:
     """Write the given [cloud] settings into config.toml.
 
     Creates the file when it does not exist yet (first boot of a packaged
     install), so identity, token, and backup key survive restarts. Falsy
     values are skipped, never erased.
     """
-    cfg = read_config()
-    cloud = cfg.setdefault("cloud", {})
-    for key, value in values.items():
-        if value:
-            cloud[key] = value
-    write_config(cfg)
+    def _persist(cloud: dict) -> None:
+        for key, value in values.items():
+            if value:
+                cloud[key] = value
+    _update_cloud_config(_persist)
 
 
 def ensure_deployment_nonce() -> str:
@@ -215,14 +296,13 @@ def record_deployment_association(gateway_token: str, instance_id: str) -> None:
     live-but-unpersisted identity is carried, so the next boot's idempotent retry
     can recover.
     """
-    cfg = read_config()
-    cloud = cfg.setdefault("cloud", {})
-    cloud["token"] = gateway_token
-    cloud["instance_id"] = instance_id
-    cloud["deployment_associated"] = True
-    cloud.pop("deployment_credential", None)
-    cloud.pop("deployment_nonce", None)
-    write_config(cfg)
+    def _record(cloud: dict) -> None:
+        cloud["token"] = gateway_token
+        cloud["instance_id"] = instance_id
+        cloud["deployment_associated"] = True
+        cloud.pop("deployment_credential", None)
+        cloud.pop("deployment_nonce", None)
+    _update_cloud_config(_record)
     settings.gateway_token = gateway_token
     settings.gateway_instance_id = instance_id
     settings.deployment_credential = ""
@@ -264,6 +344,8 @@ def load_cloud_config() -> None:
         settings.gateway_token = cloud["token"]
     if cloud.get("instance_id") and not settings.gateway_instance_id:
         settings.gateway_instance_id = cloud["instance_id"]
+    if cloud.get("activation_verifier") and not settings.activation_verifier:
+        settings.activation_verifier = cloud["activation_verifier"]
     if cloud.get("public_url") and not settings.celerp_public_url and not disconnected:
         settings.celerp_public_url = cloud["public_url"]
     if cloud.get("backup_encryption_key") and not settings.backup_encryption_key:
@@ -350,7 +432,7 @@ def read_config() -> dict:
         return tomllib.load(f)
 
 
-def write_config(cfg: dict) -> None:
+def _write_config_unlocked(cfg: dict) -> None:
     """Write cfg back to config.toml.
 
     Only emits sections that are present in cfg — never writes empty/zero
@@ -404,6 +486,8 @@ def write_config(cfg: dict) -> None:
         ]
         # Absent key = never explicitly disconnected (all configs written
         # before this shipped), matching the embedded/headless idiom.
+        if cloud.get("activation_verifier"):
+            lines.append(f'activation_verifier = {_str(cloud["activation_verifier"])}')
         if cloud.get("disconnected"):
             lines.append("disconnected = true")
         # Self-hosted last-known-good commercial context, compact JSON of the
@@ -471,7 +555,69 @@ def write_config(cfg: dict) -> None:
         enabled_toml = ", ".join(f'"{m}"' for m in enabled)
         lines += ["[modules]", f"enabled = [{enabled_toml}]", ""]
 
-    path.write_text("\n".join(lines))
+    # Crash-safe replacement: fsync a 0600 temp inode, then atomically swap it
+    # over config.toml. Readers see either the complete old file or complete new
+    # file, never torn contents from concurrent workers.
+    import uuid as _uuid
+    data = "\n".join(lines)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{_uuid.uuid4().hex}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        from celerp import config_store as _config_store
+        _config_store._fsync_dir(str(path.parent))
+    except Exception:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _config_lock():
+    """Acquire the cross-process config.toml writer lock or fail closed."""
+    from celerp import config_store as _config_store
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = f"{path}.lock"
+    acquired = _config_store._acquire_lock(lock_path)
+    if acquired is None:
+        raise TimeoutError("could not acquire config.toml writer lock")
+    return _config_store, lock_path, acquired
+
+
+def write_config(cfg: dict) -> None:
+    store, lock_path, (fd, token) = _config_lock()
+    try:
+        _write_config_unlocked(cfg)
+    finally:
+        store._release_lock(fd, lock_path, token)
+
+
+def _update_config(mutator):
+    """Locked read-modify-write of the complete config snapshot."""
+    from copy import deepcopy
+
+    store, lock_path, (fd, token) = _config_lock()
+    try:
+        cfg = read_config()
+        before = deepcopy(cfg)
+        result = mutator(cfg)
+        if cfg != before:
+            _write_config_unlocked(cfg)
+        return result
+    finally:
+        store._release_lock(fd, lock_path, token)
+
+
+def _update_cloud_config(mutator):
+    """Locked read-modify-write of [cloud], returning mutator's result."""
+    return _update_config(lambda cfg: mutator(cfg.setdefault("cloud", {})))
 
 
 def resolve_install_order(names: list[str], module_dir: Path) -> list[str]:
@@ -549,18 +695,29 @@ def set_enabled_modules(names: list[str]) -> bool:
     every requested module was already enabled (no-op). Callers can use this
     to skip follow-up work like a process restart when nothing changed.
     """
-    cfg = read_config()
     _pkg_root = Path(__file__).parent.parent
     module_dir = _pkg_root / "default_modules"
-    currently_enabled: list[str] = cfg.get("modules", {}).get("enabled", [])
-    to_add = [n for n in names if n not in currently_enabled]
-    if not to_add:
-        return False
-    install_order = resolve_install_order(list(to_add), module_dir)
-    new_modules = [n for n in install_order if n not in currently_enabled]
-    if "modules" not in cfg:
-        cfg["modules"] = {}
-    cfg["modules"]["enabled"] = currently_enabled + new_modules
-    write_config(cfg)
-    return True
+    install_order = resolve_install_order(list(names), module_dir)
+
+    def _enable(cfg: dict) -> bool:
+        modules = cfg.setdefault("modules", {})
+        currently_enabled: list[str] = list(modules.get("enabled", []))
+        new_modules = [n for n in install_order if n not in currently_enabled]
+        if not new_modules:
+            return False
+        modules["enabled"] = currently_enabled + new_modules
+        return True
+
+    return bool(_update_config(_enable))
+
+
+def remove_enabled_module(name: str) -> None:
+    """Drop one module from [modules].enabled in config.toml under the config
+    lock, so the next restart honours a disable or removal. A name that is not
+    enabled leaves the file untouched."""
+    def _remove(cfg: dict) -> None:
+        enabled = cfg.get("modules", {}).get("enabled", [])
+        cfg.setdefault("modules", {})["enabled"] = [m for m in enabled if m != name]
+
+    _update_config(_remove)
 

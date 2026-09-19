@@ -11,6 +11,7 @@ exchange fails, the proxy falls back to the unauthenticated GET.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -95,22 +96,14 @@ async def test_account_status_proxy_skips_exchange_without_token():
 
 
 @pytest.mark.asyncio
-async def test_cloud_claim_sends_bearer_when_gateway_token_present():
-    """When a gateway_token is configured, the claim proxy exchanges it at
-    /auth/token and attaches the bearer to the /billing/claim request
-    alongside X-Instance-ID."""
+async def test_cloud_claim_proves_incumbent_when_gateway_token_present():
+    """An established install proves incumbent machine control when linking an account."""
     claim_resp = MagicMock()
     claim_resp.status_code = 200
     claim_resp.json = MagicMock(return_value={"tier": "free", "status": "active"})
-    token_resp = MagicMock()
-    token_resp.status_code = 200
-    token_resp.json = MagicMock(return_value={"access_token": "jwt-xyz"})
-
-    async def _post(url, **kw):
-        return token_resp if url.endswith("/auth/token") else claim_resp
 
     client = MagicMock()
-    client.post = AsyncMock(side_effect=_post)
+    client.post = AsyncMock(return_value=claim_resp)
     ctx = MagicMock()
     ctx.__aenter__ = AsyncMock(return_value=client)
     ctx.__aexit__ = AsyncMock(return_value=False)
@@ -118,18 +111,23 @@ async def test_cloud_claim_sends_bearer_when_gateway_token_present():
 
     with (
         patch("celerp.config.settings.gateway_token", "api-key-123"),
-        patch("celerp.config.ensure_instance_id", return_value="i-1"),
+        patch("celerp.config.ensure_connect_identity", return_value=("i-1", "verifier")),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("celerp.gateway.state.fetch_relay_bearer",
+              new=AsyncMock(return_value="instance-jwt")),
         patch("httpx.AsyncClient", factory),
-        patch("celerp.gateway.state.activate_payload", return_value={}),
+        patch("celerp.routers.health._activate_after_claim",
+              new=AsyncMock(return_value={"connected": True, "instance_id": "i-1"})),
     ):
         from celerp.routers.health import cloud_claim_api
         data = await cloud_claim_api({"email": "o@shop.example", "otp_code": "111222"})
 
-    assert data.get("linked") or data.get("connected")
-    claim_call = next(c for c in client.post.call_args_list if c[0][0].endswith("/billing/claim"))
-    assert claim_call[1]["headers"]["Authorization"] == "Bearer jwt-xyz"
+    assert data["connected"] is True
+    assert client.post.await_count == 1
+    claim_call = client.post.call_args_list[0]
+    assert claim_call[0][0].endswith("/billing/claim")
     assert claim_call[1]["headers"]["X-Instance-ID"] == "i-1"
+    assert claim_call[1]["headers"]["Authorization"] == "Bearer instance-jwt"
 
 
 @pytest.mark.asyncio
@@ -148,7 +146,7 @@ async def test_cloud_claim_skips_bearer_without_gateway_token():
 
     with (
         patch("celerp.config.settings.gateway_token", ""),
-        patch("celerp.config.ensure_instance_id", return_value="i-1"),
+        patch("celerp.config.ensure_connect_identity", return_value=("i-1", "verifier")),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
         patch("httpx.AsyncClient", factory),
         patch("celerp.gateway.state.activate_payload", return_value={}),
@@ -273,12 +271,18 @@ async def test_account_methods_open_door_url_without_credential():
     with (
         patch("celerp.config.settings.gateway_token", ""),
         patch("celerp.config.ensure_instance_id", return_value="i-77"),
+        patch("celerp.config.ensure_activation_verifier", return_value="local-secret-verifier"),
+        patch("celerp.config.activation_challenge", return_value="a" * 64),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
         data = await account_methods_api()
-    assert data["google_start_url"] == "https://relay.test/auth/google/start?instance_id=i-77"
+    assert data["google_start_url"] == (
+        "https://relay.test/auth/google/start?instance_id=i-77"
+        "&activation_challenge=" + "a" * 64
+    )
+    assert "local-secret-verifier" not in data["google_start_url"]
     # The only POST is the activate probe - no credential means no JWT exchange.
     assert not any(c[0][0].endswith("/auth/token") for c in client.post.call_args_list)
 
@@ -360,10 +364,9 @@ async def test_account_methods_uses_stored_token_without_rotating():
 
 
 @pytest.mark.asyncio
-async def test_account_methods_fresh_install_stays_on_open_door():
-    """A fresh install (no in-memory token, no stored token) has no link to change,
-    so it neither rotates nor exchanges a credential: the open-door start URL is
-    served unchanged."""
+async def test_account_methods_fresh_install_stays_on_challenge_bound_open_door():
+    """A fresh install has no credential to exchange, so Google uses the open
+    door bound to the locally retained activation verifier's challenge."""
     posts = []
 
     def _get_router(url, **kw):
@@ -387,10 +390,139 @@ async def test_account_methods_fresh_install_stays_on_open_door():
         patch("celerp.config.settings.gateway_token", ""),
         patch("celerp.config.read_config", return_value={"cloud": {}}),
         patch("celerp.config.ensure_instance_id", return_value="i-77"),
+        patch("celerp.config.ensure_activation_verifier",
+              return_value="local-secret-verifier"),
+        patch("celerp.config.activation_challenge", return_value="a" * 64),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
         data = await account_methods_api()
     assert posts == []  # no /auth/activate, no /auth/token
-    assert data["google_start_url"] == "https://relay.test/auth/google/start?instance_id=i-77"
+    assert data["google_start_url"] == (
+        "https://relay.test/auth/google/start?instance_id=i-77"
+        "&activation_challenge=" + "a" * 64
+    )
+
+
+
+@pytest.mark.asyncio
+async def test_account_methods_stale_stored_token_uses_challenge_bound_google_recovery():
+    """A definitive stale credential is recoverable, but only through the
+    current relay's activation challenge, never the unauthenticated UUID door."""
+    def _get_router(url, **kw):
+        resp = MagicMock()
+        resp.status_code = 200
+        if url.endswith("/auth/methods"):
+            resp.json = MagicMock(return_value={
+                "google": True, "free_email_quota": 0,
+                "secure_activation": True,
+            })
+        return resp
+
+    token_resp = MagicMock()
+    token_resp.status_code = 401
+
+    factory, client = _mock_httpx()
+    client.get = AsyncMock(side_effect=_get_router)
+    client.post = AsyncMock(return_value=token_resp)
+    with (
+        patch("celerp.config.settings.gateway_token", ""),
+        patch("celerp.config.read_config",
+              return_value={"cloud": {"token": "stale-key"}}),
+        patch("celerp.config.ensure_instance_id", return_value="i-77"),
+        patch("celerp.config.ensure_activation_verifier",
+              return_value="recovery-verifier"),
+        patch("celerp.config.activation_challenge", return_value="b" * 64),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import account_methods_api
+        data = await account_methods_api()
+
+    assert data["google"] is True
+    assert data["google_start_url"] == (
+        "https://relay.test/auth/google/start?instance_id=i-77"
+        "&activation_challenge=" + "b" * 64
+    )
+    assert "recovery-verifier" not in data["google_start_url"]
+
+
+@pytest.mark.asyncio
+async def test_account_methods_token_500_never_downgrades_to_open_google_door():
+    """Transient relay failure preserves authority: no weaker browser flow is
+    exposed until the existing credential can be classified definitively."""
+    methods = MagicMock()
+    methods.status_code = 200
+    methods.json = MagicMock(return_value={
+        "google": True, "free_email_quota": 0, "secure_activation": True})
+    token_resp = MagicMock()
+    token_resp.status_code = 500
+
+    factory, client = _mock_httpx()
+    client.get = AsyncMock(return_value=methods)
+    client.post = AsyncMock(return_value=token_resp)
+    with (
+        patch("celerp.config.settings.gateway_token", "stored-key"),
+        patch("celerp.config.ensure_instance_id", return_value="i-77"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import account_methods_api
+        data = await account_methods_api()
+
+    assert data["google"] is False
+    assert data["google_start_url"] == ""
+    assert len(client.post.call_args_list) == 1
+    assert client.post.call_args_list[0][0][0].endswith("/auth/token")
+
+
+@pytest.mark.asyncio
+async def test_account_methods_relay_timeout_is_total_across_sequence():
+    """The 6s relay budget is one wall-clock deadline, not 6s per request."""
+    methods = MagicMock()
+    methods.status_code = 200
+    methods.json = MagicMock(return_value={
+        "google": True, "free_email_quota": 0, "secure_activation": True})
+    token = MagicMock()
+    token.status_code = 200
+    token.json = MagicMock(return_value={"access_token": "jwt-abc"})
+    start = MagicMock()
+    start.status_code = 200
+    start.json = MagicMock(return_value={"url": "https://accounts.google.test/start"})
+
+    async def _slow_get(url, **kw):
+        await asyncio.sleep(0.03)
+        return methods if url.endswith("/auth/methods") else start
+
+    async def _slow_post(url, **kw):
+        await asyncio.sleep(0.03)
+        return token
+
+    factory, client = _mock_httpx()
+    client.get = AsyncMock(side_effect=_slow_get)
+    client.post = AsyncMock(side_effect=_slow_post)
+    with (
+        patch("celerp.config.settings.gateway_token", "stored-key"),
+        patch("celerp.config.ensure_instance_id", return_value="i-77"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("celerp.routers.health.RELAY_ACCOUNT_METHODS_TIMEOUT", 0.05),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import account_methods_api
+        data = await account_methods_api()
+
+    assert data["google"] is False
+    assert data["google_start_url"] == ""
+
+
+def test_magic_link_timeout_hierarchy_is_outer_to_inner():
+    """UI must outlive local proxy, which must outlive the cloud's bounded
+    five-second provider call, so callers never report failure first."""
+    from celerp.routers import health
+    from ui import api_client
+    assert api_client.ACCOUNT_SIGNUP_TIMEOUT > health.RELAY_ACCOUNT_SIGNUP_TIMEOUT > 5.0
+    assert api_client.ACCOUNT_METHODS_TIMEOUT > health.RELAY_ACCOUNT_METHODS_TIMEOUT
+    assert api_client.ACCOUNT_METHODS_TIMEOUT >= (
+        health.RELAY_ACCOUNT_METHODS_TIMEOUT + 6.0
+    )

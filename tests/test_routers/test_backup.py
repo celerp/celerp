@@ -21,6 +21,7 @@ import secrets
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
+from unittest.mock import AsyncMock
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -63,9 +64,23 @@ async def auth_client(session: AsyncSession):
 def reset_backup_settings():
     orig_key = settings.backup_encryption_key
     orig_public_url = settings.celerp_public_url
+    orig_gateway_token = settings.gateway_token
     yield
     settings.backup_encryption_key = orig_key
     settings.celerp_public_url = orig_public_url
+    settings.gateway_token = orig_gateway_token
+
+
+def _mock_durable_relay_auth(monkeypatch):
+    settings.backup_encryption_key = base64.b64encode(b"k" * 32).decode()
+    monkeypatch.setattr(
+        "celerp.services.cloud_entitlement.stored_api_key",
+        AsyncMock(return_value="api-key"),
+    )
+    monkeypatch.setattr(
+        "celerp.services.backup_repo.fetch_relay_bearer",
+        AsyncMock(return_value="relay-jwt"),
+    )
 
 
 # ── POST /backup/trigger ──────────────────────────────────────────────────────
@@ -134,6 +149,7 @@ async def test_list_free_tier_session_token_but_no_public_url(auth_client, monke
 
 @pytest.mark.asyncio
 async def test_list_htmx_with_items(auth_client, monkeypatch):
+    _mock_durable_relay_auth(monkeypatch)
     """HTMX request returns rendered table when relay returns items."""
     import httpx as _httpx
     import respx
@@ -141,6 +157,7 @@ async def test_list_htmx_with_items(auth_client, monkeypatch):
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
     settings.celerp_public_url = "https://x.celerp.com"
+    settings.gateway_token = "stored-api-key"
 
     items = [
         {"id": "bkp-1", "created_at": "2026-05-01T10:00:00Z", "size_bytes": 1048576, "label": "daily"},
@@ -161,6 +178,7 @@ async def test_list_htmx_with_items(auth_client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_list_htmx_empty_items(auth_client, monkeypatch):
+    _mock_durable_relay_auth(monkeypatch)
     """HTMX request returns empty-state when relay returns no items."""
     import httpx as _httpx
     import respx
@@ -168,6 +186,7 @@ async def test_list_htmx_empty_items(auth_client, monkeypatch):
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
     settings.celerp_public_url = "https://x.celerp.com"
+    settings.gateway_token = "stored-api-key"
 
     with respx.mock:
         respx.get("https://relay.test.com/repo/snapshots").mock(
@@ -181,6 +200,7 @@ async def test_list_htmx_empty_items(auth_client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_list_json(auth_client, monkeypatch):
+    _mock_durable_relay_auth(monkeypatch)
     """Non-HTMX request returns raw JSON from relay."""
     import httpx as _httpx
     import respx
@@ -188,6 +208,7 @@ async def test_list_json(auth_client, monkeypatch):
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
     settings.celerp_public_url = "https://x.celerp.com"
+    settings.gateway_token = "stored-api-key"
 
     items = [{"id": "bkp-1", "created_at": "2026-05-01T10:00:00Z", "size_bytes": 100, "label": "x"}]
     with respx.mock:
@@ -202,6 +223,7 @@ async def test_list_json(auth_client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_list_relay_error(auth_client, monkeypatch):
+    _mock_durable_relay_auth(monkeypatch)
     """Relay non-200 response surfaces as 502 (the client raises, route wraps)."""
     import httpx as _httpx
     import respx
@@ -209,6 +231,7 @@ async def test_list_relay_error(auth_client, monkeypatch):
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
     monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
     settings.celerp_public_url = "https://x.celerp.com"
+    settings.gateway_token = "stored-api-key"
 
     with respx.mock:
         respx.get("https://relay.test.com/repo/snapshots").mock(

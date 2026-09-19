@@ -15264,8 +15264,8 @@ class TestAIPage:
         assert "Smart Restock" in html
         assert "Discrepancy Audit" in html
         assert "Bulk Catalog Import" in html
-        assert "$29/mo" in html
-        assert "$49/mo" in html
+        assert "$29/mo" not in html
+        assert "$49/mo" not in html
         assert "celerpShowcaseSelect" in html
 
     def test_chat_view_has_sidebar_and_input(self):
@@ -17974,6 +17974,22 @@ class TestCelerpAccountSurface:
         assert r.headers["hx-redirect"] == "/settings/cloud"
 
     @pytest.mark.asyncio
+    async def test_claim_timeout_explains_the_link_state(self, ui_client):
+        """A claim that hits the UI deadline is explained in link terms (the
+        link may already be done; restart or retry), never with the generic
+        busy-server and batch-size copy of a data request."""
+        from ui.api_client import APIError, TIMEOUT_MESSAGE
+        with patch("ui.api_client.cloud_claim",
+                   new=AsyncMock(side_effect=APIError(504, TIMEOUT_MESSAGE))):
+            r = await ui_client.post("/settings/cloud-claim",
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"may already have moved to this computer" in r.content
+        assert b"batch size" not in r.content
+
+
+    @pytest.mark.asyncio
     async def test_poll_reloads_web_access_page_once_relay_connects(self, ui_client):
         """The signup/poll flow hosted on the Web Access page also lands on
         the connected page once activation brings the relay up."""
@@ -18007,46 +18023,23 @@ class TestCelerpAccountSurface:
         assert b"Signed in as" in r.content
 
     @pytest.mark.asyncio
-    async def test_poll_reconnect_applies_the_rotated_token(self, ui_client):
-        """The relay rotates the gateway key on every activate, so a reconnect
-        response's token is the only live credential: a sign-in poll must apply
-        it, not drop it and pretend the sign-in worked."""
+    async def test_poll_does_not_reapply_activation_credential(self, ui_client):
+        """Activation owns credential persistence. The UI consumes only the
+        normalized connected result and must never apply a second token itself."""
         status = {"email": "o@shop.example", "email_verified": True, "tier": "free",
                   "pending_selection": False, "linked_elsewhere": False}
-        apply_tok = AsyncMock(return_value={"connected": True, "relay_status": "active"})
+        apply_tok = AsyncMock()
         with (
             patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
             patch("ui.api_client.activate_relay",
-                  new=AsyncMock(return_value={"reconnect": True, "gateway_token": "gt-1",
-                                              "public_url": None, "tos_version": None,
+                  new=AsyncMock(return_value={"connected": True, "relay_status": "active",
                                               "instance_id": "i-1"})),
             patch("ui.api_client.apply_relay_token", new=apply_tok),
         ):
             r = await ui_client.get("/account/poll?n=3&mode=google", cookies=_authed())
-        assert apply_tok.await_count == 1
-        assert apply_tok.await_args.args[1]["gateway_token"] == "gt-1"
+        assert apply_tok.await_count == 0
         assert b"Signed in as" in r.content
         assert b"could not be connected" not in r.content
-
-    @pytest.mark.asyncio
-    async def test_poll_reconnect_on_web_access_page_reloads_it(self, ui_client):
-        """On the Web Access page a reconnect that applies cleanly is a full
-        connect: the page chrome changes, so the poll reloads the page."""
-        status = {"email": "o@shop.example", "email_verified": True, "tier": "cloud",
-                  "pending_selection": False, "linked_elsewhere": False}
-        with (
-            patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
-            patch("ui.api_client.activate_relay",
-                  new=AsyncMock(return_value={"reconnect": True, "gateway_token": "gt-1",
-                                              "public_url": "https://co.celerp.app",
-                                              "tos_version": None, "instance_id": "i-1"})),
-            patch("ui.api_client.apply_relay_token",
-                  new=AsyncMock(return_value={"connected": True, "relay_status": "active"})),
-        ):
-            r = await ui_client.get("/account/poll?panel=cloud-relay-tab&mode=email",
-                                    cookies=_authed())
-        assert r.status_code == 204
-        assert r.headers["hx-redirect"] == "/settings/cloud"
 
     @pytest.mark.asyncio
     async def test_poll_activation_failure_is_shown_not_swallowed(self, ui_client):
@@ -20151,8 +20144,9 @@ class TestCommercialRoutingRender:
         assert "USD $" not in html          # no direct $29/$49/$99 prices
         assert "plan=cloud" not in html
         assert "plan=ai" not in html
-        assert "cloud-plans" not in html
+        assert "cloud-plans" in html         # partner offer cards use the shared grid
         assert "Managed Plan" in html        # partner offer rendered instead
+        assert "$49.00" in html              # partner-controlled offer price
 
     def test_partner_managed_offer_null_shows_neutral_contact(self):
         """Partner-managed with no synced offer degrades to the neutral contact

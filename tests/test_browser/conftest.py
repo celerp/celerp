@@ -159,13 +159,19 @@ def ui_server(api_server):
 
 # ── User + company seed ───────────────────────────────────────────────────────
 
+# Pooled connections are dropped client-side well inside the test servers' 5 s
+# keep-alive window, so a request after an idle gap (Playwright work between API
+# calls) never reuses a socket the server has just closed.
+_API_LIMITS = httpx.Limits(keepalive_expiry=3.0)
+
+
 @pytest.fixture(scope="session")
 def seeded_user(api_server):
     """
     Register an admin user + seed a company via the API.
     Returns {"email": str, "password": str, "access_token": str}.
     """
-    with httpx.Client(base_url=api_server, timeout=10) as client:
+    with httpx.Client(base_url=api_server, timeout=10, limits=_API_LIMITS) as client:
         # Bootstrap the app first (creates DB tables)
         r = client.get("/health")
         assert r.status_code == 200, f"API not healthy: {r.text}"
@@ -296,7 +302,8 @@ def pytest_runtest_makereport(item, call):
 def api(api_server, seeded_user):
     """Synchronous httpx client pre-authed against the API."""
     headers = {"Authorization": f"Bearer {seeded_user['access_token']}"}
-    with httpx.Client(base_url=api_server, headers=headers, timeout=10) as client:
+    with httpx.Client(base_url=api_server, headers=headers, timeout=10,
+                      limits=_API_LIMITS) as client:
         yield client
 
 
@@ -323,7 +330,8 @@ def fresh_company(api_server, seeded_user, browser_context, api):
 
     _set_auth_cookie(browser_context, new_token)
     client = httpx.Client(
-        base_url=api_server, headers={"Authorization": f"Bearer {new_token}"}, timeout=10
+        base_url=api_server, headers={"Authorization": f"Bearer {new_token}"}, timeout=10,
+        limits=_API_LIMITS,
     )
     try:
         yield client

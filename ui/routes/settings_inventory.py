@@ -567,7 +567,10 @@ def setup_routes(app):
         # failure skips the nudge and never blocks the save that already happened.
         try:
             status = await api.get_relay_status(token)
-            paid = bool(status.get("connected")) and status.get("tier") not in (None, "", "free")
+            if status.get("entitlement_known"):
+                paid = bool(status.get("entitled"))
+            else:
+                paid = bool(status.get("gateway_token_set") or status.get("connected"))
         except APIError:
             paid = True
         dest = "/settings/inventory?tab=reorder&saved=1"

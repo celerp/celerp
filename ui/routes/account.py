@@ -584,7 +584,9 @@ def setup_routes(app):
             status = {}
         # claim_offer = a one-click confirmation is still open in the user's
         # browser tab; keep waiting so the panel lands on the final state.
-        if status.get("email_verified") and not status.get("claim_offer"):
+        if (status.get("email_verified")
+                and not status.get("account_settling")
+                and not status.get("claim_offer")):
             # Chain into activation: a fresh account needs its gateway
             # credentials (an entitled one also gets its tunnel). Best-effort -
             # the account state is already correct on the relay. (The fixed
@@ -594,14 +596,6 @@ def setup_routes(app):
             act: dict = {}
             try:
                 act = await api.activate_relay(token)
-                if act.get("reconnect"):
-                    # A previously-activated instance signing back in: the
-                    # relay rotated the key during activate, so the token it
-                    # just returned is the only live credential - apply it.
-                    act = await api.apply_relay_token(token, {
-                        "gateway_token": act.get("gateway_token", ""),
-                        "public_url": act.get("public_url"),
-                        "tos_version": act.get("tos_version")})
             except Exception:
                 act = {"error": "unreachable"}
             # On the Web Access page the whole chrome changes once the relay
