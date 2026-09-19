@@ -6,6 +6,7 @@ badge, the Drafts counter card shows it, and making it available flips both.
 from __future__ import annotations
 
 import os
+import time
 import uuid
 
 import httpx
@@ -33,6 +34,16 @@ def _set_cookie(browser_context, token: str) -> None:
     browser_context.add_cookies([{
         "name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/",
     }])
+
+def _persisted(api, item_id: str, field: str, expected, timeout: float = 8.0):
+    """Poll the item until the inline edit has been saved, returning the last value seen."""
+    deadline = time.time() + timeout
+    while True:
+        value = api.get(f"/items/{item_id}").json().get(field)
+        if value == expected or time.time() >= deadline:
+            return value
+        time.sleep(0.2)
+
 
 
 def test_draft_lifecycle_in_ui(page, ui_server, api):
@@ -239,9 +250,7 @@ def test_draft_cost_edit_on_pricing_tab_persists(page, ui_server, api, api_serve
         cost_input.wait_for(timeout=8000)
         cost_input.first.fill("88")
         cost_input.first.press("Tab")
-        page.wait_for_timeout(800)
-        check = api.get(f"/items/{item_id}")
-        assert check.json().get("cost_price") == 88.0, "cost edit did not persist"
+        assert _persisted(api, item_id, "cost_price", 88.0) == 88.0, "cost edit did not persist"
     finally:
         _set_cookie(browser_context, seeded_user["access_token"])
 
@@ -275,8 +284,6 @@ def test_draft_cost_enterable_before_any_value_set(page, ui_server, api, api_ser
         cost_input.wait_for(timeout=8000)
         cost_input.first.fill("120")
         cost_input.first.press("Tab")
-        page.wait_for_timeout(800)
-        check = api.get(f"/items/{item_id}")
-        assert check.json().get("cost_price") == 120.0, "first-time cost entry did not persist"
+        assert _persisted(api, item_id, "cost_price", 120.0) == 120.0, "first-time cost entry did not persist"
     finally:
         _set_cookie(browser_context, seeded_user["access_token"])
