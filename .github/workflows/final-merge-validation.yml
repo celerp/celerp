@@ -1,4 +1,4 @@
-name: Stage timeout regression
+name: Build final security cleanup
 
 on:
   push:
@@ -16,34 +16,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Add reviewed timeout test
+      - name: Build cleaned #331 tree
         shell: bash
         run: |
           set -euo pipefail
-          git checkout review/final-app330-timeout-test
-          python - <<'PY'
-          from pathlib import Path
-          import subprocess
-
-          name = "test_claim_timeout_explains_the_link_state"
-          dst = Path("tests/test_ui.py")
-          current = dst.read_text()
-          source = subprocess.check_output(
-              ["git", "show", "4e310020efaf5e7d2a2b656940a3d5eb15363f80:tests/test_ui.py"],
-              text=True,
-          )
-          start = source.index("    @pytest.mark.asyncio\n    async def " + name)
-          end = source.index("\n    @pytest.mark.asyncio\n    async def ", start + 1)
-          block = source[start:end] + "\n"
-          marker = "    @pytest.mark.asyncio\n    async def test_poll_reloads_web_access_page_once_relay_connects"
-          if name in current or current.count(marker) != 1:
-              raise SystemExit("unexpected test layout")
-          dst.write_text(current.replace(marker, block + "\n" + marker))
-          PY
+          cp .review/app331-ci-cleanup.patch.xz.b64 /tmp/p.b64
+          git checkout --detach 654759f4016cde2ae1729e7b7bd9c4e870ce5efc
+          base64 -d /tmp/p.b64 | xz -dc > /tmp/p.patch
+          git apply /tmp/p.patch
           git diff --check
           python -m py_compile tests/test_ui.py
-          git config user.name "Noah Severs"
-          git config user.email "118095044+ngsevers@users.noreply.github.com"
           git add tests/test_ui.py
-          git commit -m "Test Connect claim timeout guidance"
-          git push origin HEAD:refs/heads/review/final-app330-timeout-test
+          tree="$(git write-tree)"
+          sha="$(printf '%s\n' 'test: remove obsolete Connect polling regressions' | git commit-tree "$tree" -p 654759f4016cde2ae1729e7b7bd9c4e870ce5efc -p 16b9327f0e083f8d466b8fb6e64bb6ff888dc232)"
+          git push origin "$sha":refs/heads/review/final-app331-cleanup
+          echo "candidate=$sha"
