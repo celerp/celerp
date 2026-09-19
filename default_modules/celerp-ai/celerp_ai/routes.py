@@ -20,39 +20,43 @@ Endpoints:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
-from pathlib import Path
+from dataclasses import asdict
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File
-from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field, model_validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai import memory as ai_memory
 from celerp.ai.batch import create_batch_job, get_batch_job, run_batch, MAX_BATCH_FILES
-from celerp.ai.files import load_file, upload_dir
-from celerp.ai.commands import DraftBill, create_bills, parse_bill_commands
+from celerp.ai.files import AGENT_UPLOAD_TYPES, load_file, upload_dir
 from celerp.ai.conversations import (
     add_message,
     build_history_context,
+    claim_tool_call,
     create_conversation,
     delete_conversation,
+    finalize_tool_call,
     get_conversation,
     get_messages,
     list_conversations,
+    pending_actions,
     rename_conversation,
+    tool_names,
 )
+from celerp.ai.memory import get_memory
 from celerp.ai.page_count import calculate_credits, credits_for_pages, count_pages
 from celerp.ai.quota import get_quota_status, get_subscription_tier
-from celerp.ai.service import AIResponse, run_query
+from celerp.ai.service import AIResponse, AgentResult, run_agent, run_query
+from celerp.ai.tools import compile_agent_capabilities, execute_agent_capability
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.permissions import require_permission
+from celerp.services.permissions import get_current_company_settings, require_permission
 from celerp.session_gate import require_session_token
 
 def _batch_upgrade_url() -> str:
@@ -98,12 +102,8 @@ class QueryResponse(BaseModel):
     answer: str
     model_used: str
     tools_called: list[str]
+    pending_actions: list[dict] = []
     error: str | None = None
-    pending_bills: list[dict] | None = None
-
-
-class ConfirmBillsRequest(BaseModel):
-    bills: list[dict] = Field(..., description="List of bill dicts from pending_bills")
 
 
 class EstimateRequest(BaseModel):
@@ -213,29 +213,8 @@ async def ai_query(
         answer=result.answer,
         model_used=result.model_used,
         tools_called=result.tools_called,
-        pending_bills=result.pending_bills,
+        pending_actions=[],
     )
-
-
-@router.post("/confirm-bills")
-@_limiter.limit("10/minute")
-async def confirm_bills(
-    request: Request,
-    body: ConfirmBillsRequest,
-    company_id=Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Confirm and create draft bills proposed by the AI assistant."""
-    try:
-        bills = [DraftBill.model_validate(b) for b in body.bills]
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid bill data: {exc}")
-    if not bills:
-        raise HTTPException(status_code=400, detail="No bills to create")
-    feedback = await create_bills(session, company_id, user.id, bills)
-    await session.commit()
-    return {"feedback": feedback, "count": len(bills)}
 
 
 @router.post("/estimate-credits", response_model=EstimateResponse)
@@ -292,6 +271,11 @@ async def ai_upload(
         file.file.seek(0)
         if size > 10 * 1024 * 1024:
             raise HTTPException(status_code=400, detail=f"File {file.filename} exceeds 10MB limit")
+        if file.content_type not in AGENT_UPLOAD_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File {file.filename} has an unsupported type: {file.content_type}",
+            )
 
         file_id = f"ai_up_{uuid.uuid4().hex}"
         bin_path = ud / f"{file_id}.bin"
@@ -414,8 +398,19 @@ class RenameConversationRequest(BaseModel):
 
 
 class ConversationQueryRequest(BaseModel):
-    query: str = Field(..., min_length=1, max_length=2000)
+    query: str = Field("", max_length=2000)
     file_ids: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _require_query_or_files(self) -> "ConversationQueryRequest":
+        if not self.query.strip() and not self.file_ids:
+            raise ValueError("A question or at least one file is required.")
+        return self
+
+
+class ConfirmActionRequest(BaseModel):
+    message_id: uuid.UUID
+    tool_call_id: str = Field(..., min_length=1, max_length=128)
 
 
 class MessageOut(BaseModel):
@@ -424,6 +419,7 @@ class MessageOut(BaseModel):
     content: str
     model_used: str | None = None
     tools_called: list[str] | None = None
+    pending_actions: list[dict] = []
     file_ids: list[str] | None = None
     credits_used: int = 0
     created_at: str
@@ -504,7 +500,8 @@ async def get_conv(
         messages=[
             MessageOut(
                 id=m.id, role=m.role, content=m.content,
-                model_used=m.model_used, tools_called=m.tools_called,
+                model_used=m.model_used, tools_called=tool_names(m.tools_called),
+                pending_actions=pending_actions(m.tools_called),
                 file_ids=m.file_ids, credits_used=m.credits_used,
                 created_at=m.created_at.isoformat(),
             )
@@ -559,51 +556,124 @@ async def query_in_conversation(
     body: ConversationQueryRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    company_settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> QueryResponse:
-    """Send a query within a conversation, with history context."""
+    """Run the agent within a conversation.
+
+    Read capabilities execute in-process against the same app the user sees;
+    mutations are returned as pending actions the user confirms separately.
+    """
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     await _enforce_cloud_file_limit(body.file_ids)
 
-    # Build history from prior messages
+    # Assemble the read-only context, then commit so the session is quiescent
+    # for the duration of the agent loop (which reaches the app over its own
+    # request sessions).
     prior_msgs = await get_messages(session, conversation_id)
     history = build_history_context(prior_msgs)
+    memory = await get_memory(session, company_id)
 
-    # Store user message (credits are tracked on the user message for usage analytics)
     credits = _calculate_query_credits(body.file_ids, company_id)
     await add_message(
         session, conversation_id, "user", body.query,
         file_ids=body.file_ids, credits_used=credits,
     )
+    await session.commit()
 
-    result: AIResponse = await run_query(
+    result: AgentResult = await run_agent(
+        app=request.app,
+        authorization=request.headers.get("authorization", ""),
         query=body.query,
-        session=session,
         company_id=company_id,
+        company_settings=company_settings,
+        user_id=user.id,
+        memory=memory,
         file_ids=body.file_ids,
         history=history,
-        user_id=user.id,
     )
 
     if result.error:
         raise HTTPException(status_code=502, detail=result.error)
 
-    # Store assistant response
-    await add_message(
+    msg = await add_message(
         session, conversation_id, "assistant", result.answer,
-        model_used=result.model_used, tools_called=result.tools_called,
+        model_used=result.model_used,
+        tools_called=[*result.tools_called, *[asdict(p) for p in result.pending_actions]],
     )
     await session.commit()
 
     return QueryResponse(
         answer=result.answer,
         model_used=result.model_used,
-        tools_called=result.tools_called,
-        pending_bills=result.pending_bills,
+        tools_called=tool_names(msg.tools_called),
+        pending_actions=[{**asdict(p), "message_id": str(msg.id)} for p in result.pending_actions],
     )
+
+
+@router.post("/conversations/{conversation_id}/confirm")
+@_limiter.limit("10/minute")
+async def confirm_action(
+    request: Request,
+    conversation_id: uuid.UUID,
+    body: ConfirmActionRequest,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    company_settings: dict = Depends(get_current_company_settings),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Execute one pending action the user has confirmed.
+
+    The action is claimed under a row lock and committed before execution, so a
+    crash mid-flight leaves it in ``executing`` and never runs twice (fail
+    closed). No model turn resumes after a write; the user asks the next
+    question. The capability re-enters the app with the user's bearer token, so
+    the target route enforces every module permission.
+    """
+    record = await claim_tool_call(
+        session,
+        conversation_id=conversation_id,
+        message_id=body.message_id,
+        tool_call_id=body.tool_call_id,
+        company_id=company_id,
+        user_id=user.id,
+    )
+    if record is None:
+        raise HTTPException(status_code=409, detail={"code": "action_not_pending"})
+    await session.commit()
+
+    capabilities = compile_agent_capabilities(request.app, company_settings)
+    capability = capabilities.get(record["name"])
+    if capability is None:
+        await finalize_tool_call(
+            session, message_id=body.message_id, tool_call_id=body.tool_call_id,
+            status="failed", result=None,
+        )
+        await session.commit()
+        raise HTTPException(status_code=409, detail={"code": "capability_unavailable"})
+
+    result = await execute_agent_capability(
+        request.app,
+        request.headers.get("authorization", ""),
+        capability,
+        record["arguments"],
+        record["id"],
+    )
+    await finalize_tool_call(
+        session, message_id=body.message_id, tool_call_id=body.tool_call_id,
+        status="completed" if result["ok"] else "failed", result=result,
+    )
+    await session.commit()
+
+    return {
+        "ok": result["ok"],
+        "status": result["status"],
+        "data": result.get("data"),
+        "error": result.get("error"),
+    }
 
 
 # ── Batch schemas ─────────────────────────────────────────────────────────────

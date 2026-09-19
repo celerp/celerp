@@ -4,7 +4,7 @@
 """Tests for routes.py — fill coverage gaps.
 
 Covers uncovered route lines:
-  - POST /ai/upload: success, >20 files, >10MB file
+  - POST /ai/upload: success, >20 files, >10MB file, unsupported type
   - GET /ai/file/{file_id}: success, 404, 403
   - GET /ai/quota-status: with status, local mode
   - POST /ai/conversations: create
@@ -12,7 +12,8 @@ Covers uncovered route lines:
   - GET /ai/conversations/{id}: get, 404
   - DELETE /ai/conversations/{id}: success, 404
   - PATCH /ai/conversations/{id}: rename, 404
-  - POST /ai/conversations/{id}/query: success, 404, error
+  - POST /ai/conversations/{id}/query: agent reads, pending actions, 404, error, validation
+  - POST /ai/conversations/{id}/confirm: execute pending, not-pending, capability-unavailable
   - POST /ai/batch: submit
   - GET /ai/batch/{id}: status, 404
 """
@@ -36,7 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.main import app
-from celerp.ai.service import AIResponse
+from celerp.ai.service import AgentResult, PendingAction
 import celerp.gateway.state as gw_state
 
 
@@ -113,6 +114,17 @@ async def test_upload_oversized_file(auth_client):
     })
     # May be 400 (our check) or 413 (server body limit)
     assert r.status_code in (400, 413)
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_unsupported_type(auth_client):
+    """A content type the agent cannot read is refused with 400."""
+    c, h = auth_client
+    r = await c.post("/ai/upload", headers=h, files={
+        "files": ("payload.exe", b"MZ\x90\x00", "application/x-msdownload"),
+    })
+    assert r.status_code == 400
+    assert "unsupported type" in r.json()["detail"]
 
 
 # ── GET /ai/file/{file_id} ──────────────────────────────────────────────────
@@ -241,26 +253,77 @@ async def test_rename_conversation_404(auth_client):
 
 # ── POST /ai/conversations/{id}/query ────────────────────────────────────────
 
+def _pending(name="create_contact", call_id="call_1"):
+    """A PendingAction as run_agent would return one."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    return PendingAction(
+        id=call_id, name=name, arguments={"body": {"name": "Acme"}},
+        created_at=now.isoformat(), expires_at=(now + timedelta(minutes=15)).isoformat(),
+    )
+
+
 @pytest.mark.asyncio
-async def test_conversation_query_success(auth_client):
+async def test_conversation_query_reads_only(auth_client):
+    """A read-only agent turn stores both messages and returns no pending action."""
     c, h = auth_client
-    # Create conversation
     r = await c.post("/ai/conversations", headers=h, json={"title": None})
     conv_id = r.json()["id"]
 
-    mock_result = AIResponse(answer="42 items in stock", model_used="haiku", tools_called=["dashboard_kpis"])
-    with patch("celerp_ai.routes.run_query", AsyncMock(return_value=mock_result)):
+    result = AgentResult(
+        answer="42 items in stock", model_used="glm", tools_called=["dashboard_kpis"],
+        pending_actions=[],
+    )
+    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
         r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "how many items"})
     assert r.status_code == 200
     data = r.json()
     assert data["answer"] == "42 items in stock"
+    assert data["tools_called"] == ["dashboard_kpis"]
+    assert data["pending_actions"] == []
 
-    # Verify messages stored
     r2 = await c.get(f"/ai/conversations/{conv_id}", headers=h)
     msgs = r2.json()["messages"]
     assert len(msgs) == 2
     assert msgs[0]["role"] == "user"
     assert msgs[1]["role"] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_conversation_query_returns_pending_action(auth_client):
+    """A proposed mutation comes back as a pending action carrying its message_id."""
+    c, h = auth_client
+    r = await c.post("/ai/conversations", headers=h, json={"title": None})
+    conv_id = r.json()["id"]
+
+    result = AgentResult(
+        answer="I can create that contact.", model_used="glm", tools_called=[],
+        pending_actions=[_pending()],
+    )
+    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
+        r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "add Acme"})
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data["pending_actions"]) == 1
+    pa = data["pending_actions"][0]
+    assert pa["name"] == "create_contact"
+    assert pa["id"] == "call_1"
+    assert pa["message_id"]
+
+    # The stored assistant message projects the proposed action for the UI.
+    r2 = await c.get(f"/ai/conversations/{conv_id}", headers=h)
+    assistant = r2.json()["messages"][1]
+    assert [p["name"] for p in assistant["pending_actions"]] == ["create_contact"]
+
+
+@pytest.mark.asyncio
+async def test_conversation_query_requires_query_or_files(auth_client):
+    """An empty query with no files is rejected before the agent runs."""
+    c, h = auth_client
+    r = await c.post("/ai/conversations", headers=h, json={"title": None})
+    conv_id = r.json()["id"]
+    r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "   "})
+    assert r.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -277,10 +340,94 @@ async def test_conversation_query_error(auth_client):
     r = await c.post("/ai/conversations", headers=h, json={"title": None})
     conv_id = r.json()["id"]
 
-    mock_result = AIResponse(answer="", model_used="haiku", tools_called=[], error="LLM timeout")
-    with patch("celerp_ai.routes.run_query", AsyncMock(return_value=mock_result)):
+    result = AgentResult(
+        answer="", model_used="glm", tools_called=[], pending_actions=[],
+        error="The AI service took too long to respond. Please try again.",
+    )
+    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
         r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "test"})
     assert r.status_code == 502
+
+
+# ── POST /ai/conversations/{id}/confirm ──────────────────────────────────────
+
+async def _propose_action(c, h, conv_id, name="create_contact", call_id="call_1"):
+    """Run a query that yields a pending action; return (message_id, tool_call_id)."""
+    result = AgentResult(
+        answer="I can create that contact.", model_used="glm", tools_called=[],
+        pending_actions=[_pending(name=name, call_id=call_id)],
+    )
+    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
+        r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "add Acme"})
+    pa = r.json()["pending_actions"][0]
+    return pa["message_id"], pa["id"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_action_executes_pending(auth_client):
+    """Confirming a pending action executes it once; a second confirm is 409."""
+    c, h = auth_client
+    r = await c.post("/ai/conversations", headers=h, json={"title": None})
+    conv_id = r.json()["id"]
+    message_id, tool_call_id = await _propose_action(c, h, conv_id)
+
+    exec_mock = AsyncMock(return_value={"ok": True, "status": 201, "data": {"id": "new"}, "error": None})
+    with patch("celerp_ai.routes.compile_agent_capabilities", return_value={"create_contact": {"method": "POST"}}), \
+         patch("celerp_ai.routes.execute_agent_capability", exec_mock):
+        r = await c.post(
+            f"/ai/conversations/{conv_id}/confirm", headers=h,
+            json={"message_id": message_id, "tool_call_id": tool_call_id},
+        )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["status"] == 201
+    assert exec_mock.await_count == 1
+
+    # Re-confirming the same action finds nothing pending.
+    with patch("celerp_ai.routes.compile_agent_capabilities", return_value={"create_contact": {"method": "POST"}}), \
+         patch("celerp_ai.routes.execute_agent_capability", exec_mock):
+        r = await c.post(
+            f"/ai/conversations/{conv_id}/confirm", headers=h,
+            json={"message_id": message_id, "tool_call_id": tool_call_id},
+        )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "action_not_pending"
+    assert exec_mock.await_count == 1  # never executed twice
+
+
+@pytest.mark.asyncio
+async def test_confirm_action_capability_unavailable(auth_client):
+    """A confirmed action whose capability is gone fails closed with 409."""
+    c, h = auth_client
+    r = await c.post("/ai/conversations", headers=h, json={"title": None})
+    conv_id = r.json()["id"]
+    message_id, tool_call_id = await _propose_action(c, h, conv_id)
+
+    with patch("celerp_ai.routes.compile_agent_capabilities", return_value={}):
+        r = await c.post(
+            f"/ai/conversations/{conv_id}/confirm", headers=h,
+            json={"message_id": message_id, "tool_call_id": tool_call_id},
+        )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "capability_unavailable"
+
+    # The action is finalized (failed), so it is no longer pending or claimable.
+    r2 = await c.get(f"/ai/conversations/{conv_id}", headers=h)
+    assert r2.json()["messages"][1]["pending_actions"] == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_action_unknown_message(auth_client):
+    """Confirming against a message that holds no such action is 409, not a 500."""
+    c, h = auth_client
+    r = await c.post("/ai/conversations", headers=h, json={"title": None})
+    conv_id = r.json()["id"]
+    r = await c.post(
+        f"/ai/conversations/{conv_id}/confirm", headers=h,
+        json={"message_id": str(uuid.uuid4()), "tool_call_id": "call_missing"},
+    )
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "action_not_pending"
 
 
 # ── POST /ai/batch ───────────────────────────────────────────────────────────
@@ -356,39 +503,3 @@ async def test_submit_batch_records_integer_credits(auth_client, session, monkey
     assert r.status_code == 202
     assert isinstance(captured["credits"], int)
     assert captured["credits"] == 2
-
-
-@pytest.mark.asyncio
-async def test_confirm_bills_success(auth_client):
-    """POST /ai/confirm-bills creates draft bills and returns feedback."""
-    c, h = auth_client
-    bills = [
-        {
-            "vendor_name": "Acme",
-            "date": "2026-04-12",
-            "total": 100.0,
-            "line_items": [{"description": "Widget", "quantity": 2, "unit_price": 50.0}],
-        }
-    ]
-    with patch("celerp_ai.routes.create_bills", AsyncMock(return_value="Created Draft Bill BIL-TEST for Acme ($100.00)")):
-        r = await c.post("/ai/confirm-bills", json={"bills": bills}, headers=h)
-    assert r.status_code == 200
-    data = r.json()
-    assert data["count"] == 1
-    assert "Acme" in data["feedback"]
-
-
-@pytest.mark.asyncio
-async def test_confirm_bills_empty(auth_client):
-    """POST /ai/confirm-bills with empty list returns 400."""
-    c, h = auth_client
-    r = await c.post("/ai/confirm-bills", json={"bills": []}, headers=h)
-    assert r.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_confirm_bills_invalid_data(auth_client):
-    """POST /ai/confirm-bills with invalid bill data returns 422."""
-    c, h = auth_client
-    r = await c.post("/ai/confirm-bills", json={"bills": [{"bad": "data"}]}, headers=h)
-    assert r.status_code == 422
