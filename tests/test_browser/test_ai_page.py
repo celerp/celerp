@@ -134,6 +134,37 @@ class TestShowcasePage:
         btn = ai_card.locator(".btn--accent")
         expect(btn).to_be_visible()
 
+    def test_showcase_rechecks_entitlement_when_checkout_tab_returns(self, page, ui_server):
+        """Returning from checkout reloads the stale showcase once entitlement is paid."""
+        page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
+
+        page.route(
+            "**/ai/quota-status",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body='{"tier":"ai","remaining":200}',
+            ),
+        )
+        page.route(
+            f"{ui_server}/ai",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="text/html",
+                body="<div id='paid-reload'>paid</div>",
+            ),
+        )
+
+        # Arm the real click listener without leaving the test page, then model
+        # the user returning focus from the checkout tab.
+        page.eval_on_selector(
+            ".ai-showcase__cta-card--featured a",
+            "(a) => { a.href = '#'; a.target = '_self'; a.click(); }",
+        )
+        page.evaluate("window.dispatchEvent(new Event('focus'))")
+
+        expect(page.locator("#paid-reload")).to_be_visible(timeout=5000)
+
     def test_showcase_feature_checkmarks(self, page, ui_server):
         """Feature items use CSS checkmark pseudo-elements."""
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")

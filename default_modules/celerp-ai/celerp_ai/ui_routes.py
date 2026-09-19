@@ -1110,6 +1110,59 @@ def _showcase_script() -> FT:
     if (idx >= 0) { current = idx; playScenario(idx); }
   };
 
+  // A checkout opens in a new tab. When the user returns, re-use the existing
+  // quota/entitlement endpoint to converge the already-open showcase into the
+  // paid chat view. Keep checks bounded and only arm them after a purchase CTA
+  // was actually clicked, so ordinary free users do not poll the relay.
+  var purchasePending = false;
+  var entitlementCheck = null;
+  var entitlementRetry = null;
+
+  document.querySelectorAll('.ai-showcase__cta a').forEach(function(a) {
+    a.addEventListener('click', function() { purchasePending = true; });
+  });
+
+  function paidEntitlement(data) {
+    return data && !data.local && !data.unknown && !data.disconnected &&
+      ['cloud', 'ai', 'team'].indexOf(data.tier) >= 0;
+  }
+
+  function retryEntitlement(attempts) {
+    if (attempts <= 1 || !purchasePending || entitlementRetry) return;
+    entitlementRetry = setTimeout(function() {
+      entitlementRetry = null;
+      checkEntitlement(attempts - 1);
+    }, 1500);
+  }
+
+  function checkEntitlement(attempts) {
+    if (!purchasePending || entitlementCheck) return;
+    entitlementCheck = fetch('/ai/quota-status', {cache: 'no-store'})
+      .then(function(r) {
+        if (!r.ok) throw new Error('quota status failed');
+        return r.json();
+      })
+      .then(function(data) {
+        if (paidEntitlement(data)) {
+          purchasePending = false;
+          window.location.reload();
+          return;
+        }
+        retryEntitlement(attempts);
+      })
+      .catch(function() { retryEntitlement(attempts); })
+      .finally(function() { entitlementCheck = null; });
+  }
+
+  function resumeEntitlementCheck() {
+    if (purchasePending && !entitlementRetry) checkEntitlement(10);
+  }
+
+  window.addEventListener('focus', resumeEntitlementCheck);
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) resumeEntitlementCheck();
+  });
+
   playScenario(0);
 })();
 """
