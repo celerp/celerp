@@ -27,6 +27,8 @@ jobs:
           git diff --check
           python -m py_compile tests/test_ui.py
           git add tests/test_ui.py
+          git config user.name "Noah Severs"
+          git config user.email "118095044+ngsevers@users.noreply.github.com"
           tree="$(git write-tree)"
           sha="$(printf '%s\n' 'test: remove obsolete Connect polling regressions' | git commit-tree "$tree" -p 654759f4016cde2ae1729e7b7bd9c4e870ce5efc -p 16b9327f0e083f8d466b8fb6e64bb6ff888dc232)"
           git push origin "$sha":refs/heads/review/final-app331-cleanup
