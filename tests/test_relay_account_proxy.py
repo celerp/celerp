@@ -96,13 +96,8 @@ async def test_account_status_proxy_skips_exchange_without_token():
 
 
 @pytest.mark.asyncio
-async def test_cloud_claim_does_not_pre_auth_when_gateway_token_present():
-    """OTP/challenge is the claim authority even on an established install.
-
-    A configured gateway credential must not add an /auth/token leg before the
-    money-sensitive claim. Activation after claim has its own authority path and
-    is stubbed here so this test proves the claim request in isolation.
-    """
+async def test_cloud_claim_proves_incumbent_when_gateway_token_present():
+    """An established install proves incumbent machine control when linking an account."""
     claim_resp = MagicMock()
     claim_resp.status_code = 200
     claim_resp.json = MagicMock(return_value={"tier": "free", "status": "active"})
@@ -118,6 +113,8 @@ async def test_cloud_claim_does_not_pre_auth_when_gateway_token_present():
         patch("celerp.config.settings.gateway_token", "api-key-123"),
         patch("celerp.config.ensure_connect_identity", return_value=("i-1", "verifier")),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("celerp.gateway.state.fetch_relay_bearer",
+              new=AsyncMock(return_value="instance-jwt")),
         patch("httpx.AsyncClient", factory),
         patch("celerp.routers.health._activate_after_claim",
               new=AsyncMock(return_value={"connected": True, "instance_id": "i-1"})),
@@ -130,8 +127,7 @@ async def test_cloud_claim_does_not_pre_auth_when_gateway_token_present():
     claim_call = client.post.call_args_list[0]
     assert claim_call[0][0].endswith("/billing/claim")
     assert claim_call[1]["headers"]["X-Instance-ID"] == "i-1"
-    assert "Authorization" not in claim_call[1]["headers"]
-    assert not any(c[0][0].endswith("/auth/token") for c in client.post.call_args_list)
+    assert claim_call[1]["headers"]["Authorization"] == "Bearer instance-jwt"
 
 
 @pytest.mark.asyncio

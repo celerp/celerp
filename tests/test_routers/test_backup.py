@@ -21,6 +21,7 @@ import secrets
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
+from unittest.mock import AsyncMock
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,6 +67,17 @@ def reset_backup_settings():
     yield
     settings.backup_encryption_key = orig_key
     settings.celerp_public_url = orig_public_url
+
+
+def _mock_durable_relay_auth(monkeypatch):
+    monkeypatch.setattr(
+        "celerp.services.cloud_entitlement.stored_api_key",
+        AsyncMock(return_value="api-key"),
+    )
+    monkeypatch.setattr(
+        "celerp.services.backup_repo.fetch_relay_bearer",
+        AsyncMock(return_value="relay-jwt"),
+    )
 
 
 # ── POST /backup/trigger ──────────────────────────────────────────────────────
@@ -134,6 +146,7 @@ async def test_list_free_tier_session_token_but_no_public_url(auth_client, monke
 
 @pytest.mark.asyncio
 async def test_list_htmx_with_items(auth_client, monkeypatch):
+    _mock_durable_relay_auth(monkeypatch)
     """HTMX request returns rendered table when relay returns items."""
     import httpx as _httpx
     import respx
@@ -161,6 +174,7 @@ async def test_list_htmx_with_items(auth_client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_list_htmx_empty_items(auth_client, monkeypatch):
+    _mock_durable_relay_auth(monkeypatch)
     """HTMX request returns empty-state when relay returns no items."""
     import httpx as _httpx
     import respx
@@ -181,6 +195,7 @@ async def test_list_htmx_empty_items(auth_client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_list_json(auth_client, monkeypatch):
+    _mock_durable_relay_auth(monkeypatch)
     """Non-HTMX request returns raw JSON from relay."""
     import httpx as _httpx
     import respx
@@ -202,6 +217,7 @@ async def test_list_json(auth_client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_list_relay_error(auth_client, monkeypatch):
+    _mock_durable_relay_auth(monkeypatch)
     """Relay non-200 response surfaces as 502 (the client raises, route wraps)."""
     import httpx as _httpx
     import respx

@@ -45,6 +45,8 @@ async def get_quota_status() -> dict | None:
     from celerp.services.cloud_entitlement import authenticated_request, stored_api_key, sync_existing_entitlement
     if settings.cloud_disconnected:
         return {"disconnected": True}
+    if not settings.gateway_instance_id:
+        return None
     if not await stored_api_key():
         return None
     try:

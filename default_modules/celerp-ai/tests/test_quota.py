@@ -14,6 +14,7 @@ from __future__ import annotations
 import httpx
 import pytest
 import respx
+from unittest.mock import AsyncMock, patch
 
 from celerp.ai.quota import _relay_http_url, get_quota_status, get_subscription_tier
 from celerp.config import settings
@@ -58,10 +59,12 @@ async def test_quota_status_no_gateway(monkeypatch):
 @pytest.mark.asyncio
 async def test_quota_status_returns_dict(monkeypatch):
     _configure(monkeypatch)
-    with respx.mock:
-        respx.get("https://relay.test/quota/ai/status").mock(
-            return_value=httpx.Response(200, json={"tier": "ai", "allowed": True, "used": 5, "limit": 200})
-        )
+    response = httpx.Response(
+        200, json={"tier": "ai", "allowed": True, "used": 5, "limit": 200})
+    with patch(
+        "celerp.services.cloud_entitlement.authenticated_request",
+        new=AsyncMock(return_value=response),
+    ):
         status = await get_quota_status()
     assert status["tier"] == "ai"
     assert status["limit"] == 200
@@ -70,17 +73,21 @@ async def test_quota_status_returns_dict(monkeypatch):
 @pytest.mark.asyncio
 async def test_quota_status_bad_status(monkeypatch):
     _configure(monkeypatch)
-    with respx.mock:
-        respx.get("https://relay.test/quota/ai/status").mock(return_value=httpx.Response(503, json={}))
-        assert await get_quota_status() is None
+    with patch(
+        "celerp.services.cloud_entitlement.authenticated_request",
+        new=AsyncMock(return_value=httpx.Response(503, json={})),
+    ):
+        assert await get_quota_status() == {"unknown": True}
 
 
 @pytest.mark.asyncio
 async def test_quota_status_network_error(monkeypatch):
     _configure(monkeypatch)
-    with respx.mock:
-        respx.get("https://relay.test/quota/ai/status").mock(side_effect=httpx.ConnectError("refused"))
-        assert await get_quota_status() is None
+    with patch(
+        "celerp.services.cloud_entitlement.authenticated_request",
+        new=AsyncMock(side_effect=httpx.ConnectError("refused")),
+    ):
+        assert await get_quota_status() == {"unknown": True}
 
 
 # ── get_subscription_tier ─────────────────────────────────────────────────────
@@ -95,16 +102,20 @@ async def test_get_subscription_tier_no_gateway(monkeypatch):
 @pytest.mark.asyncio
 async def test_get_subscription_tier_returns_tier(monkeypatch):
     _configure(monkeypatch)
-    with respx.mock:
-        respx.get("https://relay.test/quota/ai/status").mock(
-            return_value=httpx.Response(200, json={"tier": "cloud", "allowed": True, "used": 5, "limit": 100})
-        )
+    response = httpx.Response(
+        200, json={"tier": "cloud", "allowed": True, "used": 5, "limit": 100})
+    with patch(
+        "celerp.services.cloud_entitlement.authenticated_request",
+        new=AsyncMock(return_value=response),
+    ):
         assert await get_subscription_tier() == "cloud"
 
 
 @pytest.mark.asyncio
 async def test_get_subscription_tier_network_error(monkeypatch):
     _configure(monkeypatch)
-    with respx.mock:
-        respx.get("https://relay.test/quota/ai/status").mock(side_effect=httpx.ConnectError("refused"))
+    with patch(
+        "celerp.services.cloud_entitlement.authenticated_request",
+        new=AsyncMock(side_effect=httpx.ConnectError("refused")),
+    ):
         assert await get_subscription_tier() is None
