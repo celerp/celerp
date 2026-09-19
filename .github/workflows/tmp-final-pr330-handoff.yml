@@ -1,0 +1,28 @@
+name: Temporary final PR330 handoff
+on:
+  push:
+    branches: [validate/connect-entitlement-integrity]
+permissions:
+  contents: write
+jobs:
+  handoff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create clean PR330 commit
+        run: |
+          set -euo pipefail
+          git config user.name "Noah Severs"
+          git config user.email "118095044+ngsevers@users.noreply.github.com"
+          git checkout --detach c3789bbb787c65fa1c9d2688652e4296342f4589
+          git read-tree --reset -u a4e19a3854e4e211147c7ede5e7a2ce636fc1535
+          test "$(git write-tree)" = "$(git rev-parse a4e19a3854e4e211147c7ede5e7a2ce636fc1535^{tree})"
+          git commit -m "Fix Connect entitlement integrity"
+          FINAL="$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD^)" = "c3789bbb787c65fa1c9d2688652e4296342f4589"
+          test "$(git rev-parse HEAD^{tree})" = "$(git rev-parse a4e19a3854e4e211147c7ede5e7a2ce636fc1535^{tree})"
+          git push --force-with-lease=refs/heads/fix/connect-claim-timeout:c3789bbb787c65fa1c9d2688652e4296342f4589 \
+            origin HEAD:refs/heads/fix/connect-claim-timeout
+          echo "FINAL_SHA=$FINAL"
