@@ -30,10 +30,14 @@ from celerp.inventory_codes import (
 )
 from celerp.models.projections import Projection
 from .services import (
+    BatchImportRequest,
+    BatchImportResult,
     _code_in_use,
     allocate_internal_codes,
     assert_barcode_available,
     assert_rfid_epc_available,
+    commit_import_batch,
+    import_items,
     lock_item_code_namespace,
 )
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
@@ -1377,6 +1381,43 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
             result[flat["id"]] = flat
 
     return {"items": result}
+
+
+# ── Import routes ─────────────────────────────────────────────────────────────
+# Declared before GET /{entity_id} so "import" is never captured as an entity id.
+# One committer (services.commit_import_batch), three transports: the browser
+# importer (/import/rows), the agent commit (/import/commit), and the raw event
+# batch (/import/batch). All converge on services.import_items / commit_import_batch.
+
+
+class InventoryImportRows(BaseModel):
+    rows: list[dict] = Field(..., max_length=500)
+    upsert: bool = False
+    filename: str | None = None
+    idempotency_key: str | None = None
+
+
+@router.post("/import/rows", response_model=BatchImportResult,
+             dependencies=[require_permission("import_export_data")])
+async def import_rows(
+    body: InventoryImportRows,
+    company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> BatchImportResult:
+    """Commit already-mapped import rows (the browser importer's transport).
+
+    Rows arrive mapped and fixed by the UI. The shared committer owns location
+    resolution and creation, unit and quantity derivation, monetary conversion,
+    idempotency, and the category-schema follow-up. Unmarked: this is the browser
+    transport, not an agent capability (the agent commits through /import/commit).
+    """
+    return await import_items(
+        session, company_id, user.id, role, settings, body.rows,
+        upsert=body.upsert, filename=body.filename, idempotency_key=body.idempotency_key,
+    )
 
 
 @router.get("/{entity_id}", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True})
@@ -3659,28 +3700,8 @@ async def expire_item(entity_id: str, company_id=Depends(get_current_company_id)
 
 
 # ── Import endpoint (CIF) ─────────────────────────────────────────────────────
-
-class ImportRecord(BaseModel):
-    entity_id: str
-    event_type: str
-    data: dict
-    source: str
-    idempotency_key: str
-    source_ts: str | None = None
-
-
-class BatchImportResult(BaseModel):
-    created: int
-    skipped: int
-    updated: int = 0
-    errors: list[str]
-    batch_id: str | None = None
-
-
-class BatchImportRequest(BaseModel):
-    records: list[ImportRecord] = Field(..., max_length=500)
-    filename: str | None = None
-    upsert: bool = False
+# The request/result models and the committer body live in services.py so every
+# transport shares one implementation; this route is the raw-event-batch transport.
 
 
 @router.post("/import/batch", response_model=BatchImportResult)
@@ -3693,237 +3714,13 @@ async def batch_import_items(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    """Batch-import CIF item records. Idempotent on idempotency_key. Max 500 per call."""
-    from sqlalchemy import delete as _delete
+    """Batch-import CIF item records. Idempotent on idempotency_key. Max 500 per call.
 
-    from celerp_inventory.models_import_batch import ImportBatch
-    from celerp.models.ledger import LedgerEntry
-
-    # Scope keys to company to prevent cross-company idempotency collisions
-    # (LedgerEntry.idempotency_key has a table-wide UNIQUE constraint with no company_id scope)
-    scoped_keys = [f"{company_id}:{r.idempotency_key}" for r in body.records]
-    existing = set(
-        (await session.execute(
-            select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(scoped_keys))
-        )).scalars().all()
-    )
-
-    # Fetch valid unit names once for sell_by validation across all records.
-    # Falls back to empty set (no validation) if units cannot be fetched.
-    _units = await _get_company_units(session, company_id)
-    _valid_units: frozenset[str] = frozenset(u["name"] for u in _units)
-    _derived_keys = derived_price_keys((await get_price_config(session, company_id))[0])
-
-    created = skipped = updated = 0
-    errors: list[str] = []
-    created_entity_ids: list[str] = []
-    created_keys: list[str] = []
-
-    for rec in body.records:
-        # Strip system-managed and document-lifecycle fields — never user-settable via import.
-        # status: all imported items must start as available; other statuses require linked docs.
-        rec.data.pop("status", None)
-        # Strip any client-supplied timestamps: created_at is set by ProjectionEngine on INSERT.
-        rec.data.pop("created_at", None)
-        rec.data.pop("updated_at", None)
-        # Derived price lists are computed at read time; a derived column riding along in an
-        # exported file must not be stored (same rule as item create).
-        for _dk in _derived_keys:
-            rec.data.pop(_dk, None)
-        # Normalize allow_splitting to a real bool if the import provided one (CSV
-        # gives strings like "Yes"/"No"). Imports that omit it leave it unset, which
-        # reads as splittable via splitting_allowed; only an explicit False blocks.
-        if "allow_splitting" in rec.data and not isinstance(rec.data["allow_splitting"], bool):
-            rec.data["allow_splitting"] = str(rec.data["allow_splitting"]).strip().lower() in ("true", "yes", "1", "y", "t")
-
-        # Validate sell_by against company units before attempting any DB work.
-        sell_by = str(rec.data.get("sell_by") or "").strip()
-        if not sell_by:
-            errors.append(f"Row (SKU={rec.data.get('sku', '?')}): sell_by is required")
-            skipped += 1
-            continue
-        if _valid_units and sell_by not in _valid_units:
-            errors.append(
-                f"Row (SKU={rec.data.get('sku', '?')}): sell_by '{sell_by}' is not a valid unit"
-            )
-            skipped += 1
-            continue
-
-        # Amount fields must be non-negative: rec.data is untyped and emitted verbatim
-        # as item.created / item.patched with no schema or projection validation, so this
-        # is the only place a negative CSV amount is caught.
-        _neg_amt = None
-        for _k in AMOUNT_ITEM_KEYS & set(rec.data):
-            _v = rec.data.get(_k)
-            if _v in (None, ""):
-                continue
-            try:
-                if float(_v) < 0:
-                    _neg_amt = _k
-                    break
-            except (TypeError, ValueError):
-                pass
-        if _neg_amt is not None:
-            errors.append(f"Row (SKU={rec.data.get('sku', '?')}): {_neg_amt} cannot be negative")
-            skipped += 1
-            continue
-
-        # Barcode and RFID EPC share one physical-code namespace: a value already held in
-        # EITHER slot by another item cannot be imported into either slot of this one.
-        # Interactive create/patch enforce this via assert_barcode_available /
-        # assert_rfid_epc_available; the import writer emits rec.data verbatim, so without
-        # this guard a row could set rfid_epc to a value another item holds as its barcode
-        # (a cross-field collision no single-field unique index catches). Run the same
-        # check under the company code lock so the read-then-write is serialized and
-        # earlier rows in this batch are seen (emit_event flushes projections in-session).
-        # exclude_entity_id is harmless on create and correct on upsert (re-asserting the
-        # item's own value is not a self-collision). A colliding row is skipped, never a 500.
-        _row_barcode = rec.data.get("barcode")
-        _row_epc = rec.data.get("rfid_epc")
-        if _row_barcode or _row_epc:
-            _code_err = None
-            try:
-                validate_barcode(_row_barcode)
-                validate_rfid_epc(_row_epc)
-                await lock_item_code_namespace(session, company_id)
-                await assert_barcode_available(session, company_id, _row_barcode, exclude_entity_id=rec.entity_id)
-                await assert_rfid_epc_available(session, company_id, _row_epc, exclude_entity_id=rec.entity_id)
-            except (ValueError, BarcodeConflictError, RfidEpcConflictError) as exc:
-                _code_err = str(exc)
-            if _code_err is not None:
-                errors.append(f"Row (SKU={rec.data.get('sku', '?')}): {_code_err}")
-                skipped += 1
-                continue
-
-        scoped_key = f"{company_id}:{rec.idempotency_key}"
-        if scoped_key in existing:
-            if body.upsert:
-                # Hand-editing an existing item's amount or sell unit via CSV upsert is
-                # a genuine hand-edit surface, gated by edit_inventory_amounts. A create
-                # (below) defines the item and stays on edit_inventory. The amount keys
-                # are optional per row, so their presence already signals intent to
-                # change; sell_by is required on every row (validated above), so gating
-                # it on mere presence would block every upsert by an ungranted role.
-                # Gate sell_by on a real CHANGE against the stored value instead.
-                if not role_has_permission(settings, role, "edit_inventory_amounts"):
-                    gated = set(AMOUNT_ITEM_KEYS & set(rec.data))
-                    stored_proj = await session.get(Projection, {"company_id": company_id, "entity_id": rec.entity_id})
-                    stored_sell_by = str((stored_proj.state.get("sell_by") if stored_proj else "") or "").strip()
-                    if sell_by != stored_sell_by:
-                        gated.add("sell_by")
-                    if gated:
-                        errors.append(f"Row (SKU={rec.data.get('sku', '?')}): editing {sorted(gated)} requires the edit_inventory_amounts permission")
-                        skipped += 1
-                        continue
-                # Emit patch event with a upsert-specific idempotency key
-                upsert_idem = f"{scoped_key}:upsert"
-                upsert_existing = set(
-                    (await session.execute(
-                        select(LedgerEntry.idempotency_key).where(
-                            LedgerEntry.idempotency_key == upsert_idem
-                        )
-                    )).scalars().all()
-                )
-                if upsert_idem in upsert_existing:
-                    skipped += 1
-                    continue
-                try:
-                    loc_id: uuid.UUID | None = None
-                    raw_loc = rec.data.get("location_id")
-                    if raw_loc:
-                        try:
-                            loc_id = uuid.UUID(str(raw_loc))
-                        except ValueError:
-                            pass
-                    await emit_event(
-                        session,
-                        company_id=company_id,
-                        entity_id=rec.entity_id,
-                        entity_type="item",
-                        event_type="item.patched",
-                        data=rec.data,
-                        actor_id=user.id,
-                        location_id=loc_id,
-                        source=rec.source,
-                        idempotency_key=upsert_idem,
-                        metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
-                    )
-                    updated += 1
-                except Exception as exc:
-                    if len(errors) < 10:
-                        errors.append(f"{rec.entity_id}: {exc}")
-            else:
-                skipped += 1
-            continue
-        try:
-            loc_id: uuid.UUID | None = None
-            raw_loc = rec.data.get("location_id")
-            if raw_loc:
-                try:
-                    loc_id = uuid.UUID(str(raw_loc))
-                except ValueError:
-                    pass
-            await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=rec.entity_id,
-                entity_type="item",
-                event_type=rec.event_type,
-                data=rec.data,
-                actor_id=user.id,
-                location_id=loc_id,
-                source=rec.source,
-                idempotency_key=scoped_key,
-                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
-            )
-            existing.add(scoped_key)
-            created_entity_ids.append(rec.entity_id)
-            created_keys.append(scoped_key)
-            created += 1
-        except Exception as exc:
-            if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {exc}")
-
-    batch_id: str | None = None
-    if created > 0:
-        new_batch_id = uuid.uuid4()
-        batch = ImportBatch(
-            id=new_batch_id,
-            company_id=company_id,
-            entity_type="item",
-            filename=body.filename,
-            row_count=created,
-            entity_ids=created_entity_ids,
-            idempotency_keys=created_keys,
-            status="active",
-        )
-        session.add(batch)
-        batch_id = str(new_batch_id)
-
-        # Auto-wipe demo items on first real import
-        demo_eids = (await session.execute(
-            select(LedgerEntry.entity_id).where(
-                LedgerEntry.company_id == company_id,
-                LedgerEntry.source == "demo",
-                LedgerEntry.entity_type == "item",
-            ).distinct()
-        )).scalars().all()
-        if demo_eids:
-            await session.execute(
-                _delete(Projection).where(
-                    Projection.company_id == company_id,
-                    Projection.entity_id.in_(demo_eids),
-                )
-            )
-            await session.execute(
-                _delete(LedgerEntry).where(
-                    LedgerEntry.company_id == company_id,
-                    LedgerEntry.entity_id.in_(demo_eids),
-                )
-            )
-
-    await session.commit()
-    return BatchImportResult(created=created, skipped=skipped, updated=updated, errors=errors, batch_id=batch_id)
+    The raw-event-batch transport: records arrive already shaped by the caller.
+    The committer lives in services.commit_import_batch, shared with /import/rows
+    and the agent /import/commit.
+    """
+    return await commit_import_batch(session, company_id, user, role, settings, body)
 
 
 # ---------------------------------------------------------------------------
