@@ -60,7 +60,8 @@ jobs:
           p = Path("celerp/services/cloud_entitlement.py")
           src = p.read_text()
           marker = "    from celerp.config import ensure_instance_id, settings\n"
-          pos = src.index(marker, src.index("async def _sync_existing_entitlement_impl"))
+          fn_pos = src.index("async def sync_existing_entitlement()")
+          pos = src.index(marker, fn_pos)
           src = (
               src[:pos + len(marker)]
               + "    from celerp.gateway.state import activate_payload\n"
