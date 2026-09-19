@@ -626,7 +626,7 @@ async def _assert_ref_id_unique(
         raise HTTPException(status_code=409, detail=f"Document number '{ref_id}' already exists")
 
 
-@router.get("")
+@router.get("", dependencies=[require_permission("view_documents")])
 async def list_docs(
     doc_type: str | None = None,
     status: str | None = None,
@@ -1007,7 +1007,7 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
     return {eid: _label(eid) for eid in item_eids}
 
 
-@router.get("/{entity_id}")
+@router.get("/{entity_id}", dependencies=[require_permission("view_documents")])
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     doc = row.state | {"id": row.entity_id}
