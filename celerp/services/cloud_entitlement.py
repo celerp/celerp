@@ -145,9 +145,20 @@ async def sync_existing_entitlement() -> dict | None:
     token = data.get("gateway_token") or key
     if not token:
         return None
-    await apply_activation_state(
-        token, iid, public_url=data.get("public_url"),
-        tos_version=data.get("tos_version"),
-        backup_encryption_key=data.get("backup_encryption_key"),
-        tier=data.get("tier"), status=data.get("status"))
+    try:
+        await apply_activation_state(
+            token, iid, public_url=data.get("public_url"),
+            tos_version=data.get("tos_version"),
+            backup_encryption_key=data.get("backup_encryption_key"),
+            tier=data.get("tier"), status=data.get("status"))
+    except Exception as exc:
+        # This function is an opportunistic recovery seam used by health, quota,
+        # and same-origin session gating. A local persistence/runtime failure must
+        # not turn those reads into 500s; callers can retry while durable relay
+        # authority remains unchanged.
+        log.warning(
+            "Relay entitlement sync could not apply local state (%s)",
+            type(exc).__name__,
+        )
+        return None
     return data if isinstance(data, dict) else {}

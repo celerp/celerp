@@ -64,5 +64,13 @@ async def get_quota_status() -> dict | None:
         return {"unknown": True}
     tier = str(data.get("tier") or "free")
     if tier in ("cloud", "ai", "team") and not get_session_token():
-        await sync_existing_entitlement()
+        try:
+            await sync_existing_entitlement()
+        except Exception as exc:
+            # Quota is the authoritative entitlement read for /ai. Local runtime
+            # convergence is best-effort here and must not erase a paid result.
+            log.warning(
+                "Paid quota read succeeded but local entitlement sync failed (%s)",
+                type(exc).__name__,
+            )
     return data

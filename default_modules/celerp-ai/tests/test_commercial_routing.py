@@ -136,6 +136,26 @@ def test_ai_showcase_direct_does_not_embed_stale_price():
     assert "$49" not in html
 
 
+def test_ai_showcase_direct_surfaces_existing_subscriber_recovery():
+    """The exact #332 recovery door is visible where a paid user sees the
+    locked AI showcase: direct subscribers can jump to the shared account/link
+    surface instead of being offered only another purchase.
+    """
+    from celerp_ai.ui_routes import _showcase_view
+    html = to_xml(_showcase_view(lang="en"))
+    assert "Already subscribed" in html
+    assert "Link by email" in html
+    assert 'href="/settings/cloud"' in html
+
+
+def test_ai_showcase_partner_does_not_offer_direct_email_claim():
+    """Partner-managed billing must not expose the direct-Celerp claim CTA."""
+    from celerp_ai.ui_routes import _showcase_view
+    _set_partner()
+    html = to_xml(_showcase_view(lang="en"))
+    assert 'href="/settings/cloud"' not in html
+
+
 # ── quota-status proxy topup_url injection ──────────────────────────────────
 
 @pytest_asyncio.fixture

@@ -676,6 +676,15 @@ def _showcase_view(lang: str = "en") -> FT:
                     ),
                     cls="ai-showcase__cta-cards",
                 ),
+                *([] if is_partner_managed() else [
+                    Div(
+                        P(t("page.already_subscribed", lang),
+                          cls="ai-showcase__restore-label"),
+                        A(t("btn.link_by_email", lang), href="/settings/cloud",
+                          cls="btn btn--outline"),
+                        cls="ai-showcase__restore",
+                    )
+                ]),
                 cls="ai-showcase__cta",
             ),
             cls="ai-showcase",

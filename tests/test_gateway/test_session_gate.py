@@ -145,6 +145,48 @@ def test_same_origin_request_recovers_session_from_durable_entitlement():
     assert resp.status_code == 200
 
 
+def test_same_origin_recovery_local_apply_failure_degrades_to_401(monkeypatch):
+    """Successful relay authority plus failed local persistence must not 500.
+
+    This drives the real shared recovery function used by the session gate. The
+    relay has authenticated the durable instance key and returned active AI
+    entitlement, but applying that state locally fails. The live request should
+    remain a retryable transport problem, not become an application error or a
+    billing verdict.
+    """
+    import httpx
+    from unittest.mock import AsyncMock, patch
+    from celerp.config import settings
+
+    monkeypatch.setattr(settings, "gateway_token", "durable-api-key")
+    monkeypatch.setattr(settings, "gateway_instance_id", "issue-332-iid")
+    monkeypatch.setattr(settings, "cloud_disconnected", False)
+    response = httpx.Response(200, json={
+        "gateway_token": "durable-api-key",
+        "tier": "ai",
+        "status": "active",
+        "public_url": "https://issue332.celerp.com",
+    })
+
+    with (
+        patch(
+            "celerp.services.cloud_entitlement.authenticated_request",
+            new=AsyncMock(return_value=response),
+        ) as relay_read,
+        patch(
+            "celerp.services.cloud_entitlement.apply_activation_state",
+            new=AsyncMock(side_effect=OSError("config write failed")),
+        ) as apply_state,
+        patch("celerp.config.ensure_instance_id", return_value="issue-332-iid"),
+    ):
+        resp = _client.get("/gated")
+
+    assert resp.status_code == 401
+    assert "No active Celerp Connect session" in resp.json()["detail"]
+    relay_read.assert_awaited_once()
+    apply_state.assert_awaited_once()
+
+
 def test_explicit_disconnect_never_auto_recovers(monkeypatch):
     from unittest.mock import AsyncMock, patch
     from celerp.config import settings

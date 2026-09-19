@@ -71,6 +71,46 @@ async def test_quota_status_returns_dict(monkeypatch):
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_paid_quota_survives_optional_sync_failure_without_websocket(monkeypatch):
+    """A proven paid quota read must stay usable when local WS resync fails.
+
+    This follows the live no-WebSocket path used by /ai: exchange the durable
+    instance API key for a relay bearer, read paid quota over REST, then fail the
+    optional local entitlement resync. The authoritative paid result must win.
+    """
+    monkeypatch.setattr(settings, "gateway_token", "durable-api-key")
+    monkeypatch.setattr(settings, "gateway_instance_id", "issue-332-iid")
+    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.test")
+    monkeypatch.setattr(settings, "cloud_disconnected", False)
+    monkeypatch.setattr(gw_state, "_session_token", "")
+
+    token_route = respx.post("https://relay.test/auth/token").mock(
+        return_value=httpx.Response(200, json={"access_token": "short-lived-jwt"}))
+    quota_route = respx.get("https://relay.test/quota/ai/status").mock(
+        return_value=httpx.Response(200, json={
+            "tier": "ai", "allowed": True, "used": 0,
+            "base_limit": 200, "remaining": 200,
+        }))
+
+    with patch(
+        "celerp.services.cloud_entitlement.sync_existing_entitlement",
+        new=AsyncMock(side_effect=RuntimeError("local activation persistence failed")),
+    ) as sync:
+        status = await get_quota_status()
+
+    assert status == {
+        "tier": "ai", "allowed": True, "used": 0,
+        "base_limit": 200, "remaining": 200,
+    }
+    assert token_route.call_count == 1
+    assert quota_route.call_count == 1
+    assert quota_route.calls[0].request.headers["Authorization"] == (
+        "Bearer short-lived-jwt")
+    sync.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_quota_status_bad_status(monkeypatch):
     _configure(monkeypatch)
     with patch(
