@@ -16,14 +16,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Export exact source
+      - name: Export exact committed tree
         shell: bash
         run: |
           set -euo pipefail
-          git checkout --detach 4e310020efaf5e7d2a2b656940a3d5eb15363f80
-          tar --exclude=.git -czf /tmp/app-staged-source.tar.gz .
+          git archive --format=tar.gz --output=/tmp/app-staged-tree.tar.gz 4e310020efaf5e7d2a2b656940a3d5eb15363f80
       - uses: actions/upload-artifact@v4
         with:
-          name: app-staged-source
-          path: /tmp/app-staged-source.tar.gz
+          name: app-staged-tree
+          path: /tmp/app-staged-tree.tar.gz
           retention-days: 1
