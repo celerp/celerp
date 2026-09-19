@@ -19,10 +19,11 @@ from celerp.inventory_codes import (
 )
 from celerp.models.company import Company, Location
 from celerp.models.projections import Projection
+from celerp.importers.tabular import CsvImportSpec
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.permissions import role_has_permission
-from celerp.services.pricing import derived_price_keys, get_price_config
+from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key
 from celerp.services.units import (
     build_unit_map,
     get_company_units,
@@ -429,6 +430,40 @@ def _infer_category_schemas(cat_attr_values: dict[str, dict[str, list[str]]]) ->
         if fields:
             schemas[cat] = fields
     return schemas
+
+
+# Item import columns, single-sourced here for every transport (the browser
+# mapping UI and the agent preview/commit routes). Price columns are dynamic:
+# one unit-price column per importable price list, plus a virtual "_total"
+# column that back-calculates the unit price at confirm time.
+ITEM_IMPORT_BASE_COLS = ["sku", "name", "sell_by", "category", "quantity"]
+ITEM_IMPORT_TAIL_COLS = [
+    "weight", "weight_unit", "gross_weight", "gross_weight_unit", "pieces",
+    "barcode", "hs_code", "purchase_sku", "purchase_name", "purchase_unit",
+    "purchase_conversion_factor", "short_description", "description", "notes",
+    "location_name",
+]
+
+
+def importable_price_lists(price_lists: list[dict]) -> list[dict]:
+    """Price lists whose values can be imported. Derived lists are computed from
+    the base price list at read time, so the mapper never offers their columns."""
+    return [pl for pl in price_lists if pl.get("name") and not is_derived(pl)]
+
+
+def build_item_import_spec(price_lists: list[dict]) -> CsvImportSpec:
+    """Build the item import spec with dynamic price columns from the company's
+    price lists. Shared by the browser mapper and the agent preview/commit."""
+    price_cols = [price_key(pl["name"]) for pl in importable_price_lists(price_lists)]
+    price_total_cols = [f"{col}_total" for col in price_cols]
+    type_map: dict = {"quantity": float, "weight": float, "pieces": float}
+    for col in price_cols + price_total_cols:
+        type_map[col] = float
+    return CsvImportSpec(
+        cols=ITEM_IMPORT_BASE_COLS + price_cols + price_total_cols + ITEM_IMPORT_TAIL_COLS,
+        required={"name", "sell_by"},
+        type_map=type_map,
+    )
 
 
 @dataclass

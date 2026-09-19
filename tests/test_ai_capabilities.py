@@ -38,6 +38,8 @@ _EXPECTED_AGENT_ROUTES = {
     ("GET", "/items/{entity_id}/reorder-suggestion"),
     ("POST", "/items"),
     ("PATCH", "/items/{entity_id}"),
+    ("GET", "/items/import/preview"),
+    ("POST", "/items/import/commit"),
 }
 
 
@@ -259,21 +261,28 @@ def test_bulk_delete_and_lifecycle_never_compile():
     """Destructive and lifecycle operations are never agent-callable. Bulk
     deletes, single-entity deletes, document lifecycle transitions, and the raw
     envelope import batch stay off the allowlist even though they sit on the same
-    routers as marked reads and writes."""
+    routers as marked reads and writes. The only agent-callable import
+    transports are the guided preview and commit, which validate every row and
+    echo a preview hash before any write."""
     routes = _real_agent_route_set()
 
     # Specific dangerous operations that must never appear.
     for forbidden in (
         ("POST", "/items/bulk/delete"),
         ("POST", "/items/import/batch"),
+        ("POST", "/items/import/rows"),
+        ("GET", "/items/import/batches"),
         ("POST", "/docs/{entity_id}/void"),
         ("POST", "/docs/{entity_id}/finalize"),
         ("POST", "/docs/{entity_id}/send"),
     ):
         assert forbidden not in routes, forbidden
 
-    # No DELETE is ever compiled, and no bulk or raw-import operation leaks in.
+    # No DELETE is ever compiled, and no bulk operation leaks in. The guided
+    # import preview/commit are the only import transports on the allowlist.
+    allowed_import = {("GET", "/items/import/preview"), ("POST", "/items/import/commit")}
     for method, path in routes:
         assert method != "DELETE", (method, path)
         assert "/bulk/" not in path, path
-        assert "/import/" not in path, path
+        if "/import/" in path:
+            assert (method, path) in allowed_import, (method, path)

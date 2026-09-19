@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -36,6 +36,8 @@ from .services import (
     allocate_internal_codes,
     assert_barcode_available,
     assert_rfid_epc_available,
+    build_import_records,
+    build_item_import_spec,
     commit_import_batch,
     import_items,
     lock_item_code_namespace,
@@ -1417,6 +1419,161 @@ async def import_rows(
     return await import_items(
         session, company_id, user.id, role, settings, body.rows,
         upsert=body.upsert, filename=body.filename, idempotency_key=body.idempotency_key,
+    )
+
+
+# Agent import: preview then commit. The agent uploads a CSV/xlsx, previews the
+# suggested mapping and any row errors, then commits by echoing the preview hash
+# so a file that changed between the two calls is refused rather than silently
+# imported under a stale mapping.
+
+_AI_FILE_ID_RE = re.compile(r"^ai_up_[0-9a-f]{32}$")
+
+
+class InventoryImportPreview(BaseModel):
+    file_id: str
+    sheet: str | None
+    upsert: bool
+    columns: list[str]
+    mapping: dict[str, str]
+    unmapped_required: list[str]
+    row_count: int
+    sample: list[dict]
+    errors: list[dict]
+    preview_hash: str
+
+
+async def _build_item_preview(session, company_id, *, file_id: str, sheet: str | None, upsert: bool) -> dict:
+    """Load an uploaded file, map and validate it, and dry-run the importer.
+
+    Returns the preview payload plus the mapped rows, the flat error list, the
+    original filename, and the preview hash. Recomputed identically by preview
+    and commit so the hash pins the exact bytes, sheet, mapping, and row count.
+
+    Raises 404 when the file id is malformed, missing, or owned by another
+    company; 422 when the bytes cannot be read as a table.
+    """
+    import hashlib
+    import json
+
+    from celerp.ai.files import load_file
+    from celerp.importers.tabular import (
+        TabularError,
+        read_table,
+        remap_rows,
+        suggest_mapping,
+        validate_cell,
+    )
+
+    if not _AI_FILE_ID_RE.match(file_id):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        data, meta = load_file(file_id, company_id)
+    except (FileNotFoundError, PermissionError):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    filename = meta.get("filename") or file_id
+    try:
+        cols, rows = read_table(data, filename, sheet=sheet)
+    except TabularError as exc:
+        detail: dict = {"code": "unreadable_file", "message": str(exc)}
+        if exc.sheets:
+            detail["sheets"] = exc.sheets
+        raise HTTPException(status_code=422, detail=detail)
+
+    price_lists, _default_list, _currency = await get_price_config(session, company_id)
+    spec = build_item_import_spec(price_lists)
+    mapping = suggest_mapping(cols, spec.cols)
+    new_cols, mapped_rows = remap_rows(cols, rows, mapping)
+
+    errors: list[dict] = []
+    for i, mapped in enumerate(mapped_rows):
+        for col in spec.cols:
+            if not validate_cell(spec, col, str(mapped.get(col, "")), mapped):
+                errors.append({"row": i + 1, "field": col, "message": f"Invalid or missing {col}"})
+    build = await build_import_records(session, company_id, mapped_rows, upsert=upsert, dry_run=True)
+    errors.extend(build.errors)
+    errors = errors[:50]
+
+    unmapped_required = sorted(r for r in spec.required if r not in set(new_cols))
+    row_count = len(rows)
+    canonical = json.dumps(
+        {
+            "file_id": file_id,
+            "sheet": sheet,
+            "upsert": upsert,
+            "mapping": mapping,
+            "row_count": row_count,
+            "file_sha256": hashlib.sha256(data).hexdigest(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    preview_hash = hashlib.sha256(canonical.encode()).hexdigest()
+
+    return {
+        "payload": InventoryImportPreview(
+            file_id=file_id, sheet=sheet, upsert=upsert, columns=cols,
+            mapping=mapping, unmapped_required=unmapped_required, row_count=row_count,
+            sample=mapped_rows[:5], errors=errors, preview_hash=preview_hash,
+        ),
+        "errors": errors,
+        "mapped_rows": mapped_rows,
+        "filename": filename,
+        "preview_hash": preview_hash,
+    }
+
+
+@router.get("/import/preview", response_model=InventoryImportPreview,
+            openapi_extra={"x-celerp-agent": True},
+            dependencies=[require_permission("import_export_data")])
+async def import_preview(
+    file_id: str = Query(..., min_length=1, max_length=64),
+    sheet: str | None = Query(None, max_length=64),
+    upsert: bool = Query(False),
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> InventoryImportPreview:
+    """Preview an uploaded item import: detected columns, suggested mapping,
+    per-row errors (capped), and a hash the commit call must echo back."""
+    result = await _build_item_preview(session, company_id, file_id=file_id, sheet=sheet, upsert=upsert)
+    return result["payload"]
+
+
+class InventoryImportCommit(BaseModel):
+    file_id: str = Field(..., min_length=1, max_length=64)
+    sheet: str | None = Field(None, max_length=64)
+    upsert: bool = False
+    preview_hash: str = Field(..., min_length=64, max_length=64)
+    idempotency_key: str | None = None
+
+
+@router.post("/import/commit", response_model=BatchImportResult,
+             openapi_extra={"x-celerp-agent": True},
+             dependencies=[require_permission("import_export_data")])
+async def import_commit(
+    body: InventoryImportCommit,
+    company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> BatchImportResult:
+    """Commit an item import previewed via /import/preview.
+
+    Recomputes the preview from the stored bytes; a hash mismatch means the file
+    or its mapping changed since the preview, refused with 409 rather than
+    imported under stale assumptions. Any row validation error is refused with
+    422 and the error list; otherwise the rows go through the shared committer.
+    """
+    result = await _build_item_preview(session, company_id, file_id=body.file_id, sheet=body.sheet, upsert=body.upsert)
+    if result["preview_hash"] != body.preview_hash:
+        raise HTTPException(status_code=409, detail={"code": "preview_stale"})
+    if result["errors"]:
+        raise HTTPException(status_code=422, detail={"code": "validation_failed", "errors": result["errors"]})
+    return await import_items(
+        session, company_id, user.id, role, settings, result["mapped_rows"],
+        upsert=body.upsert, filename=result["filename"], idempotency_key=body.idempotency_key,
     )
 
 

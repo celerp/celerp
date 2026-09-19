@@ -296,6 +296,49 @@ def validate_column_mapping(
     return errors
 
 
+def mapped_field_name(col: str, target: str, attr_name: str | None = None) -> str | None:
+    """Destination row key for a mapped column, or ``None`` to drop it.
+
+    The single source of the mapping semantics shared by the browser importer
+    (``apply_column_mapping``) and the agent importer: ``MAPPING_SKIP`` drops the
+    column; ``MAPPING_ATTRIBUTE`` keeps it as a custom attribute under
+    ``attr_name`` (falling back to the original header); ``MAPPING_ATTR_PREFIX``
+    uses the category-attribute key after the prefix; anything else is the core
+    target field name.
+    """
+    if target == MAPPING_SKIP:
+        return None
+    if target == MAPPING_ATTRIBUTE:
+        return attr_name or col
+    if target.startswith(MAPPING_ATTR_PREFIX):
+        return target[len(MAPPING_ATTR_PREFIX):]
+    return target
+
+
+def remap_rows(
+    cols: list[str],
+    rows: list[dict],
+    mapping: dict[str, str],
+    attr_names: dict[str, str] | None = None,
+) -> tuple[list[str], list[dict]]:
+    """Apply a ``{col: target}`` mapping to already-parsed rows.
+
+    Preserves the original column order, drops ``MAPPING_SKIP`` columns, and
+    renames the rest via :func:`mapped_field_name`. Returns ``(new_cols, rows)``.
+    """
+    attr_names = attr_names or {}
+    new_cols: list[str] = []
+    rename: dict[str, str] = {}
+    for col in cols:
+        dest = mapped_field_name(col, mapping.get(col, MAPPING_ATTRIBUTE), attr_names.get(col))
+        if dest is None:
+            continue
+        new_cols.append(dest)
+        rename[col] = dest
+    remapped = [{rename[c]: row.get(c, "") for c in rename} for row in rows]
+    return new_cols, remapped
+
+
 def apply_column_mapping(form: dict, csv_text: str) -> tuple[str, list[str]]:
     """Apply user's column mapping to CSV data.
 
@@ -320,21 +363,12 @@ def apply_column_mapping(form: dict, csv_text: str) -> tuple[str, list[str]]:
     new_cols: list[str] = []
     rename: dict[str, str] = {}  # original -> new name
     for col in original_cols:
-        target = mapping[col]
-        if target == MAPPING_SKIP:
+        attr_name = str(form.get(f"attr_name__{col}", "") or "").strip() or None
+        dest = mapped_field_name(col, mapping[col], attr_name)
+        if dest is None:
             continue
-        elif target == MAPPING_ATTRIBUTE:
-            attr_name = str(form.get(f"attr_name__{col}", "") or "").strip() or col
-            new_cols.append(attr_name)
-            rename[col] = attr_name
-        elif target.startswith(MAPPING_ATTR_PREFIX):
-            # Category attribute - use the key after the prefix as column name
-            attr_key = target[len(MAPPING_ATTR_PREFIX):]
-            new_cols.append(attr_key)
-            rename[col] = attr_key
-        else:
-            new_cols.append(target)
-            rename[col] = target
+        new_cols.append(dest)
+        rename[col] = dest
 
     # Write remapped CSV
     output = io.StringIO()
