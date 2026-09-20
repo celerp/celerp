@@ -218,42 +218,32 @@ async def backup_status() -> dict:
 
 @settings_router.post("/cloud-disconnect", dependencies=[require_permission("manage_integrations")])
 async def cloud_disconnect() -> dict:
-    """Stop the gateway WebSocket client and record a sticky Cloud disconnect.
-
-    The credential (token, public_url) is PRESERVED in config, only marked
-    disconnected: the association is not lost, so reconnecting is a local
-    one-click operation with no relay round-trip and no re-entering email
-    (see cloud_activate_api). The live credential is cleared in-memory so the
-    tunnel drops and share-minting stops at once. Nothing reconnects
-    automatically - not on restart, not on a settings visit - until the user
-    reconnects from Cloud settings or completes a sign-in.
-    """
-    from celerp.config import settings as _s, persist_cloud_settings
+    """Persist sticky disconnect first, then tear down live relay state."""
+    from celerp.config import settings as _s, set_cloud_disconnected
     from celerp.gateway import client as _gw
     from celerp.gateway.state import set_session_token as _set_session_token
 
+    try:
+        await asyncio.to_thread(set_cloud_disconnected, True)
+    except Exception as exc:
+        return {
+            "error": f"Could not save the disconnect state: {type(exc).__name__}",
+            "disconnected": False,
+        }
+
     gw = _gw.get_client()
     if gw is not None:
-        # Must await close() (not stop()): stop() only flips a flag the run loop
-        # checks between connections, but the loop is blocked in `async for` on
-        # the live socket. close() actually closes the WS, so the relay drops
-        # _connections[instance_id] and the public URL stops serving immediately.
-        await gw.close()
-        _gw.set_client(None)
+        try:
+            await gw.close()
+        except Exception:
+            logger.warning("Relay client close failed after durable disconnect",
+                           exc_info=True)
+        finally:
+            _gw.set_client(None)
 
-    _set_session_token("")  # must clear before touching config (gate reads this)
+    _set_session_token("")
     _s.gateway_token = ""
     _s.celerp_public_url = ""
-    _s.cloud_disconnected = True
-
-    try:
-        # The locked RMW preserves token/public_url while making disconnect sticky.
-        # It can wait on a cross-process file lock, so keep that synchronous wait
-        # off the sole FastAPI event loop.
-        await asyncio.to_thread(persist_cloud_settings, disconnected=True)
-    except Exception:
-        pass
-
     return {"disconnected": True}
 
 
@@ -263,83 +253,102 @@ async def _apply_gateway_token_api(
     tos_version: str | None = None, *, authoritative_public_url: bool = True,
     backup_encryption_key: str | None = None,
     tier: str | None = None, status: str | None = None,
-) -> None:
+    expected_api_key: str | None = None,
+    expected_verifier: str | None = None,
+) -> bool:
     """Compatibility wrapper around the single entitlement apply service."""
     from celerp.services.cloud_entitlement import apply_activation_state
-    await apply_activation_state(
+    return await apply_activation_state(
         token, iid, public_url=public_url, tos_version=tos_version,
         authoritative_public_url=authoritative_public_url,
         backup_encryption_key=backup_encryption_key,
-        tier=tier, status=status)
+        tier=tier, status=status,
+        expected_api_key=expected_api_key,
+        expected_verifier=expected_verifier,
+    )
 
 @settings_router.post("/cloud-activate", dependencies=[require_permission("manage_integrations")])
-async def cloud_activate_api() -> dict:
-    """Synchronise Connect using existing credential or approved proof authority."""
+async def cloud_activate_api(payload: dict | None = None) -> dict:
+    """Synchronise Connect using current credential or approved proof authority."""
     import httpx
     from celerp.config import (
-        read_config, settings as _s, ensure_instance_id)
+        ensure_instance_id, set_cloud_disconnected, settings as _s)
     from celerp.gateway.state import (
-        activate_payload, relay_http_url as _rhu, with_relay_client)
+        RelayCredentialError, activate_payload, fetch_relay_auth,
+        relay_http_url as _rhu, with_relay_client)
+    from celerp.services.cloud_entitlement import stored_api_key
+
+    explicit = bool((payload or {}).get("explicit"))
+    if explicit:
+        try:
+            await asyncio.to_thread(set_cloud_disconnected, False)
+        except Exception as exc:
+            return {"error": f"Could not save reconnect state: {type(exc).__name__}"}
+    elif _s.cloud_disconnected:
+        return {
+            "error": "Cloud is explicitly disconnected.",
+            "disconnected": True,
+            "instance_id": await asyncio.to_thread(ensure_instance_id),
+        }
 
     iid = await asyncio.to_thread(ensure_instance_id)
     relay_base = _rhu()
-    api_key = _s.gateway_token
-    if not api_key:
-        try:
-            api_key = ((read_config() or {}).get("cloud") or {}).get("token") or ""
-        except Exception:
-            api_key = ""
+    api_key = await stored_api_key()
     verifier = _s.activation_verifier or ""
+    authority = {"kind": "legacy"}
 
     async def _activate(c):
-        """Every request here is idempotent, so a reopened connection reruns
-        the whole exchange. Returns the activate response, or an error dict."""
+        nonlocal iid
         headers = {}
         activation_verifier = verifier or None
         if api_key:
-            tok_r = await c.post(
-                f"{relay_base}/auth/token", json={"api_key": api_key})
-            if tok_r.status_code == 200:
-                headers["Authorization"] = (
-                    f"Bearer {tok_r.json()['access_token']}")
-                activation_verifier = None
-            elif tok_r.status_code in (401, 403):
-                # A rejected stored key may recover, but UUID authority is
-                # allowed only after the relay is positively identified as
-                # pre-ratchet. Provider/server ambiguity never weakens auth.
+            try:
+                jwt, authenticated_iid = await fetch_relay_auth(c, api_key=api_key)
+            except RelayCredentialError as exc:
+                if exc.status_code not in (401, 403):
+                    return {"error": "Could not verify the stored relay credential. Try again."}
+                # A definitively rejected key may use challenge recovery on a
+                # current relay. UUID-only recovery remains old-relay-only.
                 methods_r = await c.get(f"{relay_base}/auth/methods")
                 if methods_r.status_code == 404:
-                    secure_activation = False
+                    activation_verifier = None
+                    authority["kind"] = "legacy"
                 elif methods_r.status_code == 200:
                     methods_data = methods_r.json()
                     if not isinstance(methods_data, dict):
                         return {"error": "Could not verify relay activation protocol. Try again."}
-                    secure_activation = bool(
-                        methods_data.get("secure_activation", False))
+                    if bool(methods_data.get("secure_activation", False)):
+                        if not activation_verifier:
+                            return {
+                                "error": "This computer needs a fresh account verification before it can reconnect. "
+                                         "Use the Link Subscription field below.",
+                                "instance_id": iid,
+                            }
+                        authority["kind"] = "verifier"
+                    else:
+                        activation_verifier = None
+                        authority["kind"] = "legacy"
                 else:
                     return {"error": "Could not verify the stored relay credential. Try again."}
-                if secure_activation and not activation_verifier:
-                    return {
-                        "error": "This computer needs a fresh account verification before it can reconnect. "
-                                 "Use the Link Subscription field below.",
-                        "instance_id": iid,
-                    }
-                if not secure_activation:
-                    activation_verifier = None
             else:
-                return {
-                    "error": "Could not verify the stored relay credential. Try again.",
-                    "instance_id": iid,
-                }
+                if authenticated_iid:
+                    iid = authenticated_iid
+                headers["Authorization"] = f"Bearer {jwt}"
+                activation_verifier = None
+                authority["kind"] = "credential"
+        elif activation_verifier:
+            authority["kind"] = "verifier"
+
         body = activate_payload(
-            iid, activation_verifier=None if headers else activation_verifier)
+            iid, activation_verifier=activation_verifier if not headers else None)
         return await c.post(
             f"{relay_base}/auth/activate", json=body, headers=headers)
 
     try:
         r = await with_relay_client(RELAY_CONTROL_TIMEOUT, _activate)
     except (httpx.ConnectError, TimeoutError):
-        return {"error": f"Connection to {relay_base} timed out or could not be reached. "                "Check your internet connection or firewall and try again."}
+        return {"error": f"Connection to {relay_base} timed out or could not be reached. "
+                         "Check your internet connection or firewall and try again."}
     except httpx.TimeoutException:
         return {"error": f"Connection to {relay_base} timed out."}
     except Exception as exc:
@@ -366,17 +375,23 @@ async def cloud_activate_api() -> dict:
         return {"error": f"Relay returned {r.status_code}: {r.text[:120]}"}
 
     data = r.json()
-    # Authenticated entitlement sync deliberately returns no new credential;
-    # proof/legacy activation returns one. In either case persist the credential
-    # that is actually authoritative for this instance.
-    token = data.get("gateway_token") or api_key
+    token = data.get("gateway_token") or (
+        api_key if authority["kind"] == "credential" else "")
     if not token:
         return {"error": "Relay did not return an activation credential."}
     public_url = data.get("public_url")
-    await _apply_gateway_token_api(
+    accepted = await _apply_gateway_token_api(
         token, iid, public_url=public_url, tos_version=data.get("tos_version"),
         backup_encryption_key=data.get("backup_encryption_key"),
-        tier=data.get("tier"), status=data.get("status"))
+        tier=data.get("tier"), status=data.get("status"),
+        expected_api_key=api_key if authority["kind"] == "credential" else None,
+        expected_verifier=verifier if authority["kind"] == "verifier" else None,
+    )
+    if not accepted:
+        return {
+            "error": "Connection state changed while the relay request was in flight. Try again.",
+            "instance_id": iid,
+        }
     gw = __import__("celerp.gateway.client", fromlist=["get_client"]).get_client()
     return {
         "connected": True,
@@ -606,21 +621,14 @@ RELAY_ACCOUNT_METHODS_TIMEOUT = 6.0
 
 @settings_router.get("/account-methods")
 async def account_methods_api() -> dict:
-    """Which optional sign-in methods the relay offers, plus the browser URL for
-    the Google flow (started in the system browser, bound to this instance).
-    Degrades to email-only when the relay is unreachable - never an error.
-
-    An activated install exchanges its gateway credential for a JWT and asks
-    the relay for an owner-initiated start URL: that sign-in may CHANGE which
-    account this computer is linked to, which the open door refuses. A
-    disconnected install reads its preserved on-disk credential (a Cloud
-    disconnect clears only the in-memory token), so the switch also works after
-    a disconnect. Fresh installs (nothing linked, no stored token) get the
-    open-door URL - they have no link to change. The UI fetches this at click
-    time, so the URL is always fresh."""
+    """Return optional sign-in methods with any incumbent credential proof."""
+    from celerp.config import (
+        activation_challenge, ensure_activation_verifier, ensure_instance_id)
+    from celerp.gateway.state import (
+        RelayCredentialError, fetch_relay_auth, relay_http_url as _rhu)
+    from celerp.services.cloud_entitlement import stored_api_key
     import httpx
-    from celerp.config import settings as _s, ensure_instance_id
-    from celerp.gateway.state import relay_http_url as _rhu
+
     relay_base = _rhu()
     iid = await asyncio.to_thread(ensure_instance_id)
     google = False
@@ -631,7 +639,7 @@ async def account_methods_api() -> dict:
 
     async def _relay_phase():
         nonlocal google, free_email_quota, secure_activation
-        nonlocal needs_activation_challenge, start_url
+        nonlocal needs_activation_challenge, start_url, iid
         async with httpx.AsyncClient(timeout=RELAY_ACCOUNT_METHODS_TIMEOUT) as c:
             r = await c.get(f"{relay_base}/auth/methods")
             if r.status_code == 200:
@@ -641,42 +649,31 @@ async def account_methods_api() -> dict:
                     free_email_quota = int(data.get("free_email_quota") or 0)
                     secure_activation = bool(data.get("secure_activation", False))
 
-            api_key = _s.gateway_token
-            if google and not api_key:
-                # A Cloud disconnect clears only the in-memory token; the on-disk
-                # credential and the relay-side link both survive. Read the persisted
-                # token to prove possession rather than calling /auth/activate, which
-                # rotates the relay key on every call and would orphan the stored
-                # credential the next reconnect relies on.
-                from celerp.config import read_config
-                cfg = read_config() or {}
-                api_key = (cfg.get("cloud") or {}).get("token") or ""
-
+            api_key = await stored_api_key()
             if google and not api_key:
                 needs_activation_challenge = True
                 return
 
             if google and api_key:
-                tok_r = await c.post(
-                    f"{relay_base}/auth/token", json={"api_key": api_key})
-                if tok_r.status_code == 200:
-                    su = await c.get(
-                        f"{relay_base}/auth/google/start-url",
-                        params={"instance_id": iid},
-                        headers={"Authorization":
-                                 f"Bearer {tok_r.json()['access_token']}"})
-                    if su.status_code == 200:
-                        su_data = su.json()
-                        if isinstance(su_data, dict) and su_data.get("url"):
-                            start_url = str(su_data["url"])
-                elif tok_r.status_code in (401, 403):
-                    if secure_activation:
+                try:
+                    jwt, authenticated_iid = await fetch_relay_auth(c, api_key=api_key)
+                except RelayCredentialError as exc:
+                    if exc.status_code in (401, 403) and secure_activation:
                         needs_activation_challenge = True
-                    # A pre-ratchet relay has been explicitly identified by the
-                    # methods response, so its legacy open door remains valid.
-                else:
-                    google = False
-                    start_url = ""
+                    elif exc.status_code not in (401, 403):
+                        google = False
+                        start_url = ""
+                    return
+                if authenticated_iid:
+                    iid = authenticated_iid
+                su = await c.get(
+                    f"{relay_base}/auth/google/start-url",
+                    params={"instance_id": iid},
+                    headers={"Authorization": f"Bearer {jwt}"})
+                if su.status_code == 200:
+                    su_data = su.json()
+                    if isinstance(su_data, dict) and su_data.get("url"):
+                        start_url = str(su_data["url"])
 
     try:
         await asyncio.wait_for(
@@ -686,11 +683,8 @@ async def account_methods_api() -> dict:
         start_url = ""
         needs_activation_challenge = False
 
-    # Config persistence is deliberately outside the relay deadline. The UI's
-    # 15s deadline contains the 6s relay phase plus the config lock's 5s budget.
     if google and needs_activation_challenge:
         try:
-            from celerp.config import ensure_activation_verifier, activation_challenge
             verifier = await asyncio.to_thread(ensure_activation_verifier)
             start_url = (
                 f"{relay_base}/auth/google/start?instance_id={iid}"
@@ -758,16 +752,12 @@ async def account_signup_api(payload: dict) -> dict:
 
 @settings_router.get("/account-status")
 async def account_status_api() -> dict:
-    """Proxy the relay account status for the app's post-sign-in polling.
-
-    Once the instance is activated it holds a permanent API key; exchange it
-    for a short-lived JWT (the connectors-catalog idiom) so the relay can
-    return the full record to the instance that owns it. Without a key, or
-    when the exchange fails, fall back to the unauthenticated GET and its
-    masked record - polling keeps working either way."""
+    """Proxy account status, using incumbent proof when a live key exists."""
     import httpx
     from celerp.config import settings as _s, ensure_instance_id
-    from celerp.gateway.state import relay_http_url as _rhu, with_relay_client
+    from celerp.gateway.state import (
+        RelayCredentialError, fetch_relay_auth,
+        relay_http_url as _rhu, with_relay_client)
     relay_base = _rhu()
     try:
         iid = await asyncio.to_thread(ensure_instance_id)
@@ -775,23 +765,28 @@ async def account_status_api() -> dict:
         return {"error": "unreachable"}
 
     async def _status(c):
+        nonlocal iid
         headers = {}
         api_key = _s.gateway_token
         if api_key:
-            tok_r = await c.post(f"{relay_base}/auth/token",
-                                 json={"api_key": api_key})
-            if tok_r.status_code == 200:
-                headers = {"Authorization": f"Bearer {tok_r.json()['access_token']}"}
-        if headers:
-            return await c.get(f"{relay_base}/auth/account",
-                               params={"instance_id": iid},
-                               headers=headers)
-        return await c.get(f"{relay_base}/auth/account",
-                           params={"instance_id": iid})
+            try:
+                jwt, authenticated_iid = await fetch_relay_auth(c, api_key=api_key)
+            except RelayCredentialError as exc:
+                if exc.status_code not in (401, 403):
+                    raise
+            else:
+                if authenticated_iid:
+                    iid = authenticated_iid
+                headers = {"Authorization": f"Bearer {jwt}"}
+        return await c.get(
+            f"{relay_base}/auth/account",
+            params={"instance_id": iid},
+            headers=headers,
+        )
 
     try:
         r = await with_relay_client(RELAY_ACCOUNT_STATUS_TIMEOUT, _status)
-    except (httpx.HTTPError, TimeoutError):
+    except (httpx.HTTPError, TimeoutError, RelayCredentialError):
         return {"error": "unreachable"}
     if r.status_code != 200:
         return {"error": f"status {r.status_code}"}
@@ -818,26 +813,17 @@ def _relay_leg(leg: str):
 
 
 async def _activate_after_claim(
-    iid: str, relay_base: str, verifier: str, api_key: str = "",
+    iid: str, relay_base: str, verifier: str,
 ) -> dict | None:
-    """One bounded, authority-safe activation attempt after a completed claim."""
+    """Redeem the exact verifier that the successful claim just approved."""
     import httpx
     from celerp.gateway.state import activate_payload, with_relay_client
 
     async def _activate(c):
-        headers = {}
-        if api_key:
-            tok_r = await c.post(
-                f"{relay_base}/auth/token", json={"api_key": api_key})
-            if tok_r.status_code == 200:
-                headers["Authorization"] = (
-                    f"Bearer {tok_r.json()['access_token']}")
         with _relay_leg("activate") as leg:
             resp = await c.post(
                 f"{relay_base}/auth/activate",
-                json=activate_payload(
-                    iid, activation_verifier=None if headers else verifier),
-                headers=headers,
+                json=activate_payload(iid, activation_verifier=verifier),
             )
             leg["status"] = resp.status_code
         return resp
@@ -849,14 +835,18 @@ async def _activate_after_claim(
     if resp.status_code != 200:
         return None
     data = resp.json()
-    token = data.get("gateway_token") or api_key
+    token = data.get("gateway_token")
     if not token:
         return None
-    await _apply_gateway_token_api(
+    accepted = await _apply_gateway_token_api(
         token, iid, public_url=data.get("public_url"),
         tos_version=data.get("tos_version"),
         backup_encryption_key=data.get("backup_encryption_key"),
-        tier=data.get("tier"), status=data.get("status"))
+        tier=data.get("tier"), status=data.get("status"),
+        expected_verifier=verifier,
+    )
+    if not accepted:
+        return None
     import celerp.gateway.client as _gw_mod
     gw = _gw_mod.get_client()
     return {
@@ -870,34 +860,40 @@ async def _activate_after_claim(
 @settings_router.post("/cloud-send-otp", dependencies=[require_permission("manage_integrations")])
 async def cloud_send_otp_api(payload: dict) -> dict:
     import httpx
-    from celerp.config import (
-        ensure_connect_identity, activation_challenge)
+    from celerp.config import activation_challenge, ensure_connect_identity
+    from celerp.gateway.state import (
+        RelayCredentialError, fetch_relay_auth,
+        relay_http_url as _rhu, with_relay_client)
     from celerp.services.cloud_entitlement import stored_api_key
 
     email = str(payload.get("email", "")).strip()
     if not email:
         return {"error": "Email required."}
-    try:
-        iid, verifier = await asyncio.to_thread(ensure_connect_identity)
-    except Exception as exc:
-        return {"error": f"Could not persist account identity: {type(exc).__name__}"}
-    challenge = activation_challenge(verifier)
-    from celerp.gateway.state import relay_http_url as _rhu, with_relay_client
     relay_base = _rhu()
     api_key = await stored_api_key()
+    context: dict = {}
 
     async def _send_otp(c):
         headers = {}
         if api_key:
-            from celerp.gateway.state import fetch_relay_bearer
-            jwt = await fetch_relay_bearer(c, api_key=api_key)
-            headers["Authorization"] = f"Bearer {jwt}"
+            try:
+                jwt, _ = await fetch_relay_auth(c, api_key=api_key)
+            except RelayCredentialError as exc:
+                if exc.status_code not in (401, 403):
+                    raise
+            else:
+                headers["Authorization"] = f"Bearer {jwt}"
+
+        # Authentication may have repaired a stale persisted instance id and
+        # discarded its old verifier. Create/read the proof only afterwards.
+        iid, verifier = await asyncio.to_thread(ensure_connect_identity)
+        context["iid"], context["verifier"] = iid, verifier
         with _relay_leg("send-otp") as leg:
             r = await c.post(
                 f"{relay_base}/billing/claim/send-otp",
                 json={
                     "email": email, "instance_id": iid,
-                    "activation_challenge": challenge,
+                    "activation_challenge": activation_challenge(verifier),
                 },
                 headers=headers,
             )
@@ -907,12 +903,14 @@ async def cloud_send_otp_api(payload: dict) -> dict:
     try:
         r = await with_relay_client(RELAY_CLAIM_TIMEOUT, _send_otp)
     except (httpx.ConnectError, TimeoutError):
-        return {"error": f"Connection to {relay_base} timed out or could not be reached. "                "Check your internet connection or firewall and try again."}
+        return {"error": f"Connection to {relay_base} timed out or could not be reached. "
+                         "Check your internet connection or firewall and try again."}
     except httpx.TimeoutException:
         return {"error": f"Connection to {relay_base} timed out."}
     except Exception as exc:
         return {"error": f"Connection error: {type(exc).__name__}: {exc}"}
 
+    iid = context.get("iid") or ""
     if r.status_code == 200:
         out = {"ok": True, "instance_id": iid}
         try:
@@ -931,7 +929,10 @@ async def cloud_send_otp_api(payload: dict) -> dict:
 async def cloud_claim_api(payload: dict) -> dict:
     import httpx
     from celerp.config import (
-        settings as _s, ensure_connect_identity, activation_challenge)
+        activation_challenge, ensure_connect_identity, set_cloud_disconnected)
+    from celerp.gateway.state import (
+        RelayCredentialError, fetch_relay_auth,
+        relay_http_url as _rhu, with_relay_client)
     from celerp.services.cloud_entitlement import stored_api_key
 
     email = str(payload.get("email", "")).strip()
@@ -940,27 +941,40 @@ async def cloud_claim_api(payload: dict) -> dict:
     if not email:
         return {"error": "Email required."}
 
-    try:
-        iid, verifier = await asyncio.to_thread(ensure_connect_identity)
-    except Exception as exc:
-        return {"error": f"Could not persist account identity: {type(exc).__name__}"}
-    challenge = activation_challenge(verifier)
-    from celerp.gateway.state import relay_http_url as _rhu, with_relay_client
-    relay_base = _rhu()
-    claim_payload: dict = {
-        "email": email, "activation_challenge": challenge}
-    api_key = await stored_api_key()
-    if subscription_id:
-        claim_payload["subscription_id"] = subscription_id
+    # Entering the emailed code is an explicit request to bind/reconnect this
+    # computer. Persist that intent before the ownership mutation.
     if otp_code:
-        claim_payload["otp_code"] = otp_code
+        try:
+            await asyncio.to_thread(set_cloud_disconnected, False)
+        except Exception as exc:
+            return {"error": f"Could not save reconnect state: {type(exc).__name__}"}
+
+    relay_base = _rhu()
+    api_key = await stored_api_key()
+    context: dict = {}
 
     async def _claim(c):
-        headers = {"X-Instance-ID": iid}
+        headers = {}
         if api_key:
-            from celerp.gateway.state import fetch_relay_bearer
-            jwt = await fetch_relay_bearer(c, api_key=api_key)
-            headers["Authorization"] = f"Bearer {jwt}"
+            try:
+                jwt, _ = await fetch_relay_auth(c, api_key=api_key)
+            except RelayCredentialError as exc:
+                if exc.status_code not in (401, 403):
+                    raise
+            else:
+                headers["Authorization"] = f"Bearer {jwt}"
+
+        iid, verifier = await asyncio.to_thread(ensure_connect_identity)
+        context["iid"], context["verifier"] = iid, verifier
+        headers["X-Instance-ID"] = iid
+        claim_payload: dict = {
+            "email": email,
+            "activation_challenge": activation_challenge(verifier),
+        }
+        if subscription_id:
+            claim_payload["subscription_id"] = subscription_id
+        if otp_code:
+            claim_payload["otp_code"] = otp_code
         with _relay_leg("claim") as leg:
             r = await c.post(
                 f"{relay_base}/billing/claim",
@@ -983,6 +997,8 @@ async def cloud_claim_api(payload: dict) -> dict:
     except Exception as exc:
         return {"error": f"Connection error: {type(exc).__name__}: {exc}"}
 
+    iid = context.get("iid") or ""
+    verifier = context.get("verifier") or ""
     if r.status_code == 401:
         try:
             detail = r.json().get("detail", {})
@@ -1021,7 +1037,7 @@ async def cloud_claim_api(payload: dict) -> dict:
             "instance_id": iid}
 
     connected = await _activate_after_claim(
-        iid, relay_base, verifier, api_key=api_key)
+        iid, relay_base, verifier)
     if connected:
         return connected
     return {"linked": True, "instance_id": iid}
@@ -1038,18 +1054,15 @@ async def connectors_catalog_api() -> dict:
     if not api_key:
         return {"error": "Not connected to relay.", "connectors": []}
 
-    from celerp.gateway.state import relay_http_url as _rhu, with_relay_client
+    from celerp.gateway.state import (
+        fetch_relay_auth, relay_http_url as _rhu, with_relay_client)
     relay_base = _rhu()
 
     async def _catalog(c):
-        # Exchange API key for short-lived JWT
-        tok_r = await c.post(f"{relay_base}/auth/token", json={"api_key": api_key})
-        if tok_r.status_code != 200:
-            return {"error": f"Could not authenticate with relay ({tok_r.status_code}).", "connectors": []}
-        jwt = tok_r.json()["access_token"]
+        jwt, authenticated_iid = await fetch_relay_auth(c, api_key=api_key)
         return await c.get(
             f"{relay_base}/api/connectors",
-            params={"instance_id": iid},
+            params={"instance_id": authenticated_iid or iid},
             headers={"Authorization": f"Bearer {jwt}"},
         )
 
@@ -1088,16 +1101,14 @@ async def connector_authorize_url(platform: str, shop: str = "") -> dict:
     if not api_key:
         return {"error": "Not connected to relay."}
 
-    from celerp.gateway.state import relay_http_url as _rhu, with_relay_client
+    from celerp.gateway.state import (
+        fetch_relay_auth, relay_http_url as _rhu, with_relay_client)
     relay_base = _rhu()
     iid = ensure_instance_id()
 
     async def _authorize(c):
-        tok_r = await c.post(f"{relay_base}/auth/token", json={"api_key": api_key})
-        if tok_r.status_code != 200:
-            return {"error": f"Could not authenticate with relay ({tok_r.status_code})."}
-        jwt = tok_r.json()["access_token"]
-        params = {"instance_id": iid}
+        jwt, authenticated_iid = await fetch_relay_auth(c, api_key=api_key)
+        params = {"instance_id": authenticated_iid or iid}
         if shop:
             params["shop"] = shop
         return await c.get(

@@ -1981,20 +1981,10 @@ def _json_dict(resp) -> dict:
 
 
 async def _relay_creds() -> tuple[str, str]:
-    """(relay_url, instance_jwt) for the marketplace's relay calls.
-
-    Exchanges gateway_token (the API key set by /auth/activate on desktop, or
-    GATEWAY_TOKEN in the env on a hosted deploy) for a short-lived JWT via
-    /auth/token, exactly like the established pattern in celerp.routers.health
-    (connectors_catalog_api, connector_authorize_url). A prior version read
-    CELERP_INSTANCE_JWT, which is set in no environment (and an instance JWT
-    expires hourly, so it could never be a static env var), so these (new,
-    not-yet-shipped) marketplace endpoints would 503 everywhere until wired to
-    the real gateway_token credential.
-    """
+    """Return relay URL + short-lived JWT from the shared credential exchange."""
     import httpx
     from celerp.config import settings as _s
-    from celerp.gateway.state import relay_http_url
+    from celerp.gateway.state import fetch_relay_bearer, relay_http_url
 
     api_key = _s.gateway_token
     if not api_key:
@@ -2003,16 +1993,12 @@ async def _relay_creds() -> tuple[str, str]:
     relay_base = relay_http_url()
     try:
         async with httpx.AsyncClient(timeout=8.0) as c:
-            tok_r = await c.post(f"{relay_base}/auth/token", json={"api_key": api_key})
+            token = await fetch_relay_bearer(c, api_key=api_key)
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="Could not reach the Celerp relay.")
-    if tok_r.status_code != 200:
+    except Exception as exc:
         raise HTTPException(status_code=502,
-                            detail=f"Could not authenticate with relay ({tok_r.status_code}).")
-    token = _json_dict(tok_r).get("access_token")
-    if not token:
-        raise HTTPException(status_code=502,
-                            detail="Relay returned an unexpected authentication response.")
+                            detail=f"Could not authenticate with relay ({type(exc).__name__}).")
     return relay_base, token
 
 

@@ -806,24 +806,53 @@ async def relay_post_with_retry(url: str, json_body: dict):
     return None
 
 
-async def fetch_relay_bearer(http_client, api_key: str | None = None) -> str:
-    """Exchange the instance API key (gateway_token) for a short-lived relay
-    bearer JWT via POST /auth/token.
+class RelayCredentialError(RuntimeError):
+    """A definitive HTTP rejection while exchanging a relay API key."""
 
-    Single source of the relay auth handshake every relay REST call needs.
-    Callers pass their own httpx client so they own the timeout and connection
-    lifecycle, and reuse it for the follow-up request. Raises RuntimeError on a
-    non-200 so each caller degrades in one place.
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+        super().__init__(f"relay auth failed ({status_code})")
+
+
+async def fetch_relay_auth(
+    http_client, api_key: str | None = None,
+) -> tuple[str, str | None]:
+    """Exchange an API key and return its bearer plus authenticated identity.
+
+    New relays return the instance_id proven by the API key. When the key is a
+    persisted desktop credential, that authenticated identity repairs stale
+    local ids atomically. Older relays omit the additive field and continue to
+    work with the caller's existing local identity.
     """
-    from celerp.config import settings
+    import asyncio
+    from celerp.config import adopt_authenticated_cloud_identity, settings
+
     key = api_key or settings.gateway_token
     if not key:
         raise RuntimeError("relay credential unavailable")
     resp = await http_client.post(
         f"{relay_http_url()}/auth/token", json={"api_key": key})
     if resp.status_code != 200:
-        raise RuntimeError(f"relay auth failed ({resp.status_code})")
-    return resp.json()["access_token"]
+        raise RelayCredentialError(resp.status_code)
+    data = resp.json()
+    token = data.get("access_token") if isinstance(data, dict) else None
+    if not token:
+        raise RuntimeError("relay auth response missing access_token")
+
+    iid_raw = data.get("instance_id") if isinstance(data, dict) else None
+    iid = str(iid_raw).strip() if iid_raw else ""
+    if iid:
+        adopted = await asyncio.to_thread(
+            adopt_authenticated_cloud_identity, key, iid)
+        if adopted is False:
+            raise RuntimeError("relay credential changed during authentication")
+    return str(token), (iid or None)
+
+
+async def fetch_relay_bearer(http_client, api_key: str | None = None) -> str:
+    """Compatibility wrapper returning only the short-lived relay bearer."""
+    bearer, _ = await fetch_relay_auth(http_client, api_key=api_key)
+    return bearer
 
 
 def _launch_mode() -> str | None:
