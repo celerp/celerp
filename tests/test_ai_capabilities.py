@@ -37,7 +37,7 @@ _EXPECTED_AGENT_ROUTES = {
     ("GET", "/items/{entity_id}/reorder-suggestion"),
     ("POST", "/items"),
     ("PATCH", "/items/{entity_id}"),
-    ("GET", "/items/import/preview"),
+    ("POST", "/items/import/preview"),
     ("POST", "/items/import/commit"),
     ("POST", "/docs/{entity_id}/payment"),
     ("GET", "/accounting/bank-accounts"),
@@ -81,7 +81,7 @@ def _app() -> FastAPI:
     ):
         return {"item_id": item_id, "q": q, "token": auth.credentials}
 
-    @app.post("/things", openapi_extra={"x-celerp-agent": True})
+    @app.post("/things", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
     async def create_thing(
         body: _WriteBody,
         auth: HTTPAuthorizationCredentials = Depends(_bearer),
@@ -99,6 +99,13 @@ def _app() -> FastAPI:
     async def touch_thing(item_id: str):
         return {"touched": item_id}
 
+    @app.post(
+        "/preview",
+        openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False},
+    )
+    async def preview_thing(body: _UnsafeWriteBody):
+        return {"preview": body.name}
+
     @app.delete("/things/{item_id}", openapi_extra={"x-celerp-agent": True})
     async def delete_thing(item_id: str):
         return {"deleted": item_id}
@@ -110,7 +117,7 @@ def _app() -> FastAPI:
     for route in app.routes:
         endpoint = getattr(route, "endpoint", None)
         if endpoint and getattr(endpoint, "__name__", "") in {
-            "get_thing", "create_thing", "unsafe_write", "delete_thing", "text_response", "touch_thing"
+            "get_thing", "create_thing", "unsafe_write", "delete_thing", "text_response", "touch_thing", "preview_thing"
         }:
             endpoint.__module__ = "celerp.routers.agent_test"
     app.openapi_schema = None
@@ -150,6 +157,39 @@ def test_declared_idempotent_mutation_compiles_without_a_key():
     assert touch["expects_body"] is False
     assert set(touch["tool"]["function"]["parameters"]["properties"]) == {"path"}
     assert all("unsafe_write" not in name for name in compiled)
+
+
+def test_nonconfirming_post_preview_compiles_without_idempotency():
+    compiled = ai_tools.compile_agent_capabilities(_app(), {})
+    preview = next(cap for name, cap in compiled.items() if name.startswith("preview_thing_"))
+    assert preview["method"] == "POST"
+    assert preview["requires_confirmation"] is False
+    assert preview["inject_idempotency"] is False
+
+
+def test_compile_filters_existing_route_permissions(monkeypatch):
+    app = FastAPI()
+
+    async def permission_guard():
+        return None
+
+    permission_guard.required_permission = "view_secret"
+
+    @app.get(
+        "/guarded",
+        dependencies=[Depends(permission_guard)],
+        openapi_extra={"x-celerp-agent": True},
+    )
+    async def guarded():
+        return {"ok": True}
+
+    route = next(r for r in app.routes if getattr(getattr(r, "endpoint", None), "__name__", "") == "guarded")
+    route.endpoint.__module__ = "celerp.routers.agent_test"
+    app.openapi_schema = None
+
+    monkeypatch.setattr(ai_tools, "role_has_permission", lambda settings, role, permission: role == "owner")
+    assert ai_tools.compile_agent_capabilities(app, {}, role="owner")
+    assert not ai_tools.compile_agent_capabilities(app, {}, role="viewer")
 
 
 def test_compile_filters_disabled_and_third_party_modules(monkeypatch):
@@ -285,7 +325,7 @@ def test_bulk_delete_and_lifecycle_never_compile():
 
     # No DELETE is ever compiled, and no bulk operation leaks in. The guided
     # import preview/commit are the only import transports on the allowlist.
-    allowed_import = {("GET", "/items/import/preview"), ("POST", "/items/import/commit")}
+    allowed_import = {("POST", "/items/import/preview"), ("POST", "/items/import/commit")}
     for method, path in routes:
         assert method != "DELETE", (method, path)
         assert "/bulk/" not in path, path

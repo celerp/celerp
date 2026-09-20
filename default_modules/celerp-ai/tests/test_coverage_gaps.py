@@ -108,6 +108,42 @@ def test_load_file_for_llm_valid(tmp_path):
     assert len(result["data"]) > 0  # base64
 
 
+def test_load_tabular_for_llm_does_not_base64_body(tmp_path):
+    """CSV is represented by file metadata only; local tools read its bytes on demand."""
+    from celerp.ai.files import load_file_for_llm
+    co_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    upload_dir = tmp_path / "ai_uploads"
+    upload_dir.mkdir()
+    fid = "ai_up_csv1"
+    (upload_dir / f"{fid}.bin").write_bytes(b"sku,name\nA,Alpha\n")
+    (upload_dir / f"{fid}.meta").write_text(json.dumps({
+        "content_type": "text/csv", "company_id": str(co_id),
+        "user_id": str(user_id), "filename": "catalog.csv",
+    }))
+    with patch.object(settings, "data_dir", tmp_path):
+        result = load_file_for_llm(fid, co_id, user_id)
+    assert result == {
+        "media_type": "text/csv", "data": "", "filename": "catalog.csv", "file_id": fid,
+    }
+
+
+def test_load_file_wrong_user(tmp_path):
+    from celerp.ai.files import load_file
+    co_id = uuid.uuid4()
+    owner_id = uuid.uuid4()
+    upload_dir = tmp_path / "ai_uploads"
+    upload_dir.mkdir()
+    fid = "ai_up_owned"
+    (upload_dir / f"{fid}.bin").write_bytes(b"data")
+    (upload_dir / f"{fid}.meta").write_text(json.dumps({
+        "content_type": "image/jpeg", "company_id": str(co_id), "user_id": str(owner_id),
+    }))
+    with patch.object(settings, "data_dir", tmp_path):
+        with pytest.raises(PermissionError):
+            load_file(fid, co_id, uuid.uuid4())
+
+
 # ── cleanup.py: edge cases ───────────────────────────────────────────────────
 
 def test_cleanup_delete_file_pair_oserror(tmp_path):

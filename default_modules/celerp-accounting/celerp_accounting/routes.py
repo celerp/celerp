@@ -12,7 +12,7 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -135,7 +135,7 @@ class AccImportRecord(BaseModel):
 
 
 class AccBatchImportRequest(BaseModel):
-    records: list[AccImportRecord]
+    records: list[AccImportRecord] = Field(..., max_length=500)
 
 
 class BatchImportResult(BaseModel):
@@ -394,7 +394,9 @@ async def import_accounting_template(
 @router.post("/import/batch", response_model=BatchImportResult)
 async def batch_import_accounting(
     body: AccBatchImportRequest,
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    __: None = require_permission("import_export_data"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
@@ -422,6 +424,11 @@ async def batch_import_accounting(
     created = skipped = 0
     errors: list[str] = []
     for rec in body.records:
+        if rec.event_type != "acc.journal_entry.created":
+            if len(errors) < 10:
+                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+            skipped += 1
+            continue
         if rec.idempotency_key in existing_keys:
             skipped += 1
             continue
@@ -2578,13 +2585,20 @@ class ReconciliationMatch(BaseModel):
     je_ids: list[str]
 
 
-async def _get_recon(db: AsyncSession, session_id: uuid.UUID, company_id: uuid.UUID) -> ReconciliationSession:
-    recon = (await db.execute(
-        select(ReconciliationSession).where(
-            ReconciliationSession.id == session_id,
-            ReconciliationSession.company_id == company_id,
-        )
-    )).scalar_one_or_none()
+async def _get_recon(
+    db: AsyncSession,
+    session_id: uuid.UUID,
+    company_id: uuid.UUID,
+    *,
+    for_update: bool = False,
+) -> ReconciliationSession:
+    query = select(ReconciliationSession).where(
+        ReconciliationSession.id == session_id,
+        ReconciliationSession.company_id == company_id,
+    )
+    if for_update:
+        query = query.with_for_update()
+    recon = (await db.execute(query)).scalar_one_or_none()
     if not recon:
         raise HTTPException(status_code=404, detail="Reconciliation session not found")
     return recon
@@ -2700,7 +2714,7 @@ async def start_reconciliation(
             select(BankAccount).where(
                 BankAccount.id == uuid.UUID(payload.bank_account_id),
                 BankAccount.company_id == company_id,
-            )
+            ).with_for_update()
         )
     ).scalar_one_or_none()
     if not bank:
@@ -2717,6 +2731,11 @@ async def start_reconciliation(
         ).order_by(ReconciliationSession.created_at)
     )).scalars().first()
     if existing:
+        if abs(float(existing.statement_balance) - float(payload.statement_balance)) >= 0.005:
+            raise HTTPException(
+                status_code=409,
+                detail="An open reconciliation already exists for this bank/date with a different statement balance.",
+            )
         return _recon_to_dict(existing)
 
     recon = ReconciliationSession(
@@ -2769,7 +2788,7 @@ async def match_reconciliation(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    recon = await _get_recon(db, session_id, company_id)
+    recon = await _get_recon(db, session_id, company_id, for_update=True)
     if recon.status == "completed":
         raise HTTPException(status_code=409, detail="Session already completed")
 
@@ -2791,9 +2810,9 @@ async def complete_reconciliation(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    recon = await _get_recon(db, session_id, company_id)
+    recon = await _get_recon(db, session_id, company_id, for_update=True)
     if recon.status == "completed":
-        raise HTTPException(status_code=409, detail="Session already completed")
+        return _recon_to_dict(recon)
 
     bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
     _, difference = _recon_balance(recon, bank, all_entries)
@@ -2940,8 +2959,12 @@ async def _import_statement_lines(
     filename: str,
     col_map: dict[str, str] | None,
 ) -> dict:
-    """Parse a statement and replace the session's lines with it. Re-importing
-    the same file lands on the same lines, so a retry never doubles them."""
+    """Parse a statement with retry-safe replacement semantics.
+
+    An exact file+mapping replay is a no-op. A changed statement may replace only
+    an untouched session; once reconciliation work exists it is refused so a retry
+    can never erase matching progress.
+    """
     from celerp_accounting.csv_parser import parse_bank_csv
 
     if recon.status == "completed":
@@ -2956,12 +2979,70 @@ async def _import_statement_lines(
             "session_id": str(recon.id),
         }
 
-    # Delete existing lines for this session (re-import)
     existing = (await db.execute(
-        select(BankStatementLine).where(BankStatementLine.reconciliation_id == recon.id)
+        select(BankStatementLine).where(
+            BankStatementLine.reconciliation_id == recon.id
+        ).order_by(BankStatementLine.created_at, BankStatementLine.id)
     )).scalars().all()
-    for line in existing:
-        await db.delete(line)
+
+    # Exact replay is a true no-op: keep line ids, match state, attachments and
+    # counters intact. Include both the raw row and its canonical interpretation:
+    # the same bytes with a different column mapping are a deliberate replacement,
+    # not a replay. Decimal normalization avoids DB scale differences turning a
+    # genuine retry into a destructive replacement.
+    def _number(value):
+        if value in (None, ""):
+            return None
+        return Decimal(str(value)).normalize()
+
+    incoming_rows = [
+        (
+            str(line.get("line_date") or ""),
+            str(line.get("description") or ""),
+            _number(line.get("amount")),
+            _number(line.get("raw_balance")),
+            str(line.get("reference") or ""),
+            dict(line.get("raw_csv_row") or {}),
+        )
+        for line in parsed["lines"]
+    ]
+    existing_rows = [
+        (
+            str(line.line_date or ""),
+            str(line.description or ""),
+            _number(line.amount),
+            _number(line.raw_balance),
+            str(line.reference or ""),
+            dict(line.raw_csv_row or {}),
+        )
+        for line in existing
+    ]
+    if existing and incoming_rows == existing_rows:
+        return {
+            "needs_mapping": False,
+            "session_id": str(recon.id),
+            "rows_imported": len(existing),
+            "csv_filename": recon.csv_filename or filename,
+            "replayed": True,
+        }
+
+    if existing:
+        has_progress = bool(recon.reconciled_je_ids) or any(
+            line.status != "unmatched"
+            or line.matched_je_id is not None
+            or bool(line.attachment_ids)
+            for line in existing
+        )
+        if has_progress:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "statement_has_progress",
+                    "message": "This statement already has reconciliation work. Start a new session instead of replacing it.",
+                },
+            )
+        for line in existing:
+            await db.delete(line)
 
     new_lines = []
     for raw_line in parsed["lines"]:
@@ -3009,7 +3090,7 @@ async def import_recon_csv(
     """Upload and parse a bank statement CSV, store lines."""
     import json as _json
 
-    recon = await _get_recon(db, session_id, company_id)
+    recon = await _get_recon(db, session_id, company_id, for_update=True)
     content = await file.read()
     col_map = _json.loads(column_map) if column_map else None
     return await _import_statement_lines(db, recon, company_id, content, file.filename or "statement.csv", col_map)
@@ -3024,12 +3105,13 @@ async def import_recon_file(
     session_id: uuid.UUID,
     payload: StatementFileImport,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    recon = await _get_recon(db, session_id, company_id)
+    recon = await _get_recon(db, session_id, company_id, for_update=True)
     try:
-        content, meta = load_file(payload.file_id, company_id)
+        content, meta = load_file(payload.file_id, company_id, user.id)
     except (FileNotFoundError, PermissionError):
         raise HTTPException(status_code=422, detail=f"Uploaded file {payload.file_id} was not found.")
     filename = str(meta.get("filename") or "statement.csv")
@@ -3069,7 +3151,7 @@ async def auto_match_recon(
     """Run the auto-matching algorithm against all unmatched statement lines."""
     from celerp_accounting.matcher import auto_match
 
-    recon = await _get_recon(db, session_id, company_id)
+    recon = await _get_recon(db, session_id, company_id, for_update=True)
     if recon.status == "completed":
         raise HTTPException(status_code=409, detail="Session already completed")
 
@@ -3120,6 +3202,62 @@ async def auto_match_recon(
     }
 
 
+async def _next_reconciliation_je_id(
+    db: AsyncSession, company_id: uuid.UUID, base_id: str,
+) -> str:
+    """Return the next usable deterministic JE id after any voided prior attempts.
+
+    The statement-line row lock serializes this allocation. Exact retries of a
+    successful attempt never reach here because the line is already ``created``;
+    after an explicit unmatch has voided that attempt, the next correction gets
+    a new immutable journal entry instead of trying to resurrect a voided one.
+    """
+    attempt = 1
+    while True:
+        entity_id = base_id if attempt == 1 else f"{base_id}:{attempt}"
+        row = await db.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+        if row is None:
+            return entity_id
+        if row.entity_type != "journal_entry":
+            raise HTTPException(status_code=409, detail="Reconciliation journal-entry id is already in use")
+        if (row.state or {}).get("status") != "void":
+            raise HTTPException(
+                status_code=409,
+                detail="This statement line already has an active reconciliation journal entry.",
+            )
+        attempt += 1
+
+
+async def _void_reconciliation_created_je(
+    db: AsyncSession,
+    *,
+    company_id: uuid.UUID,
+    actor_id,
+    line: BankStatementLine,
+) -> None:
+    """Void the deterministic JE created from a statement line before unmatching it."""
+    from celerp.services.je_keys import je_void_data
+
+    je_id = line.matched_je_id
+    if not je_id:
+        raise HTTPException(status_code=409, detail="Created statement line has no journal entry to reverse")
+    row = await db.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    if row is None or row.entity_type != "journal_entry":
+        raise HTTPException(status_code=409, detail="Created statement line journal entry was not found")
+    state = row.state or {}
+    if state.get("status") == "void":
+        return
+    if state.get("je_type") not in {"recon_create", "recon_split"}:
+        raise HTTPException(status_code=409, detail="Statement line is linked to a journal entry not owned by reconciliation")
+    await emit_event(
+        db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
+        event_type="acc.journal_entry.voided",
+        data=je_void_data("Reconciliation line unmatched", state),
+        actor_id=actor_id, location_id=None, source="reconciliation",
+        idempotency_key=f"{je_id}:reconciliation-unmatch:void", metadata_={},
+    )
+
+
 @router.post(
     "/reconciliation/{session_id}/lines/{line_id}/match",
     summary="Match a statement line to a book entry",
@@ -3134,6 +3272,13 @@ async def match_stmt_line(
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
+    if sl.status == "created":
+        if sl.matched_je_id == payload.je_id:
+            return _stmt_line_to_dict(sl)
+        raise HTTPException(
+            status_code=409,
+            detail="This line already created a journal entry. Unmatch it first so that entry is reversed.",
+        )
     bank = (
         await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))
     ).scalar_one_or_none()
@@ -3171,11 +3316,16 @@ async def unmatch_stmt_line(
     session_id: uuid.UUID,
     line_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
+    user=Depends(get_current_user),
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
     old_je_id = sl.matched_je_id
+    if sl.status == "created":
+        await _void_reconciliation_created_je(
+            db, company_id=company_id, actor_id=user.id, line=sl,
+        )
     sl.status = "unmatched"
     sl.matched_je_id = None
     if old_je_id:
@@ -3205,15 +3355,25 @@ async def create_je_from_line(
     recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
     if sl.status == "created":
         return _stmt_line_to_dict(sl)
+    if sl.status == "matched":
+        raise HTTPException(
+            status_code=409,
+            detail="This line is already matched. Unmatch it before creating a journal entry.",
+        )
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
         raise HTTPException(status_code=404, detail="Bank account not found")
     await _require_account(db, company_id, payload.account_code)
 
-    amount = payload.amount if payload.amount is not None else abs(float(sl.amount))
+    line_amount = abs(float(sl.amount))
+    if payload.amount is not None and abs(float(payload.amount) - line_amount) >= 0.005:
+        raise HTTPException(
+            status_code=422,
+            detail="Partial statement-line journal entries are not supported; amount must equal the statement line.",
+        )
     entry_date = payload.date or sl.line_date
     memo = payload.memo or sl.description
-    je_id = f"je:recon:{sl.id}"
+    je_id = await _next_reconciliation_je_id(db, company_id, f"je:recon:{sl.id}")
 
     # Determine debit/credit based on amount sign
     bank_debit = max(float(sl.amount), 0)
@@ -3221,8 +3381,8 @@ async def create_je_from_line(
     other_debit = bank_credit  # offset entry
     other_credit = bank_debit
 
-    idem_c = je_idempotency_key(entry_date, f"recon_create_{sl.id}", "c")
-    idem_p = je_idempotency_key(entry_date, f"recon_create_{sl.id}", "p")
+    idem_c = je_idempotency_key(je_id, "recon_create", "c")
+    idem_p = je_idempotency_key(je_id, "recon_create", "p")
 
     # The bank side has no party by nature; the offset side carries the one the
     # operator named, so a bank line settled to a control account lands on that
@@ -3275,6 +3435,13 @@ async def split_stmt_line(
     from celerp.services.je_keys import je_idempotency_key
 
     recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
+    if sl.status == "created":
+        return _stmt_line_to_dict(sl)
+    if sl.status == "matched":
+        raise HTTPException(
+            status_code=409,
+            detail="This line is already matched. Unmatch it before creating a split journal entry.",
+        )
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
         raise HTTPException(status_code=404, detail="Bank account not found")
@@ -3282,9 +3449,9 @@ async def split_stmt_line(
     if not payload.splits:
         raise HTTPException(status_code=422, detail="At least one split entry required")
 
-    je_id = f"je:recon:split:{sl.id}"
-    idem_c = je_idempotency_key(sl.line_date, f"recon_split_{sl.id}", "c")
-    idem_p = je_idempotency_key(sl.line_date, f"recon_split_{sl.id}", "p")
+    je_id = await _next_reconciliation_je_id(db, company_id, f"je:recon:split:{sl.id}")
+    idem_c = je_idempotency_key(je_id, "recon_split", "c")
+    idem_p = je_idempotency_key(je_id, "recon_split", "p")
 
     bank_debit = max(float(sl.amount), 0)
     bank_credit = max(-float(sl.amount), 0)
@@ -3341,9 +3508,18 @@ async def patch_stmt_line(
 ) -> dict:
     _, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
     if payload.status is not None:
-        if payload.status not in ("unmatched", "matched", "created", "skipped"):
-            raise HTTPException(status_code=422, detail="Invalid status")
+        if payload.status not in ("unmatched", "skipped"):
+            raise HTTPException(
+                status_code=422,
+                detail="Only unmatched or skipped can be set directly; use match/create for resolved states.",
+            )
+        if sl.status in ("matched", "created"):
+            raise HTTPException(
+                status_code=409,
+                detail="Unmatch this line through the dedicated unmatch action before changing its status.",
+            )
         sl.status = payload.status
+        sl.matched_je_id = None
     await db.commit()
     return _stmt_line_to_dict(sl)
 
@@ -3407,7 +3583,7 @@ async def bulk_confirm_recon(
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     """Confirm all 'suggested' matches (make them fully matched)."""
-    recon = await _get_recon(db, session_id, company_id)
+    recon = await _get_recon(db, session_id, company_id, for_update=True)
     if recon.status == "completed":
         raise HTTPException(status_code=409, detail="Session already completed")
 
@@ -3448,11 +3624,24 @@ async def write_off_difference(
     """Create a small adjustment JE to zero out the remaining difference."""
     from celerp.services.je_keys import je_idempotency_key
 
-    recon = await _get_recon(db, session_id, company_id)
+    recon = await _get_recon(db, session_id, company_id, for_update=True)
     if recon.status == "completed":
         raise HTTPException(status_code=409, detail="Session already completed")
 
     bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
+    je_id = f"je:recon:writeoff:{session_id}"
+    existing_writeoff = await db.get(
+        Projection, {"company_id": company_id, "entity_id": je_id}
+    )
+    if existing_writeoff is not None and existing_writeoff.entity_type == "journal_entry":
+        bank_entry = next(
+            (e for e in (existing_writeoff.state or {}).get("entries", [])
+             if e.get("account") == bank.chart_account_code),
+            {},
+        )
+        amount = float(bank_entry.get("debit") or 0) - float(bank_entry.get("credit") or 0)
+        return {"je_id": je_id, "amount": amount}
+
     _, difference = _recon_balance(recon, bank, all_entries)
 
     tol = float(recon.tolerance) if recon.tolerance is not None else 1.0
@@ -3465,7 +3654,6 @@ async def write_off_difference(
         raise HTTPException(status_code=422, detail="No difference to write off.")
     await _require_account(db, company_id, payload.account_code)
 
-    je_id = f"je:recon:writeoff:{session_id}"
     idem_c = je_idempotency_key(recon.statement_date, f"recon_wo_{session_id}", "c")
     idem_p = je_idempotency_key(recon.statement_date, f"recon_wo_{session_id}", "p")
 
@@ -3592,14 +3780,14 @@ async def _get_recon_and_line(
     line_id: uuid.UUID,
     company_id: uuid.UUID,
 ) -> tuple[ReconciliationSession, BankStatementLine]:
-    recon = await _get_recon(db, session_id, company_id)
+    recon = await _get_recon(db, session_id, company_id, for_update=True)
     if recon.status == "completed":
         raise HTTPException(status_code=409, detail="Session already completed")
     sl = (await db.execute(
         select(BankStatementLine).where(
             BankStatementLine.id == line_id,
             BankStatementLine.reconciliation_id == session_id,
-        )
+        ).with_for_update()
     )).scalar_one_or_none()
     if not sl:
         raise HTTPException(status_code=404, detail="Statement line not found")

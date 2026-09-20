@@ -30,19 +30,20 @@ from test_helpers import perm_setup
 def write_upload():
     """Factory writing an ai_uploads file pair, cleaned up afterwards.
 
-    Returns a callable ``(company_id, text, filename) -> file_id`` matching the
+    Returns a callable ``(company_id, user_id, text, filename) -> file_id`` matching the
     ``ai_up_<32 hex>`` id shape the routes validate before touching the disk.
     """
     created: list[str] = []
     d = upload_dir()
 
-    def _write(company_id, text: str, *, filename: str = "items.csv") -> str:
+    def _write(company_id, user_id, text: str, *, filename: str = "items.csv") -> str:
         file_id = f"ai_up_{uuid.uuid4().hex}"
         (d / f"{file_id}.bin").write_bytes(text.encode("utf-8"))
         (d / f"{file_id}.meta").write_text(json.dumps({
             "filename": filename,
             "content_type": "text/csv",
             "company_id": str(company_id),
+            "user_id": str(user_id),
         }))
         created.append(file_id)
         return file_id
@@ -60,6 +61,12 @@ async def _company_id(client, headers) -> str:
     return r.json()["id"]
 
 
+def _user_id(headers: dict) -> str:
+    from celerp.services.auth import decode_access_token
+    token = headers["Authorization"].split(" ", 1)[1]
+    return str(decode_access_token(token)["sub"])
+
+
 _GOOD_CSV = "sku,name,sell_by,quantity,retail_price\nAGENT-1,Agent Widget,piece,3,10\n"
 _BAD_CSV = "sku,name,sell_by,quantity\nBAD-1,Bad Item,,3\n"
 
@@ -73,7 +80,7 @@ async def test_preview_returns_mapping_and_hash(client, session, write_upload):
     s = await perm_setup(client, session)
     admin = s["admin_h"]
     company_id = await _company_id(client, admin)
-    file_id = write_upload(company_id, _GOOD_CSV)
+    file_id = write_upload(company_id, _user_id(admin), _GOOD_CSV)
 
     r = await client.get("/items/import/preview", params={"file_id": file_id}, headers=admin)
     assert r.status_code == 200, r.text
@@ -93,9 +100,44 @@ async def test_preview_other_companys_file_is_not_found(client, session, write_u
     s = await perm_setup(client, session)
     admin = s["admin_h"]
     other_company = uuid.uuid4()
-    file_id = write_upload(other_company, _GOOD_CSV)
+    file_id = write_upload(other_company, _user_id(admin), _GOOD_CSV)
 
     r = await client.get("/items/import/preview", params={"file_id": file_id}, headers=admin)
+    assert r.status_code == 404, r.text
+
+
+@pytest.mark.asyncio
+async def test_agent_preview_accepts_corrected_mapping(client, session, write_upload):
+    s = await perm_setup(client, session)
+    admin = s["admin_h"]
+    company_id = await _company_id(client, admin)
+    file_id = write_upload(
+        company_id, _user_id(admin),
+        "product code,description,unit,qty\nMAP-1,Mapped Widget,piece,2\n",
+    )
+    r = await client.post("/items/import/preview", headers=admin, json={
+        "file_id": file_id,
+        "mapping": {
+            "product code": "sku", "description": "name",
+            "unit": "sell_by", "qty": "quantity",
+        },
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["mapping"]["product code"] == "sku"
+    assert body["sample"][0]["name"] == "Mapped Widget"
+    assert body["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_preview_rejects_same_company_other_users_file(client, session, write_upload):
+    s = await perm_setup(client, session)
+    admin = s["admin_h"]
+    manager = s["manager_h"]
+    company_id = await _company_id(client, admin)
+    file_id = write_upload(company_id, _user_id(admin), _GOOD_CSV)
+
+    r = await client.get("/items/import/preview", params={"file_id": file_id}, headers=manager)
     assert r.status_code == 404, r.text
 
 
@@ -108,7 +150,7 @@ async def test_commit_stale_hash_is_conflict(client, session, write_upload):
     s = await perm_setup(client, session)
     admin = s["admin_h"]
     company_id = await _company_id(client, admin)
-    file_id = write_upload(company_id, _GOOD_CSV)
+    file_id = write_upload(company_id, _user_id(admin), _GOOD_CSV)
 
     r = await client.post("/items/import/commit", headers=admin, json={
         "file_id": file_id, "preview_hash": "0" * 64,
@@ -122,7 +164,7 @@ async def test_commit_validation_errors_are_unprocessable(client, session, write
     s = await perm_setup(client, session)
     admin = s["admin_h"]
     company_id = await _company_id(client, admin)
-    file_id = write_upload(company_id, _BAD_CSV)
+    file_id = write_upload(company_id, _user_id(admin), _BAD_CSV)
 
     preview = await client.get("/items/import/preview", params={"file_id": file_id}, headers=admin)
     assert preview.status_code == 200, preview.text
@@ -137,23 +179,23 @@ async def test_commit_validation_errors_are_unprocessable(client, session, write
 
 
 @pytest.mark.asyncio
-async def test_commit_idempotent_on_repeated_key(client, session, write_upload):
+async def test_commit_idempotent_on_repeated_preview(client, session, write_upload):
     s = await perm_setup(client, session)
     admin = s["admin_h"]
     company_id = await _company_id(client, admin)
-    file_id = write_upload(company_id, _GOOD_CSV)
+    file_id = write_upload(company_id, _user_id(admin), _GOOD_CSV)
 
     preview = await client.get("/items/import/preview", params={"file_id": file_id}, headers=admin)
     preview_hash = preview.json()["preview_hash"]
 
     first = await client.post("/items/import/commit", headers=admin, json={
-        "file_id": file_id, "preview_hash": preview_hash, "idempotency_key": "agent-batch-1",
+        "file_id": file_id, "preview_hash": preview_hash,
     })
     assert first.status_code == 200, first.text
     assert first.json()["created"] == 1
 
     second = await client.post("/items/import/commit", headers=admin, json={
-        "file_id": file_id, "preview_hash": preview_hash, "idempotency_key": "agent-batch-1",
+        "file_id": file_id, "preview_hash": preview_hash,
     })
     assert second.status_code == 200, second.text
     assert second.json()["created"] == 0
@@ -181,7 +223,7 @@ async def test_import_transports_require_import_export_data(client, session, wri
     admin = s["admin_h"]
     operator = s["operator_h"]  # holds view_inventory, not import_export_data
     company_id = await _company_id(client, admin)
-    file_id = write_upload(company_id, _GOOD_CSV)
+    file_id = write_upload(company_id, _user_id(admin), _GOOD_CSV)
 
     # Every transport refuses the operator with 403.
     assert (await client.get("/items/import/preview", params={"file_id": file_id}, headers=operator)).status_code == 403

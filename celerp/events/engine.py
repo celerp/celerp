@@ -20,6 +20,23 @@ def apply_event(state: dict, event: LedgerEntry) -> dict:
     return ProjectionEngine._apply(state, event.event_type, event.data)
 
 
+async def find_event_by_idempotency(session, company_id, idempotency_key: str | None) -> LedgerEntry | None:
+    """Return the event already committed for this company/key, if any.
+
+    Idempotency belongs to the canonical ledger, not to individual callers.
+    Routes use this before allocating numbers/codes or repeating secondary work;
+    ``emit_event`` remains the unique-constraint race backstop.
+    """
+    if not idempotency_key:
+        return None
+    return (await session.execute(
+        select(LedgerEntry).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.idempotency_key == idempotency_key,
+        ).limit(1)
+    )).scalars().first()
+
+
 async def _check_period_lock(session, company_id, data: dict) -> None:
     """Reject events whose effective date falls within a locked period."""
     from celerp.models.company import Company

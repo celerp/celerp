@@ -20,7 +20,7 @@ from typing import Literal
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.models.ai import AIConversation, AIMessage
+from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
 
 log = logging.getLogger(__name__)
 
@@ -28,12 +28,12 @@ MAX_CONVERSATIONS_PER_USER = 100
 MAX_MESSAGES_PER_CONVERSATION = 200
 HISTORY_TOKEN_BUDGET = 8000
 _CHARS_PER_TOKEN = 4  # conservative estimate
-# An action claimed for execution that never finalized (the process died mid-call)
-# is reported as failed after this long so the user is not left with a card that
-# can neither be confirmed nor dismissed.
+# A claimed action may outlive the process that started it. Once stale, expose it
+# as retryable: every agent mutation is compiled only after proving canonical
+# idempotency, so the same tool-call id can be retried safely.
 EXECUTING_STALE_S = 5 * 60
 UNFINISHED_ACTION_TEXT = (
-    "This action did not finish. Check whether it was applied before asking for it again."
+    "The previous attempt did not return a definite result. Retry safely to check or finish it."
 )
 
 
@@ -72,9 +72,33 @@ async def create_conversation(
         )
         old_ids = list((await session.execute(oldest_q)).scalars().all())
         if old_ids:
-            await session.execute(
-                delete(AIConversation).where(AIConversation.id.in_(old_ids))
+            active_ids = set((await session.execute(
+                select(AIBatchJob.conversation_id).where(
+                    AIBatchJob.conversation_id.in_(old_ids),
+                    AIBatchJob.status.in_(("pending", "running")),
+                )
+            )).scalars().all())
+            # Do not silently discard a conversation that still contains a user
+            # decision or an ambiguous write awaiting a safe retry. It is better to
+            # exceed the soft conversation cap briefly than to destroy unresolved
+            # action state.
+            action_rows = await session.execute(
+                select(AIMessage.conversation_id, AIMessage.tools_called).where(
+                    AIMessage.conversation_id.in_(old_ids),
+                    AIMessage.tools_called.isnot(None),
+                )
             )
+            protected_ids = {
+                conversation_id
+                for conversation_id, tools_called in action_rows.all()
+                if pending_actions(tools_called)
+            }
+            prunable = [
+                conversation_id for conversation_id in old_ids
+                if conversation_id not in active_ids and conversation_id not in protected_ids
+            ]
+            if prunable:
+                await session.execute(delete(AIConversation).where(AIConversation.id.in_(prunable)))
 
     return conv
 
@@ -191,17 +215,23 @@ async def add_message(
     )).scalar() or 0
 
     if count > MAX_MESSAGES_PER_CONVERSATION:
-        oldest_q = (
-            select(AIMessage.id)
+        old_rows = list((await session.execute(
+            select(AIMessage.id, AIMessage.tools_called)
             .where(AIMessage.conversation_id == conversation_id)
             .order_by(AIMessage.created_at.desc())
             .offset(MAX_MESSAGES_PER_CONVERSATION)
-        )
-        old_ids = list((await session.execute(oldest_q)).scalars().all())
-        if old_ids:
-            await session.execute(
-                delete(AIMessage).where(AIMessage.id.in_(old_ids))
-            )
+        )).all())
+        if old_rows:
+            # Unresolved proposals and ambiguous/retryable writes are durable user
+            # decisions, not disposable chat history. Preserve them until they reach
+            # a terminal state, even if that means temporarily exceeding the soft
+            # history cap.
+            prunable = [
+                message_id for message_id, tools_called in old_rows
+                if not pending_actions(tools_called)
+            ]
+            if prunable:
+                await session.execute(delete(AIMessage).where(AIMessage.id.in_(prunable)))
 
     return msg
 
@@ -210,7 +240,7 @@ async def get_messages(
     session: AsyncSession,
     conversation_id: uuid.UUID,
     *,
-    limit: int = 50,
+    limit: int = MAX_MESSAGES_PER_CONVERSATION,
 ) -> list[AIMessage]:
     """Get the newest ``limit`` messages, returned oldest-first (chronological)."""
     q = (
@@ -284,10 +314,8 @@ def tool_names(tools_called: list | None) -> list[str]:
 
 
 def _still_pending(record: object, now: datetime) -> bool:
-    """A dict record is pending when its status is pending and it has not expired."""
-    if not isinstance(record, dict):
-        return False
-    if record.get("status", "pending") != "pending":
+    """True while an unclaimed proposal is still inside its confirmation TTL."""
+    if not isinstance(record, dict) or record.get("status", "pending") != "pending":
         return False
     expires_at = record.get("expires_at")
     if not isinstance(expires_at, str):
@@ -299,7 +327,6 @@ def _still_pending(record: object, now: datetime) -> bool:
 
 
 def _stale_executing(record: object, now: datetime) -> bool:
-    """A dict record claimed for execution more than EXECUTING_STALE_S ago."""
     if not isinstance(record, dict) or record.get("status") != "executing":
         return False
     since = record.get("executing_since")
@@ -311,12 +338,20 @@ def _stale_executing(record: object, now: datetime) -> bool:
         return False
 
 
-def pending_actions(tools_called: list | None) -> list[dict]:
-    """Action records the user still needs to see, from a stored ``tools_called`` list.
+def _claimable(record: object, now: datetime) -> bool:
+    if not isinstance(record, dict):
+        return False
+    status = record.get("status", "pending")
+    return _still_pending(record, now) or status == "retryable" or _stale_executing(record, now)
 
-    Returns pending unexpired records as stored, plus records stuck in
-    ``executing`` past EXECUTING_STALE_S rewritten as failed with an
-    explanation, so the card shows what happened instead of a dead button.
+
+def pending_actions(tools_called: list | None) -> list[dict]:
+    """Proposal records still requiring user attention.
+
+    Fresh proposals remain ``pending``. Ambiguous transport/server failures and
+    stale ``executing`` claims are surfaced as ``retryable`` using the same
+    immutable tool-call id. Completed/failed/dismissed actions stay in audit
+    history but no longer render as open proposals.
     """
     if not tools_called:
         return []
@@ -325,8 +360,10 @@ def pending_actions(tools_called: list | None) -> list[dict]:
     for record in tools_called:
         if _still_pending(record, now):
             out.append(record)
+        elif isinstance(record, dict) and record.get("status") == "retryable":
+            out.append(record)
         elif _stale_executing(record, now):
-            out.append({**record, "status": "failed", "error": UNFINISHED_ACTION_TEXT})
+            out.append({**record, "status": "retryable", "error": UNFINISHED_ACTION_TEXT})
     return out
 
 
@@ -344,9 +381,7 @@ async def pending_action_counts(
     )
     counts: dict[uuid.UUID, int] = {}
     for conversation_id, tools_called in rows.all():
-        open_count = sum(
-            1 for r in pending_actions(tools_called) if r.get("status", "pending") == "pending"
-        )
+        open_count = len(pending_actions(tools_called))
         if open_count:
             counts[conversation_id] = counts.get(conversation_id, 0) + open_count
     return counts
@@ -390,10 +425,12 @@ async def claim_tool_call(
             claimed is None
             and isinstance(item, dict)
             and item.get("id") == tool_call_id
-            and _still_pending(item, now)
+            and _claimable(item, now)
         ):
             claimed = dict(item)
-            new_list.append({**item, "status": "executing", "executing_since": now.isoformat()})
+            running = {**item, "status": "executing", "executing_since": now.isoformat()}
+            running.pop("error", None)
+            new_list.append(running)
         else:
             new_list.append(item)
 
@@ -411,30 +448,91 @@ async def finalize_tool_call(
     *,
     message_id: uuid.UUID,
     tool_call_id: str,
-    status: Literal["completed", "failed"],
+    status: Literal["completed", "failed", "retryable", "dismissed"],
     result: dict | None,
+    error: str | None = None,
 ) -> None:
-    """Record the terminal state of a claimed action; never store result payloads."""
+    """Persist action state while retaining the immutable proposal/audit record."""
     msg = await session.get(AIMessage, message_id)
     if msg is None or not msg.tools_called:
         return
 
+    summary: dict = {}
+    data = (result or {}).get("data")
+    if isinstance(data, dict):
+        for key in ("id", "entity_id", "ref_id", "event_id"):
+            value = data.get(key)
+            if value not in (None, ""):
+                summary[key] = value
+    result_status = (result or {}).get("status")
+    if result_status is not None:
+        summary["http_status"] = result_status
+
+    now = datetime.now(timezone.utc).isoformat()
     new_list: list = []
     for item in msg.tools_called:
         if isinstance(item, dict) and item.get("id") == tool_call_id:
-            new_list.append({
-                "id": item.get("id"),
-                "name": item.get("name"),
-                "status": status,
-                "result_status": (result or {}).get("status"),
-                "finished_at": datetime.now(timezone.utc).isoformat(),
-            })
+            updated = {**item, "status": status, "finished_at": now}
+            updated.pop("executing_since", None)
+            if summary:
+                updated["result_summary"] = summary
+            else:
+                updated.pop("result_summary", None)
+            if error:
+                updated["error"] = error
+            else:
+                updated.pop("error", None)
+            new_list.append(updated)
         else:
             new_list.append(item)
 
     msg.tools_called = new_list
     session.add(msg)
     await session.flush()
+
+
+async def dismiss_tool_call(
+    session: AsyncSession,
+    *,
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
+    tool_call_id: str,
+    company_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> bool:
+    """Atomically dismiss a pending/retryable action owned by this user."""
+    q = (
+        select(AIMessage)
+        .join(AIConversation, AIMessage.conversation_id == AIConversation.id)
+        .where(
+            AIMessage.id == message_id,
+            AIMessage.conversation_id == conversation_id,
+            AIConversation.company_id == company_id,
+            AIConversation.user_id == user_id,
+        )
+        .with_for_update(of=AIMessage)
+    )
+    msg = (await session.execute(q)).scalars().first()
+    if msg is None or not msg.tools_called:
+        return False
+    now = datetime.now(timezone.utc)
+    changed = False
+    updated_items: list = []
+    for item in msg.tools_called:
+        if not changed and isinstance(item, dict) and item.get("id") == tool_call_id and _claimable(item, now):
+            dismissed = {**item, "status": "dismissed", "finished_at": now.isoformat()}
+            dismissed.pop("executing_since", None)
+            dismissed.pop("error", None)
+            updated_items.append(dismissed)
+            changed = True
+        else:
+            updated_items.append(item)
+    if not changed:
+        return False
+    msg.tools_called = updated_items
+    session.add(msg)
+    await session.flush()
+    return True
 
 
 def build_history_context(messages: list[AIMessage]) -> list[dict[str, str]]:
@@ -454,8 +552,15 @@ def build_history_context(messages: list[AIMessage]) -> list[dict[str, str]]:
     for msg in reversed_msgs:
         content = msg.content
         for record in pending_actions(msg.tools_called):
-            if record.get("status") != "failed":
-                content += f"\n[proposed action: {record.get('name')}]"
+            label = "action awaiting retry" if record.get("status") == "retryable" else "proposed action"
+            content += f"\n[{label}: {record.get('name')}]"
+        for record in (msg.tools_called or []):
+            if not isinstance(record, dict) or record.get("status") != "completed":
+                continue
+            summary = record.get("result_summary") or {}
+            identity = summary.get("id") or summary.get("entity_id") or summary.get("ref_id") or summary.get("event_id")
+            suffix = f" -> {identity}" if identity not in (None, "") else ""
+            content += f"\n[completed action: {record.get('name')}{suffix}]"
         msg_tokens = len(content) // _CHARS_PER_TOKEN
         if tokens_used + msg_tokens > HISTORY_TOKEN_BUDGET:
             break

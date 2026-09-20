@@ -263,3 +263,40 @@ async def test_estimate_credits_images(auth_client):
     assert len(data["files"]) == 3
     assert all(f["pages"] == 1 for f in data["files"])
     assert all(f["credits"] == 1 for f in data["files"])
+
+
+@pytest.mark.asyncio
+async def test_estimate_credits_is_per_unique_file_not_pages(auth_client):
+    """Page count is informational; one unique file is one billed model call."""
+    c, headers = auth_client
+    with (
+        patch("celerp_ai.routes._load_file_http") as mock_load,
+        patch("celerp_ai.routes.count_pages", return_value=15),
+    ):
+        mock_load.return_value = (b"pdf", {
+            "content_type": "application/pdf",
+            "filename": "statement.pdf",
+        })
+        r = await c.post(
+            "/ai/estimate-credits",
+            json={"file_ids": ["ai_up_pdf", "ai_up_pdf"]},
+            headers=headers,
+        )
+    assert r.status_code == 200
+    assert r.json() == {
+        "total_credits": 1,
+        "files": [{
+            "file_id": "ai_up_pdf",
+            "filename": "statement.pdf",
+            "pages": 15,
+            "credits": 1,
+        }],
+    }
+
+
+@pytest.mark.asyncio
+async def test_estimate_credits_empty_file_set_is_zero(auth_client):
+    c, headers = auth_client
+    r = await c.post("/ai/estimate-credits", json={"file_ids": []}, headers=headers)
+    assert r.status_code == 200
+    assert r.json() == {"total_credits": 0, "files": []}

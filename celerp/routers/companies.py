@@ -196,7 +196,7 @@ class SettingsImportRecord(BaseModel):
 
 
 class SettingsBatchImportRequest(BaseModel):
-    records: list[SettingsImportRecord]
+    records: list[SettingsImportRecord] = Field(..., max_length=500)
 
 
 class BatchImportResult(BaseModel):
@@ -426,6 +426,8 @@ async def batch_import_settings(
     body: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    _: None = require_permission("manage_company_settings"),
+    __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
     from sqlalchemy import select as _select
@@ -442,11 +444,18 @@ async def batch_import_settings(
     created = skipped = 0
     errors: list[str] = []
     for rec in body.records:
+        # This legacy transport is a company snapshot import, not arbitrary access
+        # to the system-event namespace. User/API-key/backup/migration events have
+        # different owners and must never be emitted against the company projection.
+        if rec.event_type != "sys.company.created":
+            if len(errors) < 10:
+                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+            skipped += 1
+            continue
         if rec.idempotency_key in existing_keys:
             skipped += 1
             continue
         try:
-            # Settings are stored on company; represent imports as sys.* events on company
             await emit_event(
                 session,
                 company_id=company_id,
@@ -471,7 +480,12 @@ async def batch_import_settings(
 
 
 @router.post("/me/locations")
-async def create_location(payload: LocationCreate, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+async def create_location(
+    payload: LocationCreate,
+    company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_company_settings"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     loc = Location(
         id=uuid.uuid4(),
         company_id=company_id,
@@ -488,13 +502,15 @@ async def create_location(payload: LocationCreate, company_id=Depends(get_curren
 
 
 class LocationBatchImportRequest(BaseModel):
-    records: list[dict]
+    records: list[dict] = Field(..., max_length=500)
 
 
 @router.post("/me/locations/import/batch")
 async def import_locations_batch(
     payload: LocationBatchImportRequest,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_company_settings"),
+    __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     existing = {
@@ -534,7 +550,13 @@ async def list_locations(company_id=Depends(get_current_company_id), session: As
 
 
 @router.patch("/me/locations/{location_id}")
-async def patch_location(location_id: str, payload: LocationPatch, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+async def patch_location(
+    location_id: str,
+    payload: LocationPatch,
+    company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_company_settings"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     try:
         loc_uuid = uuid.UUID(location_id)
     except ValueError:
@@ -1072,6 +1094,8 @@ async def patch_taxes(
 async def import_taxes_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_company_settings"),
+    __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
     """Batch import tax rates into company.settings.taxes.
@@ -1185,6 +1209,8 @@ async def patch_payment_terms(
 async def import_payment_terms_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_company_settings"),
+    __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
     """Batch import payment terms into company.settings.payment_terms.
@@ -1398,6 +1424,8 @@ async def patch_purchasing_taxes(
 async def import_purchasing_taxes_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_company_settings"),
+    __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
     company = await session.get(Company, company_id)
@@ -1467,6 +1495,8 @@ async def patch_purchasing_payment_terms(
 async def import_purchasing_payment_terms_batch(
     payload: SettingsBatchImportRequest,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_company_settings"),
+    __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
     company = await session.get(Company, company_id)

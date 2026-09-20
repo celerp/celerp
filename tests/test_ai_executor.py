@@ -119,3 +119,27 @@ async def test_executor_real_app_parity_get_item(client, session):
     assert result["ok"] is True
     assert result["status"] == direct.status_code
     assert result["data"] == direct.json()
+
+
+@pytest.mark.asyncio
+async def test_successful_confirmed_write_large_result_stays_successful():
+    """A 2xx mutation must never become an apparent failure solely due to result size."""
+    from fastapi import FastAPI
+    from celerp.ai.tools import execute_agent_capability
+
+    app = FastAPI()
+
+    @app.post("/write")
+    async def write():
+        return {"payload": "x" * 5000}
+
+    capability = {
+        "method": "POST", "path": "/write", "path_names": (), "query_names": (),
+        "expects_body": False, "inject_idempotency": False, "requires_confirmation": True,
+    }
+    result = await execute_agent_capability(
+        app, "Bearer test", capability, {}, "tool-call-1", result_max_bytes=100,
+    )
+    assert result["ok"] is True
+    assert result["status"] == 200
+    assert result["data"]["result_omitted"] is True

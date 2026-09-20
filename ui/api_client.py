@@ -342,16 +342,16 @@ async def batch_import(token: str, path: str, records: list[dict], upsert: bool 
         return r.json()
 
 
-async def import_rows(token: str, rows: list[dict], upsert: bool = False) -> dict:
+async def import_rows(token: str, rows: list[dict], upsert: bool = False, idempotency_key: str | None = None) -> dict:
     """POST mapped inventory CSV rows to the shared import committer.
 
     Rows are raw column-to-value dicts; the server owns location resolution and
-    creation, unit and quantity derivation, monetary conversion, per-row
+    creation, unit and quantity derivation, monetary conversion, command
     idempotency, and the category-schema follow-up. Rides the bulk pool for the
     same reason batch_import does: a large import holds its write connection.
     """
     async with _bulk_api_client(token, timeout=300.0) as c:
-        r = _raise(await c.post("/items/import/rows", json={"rows": rows, "upsert": upsert}))
+        r = _raise(await c.post("/items/import/rows", json={"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key}))
         return r.json()
 
 
@@ -2768,7 +2768,8 @@ async def ai_conversation_get(token: str, session_token: str, conversation_id: s
 
 
 async def ai_conversation_query(token: str, session_token: str, conversation_id: str,
-                                query: str, file_ids: list[str] | None = None) -> dict:
+                                query: str, file_ids: list[str] | None = None,
+                                document_mode: str = "chat") -> dict:
     """POST /ai/conversations/{id}/query - run the agent in a conversation.
 
     Returns {"answer", "model_used", "tools_called", "pending_actions"}; each
@@ -2779,6 +2780,8 @@ async def ai_conversation_query(token: str, session_token: str, conversation_id:
     payload: dict = {"query": query}
     if file_ids:
         payload["file_ids"] = file_ids
+    if document_mode != "chat":
+        payload["document_mode"] = document_mode
     async with _ai_api_client(token, session_token, timeout=150.0) as c:
         return _raise(await c.post(f"/ai/conversations/{conversation_id}/query", json=payload)).json()
 
@@ -2793,6 +2796,16 @@ async def ai_confirm_action(token: str, session_token: str, conversation_id: str
     async with _ai_api_client(token, session_token, timeout=60.0) as c:
         return _raise(await c.post(
             f"/ai/conversations/{conversation_id}/confirm",
+            json={"message_id": message_id, "tool_call_id": tool_call_id},
+        )).json()
+
+
+async def ai_dismiss_action(token: str, session_token: str, conversation_id: str,
+                            message_id: str, tool_call_id: str) -> dict:
+    """POST /ai/conversations/{id}/dismiss - persist dismissal of one proposal."""
+    async with _ai_api_client(token, session_token, timeout=30.0) as c:
+        return _raise(await c.post(
+            f"/ai/conversations/{conversation_id}/dismiss",
             json={"message_id": message_id, "tool_call_id": tool_call_id},
         )).json()
 

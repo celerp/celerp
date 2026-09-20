@@ -31,6 +31,7 @@ from celerp.ai.conversations import (
     claim_tool_call,
     create_conversation,
     delete_conversation,
+    dismiss_tool_call,
     finalize_tool_call,
     get_conversation,
     get_messages,
@@ -126,6 +127,25 @@ async def test_conversation_limit_per_user(session, company, user):
 
     convs = await list_conversations(session, company.id, user.id, limit=200)
     assert len(convs) <= MAX_CONVERSATIONS_PER_USER
+
+
+@pytest.mark.asyncio
+async def test_conversation_pruning_preserves_unresolved_action(session, company, user):
+    protected = await create_conversation(session, company.id, user.id, title="Needs decision")
+    await add_message(
+        session, protected.id, "assistant", "I can do that.",
+        tools_called=[_pending_record("keep-pending")],
+    )
+    await session.commit()
+    protected_id = protected.id
+
+    for i in range(MAX_CONVERSATIONS_PER_USER):
+        await create_conversation(session, company.id, user.id, title=f"New {i}")
+    await session.commit()
+
+    assert await get_conversation(session, protected_id, company.id, user.id) is not None
+    convs = await list_conversations(session, company.id, user.id, limit=MAX_CONVERSATIONS_PER_USER + 10)
+    assert len(convs) == MAX_CONVERSATIONS_PER_USER + 1
 
 
 @pytest.mark.asyncio
@@ -252,6 +272,25 @@ async def test_message_limit_per_conversation(session, company, user):
     assert len(msgs) <= MAX_MESSAGES_PER_CONVERSATION
 
 
+@pytest.mark.asyncio
+async def test_message_pruning_preserves_unresolved_action(session, company, user):
+    conv = await create_conversation(session, company.id, user.id)
+    protected = await add_message(
+        session, conv.id, "assistant", "I can do that.",
+        tools_called=[_pending_record("keep-pending")],
+    )
+    await session.commit()
+    protected_id = protected.id
+
+    for i in range(MAX_MESSAGES_PER_CONVERSATION):
+        await add_message(session, conv.id, "user", f"m{i}")
+    await session.commit()
+
+    assert await session.get(AIMessage, protected_id) is not None
+    msgs = await get_messages(session, conv.id, limit=MAX_MESSAGES_PER_CONVERSATION + 10)
+    assert len(msgs) == MAX_MESSAGES_PER_CONVERSATION + 1
+
+
 # ── history context ──────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -364,17 +403,16 @@ def test_pending_actions_filters_status_and_expiry():
     assert [r["id"] for r in result] == ["keep"]
 
 
-def test_pending_actions_reports_stale_executing_as_failed():
-    """A claim that never finalized is shown as failed with an explanation, not hidden."""
+def test_pending_actions_reports_stale_executing_as_retryable():
+    """A claim that never finalized can safely retry the same immutable action id."""
     stale_since = (datetime.now(timezone.utc) - timedelta(seconds=EXECUTING_STALE_S + 1)).isoformat()
     stale = {**_pending_record("lost"), "status": "executing", "executing_since": stale_since}
     result = pending_actions([stale])
     assert result[0]["id"] == "lost"
-    assert result[0]["status"] == "failed"
+    assert result[0]["status"] == "retryable"
     assert result[0]["error"] == UNFINISHED_ACTION_TEXT
-    assert build_history_context([SimpleNamespace(role="assistant", content="hi", tools_called=[stale])]) == [
-        {"role": "assistant", "content": "hi"}
-    ]
+    history = build_history_context([SimpleNamespace(role="assistant", content="hi", tools_called=[stale])])
+    assert "[action awaiting retry: create_contact]" in history[0]["content"]
 
 
 @pytest_asyncio.fixture
@@ -452,12 +490,50 @@ async def test_finalize_tool_call_records_terminal_state(session, company, user,
     await session.refresh(msg)
     record = msg.tools_called[0]
     assert record["status"] == "completed"
-    assert record["result_status"] == 201
+    assert record["result_summary"] == {"id": "x", "http_status": 201}
     assert record["name"] == "create_contact"
-    # No result payload is ever persisted.
-    assert "data" not in record and "arguments" not in record
-    # The name still projects for tool_names.
+    # Keep the immutable approved arguments for audit/retry history, but never the
+    # arbitrary response body.
+    assert record["arguments"] == {"body": {"name": "Acme"}}
+    assert "data" not in record
     assert tool_names(msg.tools_called) == ["create_contact"]
+    history = build_history_context([msg])
+    assert "[completed action: create_contact -> x]" in history[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_retryable_action_reclaims_same_tool_call(session, company, user, assistant_msg):
+    conv, msg = assistant_msg
+    await claim_tool_call(
+        session, conversation_id=conv.id, message_id=msg.id, tool_call_id="call_1",
+        company_id=company.id, user_id=user.id,
+    )
+    await finalize_tool_call(
+        session, message_id=msg.id, tool_call_id="call_1", status="retryable",
+        result={"ok": False, "status": 503}, error="temporarily unavailable",
+    )
+    await session.commit()
+
+    retried = await claim_tool_call(
+        session, conversation_id=conv.id, message_id=msg.id, tool_call_id="call_1",
+        company_id=company.id, user_id=user.id,
+    )
+    assert retried is not None
+    assert retried["id"] == "call_1"
+    assert retried["arguments"] == {"body": {"name": "Acme"}}
+
+
+@pytest.mark.asyncio
+async def test_dismiss_tool_call_persists(session, company, user, assistant_msg):
+    conv, msg = assistant_msg
+    assert await dismiss_tool_call(
+        session, conversation_id=conv.id, message_id=msg.id, tool_call_id="call_1",
+        company_id=company.id, user_id=user.id,
+    ) is True
+    await session.commit()
+    await session.refresh(msg)
+    assert msg.tools_called[0]["status"] == "dismissed"
+    assert pending_actions(msg.tools_called) == []
 
 
 @pytest.mark.asyncio

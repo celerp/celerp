@@ -31,11 +31,13 @@ Endpoints:
 
 from __future__ import annotations
 
+import copy
 import json
 import secrets
 import uuid
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse, JSONResponse
@@ -54,6 +56,7 @@ from celerp.ai.conversations import (
     claim_tool_call,
     create_conversation,
     delete_conversation,
+    dismiss_tool_call,
     finalize_tool_call,
     get_conversation,
     get_message,
@@ -67,14 +70,14 @@ from celerp.ai.conversations import (
     tool_names,
 )
 from celerp.ai.memory import get_memory
-from celerp.ai.page_count import calculate_credits, credits_for_pages, count_pages
+from celerp.ai.page_count import count_pages
 from celerp.ai.quota import get_quota_status
-from celerp.ai.service import PROPOSAL_TTL_S, AIResponse, AgentResult, run_agent, run_query
+from celerp.ai.service import PROPOSAL_TTL_S, AgentResult, run_agent
 from celerp.ai.tools import compile_agent_capabilities, execute_agent_capability
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.ai import AIBatchJob
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import get_current_company_settings, require_permission
 from celerp.session_gate import require_session_token
 
@@ -142,10 +145,10 @@ class KVRequest(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _load_file_http(fid: str, company_id) -> tuple[bytes, dict]:
+def _load_file_http(fid: str, company_id, user_id) -> tuple[bytes, dict]:
     """Wrap load_file with HTTP error mapping."""
     try:
-        return load_file(fid, company_id)
+        return load_file(fid, company_id, user_id)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"File {fid} not found")
     except PermissionError:
@@ -155,7 +158,7 @@ def _load_file_http(fid: str, company_id) -> tuple[bytes, dict]:
 _TABLE_TYPES = frozenset({"text/csv", XLSX_CONTENT_TYPE})
 
 
-def _attachment_kinds(file_ids: list[str] | None, company_id) -> set[str]:
+def _attachment_kinds(file_ids: list[str] | None, company_id, user_id) -> set[str]:
     """Classify attachments as ``document`` (images, PDFs) or ``table`` (CSV, XLSX).
 
     Every id is loaded first, so a missing or foreign file fails the request
@@ -163,7 +166,7 @@ def _attachment_kinds(file_ids: list[str] | None, company_id) -> set[str]:
     """
     kinds: set[str] = set()
     for fid in file_ids or []:
-        _, meta = _load_file_http(fid, company_id)
+        _, meta = _load_file_http(fid, company_id, user_id)
         kinds.add("table" if meta.get("content_type") in _TABLE_TYPES else "document")
     return kinds
 
@@ -181,23 +184,30 @@ async def ai_query(
     body: QueryRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    role: str = Depends(get_current_role),
+    company_settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> QueryResponse:
-    """Run a one-off AI query against live ERP data, outside any conversation."""
-    result: AIResponse = await run_query(
+    """Run a one-off read-only agent query against live canonical ERP APIs."""
+    memory = await get_memory(session, company_id)
+    result: AgentResult = await run_agent(
+        app=request.app,
+        authorization=request.headers.get("authorization", ""),
         query=body.query,
-        session=session,
         company_id=company_id,
-        file_ids=body.file_ids,
+        company_settings=company_settings,
+        role=role,
         user_id=user.id,
+        memory=memory,
+        file_ids=body.file_ids,
+        history=[],
+        read_only=True,
     )
     if result.error:
         raise HTTPException(status_code=502, detail=result.error)
     return QueryResponse(
-        answer=result.answer,
-        model_used=result.model_used,
-        tools_called=result.tools_called,
-        pending_actions=[],
+        answer=result.answer, model_used=result.model_used,
+        tools_called=result.tools_called, pending_actions=[],
     )
 
 
@@ -205,20 +215,28 @@ async def ai_query(
 async def estimate_credits(
     body: EstimateRequest,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
 ) -> EstimateResponse:
-    """Preview the credit cost for a list of uploaded files before submitting a query."""
+    """Preview the relay's current per-file credit cost.
+
+    Page counts remain informational; the cloud gateway charges one credit per
+    model request/file, so local estimates must not maintain a second pricing
+    formula that can drift from the authoritative meter.
+    """
     file_estimates: list[FileEstimate] = []
-    for fid in body.file_ids:
-        data, meta = _load_file_http(fid, company_id)
+    # Batch execution deduplicates repeated attachment IDs while preserving
+    # order, so the estimate must use that same canonical file set.
+    for fid in dict.fromkeys(body.file_ids):
+        data, meta = _load_file_http(fid, company_id, user.id)
         pages = count_pages(data, meta.get("content_type", "application/octet-stream"))
         file_estimates.append(FileEstimate(
             file_id=fid,
             filename=meta.get("filename", fid),
             pages=pages,
-            credits=credits_for_pages(pages),
+            credits=1,
         ))
 
-    total = calculate_credits([f.pages for f in file_estimates]) if file_estimates else 1
+    total = len(file_estimates)
     return EstimateResponse(total_credits=total, files=file_estimates)
 
 
@@ -228,6 +246,7 @@ async def ai_upload(
     request: Request,
     files: list[UploadFile] = File(...),
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
 ) -> dict:
     """Upload files for AI batch processing. Returns list of file IDs."""
     if len(files) > 20:
@@ -260,6 +279,7 @@ async def ai_upload(
             "content_type": file.content_type,
             "size": size,
             "company_id": str(company_id),
+            "user_id": str(user.id),
         }
         meta_path.write_text(json.dumps(meta))
         file_ids.append(file_id)
@@ -268,9 +288,9 @@ async def ai_upload(
 
 
 @router.get("/file/{file_id}")
-async def ai_file(file_id: str, company_id=Depends(get_current_company_id)):
+async def ai_file(file_id: str, company_id=Depends(get_current_company_id), user=Depends(get_current_user)):
     """Retrieve a previously uploaded file."""
-    data, meta = _load_file_http(file_id, company_id)
+    data, meta = _load_file_http(file_id, company_id, user.id)
     bin_path = upload_dir() / f"{file_id}.bin"
     return FileResponse(bin_path, media_type=meta.get("content_type"))
 
@@ -291,6 +311,7 @@ async def get_ai_memory(
 @router.delete("/memory", status_code=204)
 async def clear_ai_memory(
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> None:
     """Wipe all AI memory for this company."""
@@ -302,6 +323,7 @@ async def clear_ai_memory(
 async def add_ai_memory_note(
     body: NoteRequest,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Append a note to AI memory (max 50 notes, oldest trimmed)."""
@@ -314,6 +336,7 @@ async def add_ai_memory_note(
 async def set_ai_memory_kv(
     body: KVRequest,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_company_settings"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set a key-value fact in AI memory (max 100 keys)."""
@@ -371,6 +394,7 @@ class RenameConversationRequest(BaseModel):
 class ConversationQueryRequest(BaseModel):
     query: str = Field("", max_length=2000)
     file_ids: list[str] | None = None
+    document_mode: Literal["chat", "receipts"] = "chat"
 
     @model_validator(mode="after")
     def _require_query_or_files(self) -> "ConversationQueryRequest":
@@ -520,7 +544,7 @@ async def get_conv(
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     msgs = await get_messages(session, conversation_id)
-    jobs = await list_conversation_jobs(session, conversation_id, company_id)
+    jobs = await list_conversation_jobs(session, conversation_id, company_id, user.id)
     return ConversationDetail(
         id=conv.id, title=conv.title,
         created_at=conv.created_at.isoformat(), updated_at=conv.updated_at.isoformat(),
@@ -539,6 +563,9 @@ async def delete_conv(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     """Delete a conversation and all its messages."""
+    jobs = await list_conversation_jobs(session, conversation_id, company_id, user.id)
+    if any(job.status in ("pending", "running") for job in jobs):
+        raise _conflict("conversation_busy", "This conversation still has files being processed. Wait for the job to finish before deleting it.")
     found = await delete_conversation(session, conversation_id, company_id, user.id)
     if not found:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -603,30 +630,29 @@ async def query_in_conversation(
     background_tasks: BackgroundTasks,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    role: str = Depends(get_current_role),
     company_settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ):
     """Ask the assistant within a conversation.
 
-    Images and PDFs are receipts or invoices: they go to a reading job and the
-    reply is 202 with the job id; the thread shows progress from the
-    notification stream and offers bill proposals when the job finishes.
-    Text, CSV and XLSX run the agent inline: reads execute against the app the
-    user sees and changes come back as pending actions to confirm. A failed run
-    is stored as an assistant message so the thread keeps its history.
+    Normal messages, including images and PDFs, run the agent inline. Receipt
+    extraction is an explicit ``document_mode=receipts`` workflow that creates
+    a background reading job. Reads execute against the app the user sees and
+    changes come back as pending actions to confirm. A failed run is stored as
+    an assistant message so the thread keeps its history.
     """
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    kinds = _attachment_kinds(body.file_ids, company_id)
-    if kinds == {"document", "table"}:
-        raise HTTPException(
-            status_code=400,
-            detail="Attach receipts and statements in separate messages.",
-        )
-
-    if "document" in kinds:
+    kinds = _attachment_kinds(body.file_ids, company_id, user.id)
+    if body.document_mode == "receipts":
+        if not body.file_ids or kinds != {"document"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Receipt processing accepts attached images and PDFs only.",
+            )
         user_msg = await add_message(
             session, conversation_id, "user", body.query, file_ids=body.file_ids,
         )
@@ -639,7 +665,7 @@ async def query_in_conversation(
             raise HTTPException(status_code=400, detail=str(exc))
         await session.commit()
         await session.refresh(job)
-        _launch_batch(background_tasks, job, company_id, user.id, body.query, body.file_ids or [])
+        _launch_batch(background_tasks, job, company_id, user.id, body.query, list(job.file_ids or []))
         return JSONResponse(
             status_code=202,
             content={"job_id": str(job.id), "message_id": str(user_msg.id)},
@@ -661,6 +687,7 @@ async def query_in_conversation(
         company_id=company_id,
         company_settings=company_settings,
         user_id=user.id,
+        role=role,
         memory=memory,
         file_ids=body.file_ids,
         history=history,
@@ -693,6 +720,62 @@ async def query_in_conversation(
     )
 
 
+def _resolve_action_arguments(records: list, record: dict) -> tuple[dict | None, str | None]:
+    """Resolve server-authored action-result bindings into a fresh arguments dict.
+
+    Bindings are never model-controlled. A dependent action stays pending until each
+    source action has completed and persisted the requested result key.
+    """
+    arguments = copy.deepcopy(record.get("arguments") or {})
+    by_id = {r.get("id"): r for r in records if isinstance(r, dict) and r.get("id")}
+    for binding in record.get("bindings") or []:
+        if not isinstance(binding, dict):
+            return None, "This action has an invalid dependency."
+        source = by_id.get(binding.get("source_action_id"))
+        key = binding.get("source_result_key")
+        path = binding.get("target_path")
+        if not isinstance(source, dict) or source.get("status") != "completed":
+            return None, "Confirm the required earlier action first."
+        summary = source.get("result_summary")
+        if not isinstance(summary, dict) or key not in summary:
+            return None, "The earlier action completed without the result this action needs."
+        if not isinstance(path, list) or not path or not all(isinstance(p, str) and p for p in path):
+            return None, "This action has an invalid dependency target."
+        target = arguments
+        for part in path[:-1]:
+            child = target.get(part)
+            if not isinstance(child, dict):
+                child = {}
+                target[part] = child
+            target = child
+        target[path[-1]] = summary[key]
+    return arguments, None
+
+
+async def _resolved_action_arguments(
+    session: AsyncSession, *, conversation_id: uuid.UUID, message_id: uuid.UUID,
+    tool_call_id: str, company_id, user_id,
+) -> tuple[dict | None, dict | None, dict | None]:
+    """Return resolved arguments, or an action-style dependency error.
+
+    This runs before the claim so an unmet dependency never consumes or fails the
+    dependent proposal. Ownership is checked through the conversation itself.
+    """
+    conv = await get_conversation(session, conversation_id, company_id, user_id)
+    if conv is None:
+        return None, {"code": "action_not_pending", "message": "This action is no longer pending."}, None
+    msg = await get_message(session, message_id, conversation_id)
+    if msg is None or not msg.tools_called:
+        return None, {"code": "action_not_pending", "message": "This action is no longer pending."}, None
+    record = next((r for r in msg.tools_called if isinstance(r, dict) and r.get("id") == tool_call_id), None)
+    if record is None:
+        return None, {"code": "action_not_pending", "message": "This action is no longer pending."}, None
+    arguments, error = _resolve_action_arguments(msg.tools_called, record)
+    if error:
+        return None, {"code": "action_dependency_not_ready", "message": error}, record
+    return arguments, None, record
+
+
 async def _run_confirmed_action(
     request: Request,
     session: AsyncSession,
@@ -706,11 +789,25 @@ async def _run_confirmed_action(
 ) -> dict:
     """Claim, execute and finalize one pending action; never raises for action state.
 
-    The action is claimed under a row lock and committed before execution, so a
-    crash mid-flight leaves it in ``executing`` and never runs twice (fail
-    closed). The capability re-enters the app with the user's bearer token, so
-    the target route enforces every module permission.
+    The action is claimed under a row lock and committed before execution. A
+    crash/transport ambiguity becomes retryable; the retry reuses the immutable
+    tool-call id and therefore the canonical operation's idempotency identity.
+    The capability re-enters the app with the user's bearer token, so the target
+    route enforces every module permission.
     """
+    resolved_arguments, dependency_error, dependency_record = await _resolved_action_arguments(
+        session, conversation_id=conversation_id, message_id=message_id,
+        tool_call_id=tool_call_id, company_id=company_id, user_id=user_id,
+    )
+    if dependency_error is not None:
+        return {
+            "tool_call_id": tool_call_id,
+            "name": (dependency_record or {}).get("name"),
+            "title": (dependency_record or {}).get("title") or (dependency_record or {}).get("name"),
+            "ok": False, "status": 409, "data": None,
+            "error": dependency_error,
+        }
+
     record = await claim_tool_call(
         session,
         conversation_id=conversation_id,
@@ -730,14 +827,14 @@ async def _run_confirmed_action(
     if capability is None:
         await finalize_tool_call(
             session, message_id=message_id, tool_call_id=tool_call_id,
-            status="failed", result=None,
+            status="failed", result=None, error="This action is no longer available or permitted.",
         )
         await session.commit()
         return {
             "tool_call_id": tool_call_id, "ok": False, "status": 409, "data": None,
             "error": {
                 "code": "capability_unavailable",
-                "message": "The module this action needs is not enabled.",
+                "message": "This action is no longer available or permitted.",
             },
         }
 
@@ -745,12 +842,19 @@ async def _run_confirmed_action(
         request.app,
         request.headers.get("authorization", ""),
         capability,
-        record["arguments"],
+        resolved_arguments or {},
         record["id"],
+    )
+    action_error = _action_error(result)
+    action_status = (
+        "completed" if result["ok"]
+        else "retryable" if _retryable_action_result(result)
+        else "failed"
     )
     await finalize_tool_call(
         session, message_id=message_id, tool_call_id=tool_call_id,
-        status="completed" if result["ok"] else "failed", result=result,
+        status=action_status, result=result,
+        error=(action_error or {}).get("message") if action_error else None,
     )
     await session.commit()
     return {
@@ -759,9 +863,19 @@ async def _run_confirmed_action(
         "title": record.get("title") or record["name"],
         "ok": result["ok"],
         "status": result["status"],
+        "action_status": action_status,
         "data": result.get("data"),
-        "error": _action_error(result),
+        "error": action_error,
     }
+
+
+def _retryable_action_result(result: dict) -> bool:
+    """True only when execution did not produce a definitive business response."""
+    try:
+        status = int(result.get("status") or 0)
+    except (TypeError, ValueError):
+        status = 0
+    return status == 0 or status in {408, 425, 429} or status >= 500
 
 
 def _action_error(result: dict) -> dict | None:
@@ -782,7 +896,7 @@ def _action_error(result: dict) -> dict | None:
             "message": str(detail) if detail else f"The request failed with status {result.get('status')}."}
 
 
-_ACTION_STATE_CODES = frozenset({"action_not_pending", "capability_unavailable"})
+_ACTION_STATE_CODES = frozenset({"action_not_pending", "capability_unavailable", "action_dependency_not_ready"})
 
 
 @router.post("/conversations/{conversation_id}/confirm")
@@ -793,6 +907,7 @@ async def confirm_action(
     body: ConfirmActionRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    role: str = Depends(get_current_role),
     company_settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -802,7 +917,7 @@ async def confirm_action(
     An action that is no longer pending, or whose module is not enabled, is 409.
     """
     outcome = await _run_confirmed_action(
-        request, session, compile_agent_capabilities(request.app, company_settings),
+        request, session, compile_agent_capabilities(request.app, company_settings, role),
         conversation_id=conversation_id, message_id=body.message_id,
         tool_call_id=body.tool_call_id, company_id=company_id, user_id=user.id,
     )
@@ -810,6 +925,27 @@ async def confirm_action(
     if error.get("code") in _ACTION_STATE_CODES:
         raise HTTPException(status_code=409, detail=error)
     return outcome
+
+
+@router.post("/conversations/{conversation_id}/dismiss")
+@_limiter.limit("60/minute")
+async def dismiss_action(
+    request: Request,
+    conversation_id: uuid.UUID,
+    body: ConfirmActionRequest,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Persist dismissal of one proposal so it stays gone after reload."""
+    dismissed = await dismiss_tool_call(
+        session, conversation_id=conversation_id, message_id=body.message_id,
+        tool_call_id=body.tool_call_id, company_id=company_id, user_id=user.id,
+    )
+    if not dismissed:
+        raise _conflict("action_not_pending", "This action is no longer pending.")
+    await session.commit()
+    return {"dismissed": True, "tool_call_id": body.tool_call_id}
 
 
 def _selected_action_ids(records: list[dict], selection: list[str] | None) -> list[str]:
@@ -820,7 +956,11 @@ def _selected_action_ids(records: list[dict], selection: list[str] | None) -> li
     not pending, so its row reports ``action_not_pending`` instead of vanishing.
     An empty result means nothing selected is pending.
     """
-    pending = [r["id"] for r in records if r.get("status", "pending") == "pending"]
+    # ``records`` already comes from pending_actions(), which contains every
+    # action the user may act on: fresh proposals plus retryable/stale claims.
+    # Treat retryable actions exactly like pending ones so a bulk review can
+    # safely retry the same immutable tool-call/idempotency identity.
+    pending = [r["id"] for r in records]
     if selection is None:
         return pending
     wanted = list(dict.fromkeys(selection))
@@ -838,6 +978,7 @@ async def confirm_all(
     body: ConfirmAllRequest,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    role: str = Depends(get_current_role),
     company_settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -857,7 +998,7 @@ async def confirm_all(
     if not ids:
         raise _conflict("action_not_pending", "Nothing is pending on this message.")
 
-    capabilities = compile_agent_capabilities(request.app, company_settings)
+    capabilities = compile_agent_capabilities(request.app, company_settings, role)
     results = []
     for tool_call_id in ids:
         results.append(await _run_confirmed_action(
@@ -907,8 +1048,8 @@ def _same_text(a, b: str) -> bool:
 
 
 def _proposal_record(name: str, arguments: dict, *, title: str, warnings: list[str],
-                     file_id: str, now: datetime) -> dict:
-    return {
+                     file_id: str, now: datetime, bindings: list[dict] | None = None) -> dict:
+    record = {
         "id": f"prop_{secrets.token_hex(12)}",
         "name": name,
         "arguments": arguments,
@@ -918,6 +1059,11 @@ def _proposal_record(name: str, arguments: dict, *, title: str, warnings: list[s
         "warnings": warnings,
         "file_id": file_id,
     }
+    if bindings:
+        # Server-authored result bindings let one confirmed canonical action feed a
+        # later canonical action without exposing placeholders to the model or user.
+        record["bindings"] = bindings
+    return record
 
 
 class _Lookups:
@@ -985,16 +1131,21 @@ async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now:
 
     vendor = str(extraction.get("vendor_name") or "").strip()
     contact_id = None
+    vendor_create: dict | None = None
+    vendor_unlinked = False
     if vendor:
         found = await lookups.contact_id(vendor, warnings)
         if found is False:
             if lookups.has(_CONTACTS_CREATE):
-                records.append(_proposal_record(
-                    _CONTACTS_CREATE, {"body": {"name": vendor, "contact_type": "vendor"}},
-                    title=f"Add vendor {vendor}", warnings=[], file_id=file_id, now=now,
-                ))
+                vendor_create = _proposal_record(
+                    _CONTACTS_CREATE,
+                    {"body": {"name": vendor, "contact_type": "vendor"}},
+                    title=f"Create vendor {vendor}", warnings=[], file_id=file_id, now=now,
+                )
+                records.append(vendor_create)
             else:
-                warnings.append(f"No contact is named {vendor}; the bill carries the name only.")
+                vendor_unlinked = True
+                warnings.append("No matching vendor contact exists and you cannot create one from this review.")
         elif found:
             contact_id = found
     else:
@@ -1063,12 +1214,22 @@ async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now:
     body = {k: v for k, v in body.items() if v is not None}
 
     label = vendor or filename
+    bindings = None
+    if vendor_create is not None:
+        bindings = [{
+            "source_action_id": vendor_create["id"],
+            "source_result_key": "id",
+            "target_path": ["body", "contact_id"],
+        }]
     records.append(_proposal_record(
         _DOCS_CREATE, {"body": body},
         title=f"Create bill from {label}", warnings=warnings, file_id=file_id, now=now,
+        bindings=bindings,
     ))
     amount = f"{total:.2f} {currency}".strip()
     summary = f"{filename}: bill for {label}, {amount}, {len(line_items)} line(s)."
+    if vendor_unlinked:
+        summary += " No existing vendor contact was linked; the draft carries the vendor name only."
     if warnings:
         summary += f" {len(warnings)} point(s) need your attention."
     return records, summary
@@ -1082,37 +1243,74 @@ async def propose_from_job(
     job_id: uuid.UUID,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
+    role: str = Depends(get_current_role),
     company_settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Turn a finished reading job into bill proposals the user confirms.
 
-    Vendors are matched to contacts and lines to items by exact name or SKU;
-    an unknown vendor becomes a proposed contact ahead of its bill. Nothing is
-    written until the user confirms each card. Calling again returns the same
-    proposals.
+    Vendors are matched to existing contacts and lines to items by exact name
+    or SKU. When a vendor is missing and the user may create contacts, proposal order
+    is vendor first, bill second; the bill stores a server-side result binding to the
+    vendor action and resolves its returned id only when confirmation executes. Nothing
+    is written until the user confirms a card. Calling again returns the same proposals.
     """
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    job = await get_batch_job(session, job_id, company_id)
+    job = await get_batch_job(session, job_id, company_id, user.id)
     if job is None or job.conversation_id != conversation_id or job.user_id != user.id:
         raise HTTPException(status_code=404, detail="Job not found")
     if job.status in ("pending", "running"):
         raise _conflict("job_not_finished", "The files are still being read.")
-    if job.status == "failed":
+    result_files = (job.results or {}).get("files") or []
+    if job.status == "failed" and not any(entry.get("status") == "success" for entry in result_files):
         raise _conflict("job_failed", job.error or "None of the files could be read.")
 
     existing_id = (job.results or {}).get("proposal_message_id")
     if existing_id:
         msg = await get_message(session, uuid.UUID(existing_id), conversation_id)
         if msg is not None:
+            open_actions = pending_actions(msg.tools_called)
+            if open_actions:
+                return {
+                    "message_id": str(msg.id), "answer": msg.content,
+                    "pending_actions": _message_out(msg).pending_actions,
+                }
+            now = datetime.now(timezone.utc)
+            expired: list[dict] = []
+            for item in (msg.tools_called or []):
+                if not isinstance(item, dict) or item.get("status", "pending") != "pending":
+                    continue
+                try:
+                    is_expired = datetime.fromisoformat(str(item.get("expires_at") or "")) <= now
+                except ValueError:
+                    is_expired = True
+                if is_expired:
+                    refreshed = {**item}
+                    refreshed["id"] = f"proposal_{uuid.uuid4().hex}"
+                    refreshed["expires_at"] = (now + timedelta(seconds=PROPOSAL_TTL_S)).isoformat()
+                    refreshed.pop("status", None)
+                    refreshed.pop("finished_at", None)
+                    refreshed.pop("executing_since", None)
+                    refreshed.pop("error", None)
+                    expired.append(refreshed)
+            if expired:
+                refreshed_msg = await add_message(
+                    session, conversation_id, "assistant", msg.content, tools_called=expired,
+                )
+                job.results = {**(job.results or {}), "proposal_message_id": str(refreshed_msg.id)}
+                await session.commit()
+                return {
+                    "message_id": str(refreshed_msg.id), "answer": refreshed_msg.content,
+                    "pending_actions": _message_out(refreshed_msg).pending_actions,
+                }
             return {
                 "message_id": str(msg.id), "answer": msg.content,
-                "pending_actions": _message_out(msg).pending_actions,
+                "pending_actions": [],
             }
 
-    capabilities = compile_agent_capabilities(request.app, company_settings)
+    capabilities = compile_agent_capabilities(request.app, company_settings, role)
     if _DOCS_CREATE not in capabilities:
         raise _conflict("capability_unavailable", "The documents module is not enabled, so bills cannot be created.")
 
@@ -1147,6 +1345,7 @@ async def propose_from_job(
 @settings_router.get("/usage-stats")
 async def usage_stats(
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("manage_users"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Per-user AI usage for the current calendar month.
@@ -1155,13 +1354,13 @@ async def usage_stats(
     """
     from datetime import date, datetime, timezone
     from sqlalchemy import func, select
-    from celerp.models.ai import AIConversation, AIMessage
+    from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
     from celerp.models.company import User
 
     today = date.today()
     month_start = datetime(today.year, today.month, 1, tzinfo=timezone.utc)
 
-    rows = (await session.execute(
+    message_rows = (await session.execute(
         select(
             AIConversation.user_id,
             func.count(AIMessage.id).label("query_count"),
@@ -1175,10 +1374,32 @@ async def usage_stats(
             AIMessage.created_at >= month_start,
         )
         .group_by(AIConversation.user_id)
-        .order_by(func.count(AIMessage.id).desc())
+    )).all()
+    batch_rows = (await session.execute(
+        select(
+            AIBatchJob.user_id,
+            func.sum(AIBatchJob.credits_consumed).label("credits_used"),
+            func.max(AIBatchJob.created_at).label("last_query_at"),
+        )
+        .where(AIBatchJob.company_id == company_id, AIBatchJob.created_at >= month_start)
+        .group_by(AIBatchJob.user_id)
     )).all()
 
-    user_ids = [r.user_id for r in rows]
+    metrics: dict = {
+        r.user_id: {
+            "query_count": int(r.query_count or 0),
+            "credits_used": int(r.credits_used or 0),
+            "last_query_at": r.last_query_at,
+        }
+        for r in message_rows
+    }
+    for r in batch_rows:
+        row = metrics.setdefault(r.user_id, {"query_count": 0, "credits_used": 0, "last_query_at": None})
+        row["credits_used"] += int(r.credits_used or 0)
+        if r.last_query_at and (row["last_query_at"] is None or r.last_query_at > row["last_query_at"]):
+            row["last_query_at"] = r.last_query_at
+
+    user_ids = list(metrics)
     users = {}
     if user_ids:
         user_rows = (await session.execute(
@@ -1186,16 +1407,17 @@ async def usage_stats(
         )).all()
         users = {u.id: u.name for u in user_rows}
 
+    ordered = sorted(metrics.items(), key=lambda item: (-item[1]["query_count"], str(item[0])))
     return {
         "users": [
             {
-                "user_id": str(r.user_id),
-                "user_name": users.get(r.user_id, str(r.user_id)),
-                "query_count": r.query_count,
-                "credits_used": r.credits_used or 0,
-                "last_query_at": r.last_query_at.isoformat() if r.last_query_at else None,
+                "user_id": str(user_id),
+                "user_name": users.get(user_id, str(user_id)),
+                "query_count": row["query_count"],
+                "credits_used": row["credits_used"],
+                "last_query_at": row["last_query_at"].isoformat() if row["last_query_at"] else None,
             }
-            for r in rows
+            for user_id, row in ordered
         ]
     }
 
@@ -1204,10 +1426,11 @@ async def usage_stats(
 async def batch_status(
     job_id: uuid.UUID,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchJobOut:
     """Get batch job status and results."""
-    job = await get_batch_job(session, job_id, company_id)
+    job = await get_batch_job(session, job_id, company_id, user.id)
     if job is None:
         raise HTTPException(status_code=404, detail="Batch job not found")
     return _job_out(job)

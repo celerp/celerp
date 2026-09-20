@@ -17,6 +17,7 @@ from fastapi.routing import APIRoute
 
 from celerp.modules.loader import loaded_modules
 from celerp.modules.registry import get_enabled
+from celerp.services.permissions import role_has_permission
 
 
 # ---------------------------------------------------------------------------
@@ -60,8 +61,8 @@ def _inline_local_refs(value: Any, schemas: dict[str, Any], seen: tuple[str, ...
     return {key: _inline_local_refs(child, schemas, seen) for key, child in value.items()}
 
 
-def _api_routes(app: Any) -> list[tuple[str, set[str], Any]]:
-    """``(path_format, methods, endpoint)`` for every APIRoute the app serves.
+def _api_routes(app: Any) -> list[tuple[str, set[str], APIRoute]]:
+    """``(path_format, methods, route)`` for every APIRoute the app serves.
 
     FastAPI 0.141 stopped flattening included routers into ``app.routes``; the
     prefixed path then lives on a route context. Earlier releases expose the
@@ -70,15 +71,32 @@ def _api_routes(app: Any) -> list[tuple[str, set[str], Any]]:
     iter_route_contexts = getattr(fastapi.routing, "iter_route_contexts", None)
     if iter_route_contexts is not None:
         return [
-            (str(context.path_format or context.path or ""), set(context.methods or ()), context.endpoint)
+            (str(context.path_format or context.path or ""), set(context.methods or ()), context.original_route)
             for context in iter_route_contexts(app.routes)
             if isinstance(context.original_route, APIRoute)
         ]
     return [
-        (str(route.path_format or route.path), set(route.methods or ()), route.endpoint)
+        (str(route.path_format or route.path), set(route.methods or ()), route)
         for route in app.routes
         if isinstance(route, APIRoute)
     ]
+
+
+def _route_permissions(route: APIRoute) -> tuple[str, ...]:
+    """Permission keys already enforced by this FastAPI route, recursively.
+
+    ``require_permission`` annotates its dependency guard with ``required_permission``;
+    reading that same dependency graph keeps the agent tool surface DRY with the API.
+    """
+    found: set[str] = set()
+    stack = list(getattr(route.dependant, "dependencies", ()) or ())
+    while stack:
+        dep = stack.pop()
+        key = getattr(getattr(dep, "call", None), "required_permission", None)
+        if isinstance(key, str) and key:
+            found.add(key)
+        stack.extend(getattr(dep, "dependencies", ()) or ())
+    return tuple(sorted(found))
 
 
 def _agent_route_owner(endpoint: Any, company_settings: dict[str, Any]) -> str | None:
@@ -120,18 +138,25 @@ def _json_response(operation: dict[str, Any]) -> bool:
     return False
 
 
-def compile_agent_capabilities(app: Any, company_settings: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+def compile_agent_capabilities(
+    app: Any,
+    company_settings: dict[str, Any] | None = None,
+    role: str | None = None,
+) -> dict[str, dict[str, Any]]:
     """Compile explicitly marked live FastAPI operations into model tools.
 
     FastAPI/OpenAPI remains the schema source of truth. Direct module operations
     are limited to first-party loaded modules; core celerp.* routes may opt in.
 
-    A mutation compiles only when a retry cannot apply it twice: either its JSON
-    body carries ``idempotency_key`` (stripped from the tool schema and injected
-    per tool call) or the operation declares ``x-celerp-agent-idempotent``,
-    meaning the route dedupes by construction (a fixed entity id, a state that
-    re-applies to the same value, or an existing record returned instead of a
-    duplicate). Anything else is skipped.
+    A mutation compiles only when the canonical route explicitly declares
+    ``x-celerp-agent-idempotent``. Merely exposing an ``idempotency_key`` field
+    is not proof that secondary effects are replay-safe. When the proven route
+    has such a field, the compiler hides it and injects the immutable tool-call
+    identity server-side.
+
+    When ``role`` is supplied, tools whose existing FastAPI permission
+    dependencies deny that role are omitted before the model sees them. The
+    route still re-checks authorization on execution.
     """
     settings = company_settings or {}
     openapi = app.openapi()
@@ -152,13 +177,20 @@ def compile_agent_capabilities(app: Any, company_settings: dict[str, Any] | None
                 continue
 
             matching = [
-                endpoint for route_path, methods, endpoint in routes
+                route for route_path, methods, route in routes
                 if route_path == path and method in methods
             ]
             if len(matching) != 1:
                 continue
-            owner = _agent_route_owner(matching[0], settings)
+            route = matching[0]
+            owner = _agent_route_owner(route.endpoint, settings)
             if owner is None:
+                continue
+            required_permissions = _route_permissions(route)
+            if role is not None and any(
+                not role_has_permission(settings, role, permission)
+                for permission in required_permissions
+            ):
                 continue
 
             operation_id = operation.get("operationId")
@@ -212,22 +244,26 @@ def compile_agent_capabilities(app: Any, company_settings: dict[str, Any] | None
                     continue
                 body_required = bool(request_body.get("required"))
 
+            requires_confirmation = (
+                method in _AGENT_MUTATIONS
+                and operation.get("x-celerp-agent-confirm") is not False
+            )
             inject_idempotency = False
-            if method in _AGENT_MUTATIONS and operation.get("x-celerp-agent-idempotent") is not True:
-                if body_schema is None:
+            if requires_confirmation:
+                if operation.get("x-celerp-agent-idempotent") is not True:
                     continue
-                props = body_schema.get("properties")
-                if not isinstance(props, dict) or "idempotency_key" not in props:
-                    continue
-                inject_idempotency = True
-                body_schema = dict(body_schema)
-                new_props = dict(props)
-                new_props.pop("idempotency_key", None)
-                body_schema["properties"] = new_props
-                if isinstance(body_schema.get("required"), list):
-                    body_schema["required"] = [
-                        item for item in body_schema["required"] if item != "idempotency_key"
-                    ]
+                if body_schema is not None:
+                    props = body_schema.get("properties")
+                    if isinstance(props, dict) and "idempotency_key" in props:
+                        inject_idempotency = True
+                        body_schema = dict(body_schema)
+                        new_props = dict(props)
+                        new_props.pop("idempotency_key", None)
+                        body_schema["properties"] = new_props
+                        if isinstance(body_schema.get("required"), list):
+                            body_schema["required"] = [
+                                item for item in body_schema["required"] if item != "idempotency_key"
+                            ]
 
             tool_properties: dict[str, Any] = {}
             tool_required: list[str] = []
@@ -266,6 +302,8 @@ def compile_agent_capabilities(app: Any, company_settings: dict[str, Any] | None
                 "query_names": tuple(query_properties),
                 "expects_body": body_schema is not None,
                 "inject_idempotency": inject_idempotency,
+                "requires_confirmation": requires_confirmation,
+                "required_permissions": required_permissions,
                 "tool": {
                     "type": "function",
                     "function": {
@@ -380,6 +418,14 @@ async def execute_agent_capability(
 
     encoded = json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
     if len(encoded) > result_max_bytes:
+        if response.is_success and capability.get("requires_confirmation"):
+            # The write already returned success. Never turn that definite success into
+            # an apparent failure merely because its response is too large to retain;
+            # doing so would invite a needless retry of a mutation that already landed.
+            return {
+                "ok": True, "status": response.status_code,
+                "data": {"result_omitted": True, "detail": "Operation completed successfully."},
+            }
         return _agent_error(
             "result_too_large",
             "The capability result is too large; narrow the query or use pagination.",

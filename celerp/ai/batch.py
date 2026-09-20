@@ -38,10 +38,13 @@ from celerp.models.ai import AIBatchJob
 
 log = logging.getLogger(__name__)
 
-BATCH_CONCURRENCY = 10
+# Keep file decoding/base64 residency aligned with the transport's process-wide
+# model-call concurrency. A larger batch semaphore only lets extra 10 MB files sit
+# expanded in memory while call_llm waits on its own three-call gate.
+BATCH_CONCURRENCY = 3
 MAX_BATCH_FILES = 100
 
-INTERRUPTED_ERROR = "This job was interrupted by a restart. Attach the files again and resend."
+INTERRUPTED_ERROR = "This job was interrupted by a restart. Completed file results were kept; resend only files that did not finish."
 
 _BATCH_SYSTEM_PROMPT = """\
 You are reading one business document: a receipt, a supplier invoice, a bank or \
@@ -118,24 +121,29 @@ async def _process_single_file(
     file_id: str,
     query: str,
     company_id: uuid.UUID,
+    user_id: uuid.UUID,
     semaphore: asyncio.Semaphore,
 ) -> dict:
-    """Read one file through the model. Never raises; the result dict carries the outcome."""
-    try:
-        file = load_file_for_llm(file_id, company_id)
-    except (FileNotFoundError, PermissionError):
-        return {
-            "file_id": file_id,
-            "filename": file_id,
-            "status": "error",
-            "error": "This file is no longer available. Attach it again and resend.",
-        }
+    """Read one file through the model. Never raises; the result dict carries the outcome.
 
-    filename = file["filename"]
-    files = [file]
-    prompt = f"{query}\n\nRead the attached document." if query else "Read the attached document."
-
+    File loading/base64 encoding happens inside the concurrency bound so a large
+    batch cannot hold every encoded attachment in memory at once.
+    """
     async with semaphore:
+        try:
+            file = load_file_for_llm(file_id, company_id, user_id)
+        except (FileNotFoundError, PermissionError):
+            return {
+                "file_id": file_id,
+                "filename": file_id,
+                "status": "error",
+                "error": "This file is no longer available. Attach it again and resend.",
+            }
+
+        filename = file["filename"]
+        files = [file]
+        prompt = f"{query}\n\nRead the attached document." if query else "Read the attached document."
+
         try:
             result = await call_llm(BULK_EXTRACTION, _BATCH_SYSTEM_PROMPT, prompt, files=files)
         except Exception as exc:
@@ -167,6 +175,7 @@ async def create_batch_job(
     conversation_id: uuid.UUID | None = None,
 ) -> AIBatchJob:
     """Create a pending batch job record. Credits accrue per file as it runs."""
+    file_ids = list(dict.fromkeys(file_ids))
     if not file_ids:
         raise ValueError("Attach at least one file")
     if len(file_ids) > MAX_BATCH_FILES:
@@ -216,7 +225,7 @@ async def run_batch(
             await session.commit()
 
     tasks = [
-        _process_single_file(fid, query, company_id, semaphore)
+        _process_single_file(fid, query, company_id, user_id, semaphore)
         for fid in file_ids
     ]
 
@@ -233,6 +242,14 @@ async def run_batch(
         async with db_factory() as session:
             job = await session.get(AIBatchJob, job_id)
             if job:
+                persisted = list(((job.results or {}).get("files") or []))
+                persisted.append(result)
+                # Preserve the user's attachment order even though extraction finishes
+                # concurrently. File ids are upload identities; repeated ids, if any,
+                # retain their completion order after the first matching position.
+                order = {file_id: index for index, file_id in enumerate(file_ids)}
+                persisted.sort(key=lambda item: order.get(item.get("file_id"), len(order)))
+                job.results = {**(job.results or {}), "files": persisted}
                 job.completed_files = completed
                 job.failed_files = failed
                 job.credits_consumed = credits
@@ -251,7 +268,6 @@ async def run_batch(
         job = await session.get(AIBatchJob, job_id)
         if job:
             job.status = final_status
-            job.results = {**(job.results or {}), "files": results}
             job.credits_consumed = credits
             job.completed_at = datetime.now(timezone.utc)
             if all_failed:
@@ -304,10 +320,11 @@ async def get_batch_job(
     session: AsyncSession,
     job_id: uuid.UUID,
     company_id: uuid.UUID,
+    user_id: uuid.UUID,
 ) -> AIBatchJob | None:
-    """Get a batch job by ID, scoped to company."""
+    """Get a batch job by ID, scoped to company and owning user."""
     job = await session.get(AIBatchJob, job_id)
-    if job is None or job.company_id != company_id:
+    if job is None or job.company_id != company_id or job.user_id != user_id:
         return None
     return job
 
@@ -316,11 +333,12 @@ async def list_conversation_jobs(
     session: AsyncSession,
     conversation_id: uuid.UUID,
     company_id: uuid.UUID,
+    user_id: uuid.UUID,
 ) -> list[AIBatchJob]:
     """Every job started from a conversation, oldest first."""
     q = (
         select(AIBatchJob)
-        .where(AIBatchJob.conversation_id == conversation_id, AIBatchJob.company_id == company_id)
+        .where(AIBatchJob.conversation_id == conversation_id, AIBatchJob.company_id == company_id, AIBatchJob.user_id == user_id)
         .order_by(AIBatchJob.created_at.asc())
     )
     return list((await session.execute(q)).scalars().all())

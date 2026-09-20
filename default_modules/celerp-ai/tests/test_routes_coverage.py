@@ -678,8 +678,8 @@ async def test_proposals_idempotent_and_vendor_resolved(auth_client, session):
 
 @pytest.mark.asyncio
 async def test_proposal_flags_total_mismatch(auth_client, session):
-    """An unknown vendor is proposed as a contact first, and a total that does
-    not match the lines, a missing date and a non-receipt file are all flagged."""
+    """An unknown vendor becomes a vendor proposal followed by a bound draft bill;
+    total mismatch, missing date and a non-receipt file are all still surfaced."""
     c, h = auth_client
     conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
     receipt = {**_RECEIPT, "vendor_name": "New Vendor", "total": 30, "date": None}
@@ -687,21 +687,92 @@ async def test_proposal_flags_total_mismatch(auth_client, session):
         {"file_id": "ai_up_1", "filename": "r1.jpg", "status": "success", "answer": "", "extraction": receipt, "credits": 1},
         {"file_id": "ai_up_3", "filename": "photo.jpg", "status": "success", "answer": "", "extraction": {"document_kind": "other"}, "credits": 1},
     ])
-    caps = _capabilities("create_doc_docs_post", "list_contacts_crm_contacts_get", "create_contact_crm_contacts_post")
+    caps = _capabilities(
+        "create_doc_docs_post", "list_contacts_crm_contacts_get",
+        "create_contact_crm_contacts_post",
+    )
     with patch("celerp_ai.routes.compile_agent_capabilities", return_value=caps), \
          patch("celerp_ai.routes.execute_agent_capability", _executor()):
         r = await c.post(f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h)
     assert r.status_code == 200, r.text
     actions = r.json()["pending_actions"]
-    assert [a["name"] for a in actions] == ["create_contact_crm_contacts_post", "create_doc_docs_post"]
-    assert actions[0]["arguments"]["body"] == {"name": "New Vendor", "contact_type": "vendor"}
-    bill = actions[1]["arguments"]["body"]
+    assert [a["name"] for a in actions] == [
+        "create_contact_crm_contacts_post", "create_doc_docs_post",
+    ]
+    vendor, bill_action = actions
+    assert vendor["arguments"]["body"] == {"name": "New Vendor", "contact_type": "vendor"}
+    bill = bill_action["arguments"]["body"]
     assert "contact_id" not in bill and bill["contact_name"] == "New Vendor"
+    assert bill_action["bindings"] == [{
+        "source_action_id": vendor["id"],
+        "source_result_key": "id",
+        "target_path": ["body", "contact_id"],
+    }]
     assert "issue_date" not in bill
-    warnings = actions[1]["warnings"]
+    warnings = bill_action["warnings"]
     assert any("27.50" in w and "30.00" in w for w in warnings)
     assert any("No date" in w for w in warnings)
     assert "photo.jpg: read as a other" in r.json()["answer"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_vendor_dependency_resolves_across_confirmations(auth_client, session):
+    """The bill cannot run before its vendor, then resolves the persisted vendor id
+    after that canonical create succeeds, including across separate confirm calls."""
+    c, h = auth_client
+    conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
+    receipt = {**_RECEIPT, "vendor_name": "New Vendor"}
+    job_id = await _finished_job(session, c, h, conv_id, [
+        {"file_id": "ai_up_1", "filename": "r1.jpg", "status": "success",
+         "answer": "", "extraction": receipt, "credits": 1},
+    ])
+    caps = _capabilities(
+        "create_doc_docs_post", "list_contacts_crm_contacts_get",
+        "create_contact_crm_contacts_post",
+    )
+    calls = []
+
+    async def _exec(app, authorization, capability, arguments, tool_call_id, **kw):
+        calls.append((capability["name"], arguments, tool_call_id))
+        if capability["name"] == "list_contacts_crm_contacts_get":
+            return {"ok": True, "status": 200, "data": {"items": [], "total": 0}}
+        if capability["name"] == "create_contact_crm_contacts_post":
+            return {"ok": True, "status": 201, "data": {"id": "contact:new-vendor"}}
+        if capability["name"] == "create_doc_docs_post":
+            return {"ok": True, "status": 201, "data": {"id": "doc:bill-1"}}
+        raise AssertionError(capability["name"])
+
+    with patch("celerp_ai.routes.compile_agent_capabilities", return_value=caps), \
+         patch("celerp_ai.routes.execute_agent_capability", _exec):
+        proposed = (await c.post(
+            f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h,
+        )).json()
+        vendor, bill = proposed["pending_actions"]
+        # Out-of-order single confirmation is non-terminal: the bill remains pending.
+        early = await c.post(
+            f"/ai/conversations/{conv_id}/confirm", headers=h,
+            json={"message_id": proposed["message_id"], "tool_call_id": bill["id"]},
+        )
+        assert early.status_code == 409
+        assert early.json()["detail"]["code"] == "action_dependency_not_ready"
+        vendor_done = await c.post(
+            f"/ai/conversations/{conv_id}/confirm", headers=h,
+            json={"message_id": proposed["message_id"], "tool_call_id": vendor["id"]},
+        )
+        assert vendor_done.status_code == 200
+        bill_done = await c.post(
+            f"/ai/conversations/{conv_id}/confirm", headers=h,
+            json={"message_id": proposed["message_id"], "tool_call_id": bill["id"]},
+        )
+        assert bill_done.status_code == 200
+
+    writes = [(name, args) for name, args, _ in calls if not name.startswith("list_")]
+    assert [name for name, _ in writes] == [
+        "create_contact_crm_contacts_post", "create_doc_docs_post",
+    ]
+    assert writes[1][1]["body"]["contact_id"] == "contact:new-vendor"
+    thread = (await c.get(f"/ai/conversations/{conv_id}", headers=h)).json()
+    assert thread["messages"][-1]["pending_actions"] == []
 
 
 @pytest.mark.asyncio

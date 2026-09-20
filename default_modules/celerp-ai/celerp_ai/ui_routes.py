@@ -217,13 +217,24 @@ def setup_ui_routes(app) -> None:
         # Quota section
         quota_section = await _quota_section(token, session_token)
 
-        # Per-user usage table (local DB, no session token needed)
-        usage_table = await _usage_table(token, session_token)
+        # Per-user usage is company-private administrative data. Hide the section
+        # entirely for roles that cannot manage users rather than rendering a 403 as
+        # a discouraging "could not load" error. The API independently enforces it.
+        from celerp.services.permissions import role_has_permission
+        try:
+            company_settings = (await api.get_company(token)).get("settings") or {}
+        except APIError:
+            company_settings = {}
+        usage_table = (
+            await _usage_table(token, session_token)
+            if role_has_permission(company_settings, get_role(request), "manage_users")
+            else None
+        )
 
         return Div(
             H2(t("page.ai_settings"), cls="ai-settings__title"),
             quota_section,
-            usage_table,
+            *([usage_table] if usage_table is not None else []),
             cls="ai-settings",
         )
 
@@ -240,8 +251,11 @@ def setup_ui_routes(app) -> None:
         conversation_id = (form.get("conversation_id") or "").strip()
         file_ids_str = (form.get("file_ids") or "").strip()
         file_ids = [fid.strip() for fid in file_ids_str.split(",")] if file_ids_str else None
+        document_mode = "receipts" if form.get("document_mode") == "receipts" else "chat"
 
         if not query and not file_ids:
+            return _msg_bubble("ai", t("ai.chat_prompt_empty", lang))
+        if document_mode == "receipts" and not file_ids:
             return _msg_bubble("ai", t("ai.chat_prompt_empty", lang))
 
         user_bubble = _msg_bubble("user", query or t("ai.attached_files", lang))
@@ -260,6 +274,7 @@ def setup_ui_routes(app) -> None:
         try:
             result = await api.ai_conversation_query(
                 token, session_token, conversation_id, query, file_ids=file_ids,
+                document_mode=document_mode,
             )
         except APIError as e:
             if e.status == 402:
@@ -362,7 +377,37 @@ def setup_ui_routes(app) -> None:
             if e.status == 409 and _api_error_code(e) == "action_not_pending":
                 return _action_panel(t("ai.action_expired", lang), ok=False)
             return _action_panel(_api_error_text(e, lang), ok=False)
+        if result.get("action_status") == "retryable":
+            return _retry_action_panel(
+                conversation_id, message_id, tool_call_id,
+                _outcome_text(result, lang)[1], lang,
+            )
         return _outcome_line(result, lang)
+
+    @app.post("/ai/dismiss-action-ui")
+    async def ai_dismiss_action_ui(request: Request):
+        """Persist dismissal, then remove the proposal from the rendered thread."""
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        conversation_id = (form.get("conversation_id") or "").strip()
+        message_id = (form.get("message_id") or "").strip()
+        tool_call_id = (form.get("tool_call_id") or "").strip()
+        from celerp.gateway.state import get_session_token
+        session_token = get_session_token()
+        try:
+            await api.ai_dismiss_action(
+                token, session_token, conversation_id, message_id, tool_call_id,
+            )
+        except APIError as e:
+            if e.status == 409 and _api_error_code(e) == "action_not_pending":
+                # Another tab may already have handled it. Its desired visible
+                # state is still "gone", so make dismissal idempotent in the UI.
+                return _R("")
+            return _action_panel(_api_error_text(e, get_lang(request)), ok=False)
+        return _R("")
 
     @app.post("/ai/confirm-all-ui/{conversation_id}/{message_id}")
     async def ai_confirm_all_ui(request: Request, conversation_id: str, message_id: str):
@@ -401,7 +446,8 @@ def setup_ui_routes(app) -> None:
             return _confirm_tail(conversation_id, message_id, view, [], tally, lang, error=error)
         outcomes = result.get("results") or []
         tally.add(outcomes)
-        swaps = [_outcome_swap(message_id, o, view, lang) for o in outcomes]
+        swaps = [_outcome_swap(message_id, o, view, lang, conversation_id=conversation_id)
+                 for o in outcomes]
         tail = _confirm_tail(conversation_id, message_id, view, rest, tally, lang)
         return HTMLResponse(to_xml((tail, *[x for sw in swaps for x in sw])))
 
@@ -448,6 +494,18 @@ def setup_ui_routes(app) -> None:
         except Exception:
             result = {"notes": [], "kv": {}}
 
+        # Shared memory affects every user's assistant context. Mirror the API's
+        # manage_company_settings gate in the UI so ordinary AI users get a
+        # read-only drawer instead of a button that will inevitably 403.
+        from celerp.services.permissions import role_has_permission
+        try:
+            company_settings = (await api.get_company(token)).get("settings") or {}
+        except APIError:
+            company_settings = {}
+        can_manage_memory = role_has_permission(
+            company_settings, get_role(request), "manage_company_settings"
+        )
+
         notes = result.get("notes", [])
         kv = result.get("kv", {})
 
@@ -469,17 +527,20 @@ def setup_ui_routes(app) -> None:
         else:
             kv_items.append(P(t("msg.no_facts_saved"), cls="ai-memory__empty"))
 
-        return Div(
-            Div(H4(t("th.notes")), *note_items, cls="ai-memory__section"),
-            Div(H4(t("page.facts")), *kv_items, cls="ai-memory__section"),
-            Div(
+        actions = []
+        if can_manage_memory:
+            actions = [Div(
                 Button(t("btn.clear_all_memory"), cls="btn btn--danger btn--sm",
                     hx_delete="/ai/memory-clear",
                     hx_target="#ai-memory-content",
                     hx_confirm=t("ai.clear_memory_confirm"),
                 ),
                 cls="ai-memory__actions",
-            ),
+            )]
+        return Div(
+            Div(H4(t("th.notes")), *note_items, cls="ai-memory__section"),
+            Div(H4(t("page.facts")), *kv_items, cls="ai-memory__section"),
+            *actions,
             cls="ai-memory",
         )
 
@@ -492,8 +553,10 @@ def setup_ui_routes(app) -> None:
             from celerp.gateway.state import get_session_token
             session_token = get_session_token()
             await api.ai_memory_clear(token, session_token)
+        except APIError as exc:
+            return P(_api_error_text(exc), cls="ai-settings__error")
         except Exception:
-            pass
+            return P(t("msg.could_not_load_data"), cls="ai-settings__error")
         return P(t("msg.memory_cleared"), cls="ai-memory__empty")
 
     @app.post("/ai/upload")
@@ -788,34 +851,44 @@ def _action_card(conversation_id: str, message_id: str, action: dict, lang: str 
     """Render one proposed change the user must confirm before it runs.
 
     The card names the change, lists what will be written, and flags anything
-    the reader should check first. Confirm posts the identifiers only (never
-    the arguments) so the server executes the action it claimed; Dismiss
-    removes the card client-side without touching state. A record that failed
-    while executing renders without buttons and its stored reason in place of
-    them; the Failed badge already says the change was not applied.
+    the reader should check first. Confirm and Dismiss post identifiers only
+    (never mutation arguments), so the server owns both execution and proposal
+    state. Retryable actions reuse the same immutable tool-call identity.
     """
     name = action.get("name", "")
     tool_call_id = action.get("id", "")
-    failed = action.get("status") == "failed"
+    status = action.get("status", "pending")
+    failed = status == "failed"
+    retryable = status == "retryable"
     if failed:
         badge = Span(t("ai.action_failed_badge", lang), cls="badge badge--error")
         footer = Div(action.get("error") or t("ai.action_failed", lang), cls="ai-action__error")
     else:
-        badge = Span(t("ai.action_proposal", lang), cls="badge badge--proposal")
+        badge = Span(t("btn.retry", lang) if retryable else t("ai.action_proposal", lang),
+                     cls="badge badge--proposal")
         footer = Div(
-            P(t("ai.action_hint", lang), cls="ai-action__hint"),
+            P(action.get("error") or t("ai.action_hint", lang),
+              cls="ai-action__error" if retryable else "ai-action__hint"),
             Div(
                 Form(
                     Input(type="hidden", name="conversation_id", value=conversation_id),
                     Input(type="hidden", name="message_id", value=message_id),
                     Input(type="hidden", name="tool_call_id", value=tool_call_id),
-                    Button(t("btn.confirm", lang), type="submit", cls="btn btn--primary"),
+                    Button(t("btn.retry", lang) if retryable else t("btn.confirm", lang),
+                           type="submit", cls="btn btn--primary"),
                     hx_post="/ai/confirm-action-ui",
                     hx_target="closest .ai-action__card",
                     hx_swap="outerHTML",
                 ),
-                Button(t("btn.dismiss", lang), type="button", cls="btn btn--secondary",
-                       onclick="this.closest('.ai-action__card').remove()"),
+                Form(
+                    Input(type="hidden", name="conversation_id", value=conversation_id),
+                    Input(type="hidden", name="message_id", value=message_id),
+                    Input(type="hidden", name="tool_call_id", value=tool_call_id),
+                    Button(t("btn.dismiss", lang), type="submit", cls="btn btn--secondary"),
+                    hx_post="/ai/dismiss-action-ui",
+                    hx_target="closest .ai-action__card",
+                    hx_swap="outerHTML",
+                ),
                 cls="ai-action__actions",
             ),
             cls="ai-action__footer",
@@ -827,6 +900,42 @@ def _action_card(conversation_id: str, message_id: str, action: dict, lang: str 
         id=_action_dom_id(message_id, tool_call_id),
         cls="ai-action ai-action__card" + (" ai-action--failed" if failed else ""),
         data_capability=name,
+    )
+
+
+def _retry_action_panel(conversation_id: str, message_id: str, tool_call_id: str,
+                        error: str, lang: str = "en", *, oob: bool = False) -> FT:
+    """Compact replacement after an ambiguous/transient execution failure.
+
+    The proposal remains server-side as ``retryable``. Both buttons use the
+    original identifiers, so Retry reuses the same idempotency key and Dismiss
+    persists instead of merely hiding DOM state.
+    """
+    attrs = {"hx_swap_oob": "true"} if oob else {}
+    return Div(
+        Div(error, cls="ai-action__error"),
+        Div(
+            Form(
+                Input(type="hidden", name="conversation_id", value=conversation_id),
+                Input(type="hidden", name="message_id", value=message_id),
+                Input(type="hidden", name="tool_call_id", value=tool_call_id),
+                Button(t("btn.retry", lang), type="submit", cls="btn btn--primary"),
+                hx_post="/ai/confirm-action-ui", hx_target="closest .ai-action__card",
+                hx_swap="outerHTML",
+            ),
+            Form(
+                Input(type="hidden", name="conversation_id", value=conversation_id),
+                Input(type="hidden", name="message_id", value=message_id),
+                Input(type="hidden", name="tool_call_id", value=tool_call_id),
+                Button(t("btn.dismiss", lang), type="submit", cls="btn btn--secondary"),
+                hx_post="/ai/dismiss-action-ui", hx_target="closest .ai-action__card",
+                hx_swap="outerHTML",
+            ),
+            cls="ai-action__actions",
+        ),
+        id=_action_dom_id(message_id, tool_call_id),
+        cls="ai-action ai-action__card",
+        **attrs,
     )
 
 
@@ -972,24 +1081,39 @@ def _outcome_line(outcome: dict, lang: str = "en", *, message_id: str | None = N
     return Div(*parts, cls="ai-action__done" if ok else "ai-action__error", **attrs)
 
 
-def _outcome_swap(message_id: str, outcome: dict, view: str, lang: str = "en") -> list[FT]:
+def _outcome_swap(message_id: str, outcome: dict, view: str, lang: str = "en",
+                  *, conversation_id: str = "") -> list[FT]:
     """The out-of-band elements that mark one action finished in the thread."""
+    retryable = outcome.get("action_status") == "retryable"
     if view != "table":
+        if retryable:
+            return [_retry_action_panel(
+                conversation_id, message_id, outcome.get("tool_call_id", ""),
+                _outcome_text(outcome, lang)[1], lang, oob=True,
+            )]
         return [_outcome_line(outcome, lang, message_id=message_id)]
     dom_id = _action_dom_id(message_id, outcome.get("tool_call_id", ""))
     ok, text = _outcome_text(outcome, lang)
     link = _record_link(outcome)
-    if ok:
+    if retryable:
+        cell = [Span(t("btn.retry", lang), cls="badge badge--proposal"),
+                Span(text, cls="ai-action__error")]
+        pick = Td(Input(type="checkbox", cls="bulk-select", name="selected",
+                        value=outcome.get("tool_call_id", "")),
+                  id=f"{dom_id}-pick", hx_swap_oob="true")
+    elif ok:
         cell = [Span(t("th.applied", lang), cls="badge badge--active")]
         if link:
             cell += [" ", A(t("ai.open_record", lang), href=link, cls="table-link")]
+        pick = Td(id=f"{dom_id}-pick", hx_swap_oob="true")
     else:
         cell = [Span(t("ai.action_failed_badge", lang), cls="badge badge--error"),
                 Span(text, cls="ai-action__error")]
+        pick = Td(id=f"{dom_id}-pick", hx_swap_oob="true")
     # Table cells cannot stand on their own in a fragment; htmx reads them out
     # of a template wrapper and swaps each by id.
     return [Template(
-        Td(id=f"{dom_id}-pick", hx_swap_oob="true"),
+        pick,
         Td(*cell, id=f"{dom_id}-status", cls="ai-action-table__status", hx_swap_oob="true"),
     )]
 
@@ -1020,7 +1144,7 @@ class _Tally:
                 data = o.get("data")
                 if "_docs_" in str(o.get("name") or "") and isinstance(data, dict) and data.get("id"):
                     self.doc_ids.append(str(data["id"]))
-            else:
+            elif o.get("action_status") != "retryable":
                 self.failed += 1
 
     def inputs(self) -> list[FT]:
@@ -1396,6 +1520,12 @@ def _chat_view(messages: list[dict] | None = None, jobs: list[dict] | None = Non
                         autocomplete="off",
                     ),
                     Button(t("btn.send", lang), type="submit", cls="btn btn--primary ai-input__send"),
+                    Button(
+                        t("ai.query_receipts_title", lang),
+                        type="submit", name="document_mode", value="receipts",
+                        cls="btn btn--secondary ai-input__receipts",
+                        title=t("ai.query_receipts_title", lang),
+                    ),
                     cls="ai-input__row",
                 ),
                 # Drop zone
@@ -1619,8 +1749,16 @@ function _celerpAiUploadFormData(formData, fileNames) {
                     var chip = document.createElement('span');
                     chip.className = 'ai-file-chip';
                     chip.dataset.fileId = fid;
-                    chip.innerHTML = '<span class="ai-file-chip__name">' + fname + '</span>'
-                        + '<button type="button" class="ai-file-chip__remove" onclick="celerpAiRemoveChip(this,' + JSON.stringify(fid) + ')">✕</button>';
+                    var name = document.createElement('span');
+                    name.className = 'ai-file-chip__name';
+                    name.textContent = fname;
+                    var remove = document.createElement('button');
+                    remove.type = 'button';
+                    remove.className = 'ai-file-chip__remove';
+                    remove.textContent = '✕';
+                    remove.addEventListener('click', function() { celerpAiRemoveChip(remove, fid); });
+                    chip.appendChild(name);
+                    chip.appendChild(remove);
                     chips.appendChild(chip);
                 });
             }

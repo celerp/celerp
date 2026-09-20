@@ -111,7 +111,7 @@ async def user(session, company) -> User:
     return u
 
 
-def _create_test_files(company_id: uuid.UUID, count: int = 3) -> list[str]:
+def _create_test_files(company_id: uuid.UUID, user_id: uuid.UUID, count: int = 3) -> list[str]:
     """Create test files on disk and return file IDs."""
     upload_dir = settings.data_dir / "ai_uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
@@ -124,6 +124,7 @@ def _create_test_files(company_id: uuid.UUID, count: int = 3) -> list[str]:
             "content_type": "image/jpeg",
             "size": 15,
             "company_id": str(company_id),
+            "user_id": str(user_id),
         }))
         file_ids.append(fid)
     return file_ids
@@ -153,6 +154,13 @@ async def test_batch_max_files_enforced(session, company, user):
 
 
 @pytest.mark.asyncio
+async def test_batch_deduplicates_same_file_id(session, company, user):
+    job = await create_batch_job(session, company.id, user.id, "duplicates", ["f1", "f1", "f2", "f1"])
+    assert list(job.file_ids) == ["f1", "f2"]
+    assert job.total_files == 2
+
+
+@pytest.mark.asyncio
 async def test_batch_single_file_allowed(session, company, user):
     job = await create_batch_job(session, company.id, user.id, "one receipt", ["f1"])
     assert job.total_files == 1
@@ -168,7 +176,7 @@ async def test_batch_empty_rejected(session, company, user):
 
 @pytest.mark.asyncio
 async def test_batch_all_success(session, db_factory, company, user):
-    file_ids = _create_test_files(company.id, 3)
+    file_ids = _create_test_files(company.id, user.id, 3)
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 
@@ -188,7 +196,7 @@ async def test_batch_all_success(session, db_factory, company, user):
 
 @pytest.mark.asyncio
 async def test_batch_partial_failure(session, db_factory, company, user):
-    file_ids = _create_test_files(company.id, 3)
+    file_ids = _create_test_files(company.id, user.id, 3)
 
     call_count = 0
 
@@ -215,7 +223,7 @@ async def test_batch_partial_failure(session, db_factory, company, user):
 
 @pytest.mark.asyncio
 async def test_batch_total_failure(session, db_factory, company, user):
-    file_ids = _create_test_files(company.id, 2)
+    file_ids = _create_test_files(company.id, user.id, 2)
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 
@@ -231,7 +239,7 @@ async def test_batch_total_failure(session, db_factory, company, user):
 
 @pytest.mark.asyncio
 async def test_batch_creates_notification_on_complete(session, db_factory, company, user):
-    file_ids = _create_test_files(company.id, 2)
+    file_ids = _create_test_files(company.id, user.id, 2)
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 
@@ -252,7 +260,7 @@ async def test_batch_creates_notification_on_complete(session, db_factory, compa
 
 @pytest.mark.asyncio
 async def test_batch_progress_callback(session, db_factory, company, user):
-    file_ids = _create_test_files(company.id, 3)
+    file_ids = _create_test_files(company.id, user.id, 3)
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 
@@ -297,7 +305,7 @@ async def test_batch_status_endpoint(session, company, user):
     job = await create_batch_job(session, company.id, user.id, "test", ["f1", "f2"])
     await session.commit()
 
-    result = await get_batch_job(session, job.id, company.id)
+    result = await get_batch_job(session, job.id, company.id, user.id)
     assert result is not None
     assert result.id == job.id
 
@@ -307,14 +315,23 @@ async def test_batch_status_wrong_company(session, company, user):
     job = await create_batch_job(session, company.id, user.id, "test", ["f1", "f2"])
     await session.commit()
 
-    result = await get_batch_job(session, job.id, uuid.uuid4())
+    result = await get_batch_job(session, job.id, uuid.uuid4(), user.id)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_batch_status_wrong_user(session, company, user):
+    job = await create_batch_job(session, company.id, user.id, "test", ["f1"])
+    await session.commit()
+
+    result = await get_batch_job(session, job.id, company.id, uuid.uuid4())
     assert result is None
 
 
 @pytest.mark.asyncio
 async def test_batch_credits_from_relay_usage(session, db_factory, company, user):
     """Credits are the sum of what the gateway metered per file that was read."""
-    file_ids = _create_test_files(company.id, 3)
+    file_ids = _create_test_files(company.id, user.id, 3)
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 
@@ -340,7 +357,7 @@ async def test_batch_credits_from_relay_usage(session, db_factory, company, user
 
 @pytest.mark.asyncio
 async def test_batch_result_carries_extraction(session, db_factory, company, user):
-    file_ids = _create_test_files(company.id, 1)
+    file_ids = _create_test_files(company.id, user.id, 1)
     job = await create_batch_job(session, company.id, user.id, "", file_ids)
     await session.commit()
 
@@ -366,7 +383,7 @@ def test_parse_extraction_forms():
 
 @pytest.mark.asyncio
 async def test_batch_total_failure_records_error(session, db_factory, company, user):
-    file_ids = _create_test_files(company.id, 2)
+    file_ids = _create_test_files(company.id, user.id, 2)
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 
@@ -405,7 +422,7 @@ async def test_interrupted_jobs_marked_failed_on_startup(session, company, user)
 @pytest.mark.asyncio
 async def test_batch_on_progress_failure_handled(session, db_factory, company, user):
     """on_progress callback failure is caught and logged, not propagated."""
-    file_ids = _create_test_files(company.id, 2)
+    file_ids = _create_test_files(company.id, user.id, 2)
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 
@@ -428,7 +445,7 @@ async def test_batch_on_progress_failure_handled(session, db_factory, company, u
 @pytest.mark.asyncio
 async def test_batch_notification_failure_handled(session, db_factory, company, user):
     """Notification creation failure is caught and logged."""
-    file_ids = _create_test_files(company.id, 2)
+    file_ids = _create_test_files(company.id, user.id, 2)
     job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
     await session.commit()
 

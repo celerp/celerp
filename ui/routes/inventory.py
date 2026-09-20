@@ -6,9 +6,11 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import hashlib
 import json
 import logging
 import re
+import uuid
 from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
@@ -1596,17 +1598,23 @@ def setup_routes(app):
 
         # Rows arrive mapped and validated by the revalidate cycle. The server owns
         # location resolution and creation, unit and quantity derivation, monetary
-        # conversion, per-row idempotency, and the category-schema follow-up (one
+        # conversion, command idempotency, and the category-schema follow-up (one
         # committer for the browser, the agent, and the raw batch). The browser
         # transport only chunks to the per-call cap and renders the outcome.
         _CHUNK = 500
         merged: dict = {"created": 0, "skipped": 0, "updated": 0, "errors": [], "batch_id": None}
         try:
+            import_fingerprint = hashlib.sha256(
+                json.dumps({"upsert": upsert, "rows": rows}, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            import_key = f"ui-import:{import_fingerprint}"
             for i in range(0, max(len(rows), 1), _CHUNK):
                 chunk = rows[i : i + _CHUNK]
                 if not chunk:
                     break
-                r = await api.import_rows(token, chunk, upsert=upsert)
+                r = await api.import_rows(
+                    token, chunk, upsert=upsert, idempotency_key=f"{import_key}:chunk:{i // _CHUNK}"
+                )
                 merged["created"] += r.get("created", 0)
                 merged["skipped"] += r.get("skipped", 0)
                 merged["updated"] += r.get("updated", 0)

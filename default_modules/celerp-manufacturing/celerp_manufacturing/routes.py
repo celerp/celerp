@@ -122,7 +122,7 @@ class MfgImportRecord(BaseModel):
 
 
 class MfgBatchImportRequest(BaseModel):
-    records: list[MfgImportRecord]
+    records: list[MfgImportRecord] = Field(..., max_length=500)
 
 
 class BatchImportResult(BaseModel):
@@ -985,6 +985,7 @@ async def batch_import_manufacturing(
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     _: None = require_permission("manage_manufacturing"),
+    __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
     from sqlalchemy import select as _select
@@ -992,7 +993,9 @@ async def batch_import_manufacturing(
 
     keys = [r.idempotency_key for r in body.records]
     existing_keys = set((await session.execute(
-        _select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(keys))
+        _select(LedgerEntry.idempotency_key).where(
+            LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key.in_(keys)
+        )
     )).scalars().all())
 
     create_entity_ids = [r.entity_id for r in body.records if r.event_type == "mfg.order.created"]
@@ -1008,6 +1011,11 @@ async def batch_import_manufacturing(
     created = skipped = 0
     errors: list[str] = []
     for rec in body.records:
+        if rec.event_type != "mfg.order.created":
+            if len(errors) < 10:
+                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+            skipped += 1
+            continue
         if rec.idempotency_key in existing_keys:
             skipped += 1
             continue

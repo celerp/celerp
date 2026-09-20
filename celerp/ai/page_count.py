@@ -1,15 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Page counting and credit calculation for AI file processing.
+"""Informational page counting for AI file processing.
 
-Credit rules (per revenue model):
-  - Pure text query (no files): 1 credit
-  - Query with files: 0 base + ceil(pages / 5) per file, minimum 1 per file
-  - Page counting:
-      PDF: actual page count via pypdf
-      Images (jpeg, png, gif, webp): 1 page each
-      Other files: estimated from file size (1 page per 50KB, min 1)
+Page counts are presentation metadata only. Credit pricing is defined by the
+cloud AI meter and must not be reimplemented here.
 """
 
 from __future__ import annotations
@@ -46,22 +41,3 @@ def count_pages(data: bytes, content_type: str) -> int:
     # Unknown type: estimate from size
     estimated = max(1, math.ceil(len(data) / _BYTES_PER_PAGE))
     return estimated
-
-
-def credits_for_pages(page_count: int) -> int:
-    """Return the credit cost for a single file with the given page count.
-
-    1 credit per 5 pages, minimum 1.
-    """
-    return max(1, math.ceil(page_count / 5))
-
-
-def calculate_credits(file_page_counts: list[int]) -> int:
-    """Return total credits for a list of per-file page counts.
-
-    Pure text (empty list): 1 credit.
-    With files: 0 base + sum of per-file credits.
-    """
-    if not file_page_counts:
-        return 1
-    return sum(credits_for_pages(p) for p in file_page_counts)

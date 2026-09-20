@@ -112,7 +112,7 @@ async def test_unknown_location_created(session):
     build = await build_import_records(
         session, company_id,
         [{"name": "Widget", "sell_by": "piece", "pieces": "1", "location_name": "Annex"}],
-        upsert=False, dry_run=False,
+        upsert=False, dry_run=False, create_missing_locations=True,
     )
     assert build.errors == []
     annex = (await session.execute(
@@ -201,8 +201,176 @@ async def test_upsert(client, session):
     r2 = await import_items(session, company_id, user_id, "admin", {}, rows, upsert=True, filename=None, idempotency_key=None)
     assert (r2.created, r2.updated, r2.skipped) == (0, 1, 0)
 
+    items = await _item_projections(session, company_id)
+    assert len(items) == 1
+    entity_id = items[0].entity_id
+
     r3 = await import_items(session, company_id, user_id, "admin", {}, rows, upsert=True, filename=None, idempotency_key=None)
     assert (r3.created, r3.updated, r3.skipped) == (0, 0, 1)
+
+    changed = [{**rows[0], "name": "Updated name", "pieces": "4"}]
+    r4 = await import_items(session, company_id, user_id, "admin", {}, changed, upsert=True, filename=None, idempotency_key=None)
+    assert (r4.created, r4.updated, r4.skipped) == (0, 1, 0)
+    items = await _item_projections(session, company_id)
+    assert len(items) == 1
+    assert items[0].entity_id == entity_id
+    assert items[0].state["name"] == "Updated name"
+    assert float(items[0].state["quantity"]) == 4.0
+
+
+@pytest.mark.asyncio
+async def test_import_keeps_distinct_lots_with_same_sku(session):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    rows = [
+        {"name": "Lot A", "sku": "LOT-SKU", "sell_by": "piece", "pieces": "1"},
+        {"name": "Lot B", "sku": "LOT-SKU", "sell_by": "piece", "pieces": "2"},
+    ]
+    result = await import_items(
+        session, company_id, user_id, "admin", {}, rows, upsert=False,
+        filename=None, idempotency_key="same-sku-batch",
+    )
+    assert result.created == 2
+    items = await _item_projections(session, company_id)
+    assert len(items) == 2
+    assert {item.state["name"] for item in items} == {"Lot A", "Lot B"}
+
+
+@pytest.mark.asyncio
+async def test_import_no_sku_rows_receive_distinct_internal_codes(session):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    rows = [
+        {"name": "Unnamed A", "sell_by": "piece", "pieces": "1"},
+        {"name": "Unnamed B", "sell_by": "piece", "pieces": "1"},
+    ]
+    result = await import_items(
+        session, company_id, user_id, "admin", {}, rows, upsert=False,
+        filename=None, idempotency_key="no-sku-batch",
+    )
+    assert result.created == 2
+    items = await _item_projections(session, company_id)
+    skus = [item.state.get("sku") for item in items]
+    assert len(set(skus)) == 2
+    assert all(skus)
+
+
+@pytest.mark.asyncio
+async def test_upsert_repeated_sku_requires_barcode_to_choose_lot(session):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    seed_rows = [
+        {"name": "Lot A", "sku": "AMB", "barcode": "700001", "sell_by": "piece", "pieces": "1"},
+        {"name": "Lot B", "sku": "AMB", "barcode": "700002", "sell_by": "piece", "pieces": "1"},
+    ]
+    seeded = await import_items(
+        session, company_id, user_id, "admin", {}, seed_rows, upsert=False,
+        filename=None, idempotency_key="amb-seed",
+    )
+    assert seeded.created == 2
+
+    build = await build_import_records(
+        session, company_id,
+        [{"name": "Which lot?", "sku": "AMB", "sell_by": "piece", "pieces": "2"}],
+        upsert=True, dry_run=True,
+    )
+    assert build.records == []
+    assert "matches multiple lots" in build.errors[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_exact_create_replay_uses_content_identity(session):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    rows = [{"name": "Replay Item", "sku": "REPLAY-1", "sell_by": "piece", "pieces": "1"}]
+
+    first = await import_items(
+        session, company_id, user_id, "admin", {}, rows, upsert=False,
+        filename="replay.csv", idempotency_key=None,
+    )
+    second = await import_items(
+        session, company_id, user_id, "admin", {}, rows, upsert=False,
+        filename="replay.csv", idempotency_key=None,
+    )
+
+    assert (first.created, first.skipped) == (1, 0)
+    assert (second.created, second.skipped) == (0, 1)
+    assert len(await _item_projections(session, company_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_upsert_omitted_fields_preserve_existing_state(session):
+    company_id, user_id, locs = await _seed(session, locations=[{"name": "Main"}])
+    original = [{
+        "name": "Original", "sku": "KEEP-1", "sell_by": "piece", "pieces": "2",
+        "description": "keep this description",
+    }]
+    created = await import_items(
+        session, company_id, user_id, "admin", {}, original, upsert=False,
+        filename=None, idempotency_key="keep-seed",
+    )
+    assert created.created == 1
+
+    changed = [{"name": "Renamed", "sku": "KEEP-1", "sell_by": "piece"}]
+    updated = await import_items(
+        session, company_id, user_id, "admin", {}, changed, upsert=True,
+        filename=None, idempotency_key=None,
+    )
+    assert updated.updated == 1
+
+    item = (await _item_projections(session, company_id))[0]
+    assert item.state["name"] == "Renamed"
+    assert item.state["description"] == "keep this description"
+    assert str(item.location_id) == str(locs[0].id)
+    assert float(item.state["quantity"]) == 2.0
+
+
+@pytest.mark.asyncio
+async def test_raw_upsert_binds_to_original_created_entity(session):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    user = SimpleNamespace(id=user_id)
+    seed_rows = [{"name": "Raw One", "sku": "RAW-UP", "sell_by": "piece", "pieces": "1"}]
+
+    first_build = await build_import_records(
+        session, company_id, seed_rows, upsert=False, dry_run=False,
+    )
+    original_id = first_build.records[0]["entity_id"]
+    first = await commit_import_batch(
+        session, company_id, user, "admin", {},
+        BatchImportRequest(records=[ImportRecord(**first_build.records[0])]),
+    )
+    assert first.created == 1
+
+    changed_rows = [{"name": "Raw Two", "sku": "RAW-UP", "sell_by": "piece", "pieces": "2"}]
+    replay_build = await build_import_records(
+        session, company_id, changed_rows, upsert=False, dry_run=False,
+    )
+    assert replay_build.records[0]["entity_id"] != original_id
+    second = await commit_import_batch(
+        session, company_id, user, "admin", {},
+        BatchImportRequest(records=[ImportRecord(**replay_build.records[0])], upsert=True),
+    )
+    assert second.updated == 1
+
+    items = await _item_projections(session, company_id)
+    assert len(items) == 1
+    assert items[0].entity_id == original_id
+    assert items[0].state["name"] == "Raw Two"
+    assert float(items[0].state["quantity"]) == 2.0
+
+
+@pytest.mark.asyncio
+async def test_authorized_preview_can_plan_missing_location_without_writing(session):
+    company_id, _, _ = await _seed(session, locations=[{"name": "Main"}])
+    build = await build_import_records(
+        session, company_id,
+        [{"name": "Widget", "sell_by": "piece", "pieces": "1", "location_name": "Annex"}],
+        upsert=False, dry_run=True, create_missing_locations=True,
+    )
+    assert build.errors == []
+    assert build.locations_to_create == ["Annex"]
+    assert len(build.records) == 1
+    assert build.records[0]["data"]["location_id"] is None
+    names = (await session.execute(
+        select(Location.name).where(Location.company_id == company_id)
+    )).scalars().all()
+    assert names == ["Main"]
 
 
 # ---------------------------------------------------------------------------

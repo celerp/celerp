@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import FileResponse
 
 from celerp.db import get_session
-from celerp.events.engine import emit_event
+from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.projections import Projection
 from celerp.services.attachments import remove_attachment, store_upload
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -123,14 +123,28 @@ class BatchImportResult(BaseModel):
 
 
 class CRMBatchImportRequest(BaseModel):
-    records: list[CRMImportRecord]
+    records: list[CRMImportRecord] = Field(..., max_length=500)
 
 
 # ── Contact CRUD ──────────────────────────────────────────────────────────────
 
 
-@router.post("/contacts", openapi_extra={"x-celerp-agent": True})
+async def _get_contact(session: AsyncSession, company_id, contact_id: str) -> Projection:
+    """Canonical contact lookup: an id from another projection type is not a contact."""
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
+    if row is None or row.entity_type != "contact":
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return row
+
+
+@router.post("/contacts", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def create_contact(payload: ContactCreate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
+    if payload.idempotency_key:
+        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+        if replay is not None:
+            if replay.event_type != "crm.contact.created":
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            return {"event_id": replay.id, "id": replay.entity_id}
     if not payload.name or not payload.name.strip():
         raise HTTPException(status_code=422, detail="Contact name is required and must be non-empty")
     entity_id = f"contact:{uuid.uuid4()}"
@@ -148,7 +162,7 @@ async def create_contact(payload: ContactCreate, company_id: str = Depends(get_c
         metadata_={},
     )
     await session.commit()
-    return {"event_id": entry.id, "id": entity_id}
+    return {"event_id": entry.id, "id": entry.entity_id}
 
 
 @router.get("/contacts", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True})
@@ -171,14 +185,19 @@ async def list_contacts(
 
 @router.get("/contacts/{contact_id}", dependencies=[require_permission("view_contacts")], openapi_extra={"x-celerp-agent": True})
 async def get_contact(contact_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Not found")
+    row = await _get_contact(session, company_id, contact_id)
     return row.state | {"id": row.entity_id}
 
 
-@router.patch("/contacts/{contact_id}", openapi_extra={"x-celerp-agent": True})
+@router.patch("/contacts/{contact_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def update_contact(contact_id: str, payload: ContactUpdate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
+    await _get_contact(session, company_id, contact_id)
+    if payload.idempotency_key:
+        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+        if replay is not None:
+            if replay.event_type != "crm.contact.updated" or replay.entity_id != contact_id:
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            return {"event_id": replay.id}
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -721,15 +740,26 @@ async def import_contact(
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
     _: None = require_permission("edit_contacts"),
+    __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Accept a CIF contact record and emit the corresponding ledger event."""
+    """Accept only the canonical contact-create CIF snapshot transport."""
+    if body.event_type != "crm.contact.created":
+        raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
+    replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
+    if replay is not None:
+        if replay.event_type != "crm.contact.created":
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
+    existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})
+    if existing is not None:
+        raise HTTPException(status_code=409, detail=f"Contact {body.entity_id} already exists")
     entry = await emit_event(
         session,
         company_id=company_id,
         entity_id=body.entity_id,
         entity_type="contact",
-        event_type=body.event_type,
+        event_type="crm.contact.created",
         data=body.data,
         actor_id=user.id,
         location_id=None,
@@ -738,7 +768,7 @@ async def import_contact(
         metadata_={"source_ts": body.source_ts} if body.source_ts else {},
     )
     await session.commit()
-    return {"event_id": entry.id, "idempotency_hit": False}
+    return {"event_id": entry.id, "id": entry.entity_id, "idempotency_hit": False}
 
 
 
@@ -794,8 +824,11 @@ async def bulk_delete_contacts(
     # Validate all contacts exist and are not already deleted
     contact_rows = []
     for cid in payload.contact_ids:
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": cid})
-        if row is None or row.state.get("deleted"):
+        try:
+            row = await _get_contact(session, company_id, cid)
+        except HTTPException as exc:
+            raise HTTPException(status_code=404, detail=f"Contact '{cid}' not found.") from exc
+        if row.state.get("deleted"):
             raise HTTPException(status_code=404, detail=f"Contact '{cid}' not found.")
         contact_rows.append(row)
 
@@ -869,18 +902,20 @@ async def merge_contacts_service(
         raise HTTPException(status_code=422, detail="target_contact_id must not be in source_contact_ids.")
 
     # 2. Validate target
-    target_row = await session.get(Projection, {"company_id": company_id, "entity_id": payload.target_contact_id})
-    if target_row is None or target_row.state.get("entity_type") not in ("contact", None):
-        raise HTTPException(status_code=404, detail=f"Target contact '{payload.target_contact_id}' not found.")
+    try:
+        target_row = await _get_contact(session, company_id, payload.target_contact_id)
+    except HTTPException as exc:
+        raise HTTPException(status_code=404, detail=f"Target contact '{payload.target_contact_id}' not found.") from exc
     if target_row.state.get("deleted"):
         raise HTTPException(status_code=422, detail="Cannot merge into a deleted contact.")
 
     # 3. Validate sources
     source_rows = []
     for sid in payload.source_contact_ids:
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": sid})
-        if row is None:
-            raise HTTPException(status_code=404, detail=f"Source contact '{sid}' not found.")
+        try:
+            row = await _get_contact(session, company_id, sid)
+        except HTTPException as exc:
+            raise HTTPException(status_code=404, detail=f"Source contact '{sid}' not found.") from exc
         if row.state.get("deleted"):
             raise HTTPException(status_code=422, detail=f"Contact '{sid}' is already deleted.")
         if row.state.get("merged_into"):
@@ -1093,7 +1128,9 @@ async def _batch_import(
     keys = [r.idempotency_key for r in records]
     existing = set(
         (await session.execute(
-            _select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(keys))
+            _select(LedgerEntry.idempotency_key).where(
+                LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key.in_(keys)
+            )
         )).scalars().all()
     )
 
@@ -1101,6 +1138,11 @@ async def _batch_import(
     errors: list[str] = []
 
     for rec in records:
+        if rec.event_type != "crm.contact.created":
+            if len(errors) < 10:
+                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+            skipped += 1
+            continue
         if rec.idempotency_key in existing:
             skipped += 1
             continue
@@ -1134,6 +1176,7 @@ async def batch_import_contacts(
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
     _: None = require_permission("edit_contacts"),
+    __: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
     """Batch-import CIF contact records. Idempotent on idempotency_key. Max 500 per call."""
