@@ -367,37 +367,167 @@ def test_action_group_offers_confirm_all_only_for_several_open_cards():
     assert "/ai/confirm-all-ui" not in mixed
 
 
-# ── POST /ai/confirm-all-ui ──────────────────────────────────────────────────
+# ── The review table for a large proposal set ────────────────────────────────
+
+def _bills(n: int, *, flagged: set[int] = frozenset()) -> list[dict]:
+    return [{
+        "id": f"p{i}", "name": "create_bill_docs_post", "title": f"Create bill from r{i}.jpg",
+        "arguments": {"body": {"contact_name": f"Vendor {i}", "issue_date": f"2026-09-0{i}",
+                               "currency": "THB", "total": 10 * i}},
+        "warnings": ["No date was found."] if i in flagged else [],
+    } for i in range(1, n + 1)]
+
+
+def _group_html(actions: list[dict]) -> str:
+    from fasthtml.common import to_xml
+    from celerp_ai.ui_routes import _action_group
+    return to_xml(_action_group("conv-1", "m2", actions, "en"))
+
+
+def test_action_group_renders_review_table_past_five_proposals():
+    html = _group_html(_bills(6, flagged={2}))
+    assert 'id="ai-actions-m2"' in html and "ai-action-table" in html
+    assert html.count('class="bulk-select"') == 6
+    # Flagged rows start unticked with the reason in the Checks column.
+    row2 = html[html.index('id="ai-act-m2-p2"'):html.index('id="ai-act-m2-p3"')]
+    assert "checked" not in row2 and "No date was found." in row2
+    row1 = html[html.index('id="ai-act-m2-p1"'):html.index('id="ai-act-m2-p2"')]
+    assert "checked" in row1
+    assert "Vendor 3" in html and "฿30.00" in html and "2026-09-03" in html
+    # The shared bulk toolbar posts the ticked ids to the chunked confirm route.
+    assert "/ai/confirm-all-ui/conv-1/m2?view=table" in html
+    assert "Confirm selected" in html and "bulk-select-all" in html
+    assert 'id="ai-tail-m2"' in html
+    assert "ai-action__card" not in html
+
+
+def test_action_group_keeps_cards_up_to_five_proposals():
+    html = _group_html(_bills(5))
+    assert "ai-action-table" not in html
+    assert html.count('class="ai-action ai-action__card"') == 5
+    assert "Confirm all (5)" in html
+    assert "/ai/confirm-all-ui/conv-1/m2?view=cards" in html
+    assert html.count('name="selected"') == 5
+
+
+def test_action_table_failed_record_has_no_checkbox():
+    actions = _bills(6)
+    actions[0] = {**actions[0], "status": "failed", "error": "The model stopped."}
+    html = _group_html(actions)
+    assert html.count('class="bulk-select"') == 5
+    row = html[html.index('id="ai-act-m2-p1"'):html.index('id="ai-act-m2-p2"')]
+    assert "Failed" in row and "The model stopped." in row
+
+
+# ── POST /ai/confirm-all-ui/{conversation}/{message}: chunked bulk confirm ───
+
+def _ok(i: int) -> dict:
+    return {"tool_call_id": f"p{i}", "name": "create_bill_docs_post", "title": f"Create bill from r{i}.jpg",
+            "ok": True, "status": 201, "data": {"id": f"doc:{i}", "doc_number": f"BILL-{i}"}, "error": None}
+
 
 @pytest.mark.asyncio
-async def test_confirm_all_lists_each_outcome_by_title(ui_client):
+async def test_confirm_all_runs_the_first_chunk_and_chains_the_rest(ui_client):
+    ids = [f"p{i}" for i in range(1, 13)]
+    result = {"results": [_ok(i) for i in range(1, 11)], "completed": 10, "failed": 0}
+    with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(return_value=result)) as call:
+        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=table", cookies=_authed(),
+                                 data={"selected": ids})
+    assert r.status_code == 200, r.text
+    assert call.await_args.args[2:] == ("conv-1", "m2")
+    assert call.await_args.kwargs["tool_call_ids"] == ids[:10]
+    # Progress line plus a form that fires on load with the remaining ids and the tally.
+    assert "Applying 10 of 12." in r.text
+    assert 'hx-trigger="load"' in r.text
+    assert 'hx-post="/ai/confirm-all-ui/conv-1/m2?view=table"' in r.text
+    assert 'name="selected" value="p11"' in r.text and 'name="selected" value="p12"' in r.text
+    assert 'name="selected" value="p1"' not in r.text
+    assert 'name="completed" value="10"' in r.text
+    assert 'name="doc_ids" value="doc:1,doc:2,doc:3,doc:4,doc:5,doc:6,doc:7,doc:8,doc:9,doc:10"' in r.text
+    # Each finished row loses its checkbox and gains a status badge with a record link.
+    assert 'hx-swap-oob="true" id="ai-act-m2-p1-pick"' in r.text
+    assert 'id="ai-act-m2-p1-status"' in r.text and "Applied" in r.text
+    assert 'href="/docs/doc:1"' in r.text and 'href="/docs/doc:10"' in r.text
+    assert "ai-act-m2-p11" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_confirm_all_last_chunk_shows_tally_and_drafts_link(ui_client):
+    result = {"results": [_ok(11), _ok(12)], "completed": 2, "failed": 0}
+    with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(return_value=result)):
+        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=table", cookies=_authed(), data={
+            "selected": ["p11", "p12"], "completed": "10", "failed": "0",
+            "doc_ids": ",".join(f"doc:{i}" for i in range(1, 11)),
+        })
+    assert r.status_code == 200, r.text
+    assert "12 applied, 0 failed." in r.text
+    assert "hx-trigger" not in r.text
+    assert "Open these 12 drafts" in r.text
+    assert 'href="/docs?view=drafts&amp;ids=' + ",".join(f"doc:{i}" for i in range(1, 13)) + '"' in r.text
+
+
+@pytest.mark.asyncio
+async def test_confirm_all_cards_view_replaces_each_card(ui_client):
     result = {
         "results": [
-            {"tool_call_id": "p1", "title": "Add vendor Supplier Co", "ok": True, "status": 201,
-             "data": {"name": "Supplier Co", "id": "contact:1"}, "error": None},
-            {"tool_call_id": "p2", "title": "Create bill from receipt.jpg", "ok": False, "status": 422,
-             "data": None, "error": {"code": "validation_failed", "message": "total is required"}},
+            {"tool_call_id": "p1", "name": "create_contact_crm_contacts_post", "title": "Add vendor Supplier Co",
+             "ok": True, "status": 201, "data": {"name": "Supplier Co", "id": "contact:1"}, "error": None},
+            {"tool_call_id": "p2", "name": "create_bill_docs_post", "title": "Create bill from receipt.jpg",
+             "ok": False, "status": 422, "data": None,
+             "error": {"code": "validation_failed", "message": "total is required"}},
         ],
         "completed": 1, "failed": 1,
     }
     with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(return_value=result)) as call:
-        r = await ui_client.post("/ai/confirm-all-ui", cookies=_authed(),
-                                 data={"conversation_id": "conv-1", "message_id": "m2"})
-    assert call.await_args.args[2:] == ("conv-1", "m2")
+        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=cards", cookies=_authed(),
+                                 data={"selected": ["p1", "p2"]})
+    assert call.await_args.kwargs["tool_call_ids"] == ["p1", "p2"]
     assert r.status_code == 200
     assert "1 applied, 1 failed." in r.text
+    assert 'hx-swap-oob="true" id="ai-act-m2-p1"' in r.text
     assert "Add vendor Supplier Co" in r.text and "ai-action__done" in r.text
+    assert 'href="/contacts/contact:1"' in r.text
     assert "Create bill from receipt.jpg" in r.text and "total is required" in r.text
+    assert "Open these" not in r.text
 
 
 @pytest.mark.asyncio
-async def test_confirm_all_nothing_pending_shows_expired_panel(ui_client):
+async def test_confirm_all_nothing_pending_shows_expired_tail(ui_client):
     err = APIError(409, "Nothing is pending.", {"code": "action_not_pending"})
     with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(side_effect=err)):
-        r = await ui_client.post("/ai/confirm-all-ui", cookies=_authed(),
-                                 data={"conversation_id": "conv-1", "message_id": "m2"})
+        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=cards", cookies=_authed(),
+                                 data={"selected": "p1"})
     assert r.status_code == 200
     assert "already handled or has expired" in r.text
+    assert "hx-trigger" not in r.text
+    empty = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=table", cookies=_authed(), data={})
+    assert "already handled or has expired" in empty.text
+
+
+@pytest.mark.asyncio
+async def test_confirm_all_api_failure_stops_the_run_with_the_tally(ui_client):
+    err = APIError(502, "The API is down.", {"code": "upstream_unavailable", "message": "The API is down."})
+    with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(side_effect=err)):
+        r = await ui_client.post("/ai/confirm-all-ui/conv-1/m2?view=table", cookies=_authed(), data={
+            "selected": ["p11", "p12"], "completed": "9", "failed": "1", "doc_ids": "doc:1",
+        })
+    assert "9 applied, 1 failed." in r.text
+    assert "The API is down." in r.text
+    assert "hx-trigger" not in r.text
+    assert "Open these 1 drafts" in r.text
+
+
+# ── Sidebar: conversations with open proposals ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_conversations_list_shows_pending_count(ui_client):
+    convs = [{"id": "c1", "title": "Receipts", "pending_count": 7},
+             {"id": "c2", "title": "Questions", "pending_count": 0}]
+    with patch("celerp_ai.ui_routes.api.ai_conversations_list", AsyncMock(return_value=convs)):
+        r = await ui_client.get("/ai/conversations-list", cookies=_authed())
+    assert r.status_code == 200
+    assert r.text.count("ai-sidebar__badge") == 1
+    assert '>7</span>' in r.text and "7 open proposals" in r.text
 
 
 # ── Reading jobs: /ai/chat 202 and /ai/proposals-ui ──────────────────────────
@@ -448,7 +578,7 @@ async def test_proposals_ui_renders_summary_and_cards_when_done(ui_client):
     assert "Two bills are ready to confirm." in r.text
     assert "Create bill from a.jpg" in r.text and "Create bill from b.jpg" in r.text
     assert "No date was found." in r.text
-    assert 'value="m9"' in r.text
+    assert "/ai/confirm-all-ui/conv-1/m9?view=cards" in r.text
     assert "Confirm all (2)" in r.text
 
 

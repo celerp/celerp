@@ -330,6 +330,28 @@ def pending_actions(tools_called: list | None) -> list[dict]:
     return out
 
 
+async def pending_action_counts(
+    session: AsyncSession, conversation_ids: list[uuid.UUID],
+) -> dict[uuid.UUID, int]:
+    """Open (pending, unexpired) proposals per conversation, one query for the list."""
+    if not conversation_ids:
+        return {}
+    rows = await session.execute(
+        select(AIMessage.conversation_id, AIMessage.tools_called).where(
+            AIMessage.conversation_id.in_(conversation_ids),
+            AIMessage.tools_called.isnot(None),
+        )
+    )
+    counts: dict[uuid.UUID, int] = {}
+    for conversation_id, tools_called in rows.all():
+        open_count = sum(
+            1 for r in pending_actions(tools_called) if r.get("status", "pending") == "pending"
+        )
+        if open_count:
+            counts[conversation_id] = counts.get(conversation_id, 0) + open_count
+    return counts
+
+
 async def claim_tool_call(
     session: AsyncSession,
     *,

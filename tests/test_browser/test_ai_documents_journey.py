@@ -14,6 +14,7 @@ every write still lands through the real routes.
 from __future__ import annotations
 
 import json
+import re
 from unittest.mock import patch
 
 import pytest
@@ -49,9 +50,25 @@ _RECEIPTS = {
 }
 
 
+def _bulk_receipt(n: int, vendor: str, *, short: bool = False) -> dict:
+    """A receipt whose lines and tax reach its total, or fall short when asked."""
+    return {
+        "document_kind": "receipt", "vendor_name": vendor, "date": f"2026-09-1{n}",
+        "currency": "THB", "total": 13.0 if short else 11.0, "tax": 1.0, "reference": f"B-{n}",
+        "line_items": [{"description": "Tape", "quantity": 1, "unit_price": 10}],
+    }
+
+
+_BULK_RECEIPTS = {
+    "bulk-a.png": _bulk_receipt(1, "Alder Supplies"),
+    "bulk-b.png": _bulk_receipt(2, "Birch Traders", short=True),
+    "bulk-c.png": _bulk_receipt(3, "Cedar Goods"),
+}
+
+
 async def _fake_read(model, system, prompt, *, files=None, **_kw) -> ModelResult:
     """The reading model: answers with the receipt JSON for the attached file."""
-    extraction = _RECEIPTS[files[0]["filename"]]
+    extraction = {**_RECEIPTS, **_BULK_RECEIPTS}[files[0]["filename"]]
     return ModelResult(
         message={"role": "assistant", "content": f"```json\n{json.dumps(extraction)}\n```"},
         model_used="fake-reader", usage={"credits": 1}, reservation_id=None, remaining=None,
@@ -124,6 +141,57 @@ def test_receipts_to_bills_journey(page: Page, ui_server, api):
     assert bills[0]["status"] == "draft"
     vendors = api.get("/crm/contacts", params={"q": "Quick Parts Ltd"}).json()["items"]
     assert [v["name"] for v in vendors] == ["Quick Parts Ltd"]
+
+
+def test_receipts_bulk_table_journey(page: Page, ui_server, api):
+    """Past five proposals the thread shows the review table: the flagged bill
+    starts unticked, Confirm selected from the bulk toolbar applies the rest,
+    and the tally links to exactly the drafts this batch created."""
+    with patch("celerp.ai.batch.call_llm", _fake_read):
+        _open_chat(page, ui_server)
+        _attach(page, [
+            {"name": name, "mimeType": "image/png", "buffer": _PNG} for name in _BULK_RECEIPTS
+        ])
+        _send(page, "Enter these as bills")
+        expect(page.locator(".ai-job--done")).to_be_visible(timeout=20_000)
+        expect(page.locator(".ai-job--done")).to_contain_text("3 of 3 files were read.")
+
+    table = page.locator(".ai-action-table")
+    expect(table).to_be_visible()
+    rows = table.locator("tbody tr.data-row")
+    expect(rows).to_have_count(6)
+    expect(page.locator(".ai-action__card")).to_have_count(0)
+
+    flagged = rows.filter(has_text="Create bill from Birch Traders")
+    expect(flagged.locator(".ai-action-table__checks")).to_contain_text(
+        "The lines and tax add up to 11.00 but the receipt total is 13.00."
+    )
+    expect(flagged.locator(".bulk-select")).not_to_be_checked()
+    expect(rows.filter(has_text="Create bill from Alder Supplies").locator(".bulk-select")).to_be_checked()
+
+    # A row expands to the card's detail without leaving the thread.
+    rows.filter(has_text="Create bill from Cedar Goods").locator(".ai-action-table__toggle").click()
+    expect(table.locator(".ai-action-table__details.is-open")).to_contain_text("Cedar Goods")
+
+    toolbar = page.locator(".bulkbar")
+    expect(toolbar).to_be_visible()
+    expect(toolbar.locator(".bulk-count")).to_contain_text("5")
+    toolbar.locator(".bulk-action-select").select_option("confirm")
+    expect(page.locator(".ai-action-group__summary")).to_contain_text("5 applied, 0 failed.", timeout=20_000)
+    expect(table.locator(".bulk-select")).to_have_count(1)
+    expect(rows.filter(has_text="Create bill from Alder Supplies").locator(".table-link")).to_have_attribute(
+        "href", re.compile(r"^/docs/")
+    )
+
+    drafts = page.locator(".ai-action-group__footer a", has_text="Open these 2 drafts")
+    expect(drafts).to_be_visible()
+    drafts.click()
+    expect(page).to_have_url(re.compile(r"/docs\?view=drafts&ids="))
+    listed = page.locator(".data-table tbody tr.data-row")
+    expect(listed).to_have_count(2)
+    expect(page.locator(".data-table")).to_contain_text("Alder Supplies")
+    expect(page.locator(".data-table")).to_contain_text("Cedar Goods")
+    expect(page.locator(".data-table")).not_to_contain_text("Birch Traders")
 
 
 # ── Statement reconciliation ──────────────────────────────────────────────────

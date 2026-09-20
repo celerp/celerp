@@ -49,6 +49,9 @@ from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
+# Longest explicit id list the list route accepts; a batch of AI drafts is far below it.
+MAX_IDS_FILTER = 500
+
 # Bulk payment bounds each per-doc row-lock wait so a contended doc skips rather than
 # blocking the worker. 3s sits above a normal per-doc lock hold (no false skip under
 # ordinary load) and well under typical client/proxy request timeouts. Applied
@@ -646,11 +649,15 @@ async def list_docs(
     not_restocked: bool = False,
     not_stocked: bool = False,
     converted_to_type: str | None = None,
+    ids: str | None = None,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from datetime import date as _date_cls
     today = _date_cls.today().isoformat()
+    id_list = [x.strip() for x in ids.split(",") if x.strip()] if ids else []
+    if len(id_list) > MAX_IDS_FILTER:
+        raise HTTPException(status_code=422, detail=f"ids accepts at most {MAX_IDS_FILTER} document ids")
 
     # Build SQL WHERE conditions - push all indexable filters into the DB.
     # Complex post-filters (overdue_only, unfulfilled_only, etc.) still run in
@@ -670,6 +677,8 @@ async def list_docs(
         base_where.append(Projection.state["status"].as_string() != exclude_status)
     if contact_id:
         base_where.append(Projection.state["contact_id"].as_string() == contact_id)
+    if id_list:
+        base_where.append(Projection.entity_id.in_(id_list))
     if date_from:
         base_where.append(Projection.state["issue_date"].as_string() >= date_from)
     if date_to:

@@ -22,6 +22,11 @@ from ui.components.shell import base_shell
 from ui.config import get_token as _token, get_role
 from ui.i18n import t, get_lang
 
+# A proposal set larger than this renders as the review table instead of cards.
+TABLE_FROM = 5
+# Actions run per request of a bulk confirm; the tail form chains the rest.
+CONFIRM_CHUNK = 10
+
 
 # ---------------------------------------------------------------------------
 # Showcase scenario data
@@ -359,25 +364,46 @@ def setup_ui_routes(app) -> None:
             return _action_panel(_api_error_text(e, lang), ok=False)
         return _outcome_line(result, lang)
 
-    @app.post("/ai/confirm-all-ui")
-    async def ai_confirm_all_ui(request: Request):
+    @app.post("/ai/confirm-all-ui/{conversation_id}/{message_id}")
+    async def ai_confirm_all_ui(request: Request, conversation_id: str, message_id: str):
+        """Run one chunk of the selected proposals and report each outcome in place.
+
+        The form carries the selected action ids plus the running tally. Up to
+        CONFIRM_CHUNK actions run per request; the reply swaps each finished
+        card or table row by id and replaces the tail with the progress line and
+        a self-firing form for the rest, or the final tally when nothing remains.
+        An API failure mid-batch stops the run and shows the tally so far; the
+        untouched rows keep their checkboxes, so the user can run them again.
+        """
         token = _token(request)
         lang = get_lang(request)
         if not token:
             return _action_panel(t("msg.not_authenticated", lang), ok=False)
         form = await request.form()
-        conversation_id = (form.get("conversation_id") or "").strip()
-        message_id = (form.get("message_id") or "").strip()
+        view = "table" if request.query_params.get("view") == "table" else "cards"
+        selected = list(dict.fromkeys(str(v).strip() for v in form.getlist("selected") if str(v).strip()))
+        tally = _Tally.from_form(form)
+        if not selected:
+            return _action_panel(t("ai.action_expired", lang), ok=False)
+        chunk, rest = selected[:CONFIRM_CHUNK], selected[CONFIRM_CHUNK:]
 
         from celerp.gateway.state import get_session_token
         session_token = get_session_token()
         try:
-            result = await api.ai_confirm_all(token, session_token, conversation_id, message_id)
+            result = await api.ai_confirm_all(
+                token, session_token, conversation_id, message_id, tool_call_ids=chunk,
+            )
         except APIError as e:
             if e.status == 409 and _api_error_code(e) == "action_not_pending":
-                return _action_panel(t("ai.action_expired", lang), ok=False)
-            return _action_panel(_api_error_text(e, lang), ok=False)
-        return _confirm_all_panel(result, lang)
+                error = t("ai.action_expired", lang)
+            else:
+                error = _api_error_text(e, lang)
+            return _confirm_tail(conversation_id, message_id, view, [], tally, lang, error=error)
+        outcomes = result.get("results") or []
+        tally.add(outcomes)
+        swaps = [_outcome_swap(message_id, o, view, lang) for o in outcomes]
+        tail = _confirm_tail(conversation_id, message_id, view, rest, tally, lang)
+        return HTMLResponse(to_xml((tail, *[x for sw in swaps for x in sw])))
 
     @app.get("/ai/conversations-list")
     async def ai_conversations_list(request: Request):
@@ -397,9 +423,13 @@ def setup_ui_routes(app) -> None:
         items = []
         for c in result:
             title = c.get("title") or "New conversation"
+            open_count = int(c.get("pending_count") or 0)
+            badge = [Span(str(open_count), cls="ai-sidebar__badge",
+                          title=t("ai.open_proposals", count=open_count))] if open_count else []
             items.append(
                 A(
-                    title,
+                    Span(title, cls="ai-sidebar__item-title"),
+                    *badge,
                     href=f"/ai?conversation={c['id']}",
                     cls="ai-sidebar__item",
                 )
@@ -724,6 +754,36 @@ def _action_title(action: dict) -> str:
     return action.get("title") or _label(action.get("name", ""))
 
 
+def _action_dom_id(message_id: str, tool_call_id: str) -> str:
+    """The element id a proposal's card or table row carries, so an outcome can
+    replace it out of band after a bulk confirm."""
+    return f"ai-act-{message_id}-{tool_call_id}"
+
+
+def _action_body(action: dict, lang: str = "en") -> list[FT]:
+    """What a proposal will write and what to check first: the argument groups
+    and the warnings block, shared by the card and the table's detail row."""
+    args = action.get("arguments") or {}
+    groups = [
+        _arg_lines(args[part])
+        for part in ("body", "path", "query")
+        if isinstance(args.get(part), dict) and args[part]
+    ]
+    out: list[FT] = [Div(*groups, cls="ai-action__list")]
+    warnings = _action_warnings(action)
+    if warnings:
+        out.append(Div(
+            P(t("ai.action_check", lang), cls="ai-action__warnings-title"),
+            Ul(*[Li(w) for w in warnings], cls="ai-action__warnings-list"),
+            cls="ai-action__warnings",
+        ))
+    return out
+
+
+def _action_warnings(action: dict) -> list[str]:
+    return [w for w in (action.get("warnings") or []) if w]
+
+
 def _action_card(conversation_id: str, message_id: str, action: dict, lang: str = "en") -> FT:
     """Render one proposed change the user must confirm before it runs.
 
@@ -736,21 +796,7 @@ def _action_card(conversation_id: str, message_id: str, action: dict, lang: str 
     """
     name = action.get("name", "")
     tool_call_id = action.get("id", "")
-    args = action.get("arguments") or {}
     failed = action.get("status") == "failed"
-    groups = [
-        _arg_lines(args[part])
-        for part in ("body", "path", "query")
-        if isinstance(args.get(part), dict) and args[part]
-    ]
-    warnings = [w for w in (action.get("warnings") or []) if w]
-    warning_block = []
-    if warnings:
-        warning_block = [Div(
-            P(t("ai.action_check", lang), cls="ai-action__warnings-title"),
-            Ul(*[Li(w) for w in warnings], cls="ai-action__warnings-list"),
-            cls="ai-action__warnings",
-        )]
     if failed:
         badge = Span(t("ai.action_failed_badge", lang), cls="badge badge--error")
         footer = Div(action.get("error") or t("ai.action_failed", lang), cls="ai-action__error")
@@ -776,46 +822,248 @@ def _action_card(conversation_id: str, message_id: str, action: dict, lang: str 
         )
     return Div(
         Div(P(_action_title(action), cls="ai-action__title"), badge, cls="ai-action__header"),
-        Div(*groups, cls="ai-action__list"),
-        *warning_block,
+        *_action_body(action, lang),
         footer,
+        id=_action_dom_id(message_id, tool_call_id),
         cls="ai-action ai-action__card" + (" ai-action--failed" if failed else ""),
         data_capability=name,
     )
 
 
+# Field names a proposal's body is summarised by in the review table, first match wins.
+_SUMMARY_NAME_KEYS = ("contact_name", "name", "sku", "title")
+_SUMMARY_DATE_KEYS = ("issue_date", "date")
+_SUMMARY_AMOUNT_KEYS = ("total", "amount", "quantity")
+
+
+def _summary_field(body: dict, keys: tuple[str, ...]) -> str:
+    currency = body.get("currency") if isinstance(body.get("currency"), str) else None
+    for key in keys:
+        value = body.get(key)
+        if value not in (None, "") and not isinstance(value, (dict, list)):
+            return _fmt_scalar(key, value, currency)
+    return "--"
+
+
+def _action_status_cell(action: dict, lang: str = "en") -> list:
+    if action.get("status") == "failed":
+        return [Span(t("ai.action_failed_badge", lang), cls="badge badge--error"),
+                Span(action.get("error") or t("ai.action_failed", lang), cls="ai-action__error")]
+    return [Span(t("ai.action_proposal", lang), cls="badge badge--proposal")]
+
+
+def _action_row(message_id: str, action: dict, lang: str = "en") -> tuple[FT, FT]:
+    """One proposal as a review-table row plus its hidden detail row.
+
+    A proposal with warnings starts unticked, its reasons in the Checks column,
+    so a bulk confirm applies only what needs no second look unless the user
+    ticks it. A failed record has no checkbox.
+    """
+    tool_call_id = action.get("id", "")
+    dom_id = _action_dom_id(message_id, tool_call_id)
+    body = (action.get("arguments") or {}).get("body")
+    body = body if isinstance(body, dict) else {}
+    warnings = _action_warnings(action)
+    pending = action.get("status", "pending") == "pending"
+    pick = []
+    if pending:
+        box = {"type": "checkbox", "cls": "bulk-select", "name": "selected", "value": tool_call_id}
+        if not warnings:
+            box["checked"] = True
+        pick = [Input(**box)]
+    row = Tr(
+        Td(*pick, id=f"{dom_id}-pick"),
+        Td(Button(_action_title(action), type="button", cls="ai-action-table__toggle",
+                  title=t("th.details", lang),
+                  onclick="this.closest('tr').nextElementSibling.classList.toggle('is-open')")),
+        Td(_summary_field(body, _SUMMARY_NAME_KEYS)),
+        Td(_summary_field(body, _SUMMARY_DATE_KEYS)),
+        Td(_summary_field(body, _SUMMARY_AMOUNT_KEYS), cls="cell--number"),
+        Td(Div("; ".join(warnings) if warnings else "--", cls="ai-action-table__checks-text"), cls="ai-action-table__checks"),
+        Td(*_action_status_cell(action, lang), id=f"{dom_id}-status", cls="ai-action-table__status"),
+        id=dom_id, cls="data-row", data_capability=action.get("name", ""),
+    )
+    details = Tr(Td(*_action_body(action, lang), colspan="7"), cls="ai-action-table__details")
+    return row, details
+
+
+def _action_table(conversation_id: str, message_id: str, actions: list[dict], lang: str = "en") -> FT:
+    """The review table for a large proposal set: tick rows, then Confirm selected
+    from the shared bulk toolbar; each row expands to the card's detail."""
+    from ui.components.table import bulk_toolbar
+    table_id = f"ai-actions-{message_id}"
+    rows = [part for a in actions for part in _action_row(message_id, a, lang)]
+    table = Table(
+        Thead(Tr(
+            Th(Input(type="checkbox", cls="bulk-select-all")),
+            Th(t("ai.col_change", lang)),
+            Th(t("label.name", lang)),
+            Th(t("th.date", lang)),
+            Th(t("label.amount", lang), cls="cell--number"),
+            Th(t("ai.col_checks", lang)),
+            Th(t("label.status", lang)),
+        )),
+        Tbody(*rows),
+        id=table_id, cls="data-table ai-action-table",
+    )
+    toolbar = bulk_toolbar(table_id, [{
+        "value": "confirm", "label": t("ai.confirm_selected", lang), "method": "post",
+        "url": f"/ai/confirm-all-ui/{conversation_id}/{message_id}?view=table",
+        "target": f"#ai-tail-{message_id}", "swap": "outerHTML",
+    }])
+    return Div(
+        Div(table, cls="table-scroll-wrap"),
+        toolbar,
+        Div(id=f"ai-tail-{message_id}", cls="ai-action-group__footer"),
+        cls="ai-action-group ai-action-group--table",
+    )
+
+
 def _action_group(conversation_id: str, message_id: str, actions: list[dict], lang: str = "en") -> FT:
-    """The cards one assistant turn proposed, with one button to confirm them all
-    when more than one is still open."""
+    """The proposals one assistant turn made: cards with one Confirm all button
+    when more than one is open, or the review table once the set is large."""
+    if len(actions) > TABLE_FROM:
+        return _action_table(conversation_id, message_id, actions, lang)
     cards = [_action_card(conversation_id, message_id, a, lang) for a in actions]
-    open_count = sum(1 for a in actions if a.get("status", "pending") == "pending")
+    open_ids = [a.get("id", "") for a in actions if a.get("status", "pending") == "pending"]
     footer = []
-    if open_count > 1:
+    if len(open_ids) > 1:
         footer = [Form(
-            Input(type="hidden", name="conversation_id", value=conversation_id),
-            Input(type="hidden", name="message_id", value=message_id),
-            Button(t("ai.confirm_all", lang, count=open_count), type="submit", cls="btn btn--primary"),
-            hx_post="/ai/confirm-all-ui",
-            hx_target="closest .ai-action-group",
+            *[Input(type="hidden", name="selected", value=i) for i in open_ids],
+            Button(t("ai.confirm_all", lang, count=len(open_ids)), type="submit", cls="btn btn--primary"),
+            hx_post=f"/ai/confirm-all-ui/{conversation_id}/{message_id}?view=cards",
+            hx_target=f"#ai-tail-{message_id}",
             hx_swap="outerHTML",
+            id=f"ai-tail-{message_id}",
             cls="ai-action-group__footer",
         )]
     return Div(*cards, *footer, cls="ai-action-group")
 
 
-def _outcome_line(outcome: dict, lang: str = "en") -> FT:
-    """The line that replaces a confirmed card: the action by name, then what happened."""
+# UI paths of the records the confirmed capabilities create, by operation id fragment.
+_RECORD_PATHS = (("_docs_", "/docs/{id}"), ("_crm_contacts", "/contacts/{id}"), ("_items_", "/inventory/{id}"))
+
+
+def _record_link(outcome: dict) -> str | None:
+    """Where the record a successful action created lives in the UI, if known."""
+    data = outcome.get("data")
+    ident = (data.get("id") or data.get("entity_id")) if isinstance(data, dict) else None
+    if not outcome.get("ok") or not ident:
+        return None
+    name = str(outcome.get("name") or "")
+    for needle, path in _RECORD_PATHS:
+        if needle in name:
+            return path.format(id=ident)
+    return None
+
+
+def _outcome_line(outcome: dict, lang: str = "en", *, message_id: str | None = None) -> FT:
+    """The line that replaces a confirmed card: the action by name, what happened,
+    and a link to the record when one was created."""
     ok, text = _outcome_text(outcome, lang)
     title = outcome.get("title") or ""
-    return _action_panel(f"{title}: {text}" if title else text, ok=ok)
+    link = _record_link(outcome)
+    parts = [f"{title}: {text}" if title else text]
+    if link:
+        parts += [" ", A(t("ai.open_record", lang), href=link, cls="table-link")]
+    attrs = {}
+    if message_id is not None:
+        attrs = {"id": _action_dom_id(message_id, outcome.get("tool_call_id", "")), "hx_swap_oob": "true"}
+    return Div(*parts, cls="ai-action__done" if ok else "ai-action__error", **attrs)
 
 
-def _confirm_all_panel(result: dict, lang: str = "en") -> FT:
-    """Replaces the card group after Confirm all: a boxed tally with one line per action."""
-    rows = [_outcome_line(outcome, lang) for outcome in result.get("results") or []]
-    summary = t("ai.confirm_all_result", lang,
-                completed=result.get("completed", 0), failed=result.get("failed", 0))
-    return Div(P(summary, cls="ai-action-group__summary"), *rows, cls="ai-action ai-action-group")
+def _outcome_swap(message_id: str, outcome: dict, view: str, lang: str = "en") -> list[FT]:
+    """The out-of-band elements that mark one action finished in the thread."""
+    if view != "table":
+        return [_outcome_line(outcome, lang, message_id=message_id)]
+    dom_id = _action_dom_id(message_id, outcome.get("tool_call_id", ""))
+    ok, text = _outcome_text(outcome, lang)
+    link = _record_link(outcome)
+    if ok:
+        cell = [Span(t("th.applied", lang), cls="badge badge--active")]
+        if link:
+            cell += [" ", A(t("ai.open_record", lang), href=link, cls="table-link")]
+    else:
+        cell = [Span(t("ai.action_failed_badge", lang), cls="badge badge--error"),
+                Span(text, cls="ai-action__error")]
+    # Table cells cannot stand on their own in a fragment; htmx reads them out
+    # of a template wrapper and swaps each by id.
+    return [Template(
+        Td(id=f"{dom_id}-pick", hx_swap_oob="true"),
+        Td(*cell, id=f"{dom_id}-status", cls="ai-action-table__status", hx_swap_oob="true"),
+    )]
+
+
+class _Tally:
+    """The running result of a chunked confirm, carried between requests in the
+    tail form: counts so far and the ids of the drafts created."""
+
+    def __init__(self, completed: int = 0, failed: int = 0, doc_ids: list[str] | None = None):
+        self.completed = completed
+        self.failed = failed
+        self.doc_ids = doc_ids or []
+
+    @classmethod
+    def from_form(cls, form) -> "_Tally":
+        def _int(key: str) -> int:
+            try:
+                return max(0, int(form.get(key) or 0))
+            except (TypeError, ValueError):
+                return 0
+        doc_ids = [x.strip() for x in str(form.get("doc_ids") or "").split(",") if x.strip()]
+        return cls(_int("completed"), _int("failed"), doc_ids)
+
+    def add(self, outcomes: list[dict]) -> None:
+        for o in outcomes:
+            if o.get("ok"):
+                self.completed += 1
+                data = o.get("data")
+                if "_docs_" in str(o.get("name") or "") and isinstance(data, dict) and data.get("id"):
+                    self.doc_ids.append(str(data["id"]))
+            else:
+                self.failed += 1
+
+    def inputs(self) -> list[FT]:
+        return [
+            Input(type="hidden", name="completed", value=str(self.completed)),
+            Input(type="hidden", name="failed", value=str(self.failed)),
+            Input(type="hidden", name="doc_ids", value=",".join(self.doc_ids)),
+        ]
+
+
+def _confirm_tail(conversation_id: str, message_id: str, view: str, rest: list[str],
+                  tally: _Tally, lang: str = "en", *, error: str | None = None) -> FT:
+    """The footer under a proposal set while a bulk confirm runs and after it ends.
+
+    With ids left and no error it shows how far the run is and carries a form
+    that fires on load for the next chunk. Otherwise it is the tally, any error
+    that stopped the run, and a link to the drafts the batch created.
+    """
+    done = tally.completed + tally.failed
+    if rest and not error:
+        return Div(
+            P(t("ai.confirm_progress", lang, done=done, total=done + len(rest)), cls="ai-action-group__summary"),
+            Form(
+                *[Input(type="hidden", name="selected", value=i) for i in rest],
+                *tally.inputs(),
+                hx_post=f"/ai/confirm-all-ui/{conversation_id}/{message_id}?view={view}",
+                hx_trigger="load",
+                hx_target=f"#ai-tail-{message_id}",
+                hx_swap="outerHTML",
+            ),
+            id=f"ai-tail-{message_id}", cls="ai-action-group__footer",
+        )
+    children: list = [P(t("ai.confirm_all_result", lang, completed=tally.completed, failed=tally.failed),
+                        cls="ai-action-group__summary")]
+    if error:
+        children.append(Div(error, cls="ai-action__error"))
+    if tally.doc_ids:
+        children.append(A(
+            t("ai.open_drafts", lang, n=len(tally.doc_ids)),
+            href=f"/docs?view=drafts&ids={','.join(tally.doc_ids)}",
+            cls="btn btn--secondary",
+        ))
+    return Div(*children, id=f"ai-tail-{message_id}", cls="ai-action-group__footer")
 
 
 def _job_counts(job: dict) -> tuple[int, int, int]:

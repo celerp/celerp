@@ -1125,6 +1125,7 @@ def setup_routes(app):
         all_issued = request.query_params.get("all_issued", "") in ("1", "true")
         converted_to_type = request.query_params.get("converted_to_type", "")
         view = request.query_params.get("view", "")  # "drafts" = drafts-only mode
+        ids = ",".join(x.strip() for x in request.query_params.get("ids", "").split(",") if x.strip())
         page = int(request.query_params.get("page", 1))
         sort = request.query_params.get("sort", "date")
         sort_dir = request.query_params.get("dir", "desc")
@@ -1145,7 +1146,11 @@ def setup_routes(app):
         except Exception:
             company = {}
         currency = company.get("currency") or None
-        if _has_explicit_date:
+        if ids:
+            # An explicit id list is the whole filter: a batch of AI drafts may carry
+            # receipt dates outside the saved date preset and must still all show.
+            date_from, date_to, preset = "", "", "all"
+        elif _has_explicit_date:
             date_from, date_to, preset = _parse_dates(request)
         else:
             _default_preset = company.get("docs_default_preset") or "last_12m"
@@ -1170,6 +1175,8 @@ def setup_routes(app):
                 params["q"] = q
             if contact_id:
                 params["contact_id"] = contact_id
+            if ids:
+                params["ids"] = ids
             if doc_type:
                 params["doc_type"] = doc_type
             if is_drafts_view:
@@ -1210,10 +1217,10 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            docs, summary, draft_count = [], {}, 0
+            docs_resp, docs, summary, draft_count = {}, [], {}, 0
 
-        extra = f"&q={quote_plus(q)}&type={quote_plus(doc_type)}&status={quote_plus(status)}&view={quote_plus(view)}".strip("&")
-        total_count = summary.get("total_count", len(docs))
+        extra = f"&q={quote_plus(q)}&type={quote_plus(doc_type)}&status={quote_plus(status)}&view={quote_plus(view)}&ids={quote_plus(ids)}".strip("&")
+        total_count = docs_resp.get("total", len(docs)) if isinstance(docs_resp, dict) else len(docs)
 
         # Auto-redirect to drafts when no finalized docs exist but drafts do.
         # Prevents the "where did my draft go?" confusion for new users.
@@ -1257,13 +1264,13 @@ def setup_routes(app):
                 docs,
                 sort=sort,
                 sort_dir=sort_dir,
-                base_params={"q": q, "type": doc_type, "status": status, "contact_id": contact_id, "view": view, "page": str(page), "per_page": str(per_page)},
+                base_params={"q": q, "type": doc_type, "status": status, "contact_id": contact_id, "view": view, "ids": ids, "page": str(page), "per_page": str(per_page)},
                 doc_type=doc_type,
                 lang=lang,
                 currency=currency,
                 is_drafts_view=is_drafts_view,
             ),
-            pagination(page, total_count, per_page, "/docs", f"q={q}&type={doc_type}&status={status}&view={view}&sort={sort}&dir={sort_dir}".strip("&")),
+            pagination(page, total_count, per_page, "/docs", f"q={q}&type={doc_type}&status={status}&view={view}&ids={ids}&sort={sort}&dir={sort_dir}".strip("&")),
             title=page_title(section_label_key),
             nav_active=_doc_nav_key(doc_type),
             lang=lang,

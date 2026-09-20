@@ -770,3 +770,59 @@ async def test_confirm_all_executes_in_order(auth_client):
     assert r2.status_code == 409 and r2.json()["detail"]["code"] == "action_not_pending"
     thread = (await c.get(f"/ai/conversations/{conv_id}", headers=h)).json()
     assert thread["messages"][1]["pending_actions"] == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_all_selection_runs_only_selected_in_order(auth_client):
+    """A selection runs only those ids, in proposal order; an id that is not
+    pending is reported as a failed row without stopping the others; a
+    selection with nothing pending is 409."""
+    c, h = auth_client
+    conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
+    result = AgentResult(
+        answer="Three changes.", model_used="glm", tools_called=[],
+        pending_actions=[_pending(call_id="call_a"), _pending(call_id="call_b"), _pending(call_id="call_c")],
+    )
+    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
+        r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "do all"})
+    message_id = r.json()["pending_actions"][0]["message_id"]
+
+    seen = []
+
+    async def _exec(app, authorization, capability, arguments, tool_call_id, **kw):
+        seen.append(tool_call_id)
+        return {"ok": True, "status": 201, "data": {"id": f"doc-{tool_call_id}"}}
+
+    caps = {"create_contact": {"method": "POST"}}
+    url = f"/ai/conversations/{conv_id}/confirm-all"
+    with patch("celerp_ai.routes.compile_agent_capabilities", return_value=caps), \
+         patch("celerp_ai.routes.execute_agent_capability", _exec):
+        r = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_ids": ["call_c", "call_a", "ghost"]})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        r2 = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_ids": ["call_b"]})
+        r3 = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_ids": ["ghost"]})
+    assert seen == ["call_a", "call_c", "call_b"]
+    assert [x["tool_call_id"] for x in body["results"]] == ["call_a", "call_c", "ghost"]
+    assert body["results"][0]["name"] == "create_contact"
+    assert body["results"][2]["ok"] is False
+    assert body["results"][2]["error"]["code"] == "action_not_pending"
+    assert body["completed"] == 2 and body["failed"] == 1
+    assert r2.status_code == 200 and r2.json()["completed"] == 1
+    assert r3.status_code == 409 and r3.json()["detail"]["code"] == "action_not_pending"
+
+
+@pytest.mark.asyncio
+async def test_list_conversations_reports_pending_count(auth_client):
+    """The list carries how many proposals each conversation still has open."""
+    c, h = auth_client
+    quiet = (await c.post("/ai/conversations", headers=h, json={"title": "quiet"})).json()["id"]
+    busy = (await c.post("/ai/conversations", headers=h, json={"title": "busy"})).json()["id"]
+    result = AgentResult(
+        answer="Two changes.", model_used="glm", tools_called=[],
+        pending_actions=[_pending(call_id="call_a"), _pending(call_id="call_b")],
+    )
+    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
+        await c.post(f"/ai/conversations/{busy}/query", headers=h, json={"query": "do both"})
+    counts = {x["id"]: x["pending_count"] for x in (await c.get("/ai/conversations", headers=h)).json()}
+    assert counts[busy] == 2 and counts[quiet] == 0

@@ -2227,7 +2227,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .ai-sidebar__icon-btn { width: 32px; height: 32px; padding: 0; display: flex; align-items: center; justify-content: center; border-radius: var(--radius); border: 1px solid var(--c-border); background: var(--c-bg3); cursor: pointer; font-size: 1rem; color: var(--c-text2); }
 .ai-sidebar__icon-btn:hover { background: var(--c-bg2); color: var(--c-text); }
 .ai-sidebar__empty { color: var(--c-text2); font-size: 0.82rem; text-align: center; margin-top: 1rem; }
-.ai-sidebar__item { display: block; padding: 0.45rem 0.65rem; border-radius: var(--radius); font-size: 0.85rem; color: var(--c-text); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: background 0.1s; }
+.ai-sidebar__item { display: flex; align-items: center; gap: 0.4rem; padding: 0.45rem 0.65rem; border-radius: var(--radius); font-size: 0.85rem; color: var(--c-text); text-decoration: none; white-space: nowrap; transition: background 0.1s; }
 .ai-sidebar__item:hover { background: var(--c-bg3); }
 .ai-chat__main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .ai-messages { flex: 1; overflow-y: auto; padding: 1.25rem 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
@@ -2472,7 +2472,24 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .ai-action--failed { border-color: rgba(239,68,68,0.35); }
 .ai-action-group { display: flex; flex-direction: column; gap: 0.5rem; max-width: 36rem; }
 .ai-action-group .ai-action { margin: 0; }
-.ai-action-group__footer { display: flex; justify-content: flex-end; }
+.ai-action-group__footer { display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem; }
+.ai-action-group__footer:empty { display: none; }
+.ai-action-group--table { max-width: 100%; }
+/* Fills the chat pane like .activity-table so the Checks column wraps instead of
+   pushing Status past the right edge. */
+.ai-action-table { width: 100%; font-size: 0.8rem; }
+.ai-action-table__toggle { background: none; border: 0; padding: 0; color: var(--c-accent); cursor: pointer; text-align: left; font: inherit; }
+.ai-action-table__toggle:hover { text-decoration: underline; }
+.ai-action-table__details { display: none; }
+.ai-action-table__details.is-open { display: table-row; }
+.ai-action-table__details > td { background: var(--c-bg2); white-space: normal; height: auto; padding: 0.5rem 10px; }
+.ai-action-table td.ai-action-table__checks { white-space: normal; }
+.ai-action-table__checks-text { max-width: 14rem; }
+@media (max-width: 640px) { .ai-action-table__checks-text { min-width: 12rem; } }
+.ai-action-table__status { white-space: nowrap; }
+.ai-action-table__status .ai-action__error { display: block; white-space: normal; font-size: 0.75rem; }
+.ai-sidebar__item-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ai-sidebar__badge { flex: none; min-width: 1.4em; padding: 0 0.4em; border-radius: 999px; background: var(--c-accent); color: #fff; font-size: 0.7rem; font-weight: 600; text-align: center; line-height: 1.5; }
 .ai-action-group__summary { margin: 0; font-size: 0.95rem; font-weight: 600; }
 .ai-action-group > .ai-action__done, .ai-action-group > .ai-action__error { margin: 0; }
 .ai-msg--error { color: var(--c-red-text); border: 1px solid rgba(239,68,68,0.35); }

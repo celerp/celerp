@@ -60,6 +60,7 @@ from celerp.ai.conversations import (
     get_messages,
     list_conversations,
     message_error,
+    pending_action_counts,
     pending_actions,
     record_credits,
     rename_conversation,
@@ -385,6 +386,7 @@ class ConfirmActionRequest(BaseModel):
 
 class ConfirmAllRequest(BaseModel):
     message_id: uuid.UUID
+    tool_call_ids: list[str] | None = Field(default=None, max_length=200)
 
 
 class MessageOut(BaseModel):
@@ -424,6 +426,7 @@ class ConversationOut(BaseModel):
     title: str | None
     created_at: str
     updated_at: str
+    pending_count: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -492,12 +495,14 @@ async def list_convs(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[ConversationOut]:
-    """List conversations, newest first."""
+    """List conversations, newest first, each with its count of open proposals."""
     convs = await list_conversations(session, company_id, user.id, limit=limit, offset=offset)
+    open_counts = await pending_action_counts(session, [c.id for c in convs])
     return [
         ConversationOut(
             id=c.id, title=c.title,
             created_at=c.created_at.isoformat(), updated_at=c.updated_at.isoformat(),
+            pending_count=open_counts.get(c.id, 0),
         )
         for c in convs
     ]
@@ -750,6 +755,7 @@ async def _run_confirmed_action(
     await session.commit()
     return {
         "tool_call_id": tool_call_id,
+        "name": record["name"],
         "title": record.get("title") or record["name"],
         "ok": result["ok"],
         "status": result["status"],
@@ -806,6 +812,24 @@ async def confirm_action(
     return outcome
 
 
+def _selected_action_ids(records: list[dict], selection: list[str] | None) -> list[str]:
+    """The action ids one confirm-all call runs, in proposal order.
+
+    Without a selection every pending action runs. With one, the pending
+    actions it names run first in proposal order, then any selected id that is
+    not pending, so its row reports ``action_not_pending`` instead of vanishing.
+    An empty result means nothing selected is pending.
+    """
+    pending = [r["id"] for r in records if r.get("status", "pending") == "pending"]
+    if selection is None:
+        return pending
+    wanted = list(dict.fromkeys(selection))
+    chosen = [i for i in pending if i in wanted]
+    if not chosen:
+        return []
+    return chosen + [i for i in wanted if i not in pending]
+
+
 @router.post("/conversations/{conversation_id}/confirm-all")
 @_limiter.limit("5/minute")
 async def confirm_all(
@@ -817,10 +841,11 @@ async def confirm_all(
     company_settings: dict = Depends(get_current_company_settings),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Execute every pending action on one message, in the order they were proposed.
+    """Execute the pending actions on one message, in the order they were proposed.
 
-    Each action is claimed and finalized on its own, so one failure never rolls
-    back the others; the reply lists the outcome per action.
+    ``tool_call_ids`` narrows the run to a selection; without it every pending
+    action runs. Each action is claimed and finalized on its own, so one
+    failure never rolls back the others; the reply lists the outcome per action.
     """
     conv = await get_conversation(session, conversation_id, company_id, user.id)
     if conv is None:
@@ -828,17 +853,17 @@ async def confirm_all(
     msg = await get_message(session, body.message_id, conversation_id)
     if msg is None:
         raise HTTPException(status_code=404, detail="Message not found")
-    records = [r for r in pending_actions(msg.tools_called) if r.get("status", "pending") == "pending"]
-    if not records:
+    ids = _selected_action_ids(pending_actions(msg.tools_called), body.tool_call_ids)
+    if not ids:
         raise _conflict("action_not_pending", "Nothing is pending on this message.")
 
     capabilities = compile_agent_capabilities(request.app, company_settings)
     results = []
-    for record in records:
+    for tool_call_id in ids:
         results.append(await _run_confirmed_action(
             request, session, capabilities,
             conversation_id=conversation_id, message_id=body.message_id,
-            tool_call_id=record["id"], company_id=company_id, user_id=user.id,
+            tool_call_id=tool_call_id, company_id=company_id, user_id=user.id,
         ))
     completed = sum(1 for r in results if r["ok"])
     return {"results": results, "completed": completed, "failed": len(results) - completed}

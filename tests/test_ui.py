@@ -1433,6 +1433,21 @@ class TestDocsPage:
         assert b"INV-001" in r.content
 
     @pytest.mark.asyncio
+    async def test_docs_drafts_view_with_ids_lists_only_that_batch(self, ui_client):
+        """The drafts link from a bulk confirm passes the batch ids through and
+        drops the date preset, since receipt dates may fall outside it."""
+        with (
+            patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": _DOCS, "total": len(_DOCS)})) as listed,
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
+        ):
+            r = await ui_client.get("/docs?view=drafts&ids=doc:1,doc:2", cookies=_authed())
+        assert r.status_code == 200
+        params = listed.await_args.kwargs.get("params") or listed.await_args.args[-1]
+        assert params["ids"] == "doc:1,doc:2"
+        assert params["status"] == "draft"
+        assert not params.get("date_from") and not params.get("date_to")
+
+    @pytest.mark.asyncio
     async def test_docs_search(self, ui_client):
         with patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": _DOCS, "total": len(_DOCS)})):
             r = await ui_client.get("/docs/search?q=INV", cookies=_authed())

@@ -2798,16 +2798,19 @@ async def ai_confirm_action(token: str, session_token: str, conversation_id: str
 
 
 async def ai_confirm_all(token: str, session_token: str, conversation_id: str,
-                         message_id: str) -> dict:
-    """POST /ai/conversations/{id}/confirm-all - execute every pending action on one message.
+                         message_id: str, tool_call_ids: list[str] | None = None) -> dict:
+    """POST /ai/conversations/{id}/confirm-all - execute the pending actions on one
+    message, or only the selected ``tool_call_ids``, in proposal order.
 
-    Returns {"results": [{"tool_call_id", "title", "ok", "status", "data", "error"}],
+    Returns {"results": [{"tool_call_id", "name", "title", "ok", "status", "data", "error"}],
     "completed", "failed"}.
     """
+    body: dict = {"message_id": message_id}
+    if tool_call_ids is not None:
+        body["tool_call_ids"] = tool_call_ids
     async with _ai_api_client(token, session_token, timeout=150.0) as c:
         return _raise(await c.post(
-            f"/ai/conversations/{conversation_id}/confirm-all",
-            json={"message_id": message_id},
+            f"/ai/conversations/{conversation_id}/confirm-all", json=body,
         )).json()
 
 
