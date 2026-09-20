@@ -157,7 +157,7 @@ async def test_get_file_wrong_company(auth_client, session):
     # Upload via another company
     upload_dir = settings.data_dir / "ai_uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
-    fid = "ai_up_otherco"
+    fid = f"ai_up_{uuid.uuid4().hex}"
     (upload_dir / f"{fid}.bin").write_bytes(b"secret data")
     (upload_dir / f"{fid}.meta").write_text(json.dumps({
         "filename": "secret.jpg", "content_type": "image/jpeg",
@@ -822,11 +822,14 @@ async def test_confirm_all_executes_in_order(auth_client):
         r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "do both"})
     message_id = r.json()["pending_actions"][0]["message_id"]
 
+    from celerp_ai.routes import _confirmed_action_identity
+    expected_a = _confirmed_action_identity(uuid.UUID(message_id), "call_a")
+    expected_b = _confirmed_action_identity(uuid.UUID(message_id), "call_b")
     seen = []
 
     async def _exec(app, authorization, capability, arguments, tool_call_id, **kw):
         seen.append(tool_call_id)
-        if tool_call_id == "call_a":
+        if tool_call_id == expected_a:
             return {"ok": False, "status": 422, "error": {"code": "invalid", "message": "Name is required."}}
         return {"ok": True, "status": 201, "data": {"id": "doc-1"}}
 
@@ -837,7 +840,7 @@ async def test_confirm_all_executes_in_order(auth_client):
         assert r.status_code == 200, r.text
         body = r.json()
         r2 = await c.post(f"/ai/conversations/{conv_id}/confirm-all", headers=h, json={"message_id": message_id})
-    assert seen == ["call_a", "call_b"]
+    assert seen == [expected_a, expected_b]
     assert body["completed"] == 1 and body["failed"] == 1
     assert [x["tool_call_id"] for x in body["results"]] == ["call_a", "call_b"]
     assert body["results"][0]["error"]["message"] == "Name is required."
@@ -862,6 +865,10 @@ async def test_confirm_all_selection_runs_only_selected_in_order(auth_client):
         r = await c.post(f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "do all"})
     message_id = r.json()["pending_actions"][0]["message_id"]
 
+    from celerp_ai.routes import _confirmed_action_identity
+    expected_a = _confirmed_action_identity(uuid.UUID(message_id), "call_a")
+    expected_b = _confirmed_action_identity(uuid.UUID(message_id), "call_b")
+    expected_c = _confirmed_action_identity(uuid.UUID(message_id), "call_c")
     seen = []
 
     async def _exec(app, authorization, capability, arguments, tool_call_id, **kw):
@@ -877,7 +884,7 @@ async def test_confirm_all_selection_runs_only_selected_in_order(auth_client):
         body = r.json()
         r2 = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_ids": ["call_b"]})
         r3 = await c.post(url, headers=h, json={"message_id": message_id, "tool_call_ids": ["ghost"]})
-    assert seen == ["call_a", "call_c", "call_b"]
+    assert seen == [expected_a, expected_c, expected_b]
     assert [x["tool_call_id"] for x in body["results"]] == ["call_a", "call_c", "ghost"]
     assert body["results"][0]["name"] == "create_contact"
     assert body["results"][2]["ok"] is False

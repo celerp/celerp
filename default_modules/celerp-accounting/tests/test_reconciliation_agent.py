@@ -39,7 +39,7 @@ _CSV = b"Date,Description,Amount\n2026-03-01,Bank Fee,-500\n2026-03-02,Client wi
 
 
 def _seed_upload(company_id: str, user_id: str, content: bytes, filename: str, content_type: str) -> str:
-    file_id = f"ai_up_test_{_uuid.uuid4().hex[:8]}"
+    file_id = f"ai_up_{_uuid.uuid4().hex}"
     d = upload_dir()
     (d / f"{file_id}.bin").write_bytes(content)
     (d / f"{file_id}.meta").write_text(json.dumps({

@@ -117,7 +117,7 @@ def _create_test_files(company_id: uuid.UUID, user_id: uuid.UUID, count: int = 3
     upload_dir.mkdir(parents=True, exist_ok=True)
     file_ids = []
     for i in range(count):
-        fid = f"ai_up_batch_{uuid.uuid4().hex[:8]}"
+        fid = f"ai_up_{uuid.uuid4().hex}"
         (upload_dir / f"{fid}.bin").write_bytes(b"fake image data")
         (upload_dir / f"{fid}.meta").write_text(json.dumps({
             "filename": f"receipt_{i}.jpg",
