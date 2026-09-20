@@ -2067,7 +2067,9 @@ def setup_routes(app):
                 email, iid, connect_intent=connect_intent)
 
         if data.get("requires_selection"):
-            return _cloud_claim_selection(data["matches"], email, iid, otp_code=otp_code)
+            return _cloud_claim_selection(
+                data["matches"], email, iid, otp_code=otp_code,
+                connect_intent=connect_intent)
 
         if err := data.get("error"):
             return _cloud_relay_unconnected(iid, error=err)

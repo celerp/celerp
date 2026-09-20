@@ -31,6 +31,9 @@ def test_claim_forms_carry_account_vs_connect_intent():
     assert 'name="connect_intent"' in account
     assert 'name="connect_intent"' in settings
     assert '"intent": connect_intent' in settings
+    selection = settings.split('if data.get("requires_selection"):', 1)[1].split(
+        'if err := data.get("error"):', 1)[0]
+    assert "connect_intent=connect_intent" in selection
 
 
 def test_build_checkout_has_history_for_semver_derivation():
