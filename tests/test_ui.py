@@ -15058,13 +15058,14 @@ class TestAIPage:
     """Tests for AI page components, showcase, chat, modular arch."""
 
     def test_showcase_view_has_scenarios_and_cta(self):
-        """Showcase view renders 4 scenario tabs and both tier CTAs."""
+        """Showcase view renders the five scenario tabs and both tier CTAs."""
         from celerp_ai.ui_routes import _showcase_view
         from fasthtml.common import to_xml
         html = to_xml(_showcase_view())
         assert "ai-showcase" in html
         assert "Meet your AI operator" in html
-        assert "Batch Bill Entry" in html
+        assert "Receipts to bills" in html
+        assert "Statement reconciliation" in html
         assert "Smart Restock" in html
         assert "Discrepancy Audit" in html
         assert "Bulk Catalog Import" in html
@@ -15098,12 +15099,11 @@ class TestAIPage:
         assert "I can help" in html
 
     def test_scenarios_match_plan(self):
-        """All 4 scenarios from the v7 plan are present."""
+        """All five showcase scenarios are present, receipts first."""
         from celerp_ai.ui_routes import _get_scenarios
         scenarios = _get_scenarios("en")
-        assert len(scenarios) == 4
-        ids = {s["id"] for s in scenarios}
-        assert ids == {"batch-bills", "smart-restock", "discrepancy-audit", "bulk-catalog"}
+        assert [s["id"] for s in scenarios] == [
+            "batch-bills", "reconcile", "smart-restock", "discrepancy-audit", "bulk-catalog"]
         for s in scenarios:
             assert s.get("user"), f"Scenario {s['id']} missing user prompt"
             assert s.get("thinking"), f"Scenario {s['id']} missing thinking text"

@@ -127,10 +127,12 @@ def bank_account(api, seeded_chart):
     return r.json()
 
 
-def _start_session(api, bank_id):
+def _start_session(api, bank_id, statement_date):
+    """One open session per statement: starting the same statement date again
+    continues it, so each test session is a different month."""
     r = api.post("/accounting/reconciliation/start", json={
         "bank_account_id": bank_id,
-        "statement_date": "2026-03-31",
+        "statement_date": statement_date,
         "statement_balance": 105000.0,
     })
     assert r.status_code == 200, r.text
@@ -142,7 +144,7 @@ def test_reconciliation_import_and_mapping(page, ui_server, api, bank_account):
 
     # Money path: auto-detect CSV import answers 204 + HX-Redirect, and the
     # workspace never contains a nested document.
-    sid = _start_session(api, bank_account["id"])
+    sid = _start_session(api, bank_account["id"], "2026-03-31")
     page.goto(f"{ui_server}/accounting/reconcile/{sid}", wait_until="domcontentloaded")
     _no_crash(page, "workspace-empty")
     _upload_csv(page, AUTO_CSV, "statement.csv")
@@ -163,7 +165,7 @@ def test_reconciliation_import_and_mapping(page, ui_server, api, bank_account):
 
     # Column-mapping path: ambiguous CSV renders the inline mapper (200
     # fragment, same page), and the mapped line round-trips into the workspace.
-    sid2 = _start_session(api, bank_account["id"])
+    sid2 = _start_session(api, bank_account["id"], "2026-04-30")
     page.goto(f"{ui_server}/accounting/reconcile/{sid2}", wait_until="domcontentloaded")
     _upload_csv(page, AMBIGUOUS_CSV, "ambiguous.csv")
     with page.expect_response(f"**/accounting/reconcile/{sid2}/import") as resp_info:
@@ -231,7 +233,7 @@ def test_select_to_match_end_to_end(page, ui_server, api, bank_account):
     page.set_viewport_size({"width": 1440, "height": 1000})
     _post_bank_je(api, bank_account["chart_account_code"], "Wire to ACME supplier", -5000.0)
 
-    sid = _start_session(api, bank_account["id"])
+    sid = _start_session(api, bank_account["id"], "2026-05-31")
     page.goto(f"{ui_server}/accounting/reconcile/{sid}", wait_until="domcontentloaded")
     _upload_csv(page, AUTO_CSV, "statement.csv")
     page.click('button:has-text("Import CSV")')
@@ -283,7 +285,7 @@ def test_match_endpoint_validates_book_entry(api, bank_account):
     amount = -1234.56
     _post_bank_je(api, bank_account["chart_account_code"], "Validation wire", amount,
                   ts="2026-03-02")
-    sid = _start_session(api, bank_account["id"])
+    sid = _start_session(api, bank_account["id"], "2026-06-30")
     r = api.post(f"/accounting/reconciliation/{sid}/import-csv",
                  files={"file": ("statement.csv", AUTO_CSV, "text/csv")})
     assert r.status_code == 200, r.text
