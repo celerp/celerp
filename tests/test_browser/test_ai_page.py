@@ -57,12 +57,13 @@ class TestShowcasePage:
         assert h1s.count() == 1, f"Expected 1 H1, got {h1s.count()}"
 
     def test_showcase_scenario_tabs(self, page, ui_server):
-        """Four scenario tab buttons are rendered."""
+        """Five scenario tab buttons are rendered."""
         page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
         tabs = page.locator(".ai-showcase__tab")
-        assert tabs.count() == 4
-        labels = [tabs.nth(i).inner_text() for i in range(4)]
-        assert "Batch Bill Entry" in labels
+        assert tabs.count() == 5
+        labels = [tabs.nth(i).inner_text() for i in range(5)]
+        assert "Receipts to bills" in labels
+        assert "Statement reconciliation" in labels
         assert "Smart Restock" in labels
         assert "Discrepancy Audit" in labels
         assert "Bulk Catalog Import" in labels
