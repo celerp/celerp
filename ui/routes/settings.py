@@ -1825,7 +1825,10 @@ def setup_routes(app):
         )
         return Response(to_xml(dot), media_type="text/html")
 
-    def _cloud_claim_selection(matches: list[dict], email: str, iid: str, otp_code: str | None = None) -> FT:
+    def _cloud_claim_selection(
+        matches: list[dict], email: str, iid: str,
+        otp_code: str | None = None,
+        connect_intent: str = "connect") -> FT:
         """Render the subscription selection UI when multiple subs match an email.
 
         Replaces the entire #cloud-relay-tab (same swap target as cloud_claim).
@@ -1873,6 +1876,7 @@ def setup_routes(app):
 
         form_content = Form(
             Input(type="hidden", name="claim_email", value=email),
+            Input(type="hidden", name="connect_intent", value=connect_intent),
             *([] if otp_code is None else [Input(type="hidden", name="otp_code", value=otp_code)]),
             P(t("settings.multiple_subscriptions_are_associated_with_that_em"),
                 cls="settings-hint",
@@ -1904,7 +1908,9 @@ def setup_routes(app):
             cls="settings-tab-content",
         )
 
-    def _cloud_claim_otp_form(email: str, iid: str, error: str | None = None) -> FT:
+    def _cloud_claim_otp_form(
+        email: str, iid: str, error: str | None = None,
+        connect_intent: str = "connect") -> FT:
         """Render the OTP entry step after sending a verification code."""
         children: list = [
             H3(t("page.check_your_email"), cls="settings-section-title"),
@@ -1920,6 +1926,7 @@ def setup_routes(app):
         children += [
             Form(
                 Input(type="hidden", name="claim_email", value=email),
+                Input(type="hidden", name="connect_intent", value=connect_intent),
                 Div(
                     Input(
                         type="text",
@@ -1950,7 +1957,10 @@ def setup_routes(app):
                     hx_post="/settings/cloud-send-otp",
                     hx_target="#cloud-relay-tab",
                     hx_swap="outerHTML",
-                    hx_vals=hx_vals({"claim_email": email}),
+                    hx_vals=hx_vals({
+                        "claim_email": email,
+                        "connect_intent": connect_intent,
+                    }),
                     hx_disabled_elt="this",
                     hx_sync="#cloud-relay-tab:drop",
                 ),
@@ -1975,6 +1985,9 @@ def setup_routes(app):
         import ui.api_client as _api
         form = await request.form()
         email = str(form.get("claim_email", "")).strip()
+        connect_intent = str(form.get("connect_intent", "connect"))
+        if connect_intent not in ("connect", "account"):
+            connect_intent = "connect"
         ui_token = _token(request)
 
         if not email:
@@ -1991,7 +2004,8 @@ def setup_routes(app):
         if err := data.get("error"):
             return _cloud_relay_unconnected(iid, error=err)
 
-        return _cloud_claim_otp_form(email, iid)
+        return _cloud_claim_otp_form(
+            email, iid, connect_intent=connect_intent)
 
     @app.post("/settings/cloud-claim")
     async def cloud_claim(request: Request):
@@ -2007,13 +2021,16 @@ def setup_routes(app):
         email = str(form.get("claim_email", "")).strip()
         subscription_id = str(form.get("subscription_id", "")).strip() or None
         otp_code = str(form.get("otp_code", "")).strip() or None
+        connect_intent = str(form.get("connect_intent", "connect"))
+        if connect_intent not in ("connect", "account"):
+            connect_intent = "connect"
         ui_token = _token(request)
 
         if not email:
             from celerp.config import ensure_instance_id
             return _cloud_relay_unconnected(ensure_instance_id(), error=t("settings.please_enter_email"))
 
-        claim_payload: dict = {"email": email}
+        claim_payload: dict = {"email": email, "intent": connect_intent}
         if subscription_id:
             claim_payload["subscription_id"] = subscription_id
         if otp_code:
@@ -2041,11 +2058,13 @@ def setup_routes(app):
                 return _cloud_claim_otp_form(
                     email, iid,
                     error=t("settings.incorrect_code_attempts", n=attempts_left),
+                    connect_intent=connect_intent,
                 )
             return _cloud_relay_unconnected(iid, error=t("settings.code_expired"))
 
         if data.get("otp_required"):
-            return _cloud_claim_otp_form(email, iid)
+            return _cloud_claim_otp_form(
+                email, iid, connect_intent=connect_intent)
 
         if data.get("requires_selection"):
             return _cloud_claim_selection(data["matches"], email, iid, otp_code=otp_code)
@@ -3767,7 +3786,8 @@ PAID_TIERS = frozenset({"cloud", "ai", "team"})
 
 def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None,
                       tier: str | None = None, token_bound: bool = False,
-                      entitlement_known: bool = True) -> FT:
+                      entitlement_known: bool = True,
+                      disconnected: bool = False) -> FT:
     """Celerp Connect settings tab.
 
     relay_status: caller-supplied (cross-process split); falls back to local get_client().
@@ -3783,6 +3803,9 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
     from celerp.config import settings as _cfg, ensure_instance_id
     from celerp.gateway.client import get_client
     gw = get_client()
+
+    if disconnected:
+        return _cloud_relay_unconnected(ensure_instance_id())
 
     if relay_status is None:
         relay_status = gw.relay_status if gw else "inactive"

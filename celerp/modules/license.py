@@ -170,11 +170,6 @@ def exchange_api_key_for_jwt(relay_url: str, api_key: str) -> str | None:
         token = data.get("access_token")
         if not token:
             return None
-        iid = data.get("instance_id")
-        if iid:
-            from celerp.config import adopt_authenticated_cloud_identity
-            if adopt_authenticated_cloud_identity(api_key, str(iid)) is False:
-                return None
         return str(token)
     except Exception:
         return None

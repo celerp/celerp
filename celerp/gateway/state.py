@@ -821,15 +821,12 @@ class RelayProtocolError(RuntimeError):
 async def fetch_relay_auth(
     http_client, api_key: str | None = None,
 ) -> tuple[str, str | None]:
-    """Exchange an API key and return its bearer plus authenticated identity.
+    """Exchange an API key for a bearer plus the identity that key proves.
 
-    New relays return the instance_id proven by the API key. When the key is a
-    persisted desktop credential, that authenticated identity repairs stale
-    local ids atomically. Older relays omit the additive field and continue to
-    work with the caller's existing local identity.
+    Authentication is deliberately observational: it never mutates local
+    identity or consumes a pending activation proof.
     """
-    import asyncio
-    from celerp.config import adopt_authenticated_cloud_identity, settings
+    from celerp.config import settings
 
     key = api_key or settings.gateway_token
     if not key:
@@ -842,16 +839,9 @@ async def fetch_relay_auth(
     token = data.get("access_token") if isinstance(data, dict) else None
     if not token:
         raise RelayProtocolError("relay auth response missing access_token")
-
     iid_raw = data.get("instance_id") if isinstance(data, dict) else None
     iid = str(iid_raw).strip() if iid_raw else ""
-    if iid:
-        adopted = await asyncio.to_thread(
-            adopt_authenticated_cloud_identity, key, iid)
-        if adopted is False:
-            raise RuntimeError("relay credential changed during authentication")
     return str(token), (iid or None)
-
 
 async def fetch_relay_bearer(http_client, api_key: str | None = None) -> str:
     """Compatibility wrapper returning only the short-lived relay bearer."""

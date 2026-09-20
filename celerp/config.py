@@ -230,34 +230,6 @@ def activation_challenge(verifier: str | None = None) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def adopt_authenticated_cloud_identity(api_key: str, instance_id: str) -> bool | None:
-    """Converge persisted identity to the instance proven by *api_key*.
-
-    Returns True when the persisted credential still matches (including a no-op
-    identity match), False when a newer credential won the race, and None when
-    the credential is environment-only and therefore is not ours to persist.
-    """
-    def _adopt(cloud: dict) -> tuple[bool | None, bool]:
-        stored = cloud.get("token")
-        if not isinstance(stored, str) or not stored:
-            return None, False
-        if stored != api_key:
-            return False, False
-        changed = cloud.get("instance_id") != instance_id
-        cloud["instance_id"] = instance_id
-        if changed:
-            # A verifier is bound to the instance id through its challenge.
-            cloud.pop("activation_verifier", None)
-        return True, changed
-
-    accepted, changed = _update_cloud_config(_adopt)
-    if accepted is True:
-        settings.gateway_instance_id = instance_id
-        if changed:
-            settings.activation_verifier = ""
-    return accepted
-
-
 def set_cloud_disconnected(disconnected: bool) -> None:
     """Persist explicit Connect intent before changing any live runtime state."""
     def _set(cloud: dict) -> None:
@@ -275,23 +247,26 @@ def record_cloud_activation(
     tos_version: str | None = None, backup_encryption_key: str | None = None,
     expected_api_key: str | None = None,
     expected_verifier: str | None = None,
+    keep_disconnected: bool = False,
 ) -> bool:
-    """CAS-persist an activation result without reviving stale operations.
-
-    An explicit durable disconnect always wins. Credential-authenticated sync
-    may apply only while the credential that started it is still current.
-    Verifier redemption may apply only while that exact verifier is current and
-    consumes it atomically with the replacement credential.
-    """
+    """CAS-persist authoritative activation without reviving stale operations."""
     def _record(cloud: dict) -> bool:
-        if bool(cloud.get("disconnected")):
+        if bool(cloud.get("disconnected")) and not keep_disconnected:
             return False
+
+        current_iid = str(cloud.get("instance_id") or "")
+        pending_verifier = str(cloud.get("activation_verifier") or "")
+
         if expected_api_key is not None:
-            current = cloud.get("token")
-            if isinstance(current, str) and current and current != expected_api_key:
+            if cloud.get("token") != expected_api_key:
                 return False
+            if pending_verifier and current_iid and current_iid != instance_id:
+                return False
+
         if expected_verifier is not None:
-            if cloud.get("activation_verifier") != expected_verifier:
+            if pending_verifier != expected_verifier:
+                return False
+            if current_iid and current_iid != instance_id:
                 return False
 
         cloud["token"] = gateway_token
@@ -312,7 +287,6 @@ def record_cloud_activation(
     if accepted and expected_verifier is not None:
         settings.activation_verifier = ""
     return accepted
-
 
 def persist_cloud_settings(**values: object) -> None:
     """Write the given [cloud] settings into config.toml.

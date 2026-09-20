@@ -874,10 +874,11 @@ def setup_routes(app):
             return Response(status_code=401)
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
-        relay_status, public_url, tier, _, token_bound, known = await _relay_state(token)
+        relay_status, public_url, tier, disconnected, token_bound, known = await _relay_state(token)
         return _cloud_relay_tab(
             relay_status=relay_status, public_url=public_url,
-            tier=tier, token_bound=token_bound, entitlement_known=known)
+            tier=tier, token_bound=token_bound, entitlement_known=known,
+            disconnected=disconnected)
 
     @app.get("/settings/cloud")
     async def settings_cloud_page(request: Request):
@@ -895,7 +896,9 @@ def setup_routes(app):
         # client - it has no tunnel to serve - so relay_status stays "inactive".
         # Treat a token-bound instance as connected so a signed-in free account
         # gets the account/disconnect view plus the upgrade ad, not the landing page.
-        gw_ok = relay_status in ("active", "tos_required", "connecting", "error") or token_bound
+        gw_ok = (not disconnected and (
+            relay_status in ("active", "tos_required", "connecting", "error")
+            or token_bound))
 
         # If not connected, show value-prop landing. A sticky-disconnected install
         # keeps its preserved credential, so the connect section withholds its

@@ -3115,11 +3115,13 @@ async def _control_post(token: str, path: str, payload: dict | None = None) -> d
     return await _with_total_timeout(_request(), CONTROL_PLANE_TIMEOUT)
 
 
-async def activate_relay(token: str, *, explicit: bool = False) -> dict:
-    """POST /settings/cloud-activate; explicit=True records user reconnect intent."""
+async def activate_relay(
+    token: str, *, explicit: bool = False, intent: str | None = None,
+) -> dict:
+    """POST /settings/cloud-activate with explicit activation intent."""
+    chosen = intent or ("connect" if explicit else "background")
     return await _control_post(
-        token, "/settings/cloud-activate", {"explicit": explicit})
-
+        token, "/settings/cloud-activate", {"intent": chosen})
 
 async def resolve_partner_claim(token: str, claim_token: str) -> dict:
     """POST /settings/partner-claim/resolve - preview the partner behind a claim

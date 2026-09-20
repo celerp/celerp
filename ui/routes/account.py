@@ -264,6 +264,8 @@ def _claim_body(lang: str, panel_id: str) -> list:
         P(t("settings.or_enter_the_email_address_you_used_at_checkout", lang),
           cls="settings-hint"),
         Form(
+            Input(type="hidden", name="connect_intent",
+                  value="connect" if panel_id == "cloud-relay-tab" else "account"),
             Input(type="email", name="claim_email", required=True,
                   placeholder=t("account.claim_email_placeholder", lang),
                   cls="input input--sm", style="width:260px;"),
@@ -584,7 +586,11 @@ def setup_routes(app):
             # case is one redundant call.)
             act: dict = {}
             try:
-                act = await api.activate_relay(token)
+                act = await api.activate_relay(
+                    token,
+                    intent=("connect" if panel_id == "cloud-relay-tab"
+                            else "account"),
+                )
             except Exception:
                 act = {"error": "unreachable"}
             # On the Web Access page the whole chrome changes once the relay
