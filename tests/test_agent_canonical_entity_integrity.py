@@ -35,7 +35,7 @@ async def test_document_contact_must_be_live_contact_projection(client, session)
         "/docs", json={"doc_type": "invoice", "contact_id": item_id}, headers=headers,
     )
     assert created.status_code == 422, created.text
-    assert "Contact" in str(created.json()["detail"])
+    assert "contact" in str(created.json()["detail"]).lower()
 
     doc = await client.post("/docs", json={"doc_type": "invoice"}, headers=headers)
     assert doc.status_code == 200, doc.text
@@ -45,7 +45,7 @@ async def test_document_contact_must_be_live_contact_projection(client, session)
         headers=headers,
     )
     assert patched.status_code == 422, patched.text
-    assert "Contact" in str(patched.json()["detail"])
+    assert "contact" in str(patched.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio

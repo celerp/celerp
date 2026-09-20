@@ -11,6 +11,8 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+import pytest
+
 from test_helpers import perm_setup
 
 from celerp.ai import tools as ai_tools
