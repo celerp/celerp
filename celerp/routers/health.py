@@ -323,6 +323,7 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
             f"{relay_base}/auth/activate",
             json=activate_payload(
                 local_iid, activation_verifier=verifier),
+            headers={},
         )
 
     async def _activate(c):
@@ -392,7 +393,8 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
     if r.status_code == 404:
         return {
             "error": f"No active subscription found for this instance ({iid}). "
-                     "Complete checkout first, or use the Link Subscription field below.",
+                     "Complete checkout first, or if you need to move your subscription "
+                     "to this instance, use the Link Subscription field below.",
             "instance_id": iid,
         }
     if r.status_code == 402:
@@ -445,6 +447,9 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
         "public_url": data.get("public_url") or "",
         "instance_id": iid,
     }
+
+_CLAIM_TOKEN_MAX = 512
+
 
 def _validate_claim_token(raw: object) -> tuple[str | None, dict | None]:
     """Function-boundary validation for a claim token, before any relay call.
