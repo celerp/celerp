@@ -776,6 +776,16 @@ async def _resolved_action_arguments(
     return arguments, None, record
 
 
+def _confirmed_action_identity(message_id: uuid.UUID, tool_call_id: str) -> str:
+    """Stable mutation identity scoped to the persisted proposal message.
+
+    Provider tool-call ids are correlation ids, not a company-wide uniqueness
+    guarantee. Namespacing them here keeps retries stable without allowing an
+    unrelated conversation to collide in the canonical event ledger.
+    """
+    return f"{message_id}:{tool_call_id}"
+
+
 async def _run_confirmed_action(
     request: Request,
     session: AsyncSession,
@@ -843,7 +853,7 @@ async def _run_confirmed_action(
         request.headers.get("authorization", ""),
         capability,
         resolved_arguments or {},
-        record["id"],
+        _confirmed_action_identity(message_id, record["id"]),
     )
     action_error = _action_error(result)
     action_status = (
@@ -1235,6 +1245,51 @@ async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now:
     return records, summary
 
 
+def _refresh_expired_proposals(records: list, now: datetime) -> list:
+    """Refresh expired pending actions while preserving dependency context.
+
+    Completed source actions stay in the copied audit records so a refreshed
+    dependent action can still resolve their result. When both source and
+    dependent actions expired, bindings are remapped to the source's fresh id.
+    """
+    copied = copy.deepcopy(records or [])
+    id_map: dict[str, str] = {}
+    refreshed = False
+    for item in copied:
+        if not isinstance(item, dict) or item.get("status", "pending") != "pending":
+            continue
+        try:
+            is_expired = datetime.fromisoformat(str(item.get("expires_at") or "")) <= now
+        except (TypeError, ValueError):
+            is_expired = True
+        if not is_expired:
+            continue
+        old_id = item.get("id")
+        new_id = f"proposal_{uuid.uuid4().hex}"
+        if isinstance(old_id, str) and old_id:
+            id_map[old_id] = new_id
+        item["id"] = new_id
+        item["created_at"] = now.isoformat()
+        item["expires_at"] = (now + timedelta(seconds=PROPOSAL_TTL_S)).isoformat()
+        for key in ("status", "finished_at", "executing_since", "error", "result_summary"):
+            item.pop(key, None)
+        refreshed = True
+
+    if not refreshed:
+        return []
+
+    for item in copied:
+        if not isinstance(item, dict):
+            continue
+        for binding in item.get("bindings") or []:
+            if not isinstance(binding, dict):
+                continue
+            source_id = binding.get("source_action_id")
+            if source_id in id_map:
+                binding["source_action_id"] = id_map[source_id]
+    return copied
+
+
 @router.post("/conversations/{conversation_id}/jobs/{job_id}/proposals")
 @_limiter.limit("20/minute")
 async def propose_from_job(
@@ -1278,26 +1333,10 @@ async def propose_from_job(
                     "pending_actions": _message_out(msg).pending_actions,
                 }
             now = datetime.now(timezone.utc)
-            expired: list[dict] = []
-            for item in (msg.tools_called or []):
-                if not isinstance(item, dict) or item.get("status", "pending") != "pending":
-                    continue
-                try:
-                    is_expired = datetime.fromisoformat(str(item.get("expires_at") or "")) <= now
-                except ValueError:
-                    is_expired = True
-                if is_expired:
-                    refreshed = {**item}
-                    refreshed["id"] = f"proposal_{uuid.uuid4().hex}"
-                    refreshed["expires_at"] = (now + timedelta(seconds=PROPOSAL_TTL_S)).isoformat()
-                    refreshed.pop("status", None)
-                    refreshed.pop("finished_at", None)
-                    refreshed.pop("executing_since", None)
-                    refreshed.pop("error", None)
-                    expired.append(refreshed)
-            if expired:
+            refreshed = _refresh_expired_proposals(msg.tools_called or [], now)
+            if refreshed:
                 refreshed_msg = await add_message(
-                    session, conversation_id, "assistant", msg.content, tools_called=expired,
+                    session, conversation_id, "assistant", msg.content, tools_called=refreshed,
                 )
                 job.results = {**(job.results or {}), "proposal_message_id": str(refreshed_msg.id)}
                 await session.commit()

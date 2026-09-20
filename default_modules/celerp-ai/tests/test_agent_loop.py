@@ -57,7 +57,8 @@ CAPS = {
     "create_contact": {
         "name": "create_contact", "method": "POST", "path": "/api/crm/contacts",
         "path_names": (), "query_names": (), "expects_body": True,
-        "inject_idempotency": True, "tool": _tool("create_contact"),
+        "inject_idempotency": True, "requires_confirmation": True,
+        "tool": _tool("create_contact"),
     },
 }
 
@@ -82,7 +83,7 @@ def _install(monkeypatch, results, execute=None):
     """Wire the fake complete/compile/execute into the service module."""
     fake = FakeComplete(results)
     monkeypatch.setattr(service, "complete", fake)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings: CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
     if execute is not None:
         monkeypatch.setattr(service, "execute_agent_capability", execute)
     return fake
@@ -98,7 +99,7 @@ async def _run(**over):
     kwargs = dict(
         app=object(), authorization="Bearer tok", query="a question",
         company_id=uuid.uuid4(), company_settings={}, user_id=uuid.uuid4(),
-        memory={"notes": [], "kv": {}}, file_ids=None, history=[],
+        role="owner", memory={"notes": [], "kv": {}}, file_ids=None, history=[],
     )
     kwargs.update(over)
     return await run_agent(**kwargs)
@@ -492,7 +493,7 @@ async def test_timeout_maps_to_error(monkeypatch):
 
     monkeypatch.setattr(service, "AGENT_RUN_TIMEOUT_S", 0.05)
     monkeypatch.setattr(service, "complete", _slow)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings: CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
     result = await _run()
     assert result.error is not None
     assert "too long" in result.error
@@ -504,7 +505,7 @@ async def test_relay_409_continuation_expired_maps_to_plain_error(monkeypatch):
         raise RelayError("continuation_expired", "continuation_expired", status=409)
 
     monkeypatch.setattr(service, "complete", _raise)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings: CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
     result = await _run()
     assert result.pending_actions == []
     assert result.error == "The conversation step expired, ask the question again."
@@ -516,7 +517,7 @@ async def test_relay_busy_maps_to_retry_text(monkeypatch):
         raise RelayError("busy", "busy", status=429)
 
     monkeypatch.setattr(service, "complete", _raise)
-    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings: CAPS)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
     result = await _run()
     assert result.error == "The AI service is temporarily busy. Please try again in a moment."
 

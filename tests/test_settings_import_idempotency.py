@@ -35,9 +35,9 @@ async def test_settings_import_batch_idempotency(client, session):
     payload = {
         "records": [
             {
-                "entity_id": "company",
-                "event_type": "sys.migration.applied",
-                "data": {"revision": "settings-import-test"},
+                "entity_id": str(company_id),
+                "event_type": "sys.company.created",
+                "data": {"name": "TestCo", "slug": "testco"},
                 "source": "import",
                 "idempotency_key": "settings-test-1",
             }

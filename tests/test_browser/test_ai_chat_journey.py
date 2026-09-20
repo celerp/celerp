@@ -183,7 +183,7 @@ def test_action_card_confirm_success(page: Page, ui_server, item_create_cap, api
     card = page.locator(".ai-action__card")
     expect(card).to_be_visible()
     expect(card).to_contain_text("Agent Widget")
-    card.locator("button[type=submit]").click()
+    card.get_by_role("button", name="Confirm").click()
 
     # POST /items returns only the new id, so the success line degrades to the
     # plain "done" text; the proof the write landed is the record itself.
@@ -206,11 +206,12 @@ def test_action_card_confirm_twice_shows_expired(page: Page, ui_server, item_cre
     card = page.locator(".ai-action__card")
     expect(card).to_be_visible()
     # Capture the confirm identifiers before the card is swapped away.
-    conv_id = card.locator("input[name=conversation_id]").get_attribute("value")
-    message_id = card.locator("input[name=message_id]").get_attribute("value")
-    tool_call_id = card.locator("input[name=tool_call_id]").get_attribute("value")
+    confirm_form = card.locator("form").filter(has_text="Confirm")
+    conv_id = confirm_form.locator("input[name=conversation_id]").get_attribute("value")
+    message_id = confirm_form.locator("input[name=message_id]").get_attribute("value")
+    tool_call_id = confirm_form.locator("input[name=tool_call_id]").get_attribute("value")
 
-    card.locator("button[type=submit]").click()
+    card.get_by_role("button", name="Confirm").click()
     expect(page.locator(".ai-action__done")).to_be_visible()
 
     # The card was replaced by the success line, so a second confirm is only

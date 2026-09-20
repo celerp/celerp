@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -46,13 +47,17 @@ async def company(session) -> Company:
 
 # ── files.py: load_file, load_file_for_llm ──────────────────────────────────
 
+def _upload_id(digit: str) -> str:
+    return f"ai_up_{digit * 32}"
+
+
 def test_load_file_valid(tmp_path):
     """Load a file that exists and belongs to the right company."""
     from celerp.ai.files import load_file
     co_id = uuid.uuid4()
     upload_dir = tmp_path / "ai_uploads"
     upload_dir.mkdir()
-    fid = "ai_up_test1"
+    fid = _upload_id("1")
     (upload_dir / f"{fid}.bin").write_bytes(b"\x89PNG\r\n")
     (upload_dir / f"{fid}.meta").write_text(json.dumps({
         "content_type": "image/png", "company_id": str(co_id),
@@ -74,6 +79,21 @@ def test_load_file_missing(tmp_path):
             load_file("ai_up_nonexistent", co_id)
 
 
+def test_load_file_rejects_path_traversal(tmp_path):
+    """Caller-controlled file ids cannot escape the transient upload directory."""
+    from celerp.ai.files import load_file
+    co_id = uuid.uuid4()
+    upload_dir = tmp_path / "ai_uploads"
+    upload_dir.mkdir()
+    (tmp_path / "escape.bin").write_bytes(b"secret")
+    (tmp_path / "escape.meta").write_text(json.dumps({
+        "content_type": "image/jpeg", "company_id": str(co_id),
+    }))
+    with patch.object(settings, "data_dir", tmp_path):
+        with pytest.raises(FileNotFoundError):
+            load_file("../escape", co_id)
+
+
 def test_load_file_wrong_company(tmp_path):
     """File belonging to different company raises PermissionError."""
     from celerp.ai.files import load_file
@@ -81,7 +101,7 @@ def test_load_file_wrong_company(tmp_path):
     other_co = uuid.uuid4()
     upload_dir = tmp_path / "ai_uploads"
     upload_dir.mkdir()
-    fid = "ai_up_test2"
+    fid = _upload_id("2")
     (upload_dir / f"{fid}.bin").write_bytes(b"data")
     (upload_dir / f"{fid}.meta").write_text(json.dumps({
         "content_type": "image/jpeg", "company_id": str(other_co),
@@ -97,7 +117,7 @@ def test_load_file_for_llm_valid(tmp_path):
     co_id = uuid.uuid4()
     upload_dir = tmp_path / "ai_uploads"
     upload_dir.mkdir()
-    fid = "ai_up_llm1"
+    fid = _upload_id("3")
     (upload_dir / f"{fid}.bin").write_bytes(b"\x89PNG\r\n")
     (upload_dir / f"{fid}.meta").write_text(json.dumps({
         "content_type": "image/png", "company_id": str(co_id),
@@ -115,7 +135,7 @@ def test_load_tabular_for_llm_does_not_base64_body(tmp_path):
     user_id = uuid.uuid4()
     upload_dir = tmp_path / "ai_uploads"
     upload_dir.mkdir()
-    fid = "ai_up_csv1"
+    fid = _upload_id("4")
     (upload_dir / f"{fid}.bin").write_bytes(b"sku,name\nA,Alpha\n")
     (upload_dir / f"{fid}.meta").write_text(json.dumps({
         "content_type": "text/csv", "company_id": str(co_id),
@@ -134,7 +154,7 @@ def test_load_file_wrong_user(tmp_path):
     owner_id = uuid.uuid4()
     upload_dir = tmp_path / "ai_uploads"
     upload_dir.mkdir()
-    fid = "ai_up_owned"
+    fid = _upload_id("5")
     (upload_dir / f"{fid}.bin").write_bytes(b"data")
     (upload_dir / f"{fid}.meta").write_text(json.dumps({
         "content_type": "image/jpeg", "company_id": str(co_id), "user_id": str(owner_id),
@@ -236,7 +256,7 @@ def test_batch_load_file_wrong_company(tmp_path):
     other = uuid.uuid4()
     upload_dir = tmp_path / "ai_uploads"
     upload_dir.mkdir()
-    fid = "ai_up_batchtest"
+    fid = _upload_id("6")
     (upload_dir / f"{fid}.bin").write_bytes(b"data")
     (upload_dir / f"{fid}.meta").write_text(json.dumps({
         "content_type": "image/jpeg", "company_id": str(other),
@@ -319,3 +339,71 @@ async def test_rename_conversation_not_found(session, company):
     from celerp.ai.conversations import rename_conversation
     result = await rename_conversation(session, uuid.uuid4(), company.id, uuid.uuid4(), "new title")
     assert result is None
+
+
+# ── proposal refresh / confirmation identity regressions ─────────────────────
+
+def test_refresh_expired_proposals_rebinds_dependency_ids():
+    from celerp_ai.routes import _refresh_expired_proposals
+
+    now = datetime.now(timezone.utc)
+    expired = (now - timedelta(seconds=1)).isoformat()
+    records = [
+        {
+            "id": "vendor-old", "name": "create_contact", "arguments": {},
+            "created_at": expired, "expires_at": expired,
+        },
+        {
+            "id": "bill-old", "name": "create_bill", "arguments": {"body": {}},
+            "created_at": expired, "expires_at": expired,
+            "bindings": [{
+                "source_action_id": "vendor-old", "source_result_key": "id",
+                "target_path": ["body", "contact_id"],
+            }],
+        },
+    ]
+
+    refreshed = _refresh_expired_proposals(records, now)
+    assert len(refreshed) == 2
+    assert refreshed[0]["id"] != "vendor-old"
+    assert refreshed[1]["id"] != "bill-old"
+    assert refreshed[1]["bindings"][0]["source_action_id"] == refreshed[0]["id"]
+
+
+def test_refresh_expired_proposals_keeps_completed_dependency_context():
+    from celerp_ai.routes import _refresh_expired_proposals, _resolve_action_arguments
+
+    now = datetime.now(timezone.utc)
+    expired = (now - timedelta(seconds=1)).isoformat()
+    records = [
+        {
+            "id": "vendor-done", "name": "create_contact", "arguments": {},
+            "status": "completed", "result_summary": {"id": "contact:123"},
+            "created_at": expired, "expires_at": expired,
+        },
+        {
+            "id": "bill-old", "name": "create_bill", "arguments": {"body": {}},
+            "created_at": expired, "expires_at": expired,
+            "bindings": [{
+                "source_action_id": "vendor-done", "source_result_key": "id",
+                "target_path": ["body", "contact_id"],
+            }],
+        },
+    ]
+
+    refreshed = _refresh_expired_proposals(records, now)
+    source = next(r for r in refreshed if r["id"] == "vendor-done")
+    bill = next(r for r in refreshed if r["name"] == "create_bill")
+    assert source["status"] == "completed"
+    arguments, error = _resolve_action_arguments(refreshed, bill)
+    assert error is None
+    assert arguments["body"]["contact_id"] == "contact:123"
+
+
+def test_confirmed_action_identity_is_stable_and_message_scoped():
+    from celerp_ai.routes import _confirmed_action_identity
+
+    first = uuid.uuid4()
+    second = uuid.uuid4()
+    assert _confirmed_action_identity(first, "call_1") == _confirmed_action_identity(first, "call_1")
+    assert _confirmed_action_identity(first, "call_1") != _confirmed_action_identity(second, "call_1")

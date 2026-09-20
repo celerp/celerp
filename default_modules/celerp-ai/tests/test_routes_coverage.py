@@ -530,20 +530,24 @@ async def test_query_missing_file_is_404_before_store(auth_client):
 
 
 @pytest.mark.asyncio
-async def test_mixed_receipts_and_statements_refused(auth_client):
-    """A receipt image and a statement CSV in one message is 400 with nothing stored."""
+async def test_mixed_attachments_run_agent_in_chat_mode(auth_client):
+    """Mixed files are valid chat context; only explicit receipt mode starts a batch."""
     c, h = auth_client
     conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
     jpg = await _upload(c, h, "receipt.jpg", b"fake jpeg", "image/jpeg")
     csv = await _upload(c, h, "statement.csv", b"date,amount\n2026-09-01,10\n", "text/csv")
-    r = await c.post(
-        f"/ai/conversations/{conv_id}/query", headers=h,
-        json={"query": "", "file_ids": [jpg, csv]},
-    )
-    assert r.status_code == 400
-    assert "separate messages" in r.json()["detail"]
+    mocked = AsyncMock(return_value=AgentResult(
+        answer="Reviewed both files.", model_used="fake", tools_called=[], pending_actions=[],
+    ))
+    with patch("celerp_ai.routes.run_agent", mocked):
+        r = await c.post(
+            f"/ai/conversations/{conv_id}/query", headers=h,
+            json={"query": "review these together", "file_ids": [jpg, csv]},
+        )
+    assert r.status_code == 200, r.text
+    assert mocked.await_args.kwargs["file_ids"] == [jpg, csv]
     thread = (await c.get(f"/ai/conversations/{conv_id}", headers=h)).json()
-    assert thread["messages"] == []
+    assert [m["role"] for m in thread["messages"]] == ["user", "assistant"]
 
 
 @pytest.mark.asyncio
@@ -557,7 +561,7 @@ async def test_query_with_images_creates_job(auth_client):
          patch("celerp_ai.routes.run_agent", AsyncMock(side_effect=AssertionError("agent must not run"))):
         r = await c.post(
             f"/ai/conversations/{conv_id}/query", headers=h,
-            json={"query": "", "file_ids": ids},
+            json={"query": "", "file_ids": ids, "document_mode": "receipts"},
         )
     assert r.status_code == 202
     job_id = r.json()["job_id"]

@@ -119,12 +119,9 @@ def _op(caps: dict, method: str, path: str) -> str:
 
 @pytest.fixture
 def xlsx_upload():
-    """Write an ai_uploads xlsx file pair the import routes can read; cleaned up
-    afterwards. Returns ``(company_id, {sheet: rows}) -> file_id``."""
-    created: list[str] = []
-    d = upload_dir()
-
-    def _write(company_id, sheets: dict[str, list[list]], *, filename: str = "catalog.xlsx") -> str:
+    """Upload an xlsx through the real AI upload route and return its owned file id."""
+    async def _write(client, headers, sheets: dict[str, list[list]], *,
+                     filename: str = "catalog.xlsx") -> str:
         workbook = openpyxl.Workbook()
         workbook.remove(workbook.active)
         for name, rows in sheets.items():
@@ -133,24 +130,22 @@ def xlsx_upload():
                 worksheet.append(row)
         buffer = io.BytesIO()
         workbook.save(buffer)
-        file_id = f"ai_up_{uuid.uuid4().hex}"
-        (d / f"{file_id}.bin").write_bytes(buffer.getvalue())
-        (d / f"{file_id}.meta").write_text(json.dumps({
-            "filename": filename,
-            "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "company_id": str(company_id),
-        }))
-        created.append(file_id)
-        return file_id
+        response = await client.post(
+            "/ai/upload",
+            headers=headers,
+            files={"files": (
+                filename,
+                buffer.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )},
+        )
+        assert response.status_code == 201, response.text
+        return response.json()["file_ids"][0]
 
-    yield _write
-
-    for file_id in created:
-        (d / f"{file_id}.bin").unlink(missing_ok=True)
-        (d / f"{file_id}.meta").unlink(missing_ok=True)
+    return _write
 
 
-# ── Conversation helpers ──────────────────────────────────────────────────────
+# ── Conversation helpers# ── Conversation helpers ──────────────────────────────────────────────────────
 
 @pytest.fixture
 def ai_session(client):
@@ -364,13 +359,12 @@ async def test_supplier_catalog_xlsx_preview_then_commit(client, session, agent_
     call, which is confirmed to land the rows."""
     ctx = await perm_setup(client, session)
     admin = ctx["admin_h"]
-    company_id = await _company_id(client, admin)
-    file_id = xlsx_upload(company_id, {"Catalog": [
+    file_id = await xlsx_upload(client, admin, {"Catalog": [
         ["sku", "name", "sell_by", "quantity", "retail_price"],
         ["CAT-1", "Catalog Widget", "piece", 4, 12],
     ]})
 
-    preview_op = _op(agent_caps, "GET", "/items/import/preview")
+    preview_op = _op(agent_caps, "POST", "/items/import/preview")
     commit_op = _op(agent_caps, "POST", "/items/import/commit")
 
     def _propose_commit(messages):
@@ -382,7 +376,7 @@ async def test_supplier_catalog_xlsx_preview_then_commit(client, session, agent_
         return tool_result(calls=[tool_call(commit_op, args, "cm1")])
 
     scripted = ScriptedModel(
-        _call(preview_op, {"query": {"file_id": file_id, "sheet": "Catalog"}}, "pv1"),
+        _call(preview_op, {"body": {"file_id": file_id, "sheet": "Catalog"}}, "pv1"),
         _propose_commit,
     )
     conv_id = await _new_conversation(client, admin)

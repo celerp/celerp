@@ -451,7 +451,7 @@ class TestListImport:
         assert r.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_import_lifecycle_event_on_existing(self, client):
+    async def test_import_lifecycle_event_on_existing_is_rejected(self, client):
         token = await _register(client)
         await client.post("/lists/import", headers=_h(token), json={
             "entity_id": "list:IMP-004", "event_type": "list.created",
@@ -463,9 +463,10 @@ class TestListImport:
             "data": {"status": "finalized", "sent_at": "2026-06-17T00:00:00+00:00"},
             "source": "old_system", "idempotency_key": "key-finalize-004",
         })
-        assert r.status_code == 200
+        assert r.status_code == 422
+        assert "not import-safe" in str(r.json()["detail"])
         detail = (await client.get("/lists/list:IMP-004", headers=_h(token))).json()
-        assert detail["status"] == "finalized"
+        assert detail["status"] == "draft"
 
     @pytest.mark.asyncio
     async def test_batch_import(self, client):

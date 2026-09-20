@@ -25,6 +25,28 @@ def _h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+async def _emit_legacy_doc_event(client, session, token: str, entity_id: str,
+                                 event_type: str, data: dict) -> None:
+    """Seed historical ledger state without reopening the public raw-event import."""
+    from celerp.events.engine import emit_event
+
+    company = (await client.get("/companies/me", headers=_h(token))).json()
+    await emit_event(
+        session,
+        company_id=uuid.UUID(company["id"]),
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type=event_type,
+        data=data,
+        actor_id=None,
+        location_id=None,
+        source="import:test",
+        idempotency_key=f"legacy-{uuid.uuid4().hex}",
+        metadata_={},
+    )
+    await session.commit()
+
+
 async def _create_invoice(client, token, *, total=1000, tax=70, status="draft") -> str:
     r = await client.post("/docs", headers=_h(token), json={
         "doc_type": "invoice", "contact_name": "Test",
@@ -135,11 +157,10 @@ async def test_import_rejects_duplicate_entity_id(client, session):
 
 
 @pytest.mark.asyncio
-async def test_import_allows_lifecycle_events_on_existing(client, session):
+async def test_import_rejects_lifecycle_events_on_existing(client, session):
     token = await _register(client)
     entity_id = f"doc:test-lc-{uuid.uuid4().hex[:8]}"
 
-    # Create
     r = await client.post("/docs/import", headers=_h(token), json={
         "entity_id": entity_id, "event_type": "doc.created",
         "data": {"doc_type": "invoice", "total": 100, "status": "draft"},
@@ -147,13 +168,15 @@ async def test_import_allows_lifecycle_events_on_existing(client, session):
     })
     assert r.status_code == 200
 
-    # Finalize (non-create event) should be allowed
     r = await client.post("/docs/import", headers=_h(token), json={
         "entity_id": entity_id, "event_type": "doc.finalized",
         "data": {}, "source": "import:test",
         "idempotency_key": f"idem-fin-{uuid.uuid4().hex[:8]}",
     })
-    assert r.status_code == 200
+    assert r.status_code == 422
+    assert "not import-safe" in str(r.json()["detail"])
+    detail = (await client.get(f"/docs/{entity_id}", headers=_h(token))).json()
+    assert detail["status"] == "draft"
 
 
 @pytest.mark.asyncio
@@ -354,12 +377,8 @@ async def test_doctor_fix_creates_missing_jes(client, session):
     })
     assert r.status_code == 200
 
-    # Finalize via import (non-create event, no JE hook)
-    r = await client.post("/docs/import", headers=_h(token), json={
-        "entity_id": entity_id, "event_type": "doc.finalized", "data": {},
-        "source": "import:test", "idempotency_key": f"idem-fin-{uuid.uuid4().hex[:8]}",
-    })
-    assert r.status_code == 200
+    # Historical lifecycle state predates the creation-only import boundary.
+    await _emit_legacy_doc_event(client, session, token, entity_id, "doc.finalized", {})
 
     # No JEs yet (finalize via import doesn't trigger auto-JE)
     r = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
@@ -534,21 +553,18 @@ async def test_doctor_fix_missing_payment_je(client, session):
         "entity_id": entity_id, "event_type": "doc.created",
         "data": {
             "doc_type": "invoice", "total": 600, "subtotal": 600, "tax": 0,
-            "status": "finalized",
+            "status": "final",
         },
         "source": "import:test",
         "idempotency_key": f"idem-pf-cr-{uuid.uuid4().hex[:8]}",
     })
     assert r.status_code == 200
 
-    # Mark as paid via a subsequent event (but no auto-JE hook for this path)
-    r = await client.post("/docs/import", headers=_h(token), json={
-        "entity_id": entity_id, "event_type": "doc.payment.received",
-        "data": {"amount": 600.0, "amount_paid": 600, "amount_outstanding": 0, "status": "paid", "payment_date": "2026-01-15"},
-        "source": "import:test",
-        "idempotency_key": f"idem-pf-pay-{uuid.uuid4().hex[:8]}",
-    })
-    assert r.status_code == 200
+    # Seed the historical payment event directly so no payment JE hook runs.
+    await _emit_legacy_doc_event(
+        client, session, token, entity_id, "doc.payment.received",
+        {"amount": 600.0, "payment_date": "2026-01-15", "method": "bank"},
+    )
 
     # Doctor: may find missing payment JE depending on hook coverage - just verify it runs
     r = await client.post("/admin/doctor?checks=missing_jes&fix=true", headers=_h(token))
@@ -686,14 +702,11 @@ async def test_doctor_fix_po_missing_je(client, session):
     })
     assert r.status_code == 200
 
-    # Mark as received via import (lifecycle event - doc.received requires location_id)
-    r = await client.post("/docs/import", headers=_h(token), json={
-        "entity_id": entity_id, "event_type": "doc.received",
-        "data": {"status": "received", "location_id": "loc:default", "received_items": []},
-        "source": "import:test",
-        "idempotency_key": f"idem-po-rcv-{_uuid.uuid4().hex[:8]}",
-    })
-    assert r.status_code == 200
+    # Seed historical received state directly; the public import is creation-only.
+    await _emit_legacy_doc_event(
+        client, session, token, entity_id, "doc.received",
+        {"location_id": "loc:default", "received_items": []},
+    )
 
     # Doctor fix: creates the missing PO received JE
     r2 = await client.post("/admin/doctor?checks=missing_jes&fix=true", headers=_h(token))

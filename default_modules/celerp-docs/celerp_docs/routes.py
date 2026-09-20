@@ -2210,6 +2210,9 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     if replay is not None:
         if replay.event_type != "doc.payment.received" or replay.entity_id != entity_id:
             raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        # Match emit_event's duplicate-race contract so callers can distinguish a
+        # replay from a newly applied payment without changing this function's return shape.
+        replay.was_deduped = True
         return replay, float((replay.data or {}).get("amount") or 0)
     doc_state = dict(row.state)
     if doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:

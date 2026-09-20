@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import uuid
 from pathlib import Path
 
@@ -21,6 +22,7 @@ AGENT_UPLOAD_TYPES = frozenset({
     "text/csv",
     XLSX_CONTENT_TYPE,
 })
+_UPLOAD_ID_RE = re.compile(r"^ai_up_[0-9a-f]{32}$")
 
 
 def upload_dir() -> Path:
@@ -34,6 +36,8 @@ def _file_paths_and_meta(
     file_id: str, company_id: uuid.UUID, user_id: uuid.UUID | None = None,
 ) -> tuple[Path, dict]:
     """Resolve an owned transient upload without reading its potentially large body."""
+    if not isinstance(file_id, str) or not _UPLOAD_ID_RE.fullmatch(file_id):
+        raise FileNotFoundError(f"File {file_id} not found")
     d = upload_dir()
     bin_path = d / f"{file_id}.bin"
     meta_path = d / f"{file_id}.meta"

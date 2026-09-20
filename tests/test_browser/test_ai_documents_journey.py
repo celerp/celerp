@@ -88,9 +88,14 @@ def _confirm_card(page: Page, text: str) -> None:
     card = page.locator(".ai-action__card", has_text=text)
     expect(card).to_be_visible()
     done_before = page.locator(".ai-action__done").count()
-    card.locator("button[type=submit]").click()
+    card.get_by_role("button", name="Confirm").click()
     expect(page.locator(".ai-action__done")).to_have_count(done_before + 1)
     expect(page.locator(".ai-action__error")).to_have_count(0)
+
+
+def _send_receipts(page: Page, text: str) -> None:
+    page.locator("#ai-query-input").fill(text)
+    page.get_by_role("button", name="Process receipts").click()
 
 
 def _call(cap: dict, path: dict | None = None, body: dict | None = None, content: str = "") -> ModelResult:
@@ -110,7 +115,7 @@ def test_receipts_to_bills_journey(page: Page, ui_server, api):
         _attach(page, [
             {"name": name, "mimeType": "image/png", "buffer": _PNG} for name in _RECEIPTS
         ])
-        _send(page, "Enter these as bills")
+        _send_receipts(page, "Enter these as bills")
 
         job = page.locator(".ai-job")
         expect(job).to_be_visible()
@@ -118,10 +123,11 @@ def test_receipts_to_bills_journey(page: Page, ui_server, api):
         expect(page.locator(".ai-job--done")).to_contain_text("2 of 2 files were read.")
 
     cards = page.locator(".ai-action__card")
-    expect(cards).to_have_count(2)
-    titles = [cards.nth(i).locator(".ai-action__title").inner_text() for i in range(2)]
+    expect(cards).to_have_count(4)
+    titles = [cards.nth(i).locator(".ai-action__title").inner_text() for i in range(4)]
     assert sorted(titles) == sorted([
-        "Create bill from Northwind Paper Co", "Create bill from Quick Parts Ltd",
+        "Create vendor Northwind Paper Co", "Create bill from Northwind Paper Co",
+        "Create vendor Quick Parts Ltd", "Create bill from Quick Parts Ltd",
     ])
 
     # The receipt whose lines and tax do not reach its total carries the check.
@@ -133,13 +139,13 @@ def test_receipts_to_bills_journey(page: Page, ui_server, api):
     expect(clean.locator(".ai-action__warnings")).to_have_count(0)
 
     page.locator(".ai-action-group__footer button[type=submit]").click()
-    expect(page.locator(".ai-action-group__summary")).to_contain_text("2 applied, 0 failed.")
+    expect(page.locator(".ai-action-group__summary")).to_contain_text("4 applied, 0 failed.")
 
     bills = api.get("/docs", params={"doc_type": "bill", "q": "Northwind"}).json()["items"]
     assert [b["contact_name"] for b in bills] == ["Northwind Paper Co"]
     assert bills[0]["status"] == "draft"
     vendors = api.get("/crm/contacts", params={"q": "Quick Parts Ltd"}).json()["items"]
-    assert vendors == []
+    assert [v["name"] for v in vendors] == ["Quick Parts Ltd"]
 
 
 def test_receipts_bulk_table_journey(page: Page, ui_server, api):
@@ -151,7 +157,7 @@ def test_receipts_bulk_table_journey(page: Page, ui_server, api):
         _attach(page, [
             {"name": name, "mimeType": "image/png", "buffer": _PNG} for name in _BULK_RECEIPTS
         ])
-        _send(page, "Enter these as bills")
+        _send_receipts(page, "Enter these as bills")
         expect(page.locator(".ai-job--done")).to_be_visible(timeout=20_000)
         expect(page.locator(".ai-job--done")).to_contain_text("3 of 3 files were read.")
 
