@@ -616,3 +616,51 @@ def test_build_workflow_keeps_exact_release_tag_version():
     step = workflow[start:start + 1800]
     assert 'if [[ "$GITHUB_REF" == refs/tags/v* ]]' in step
     assert 'VERSION="${GITHUB_REF_NAME#v}"' in step
+
+
+def test_build_workflow_signs_all_non_pr_macos_dev_builds():
+    """Every non-PR macOS build must use the Developer ID signing path."""
+    workflow = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
+
+    prep_idx = workflow.index("- name: Prepare macOS signing keychain")
+    prep_end = workflow.index("\n      - name:", prep_idx + 1)
+    prep = workflow[prep_idx:prep_end]
+    assert "github.event_name != 'pull_request'" in prep
+    assert "github.ref_name != 'bugfix'" not in prep
+
+    dev_idx = workflow.index("- name: Build macOS (development - signed only, no notarization)")
+    dev_end = workflow.index("\n      - name:", dev_idx + 1)
+    dev = workflow[dev_idx:dev_end]
+    assert "!startsWith(github.ref, 'refs/tags/v')" in dev
+    assert "github.event_name != 'pull_request'" in dev
+    assert "github.ref_name != 'bugfix'" not in dev
+
+    pr_idx = workflow.index("- name: Build macOS (pull request - UNSIGNED)")
+    pr_end = workflow.index("\n      - name:", pr_idx + 1)
+    pr = workflow[pr_idx:pr_end]
+    assert "github.event_name == 'pull_request'" in pr
+    assert 'CSC_IDENTITY_AUTO_DISCOVERY: "false"' in pr
+
+
+def test_build_workflow_validates_final_macos_dmg_before_distribution():
+    """The exact DMG users receive must verify, mount, and contain Celerp.app."""
+    workflow = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
+
+    verify_idx = workflow.index("- name: Verify macOS distributable")
+    verify_end = workflow.index("\n      - name:", verify_idx + 1)
+    verify = workflow[verify_idx:verify_end]
+
+    assert "if: matrix.os == 'macos-latest'" in verify
+    assert 'hdiutil verify "$DMG"' in verify
+    assert 'hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT_POINT" "$DMG"' in verify
+    assert 'test -d "$MOUNT_POINT/Celerp.app"' in verify
+    assert 'hdiutil detach "$MOUNT_POINT"' in verify
+    assert 'codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/Celerp.app"' in verify
+    assert 'xcrun stapler validate "$MOUNT_POINT/Celerp.app"' in verify
+    assert 'if [[ "$GITHUB_REF" == refs/tags/v* ]]' in verify
+
+    # Both dev artifact upload and tag publication are downstream of this build step.
+    assert verify_idx < workflow.index("- name: Upload artifacts (dev builds only)")
+    assert "publish-release:" in workflow
+    publish_idx = workflow.index("  publish-release:")
+    assert "needs: [build]" in workflow[publish_idx:publish_idx + 300]

@@ -83,9 +83,9 @@ jobs:
           done
           echo "Assets cleared"
 
-  # Compute the build matrix: the bugfix branch and pull requests build macOS only
-  # (a fast unsigned test DMG, for the boot-smoke gate); every other ref builds all
-  # three platforms.
+  # Compute the build matrix: the bugfix branch and pull requests build macOS only.
+  # Bugfix pushes use the normal signed-dev path; pull requests remain unsigned
+  # because signing credentials must not be exposed to PR workflows.
   setup-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -381,10 +381,10 @@ jobs:
       # create a throwaway one. The keychain password and the .p12 password are
       # two different secrets; the newer hosted macOS image rejects the combined
       # shortcut electron-builder was using, so signing failed at unlock time.
-      # Runs for every signed build (release tag and develop dev), never for the
-      # unsigned bugfix/PR path where the secrets are unavailable.
+      # Runs for every signed build (release tags and non-PR development builds).
+      # Pull requests remain unsigned because signing secrets are unavailable there.
       - name: Prepare macOS signing keychain
-        if: matrix.os == 'macos-latest' && github.ref_name != 'bugfix' && github.event_name != 'pull_request'
+        if: matrix.os == 'macos-latest' && github.event_name != 'pull_request'
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -419,7 +419,7 @@ jobs:
           rm -f "$CERT_PATH"
 
       - name: Verify macOS signing identity
-        if: matrix.os == 'macos-latest' && github.ref_name != 'bugfix' && github.event_name != 'pull_request'
+        if: matrix.os == 'macos-latest' && github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
@@ -440,27 +440,63 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm run build:mac -- --publish always
 
-      - name: Build macOS (develop dev - signed only, no notarization)
-        if: matrix.os == 'macos-latest' && !startsWith(github.ref, 'refs/tags/v') && github.ref_name != 'bugfix' && github.event_name != 'pull_request'
+      - name: Build macOS (development - signed only, no notarization)
+        if: matrix.os == 'macos-latest' && !startsWith(github.ref, 'refs/tags/v') && github.event_name != 'pull_request'
         timeout-minutes: 60
         working-directory: electron
         env:
           CSC_KEYCHAIN: ${{ env.CSC_KEYCHAIN }}
         run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
 
-      - name: Build macOS (bugfix dev - UNSIGNED, fast)
-        # bugfix-branch dev builds skip macOS code signing (~20 min) entirely to
-        # speed up the test loop. The resulting .app/.dmg is unsigned and is for our
-        # own testing only — get it past Gatekeeper with
-        #   xattr -dr com.apple.quarantine /Applications/Celerp.app
-        # (or right-click -> Open). Not for distribution. PRs use this fast unsigned
-        # path too (signing secrets aren't available to PR builds).
-        if: matrix.os == 'macos-latest' && (github.ref_name == 'bugfix' || github.event_name == 'pull_request')
+      - name: Build macOS (pull request - UNSIGNED)
+        # Pull-request builds do not receive signing credentials. They still build
+        # the final distributable and pass the DMG integrity/mount gate below.
+        if: matrix.os == 'macos-latest' && github.event_name == 'pull_request'
         timeout-minutes: 60
         working-directory: electron
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
+
+      - name: Verify macOS distributable
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        env:
+          REQUIRE_SIGNATURE: ${{ github.event_name != 'pull_request' }}
+        run: |
+          set -euo pipefail
+          DMG="$PWD/electron/dist/Celerp-mac.dmg"
+          MOUNT_POINT="$RUNNER_TEMP/celerp-dmg"
+
+          test -f "$DMG"
+          hdiutil verify "$DMG"
+
+          if [ "$REQUIRE_SIGNATURE" = "true" ]; then
+            APP="$(ls -d "$PWD"/electron/dist/mac*/Celerp.app | head -1)"
+            test -d "$APP"
+            codesign --verify --deep --strict --verbose=2 "$APP"
+          fi
+
+          rm -rf "$MOUNT_POINT"
+          mkdir -p "$MOUNT_POINT"
+          hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT_POINT" "$DMG"
+          cleanup() { hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          test -d "$MOUNT_POINT/Celerp.app"
+          if [ "$REQUIRE_SIGNATURE" = "true" ]; then
+            codesign --verify --deep --strict --verbose=2 "$MOUNT_POINT/Celerp.app"
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            # electron-builder 25 silently skips notarization when credentials are
+            # absent. A release must prove that Apple's ticket was actually stapled
+            # to the exact app contained in the final DMG before it can publish.
+            xcrun stapler validate "$MOUNT_POINT/Celerp.app"
+          fi
+
+          hdiutil detach "$MOUNT_POINT"
+          trap - EXIT
+          echo "macOS distributable verified: checksum, mount, contents, signing, and release notarization policy OK"
 
       - name: Clean up macOS signing keychain
         if: always() && matrix.os == 'macos-latest'
