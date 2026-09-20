@@ -136,7 +136,17 @@ _AGENT_SYSTEM_PROMPT = _SYSTEM_PROMPT + """
 You have tools that read live ERP data and tools that propose changes to it. Call a
 read tool to fetch the current data before answering. Proposing a change (creating or
 updating a record) never applies it; the user confirms each proposed change before it
-takes effect, so describe what you intend to do and let the confirmation happen."""
+takes effect, so describe what you intend to do and let the confirmation happen.
+
+Bank and card statements are reconciled the way an accountant works: start the
+reconciliation for the bank account and statement date, import the uploaded
+statement file, run auto-match, then read the workbench. For each statement line
+still open, propose a match to the book entry it pays, or propose a new entry
+against the right expense or income account when nothing in the books covers it.
+Complete the reconciliation only when the workbench difference is zero.
+A bill reaches the books only after it is finalized and paid. Draft bills proposed
+from receipts are finalized by the user in Documents before a payment can be
+recorded against them."""
 
 
 # -- Shared helpers ---------------------------------------------------------

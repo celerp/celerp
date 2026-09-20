@@ -16,6 +16,11 @@ import json
 import os
 from pathlib import Path
 
+from fastapi import FastAPI
+
+from celerp.modules.loader import _BUNDLED_MODULES_DIRS, is_core_folded, load_all, register_api_routes
+from celerp.routers import search as search_router_mod
+
 # Repo root: this file lives at repo root, so parent == repo root.
 REPO_ROOT = Path(__file__).resolve().parent
 
@@ -192,3 +197,30 @@ async def grant_permission(client, admin_headers: dict, permission: str, role: s
             headers=admin_headers,
         )
         assert r.status_code == 200, r.text
+
+
+def _bundled_pluggable_names() -> set[str]:
+    """Every bundled default module the loader actually loads (core-folded
+    ai/backup/connectors are wired at construction, never via load_all)."""
+    root = _BUNDLED_MODULES_DIRS[0]
+    return {
+        p.name for p in root.iterdir()
+        if p.is_dir() and (p / "__init__.py").exists() and not is_core_folded(p.name)
+    }
+
+
+def real_agent_app() -> FastAPI:
+    """The real Celerp API surface with every first-party module enabled.
+
+    Built the same way `celerp.main` builds the live app: the core search router
+    plus every bundled pluggable module's routes. `docs_url`/`redoc_url` are off
+    exactly as in production, so FastAPI's own `/docs` never shadows the
+    documents module. The autouse loader-reset fixture tears `_loaded` and the
+    slot registry back down after the test.
+    """
+    app = FastAPI(docs_url=None, redoc_url=None)
+    app.include_router(search_router_mod.router, tags=["search"])
+    loaded = load_all(_BUNDLED_MODULES_DIRS[0], _bundled_pluggable_names())
+    register_api_routes(app, loaded)
+    app.openapi_schema = None
+    return app

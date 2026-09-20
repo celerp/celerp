@@ -125,6 +125,13 @@ def compile_agent_capabilities(app: Any, company_settings: dict[str, Any] | None
 
     FastAPI/OpenAPI remains the schema source of truth. Direct module operations
     are limited to first-party loaded modules; core celerp.* routes may opt in.
+
+    A mutation compiles only when a retry cannot apply it twice: either its JSON
+    body carries ``idempotency_key`` (stripped from the tool schema and injected
+    per tool call) or the operation declares ``x-celerp-agent-idempotent``,
+    meaning the route dedupes by construction (a fixed entity id, a state that
+    re-applies to the same value, or an existing record returned instead of a
+    duplicate). Anything else is skipped.
     """
     settings = company_settings or {}
     openapi = app.openapi()
@@ -206,7 +213,7 @@ def compile_agent_capabilities(app: Any, company_settings: dict[str, Any] | None
                 body_required = bool(request_body.get("required"))
 
             inject_idempotency = False
-            if method in _AGENT_MUTATIONS:
+            if method in _AGENT_MUTATIONS and operation.get("x-celerp-agent-idempotent") is not True:
                 if body_schema is None:
                     continue
                 props = body_schema.get("properties")

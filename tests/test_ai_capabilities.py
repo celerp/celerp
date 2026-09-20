@@ -9,8 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from celerp.ai import tools as ai_tools
-from celerp.modules.loader import _BUNDLED_MODULES_DIRS, is_core_folded, load_all, register_api_routes
-from celerp.routers import search as search_router_mod
+from test_helpers import real_agent_app
 
 
 _bearer = HTTPBearer()
@@ -40,38 +39,24 @@ _EXPECTED_AGENT_ROUTES = {
     ("PATCH", "/items/{entity_id}"),
     ("GET", "/items/import/preview"),
     ("POST", "/items/import/commit"),
+    ("POST", "/docs/{entity_id}/payment"),
+    ("GET", "/accounting/bank-accounts"),
+    ("POST", "/accounting/reconciliation/start"),
+    ("GET", "/accounting/reconciliation/{session_id}/workbench"),
+    ("POST", "/accounting/reconciliation/{session_id}/import-file"),
+    ("POST", "/accounting/reconciliation/{session_id}/auto-match"),
+    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/match"),
+    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/unmatch"),
+    ("POST", "/accounting/reconciliation/{session_id}/lines/{line_id}/create"),
+    ("PATCH", "/accounting/reconciliation/{session_id}/lines/{line_id}"),
+    ("POST", "/accounting/reconciliation/{session_id}/bulk-confirm"),
+    ("POST", "/accounting/reconciliation/{session_id}/complete"),
+    ("POST", "/accounting/reconciliation/{session_id}/write-off"),
 }
 
 
-def _bundled_pluggable_names() -> set[str]:
-    """Every bundled default module the loader actually loads (core-folded
-    ai/backup/connectors are wired at construction, never via load_all)."""
-    root = _BUNDLED_MODULES_DIRS[0]
-    return {
-        p.name for p in root.iterdir()
-        if p.is_dir() and (p / "__init__.py").exists() and not is_core_folded(p.name)
-    }
-
-
-def _real_agent_app() -> FastAPI:
-    """The real Celerp API surface with every first-party module enabled.
-
-    Built the same way `celerp.main` builds the live app: the core search router
-    plus every bundled pluggable module's routes. `docs_url`/`redoc_url` are off
-    exactly as in production, so FastAPI's own `/docs` never shadows the
-    documents module. The autouse loader-reset fixture tears `_loaded` and the
-    slot registry back down after the test.
-    """
-    app = FastAPI(docs_url=None, redoc_url=None)
-    app.include_router(search_router_mod.router, tags=["search"])
-    loaded = load_all(_BUNDLED_MODULES_DIRS[0], _bundled_pluggable_names())
-    register_api_routes(app, loaded)
-    app.openapi_schema = None
-    return app
-
-
 def _real_agent_route_set() -> set[tuple[str, str]]:
-    app = _real_agent_app()
+    app = real_agent_app()
     compiled = ai_tools.compile_agent_capabilities(app, {})
     return {(cap["method"], cap["path"]) for cap in compiled.values()}
 
@@ -107,6 +92,13 @@ def _app() -> FastAPI:
     async def unsafe_write(body: _UnsafeWriteBody):
         return {"name": body.name}
 
+    @app.post(
+        "/things/{item_id}/touch",
+        openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+    )
+    async def touch_thing(item_id: str):
+        return {"touched": item_id}
+
     @app.delete("/things/{item_id}", openapi_extra={"x-celerp-agent": True})
     async def delete_thing(item_id: str):
         return {"deleted": item_id}
@@ -118,7 +110,7 @@ def _app() -> FastAPI:
     for route in app.routes:
         endpoint = getattr(route, "endpoint", None)
         if endpoint and getattr(endpoint, "__name__", "") in {
-            "get_thing", "create_thing", "unsafe_write", "delete_thing", "text_response"
+            "get_thing", "create_thing", "unsafe_write", "delete_thing", "text_response", "touch_thing"
         }:
             endpoint.__module__ = "celerp.routers.agent_test"
     app.openapi_schema = None
@@ -145,6 +137,19 @@ def test_compile_uses_openapi_and_fails_closed_for_unsafe_shapes():
     post_body = compiled[post_name]["tool"]["function"]["parameters"]["properties"]["body"]
     assert "idempotency_key" not in post_body["properties"]
     assert compiled[post_name]["inject_idempotency"] is True
+
+
+def test_declared_idempotent_mutation_compiles_without_a_key():
+    """A route that dedupes by construction opts out of the injected key; a
+    mutation with neither the key nor the declaration still never compiles."""
+    compiled = ai_tools.compile_agent_capabilities(_app(), {})
+    touch_name = next(name for name in compiled if name.startswith("touch_thing_"))
+    touch = compiled[touch_name]
+    assert touch["method"] == "POST"
+    assert touch["inject_idempotency"] is False
+    assert touch["expects_body"] is False
+    assert set(touch["tool"]["function"]["parameters"]["properties"]) == {"path"}
+    assert all("unsafe_write" not in name for name in compiled)
 
 
 def test_compile_filters_disabled_and_third_party_modules(monkeypatch):

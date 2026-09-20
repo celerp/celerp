@@ -16,8 +16,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.ai.files import XLSX_CONTENT_TYPE, load_file
 from celerp.db import get_session
 from celerp.events.engine import emit_event
+from celerp.importers.tabular import TabularError, _rows_to_csv, read_table
 from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
@@ -2291,7 +2293,11 @@ async def _next_bank_account_code(session: AsyncSession, company_id: uuid.UUID) 
     raise HTTPException(status_code=400, detail="No available account codes under 1110")
 
 
-@router.get("/bank-accounts")
+@router.get(
+    "/bank-accounts",
+    summary="List the company's bank and card accounts",
+    openapi_extra={"x-celerp-agent": True},
+)
 async def list_bank_accounts(
     include_inactive: bool = False,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -2572,6 +2578,34 @@ class ReconciliationMatch(BaseModel):
     je_ids: list[str]
 
 
+async def _get_recon(db: AsyncSession, session_id: uuid.UUID, company_id: uuid.UUID) -> ReconciliationSession:
+    recon = (await db.execute(
+        select(ReconciliationSession).where(
+            ReconciliationSession.id == session_id,
+            ReconciliationSession.company_id == company_id,
+        )
+    )).scalar_one_or_none()
+    if not recon:
+        raise HTTPException(status_code=404, detail="Reconciliation session not found")
+    return recon
+
+
+async def _recon_bank_and_entries(
+    db: AsyncSession, recon: ReconciliationSession, company_id: uuid.UUID
+) -> tuple[BankAccount, list[dict]]:
+    bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
+    if not bank:
+        raise HTTPException(status_code=404, detail="Bank account not found")
+    return bank, await _je_entries_for_account(db, company_id, bank.chart_account_code)
+
+
+def _recon_balance(recon: ReconciliationSession, bank: BankAccount, all_entries: list[dict]) -> tuple[float, float]:
+    """(matched balance, remaining difference) for a session."""
+    reconciled_ids = set(recon.reconciled_je_ids or [])
+    matched_balance = float(bank.opening_balance) + sum(e["amount"] for e in all_entries if e["je_id"] in reconciled_ids)
+    return matched_balance, float(recon.statement_balance) - matched_balance
+
+
 def _recon_to_dict(r: ReconciliationSession) -> dict:
     return {
         "id": str(r.id),
@@ -2650,7 +2684,11 @@ async def _je_entries_for_account(
     return result
 
 
-@router.post("/reconciliation/start")
+@router.post(
+    "/reconciliation/start",
+    summary="Start reconciling a bank or card statement",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+)
 async def start_reconciliation(
     payload: ReconciliationStart,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -2667,6 +2705,19 @@ async def start_reconciliation(
     ).scalar_one_or_none()
     if not bank:
         raise HTTPException(status_code=404, detail="Bank account not found")
+
+    # One open session per statement: starting the same statement again
+    # continues it instead of opening a duplicate.
+    existing = (await session.execute(
+        select(ReconciliationSession).where(
+            ReconciliationSession.company_id == company_id,
+            ReconciliationSession.bank_account_id == bank.id,
+            ReconciliationSession.statement_date == payload.statement_date,
+            ReconciliationSession.status == "open",
+        ).order_by(ReconciliationSession.created_at)
+    )).scalars().first()
+    if existing:
+        return _recon_to_dict(existing)
 
     recon = ReconciliationSession(
         id=uuid.uuid4(),
@@ -2689,29 +2740,13 @@ async def get_reconciliation(
     db: AsyncSession = Depends(get_session),
     _: None = require_permission("manage_accounting"),
 ) -> dict:
-    recon = (
-        await db.execute(
-            select(ReconciliationSession).where(
-                ReconciliationSession.id == session_id,
-                ReconciliationSession.company_id == company_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if not recon:
-        raise HTTPException(status_code=404, detail="Reconciliation session not found")
+    recon = await _get_recon(db, session_id, company_id)
 
-    bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
-    if not bank:
-        raise HTTPException(status_code=404, detail="Bank account not found")
-
-    all_entries = await _je_entries_for_account(db, company_id, bank.chart_account_code)
+    bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
     reconciled_ids = set(recon.reconciled_je_ids or [])
     unreconciled = [e for e in all_entries if e["je_id"] not in reconciled_ids]
     reconciled = [e for e in all_entries if e["je_id"] in reconciled_ids]
-
-    book_balance = float(bank.opening_balance) + sum(e["amount"] for e in all_entries)
-    matched_sum = sum(e["amount"] for e in reconciled)
-    difference = float(recon.statement_balance) - (float(bank.opening_balance) + matched_sum)
+    matched_balance, difference = _recon_balance(recon, bank, all_entries)
 
     d = _recon_to_dict(recon)
     d.update({
@@ -2719,8 +2754,8 @@ async def get_reconciliation(
         "all_entries": all_entries,
         "unreconciled_entries": unreconciled,
         "reconciled_entries": reconciled,
-        "book_balance": book_balance,
-        "matched_balance": float(bank.opening_balance) + matched_sum,
+        "book_balance": float(bank.opening_balance) + sum(e["amount"] for e in all_entries),
+        "matched_balance": matched_balance,
         "difference": difference,
     })
     return d
@@ -2734,16 +2769,7 @@ async def match_reconciliation(
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    recon = (
-        await db.execute(
-            select(ReconciliationSession).where(
-                ReconciliationSession.id == session_id,
-                ReconciliationSession.company_id == company_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if not recon:
-        raise HTTPException(status_code=404, detail="Reconciliation session not found")
+    recon = await _get_recon(db, session_id, company_id)
     if recon.status == "completed":
         raise HTTPException(status_code=409, detail="Session already completed")
 
@@ -2754,35 +2780,23 @@ async def match_reconciliation(
     return _recon_to_dict(recon)
 
 
-@router.post("/reconciliation/{session_id}/complete")
+@router.post(
+    "/reconciliation/{session_id}/complete",
+    summary="Complete the reconciliation once the difference is zero",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+)
 async def complete_reconciliation(
     session_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("manage_accounting"),
     db: AsyncSession = Depends(get_session),
 ) -> dict:
-    recon = (
-        await db.execute(
-            select(ReconciliationSession).where(
-                ReconciliationSession.id == session_id,
-                ReconciliationSession.company_id == company_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if not recon:
-        raise HTTPException(status_code=404, detail="Reconciliation session not found")
+    recon = await _get_recon(db, session_id, company_id)
     if recon.status == "completed":
         raise HTTPException(status_code=409, detail="Session already completed")
 
-    bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
-    if not bank:
-        raise HTTPException(status_code=404, detail="Bank account not found")
-
-    all_entries = await _je_entries_for_account(db, company_id, bank.chart_account_code)
-    reconciled_ids = set(recon.reconciled_je_ids or [])
-    reconciled = [e for e in all_entries if e["je_id"] in reconciled_ids]
-    matched_sum = sum(e["amount"] for e in reconciled)
-    difference = float(recon.statement_balance) - (float(bank.opening_balance) + matched_sum)
+    bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
+    _, difference = _recon_balance(recon, bank, all_entries)
 
     if abs(difference) >= 0.01:
         raise HTTPException(
@@ -2794,6 +2808,57 @@ async def complete_reconciliation(
     recon.completed_at = datetime.now(timezone.utc)
     await db.commit()
     return _recon_to_dict(recon)
+
+
+AGENT_WORKBENCH_CAP = 500
+
+
+def _capped(rows: list, cap: int = AGENT_WORKBENCH_CAP) -> tuple[list, bool]:
+    return rows[:cap], len(rows) > cap
+
+
+async def _require_account(db: AsyncSession, company_id: uuid.UUID, code: str) -> Account:
+    account = (await db.execute(
+        select(Account).where(Account.company_id == company_id, Account.code == code)
+    )).scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=422, detail=f"Account {code} is not in the chart of accounts.")
+    return account
+
+
+@router.get(
+    "/reconciliation/{session_id}/workbench",
+    summary="Statement lines still to resolve, unreconciled book entries, and the remaining difference",
+    openapi_extra={"x-celerp-agent": True},
+)
+async def reconciliation_workbench(
+    session_id: uuid.UUID,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    db: AsyncSession = Depends(get_session),
+    _: None = require_permission("manage_accounting"),
+) -> dict:
+    recon = await _get_recon(db, session_id, company_id)
+    bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
+    lines = (await db.execute(
+        select(BankStatementLine).where(
+            BankStatementLine.reconciliation_id == session_id,
+            BankStatementLine.status.in_(("unmatched", "suggested")),
+        ).order_by(BankStatementLine.line_date, BankStatementLine.created_at)
+    )).scalars().all()
+    reconciled_ids = set(recon.reconciled_je_ids or [])
+    _, difference = _recon_balance(recon, bank, all_entries)
+
+    open_lines, lines_truncated = _capped([_stmt_line_to_dict(l) for l in lines])
+    entries, entries_truncated = _capped([e for e in all_entries if e["je_id"] not in reconciled_ids])
+    return {
+        "session": _recon_to_dict(recon),
+        "bank_account": _bank_to_dict(bank),
+        "statement_lines": open_lines,
+        "statement_lines_truncated": lines_truncated,
+        "book_entries": entries,
+        "book_entries_truncated": entries_truncated,
+        "difference": difference,
+    }
 
 
 # ── Reconciliation V2 — CSV import, statement lines, auto-match, rules ────────
@@ -2850,32 +2915,37 @@ class ReconRulePatch(BaseModel):
     is_active: bool | None = None
 
 
-@router.post("/reconciliation/{session_id}/import-csv")
-async def import_recon_csv(
-    session_id: uuid.UUID,
-    file: UploadFile = File(...),
-    column_map: str | None = FastForm(None),  # JSON-encoded dict
-    company_id: uuid.UUID = Depends(get_current_company_id),
-    _: None = require_permission("manage_accounting"),
-    db: AsyncSession = Depends(get_session),
+class StatementFileImport(BaseModel):
+    file_id: str
+    column_map: dict[str, str] | None = None  # {canonical_field: column header}
+
+
+def _statement_csv_bytes(content: bytes, filename: str, content_type: str | None) -> bytes:
+    """Spreadsheet statements are read through the shared table reader and
+    handed on as CSV so one parser serves both file types."""
+    if content_type == XLSX_CONTENT_TYPE or filename.lower().endswith(".xlsx"):
+        try:
+            cols, rows = read_table(content, "statement.xlsx")
+        except TabularError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return _rows_to_csv(rows, cols).encode("utf-8")
+    return content
+
+
+async def _import_statement_lines(
+    db: AsyncSession,
+    recon: ReconciliationSession,
+    company_id: uuid.UUID,
+    content: bytes,
+    filename: str,
+    col_map: dict[str, str] | None,
 ) -> dict:
-    """Upload and parse a bank statement CSV, store lines."""
-    import json as _json
+    """Parse a statement and replace the session's lines with it. Re-importing
+    the same file lands on the same lines, so a retry never doubles them."""
     from celerp_accounting.csv_parser import parse_bank_csv
 
-    recon = (await db.execute(
-        select(ReconciliationSession).where(
-            ReconciliationSession.id == session_id,
-            ReconciliationSession.company_id == company_id,
-        )
-    )).scalar_one_or_none()
-    if not recon:
-        raise HTTPException(status_code=404, detail="Reconciliation session not found")
     if recon.status == "completed":
         raise HTTPException(status_code=409, detail="Session already completed")
-
-    content = await file.read()
-    col_map = _json.loads(column_map) if column_map else None
     parsed = parse_bank_csv(content, col_map)
 
     if parsed["needs_mapping"]:
@@ -2883,12 +2953,12 @@ async def import_recon_csv(
             "needs_mapping": True,
             "headers": parsed["headers"],
             "preview": parsed["preview"],
-            "session_id": str(session_id),
+            "session_id": str(recon.id),
         }
 
     # Delete existing lines for this session (re-import)
     existing = (await db.execute(
-        select(BankStatementLine).where(BankStatementLine.reconciliation_id == session_id)
+        select(BankStatementLine).where(BankStatementLine.reconciliation_id == recon.id)
     )).scalars().all()
     for line in existing:
         await db.delete(line)
@@ -2898,7 +2968,7 @@ async def import_recon_csv(
         sl = BankStatementLine(
             id=uuid.uuid4(),
             company_id=company_id,
-            reconciliation_id=session_id,
+            reconciliation_id=recon.id,
             line_date=raw_line.get("line_date", ""),
             description=raw_line.get("description", ""),
             amount=raw_line.get("amount", "0"),
@@ -2911,7 +2981,7 @@ async def import_recon_csv(
         db.add(sl)
         new_lines.append(sl)
 
-    recon.csv_filename = file.filename
+    recon.csv_filename = filename
     recon.csv_row_count = len(new_lines)
     recon.imported_at = datetime.now(timezone.utc)
     recon.auto_matched_count = 0
@@ -2921,10 +2991,50 @@ async def import_recon_csv(
     await db.commit()
     return {
         "needs_mapping": False,
-        "session_id": str(session_id),
+        "session_id": str(recon.id),
         "rows_imported": len(new_lines),
-        "csv_filename": file.filename,
+        "csv_filename": filename,
     }
+
+
+@router.post("/reconciliation/{session_id}/import-csv")
+async def import_recon_csv(
+    session_id: uuid.UUID,
+    file: UploadFile = File(...),
+    column_map: str | None = FastForm(None),  # JSON-encoded dict
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    """Upload and parse a bank statement CSV, store lines."""
+    import json as _json
+
+    recon = await _get_recon(db, session_id, company_id)
+    content = await file.read()
+    col_map = _json.loads(column_map) if column_map else None
+    return await _import_statement_lines(db, recon, company_id, content, file.filename or "statement.csv", col_map)
+
+
+@router.post(
+    "/reconciliation/{session_id}/import-file",
+    summary="Import an uploaded statement file (csv or xlsx) into the reconciliation",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+)
+async def import_recon_file(
+    session_id: uuid.UUID,
+    payload: StatementFileImport,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("manage_accounting"),
+    db: AsyncSession = Depends(get_session),
+) -> dict:
+    recon = await _get_recon(db, session_id, company_id)
+    try:
+        content, meta = load_file(payload.file_id, company_id)
+    except (FileNotFoundError, PermissionError):
+        raise HTTPException(status_code=422, detail=f"Uploaded file {payload.file_id} was not found.")
+    filename = str(meta.get("filename") or "statement.csv")
+    content = _statement_csv_bytes(content, filename, meta.get("content_type"))
+    return await _import_statement_lines(db, recon, company_id, content, filename, payload.column_map)
 
 
 @router.get("/reconciliation/{session_id}/statement-lines")
@@ -2934,14 +3044,7 @@ async def get_statement_lines(
     db: AsyncSession = Depends(get_session),
     _: None = require_permission("manage_accounting"),
 ) -> dict:
-    recon = (await db.execute(
-        select(ReconciliationSession).where(
-            ReconciliationSession.id == session_id,
-            ReconciliationSession.company_id == company_id,
-        )
-    )).scalar_one_or_none()
-    if not recon:
-        raise HTTPException(status_code=404, detail="Reconciliation session not found")
+    recon = await _get_recon(db, session_id, company_id)
 
     lines = (await db.execute(
         select(BankStatementLine).where(
@@ -2952,7 +3055,11 @@ async def get_statement_lines(
     return {"items": [_stmt_line_to_dict(l) for l in lines], "total": len(lines)}
 
 
-@router.post("/reconciliation/{session_id}/auto-match")
+@router.post(
+    "/reconciliation/{session_id}/auto-match",
+    summary="Match statement lines to book entries automatically",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+)
 async def auto_match_recon(
     session_id: uuid.UUID,
     company_id: uuid.UUID = Depends(get_current_company_id),
@@ -2962,14 +3069,7 @@ async def auto_match_recon(
     """Run the auto-matching algorithm against all unmatched statement lines."""
     from celerp_accounting.matcher import auto_match
 
-    recon = (await db.execute(
-        select(ReconciliationSession).where(
-            ReconciliationSession.id == session_id,
-            ReconciliationSession.company_id == company_id,
-        )
-    )).scalar_one_or_none()
-    if not recon:
-        raise HTTPException(status_code=404, detail="Reconciliation session not found")
+    recon = await _get_recon(db, session_id, company_id)
     if recon.status == "completed":
         raise HTTPException(status_code=409, detail="Session already completed")
 
@@ -3020,7 +3120,11 @@ async def auto_match_recon(
     }
 
 
-@router.post("/reconciliation/{session_id}/lines/{line_id}/match")
+@router.post(
+    "/reconciliation/{session_id}/lines/{line_id}/match",
+    summary="Match a statement line to a book entry",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+)
 async def match_stmt_line(
     session_id: uuid.UUID,
     line_id: uuid.UUID,
@@ -3058,7 +3162,11 @@ async def match_stmt_line(
     return _stmt_line_to_dict(sl)
 
 
-@router.post("/reconciliation/{session_id}/lines/{line_id}/unmatch")
+@router.post(
+    "/reconciliation/{session_id}/lines/{line_id}/unmatch",
+    summary="Undo the match on a statement line",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+)
 async def unmatch_stmt_line(
     session_id: uuid.UUID,
     line_id: uuid.UUID,
@@ -3077,7 +3185,11 @@ async def unmatch_stmt_line(
     return _stmt_line_to_dict(sl)
 
 
-@router.post("/reconciliation/{session_id}/lines/{line_id}/create")
+@router.post(
+    "/reconciliation/{session_id}/lines/{line_id}/create",
+    summary="Post a journal entry for a statement line with no book entry",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+)
 async def create_je_from_line(
     session_id: uuid.UUID,
     line_id: uuid.UUID,
@@ -3091,9 +3203,12 @@ async def create_je_from_line(
     from celerp.services.je_keys import je_idempotency_key
 
     recon, sl = await _get_recon_and_line(db, session_id, line_id, company_id)
+    if sl.status == "created":
+        return _stmt_line_to_dict(sl)
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
         raise HTTPException(status_code=404, detail="Bank account not found")
+    await _require_account(db, company_id, payload.account_code)
 
     amount = payload.amount if payload.amount is not None else abs(float(sl.amount))
     entry_date = payload.date or sl.line_date
@@ -3211,7 +3326,11 @@ async def split_stmt_line(
     return _stmt_line_to_dict(sl)
 
 
-@router.patch("/reconciliation/{session_id}/lines/{line_id}")
+@router.patch(
+    "/reconciliation/{session_id}/lines/{line_id}",
+    summary="Set a statement line's status, for example skip a line that needs no entry",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+)
 async def patch_stmt_line(
     session_id: uuid.UUID,
     line_id: uuid.UUID,
@@ -3275,7 +3394,11 @@ async def remove_line_attachment(
     return {"removed": att_id}
 
 
-@router.post("/reconciliation/{session_id}/bulk-confirm")
+@router.post(
+    "/reconciliation/{session_id}/bulk-confirm",
+    summary="Confirm every suggested match",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+)
 async def bulk_confirm_recon(
     session_id: uuid.UUID,
     payload: BulkConfirmPayload | None = None,
@@ -3284,14 +3407,7 @@ async def bulk_confirm_recon(
     db: AsyncSession = Depends(get_session),
 ) -> dict:
     """Confirm all 'suggested' matches (make them fully matched)."""
-    recon = (await db.execute(
-        select(ReconciliationSession).where(
-            ReconciliationSession.id == session_id,
-            ReconciliationSession.company_id == company_id,
-        )
-    )).scalar_one_or_none()
-    if not recon:
-        raise HTTPException(status_code=404, detail="Reconciliation session not found")
+    recon = await _get_recon(db, session_id, company_id)
     if recon.status == "completed":
         raise HTTPException(status_code=409, detail="Session already completed")
 
@@ -3316,7 +3432,11 @@ async def bulk_confirm_recon(
     return {"confirmed": confirmed}
 
 
-@router.post("/reconciliation/{session_id}/write-off")
+@router.post(
+    "/reconciliation/{session_id}/write-off",
+    summary="Write off a remaining difference within tolerance",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+)
 async def write_off_difference(
     session_id: uuid.UUID,
     payload: WriteOffPayload,
@@ -3328,26 +3448,12 @@ async def write_off_difference(
     """Create a small adjustment JE to zero out the remaining difference."""
     from celerp.services.je_keys import je_idempotency_key
 
-    recon = (await db.execute(
-        select(ReconciliationSession).where(
-            ReconciliationSession.id == session_id,
-            ReconciliationSession.company_id == company_id,
-        )
-    )).scalar_one_or_none()
-    if not recon:
-        raise HTTPException(status_code=404, detail="Reconciliation session not found")
+    recon = await _get_recon(db, session_id, company_id)
     if recon.status == "completed":
         raise HTTPException(status_code=409, detail="Session already completed")
 
-    bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
-    if not bank:
-        raise HTTPException(status_code=404, detail="Bank account not found")
-
-    all_entries = await _je_entries_for_account(db, company_id, bank.chart_account_code)
-    reconciled_ids = set(recon.reconciled_je_ids or [])
-    reconciled = [e for e in all_entries if e["je_id"] in reconciled_ids]
-    matched_sum = sum(e["amount"] for e in reconciled)
-    difference = float(recon.statement_balance) - (float(bank.opening_balance) + matched_sum)
+    bank, all_entries = await _recon_bank_and_entries(db, recon, company_id)
+    _, difference = _recon_balance(recon, bank, all_entries)
 
     tol = float(recon.tolerance) if recon.tolerance is not None else 1.0
     if abs(difference) > tol:
@@ -3357,6 +3463,7 @@ async def write_off_difference(
         )
     if abs(difference) < 0.005:
         raise HTTPException(status_code=422, detail="No difference to write off.")
+    await _require_account(db, company_id, payload.account_code)
 
     je_id = f"je:recon:writeoff:{session_id}"
     idem_c = je_idempotency_key(recon.statement_date, f"recon_wo_{session_id}", "c")
@@ -3485,14 +3592,7 @@ async def _get_recon_and_line(
     line_id: uuid.UUID,
     company_id: uuid.UUID,
 ) -> tuple[ReconciliationSession, BankStatementLine]:
-    recon = (await db.execute(
-        select(ReconciliationSession).where(
-            ReconciliationSession.id == session_id,
-            ReconciliationSession.company_id == company_id,
-        )
-    )).scalar_one_or_none()
-    if not recon:
-        raise HTTPException(status_code=404, detail="Reconciliation session not found")
+    recon = await _get_recon(db, session_id, company_id)
     if recon.status == "completed":
         raise HTTPException(status_code=409, detail="Session already completed")
     sl = (await db.execute(

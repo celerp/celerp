@@ -2247,7 +2247,11 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     return entry, amount
 
 
-@router.post("/{entity_id}/payment")
+@router.post(
+    "/{entity_id}/payment",
+    summary="Record a payment on a document",
+    openapi_extra={"x-celerp-agent": True},
+)
 async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # apply_doc_payment takes the doc row FOR UPDATE and validates against that fresh
     # read, rejecting a closed memo via its status allowlist; the row lock serializes
