@@ -155,6 +155,8 @@ def _signup_body(lang: str, panel_id: str, google: bool,
                cls="btn btn--xs btn--primary account-panel__email-btn"),
         hx_post=f"/account/email?panel={panel_id}",
         **_panel_target(panel_id),
+        hx_disabled_elt="find button[type='submit']",
+        hx_sync=f"#{panel_id}:drop",
         cls="account-panel__form",
     )
     if next_action:
@@ -235,14 +237,8 @@ def _signup_body(lang: str, panel_id: str, google: bool,
     return parts
 
 
-def _claim_body(lang: str, panel_id: str, suppress_autoconnect: bool = False) -> list:
-    """The linking flow for an existing subscriber - the shipped auto-connect +
-    email-claim block, with the signup entry de-emphasized beneath it.
-
-    suppress_autoconnect drops the on-load auto-connect for a sticky-disconnected
-    install: the credential is preserved, so the Connect button reconnects in one
-    click, but landing on this page must NOT silently undo a deliberate disconnect.
-    The button stays; only its automatic firing is withheld."""
+def _claim_body(lang: str, panel_id: str) -> list:
+    """Link an existing account only through deliberate user actions."""
     parts: list = [
         H4(t("page.already_subscribed", lang), cls="account-panel__title"),
         P(t("settings.if_you_already_subscribed_on_the_website_we_can_li", lang),
@@ -254,6 +250,8 @@ def _claim_body(lang: str, panel_id: str, suppress_autoconnect: bool = False) ->
                    hx_post="/settings/cloud-activate",
                    **_panel_target(panel_id),
                    hx_indicator="#cloud-connecting",
+                   hx_disabled_elt="this",
+                   hx_sync=f"#{panel_id}:drop",
                    id="cloud-connect-btn"),
             Span(t("settings.connecting", lang), id="cloud-connecting",
                  cls="settings-hint htmx-indicator",
@@ -261,15 +259,6 @@ def _claim_body(lang: str, panel_id: str, suppress_autoconnect: bool = False) ->
             style="margin-bottom:16px;",
         ),
     ]
-    if not suppress_autoconnect:
-        parts.append(Script("""
-(function(){
-  if (sessionStorage.getItem('cloud_activate_tried')) return;
-  sessionStorage.setItem('cloud_activate_tried', '1');
-  var btn = document.getElementById('cloud-connect-btn');
-  if (btn) htmx.trigger(btn, 'click');
-})();
-"""))
     parts += [
         # Email claim form (always visible)
         P(t("settings.or_enter_the_email_address_you_used_at_checkout", lang),
@@ -282,6 +271,8 @@ def _claim_body(lang: str, panel_id: str, suppress_autoconnect: bool = False) ->
                    cls="btn btn--sm btn--outline", style="margin-left:8px;"),
             hx_post="/settings/cloud-send-otp",
             **_panel_target(panel_id),
+            hx_disabled_elt="find button[type='submit']",
+            hx_sync=f"#{panel_id}:drop",
             style="display:flex;align-items:center;margin-top:8px;",
         ),
     ]
@@ -292,15 +283,13 @@ def account_panel(lang: str, *, intent: str = "signup",
                   panel_id: str = "celerp-account-panel",
                   google: bool = False, error: str | None = None,
                   next_action: str | None = None,
-                  free_quota: int = 0,
-                  suppress_autoconnect: bool = False) -> FT:
+                  free_quota: int = 0) -> FT:
     """The one account surface. `panel_id` lets a host page keep its own swap
     target (the Settings Connect page uses cloud-relay-tab so the shipped
     claim endpoints keep replacing the same element).
 
-    suppress_autoconnect withholds the claim panel's on-load auto-connect for a
-    sticky-disconnected install (see _claim_body)."""
-    body = _claim_body(lang, panel_id, suppress_autoconnect=suppress_autoconnect) \
+    The claim variant never auto-submits Connect; opening a panel is read-only."""
+    body = _claim_body(lang, panel_id) \
         if intent == "claim" \
         else _signup_body(lang, panel_id, google, next_action=next_action,
                           free_quota=free_quota)

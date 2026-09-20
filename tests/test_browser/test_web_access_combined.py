@@ -51,7 +51,7 @@ def test_web_access_combined_sections(page, ui_server, monkeypatch):
     async def _fake_relay_state(token):
         # relay_status "connecting" (or token_bound) makes gw_ok True, so the page
         # shows the connected tab set rather than the value-prop landing.
-        return ("connecting", "https://demo.celerp.com", "team", False, True)
+        return ("connecting", "https://demo.celerp.com", "team", False, True, True)
 
     monkeypatch.setattr(sc, "_relay_state", _fake_relay_state)
     monkeypatch.setattr(gw_state, "get_local_infra_state", _grace_infra_state)

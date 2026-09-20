@@ -556,25 +556,6 @@ async def partner_claim_accept(payload: dict, role: str = Depends(get_current_ro
     }
 
 
-@settings_router.post("/cloud-apply-token", dependencies=[require_permission("manage_integrations")])
-async def cloud_apply_token_api(payload: dict) -> dict:
-    """Apply a pre-fetched gateway token (reconnect confirmation flow)."""
-    from celerp.config import ensure_instance_id
-
-    token = payload.get("gateway_token", "")
-    public_url_known = "public_url" in payload
-    public_url = payload.get("public_url") or None
-    tos_version = payload.get("tos_version") or None
-    iid = await asyncio.to_thread(ensure_instance_id)
-    if not token:
-        return {"error": "gateway_token missing"}
-    await _apply_gateway_token_api(
-        token, iid, public_url=public_url, tos_version=tos_version,
-        authoritative_public_url=public_url_known)
-    gw = __import__("celerp.gateway.client", fromlist=["get_client"]).get_client()
-    return {"connected": True, "relay_status": gw.relay_status if gw else "connecting", "public_url": public_url or ""}
-
-
 @settings_router.post("/cloud-accept-tos", dependencies=[require_permission("manage_integrations")])
 async def cloud_accept_tos_api() -> dict:
     """Persist TOS acceptance, restart gateway client with new tos_version."""

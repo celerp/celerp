@@ -3115,9 +3115,10 @@ async def _control_post(token: str, path: str, payload: dict | None = None) -> d
     return await _with_total_timeout(_request(), CONTROL_PLANE_TIMEOUT)
 
 
-async def activate_relay(token: str) -> dict:
-    """POST /settings/cloud-activate - call relay /auth/activate, start gateway."""
-    return await _control_post(token, "/settings/cloud-activate")
+async def activate_relay(token: str, *, explicit: bool = False) -> dict:
+    """POST /settings/cloud-activate; explicit=True records user reconnect intent."""
+    return await _control_post(
+        token, "/settings/cloud-activate", {"explicit": explicit})
 
 
 async def resolve_partner_claim(token: str, claim_token: str) -> dict:
@@ -3132,12 +3133,6 @@ async def accept_partner_claim(token: str, claim_token: str) -> dict:
     relationship and pushes the new commercial context."""
     return await _control_post(
         token, "/settings/partner-claim/accept", {"claim_token": claim_token})
-
-
-async def apply_relay_token(token: str, payload: dict) -> dict:
-    """POST /settings/cloud-apply-token - apply pre-fetched gateway token."""
-    async with _api_client(token) as c:
-        return _raise(await c.post("/settings/cloud-apply-token", json=payload)).json()
 
 
 async def accept_relay_tos(token: str) -> dict:

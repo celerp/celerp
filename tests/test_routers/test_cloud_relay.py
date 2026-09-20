@@ -96,7 +96,7 @@ async def test_cloud_disconnect_stops_client_and_clears_live_token(client):
     with (
         patch("celerp.gateway.client.get_client", return_value=gw),
         patch("celerp.gateway.client.set_client") as mock_set,
-        patch("celerp.config.persist_cloud_settings") as persist,
+        patch("celerp.config.set_cloud_disconnected") as persist,
     ):
         r = await client.post("/settings/cloud-disconnect", headers=_h(token))
 
@@ -108,7 +108,7 @@ async def test_cloud_disconnect_stops_client_and_clears_live_token(client):
     mock_set.assert_called_once_with(None)
     assert _s.gateway_token == ""
     assert _s.celerp_public_url == ""
-    persist.assert_called_once_with(disconnected=True)
+    persist.assert_called_once_with(True)
 
 
 @pytest.mark.asyncio
@@ -132,7 +132,7 @@ async def test_cloud_disconnect_clears_session_token(client, session):
     with (
         patch("celerp.gateway.client.get_client", return_value=gw),
         patch("celerp.gateway.client.set_client"),
-        patch("celerp.config.persist_cloud_settings"),
+        patch("celerp.config.set_cloud_disconnected"),
     ):
         r = await client.post("/settings/cloud-disconnect", headers=_h(token))
 
@@ -158,7 +158,7 @@ async def test_cloud_disconnect_no_op_when_already_disconnected(client):
     token = await _register(client, "disc-noop")
     with (
         patch("celerp.gateway.client.get_client", return_value=None),
-        patch("celerp.config.persist_cloud_settings"),
+        patch("celerp.config.set_cloud_disconnected"),
     ):
         r = await client.post("/settings/cloud-disconnect", headers=_h(token))
     assert r.status_code == 200
@@ -283,45 +283,6 @@ async def test_cloud_activate_relay_unreachable(client):
 
 
 # ---------------------------------------------------------------------------
-# /settings/cloud-apply-token
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_cloud_apply_token_success(client):
-    """Apply-token applies the given gateway token and returns connected status."""
-    token = await _register(client, "apply-ok")
-
-    gw = _mock_gw("active")
-
-    with (
-        patch("celerp.gateway.client.get_client", return_value=None),
-        patch("celerp.gateway.client.set_client"),
-        patch("celerp.gateway.client.GatewayClient", return_value=gw),
-        patch("celerp.config.write_config"),
-        patch("celerp.config.read_config", return_value={"cloud": {}}),
-        patch("asyncio.create_task"),
-    ):
-        r = await client.post(
-            "/settings/cloud-apply-token",
-            headers=_h(token),
-            json={"gateway_token": "gw-xyz", "public_url": "https://co.celerp.app"},
-        )
-
-    assert r.status_code == 200
-    data = r.json()
-    assert data["connected"] is True
-
-
-@pytest.mark.asyncio
-async def test_cloud_apply_token_missing_token(client):
-    """Apply-token returns error when gateway_token is missing."""
-    token = await _register(client, "apply-empty")
-    r = await client.post("/settings/cloud-apply-token", headers=_h(token), json={})
-    assert r.status_code == 200
-    assert "error" in r.json()
-
-
-# ---------------------------------------------------------------------------
 # /settings/cloud-accept-tos
 # ---------------------------------------------------------------------------
 
@@ -338,7 +299,7 @@ async def test_cloud_accept_tos_restarts_client(client):
         patch("celerp.gateway.client.get_client", return_value=old_gw),
         patch("celerp.gateway.client.set_client"),
         patch("celerp.gateway.client.GatewayClient", return_value=new_gw),
-        patch("celerp.config.persist_cloud_settings") as persist,
+        patch("celerp.config.set_cloud_disconnected") as persist,
         patch("asyncio.create_task"),
     ):
         r = await client.post("/settings/cloud-accept-tos", headers=_h(token))
@@ -1059,13 +1020,13 @@ async def test_cloud_disconnect_is_sticky(client):
     with (
         patch("celerp.gateway.client.get_client", return_value=gw),
         patch("celerp.gateway.client.set_client"),
-        patch("celerp.config.persist_cloud_settings") as persist,
+        patch("celerp.config.set_cloud_disconnected") as persist,
     ):
         r = await client.post("/settings/cloud-disconnect", headers=_h(token))
 
     assert r.status_code == 200
     assert _s.cloud_disconnected is True
-    persist.assert_called_once_with(disconnected=True)
+    persist.assert_called_once_with(True)
     # Live credential cleared in-memory so the tunnel drops and share-minting stops.
     assert _s.gateway_token == ""
 

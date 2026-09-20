@@ -236,6 +236,7 @@ a:hover { text-decoration: underline; }
   transition: background 0.1s, color 0.1s;
   text-decoration: none;
 }
+.btn:disabled { cursor: not-allowed; opacity: 0.55; }
 .btn--primary { background: var(--c-accent); color: #fff; border-color: var(--c-accent2); }
 .btn--primary:hover { background: var(--c-accent2); text-decoration: none; color: #fff; }
 .btn--secondary { background: var(--c-bg3); color: var(--c-text); border-color: var(--c-border); }

@@ -1723,7 +1723,7 @@ def setup_routes(app):
         iid = ensure_instance_id()
 
         try:
-            data = await _api.activate_relay(ui_token)
+            data = await _api.activate_relay(ui_token, explicit=True)
         except Exception as exc:
             return _cloud_relay_unconnected(iid, error=t("settings.could_not_reach_api", exc=exc))
 
@@ -1732,14 +1732,6 @@ def setup_routes(app):
 
         if err := data.get("error"):
             return _cloud_relay_unconnected(iid, error=err)
-
-        if data.get("reconnect"):
-            return _cloud_reconnect_confirm(
-                iid,
-                data["gateway_token"],
-                data.get("public_url"),
-                data.get("tos_version"),
-            )
 
         # Connected: the page chrome changes with the relay state (value-prop
         # landing vs connected tabs), so load the page fresh instead of
@@ -1804,76 +1796,6 @@ def setup_routes(app):
             id="relay-dot-wrap",
         )
         return Response(to_xml(dot), media_type="text/html")
-
-    def _cloud_reconnect_confirm(
-        iid: str, token: str, public_url: str | None, tos_version: str | None
-    ) -> FT:
-        """Shown when activate returns reconnect=True.
-
-        Lets the user confirm reconnecting or start the claim flow to pick a
-        different account. The relay returns a public URL exactly when the
-        tier is entitled to one, so no public URL means a free account: those
-        get sign-back-in wording, never subscription wording.
-        """
-        if public_url:
-            prompt = P(t("settings.this_instance_was_previously_connected_to"),
-                       B(public_url),
-                       t("settings.reconnect_to_same_subscription"),
-                       cls="settings-hint", style="margin-bottom:12px;")
-            confirm_label = t("btn.reconnect_to") + public_url
-            other_label = t("btn.use_a_different_subscription")
-        else:
-            prompt = P(t("settings.previously_signed_in_free"),
-                       cls="settings-hint", style="margin-bottom:12px;")
-            confirm_label = t("btn.sign_back_in")
-            other_label = t("btn.use_a_different_account")
-        return Div(
-            H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
-            prompt,
-            Div(
-                Form(
-                    Input(type="hidden", name="_reconnect_token", value=token),
-                    Input(type="hidden", name="_reconnect_public_url", value=public_url or ""),
-                    Input(type="hidden", name="_reconnect_tos_version", value=tos_version or ""),
-                    Button(confirm_label, type="submit", cls="btn btn--primary"),
-                    hx_post="/settings/cloud-reconnect-confirm",
-                    hx_target="#cloud-relay-tab",
-                    hx_swap="outerHTML",
-                ),
-                Button(other_label,
-                    cls="btn btn--outline",
-                    style="margin-left:8px;",
-                    hx_post="/settings/cloud-disconnect",
-                    hx_target="#cloud-relay-tab",
-                    hx_swap="outerHTML",
-                ),
-                style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;",
-            ),
-            id="cloud-relay-tab",
-            cls="settings-card",
-        )
-
-    @app.post("/settings/cloud-reconnect-confirm")
-    async def cloud_reconnect_confirm(request: Request):
-        """HTMX: apply a previously-retrieved gateway token via API (reconnect confirmation)."""
-        import ui.api_client as _api
-        from celerp.config import ensure_instance_id
-        form = await request.form()
-        gw_token = str(form.get("_reconnect_token", "")).strip()
-        public_url = str(form.get("_reconnect_public_url", "")).strip() or None
-        tos_version = str(form.get("_reconnect_tos_version", "")).strip() or None
-        iid = ensure_instance_id()
-        if not gw_token:
-            return _cloud_relay_unconnected(iid, error=t("settings.reconnect_token_missing"))
-        ui_token = _token(request)
-        try:
-            data = await _api.apply_relay_token(ui_token, {"gateway_token": gw_token, "public_url": public_url, "tos_version": tos_version})
-        except Exception as exc:
-            return _cloud_relay_unconnected(iid, error=t("settings.could_not_reach_api", exc=exc))
-        if err := data.get("error"):
-            return _cloud_relay_unconnected(iid, error=err)
-        # Same as cloud_activate: connecting changes the whole page, reload it.
-        return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
 
     def _cloud_claim_selection(matches: list[dict], email: str, iid: str, otp_code: str | None = None) -> FT:
         """Render the subscription selection UI when multiple subs match an email.
@@ -1943,6 +1865,8 @@ def setup_routes(app):
             hx_post="/settings/cloud-claim",
             hx_target="#cloud-relay-tab",
             hx_swap="outerHTML",
+            hx_disabled_elt="find button[type='submit']",
+            hx_sync="#cloud-relay-tab:drop",
         )
 
         return Div(
@@ -1987,6 +1911,8 @@ def setup_routes(app):
                 hx_post="/settings/cloud-claim",
                 hx_target="#cloud-relay-tab",
                 hx_swap="outerHTML",
+                hx_disabled_elt="find button[type='submit']",
+                hx_sync="#cloud-relay-tab:drop",
                 style="margin-bottom:12px;",
             ),
             Div(
@@ -1997,6 +1923,8 @@ def setup_routes(app):
                     hx_target="#cloud-relay-tab",
                     hx_swap="outerHTML",
                     hx_vals=hx_vals({"claim_email": email}),
+                    hx_disabled_elt="this",
+                    hx_sync="#cloud-relay-tab:drop",
                 ),
                 Button(t("btn.back_to_settings"),
                     type="button",
@@ -2108,19 +2036,26 @@ def setup_routes(app):
 
     @app.post("/settings/cloud-disconnect")
     async def cloud_disconnect(request: Request):
-        """HTMX: stop gateway WS and clear credentials. Shows subscribe/claim UI."""
+        """HTMX: disconnect only after the API durably records the user's intent."""
         import ui.api_client as _api
         from celerp.config import ensure_instance_id
         token = _token(request)
-        try:
-            await _api.disconnect_relay(token)
-        except Exception:
-            pass
         iid = ensure_instance_id()
-        # Sticky disconnect: the credential is preserved (one-click reconnect via
-        # the Connect button), but the fragment must not auto-fire Connect and
-        # undo the disconnect the user just chose.
-        return _cloud_relay_unconnected(iid, suppress_autoconnect=True)
+        try:
+            data = await _api.disconnect_relay(token)
+        except Exception as exc:
+            return Div(
+                H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
+                P(t("settings.could_not_reach_api", exc=exc), cls="text-error"),
+                id="cloud-relay-tab", cls="settings-card",
+            )
+        if err := data.get("error"):
+            return Div(
+                H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
+                P(err, cls="text-error"),
+                id="cloud-relay-tab", cls="settings-card",
+            )
+        return _cloud_relay_unconnected(iid)
 
     @app.post("/settings/cloud-accept-tos")
     async def cloud_accept_tos(request: Request):
@@ -3672,7 +3607,6 @@ def _cloud_link_handover(iid: str) -> FT:
     """Linked, activation not confirmed: the Connect button finishes it on demand."""
     return _cloud_relay_unconnected(
         iid, info=t("settings.subscription_linked_info"), show_email_form=False,
-        suppress_autoconnect=True,
     )
 
 
@@ -3682,7 +3616,6 @@ def _cloud_relay_unconnected(
     info: str | None = None,
     show_email_form: bool = True,
     show_header: bool = True,
-    suppress_autoconnect: bool = False,
 ) -> FT:
     """Render the unconnected state of the Celerp Connect tab (used by HTMX responses too).
 
@@ -3690,11 +3623,8 @@ def _cloud_relay_unconnected(
         show_header: When False, suppress the H3 title, description, and Subscribe button.
             Used when embedding inside the Web Access value-prop page which already
             has its own plan cards and CTAs.
-        suppress_autoconnect: When True, omit the on-load auto-connect script. Set by
-            the disconnect response so the fragment it swaps in cannot immediately
-            re-fire Connect and undo the disconnect the user just performed; the
-            Connect button stays and reconnects in one click from the preserved
-            credential.
+        Opening this fragment never mutates Connect state. Reconnect happens only
+            when the user presses the Connect button.
     """
     from ui.components.cloud_gate import commercial_cta
     from ui.i18n import current_lang
@@ -3729,27 +3659,14 @@ def _cloud_relay_unconnected(
                 hx_target="#cloud-relay-tab",
                 hx_swap="outerHTML",
                 hx_indicator="#cloud-connecting",
+                hx_disabled_elt="this",
+                hx_sync="#cloud-relay-tab:drop",
                 style="margin-left:8px;" if show_header else "",
             ),
             Span(t("settings.connecting"), id="cloud-connecting", cls="settings-hint htmx-indicator", style="margin-left:12px;display:none;"),
             style="display:flex;align-items:center;flex-wrap:wrap;gap:0;margin-top:12px;",
         )
     )
-    # Auto-trigger on first load (silently tries to activate; shows result inline).
-    # Withheld after a deliberate disconnect so the swapped-in fragment cannot
-    # instantly reconnect and undo it.
-    if not suppress_autoconnect:
-        children.append(
-            Script("""
-(function(){
-  if (sessionStorage.getItem('cloud_activate_tried')) return;
-  sessionStorage.setItem('cloud_activate_tried', '1');
-  var btn = document.getElementById('cloud-connect-btn');
-  if (btn) htmx.trigger(btn, 'click');
-})();
-""")
-        )
-
     if show_email_form:
         children += [
             P(
@@ -3770,6 +3687,8 @@ def _cloud_relay_unconnected(
                 hx_post="/settings/cloud-send-otp",
                 hx_target="#cloud-relay-tab",
                 hx_swap="outerHTML",
+                hx_disabled_elt="find button[type='submit']",
+                hx_sync="#cloud-relay-tab:drop",
                 style="display:flex;align-items:center;margin-top:8px;",
             ),
         ]
@@ -3821,14 +3740,15 @@ PAID_TIERS = frozenset({"cloud", "ai", "team"})
 
 
 def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None,
-                      tier: str | None = None, token_bound: bool = False) -> FT:
+                      tier: str | None = None, token_bound: bool = False,
+                      entitlement_known: bool = True) -> FT:
     """Celerp Connect settings tab.
 
     relay_status: caller-supplied (cross-process split); falls back to local get_client().
     public_url: caller-supplied; falls back to local config.
-    tier: caller-supplied billing tier ("free", "cloud", "ai", "team"); anything
-    other than a known paid tier (including None/"" while unknown) is treated
-    as free, so the free-tier note degrades to shown, never hidden.
+    tier: caller-supplied billing tier ("free", "cloud", "ai", "team").
+    entitlement_known: whether the relay authoritatively supplied that tier.
+    Unknown entitlement is never presented as Free.
     token_bound: the instance holds a gateway_token (it is signed in), which a
     free tier does WITHOUT a live tunnel - the WS client never starts for it, so
     relay_status stays "inactive". Treat that as connected so a signed-in free
@@ -3848,6 +3768,21 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
     if relay_status == "tos_required":
         return _tos_acceptance_card(required_tos)
 
+    if token_bound and not entitlement_known:
+        return Div(
+            H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
+            P(t("account.activate_failed"), cls="text-error"),
+            Button(
+                t("btn.link_subscription"), type="button",
+                hx_get="/account/panel?intent=claim&panel=account-gate-panel&modal=1",
+                hx_target="#account-gate-host", hx_swap="outerHTML",
+                cls="btn btn--sm btn--outline",
+            ),
+            disconnect_button,
+            id="cloud-relay-tab",
+            cls="settings-card",
+        )
+
     disconnect_button = Div(
         Button(t("btn.disconnect"),
             cls="btn btn--sm btn--outline btn--danger",
@@ -3855,6 +3790,8 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
             hx_target="#cloud-relay-tab",
             hx_swap="outerHTML",
             hx_confirm=t("settings.confirm_disconnect_web"),
+            hx_disabled_elt="this",
+            hx_sync="#cloud-relay-tab:drop",
         ),
         style="margin-top:12px;",
     )
@@ -3889,12 +3826,18 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
     is_connected = token_bound or relay_status == "active"
     if is_connected:
         badge_cls = "badge--active" if relay_status == "active" else "badge--inactive"
-        # Status explanation for the signed-in-without-tunnel state
-        status_hint = t("settings.initializing_connection") if relay_status == "inactive" else ""
+        # A Free account intentionally has no persistent Web Access tunnel.
+        status_hint = (
+            t("settings.initializing_connection")
+            if relay_status == "inactive" and tier in PAID_TIERS else "")
+        status_label = (
+            t("account.plan_free")
+            if relay_status == "inactive" and entitlement_known and tier == "free"
+            else relay_status.capitalize())
 
         rows = [
             Tr(Td(t("th.status"), cls="detail-label"), Td(
-                Span(relay_status.capitalize(), cls=f"badge {badge_cls}"),
+                Span(status_label, cls=f"badge {badge_cls}"),
                 Span(f" - {status_hint}", cls="settings-hint") if status_hint else "",
             )),
         ]
@@ -3924,7 +3867,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
                    hx_target="#account-gate-host", hx_swap="outerHTML",
                    cls="btn btn--sm btn--outline", style="margin-top:8px;"),
             style="margin-top:12px;",
-        ) if tier not in PAID_TIERS else ""
+        ) if entitlement_known and tier == "free" else ""
 
         return Div(
             H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),

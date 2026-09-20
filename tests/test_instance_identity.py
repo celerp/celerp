@@ -404,7 +404,8 @@ def test_activation_verifier_survives_restart_until_credential_is_durable(tmp_pa
     assert mod.ensure_instance_id() == iid
     assert mod.ensure_activation_verifier() == verifier
 
-    mod.record_cloud_activation("gw-token", iid, public_url=None)
+    mod.record_cloud_activation(
+        "gw-token", iid, public_url=None, expected_verifier=verifier)
     cfg = mod.read_config()
     assert cfg["cloud"]["token"] == "gw-token"
     assert "activation_verifier" not in cfg["cloud"]
