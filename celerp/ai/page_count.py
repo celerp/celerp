@@ -25,7 +25,7 @@ def count_pages(data: bytes, content_type: str) -> int:
     """Return the page count for a file given its raw bytes and MIME type.
 
     Raises ValueError if the file cannot be parsed (e.g. corrupt PDF).
-    Never returns 0 — minimum is 1.
+    Never returns 0; minimum is 1.
     """
     ct = content_type.lower()
 
@@ -37,13 +37,13 @@ def count_pages(data: bytes, content_type: str) -> int:
         except Exception as exc:
             raise ValueError(f"Cannot read PDF page count: {exc}") from exc
         if pages < 1:
-            raise ValueError("PDF reports 0 pages — file may be corrupt.")
+            raise ValueError("PDF reports 0 pages, the file may be corrupt.")
         return pages
 
     if ct in ("image/jpeg", "image/png", "image/gif", "image/webp"):
         return 1
 
-    # Unknown type — estimate from size
+    # Unknown type: estimate from size
     estimated = max(1, math.ceil(len(data) / _BYTES_PER_PAGE))
     return estimated
 

@@ -2773,11 +2773,13 @@ async def ai_conversation_query(token: str, session_token: str, conversation_id:
 
     Returns {"answer", "model_used", "tools_called", "pending_actions"}; each
     pending action carries its own message_id and tool_call_id for confirmation.
+    Receipts and invoices are read as a job instead: the reply is then
+    {"job_id", "message_id"} and the thread polls the job.
     """
     payload: dict = {"query": query}
     if file_ids:
         payload["file_ids"] = file_ids
-    async with _ai_api_client(token, session_token, timeout=60.0) as c:
+    async with _ai_api_client(token, session_token, timeout=150.0) as c:
         return _raise(await c.post(f"/ai/conversations/{conversation_id}/query", json=payload)).json()
 
 
@@ -2792,6 +2794,37 @@ async def ai_confirm_action(token: str, session_token: str, conversation_id: str
             f"/ai/conversations/{conversation_id}/confirm",
             json={"message_id": message_id, "tool_call_id": tool_call_id},
         )).json()
+
+
+async def ai_confirm_all(token: str, session_token: str, conversation_id: str,
+                         message_id: str) -> dict:
+    """POST /ai/conversations/{id}/confirm-all - execute every pending action on one message.
+
+    Returns {"results": [{"tool_call_id", "title", "ok", "status", "data", "error"}],
+    "completed", "failed"}.
+    """
+    async with _ai_api_client(token, session_token, timeout=150.0) as c:
+        return _raise(await c.post(
+            f"/ai/conversations/{conversation_id}/confirm-all",
+            json={"message_id": message_id},
+        )).json()
+
+
+async def ai_job_proposals(token: str, session_token: str, conversation_id: str, job_id: str) -> dict:
+    """POST /ai/conversations/{id}/jobs/{job}/proposals - bill proposals from a finished reading job.
+
+    Returns {"message_id", "answer", "pending_actions"}; calling again returns the same.
+    """
+    async with _ai_api_client(token, session_token, timeout=60.0) as c:
+        return _raise(await c.post(
+            f"/ai/conversations/{conversation_id}/jobs/{job_id}/proposals",
+        )).json()
+
+
+async def ai_batch_status(token: str, session_token: str, job_id: str) -> dict:
+    """GET /ai/batch/{id} - status and per-file results of a reading job."""
+    async with _ai_api_client(token, session_token) as c:
+        return _raise(await c.get(f"/ai/batch/{job_id}")).json()
 
 
 async def ai_conversations_list(token: str, session_token: str) -> list[dict]:

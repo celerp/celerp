@@ -750,6 +750,7 @@ async def _run_confirmed_action(
     await session.commit()
     return {
         "tool_call_id": tool_call_id,
+        "title": record.get("title") or record["name"],
         "ok": result["ok"],
         "status": result["status"],
         "data": result.get("data"),

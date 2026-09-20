@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""AI file I/O — single source of truth for upload directory and file loading."""
+"""AI file I/O: single source of truth for upload directory and file loading."""
 
 from __future__ import annotations
 

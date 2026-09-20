@@ -74,6 +74,7 @@ class PendingAction:
     arguments: dict    # nested path/query/body
     created_at: str    # ISO 8601 UTC
     expires_at: str
+    title: str         # human label from the route summary, shown on the card
 
 
 @dataclass
@@ -362,6 +363,7 @@ async def _agent_loop(
                 PendingAction(
                     id=call_id, name=name, arguments=arguments,
                     created_at=now.isoformat(), expires_at=expires.isoformat(),
+                    title=capability["tool"]["function"]["description"],
                 )
                 for (call_id, name, capability, arguments) in mutations
             ]

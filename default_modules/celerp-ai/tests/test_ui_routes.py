@@ -125,7 +125,8 @@ async def test_ai_page_renders_thread_with_action_card(ui_client):
     assert "Add a widget" in r.text
     assert "I can add that." in r.text
     assert "ai-action__card" in r.text
-    assert "create_item_items_post" in r.text
+    assert 'data-capability="create_item_items_post"' in r.text
+    assert "create_item_items_post</" not in r.text  # the raw name is never visible text
     assert 'value="conv-1"' in r.text  # hidden conversation_id seeded
 
 
@@ -272,3 +273,222 @@ async def test_busy_message_resolves_in_thai(ui_client):
     assert r.status_code == 200
     assert "ผู้ช่วยกำลังไม่ว่างในขณะนี้" in r.text  # ai.busy (th)
     assert "The assistant is busy right now" not in r.text
+
+
+# ── Action cards: what a person reads ────────────────────────────────────────
+
+def _card_html(action: dict, lang: str = "en") -> str:
+    from fasthtml.common import to_xml
+    from celerp_ai.ui_routes import _action_card
+    return to_xml(_action_card("conv-1", "m2", action, lang))
+
+
+def test_action_card_shows_title_fields_and_next_step():
+    html = _card_html({**_ACTION, "title": "Create item"})
+    assert "Create item" in html
+    assert "Sku" in html and "AGENT-1" in html
+    assert "Name" in html and "Agent Widget" in html
+    assert "Check the details, then confirm" in html
+    assert "Proposed action" in html
+
+
+def test_action_card_falls_back_to_readable_name_without_title():
+    html = _card_html(_ACTION)
+    assert "Create item items post" in html
+    assert "create_item_items_post</" not in html
+
+
+def test_action_card_hides_id_when_name_sibling_present_and_nests_lines():
+    action = {
+        "id": "prop_1", "name": "create_bill_bills_post", "title": "Create bill from receipt.jpg",
+        "arguments": {"body": {
+            "contact_id": "c-1", "contact_name": "Supplier Co", "total": 842.0,
+            "lines": [{"item_name": "Widget", "quantity": 2, "amount": 10.5}],
+            "notes": None,
+        }},
+    }
+    html = _card_html(action)
+    assert "c-1" not in html
+    assert "Supplier Co" in html
+    assert "ai-action__sublist" in html
+    assert "Item name: Widget" in html
+    assert "Quantity: 2" in html
+    assert "Notes" in html and "--" in html
+
+
+def test_action_card_lists_warnings_before_the_buttons():
+    action = {**_ACTION, "title": "Create bill",
+              "warnings": ["The tax does not match the line totals."]}
+    html = _card_html(action)
+    assert "Check before confirming" in html
+    assert "The tax does not match the line totals." in html
+    assert html.index("ai-action__warnings") < html.index("/ai/confirm-action-ui")
+
+
+def test_failed_record_card_has_no_buttons_and_says_why():
+    action = {**_ACTION, "title": "Create item", "status": "failed",
+              "error": "The action did not finish."}
+    html = _card_html(action)
+    assert "ai-action--failed" in html
+    assert "This change was not applied." in html
+    assert "The action did not finish." in html
+    assert "/ai/confirm-action-ui" not in html
+    assert "Dismiss" not in html
+
+
+def test_action_group_offers_confirm_all_only_for_several_open_cards():
+    from fasthtml.common import to_xml
+    from celerp_ai.ui_routes import _action_group
+    one = to_xml(_action_group("conv-1", "m2", [_ACTION], "en"))
+    assert "/ai/confirm-all-ui" not in one
+    two = to_xml(_action_group("conv-1", "m2", [_ACTION, {**_ACTION, "id": "call-2"}], "en"))
+    assert "/ai/confirm-all-ui" in two
+    assert "Confirm all (2)" in two
+    failed = {**_ACTION, "id": "call-3", "status": "failed", "error": "x"}
+    mixed = to_xml(_action_group("conv-1", "m2", [_ACTION, failed], "en"))
+    assert "/ai/confirm-all-ui" not in mixed
+
+
+# ── POST /ai/confirm-all-ui ──────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_confirm_all_lists_each_outcome_by_title(ui_client):
+    result = {
+        "results": [
+            {"tool_call_id": "p1", "title": "Add vendor Supplier Co", "ok": True, "status": 201,
+             "data": {"name": "Supplier Co", "id": "contact:1"}, "error": None},
+            {"tool_call_id": "p2", "title": "Create bill from receipt.jpg", "ok": False, "status": 422,
+             "data": None, "error": {"code": "validation_failed", "message": "total is required"}},
+        ],
+        "completed": 1, "failed": 1,
+    }
+    with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(return_value=result)) as call:
+        r = await ui_client.post("/ai/confirm-all-ui", cookies=_authed(),
+                                 data={"conversation_id": "conv-1", "message_id": "m2"})
+    assert call.await_args.args[2:] == ("conv-1", "m2")
+    assert r.status_code == 200
+    assert "1 applied, 1 failed." in r.text
+    assert "Add vendor Supplier Co" in r.text and "ai-action__done" in r.text
+    assert "Create bill from receipt.jpg" in r.text and "total is required" in r.text
+
+
+@pytest.mark.asyncio
+async def test_confirm_all_nothing_pending_shows_expired_panel(ui_client):
+    err = APIError(409, "Nothing is pending.", {"code": "action_not_pending"})
+    with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(side_effect=err)):
+        r = await ui_client.post("/ai/confirm-all-ui", cookies=_authed(),
+                                 data={"conversation_id": "conv-1", "message_id": "m2"})
+    assert r.status_code == 200
+    assert "already handled or has expired" in r.text
+
+
+# ── Reading jobs: /ai/chat 202 and /ai/proposals-ui ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_chat_with_receipts_renders_progress_bubble(ui_client):
+    with patch("celerp_ai.ui_routes.api.ai_conversation_query",
+               AsyncMock(return_value={"job_id": "job-1", "message_id": "m1"})):
+        r = await ui_client.post("/ai/chat", cookies=_authed(), data={
+            "query": "", "conversation_id": "conv-1", "file_ids": "f1,f2,f3",
+        })
+    assert r.status_code == 200
+    assert 'data-job-id="job-1"' in r.text
+    assert "Reading files: 0 of 3 finished." in r.text
+    assert "/ai/proposals-ui?conversation=conv-1&amp;job=job-1" in r.text
+    assert "You can keep working." in r.text
+
+
+@pytest.mark.asyncio
+async def test_proposals_ui_keeps_polling_while_running(ui_client):
+    job = {"id": "job-1", "status": "running", "total_files": 4,
+           "completed_files": 1, "failed_files": 1, "proposal_message_id": None}
+    with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)), \
+         patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock()) as proposals:
+        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1", cookies=_authed())
+    proposals.assert_not_awaited()
+    assert "Reading files: 2 of 4 finished." in r.text
+    assert "load delay:5s" in r.text
+    assert "width:50%" in r.text
+
+
+@pytest.mark.asyncio
+async def test_proposals_ui_renders_summary_and_cards_when_done(ui_client):
+    job = {"id": "job-1", "status": "completed", "total_files": 2,
+           "completed_files": 2, "failed_files": 0, "proposal_message_id": None}
+    proposals = {"message_id": "m9", "answer": "Two bills are ready to confirm.",
+                 "pending_actions": [
+                     {"id": "prop_1", "name": "create_bill_bills_post", "title": "Create bill from a.jpg",
+                      "arguments": {"body": {"total": 10}}, "warnings": [], "file_id": "f1"},
+                     {"id": "prop_2", "name": "create_bill_bills_post", "title": "Create bill from b.jpg",
+                      "arguments": {"body": {"total": 20}}, "warnings": ["No date was found."], "file_id": "f2"},
+                 ]}
+    with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)), \
+         patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock(return_value=proposals)):
+        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1", cookies=_authed())
+    assert r.status_code == 200
+    assert "2 of 2 files were read." in r.text
+    assert "Two bills are ready to confirm." in r.text
+    assert "Create bill from a.jpg" in r.text and "Create bill from b.jpg" in r.text
+    assert "No date was found." in r.text
+    assert 'value="m9"' in r.text
+    assert "Confirm all (2)" in r.text
+
+
+@pytest.mark.asyncio
+async def test_proposals_ui_failed_job_is_an_error_bubble(ui_client):
+    job = {"id": "job-1", "status": "failed", "total_files": 2, "completed_files": 0,
+           "failed_files": 2, "error": "Every file failed to read."}
+    with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)):
+        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1", cookies=_authed())
+    assert "ai-msg--error" in r.text
+    assert "The files could not be read." in r.text
+    assert "Every file failed to read." in r.text
+    assert "hx-get" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_proposals_ui_api_error_shows_message(ui_client):
+    job = {"id": "job-1", "status": "completed", "total_files": 1,
+           "completed_files": 1, "failed_files": 0, "proposal_message_id": None}
+    err = APIError(409, "The bill capability is not available.", {"code": "capability_unavailable"})
+    with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=job)), \
+         patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock(side_effect=err)):
+        r = await ui_client.get("/ai/proposals-ui?conversation=conv-1&job=job-1", cookies=_authed())
+    assert "1 of 1 files were read." in r.text
+    assert "Error: The bill capability is not available." in r.text
+
+
+@pytest.mark.asyncio
+async def test_thread_orders_jobs_between_messages_and_marks_errors(ui_client):
+    detail = {
+        "id": "conv-1",
+        "messages": [
+            {"id": "m1", "role": "user", "content": "", "file_ids": ["f1"],
+             "created_at": "2026-09-20T10:00:00"},
+            {"id": "m2", "role": "assistant", "content": "The model timed out.", "error": True,
+             "created_at": "2026-09-20T10:03:00"},
+        ],
+        "jobs": [{"id": "job-1", "status": "completed", "total_files": 1, "completed_files": 1,
+                  "failed_files": 0, "proposal_message_id": "m2",
+                  "created_at": "2026-09-20T10:01:00"}],
+    }
+    patches = _patch_page(ai_conversation_get=AsyncMock(return_value=detail))
+    _apply(patches)
+    try:
+        r = await ui_client.get("/ai?conversation=conv-1", cookies=_authed())
+    finally:
+        _stop(patches)
+    assert r.status_code == 200
+    assert "Attached file(s)" in r.text
+    assert "1 of 1 files were read." in r.text
+    assert "ai-msg--error" in r.text
+    assert r.text.index("Attached file(s)") < r.text.index("1 of 1 files") < r.text.index("timed out")
+
+
+def test_chat_view_has_no_gif_and_an_upload_error_slot():
+    from fasthtml.common import to_xml
+    from celerp_ai.ui_routes import _chat_view
+    html = to_xml(_chat_view(lang="en"))
+    assert "image/gif" not in html
+    assert 'id="ai-upload-error"' in html
+    assert "Upload failed: {detail}" in html

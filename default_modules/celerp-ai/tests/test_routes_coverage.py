@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Tests for routes.py — fill coverage gaps.
+"""Tests for routes.py, filling coverage gaps.
 
 Covers uncovered route lines:
   - POST /ai/upload: success, >20 files, >10MB file, unsupported type
@@ -260,6 +260,7 @@ def _pending(name="create_contact", call_id="call_1"):
     return PendingAction(
         id=call_id, name=name, arguments={"body": {"name": "Acme"}},
         created_at=now.isoformat(), expires_at=(now + timedelta(minutes=15)).isoformat(),
+        title="Create contact",
     )
 
 

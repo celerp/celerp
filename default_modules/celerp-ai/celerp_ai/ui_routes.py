@@ -36,6 +36,13 @@ def _get_scenarios(lang: str = "en") -> list[dict]:
             "reply": t("ai.scenario_batch_bills_reply", lang),
         },
         {
+            "id": "reconcile",
+            "label": t("ai.scenario_reconcile_label", lang),
+            "user": t("ai.scenario_reconcile_user", lang),
+            "thinking": t("ai.scenario_reconcile_thinking", lang),
+            "reply": t("ai.scenario_reconcile_reply", lang),
+        },
+        {
             "id": "smart-restock",
             "label": t("ai.scenario_smart_restock_label", lang),
             "user": t("ai.scenario_smart_restock_user", lang),
@@ -156,19 +163,20 @@ def setup_ui_routes(app) -> None:
         # A conversation id in the URL opens that thread; an unknown or foreign
         # id falls back to the empty state rather than surfacing an error.
         conversation_id = (request.query_params.get("conversation") or "").strip()
-        messages = None
+        messages: list[dict] = []
+        jobs: list[dict] = []
         if conversation_id:
             from celerp.gateway.state import get_session_token
             session_token = get_session_token()
             try:
                 conv = await api.ai_conversation_get(token, session_token, conversation_id)
                 messages = conv.get("messages") or []
+                jobs = conv.get("jobs") or []
             except APIError:
                 conversation_id = ""
-                messages = None
 
         return await base_shell(
-            _chat_view(messages=messages, conversation_id=conversation_id, lang=lang),
+            _chat_view(messages=messages, jobs=jobs, conversation_id=conversation_id, lang=lang),
             title="AI Assistant - Celerp",
             nav_active="ai",
             request=request,
@@ -253,11 +261,6 @@ def setup_ui_routes(app) -> None:
                 return _quota_exceeded_card(card_detail, user_bubble, lang)
             return _failed_reply(user_bubble, e, lang)
 
-        answer = result.get("answer", "")
-        cards = [
-            _action_card(conversation_id, str(action.get("message_id", "")), action, lang)
-            for action in (result.get("pending_actions") or [])
-        ]
         # Out-of-band swaps keep the hidden id and the sidebar list in step with
         # the (possibly newly created) conversation; HX-Push-Url puts the thread
         # in the address bar so a reload reopens it.
@@ -267,8 +270,56 @@ def setup_ui_routes(app) -> None:
             id="ai-history", hx_swap_oob="true",
             hx_get="/ai/conversations-list", hx_trigger="load", hx_swap="innerHTML",
         )
-        html = to_xml((user_bubble, _msg_bubble("ai", answer), *cards, oob_id, oob_history))
-        return HTMLResponse(html, headers={"HX-Push-Url": f"/ai?conversation={conversation_id}"})
+        headers = {"HX-Push-Url": f"/ai?conversation={conversation_id}"}
+
+        if result.get("job_id"):
+            # Receipts and invoices are read in the background: the thread shows
+            # the job's progress and fetches the bill proposals when it finishes.
+            job = {
+                "id": result["job_id"], "status": "pending",
+                "total_files": len(file_ids or []), "completed_files": 0, "failed_files": 0,
+            }
+            reply = (user_bubble, _job_bubble(job, conversation_id, lang), oob_id, oob_history)
+            return HTMLResponse(to_xml(reply), headers=headers)
+
+        actions = result.get("pending_actions") or []
+        message_id = str(actions[0].get("message_id", "")) if actions else ""
+        groups = [_action_group(conversation_id, message_id, actions, lang)] if actions else []
+        reply = (user_bubble, _msg_bubble("ai", result.get("answer", "")), *groups, oob_id, oob_history)
+        return HTMLResponse(to_xml(reply), headers=headers)
+
+    @app.get("/ai/proposals-ui")
+    async def ai_proposals_ui(request: Request):
+        """The reading job's bubble polls this until the job ends, then it is
+        swapped for the finished line, the assistant's summary and the bill cards."""
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        lang = get_lang(request)
+        conversation_id = (request.query_params.get("conversation") or "").strip()
+        job_id = (request.query_params.get("job") or "").strip()
+
+        from celerp.gateway.state import get_session_token
+        session_token = get_session_token()
+        try:
+            job = await api.ai_batch_status(token, session_token, job_id)
+        except APIError as e:
+            return _msg_bubble("ai", _api_error_text(e, lang), error=True)
+        if job.get("status") != "completed":
+            return _job_bubble(job, conversation_id, lang)
+
+        try:
+            result = await api.ai_job_proposals(token, session_token, conversation_id, job_id)
+        except APIError as e:
+            return (
+                _job_done_line(job, lang),
+                _msg_bubble("ai", _api_error_text(e, lang), error=True),
+            )
+        message_id = str(result.get("message_id", ""))
+        actions = result.get("pending_actions") or []
+        groups = [_action_group(conversation_id, message_id, actions, lang)] if actions else []
+        return (_job_done_line(job, lang), _msg_bubble("ai", result.get("answer", "")), *groups)
 
     @app.post("/ai/conversations")
     async def ai_conversation_new(request: Request):
@@ -302,16 +353,31 @@ def setup_ui_routes(app) -> None:
                 token, session_token, conversation_id, message_id, tool_call_id,
             )
         except APIError as e:
-            code = e.detail.get("code") if isinstance(e.detail, dict) else ""
-            if e.status == 409 and code == "action_not_pending":
+            if e.status == 409 and _api_error_code(e) == "action_not_pending":
                 return _action_panel(t("ai.action_expired", lang), ok=False)
-            return _action_panel(f"{t('ai.error_prefix', lang)} {e.detail}", ok=False)
+            return _action_panel(_api_error_text(e, lang), ok=False)
+        ok, text = _outcome_text(result, lang)
+        return _action_panel(text, ok=ok)
 
-        if result.get("ok"):
-            return _action_panel(_confirm_success_text(result.get("data"), lang), ok=True)
-        error = result.get("error") or {}
-        message = error.get("message") or error.get("code") if isinstance(error, dict) else str(error)
-        return _action_panel(f"{t('ai.error_prefix', lang)} {message}", ok=False)
+    @app.post("/ai/confirm-all-ui")
+    async def ai_confirm_all_ui(request: Request):
+        token = _token(request)
+        lang = get_lang(request)
+        if not token:
+            return _action_panel(t("msg.not_authenticated", lang), ok=False)
+        form = await request.form()
+        conversation_id = (form.get("conversation_id") or "").strip()
+        message_id = (form.get("message_id") or "").strip()
+
+        from celerp.gateway.state import get_session_token
+        session_token = get_session_token()
+        try:
+            result = await api.ai_confirm_all(token, session_token, conversation_id, message_id)
+        except APIError as e:
+            if e.status == 409 and _api_error_code(e) == "action_not_pending":
+                return _action_panel(t("ai.action_expired", lang), ok=False)
+            return _action_panel(_api_error_text(e, lang), ok=False)
+        return _confirm_all_panel(result, lang)
 
     @app.get("/ai/conversations-list")
     async def ai_conversations_list(request: Request):
@@ -536,7 +602,7 @@ async def _usage_table(token: str, session_token: str) -> FT:
             # Show date only
             last_q = last_q[:10]
         table_rows.append(Tr(
-            Td(r.get("user_name", "—"), cls="td-left"),
+            Td(r.get("user_name", "--"), cls="td-left"),
             Td(str(r.get("query_count", 0)), cls="td-right"),
             Td(str(r.get("credits_used", 0)), cls="td-right"),
             Td(last_q, cls="td-right"),
@@ -562,8 +628,10 @@ async def _usage_table(token: str, session_token: str) -> FT:
 # Components
 # ---------------------------------------------------------------------------
 
-def _msg_bubble(role: str, text: str) -> FT:
+def _msg_bubble(role: str, text: str, *, error: bool = False) -> FT:
     cls = "ai-msg ai-msg--user" if role == "user" else "ai-msg ai-msg--ai"
+    if error:
+        cls += " ai-msg--error"
     return Div(text, cls=cls)
 
 
@@ -575,61 +643,216 @@ def _failed_reply(user_bubble: FT, e: APIError, lang: str) -> tuple[FT, FT]:
     """
     if e.status == 429:
         return user_bubble, _msg_bubble("ai", t("ai.busy", lang))
-    return user_bubble, _msg_bubble("ai", f"{t('ai.error_prefix', lang)} {e.detail}")
+    return user_bubble, _msg_bubble("ai", _api_error_text(e, lang), error=True)
+
+
+def _api_error_code(e: APIError) -> str:
+    """The API's typed error code, from the 409 detail dict."""
+    for source in (e.data, e.detail):
+        if isinstance(source, dict) and source.get("code"):
+            return str(source["code"])
+    return ""
+
+
+def _api_error_text(e: APIError, lang: str = "en") -> str:
+    detail = e.detail.get("message") or e.detail.get("code") if isinstance(e.detail, dict) else e.detail
+    return f"{t('ai.error_prefix', lang)} {detail}"
+
+
+def _outcome_text(outcome: dict, lang: str = "en") -> tuple[bool, str]:
+    """(ok, text) for one confirmed action's outcome, success or failure."""
+    if outcome.get("ok"):
+        return True, _confirm_success_text(outcome.get("data"), lang)
+    error = outcome.get("error") or {}
+    message = (error.get("message") or error.get("code")) if isinstance(error, dict) else str(error)
+    return False, f"{t('ai.error_prefix', lang)} {message}"
+
+
+def _label(key: str) -> str:
+    """A field name as a person reads it: contact_name becomes Contact name."""
+    return str(key).replace("_", " ").strip().capitalize()
+
+
+def _fmt_value(value) -> FT | str:
+    """A field value as a person reads it; nested records become short lines."""
+    if isinstance(value, dict):
+        parts = [f"{_label(k)}: {v}" for k, v in value.items() if v not in (None, "")]
+        return ", ".join(parts) or "--"
+    if isinstance(value, list):
+        if not value:
+            return "--"
+        if all(not isinstance(v, (dict, list)) for v in value):
+            return ", ".join(str(v) for v in value)
+        return Ol(*[Li(_fmt_value(v)) for v in value], cls="ai-action__sublist")
+    if value is None or value == "":
+        return "--"
+    return str(value)
 
 
 def _arg_lines(section: dict) -> FT:
-    """A definition-style list of one argument group (body, path, or query)."""
-    return Div(
-        *[
-            Div(
-                Span(str(key), cls="ai-action__line-key"),
-                Span(str(value), cls="ai-action__line-val"),
-                cls="ai-action__line",
-            )
-            for key, value in section.items()
-        ],
-        cls="ai-action__lines",
-    )
+    """A definition-style list of one argument group (body, path, or query).
+
+    A record id is hidden when the same section names the record (contact_id
+    next to contact_name): the name is what the person checks.
+    """
+    lines = []
+    for key, value in section.items():
+        if str(key).endswith("_id") and f"{str(key)[:-3]}_name" in section:
+            continue
+        lines.append(Div(
+            Span(_label(key), cls="ai-action__line-key"),
+            Span(_fmt_value(value), cls="ai-action__line-val"),
+            cls="ai-action__line",
+        ))
+    return Div(*lines, cls="ai-action__lines")
+
+
+def _action_title(action: dict) -> str:
+    return action.get("title") or _label(action.get("name", ""))
 
 
 def _action_card(conversation_id: str, message_id: str, action: dict, lang: str = "en") -> FT:
-    """Render one pending mutation the user must confirm before it runs.
+    """Render one proposed change the user must confirm before it runs.
 
-    The arguments are shown read-only, grouped by request part; Confirm posts the
-    identifiers only (never the arguments) so the server executes the action it
-    claimed, and Dismiss removes the card client-side without touching state.
+    The card names the change, lists what will be written, and flags anything
+    the reader should check first. Confirm posts the identifiers only (never
+    the arguments) so the server executes the action it claimed; Dismiss
+    removes the card client-side without touching state. A record that failed
+    while executing renders without buttons and says what happened.
     """
     name = action.get("name", "")
     tool_call_id = action.get("id", "")
     args = action.get("arguments") or {}
+    failed = action.get("status") == "failed"
     groups = [
         _arg_lines(args[part])
         for part in ("body", "path", "query")
         if isinstance(args.get(part), dict) and args[part]
     ]
-    return Div(
-        Div(
-            P(t("ai.action_proposal", lang), cls="ai-action__title"),
-            Span(name, cls="ai-action__meta"),
-            cls="ai-action__header",
-        ),
-        Div(*groups, cls="ai-action__list"),
-        Div(
-            Form(
-                Input(type="hidden", name="conversation_id", value=conversation_id),
-                Input(type="hidden", name="message_id", value=message_id),
-                Input(type="hidden", name="tool_call_id", value=tool_call_id),
-                Button(t("btn.confirm", lang), type="submit", cls="btn btn--primary"),
-                hx_post="/ai/confirm-action-ui",
-                hx_target="closest .ai-action__card",
-                hx_swap="outerHTML",
+    warnings = [w for w in (action.get("warnings") or []) if w]
+    warning_block = []
+    if warnings:
+        warning_block = [Div(
+            P(t("ai.action_check", lang), cls="ai-action__warnings-title"),
+            Ul(*[Li(w) for w in warnings], cls="ai-action__warnings-list"),
+            cls="ai-action__warnings",
+        )]
+    if failed:
+        badge = Span(t("ai.action_failed_badge", lang), cls="badge badge--error")
+        footer = Div(
+            f"{t('ai.action_failed', lang)} {action.get('error') or ''}".strip(),
+            cls="ai-action__error",
+        )
+    else:
+        badge = Span(t("ai.action_proposal", lang), cls="badge badge--proposal")
+        footer = Div(
+            P(t("ai.action_hint", lang), cls="ai-action__hint"),
+            Div(
+                Form(
+                    Input(type="hidden", name="conversation_id", value=conversation_id),
+                    Input(type="hidden", name="message_id", value=message_id),
+                    Input(type="hidden", name="tool_call_id", value=tool_call_id),
+                    Button(t("btn.confirm", lang), type="submit", cls="btn btn--primary"),
+                    hx_post="/ai/confirm-action-ui",
+                    hx_target="closest .ai-action__card",
+                    hx_swap="outerHTML",
+                ),
+                Button(t("btn.dismiss", lang), type="button", cls="btn btn--secondary",
+                       onclick="this.closest('.ai-action__card').remove()"),
+                cls="ai-action__actions",
             ),
-            Button(t("btn.dismiss", lang), cls="btn btn--secondary",
-                   onclick="this.closest('.ai-action__card').remove()"),
-            cls="ai-action__actions",
-        ),
-        cls="ai-action ai-action__card",
+            cls="ai-action__footer",
+        )
+    return Div(
+        Div(P(_action_title(action), cls="ai-action__title"), badge, cls="ai-action__header"),
+        Div(*groups, cls="ai-action__list"),
+        *warning_block,
+        footer,
+        cls="ai-action ai-action__card" + (" ai-action--failed" if failed else ""),
+        data_capability=name,
+    )
+
+
+def _action_group(conversation_id: str, message_id: str, actions: list[dict], lang: str = "en") -> FT:
+    """The cards one assistant turn proposed, with one button to confirm them all
+    when more than one is still open."""
+    cards = [_action_card(conversation_id, message_id, a, lang) for a in actions]
+    open_count = sum(1 for a in actions if a.get("status", "pending") == "pending")
+    footer = []
+    if open_count > 1:
+        footer = [Form(
+            Input(type="hidden", name="conversation_id", value=conversation_id),
+            Input(type="hidden", name="message_id", value=message_id),
+            Button(t("ai.confirm_all", lang, count=open_count), type="submit", cls="btn btn--primary"),
+            hx_post="/ai/confirm-all-ui",
+            hx_target="closest .ai-action-group",
+            hx_swap="outerHTML",
+            cls="ai-action-group__footer",
+        )]
+    return Div(*cards, *footer, cls="ai-action-group")
+
+
+def _confirm_all_panel(result: dict, lang: str = "en") -> FT:
+    """Replaces the card group after Confirm all: one line per action, by name."""
+    rows = []
+    for outcome in result.get("results") or []:
+        ok, text = _outcome_text(outcome, lang)
+        rows.append(Div(f"{outcome.get('title') or ''}: {text}",
+                        cls="ai-action__done" if ok else "ai-action__error"))
+    summary = t("ai.confirm_all_result", lang,
+                completed=result.get("completed", 0), failed=result.get("failed", 0))
+    return Div(P(summary, cls="ai-action-group__summary"), *rows, cls="ai-action-group")
+
+
+def _job_counts(job: dict) -> tuple[int, int, int]:
+    """(read, failed, total) file counts of a reading job."""
+    return (
+        int(job.get("completed_files") or 0),
+        int(job.get("failed_files") or 0),
+        int(job.get("total_files") or 0),
+    )
+
+
+def _job_done_line(job: dict, lang: str = "en") -> FT:
+    ok, _failed, total = _job_counts(job)
+    return Div(t("ai.job_done", lang, ok=ok, total=total),
+               cls="ai-msg ai-msg--ai ai-job ai-job--done", data_job_id=str(job.get("id", "")))
+
+
+def _job_bubble(job: dict, conversation_id: str, lang: str = "en") -> FT:
+    """The assistant-side bubble for a receipts reading job.
+
+    While the job runs the bubble shows how many files are read, updates from
+    the notification stream, and polls the proposals route so the cards appear
+    without a reload. A failed job is an error bubble; a finished job whose
+    proposals already exist is the finished line.
+    """
+    job_id = str(job.get("id", ""))
+    status = job.get("status")
+    ok, failed, total = _job_counts(job)
+    if status == "failed":
+        return Div(f"{t('ai.job_failed', lang)} {job.get('error') or ''}".strip(),
+                   cls="ai-msg ai-msg--ai ai-msg--error", data_job_id=job_id)
+    if status == "completed" and job.get("proposal_message_id"):
+        return _job_done_line(job, lang)
+    done = ok + failed
+    if status == "completed":
+        poll = "load"
+    else:
+        poll = "load delay:1s" if total and done >= total else "load delay:5s"
+    pct = round(done / total * 100) if total else 0
+    return Div(
+        Div(t("ai.job_reading", lang, done=done, total=total), cls="ai-job__text"),
+        Div(Div(cls="ai-job__bar", style=f"width:{pct}%"), cls="ai-job__track"),
+        P(t("ai.job_reading_hint", lang), cls="ai-job__hint"),
+        id=f"ai-job-{job_id}",
+        cls="ai-msg ai-msg--ai ai-job",
+        data_job_id=job_id,
+        data_total=str(total),
+        data_text=t("ai.job_reading", lang, done="{done}", total="{total}"),
+        hx_get=f"/ai/proposals-ui?conversation={conversation_id}&job={job_id}",
+        hx_trigger=f"{poll}, celerp:job-done",
+        hx_swap="outerHTML",
     )
 
 
@@ -779,21 +1002,29 @@ def _showcase_view(lang: str = "en") -> FT:
     )
 
 
-def _thread(messages: list[dict], conversation_id: str, lang: str) -> list[FT]:
-    """Render a stored conversation into message bubbles, with one action card
-    per still-open pending action beneath the assistant turn that proposed it."""
+def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: str) -> list[FT]:
+    """Render a stored conversation in time order: message bubbles, reading-job
+    bubbles, and the action cards beneath the assistant turn that proposed them."""
+    entries = [("message", m) for m in messages] + [("job", j) for j in jobs]
+    entries.sort(key=lambda entry: str(entry[1].get("created_at") or ""))
     out: list[FT] = []
-    for m in messages:
-        role = m.get("role")
-        out.append(_msg_bubble("user" if role == "user" else "ai", m.get("content") or ""))
-        for action in (m.get("pending_actions") or []):
-            out.append(_action_card(conversation_id, str(m.get("id", "")), action, lang))
+    for kind, entry in entries:
+        if kind == "job":
+            out.append(_job_bubble(entry, conversation_id, lang))
+            continue
+        role = entry.get("role")
+        text = entry.get("content") or (t("ai.attached_files", lang) if entry.get("file_ids") else "")
+        out.append(_msg_bubble("user" if role == "user" else "ai", text, error=bool(entry.get("error"))))
+        actions = entry.get("pending_actions") or []
+        if actions:
+            out.append(_action_group(conversation_id, str(entry.get("id", "")), actions, lang))
     return out
 
 
-def _chat_view(messages: list[dict] | None = None, conversation_id: str = "", lang: str = "en") -> FT:
-    if messages:
-        message_children = _thread(messages, conversation_id, lang)
+def _chat_view(messages: list[dict] | None = None, jobs: list[dict] | None = None,
+               conversation_id: str = "", lang: str = "en") -> FT:
+    if messages or jobs:
+        message_children = _thread(messages or [], jobs or [], conversation_id, lang)
     else:
         message_children = [_empty_state(lang)]
     return Div(
@@ -877,7 +1108,7 @@ def _chat_view(messages: list[dict] | None = None, conversation_id: str = "", la
                     id="ai-file-input",
                     multiple=True,
                     style="display: none;",
-                    accept="image/jpeg,image/png,image/gif,image/webp,application/pdf,.csv,.xlsx",
+                    accept="image/jpeg,image/png,image/webp,application/pdf,.csv,.xlsx",
                     onchange="celerpAiHandleFiles(this)",
                 ),
                 Input(
@@ -914,6 +1145,7 @@ def _chat_view(messages: list[dict] | None = None, conversation_id: str = "", la
                     cls="ai-chat-dropzone",
                     onclick="document.getElementById('ai-file-input').click()",
                 ),
+                Div(id="ai-upload-error", cls="ai-upload-error", role="alert"),
                 hx_post="/ai/chat",
                 hx_target="#ai-messages",
                 hx_swap="beforeend",
@@ -922,15 +1154,19 @@ def _chat_view(messages: list[dict] | None = None, conversation_id: str = "", la
                 cls="ai-input",
                 id="ai-chat-form",
             ),
-            Script(_chat_script()),
+            Script(_chat_script(lang)),
             cls="ai-chat__main",
         ),
         cls="ai-chat",
     )
 
 
-def _chat_script() -> str:
-    return r"""
+def _chat_script(lang: str = "en") -> str:
+    text = json.dumps({
+        "upload_failed": t("ai.upload_failed", lang),
+        "upload_network": t("ai.upload_network_error", lang),
+    })
+    return "var CELERP_AI_TEXT = " + text + ";" + r"""
 // ── Sidebar collapse ─────────────────────────────────────────────────────────
 (function() {
     var sidebar = document.getElementById('ai-sidebar');
@@ -1062,9 +1298,29 @@ function celerpAiResetForm() {
     });
 })();
 
+// ── Reading-job progress from the notification stream ────────────────────────
+document.addEventListener('celerp:batch-progress', function(e) {
+    var d = e.detail || {};
+    var el = document.querySelector('.ai-job[data-job-id="' + d.job_id + '"]');
+    if (!el) return;
+    var done = (d.completed || 0) + (d.failed || 0);
+    var total = d.total || parseInt(el.dataset.total || '0', 10);
+    var text = el.querySelector('.ai-job__text');
+    if (text) text.textContent = (el.dataset.text || '').replace('{done}', done).replace('{total}', total);
+    var bar = el.querySelector('.ai-job__bar');
+    if (bar && total) bar.style.width = Math.round(done / total * 100) + '%';
+    if (total && done >= total && window.htmx) htmx.trigger(el, 'celerp:job-done');
+});
+
+function _celerpAiUploadError(message) {
+    var box = document.getElementById('ai-upload-error');
+    if (box) box.textContent = message || '';
+}
+
 function _celerpAiUploadFormData(formData, fileNames) {
     var zone = document.getElementById('ai-chat-dropzone');
     var chips = document.getElementById('ai-file-chips');
+    _celerpAiUploadError('');
 
     var progressWrap = document.getElementById('ai-upload-progress');
     if (!progressWrap) {
@@ -1106,10 +1362,16 @@ function _celerpAiUploadFormData(formData, fileNames) {
                     chips.appendChild(chip);
                 });
             }
+        } else {
+            var detail = '';
+            try { detail = JSON.parse(xhr.responseText).detail || ''; } catch (_) {}
+            if (typeof detail !== 'string') detail = JSON.stringify(detail);
+            _celerpAiUploadError(CELERP_AI_TEXT.upload_failed.replace('{detail}', detail));
         }
     });
     xhr.addEventListener('error', function() {
         progressWrap.style.display = 'none';
+        _celerpAiUploadError(CELERP_AI_TEXT.upload_network);
     });
     xhr.open('POST', '/ai/upload');
     xhr.send(formData);

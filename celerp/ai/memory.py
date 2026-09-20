@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""AI memory — per-company context stored in company.settings['ai_memory'].
+"""AI memory: per-company context stored in company.settings['ai_memory'].
 
 Memory is a JSON object stored in the Company.settings column under the key
 "ai_memory". It persists across sessions and is passed as context on every
