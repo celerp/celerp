@@ -1984,7 +1984,8 @@ async def _relay_creds() -> tuple[str, str]:
     """Return relay URL + short-lived JWT from the shared credential exchange."""
     import httpx
     from celerp.config import settings as _s
-    from celerp.gateway.state import fetch_relay_bearer, relay_http_url
+    from celerp.gateway.state import (
+        RelayProtocolError, fetch_relay_bearer, relay_http_url)
 
     api_key = _s.gateway_token
     if not api_key:
@@ -1996,6 +1997,10 @@ async def _relay_creds() -> tuple[str, str]:
             token = await fetch_relay_bearer(c, api_key=api_key)
     except httpx.HTTPError:
         raise HTTPException(status_code=502, detail="Could not reach the Celerp relay.")
+    except RelayProtocolError:
+        raise HTTPException(
+            status_code=502,
+            detail="Relay returned an unexpected authentication response.")
     except Exception as exc:
         raise HTTPException(status_code=502,
                             detail=f"Could not authenticate with relay ({type(exc).__name__}).")

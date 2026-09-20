@@ -36,8 +36,9 @@ def test_stale_authenticated_result_cannot_overwrite_newer_credential(tmp_path, 
     mod.write_config({"cloud": {"token": "new-key", "instance_id": "new-iid"}})
 
     assert mod.adopt_authenticated_cloud_identity("old-key", "old-iid") is False
-    assert mod.read_config()["cloud"] == {
-        "token": "new-key", "instance_id": "new-iid"}
+    cloud = mod.read_config()["cloud"]
+    assert cloud["token"] == "new-key"
+    assert cloud["instance_id"] == "new-iid"
 
 
 def test_authenticated_sync_preserves_pending_verifier(tmp_path, monkeypatch):
@@ -82,7 +83,7 @@ def test_disconnect_wins_over_inflight_activation(tmp_path, monkeypatch):
     ) is False
     cloud = mod.read_config()["cloud"]
     assert cloud["disconnected"] is True
-    assert "public_url" not in cloud
+    assert not cloud.get("public_url")
 
 
 @pytest.mark.asyncio
@@ -139,3 +140,71 @@ async def test_post_claim_activation_redeems_verifier_without_old_bearer():
     assert kwargs["json"]["activation_verifier"] == "current-verifier"
     apply_token.assert_awaited_once()
     assert apply_token.await_args.kwargs["expected_verifier"] == "current-verifier"
+
+
+@pytest.mark.asyncio
+async def test_apply_activation_state_keeps_healthy_serving_client(monkeypatch):
+    """Refreshing a healthy connected instance must not disturb its live tunnel."""
+    from celerp.config import settings
+    from celerp.services.cloud_entitlement import apply_activation_state
+
+    monkeypatch.setattr(settings, "gateway_token", "same-key")
+    monkeypatch.setattr(settings, "gateway_instance_id", "same-iid")
+    monkeypatch.setattr(settings, "celerp_public_url", "https://same.celerp.app")
+    monkeypatch.setattr(settings, "backup_enabled", False)
+
+    live = MagicMock()
+    live.is_serving.return_value = True
+    live.close = AsyncMock()
+    live.relay_status = "active"
+
+    with (
+        patch("celerp.config.record_cloud_activation", return_value=True),
+        patch("celerp.gateway.has_active_share", new=AsyncMock(return_value=False)),
+        patch("celerp.gateway.ensure_running"),
+        patch("celerp.gateway.client.get_client", return_value=live),
+        patch("celerp.gateway.client.set_client") as set_client,
+        patch("celerp.services.backup_scheduler.stop"),
+    ):
+        accepted = await apply_activation_state(
+            "same-key", "same-iid",
+            public_url="https://same.celerp.app",
+            tier="cloud", status="active",
+            expected_api_key="same-key",
+        )
+
+    assert accepted is True
+    live.is_serving.assert_called_once_with("same-key")
+    live.close.assert_not_awaited()
+    set_client.assert_not_called()
+    assert settings.gateway_token == "same-key"
+    assert settings.gateway_instance_id == "same-iid"
+
+
+@pytest.mark.asyncio
+async def test_apply_activation_state_replaces_rejected_client(monkeypatch):
+    """A rejected client is closed only after the durable activation apply wins."""
+    from celerp.config import settings
+    from celerp.services.cloud_entitlement import apply_activation_state
+
+    monkeypatch.setattr(settings, "backup_enabled", False)
+    dead = MagicMock()
+    dead.is_serving.return_value = False
+    dead.close = AsyncMock()
+
+    with (
+        patch("celerp.config.record_cloud_activation", return_value=True),
+        patch("celerp.gateway.has_active_share", new=AsyncMock(return_value=False)),
+        patch("celerp.gateway.ensure_running"),
+        patch("celerp.gateway.client.get_client", return_value=dead),
+        patch("celerp.gateway.client.set_client") as set_client,
+        patch("celerp.services.backup_scheduler.stop"),
+    ):
+        accepted = await apply_activation_state(
+            "fresh-key", "iid", public_url=None,
+            expected_api_key="old-key",
+        )
+
+    assert accepted is True
+    dead.close.assert_awaited_once()
+    set_client.assert_called_once_with(None)

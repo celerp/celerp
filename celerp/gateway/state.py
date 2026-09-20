@@ -814,6 +814,10 @@ class RelayCredentialError(RuntimeError):
         super().__init__(f"relay auth failed ({status_code})")
 
 
+class RelayProtocolError(RuntimeError):
+    """The relay answered successfully but violated the token response contract."""
+
+
 async def fetch_relay_auth(
     http_client, api_key: str | None = None,
 ) -> tuple[str, str | None]:
@@ -837,7 +841,7 @@ async def fetch_relay_auth(
     data = resp.json()
     token = data.get("access_token") if isinstance(data, dict) else None
     if not token:
-        raise RuntimeError("relay auth response missing access_token")
+        raise RelayProtocolError("relay auth response missing access_token")
 
     iid_raw = data.get("instance_id") if isinstance(data, dict) else None
     iid = str(iid_raw).strip() if iid_raw else ""

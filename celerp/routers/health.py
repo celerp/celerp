@@ -556,6 +556,44 @@ async def partner_claim_accept(payload: dict, role: str = Depends(get_current_ro
     }
 
 
+@settings_router.post("/cloud-apply-token", dependencies=[require_permission("manage_integrations")])
+async def cloud_apply_token_api(payload: dict) -> dict:
+    """Compatibility endpoint for trusted local callers.
+
+    Current UI never transports gateway credentials through HTML. A local caller
+    may still explicitly apply a credential, using the same durable CAS boundary.
+    """
+    from celerp.config import ensure_instance_id, set_cloud_disconnected
+    from celerp.services.cloud_entitlement import stored_api_key
+    token = str(payload.get("gateway_token") or "").strip()
+    if not token:
+        return {"error": "Missing gateway token."}
+    iid = await asyncio.to_thread(ensure_instance_id)
+    previous = await stored_api_key()
+    try:
+        await asyncio.to_thread(set_cloud_disconnected, False)
+    except Exception as exc:
+        return {"error": f"Could not save reconnect state: {type(exc).__name__}"}
+    accepted = await _apply_gateway_token_api(
+        token,
+        iid,
+        public_url=payload.get("public_url"),
+        tos_version=payload.get("tos_version"),
+        authoritative_public_url="public_url" in payload,
+        expected_api_key=previous or None,
+    )
+    if not accepted:
+        return {"error": "Connection state changed while reconnecting."}
+    import celerp.gateway.client as _gw_mod
+    gw = _gw_mod.get_client()
+    return {
+        "connected": True,
+        "relay_status": gw.relay_status if gw else "connecting",
+        "public_url": payload.get("public_url") or "",
+        "instance_id": iid,
+    }
+
+
 @settings_router.post("/cloud-accept-tos", dependencies=[require_permission("manage_integrations")])
 async def cloud_accept_tos_api() -> dict:
     """Persist TOS acceptance, restart gateway client with new tos_version."""

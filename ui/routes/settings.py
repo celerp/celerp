@@ -1710,6 +1710,22 @@ def setup_routes(app):
 
     _RELAY_BASE = _relay_base()
 
+    @app.post("/settings/cloud-reconnect-confirm")
+    async def cloud_reconnect_confirm(request: Request):
+        """Compatibility handover for stale UI forms.
+
+        Submitted legacy gateway-token fields are intentionally ignored. The
+        current Connect button performs the authenticated reconnect instead.
+        """
+        if await _check_permission(request, "manage_integrations"):
+            return Div(id="cloud-relay-tab")
+        from celerp.config import ensure_instance_id
+        return _cloud_relay_unconnected(
+            ensure_instance_id(),
+            info=t("settings.previously_signed_in_free"),
+            show_email_form=False,
+        )
+
     @app.post("/settings/cloud-activate")
     async def cloud_activate(request: Request):
         """HTMX: proxy to API process to call relay /auth/activate + start gateway."""
@@ -3732,10 +3748,8 @@ def _tos_acceptance_card(required_version: str) -> FT:
     )
 
 
-# Billing tiers above free. Any tier NOT in this set (including "", None, and
-# "free" itself) is treated as free - an unconfirmed tier must default to the
-# more restrictive, upsell-showing state, never silently hide the free-tier
-# note and sales funnel because a status round trip hasn't landed yet.
+# Billing tiers above free. Unknown entitlement is represented separately and
+# must never be rendered as an authoritative Free account.
 PAID_TIERS = frozenset({"cloud", "ai", "team"})
 
 
@@ -3768,6 +3782,19 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
     if relay_status == "tos_required":
         return _tos_acceptance_card(required_tos)
 
+    disconnect_button = Div(
+        Button(t("btn.disconnect"),
+            cls="btn btn--sm btn--outline btn--danger",
+            hx_post="/settings/cloud-disconnect",
+            hx_target="#cloud-relay-tab",
+            hx_swap="outerHTML",
+            hx_confirm=t("settings.confirm_disconnect_web"),
+            hx_disabled_elt="this",
+            hx_sync="#cloud-relay-tab:drop",
+        ),
+        style="margin-top:12px;",
+    )
+
     if token_bound and not entitlement_known:
         return Div(
             H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
@@ -3782,19 +3809,6 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
             id="cloud-relay-tab",
             cls="settings-card",
         )
-
-    disconnect_button = Div(
-        Button(t("btn.disconnect"),
-            cls="btn btn--sm btn--outline btn--danger",
-            hx_post="/settings/cloud-disconnect",
-            hx_target="#cloud-relay-tab",
-            hx_swap="outerHTML",
-            hx_confirm=t("settings.confirm_disconnect_web"),
-            hx_disabled_elt="this",
-            hx_sync="#cloud-relay-tab:drop",
-        ),
-        style="margin-top:12px;",
-    )
 
     if relay_status in ("connecting", "error"):
         # The relay has not accepted this instance's credentials yet (or has

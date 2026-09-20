@@ -148,7 +148,7 @@ jobs:
         working-directory: electron
         run: pnpm install --frozen-lockfile
 
-      - name: Set Electron build version
+      - name: Set Electron version from git tag or development commit
         shell: bash
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
