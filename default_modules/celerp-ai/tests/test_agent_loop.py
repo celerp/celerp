@@ -22,9 +22,11 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 import pytest
 
 from celerp.ai import service
+from celerp.ai.llm import RelayError
 from celerp.ai.service import (
     MAX_ARGUMENT_BYTES,
     MAX_MODEL_TURNS,
+    MAX_TOOL_CALLS_PER_RUN,
     MAX_TOOL_CALLS_PER_TURN,
     MAX_TOTAL_RESULT_BYTES,
     AgentResult,
@@ -172,26 +174,48 @@ async def test_mutation_call_executes_nothing_and_returns_pending(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_mixed_read_and_mutation_drops_reads_stores_mutations(monkeypatch):
+async def test_mixed_read_and_mutation_executes_reads_and_defers_mutation(monkeypatch):
     calls = []
 
-    async def _exec(*a, **k):
-        calls.append(a)
-        return {"ok": True, "status": 200, "data": {}}
+    async def _exec(app, authz, capability, arguments, call_id, *, result_max_bytes=None):
+        calls.append(capability["name"])
+        return {"ok": True, "status": 200, "data": {"items": []}}
 
-    _install(
+    fake = _install(
         monkeypatch,
-        [tool_result(calls=[
-            tool_call("list_items", {"query": {"q": "x"}}, "r1"),
-            tool_call("create_contact", {"body": {"name": "A"}}, "m1"),
-        ])],
+        [
+            tool_result(calls=[
+                tool_call("list_items", {"query": {"q": "x"}}, "r1"),
+                tool_call("create_contact", {"body": {"name": "A"}}, "m1"),
+            ]),
+            tool_result(calls=[tool_call("create_contact", {"body": {"name": "A"}}, "m2")]),
+        ],
         execute=_exec,
     )
     result = await _run()
-    assert calls == []
-    assert result.tools_called == []
+    # The read ran; the change was answered with a mixed_turn error, not executed.
+    assert calls == ["list_items"]
+    assert result.tools_called == ["list_items"]
+    assert _tool_message(fake, 1, "r1")["ok"] is True
+    assert _tool_message(fake, 1, "m1")["error"]["code"] == "mixed_turn"
+    # The model re-proposed the change on its own turn and it became pending.
     assert [p.name for p in result.pending_actions] == ["create_contact"]
-    assert result.pending_actions[0].id == "m1"
+    assert result.pending_actions[0].id == "m2"
+
+
+@pytest.mark.asyncio
+async def test_mutation_with_parse_error_sibling_still_pends(monkeypatch):
+    _install(
+        monkeypatch,
+        [tool_result(calls=[
+            raw_tool_call("create_contact", "{not json", "bad"),
+            tool_call("create_contact", {"body": {"name": "A"}}, "m1"),
+        ])],
+        execute=_execute_returning({"ok": True, "status": 200, "data": {}}),
+    )
+    result = await _run()
+    assert result.error is None
+    assert [p.id for p in result.pending_actions] == ["m1"]
 
 
 @pytest.mark.asyncio
@@ -348,11 +372,55 @@ async def test_tool_calls_per_turn_cap(monkeypatch):
         calls.append(a)
         return {"ok": True, "status": 200, "data": {}}
 
-    _install(monkeypatch, [tool_result(calls=over)], execute=_exec)
+    fake = _install(
+        monkeypatch,
+        [tool_result(calls=over), tool_result(content="done with what fit")],
+        execute=_exec,
+    )
     result = await _run()
-    assert calls == []
-    assert result.error is not None
-    assert "too many operations" in result.error
+    # The first MAX_TOOL_CALLS_PER_TURN calls ran; the overflow got a call_limit
+    # tool error so the model can answer from the data it has.
+    assert len(calls) == MAX_TOOL_CALLS_PER_TURN
+    assert result.error is None
+    assert result.answer == "done with what fit"
+    assert _tool_message(fake, 1, f"t{MAX_TOOL_CALLS_PER_TURN}")["error"]["code"] == "call_limit"
+
+
+@pytest.mark.asyncio
+async def test_tool_calls_per_run_cap_drops_overflow(monkeypatch):
+    per_turn = [
+        tool_result(calls=[
+            tool_call("list_items", {"query": {"q": f"{t}-{i}"}}, f"t{t}c{i}")
+            for i in range(MAX_TOOL_CALLS_PER_TURN)
+        ])
+        for t in range(3)
+    ]
+    calls = []
+
+    async def _exec(*a, **k):
+        calls.append(a)
+        return {"ok": True, "status": 200, "data": {}}
+
+    fake = _install(monkeypatch, [*per_turn, tool_result(content="final")], execute=_exec)
+    result = await _run()
+    assert len(calls) == MAX_TOOL_CALLS_PER_RUN
+    assert result.answer == "final"
+    # Third turn: only the calls that fit under the per-run cap ran.
+    room = MAX_TOOL_CALLS_PER_RUN - 2 * MAX_TOOL_CALLS_PER_TURN
+    assert _tool_message(fake, 3, f"t2c{room}")["error"]["code"] == "call_limit"
+
+
+@pytest.mark.asyncio
+async def test_mutation_overflow_noted_in_answer(monkeypatch):
+    over = [
+        tool_call("create_contact", {"body": {"name": str(i)}}, f"m{i}")
+        for i in range(MAX_TOOL_CALLS_PER_TURN + 2)
+    ]
+    _install(monkeypatch, [tool_result(content="Proposed:", calls=over)])
+    result = await _run()
+    assert len(result.pending_actions) == MAX_TOOL_CALLS_PER_TURN
+    assert result.answer.startswith("Proposed:")
+    assert "2 further proposed change(s) were not included" in result.answer
 
 
 @pytest.mark.asyncio
@@ -433,10 +501,44 @@ async def test_timeout_maps_to_error(monkeypatch):
 @pytest.mark.asyncio
 async def test_relay_409_continuation_expired_maps_to_plain_error(monkeypatch):
     async def _raise(messages, *, tools=None, tool_choice=None, reservation_id=None, **kw):
-        raise RuntimeError("continuation_expired")
+        raise RelayError("continuation_expired", "continuation_expired", status=409)
 
     monkeypatch.setattr(service, "complete", _raise)
     monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings: CAPS)
     result = await _run()
     assert result.pending_actions == []
     assert result.error == "The conversation step expired, ask the question again."
+
+
+@pytest.mark.asyncio
+async def test_relay_busy_maps_to_retry_text(monkeypatch):
+    async def _raise(messages, *, tools=None, tool_choice=None, reservation_id=None, **kw):
+        raise RelayError("busy", "busy", status=429)
+
+    monkeypatch.setattr(service, "complete", _raise)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings: CAPS)
+    result = await _run()
+    assert result.error == "The AI service is temporarily busy. Please try again in a moment."
+
+
+@pytest.mark.asyncio
+async def test_tool_401_ends_run_with_session_expired(monkeypatch):
+    _install(
+        monkeypatch,
+        [tool_result(calls=[tool_call("list_items", {"query": {"q": "x"}}, "r1")])],
+        execute=_execute_returning({"ok": False, "status": 401, "error": {"code": "http_401", "message": "no"}}),
+    )
+    result = await _run()
+    assert result.error == "Your session expired, sign in again."
+    assert result.pending_actions == []
+
+
+@pytest.mark.asyncio
+async def test_missing_file_raises_404(monkeypatch):
+    from fastapi import HTTPException
+
+    _install(monkeypatch, [tool_result(content="unused")])
+    with pytest.raises(HTTPException) as ei:
+        await _run(file_ids=["ai_up_missing"])
+    assert ei.value.status_code == 404
+    assert "no longer available" in ei.value.detail

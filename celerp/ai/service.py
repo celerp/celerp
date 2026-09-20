@@ -23,10 +23,11 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from fastapi import HTTPException
 
 from celerp.ai.files import load_file_for_llm
-from celerp.ai.llm import _build_user_content, call_llm, complete
+from celerp.ai.llm import MODEL_CALL_TIMEOUT_S, RelayError, _build_user_content, call_llm, complete
 from celerp.ai.models import select_model
 from celerp.ai.tools import (
     AGENT_RESULT_MAX_BYTES,
@@ -47,8 +48,11 @@ MAX_TOOL_CALLS_PER_RUN = 12
 MAX_ARGUMENT_BYTES = 16 * 1024  # per tool call, serialized arguments
 MAX_RESULT_BYTES = AGENT_RESULT_MAX_BYTES  # per tool call result
 MAX_TOTAL_RESULT_BYTES = 192 * 1024
-AGENT_RUN_TIMEOUT_S = 50.0
-PENDING_ACTION_TTL_S = 15 * 60
+AGENT_RUN_TIMEOUT_S = 120.0     # whole run; wider than one model call
+PENDING_ACTION_TTL_S = 15 * 60  # interactive proposals
+PROPOSAL_TTL_S = 24 * 60 * 60   # proposals built from an extraction job
+
+assert MODEL_CALL_TIMEOUT_S < AGENT_RUN_TIMEOUT_S
 
 _EMPTY_ANSWER = "I could not find an answer to that. Please try rephrasing your question."
 
@@ -81,22 +85,33 @@ class AgentResult:
     error: str | None = None
 
 
-# -- Error sanitization -----------------------------------------------------
+# -- Error mapping ----------------------------------------------------------
 
-def _sanitize_error(exc: Exception) -> str:
-    """Map internal errors to user-safe messages.
+_RELAY_ERROR_TEXT = {
+    "no_session": "The AI service is not available right now. Sign in to Connect and try again.",
+    "unexpected_reply": "The AI service returned an unexpected reply. Please try again.",
+    "continuation_expired": "The conversation step expired, ask the question again.",
+    "busy": "The AI service is temporarily busy. Please try again in a moment.",
+    "gateway_error": "The AI service is temporarily unavailable. Please try again shortly.",
+}
+_TIMEOUT_TEXT = "The query took too long. Please try a simpler question."
+_SESSION_EXPIRED_TEXT = "Your session expired, sign in again."
 
-    Never exposes API keys, raw API JSON, or configuration details.
-    """
-    msg = str(exc)
-    if "OPENROUTER_API_KEY" in msg or "not configured" in msg:
-        return "The AI service is not available right now. Please contact support."
-    if "rate limit" in msg.lower() or "429" in msg or "busy" in msg.lower():
-        return "The AI service is temporarily busy. Please try again in a moment."
-    if "timeout" in msg.lower() or "timed out" in msg.lower():
+
+class _SessionExpired(Exception):
+    """A capability answered 401 mid-run: the user's token is no longer valid."""
+
+
+def _user_error(exc: BaseException) -> str:
+    """Map an exception to user-safe text by type, never by message substring."""
+    if isinstance(exc, asyncio.TimeoutError):
+        return _TIMEOUT_TEXT
+    if isinstance(exc, RelayError):
+        return _RELAY_ERROR_TEXT[exc.code]
+    if isinstance(exc, httpx.TimeoutException):
         return "The AI service took too long to respond. Please try again."
-    if "LLM API error" in msg or "overloaded" in msg.lower():
-        return "The AI service is temporarily unavailable. Please try again shortly."
+    if isinstance(exc, _SessionExpired):
+        return _SESSION_EXPIRED_TEXT
     return "An unexpected error occurred. Please try again."
 
 
@@ -137,7 +152,11 @@ def _memory_block(memory: dict) -> str:
 
 
 def _load_files(file_ids: list[str] | None, company_id: uuid.UUID) -> list[dict] | None:
-    """Load uploaded files for the model, skipping any that are gone or foreign."""
+    """Load uploaded files for the model.
+
+    Raises HTTPException(404) naming the first file that is gone or belongs to
+    another company; the caller reports it before anything is stored.
+    """
     if not file_ids:
         return None
     files: list[dict] = []
@@ -145,8 +164,11 @@ def _load_files(file_ids: list[str] | None, company_id: uuid.UUID) -> list[dict]
         try:
             files.append(load_file_for_llm(fid, company_id))
         except (FileNotFoundError, PermissionError):
-            continue
-    return files or None
+            raise HTTPException(
+                status_code=404,
+                detail=f"File {fid} is no longer available, please attach it again.",
+            )
+    return files
 
 
 # -- Text-only query --------------------------------------------------------
@@ -181,24 +203,13 @@ async def run_query(
 
         answer = await asyncio.wait_for(_llm_call(), timeout=AGENT_RUN_TIMEOUT_S)
         result = AIResponse(answer=answer, model_used=model, tools_called=[])
-        _log_query(company_id, user_id, model, [], file_count, t0, result.error)
-        return result
-    except asyncio.TimeoutError:
-        result = AIResponse(
-            answer="", model_used=model, tools_called=[],
-            error="The query took too long. Please try a simpler question.",
-        )
-        _log_query(company_id, user_id, model, [], file_count, t0, result.error)
-        return result
     except HTTPException:
         raise
     except Exception as exc:
         log.error("AI query failed: %s", exc)
-        result = AIResponse(
-            answer="", model_used=model, tools_called=[], error=_sanitize_error(exc),
-        )
-        _log_query(company_id, user_id, model, [], file_count, t0, result.error)
-        return result
+        result = AIResponse(answer="", model_used=model, tools_called=[], error=_user_error(exc))
+    _log_query(company_id, user_id, model, [], file_count, t0, result.error)
+    return result
 
 
 # -- Agent loop -------------------------------------------------------------
@@ -269,30 +280,16 @@ async def run_agent(
         )
         _log_query(company_id, user_id, result.model_used, result.tools_called, len(file_ids or []), t0, result.error)
         return result
-    except asyncio.TimeoutError:
-        return AgentResult(
-            answer="", model_used="", tools_called=[], pending_actions=[],
-            error="The query took too long. Please try a simpler question.",
-        )
     except HTTPException:
         raise
-    except RuntimeError as exc:
-        if str(exc) == "continuation_expired":
-            return AgentResult(
-                answer="", model_used="", tools_called=[], pending_actions=[],
-                error="The conversation step expired, ask the question again.",
-            )
-        log.error("AI agent run failed: %s", exc)
-        return AgentResult(
-            answer="", model_used="", tools_called=[], pending_actions=[],
-            error=_sanitize_error(exc),
-        )
     except Exception as exc:
-        log.error("AI agent run failed: %s", exc)
-        return AgentResult(
-            answer="", model_used="", tools_called=[], pending_actions=[],
-            error=_sanitize_error(exc),
+        if not isinstance(exc, (asyncio.TimeoutError, _SessionExpired)):
+            log.error("AI agent run failed: %s", exc)
+        result = AgentResult(
+            answer="", model_used="", tools_called=[], pending_actions=[], error=_user_error(exc),
         )
+        _log_query(company_id, user_id, "", [], len(file_ids or []), t0, result.error)
+        return result
 
 
 async def _agent_loop(
@@ -337,22 +334,24 @@ async def _agent_loop(
                 tools_called=tools_called, pending_actions=[],
             )
 
-        if len(calls) > MAX_TOOL_CALLS_PER_TURN or tool_calls_total + len(calls) > MAX_TOOL_CALLS_PER_RUN:
-            return AgentResult(
-                answer="", model_used=model_used, tools_called=tools_called,
-                pending_actions=[], error="The assistant requested too many operations.",
-            )
-        tool_calls_total += len(calls)
+        # Over the per-turn or per-run cap: execute what fits, answer the rest
+        # with a tool error so the model knows they did not run.
+        room = min(MAX_TOOL_CALLS_PER_TURN, MAX_TOOL_CALLS_PER_RUN - tool_calls_total)
+        kept, dropped = calls[:room], calls[room:]
+        tool_calls_total += len(kept)
 
-        parsed = [_parse_call(call, capabilities) for call in calls]
-
+        parsed = [_parse_call(call, capabilities) for call in kept]
         mutations = [
             (call_id, name, capability, arguments)
             for (call_id, name, capability, arguments, error) in parsed
             if error is None and capability is not None
             and capability["method"] in ("POST", "PUT", "PATCH")
         ]
-        if mutations:
+        reads = [
+            entry for entry in parsed
+            if entry[4] is None and entry[2] is not None and entry[2]["method"] == "GET"
+        ]
+        if mutations and not reads:
             now = datetime.now(timezone.utc)
             expires = now + timedelta(seconds=PENDING_ACTION_TTL_S)
             pending = [
@@ -362,23 +361,39 @@ async def _agent_loop(
                 )
                 for (call_id, name, capability, arguments) in mutations
             ]
+            answer = content or ""
+            if dropped:
+                answer = (
+                    f"{answer}\n\n{len(dropped)} further proposed change(s) were not included; "
+                    f"at most {MAX_TOOL_CALLS_PER_TURN} are proposed at a time. "
+                    "Confirm or dismiss these, then ask again for the rest."
+                ).strip()
             return AgentResult(
-                answer=content or "", model_used=model_used,
+                answer=answer, model_used=model_used,
                 tools_called=tools_called, pending_actions=pending,
             )
 
-        # Reads only (plus any error results): append the assistant turn, then
-        # one tool message per call.
+        # Reads (plus parse errors, dropped calls, and any change that shared
+        # the turn with a read): append the assistant turn, then one tool
+        # message per call so the model continues with real data.
         messages.append(message)
         for (call_id, name, capability, arguments, error) in parsed:
             if error is not None:
                 tool_result: dict = error
+            elif capability["method"] != "GET":
+                tool_result = _agent_error(
+                    "mixed_turn",
+                    "Changes are proposed on a turn of their own. Use the read results "
+                    "from this turn, then propose the change again.",
+                )
             else:
                 tool_result = await execute_agent_capability(
                     app, authorization, capability, arguments, call_id,
                     result_max_bytes=MAX_RESULT_BYTES,
                 )
                 tools_called.append(name)
+                if tool_result.get("status") == 401:
+                    raise _SessionExpired()
                 if not tool_result.get("ok") and (tool_result.get("error") or {}).get("code") == "invalid_arguments":
                     # Help the model self-correct by naming the accepted argument shape.
                     tool_result = {**tool_result, "expected_sections": _allowed_sections(capability)}
@@ -392,6 +407,16 @@ async def _agent_loop(
                     error="Too much data was returned; ask a narrower question.",
                 )
             messages.append({"role": "tool", "tool_call_id": call_id, "content": encoded})
+        for call in dropped:
+            dropped_result = _agent_error(
+                "call_limit",
+                f"This call was not executed: at most {MAX_TOOL_CALLS_PER_TURN} calls run per turn "
+                f"and {MAX_TOOL_CALLS_PER_RUN} per question. Answer with the data you have.",
+            )
+            messages.append({
+                "role": "tool", "tool_call_id": call.get("id") or "",
+                "content": json.dumps(dropped_result, ensure_ascii=False),
+            })
 
     return AgentResult(
         answer="", model_used=model_used, tools_called=tools_called,

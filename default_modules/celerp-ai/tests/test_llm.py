@@ -22,7 +22,7 @@ from fastapi import HTTPException
 
 from celerp.ai import llm as llm_mod
 from celerp.ai.files import XLSX_CONTENT_TYPE
-from celerp.ai.llm import ModelResult, _build_user_content, call_llm, complete
+from celerp.ai.llm import ModelResult, RelayError, _build_user_content, call_llm, complete
 
 from _fixtures import load_relay
 
@@ -128,12 +128,13 @@ async def test_complete_parses_message_model_usage(relay):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_complete_falls_back_to_answer_without_message(relay):
+async def test_complete_without_message_is_unexpected_reply(relay):
     respx.post(f"{_RELAY}/ai/complete").mock(
-        return_value=httpx.Response(200, json={"answer": "legacy relay reply", "model_used": "old"}))
-    result = await complete([{"role": "user", "content": "hi"}])
-    assert result.message == {"role": "assistant", "content": "legacy relay reply"}
-    assert result.model_used == "old"
+        return_value=httpx.Response(200, json={"answer": "no message key", "model_used": "old"}))
+    with pytest.raises(RelayError) as ei:
+        await complete([{"role": "user", "content": "hi"}])
+    assert ei.value.code == "unexpected_reply"
+    assert ei.value.status == 200
 
 
 @pytest.mark.asyncio
@@ -162,27 +163,31 @@ async def test_complete_maps_recorded_402_409_429(relay):
     assert ei.value.detail["code"] == "quota_exceeded"
 
     route.mock(return_value=httpx.Response(409, json=load_relay("error_409")))
-    with pytest.raises(RuntimeError, match="continuation_expired"):
+    with pytest.raises(RelayError) as ei:
         await complete([{"role": "user", "content": "x"}])
+    assert (ei.value.code, ei.value.status) == ("continuation_expired", 409)
 
     route.mock(return_value=httpx.Response(429, json=load_relay("error_429")))
-    with pytest.raises(RuntimeError, match="busy"):
+    with pytest.raises(RelayError) as ei:
         await complete([{"role": "user", "content": "x"}])
+    assert (ei.value.code, ei.value.status) == ("busy", 429)
 
 
 @pytest.mark.asyncio
 async def test_complete_no_session(monkeypatch):
     monkeypatch.setattr(llm_mod, "relay_session_headers", lambda: {"X-Session-Token": "", "X-Instance-ID": ""})
-    with pytest.raises(RuntimeError, match="no active cloud session"):
+    with pytest.raises(RelayError) as ei:
         await complete([{"role": "user", "content": "x"}])
+    assert ei.value.code == "no_session"
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_complete_gateway_error(relay):
     respx.post(f"{_RELAY}/ai/complete").mock(return_value=httpx.Response(500, json={}))
-    with pytest.raises(RuntimeError, match="gateway error"):
+    with pytest.raises(RelayError) as ei:
         await complete([{"role": "user", "content": "x"}])
+    assert (ei.value.code, ei.value.status) == ("gateway_error", 500)
 
 
 # -- call_llm ---------------------------------------------------------------
@@ -213,5 +218,6 @@ async def test_call_llm_quota_exceeded_raises_402(relay):
 @pytest.mark.asyncio
 async def test_call_llm_no_session(monkeypatch):
     monkeypatch.setattr(llm_mod, "relay_session_headers", lambda: {"X-Session-Token": ""})
-    with pytest.raises(RuntimeError, match="no active cloud session"):
+    with pytest.raises(RelayError) as ei:
         await call_llm("m", "s", "u")
+    assert ei.value.code == "no_session"

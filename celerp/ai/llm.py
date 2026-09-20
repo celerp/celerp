@@ -26,6 +26,25 @@ log = logging.getLogger(__name__)
 _MAX_CONCURRENT = int(os.getenv("AI_MAX_CONCURRENT", "3"))
 _semaphore = asyncio.Semaphore(_MAX_CONCURRENT)
 
+# One model call may run this long; the agent run budget in celerp.ai.service
+# is wider so that several calls fit inside one run.
+MODEL_CALL_TIMEOUT_S = 90.0
+
+
+class RelayError(RuntimeError):
+    """A gateway call failed. ``code`` names the failure for the caller.
+
+    Codes: ``no_session`` (no active cloud session), ``unexpected_reply`` (a
+    200 without a structured assistant message), ``continuation_expired``
+    (the relay dropped the reservation), ``busy`` (429 or 503), and
+    ``gateway_error`` (any other non-2xx status, carried in ``status``).
+    """
+
+    def __init__(self, code: str, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status = status
+
 
 @dataclass
 class ModelResult:
@@ -91,16 +110,17 @@ async def complete(
     reservation_id: str | None = None,
     hints: dict | None = None,
     max_tokens: int = 2048,
-    timeout: float = 60.0,
+    timeout: float = MODEL_CALL_TIMEOUT_S,
 ) -> ModelResult:
     """Run a structured completion through the gateway.
 
     Posts to {relay}/ai/complete with the session headers. tools, tool_choice
     and reservation_id are sent only when not None.
 
-    Raises HTTPException(402) when the plan's quota is exhausted.
-    Raises RuntimeError("continuation_expired") on a 409 (expired reservation
-    continuation), or a generic RuntimeError on other gateway failures.
+    Raises HTTPException(402) when the plan's quota is exhausted and
+    RelayError for every other gateway failure (see RelayError.code).
+    httpx.TimeoutException propagates when the gateway does not answer in
+    ``timeout`` seconds.
     """
     body: dict = {"messages": messages, "max_tokens": max_tokens}
     if hints is not None:
@@ -114,7 +134,7 @@ async def complete(
 
     headers = relay_session_headers()
     if not headers.get("X-Session-Token"):
-        raise RuntimeError("The AI service is not available - no active cloud session.")
+        raise RelayError("no_session", "The AI service is not available - no active cloud session.")
 
     url = f"{relay_http_url()}/ai/complete"
 
@@ -126,8 +146,7 @@ async def complete(
         data = resp.json()
         message = data.get("message")
         if not isinstance(message, dict):
-            # Older relay without a structured message: fall back to answer.
-            message = {"role": "assistant", "content": data.get("answer", "")}
+            raise RelayError("unexpected_reply", "The AI service returned an unexpected reply.", status=200)
         return ModelResult(
             message=message,
             model_used=data.get("model_used", ""),
@@ -147,12 +166,14 @@ async def complete(
         raise HTTPException(status_code=402, detail=detail)
 
     if resp.status_code == 409:
-        raise RuntimeError("continuation_expired")
+        raise RelayError("continuation_expired", "continuation_expired", status=409)
 
     if resp.status_code in (429, 503):
-        raise RuntimeError("The AI service is temporarily busy.")
+        raise RelayError("busy", "The AI service is temporarily busy.", status=resp.status_code)
 
-    raise RuntimeError(f"LLM gateway error {resp.status_code}")
+    raise RelayError(
+        "gateway_error", f"LLM gateway error {resp.status_code}", status=resp.status_code,
+    )
 
 
 async def call_llm(
@@ -162,7 +183,7 @@ async def call_llm(
     files: list[dict] | None = None,
     max_tokens: int = 2048,
     history: list[dict[str, str]] | None = None,
-    timeout: float = 60.0,
+    timeout: float = MODEL_CALL_TIMEOUT_S,
 ) -> str:
     """Run a text completion through the gateway and return the assistant text.
 
@@ -170,8 +191,8 @@ async def call_llm(
         model: advisory only - the gateway selects the served model.
         history: Optional prior conversation messages [{"role": ..., "content": ...}].
 
-    Raises HTTPException(402) when the plan's quota is exhausted.
-    Raises RuntimeError on other failures (no session, gateway error).
+    Raises HTTPException(402) when the plan's quota is exhausted and
+    RelayError on other gateway failures.
     """
     user_content = _build_user_content(user_text, files)
 

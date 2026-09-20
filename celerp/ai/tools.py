@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from urllib.parse import quote
@@ -25,6 +26,9 @@ from celerp.modules.registry import get_enabled
 _AGENT_METHODS = frozenset({"GET", "POST", "PUT", "PATCH"})
 _AGENT_MUTATIONS = frozenset({"POST", "PUT", "PATCH"})
 AGENT_RESULT_MAX_BYTES = 64 * 1024
+# The in-process ASGI transport ignores httpx timeouts, so the executor bounds
+# each capability call itself.
+CAPABILITY_TIMEOUT_S = 30.0
 _LOCAL_REF_PREFIX = "#/components/schemas/"
 
 
@@ -340,14 +344,23 @@ async def execute_agent_capability(
 
     transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://celerp.internal") as client:
-        response = await client.request(
-            str(capability["method"]),
-            url_path,
-            params=params,
-            json=body,
-            headers={"Authorization": authorization},
-            follow_redirects=False,
-        )
+        try:
+            response = await asyncio.wait_for(
+                client.request(
+                    str(capability["method"]),
+                    url_path,
+                    params=params,
+                    json=body,
+                    headers={"Authorization": authorization},
+                    follow_redirects=False,
+                ),
+                timeout=CAPABILITY_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            return _agent_error(
+                "capability_timeout",
+                f"The operation did not finish within {int(CAPABILITY_TIMEOUT_S)} seconds.",
+            )
 
     try:
         data = response.json()
