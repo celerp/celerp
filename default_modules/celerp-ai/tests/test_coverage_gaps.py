@@ -223,7 +223,7 @@ async def test_call_llm_with_history():
         captured["messages"] = json["messages"]
         resp = MagicMock()
         resp.status_code = 200
-        resp.json.return_value = {"answer": "result"}
+        resp.json.return_value = {"message": {"role": "assistant", "content": "result"}}
         return resp
 
     with patch("celerp.ai.llm.relay_session_headers", return_value={"X-Session-Token": "s", "X-Instance-ID": "i"}):
@@ -234,7 +234,7 @@ async def test_call_llm_with_history():
                     history=[{"role": "user", "content": "prior"}, {"role": "assistant", "content": "reply"}],
                 )
 
-    assert result == "result"
+    assert result.message["content"] == "result"
     roles = [m["role"] for m in captured["messages"]]
     assert roles == ["system", "user", "assistant", "user"]
 

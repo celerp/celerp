@@ -199,7 +199,8 @@ async def run_query(
         files = _load_files(file_ids, company_id)
 
         async def _llm_call() -> str:
-            return await call_llm(model, _SYSTEM_PROMPT, user_message, files=files, history=history)
+            result = await call_llm(model, _SYSTEM_PROMPT, user_message, files=files, history=history)
+            return result.message.get("content") or ""
 
         answer = await asyncio.wait_for(_llm_call(), timeout=AGENT_RUN_TIMEOUT_S)
         result = AIResponse(answer=answer, model_used=model, tools_called=[])

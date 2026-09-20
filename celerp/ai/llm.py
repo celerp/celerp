@@ -184,8 +184,11 @@ async def call_llm(
     max_tokens: int = 2048,
     history: list[dict[str, str]] | None = None,
     timeout: float = MODEL_CALL_TIMEOUT_S,
-) -> str:
-    """Run a text completion through the gateway and return the assistant text.
+) -> ModelResult:
+    """Run a text completion through the gateway.
+
+    The assistant text is ``result.message["content"]``; ``result.usage`` carries
+    the credits the gateway metered for the call.
 
     Args:
         model: advisory only - the gateway selects the served model.
@@ -208,5 +211,4 @@ async def call_llm(
         "is_batch": file_count > 1,
     }
 
-    result = await complete(messages, hints=hints, max_tokens=max_tokens, timeout=timeout)
-    return result.message.get("content") or ""
+    return await complete(messages, hints=hints, max_tokens=max_tokens, timeout=timeout)

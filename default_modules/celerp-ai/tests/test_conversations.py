@@ -17,8 +17,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company, User
 from celerp.models.ai import AIConversation, AIMessage
+from types import SimpleNamespace
+
 from celerp.ai.conversations import (
+    EXECUTING_STALE_S,
     MAX_CONVERSATIONS_PER_USER,
+    UNFINISHED_ACTION_TEXT,
     MAX_MESSAGES_PER_CONVERSATION,
     HISTORY_TOKEN_BUDGET,
     _CHARS_PER_TOKEN,
@@ -352,11 +356,25 @@ def test_tool_names_mixes_strings_and_records():
 
 def test_pending_actions_filters_status_and_expiry():
     fresh = _pending_record("keep")
-    executing = {**_pending_record("busy"), "status": "executing"}
+    now = datetime.now(timezone.utc)
+    executing = {**_pending_record("busy"), "status": "executing", "executing_since": now.isoformat()}
     completed = {"id": "done", "name": "x", "status": "completed"}
     expired = _pending_record("gone", minutes=-1)
     result = pending_actions(["list_items", fresh, executing, completed, expired])
     assert [r["id"] for r in result] == ["keep"]
+
+
+def test_pending_actions_reports_stale_executing_as_failed():
+    """A claim that never finalized is shown as failed with an explanation, not hidden."""
+    stale_since = (datetime.now(timezone.utc) - timedelta(seconds=EXECUTING_STALE_S + 1)).isoformat()
+    stale = {**_pending_record("lost"), "status": "executing", "executing_since": stale_since}
+    result = pending_actions([stale])
+    assert result[0]["id"] == "lost"
+    assert result[0]["status"] == "failed"
+    assert result[0]["error"] == UNFINISHED_ACTION_TEXT
+    assert build_history_context([SimpleNamespace(role="assistant", content="hi", tools_called=[stale])]) == [
+        {"role": "assistant", "content": "hi"}
+    ]
 
 
 @pytest_asyncio.fixture
@@ -383,6 +401,7 @@ async def test_claim_tool_call_moves_pending_to_executing(session, company, user
 
     await session.refresh(msg)
     assert msg.tools_called[0]["status"] == "executing"
+    assert msg.tools_called[0]["executing_since"]
 
     # A second claim of the same action finds nothing pending.
     again = await claim_tool_call(

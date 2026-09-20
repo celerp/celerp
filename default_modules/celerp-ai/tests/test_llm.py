@@ -198,7 +198,8 @@ async def test_call_llm_returns_content(relay):
     route = respx.post(f"{_RELAY}/ai/complete").mock(
         return_value=httpx.Response(200, json=load_relay("text_completion")))
     result = await call_llm("advisory-model", "system", "how many items")
-    assert result.startswith("You currently have 42 items")
+    assert result.message["content"].startswith("You currently have 42 items")
+    assert result.usage
     body = json.loads(route.calls.last.request.content)
     assert body["messages"][0]["role"] == "system"
     assert body["hints"]["file_count"] == 0

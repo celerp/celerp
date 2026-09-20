@@ -6,7 +6,7 @@
 Conversations are per-company, per-user. Messages are stored in the DB
 and assembled into a context window for the LLM on each query.
 
-Token budget: ~4000 tokens of history (newest messages first, trim oldest).
+Token budget: HISTORY_TOKEN_BUDGET tokens of history (newest messages kept first).
 Approximate: 1 token per 4 characters.
 """
 
@@ -28,6 +28,13 @@ MAX_CONVERSATIONS_PER_USER = 100
 MAX_MESSAGES_PER_CONVERSATION = 200
 HISTORY_TOKEN_BUDGET = 8000
 _CHARS_PER_TOKEN = 4  # conservative estimate
+# An action claimed for execution that never finalized (the process died mid-call)
+# is reported as failed after this long so the user is not left with a card that
+# can neither be confirmed nor dismissed.
+EXECUTING_STALE_S = 5 * 60
+UNFINISHED_ACTION_TEXT = (
+    "This action did not finish. Check whether it was applied before asking for it again."
+)
 
 
 async def create_conversation(
@@ -257,12 +264,36 @@ def _still_pending(record: object, now: datetime) -> bool:
         return False
 
 
+def _stale_executing(record: object, now: datetime) -> bool:
+    """A dict record claimed for execution more than EXECUTING_STALE_S ago."""
+    if not isinstance(record, dict) or record.get("status") != "executing":
+        return False
+    since = record.get("executing_since")
+    if not isinstance(since, str):
+        return False
+    try:
+        return (now - datetime.fromisoformat(since)).total_seconds() > EXECUTING_STALE_S
+    except ValueError:
+        return False
+
+
 def pending_actions(tools_called: list | None) -> list[dict]:
-    """Pending, unexpired action records from a stored ``tools_called`` list."""
+    """Action records the user still needs to see, from a stored ``tools_called`` list.
+
+    Returns pending unexpired records as stored, plus records stuck in
+    ``executing`` past EXECUTING_STALE_S rewritten as failed with an
+    explanation, so the card shows what happened instead of a dead button.
+    """
     if not tools_called:
         return []
     now = datetime.now(timezone.utc)
-    return [record for record in tools_called if _still_pending(record, now)]
+    out: list[dict] = []
+    for record in tools_called:
+        if _still_pending(record, now):
+            out.append(record)
+        elif _stale_executing(record, now):
+            out.append({**record, "status": "failed", "error": UNFINISHED_ACTION_TEXT})
+    return out
 
 
 async def claim_tool_call(
@@ -306,7 +337,7 @@ async def claim_tool_call(
             and _still_pending(item, now)
         ):
             claimed = dict(item)
-            new_list.append({**item, "status": "executing"})
+            new_list.append({**item, "status": "executing", "executing_since": now.isoformat()})
         else:
             new_list.append(item)
 
@@ -367,7 +398,8 @@ def build_history_context(messages: list[AIMessage]) -> list[dict[str, str]]:
     for msg in reversed_msgs:
         content = msg.content
         for record in pending_actions(msg.tools_called):
-            content += f"\n[proposed action: {record.get('name')}]"
+            if record.get("status") != "failed":
+                content += f"\n[proposed action: {record.get('name')}]"
         msg_tokens = len(content) // _CHARS_PER_TOKEN
         if tokens_used + msg_tokens > HISTORY_TOKEN_BUDGET:
             break
