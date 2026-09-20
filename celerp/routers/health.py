@@ -675,11 +675,16 @@ RELAY_ACCOUNT_METHODS_TIMEOUT = 6.0
 
 @settings_router.get("/account-methods")
 async def account_methods_api() -> dict:
-    """Return optional sign-in methods with any incumbent credential proof."""
+    """Return optional sign-in methods for this local instance.
+
+    An incumbent credential proves only the instance it authenticates; it never
+    replaces the durable local destination of an explicit account action.
+    """
     from celerp.config import (
         activation_challenge, ensure_activation_verifier, ensure_instance_id)
     from celerp.gateway.state import (
-        RelayCredentialError, fetch_relay_auth, relay_http_url as _rhu)
+        RelayCredentialError, fetch_relay_auth, is_foreign_relay_identity,
+        relay_http_url as _rhu)
     from celerp.services.cloud_entitlement import stored_api_key
     import httpx
 
@@ -693,7 +698,7 @@ async def account_methods_api() -> dict:
 
     async def _relay_phase():
         nonlocal google, free_email_quota, secure_activation
-        nonlocal needs_activation_challenge, start_url, iid
+        nonlocal needs_activation_challenge, start_url
         async with httpx.AsyncClient(timeout=RELAY_ACCOUNT_METHODS_TIMEOUT) as c:
             r = await c.get(f"{relay_base}/auth/methods")
             if r.status_code == 200:
@@ -718,8 +723,10 @@ async def account_methods_api() -> dict:
                         google = False
                         start_url = ""
                     return
-                if authenticated_iid:
-                    iid = authenticated_iid
+                if is_foreign_relay_identity(authenticated_iid, iid):
+                    if secure_activation:
+                        needs_activation_challenge = True
+                    return
                 su = await c.get(
                     f"{relay_base}/auth/google/start-url",
                     params={"instance_id": iid},
@@ -806,11 +813,15 @@ async def account_signup_api(payload: dict) -> dict:
 
 @settings_router.get("/account-status")
 async def account_status_api() -> dict:
-    """Proxy account status, using incumbent proof when a live key exists."""
+    """Proxy status for the durable local instance.
+
+    A stored credential may unmask this destination only when it proves the same
+    instance (or a legacy relay omits identity); foreign proof never retargets it.
+    """
     import httpx
     from celerp.config import settings as _s, ensure_instance_id
     from celerp.gateway.state import (
-        RelayCredentialError, fetch_relay_auth,
+        RelayCredentialError, fetch_relay_auth, is_foreign_relay_identity,
         relay_http_url as _rhu, with_relay_client)
     relay_base = _rhu()
     try:
@@ -819,7 +830,6 @@ async def account_status_api() -> dict:
         return {"error": "unreachable"}
 
     async def _status(c):
-        nonlocal iid
         headers = {}
         api_key = _s.gateway_token
         if api_key:
@@ -829,9 +839,8 @@ async def account_status_api() -> dict:
                 if exc.status_code not in (401, 403):
                     raise
             else:
-                if authenticated_iid:
-                    iid = authenticated_iid
-                headers = {"Authorization": f"Bearer {jwt}"}
+                if not is_foreign_relay_identity(authenticated_iid, iid):
+                    headers = {"Authorization": f"Bearer {jwt}"}
         return await c.get(
             f"{relay_base}/auth/account",
             params={"instance_id": iid},

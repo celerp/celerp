@@ -849,6 +849,13 @@ async def fetch_relay_bearer(http_client, api_key: str | None = None) -> str:
     return bearer
 
 
+def is_foreign_relay_identity(
+    authenticated_iid: str | None, local_iid: str,
+) -> bool:
+    """Whether a relay credential proves a different concrete instance."""
+    return bool(authenticated_iid and authenticated_iid != local_iid)
+
+
 def _launch_mode() -> str | None:
     """The launch channel, when the launcher told us one. Electron sets
     CELERP_MODE=desktop; a headless service sets headless. A bare or dev run

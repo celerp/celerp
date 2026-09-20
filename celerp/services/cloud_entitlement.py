@@ -41,16 +41,28 @@ async def persisted_api_key() -> str:
 async def authenticated_request(method: str, path: str, *, total_s: float = RELAY_ENTITLEMENT_TIMEOUT,
                                 json: dict | None = None, params: dict | None = None,
                                 api_key: str | None = None):
-    """One bounded relay REST request authenticated by the durable instance key."""
+    """One bounded relay REST request authenticated by the durable instance key.
+
+    A pending local verifier owns destination authority. An incumbent key may
+    still authenticate ordinary reads, but while that verifier exists a key for
+    another instance cannot answer on behalf of the local identity being bound.
+    """
+    from celerp.config import ensure_instance_id, settings
     from celerp.gateway.state import (
-        activate_payload, fetch_relay_bearer, relay_http_url, with_relay_client)
+        fetch_relay_auth, is_foreign_relay_identity,
+        relay_http_url, with_relay_client)
     key = api_key or await stored_api_key()
     if not key:
         return None
     base = relay_http_url()
+    local_iid = await asyncio.to_thread(ensure_instance_id)
+    pending_verifier = settings.activation_verifier or ""
 
     async def _op(client):
-        jwt = await fetch_relay_bearer(client, api_key=key)
+        jwt, authenticated_iid = await fetch_relay_auth(client, api_key=key)
+        if (pending_verifier
+                and is_foreign_relay_identity(authenticated_iid, local_iid)):
+            return None
         return await client.request(
             method, f"{base}{path}", json=json, params=params,
             headers={"Authorization": f"Bearer {jwt}"})
@@ -157,7 +169,8 @@ async def sync_existing_entitlement() -> dict | None:
     """Synchronise a credential without letting authentication rewrite identity."""
     from celerp.config import ensure_instance_id, settings
     from celerp.gateway.state import (
-        activate_payload, fetch_relay_auth, relay_http_url, with_relay_client)
+        activate_payload, fetch_relay_auth, is_foreign_relay_identity,
+        relay_http_url, with_relay_client)
     if settings.cloud_disconnected:
         return {"disconnected": True}
 
@@ -171,8 +184,8 @@ async def sync_existing_entitlement() -> dict | None:
     async def _sync(client):
         bearer, authenticated_iid = await fetch_relay_auth(
             client, api_key=key)
-        if (authenticated_iid and authenticated_iid != local_iid
-                and pending_verifier):
+        if (pending_verifier
+                and is_foreign_relay_identity(authenticated_iid, local_iid)):
             return None
         target_iid = authenticated_iid or local_iid
         response = await client.post(
