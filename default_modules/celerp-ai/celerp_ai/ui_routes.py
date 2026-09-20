@@ -11,6 +11,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
+from ui.components.activity import QTY_FIELD_KEYS, fmt_price, fmt_qty, is_money_field
 from ui.components.cloud_gate import (
     subscribe_url,
     topup_url,
@@ -356,8 +357,7 @@ def setup_ui_routes(app) -> None:
             if e.status == 409 and _api_error_code(e) == "action_not_pending":
                 return _action_panel(t("ai.action_expired", lang), ok=False)
             return _action_panel(_api_error_text(e, lang), ok=False)
-        ok, text = _outcome_text(result, lang)
-        return _action_panel(text, ok=ok)
+        return _outcome_line(result, lang)
 
     @app.post("/ai/confirm-all-ui")
     async def ai_confirm_all_ui(request: Request):
@@ -673,20 +673,32 @@ def _label(key: str) -> str:
     return str(key).replace("_", " ").strip().capitalize()
 
 
-def _fmt_value(value) -> FT | str:
+def _fmt_scalar(key: str, value, currency: str | None) -> str:
+    """One field value as a person reads it: quantities without float noise,
+    amounts at currency precision, everything else as text."""
+    if value is None or value == "":
+        return "--"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if key in QTY_FIELD_KEYS:
+            return fmt_qty(value)
+        if is_money_field(key):
+            return fmt_price(value, key, currency)
+    return str(value)
+
+
+def _fmt_value(key: str, value, currency: str | None = None) -> FT | str:
     """A field value as a person reads it; nested records become short lines."""
     if isinstance(value, dict):
-        parts = [f"{_label(k)}: {v}" for k, v in value.items() if v not in (None, "")]
+        parts = [f"{_label(k)}: {_fmt_scalar(k, v, currency)}"
+                 for k, v in value.items() if v not in (None, "")]
         return ", ".join(parts) or "--"
     if isinstance(value, list):
         if not value:
             return "--"
         if all(not isinstance(v, (dict, list)) for v in value):
-            return ", ".join(str(v) for v in value)
-        return Ol(*[Li(_fmt_value(v)) for v in value], cls="ai-action__sublist")
-    if value is None or value == "":
-        return "--"
-    return str(value)
+            return ", ".join(_fmt_scalar(key, v, currency) for v in value)
+        return Ol(*[Li(_fmt_value(key, v, currency)) for v in value], cls="ai-action__sublist")
+    return _fmt_scalar(key, value, currency)
 
 
 def _arg_lines(section: dict) -> FT:
@@ -695,13 +707,14 @@ def _arg_lines(section: dict) -> FT:
     A record id is hidden when the same section names the record (contact_id
     next to contact_name): the name is what the person checks.
     """
+    currency = section.get("currency") if isinstance(section.get("currency"), str) else None
     lines = []
     for key, value in section.items():
         if str(key).endswith("_id") and f"{str(key)[:-3]}_name" in section:
             continue
         lines.append(Div(
             Span(_label(key), cls="ai-action__line-key"),
-            Span(_fmt_value(value), cls="ai-action__line-val"),
+            Span(_fmt_value(str(key), value, currency), cls="ai-action__line-val"),
             cls="ai-action__line",
         ))
     return Div(*lines, cls="ai-action__lines")
@@ -718,7 +731,8 @@ def _action_card(conversation_id: str, message_id: str, action: dict, lang: str 
     the reader should check first. Confirm posts the identifiers only (never
     the arguments) so the server executes the action it claimed; Dismiss
     removes the card client-side without touching state. A record that failed
-    while executing renders without buttons and says what happened.
+    while executing renders without buttons and its stored reason in place of
+    them; the Failed badge already says the change was not applied.
     """
     name = action.get("name", "")
     tool_call_id = action.get("id", "")
@@ -739,10 +753,7 @@ def _action_card(conversation_id: str, message_id: str, action: dict, lang: str 
         )]
     if failed:
         badge = Span(t("ai.action_failed_badge", lang), cls="badge badge--error")
-        footer = Div(
-            f"{t('ai.action_failed', lang)} {action.get('error') or ''}".strip(),
-            cls="ai-action__error",
-        )
+        footer = Div(action.get("error") or t("ai.action_failed", lang), cls="ai-action__error")
     else:
         badge = Span(t("ai.action_proposal", lang), cls="badge badge--proposal")
         footer = Div(
@@ -792,16 +803,19 @@ def _action_group(conversation_id: str, message_id: str, actions: list[dict], la
     return Div(*cards, *footer, cls="ai-action-group")
 
 
+def _outcome_line(outcome: dict, lang: str = "en") -> FT:
+    """The line that replaces a confirmed card: the action by name, then what happened."""
+    ok, text = _outcome_text(outcome, lang)
+    title = outcome.get("title") or ""
+    return _action_panel(f"{title}: {text}" if title else text, ok=ok)
+
+
 def _confirm_all_panel(result: dict, lang: str = "en") -> FT:
-    """Replaces the card group after Confirm all: one line per action, by name."""
-    rows = []
-    for outcome in result.get("results") or []:
-        ok, text = _outcome_text(outcome, lang)
-        rows.append(Div(f"{outcome.get('title') or ''}: {text}",
-                        cls="ai-action__done" if ok else "ai-action__error"))
+    """Replaces the card group after Confirm all: a boxed tally with one line per action."""
+    rows = [_outcome_line(outcome, lang) for outcome in result.get("results") or []]
     summary = t("ai.confirm_all_result", lang,
                 completed=result.get("completed", 0), failed=result.get("failed", 0))
-    return Div(P(summary, cls="ai-action-group__summary"), *rows, cls="ai-action-group")
+    return Div(P(summary, cls="ai-action-group__summary"), *rows, cls="ai-action ai-action-group")
 
 
 def _job_counts(job: dict) -> tuple[int, int, int]:

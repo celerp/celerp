@@ -2787,7 +2787,8 @@ async def ai_confirm_action(token: str, session_token: str, conversation_id: str
                             message_id: str, tool_call_id: str) -> dict:
     """POST /ai/conversations/{id}/confirm - execute one confirmed pending action.
 
-    Sends IDs only, never business arguments. Returns {"ok", "status", "data", "error"}.
+    Sends IDs only, never business arguments.
+    Returns {"tool_call_id", "title", "ok", "status", "data", "error"}.
     """
     async with _ai_api_client(token, session_token, timeout=60.0) as c:
         return _raise(await c.post(

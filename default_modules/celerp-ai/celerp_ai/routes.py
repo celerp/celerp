@@ -754,8 +754,26 @@ async def _run_confirmed_action(
         "ok": result["ok"],
         "status": result["status"],
         "data": result.get("data"),
-        "error": result.get("error"),
+        "error": _action_error(result),
     }
+
+
+def _action_error(result: dict) -> dict | None:
+    """Why a confirmed action failed, as {code, message}: the executor's own
+    error, or the rejecting route's detail, so the reply always says the reason."""
+    if result.get("ok"):
+        return None
+    if result.get("error"):
+        return result["error"]
+    data = result.get("data")
+    detail = data.get("detail") if isinstance(data, dict) else None
+    if isinstance(detail, dict):
+        return {"code": detail.get("code") or "route_error",
+                "message": detail.get("message") or detail.get("code") or str(detail)}
+    if isinstance(detail, list):
+        detail = "; ".join(str(e.get("msg") if isinstance(e, dict) else e) for e in detail)
+    return {"code": "route_error",
+            "message": str(detail) if detail else f"The request failed with status {result.get('status')}."}
 
 
 _ACTION_STATE_CODES = frozenset({"action_not_pending", "capability_unavailable"})
@@ -785,7 +803,7 @@ async def confirm_action(
     error = outcome.get("error") or {}
     if error.get("code") in _ACTION_STATE_CODES:
         raise HTTPException(status_code=409, detail=error)
-    return {k: outcome[k] for k in ("ok", "status", "data", "error")}
+    return outcome
 
 
 @router.post("/conversations/{conversation_id}/confirm-all")

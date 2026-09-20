@@ -209,7 +209,7 @@ async def test_new_conversation_redirects_to_thread(ui_client):
 
 @pytest.mark.asyncio
 async def test_confirm_success_names_entity(ui_client):
-    result = {"ok": True, "status": 200,
+    result = {"ok": True, "status": 200, "title": "Create item",
               "data": {"name": "Agent Widget", "id": "item:9"}, "error": None}
     with patch("celerp_ai.ui_routes.api.ai_confirm_action", AsyncMock(return_value=result)):
         r = await ui_client.post("/ai/confirm-action-ui", cookies=_authed(), data={
@@ -217,6 +217,7 @@ async def test_confirm_success_names_entity(ui_client):
         })
     assert r.status_code == 200
     assert "ai-action__done" in r.text
+    assert "Create item: Done." in r.text
     assert "Agent Widget" in r.text
     assert "item:9" in r.text
 
@@ -330,10 +331,27 @@ def test_failed_record_card_has_no_buttons_and_says_why():
               "error": "The action did not finish."}
     html = _card_html(action)
     assert "ai-action--failed" in html
-    assert "This change was not applied." in html
     assert "The action did not finish." in html
+    assert "This change was not applied." not in html
     assert "/ai/confirm-action-ui" not in html
     assert "Dismiss" not in html
+    bare = _card_html({**_ACTION, "title": "Create item", "status": "failed"})
+    assert "This change was not applied." in bare
+
+
+def test_action_card_formats_amounts_and_quantities():
+    action = {
+        "id": "prop_1", "name": "create_doc_docs_post", "title": "Create bill from Quick Parts Ltd",
+        "arguments": {"body": {
+            "currency": "THB", "subtotal": 15.0, "tax": 1.5, "total": 20.0,
+            "line_items": [{"name": "Bolt M6", "quantity": 1.0, "unit_price": 10.0, "line_total": 10.0}],
+        }},
+    }
+    html = _card_html(action)
+    assert "฿15.00" in html and "฿1.50" in html and "฿20.00" in html
+    assert "Quantity: 1," in html
+    assert "Unit price: ฿10.00" in html and "Line total: ฿10.00" in html
+    assert ">15.0<" not in html and "1.0," not in html
 
 
 def test_action_group_offers_confirm_all_only_for_several_open_cards():

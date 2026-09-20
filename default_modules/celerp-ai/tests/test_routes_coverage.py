@@ -406,6 +406,29 @@ async def test_confirm_action_executes_pending(auth_client):
 
 
 @pytest.mark.asyncio
+async def test_confirm_action_names_action_and_route_rejection(auth_client):
+    """The reply carries the action title, and a route that rejects the write
+    with a plain detail string becomes the error message the user reads."""
+    c, h = auth_client
+    r = await c.post("/ai/conversations", headers=h, json={"title": None})
+    conv_id = r.json()["id"]
+    message_id, tool_call_id = await _propose_action(c, h, conv_id)
+
+    rejected = {"ok": False, "status": 422, "data": {"detail": "Invalid currency code: ZZZZ"}}
+    with patch("celerp_ai.routes.compile_agent_capabilities", return_value={"create_contact": {"method": "POST"}}), \
+         patch("celerp_ai.routes.execute_agent_capability", AsyncMock(return_value=rejected)):
+        r = await c.post(
+            f"/ai/conversations/{conv_id}/confirm", headers=h,
+            json={"message_id": message_id, "tool_call_id": tool_call_id},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["title"] == "Create contact"
+    assert body["error"] == {"code": "route_error", "message": "Invalid currency code: ZZZZ"}
+
+
+@pytest.mark.asyncio
 async def test_confirm_action_capability_unavailable(auth_client):
     """A confirmed action whose capability is gone fails closed with 409."""
     c, h = auth_client
