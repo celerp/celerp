@@ -3,7 +3,7 @@
 
 """Gateway quota status client.
 
-Reads AI quota status from the relay for display and tier checks. Quota is
+Reads AI quota status from the relay for display. Quota is
 enforced by the gateway as a query runs; this module only reports it.
 """
 
@@ -19,20 +19,6 @@ from celerp.gateway.state import get_session_token, relay_http_url
 _relay_http_url = relay_http_url
 
 log = logging.getLogger(__name__)
-
-
-async def get_subscription_tier() -> str | None:
-    """Fetch the subscription tier for this instance from the relay.
-
-    Returns the tier string (e.g. "cloud", "ai", "team") or None if:
-      - gateway is not configured (local install)
-      - relay is unreachable
-      - subscription is not active
-
-    Never raises — callers treat None as "no restriction".
-    """
-    status = await get_quota_status()
-    return status.get("tier") if status else None
 
 
 async def get_quota_status() -> dict | None:

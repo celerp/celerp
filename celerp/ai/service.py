@@ -83,6 +83,7 @@ class AgentResult:
     tools_called: list[str]      # executed read operation IDs, in order
     pending_actions: list[PendingAction]
     error: str | None = None
+    credits: int = 0             # relay credits consumed across all model turns
 
 
 # -- Error mapping ----------------------------------------------------------
@@ -320,10 +321,12 @@ async def _agent_loop(
     tools_called: list[str] = []
     tool_calls_total = 0
     total_result_bytes = 0
+    credits = 0
 
     for _turn in range(MAX_MODEL_TURNS):
         result = await complete(messages, tools=tools, reservation_id=reservation_id)
         reservation_id = result.reservation_id
+        credits += int((result.usage or {}).get("credits") or 0)
         model_used = result.model_used or model_used
         message = result.message
         content = message.get("content") or ""
@@ -331,7 +334,7 @@ async def _agent_loop(
 
         if not calls:
             return AgentResult(
-                answer=content or _EMPTY_ANSWER, model_used=model_used,
+                credits=credits, answer=content or _EMPTY_ANSWER, model_used=model_used,
                 tools_called=tools_called, pending_actions=[],
             )
 
@@ -370,7 +373,7 @@ async def _agent_loop(
                     "Confirm or dismiss these, then ask again for the rest."
                 ).strip()
             return AgentResult(
-                answer=answer, model_used=model_used,
+                credits=credits, answer=answer, model_used=model_used,
                 tools_called=tools_called, pending_actions=pending,
             )
 
@@ -403,7 +406,7 @@ async def _agent_loop(
             total_result_bytes += len(encoded.encode("utf-8"))
             if total_result_bytes > MAX_TOTAL_RESULT_BYTES:
                 return AgentResult(
-                    answer="", model_used=model_used, tools_called=tools_called,
+                    credits=credits, answer="", model_used=model_used, tools_called=tools_called,
                     pending_actions=[],
                     error="Too much data was returned; ask a narrower question.",
                 )
@@ -420,7 +423,7 @@ async def _agent_loop(
             })
 
     return AgentResult(
-        answer="", model_used=model_used, tools_called=tools_called,
+        credits=credits, answer="", model_used=model_used, tools_called=tools_called,
         pending_actions=[], error="The assistant could not finish within the allowed steps.",
     )
 

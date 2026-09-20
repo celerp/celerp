@@ -251,7 +251,7 @@ async def run_batch(
         job = await session.get(AIBatchJob, job_id)
         if job:
             job.status = final_status
-            job.results = {"files": results}
+            job.results = {**(job.results or {}), "files": results}
             job.credits_consumed = credits
             job.completed_at = datetime.now(timezone.utc)
             if all_failed:
@@ -310,3 +310,17 @@ async def get_batch_job(
     if job is None or job.company_id != company_id:
         return None
     return job
+
+
+async def list_conversation_jobs(
+    session: AsyncSession,
+    conversation_id: uuid.UUID,
+    company_id: uuid.UUID,
+) -> list[AIBatchJob]:
+    """Every job started from a conversation, oldest first."""
+    q = (
+        select(AIBatchJob)
+        .where(AIBatchJob.conversation_id == conversation_id, AIBatchJob.company_id == company_id)
+        .order_by(AIBatchJob.created_at.asc())
+    )
+    return list((await session.execute(q)).scalars().all())

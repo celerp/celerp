@@ -203,27 +203,11 @@ async def test_clear_memory(auth_client):
     assert r2.json()["kv"] == {}
 
 
-# ── Cloud tier file limit enforcement ────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_cloud_tier_multi_file_blocked(auth_client):
-    """Cloud tier users submitting >1 file get 403 with upsell message."""
-    c, headers = auth_client
-    with patch("celerp_ai.routes.get_subscription_tier", AsyncMock(return_value="cloud")):
-        r = await c.post(
-            "/ai/query",
-            json={"query": "process these", "file_ids": ["ai_up_aaa", "ai_up_bbb"]},
-            headers=headers,
-        )
-    assert r.status_code == 403
-    detail = r.json()["detail"]
-    assert "Connect + AI" in detail
-    assert "celerp.com" in detail
-
+# ── Multi-file queries ───────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_ai_tier_multi_file_allowed(auth_client):
-    """AI tier users can submit multiple files."""
+    """Several files can go with one question."""
     c, headers = auth_client
     mock_result = AIResponse(answer="Done.", model_used="claude-sonnet-4-5", tools_called=[])
 
@@ -248,15 +232,12 @@ async def test_ai_tier_multi_file_allowed(auth_client):
         }))
         file_ids.append(fid)
 
-    with patch("celerp_ai.routes.get_subscription_tier", AsyncMock(return_value="ai")):
-        with patch("celerp_ai.routes.run_query", AsyncMock(return_value=mock_result)):
-            with patch("celerp_ai.routes._load_file_http") as mock_load:
-                mock_load.return_value = (b"fake image data", {"content_type": "image/jpeg", "filename": "test.jpg", "company_id": company_id_placeholder})
-                r = await c.post(
-                    "/ai/query",
-                    json={"query": "process these", "file_ids": file_ids},
-                    headers=headers,
-                )
+    with patch("celerp_ai.routes.run_query", AsyncMock(return_value=mock_result)):
+        r = await c.post(
+            "/ai/query",
+            json={"query": "process these", "file_ids": file_ids},
+            headers=headers,
+        )
     assert r.status_code == 200
 
 
@@ -266,34 +247,19 @@ async def test_ai_tier_multi_file_allowed(auth_client):
 async def test_estimate_credits_images(auth_client):
     """Estimate credits for 3 image files → 3 credits (1 per image)."""
     c, headers = auth_client
-    with patch("celerp_ai.routes.get_subscription_tier", AsyncMock(return_value="ai")):
-        with patch("celerp_ai.routes._load_file_http") as mock_load:
-            mock_load.return_value = (b"fake jpeg data", {
-                "content_type": "image/jpeg",
-                "filename": "receipt.jpg",
-            })
-            r = await c.post(
-                "/ai/estimate-credits",
-                json={"file_ids": ["ai_up_1", "ai_up_2", "ai_up_3"]},
-                headers=headers,
-            )
+    with patch("celerp_ai.routes._load_file_http") as mock_load:
+        mock_load.return_value = (b"fake jpeg data", {
+            "content_type": "image/jpeg",
+            "filename": "receipt.jpg",
+        })
+        r = await c.post(
+            "/ai/estimate-credits",
+            json={"file_ids": ["ai_up_1", "ai_up_2", "ai_up_3"]},
+            headers=headers,
+        )
     assert r.status_code == 200
     data = r.json()
     assert data["total_credits"] == 3
     assert len(data["files"]) == 3
     assert all(f["pages"] == 1 for f in data["files"])
     assert all(f["credits"] == 1 for f in data["files"])
-
-
-@pytest.mark.asyncio
-async def test_estimate_credits_cloud_multi_file_blocked(auth_client):
-    """Cloud tier user requesting estimate with >1 file gets 403."""
-    c, headers = auth_client
-    with patch("celerp_ai.routes.get_subscription_tier", AsyncMock(return_value="cloud")):
-        r = await c.post(
-            "/ai/estimate-credits",
-            json={"file_ids": ["ai_up_a", "ai_up_b"]},
-            headers=headers,
-        )
-    assert r.status_code == 403
-    assert "Connect + AI" in r.json()["detail"]

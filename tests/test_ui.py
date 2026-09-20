@@ -20230,12 +20230,6 @@ class TestCommercialPartnerManagedInvariant:
         html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
         self._assert_clean(html, "AI quota card with relay upgrade_url")
 
-    def test_ai_403_body_partner_clean(self):
-        from celerp_ai.routes import _batch_upgrade_url
-        url = _batch_upgrade_url()
-        for bad in self._FORBIDDEN:
-            assert bad not in url, f"AI 403 body leaked {bad!r}: {url}"
-
     def test_session_gate_401_partner_clean(self):
         from celerp.gateway.state import build_commercial_handoff
         from celerp.config import ensure_instance_id

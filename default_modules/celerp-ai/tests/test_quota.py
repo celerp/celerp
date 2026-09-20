@@ -6,7 +6,6 @@
 Covers:
   - _relay_http_url: derivation from wss://, ws://, gateway_http_url override
   - get_quota_status: no gateway (None), 200 (dict), bad status (None), network error (None)
-  - get_subscription_tier: 200 (tier), no gateway / failure (None)
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ import pytest
 import respx
 from unittest.mock import AsyncMock, patch
 
-from celerp.ai.quota import _relay_http_url, get_quota_status, get_subscription_tier
+from celerp.ai.quota import _relay_http_url, get_quota_status
 from celerp.config import settings
 import celerp.gateway.state as gw_state
 
@@ -128,34 +127,3 @@ async def test_quota_status_network_error(monkeypatch):
         new=AsyncMock(side_effect=httpx.ConnectError("refused")),
     ):
         assert await get_quota_status() == {"unknown": True}
-
-
-# ── get_subscription_tier ─────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_get_subscription_tier_no_gateway(monkeypatch):
-    monkeypatch.setattr(settings, "gateway_token", "")
-    monkeypatch.setattr(gw_state, "_session_token", "")
-    assert await get_subscription_tier() is None
-
-
-@pytest.mark.asyncio
-async def test_get_subscription_tier_returns_tier(monkeypatch):
-    _configure(monkeypatch)
-    response = httpx.Response(
-        200, json={"tier": "cloud", "allowed": True, "used": 5, "limit": 100})
-    with patch(
-        "celerp.services.cloud_entitlement.authenticated_request",
-        new=AsyncMock(return_value=response),
-    ):
-        assert await get_subscription_tier() == "cloud"
-
-
-@pytest.mark.asyncio
-async def test_get_subscription_tier_network_error(monkeypatch):
-    _configure(monkeypatch)
-    with patch(
-        "celerp.services.cloud_entitlement.authenticated_request",
-        new=AsyncMock(side_effect=httpx.ConnectError("refused")),
-    ):
-        assert await get_subscription_tier() is None

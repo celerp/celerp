@@ -85,38 +85,6 @@ def test_ai_quota_upgrade_label_not_price_in_partner():
     assert "$49" not in html
 
 
-# ── 403 batch-upgrade body ──────────────────────────────────────────────────
-#
-# A backend API error message with no authenticated app session guaranteed, so
-# it resolves through build_public_acquisition_url rather than
-# build_commercial_handoff: an anonymous celerp.com/subscribe URL carrying no
-# instance_id, since this pre-auth-safe path can never mint the handoff token a
-# named checkout would require.
-
-def test_ai_403_upgrade_routes_through_policy():
-    """partner mode: the 403 batch-upgrade body URL routes through the public
-    acquisition resolver, never a direct checkout."""
-    from celerp_ai.routes import _batch_upgrade_url
-    _set_partner()
-    url = _batch_upgrade_url()
-    assert "/subscribe" not in url
-    assert "plan=ai" not in url
-    # partner_managed routes to the partner support destination, never direct
-    # Celerp checkout.
-    assert url == "https://partner.example.com/support"
-
-
-def test_ai_403_upgrade_direct_unchanged():
-    """celerp_direct: the 403 body yields the anonymous plan=ai subscribe URL
-    with no instance_id - a named checkout here has no handoff token to redeem
-    it, so it must never carry one."""
-    from celerp_ai.routes import _batch_upgrade_url
-    url = _batch_upgrade_url()
-    assert "/subscribe" in url
-    assert "plan=ai" in url
-    assert "instance_id=" not in url
-
-
 # ── AI showcase ─────────────────────────────────────────────────────────────
 
 def test_ai_showcase_partner_no_direct_price():

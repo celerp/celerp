@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.ai import AIConversation, AIMessage
@@ -224,6 +224,25 @@ async def get_messages(
     return newest_first
 
 
+async def get_message(
+    session: AsyncSession,
+    message_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+) -> AIMessage | None:
+    """One message by id, only when it belongs to ``conversation_id``."""
+    msg = await session.get(AIMessage, message_id)
+    if msg is None or msg.conversation_id != conversation_id:
+        return None
+    return msg
+
+
+async def record_credits(session: AsyncSession, message_id: uuid.UUID, credits: int) -> None:
+    """Store the credits a run consumed on the user message that started it."""
+    await session.execute(
+        update(AIMessage).where(AIMessage.id == message_id).values(credits_used=credits)
+    )
+
+
 # -- Tool-call record helpers ------------------------------------------------
 #
 # The assistant message's ``tools_called`` list mixes executed read operation-id
@@ -231,6 +250,21 @@ async def get_messages(
 # first stored (the model has only proposed it); it gains a status of
 # "executing" once claimed and "completed"/"failed" once finalized. A record
 # with no explicit status is therefore still pending.
+
+
+ERROR_MARKER = {"error": True}
+
+
+def message_error(tools_called: list | None) -> bool:
+    """True when a stored assistant message records a failed agent run.
+
+    The marker has no ``name`` and no ``expires_at``, so ``tool_names`` and
+    ``pending_actions`` both ignore it.
+    """
+    return any(
+        isinstance(item, dict) and item.get("error") is True and "name" not in item
+        for item in (tools_called or [])
+    )
 
 
 def tool_names(tools_called: list | None) -> list[str]:
