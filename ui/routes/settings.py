@@ -1749,6 +1749,18 @@ def setup_routes(app):
         if err := data.get("error"):
             return _cloud_relay_unconnected(iid, error=err)
 
+        # Rolling-upgrade compatibility with the older API contract. Never put
+        # the returned gateway credential into HTML; current API versions apply
+        # activation server-side and therefore never return this branch.
+        if data.get("reconnect"):
+            info = (
+                t("settings.previously_signed_in_free")
+                if not data.get("public_url")
+                else t("settings.reconnect_to_same_subscription")
+            )
+            return _cloud_relay_unconnected(
+                iid, info=info, show_email_form=False)
+
         # Connected: the page chrome changes with the relay state (value-prop
         # landing vs connected tabs), so load the page fresh instead of
         # swapping only the panel.

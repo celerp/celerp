@@ -96,8 +96,8 @@ async def test_account_status_proxy_skips_exchange_without_token():
 
 
 @pytest.mark.asyncio
-async def test_cloud_claim_proves_incumbent_when_gateway_token_present(client):
-    token = await _register(client, "claim-incumbent")
+async def test_cloud_claim_proves_incumbent_when_gateway_token_present():
+    """The incumbent API key supplies bearer proof for an ownership-changing claim."""
     claim_resp = MagicMock()
     claim_resp.status_code = 200
     claim_resp.json.return_value = {"claimed": True}
@@ -105,11 +105,20 @@ async def test_cloud_claim_proves_incumbent_when_gateway_token_present(client):
     act_resp.status_code = 200
     act_resp.json.return_value = {"gateway_token": "fresh-key"}
     seen = []
+
     async def post(url, **kwargs):
         seen.append((url, kwargs))
         return claim_resp if "billing/claim" in url else act_resp
+
+    client = MagicMock()
+    client.post = AsyncMock(side_effect=post)
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=client)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    factory = MagicMock(return_value=ctx)
+
     with (
-        patch("httpx.AsyncClient") as mock_httpx,
+        patch("httpx.AsyncClient", factory),
         patch(
             "celerp.services.cloud_entitlement.stored_api_key",
             new=AsyncMock(return_value="incumbent-key"),
@@ -129,13 +138,13 @@ async def test_cloud_claim_proves_incumbent_when_gateway_token_present(client):
         ),
         patch("celerp.gateway.client.get_client", return_value=None),
     ):
-        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
-            side_effect=post)
-        r = await client.post(
-            "/settings/cloud-claim", headers=_h(token),
-            json={"email": "paid@example.com", "otp_code": "123456"})
-    assert r.status_code == 200
-    assert r.json()["connected"] is True
+        from celerp.routers.health import cloud_claim_api
+        data = await cloud_claim_api({
+            "email": "paid@example.com",
+            "otp_code": "123456",
+        })
+
+    assert data["connected"] is True
     claim_call = next(call for call in seen if "billing/claim" in call[0])
     assert claim_call[1]["headers"]["Authorization"] == "Bearer incumbent-jwt"
     assert claim_call[1]["headers"]["X-Instance-ID"] == "canonical-iid"
