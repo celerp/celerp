@@ -58,32 +58,39 @@ def _answer(text: str) -> ModelResult:
                        remaining=None)
 
 
-def _mutation(cap_name: str, body: dict, content: str) -> ModelResult:
+def _tool_call(cap_name: str, arguments: dict, content: str) -> ModelResult:
+    """A model turn that calls one capability with the given argument sections."""
     import json
     return ModelResult(
         message={
             "role": "assistant",
             "content": content,
             "tool_calls": [{
-                "id": "call-1",
+                "id": f"call-{uuid.uuid4().hex[:8]}",
                 "type": "function",
-                "function": {"name": cap_name, "arguments": json.dumps({"body": body})},
+                "function": {"name": cap_name, "arguments": json.dumps(arguments)},
             }],
         },
         model_used="fake-model", usage={}, reservation_id=None, remaining=None,
     )
 
 
+def _mutation(cap_name: str, body: dict, content: str) -> ModelResult:
+    return _tool_call(cap_name, {"body": body}, content)
+
+
 @pytest.fixture(scope="session")
-def item_create_cap(api_server) -> str:
-    """The compiled capability name for POST /items on the live app."""
+def agent_caps(api_server) -> dict:
+    """The compiled agent capabilities of the running app, keyed by (method, path)."""
     from celerp.main import app
     from celerp.ai.tools import compile_agent_capabilities
     caps = compile_agent_capabilities(app, {})
-    for name, cap in caps.items():
-        if cap["method"] == "POST" and cap["path"] == "/items":
-            return name
-    raise RuntimeError("no create-item agent capability is compiled")
+    return {(cap["method"], cap["path"]): {"name": name, **cap} for name, cap in caps.items()}
+
+
+@pytest.fixture(scope="session")
+def item_create_cap(agent_caps) -> str:
+    return agent_caps[("POST", "/items")]["name"]
 
 
 @pytest.fixture(autouse=True)
