@@ -3115,10 +3115,13 @@ async def _control_post(token: str, path: str, payload: dict | None = None) -> d
     return await _with_total_timeout(_request(), CONTROL_PLANE_TIMEOUT)
 
 
-async def activate_relay(token: str) -> dict:
-    """POST /settings/cloud-activate - call relay /auth/activate, start gateway."""
-    return await _control_post(token, "/settings/cloud-activate")
-
+async def activate_relay(
+    token: str, *, explicit: bool = False, intent: str | None = None,
+) -> dict:
+    """POST /settings/cloud-activate with explicit activation intent."""
+    chosen = intent or ("connect" if explicit else "background")
+    return await _control_post(
+        token, "/settings/cloud-activate", {"intent": chosen})
 
 async def resolve_partner_claim(token: str, claim_token: str) -> dict:
     """POST /settings/partner-claim/resolve - preview the partner behind a claim
@@ -3135,9 +3138,8 @@ async def accept_partner_claim(token: str, claim_token: str) -> dict:
 
 
 async def apply_relay_token(token: str, payload: dict) -> dict:
-    """POST /settings/cloud-apply-token - apply pre-fetched gateway token."""
-    async with _api_client(token) as c:
-        return _raise(await c.post("/settings/cloud-apply-token", json=payload)).json()
+    """Compatibility wrapper for trusted local callers; not used by browser UI."""
+    return await _control_post(token, "/settings/cloud-apply-token", payload)
 
 
 async def accept_relay_tos(token: str) -> dict:

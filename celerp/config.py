@@ -230,12 +230,45 @@ def activation_challenge(verifier: str | None = None) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def set_cloud_disconnected(disconnected: bool) -> None:
+    """Persist explicit Connect intent before changing any live runtime state."""
+    def _set(cloud: dict) -> None:
+        if disconnected:
+            cloud["disconnected"] = True
+        else:
+            cloud.pop("disconnected", None)
+
+    _update_cloud_config(_set)
+    settings.cloud_disconnected = disconnected
+
+
 def record_cloud_activation(
     gateway_token: str, instance_id: str, *, public_url: str | None = None,
     tos_version: str | None = None, backup_encryption_key: str | None = None,
-) -> None:
-    """Atomically persist authoritative activation and consume its verifier."""
-    def _record(cloud: dict) -> None:
+    expected_api_key: str | None = None,
+    expected_verifier: str | None = None,
+    keep_disconnected: bool = False,
+) -> bool:
+    """CAS-persist authoritative activation without reviving stale operations."""
+    def _record(cloud: dict) -> bool:
+        if bool(cloud.get("disconnected")) and not keep_disconnected:
+            return False
+
+        current_iid = str(cloud.get("instance_id") or "")
+        pending_verifier = str(cloud.get("activation_verifier") or "")
+
+        if expected_api_key is not None:
+            if cloud.get("token") != expected_api_key:
+                return False
+            if pending_verifier and current_iid and current_iid != instance_id:
+                return False
+
+        if expected_verifier is not None:
+            if pending_verifier != expected_verifier:
+                return False
+            if current_iid and current_iid != instance_id:
+                return False
+
         cloud["token"] = gateway_token
         cloud["instance_id"] = instance_id
         if public_url:
@@ -246,12 +279,14 @@ def record_cloud_activation(
             cloud["tos_version"] = tos_version
         if backup_encryption_key:
             cloud["backup_encryption_key"] = backup_encryption_key
-        cloud.pop("disconnected", None)
-        cloud.pop("activation_verifier", None)
+        if expected_verifier is not None:
+            cloud.pop("activation_verifier", None)
+        return True
 
-    _update_cloud_config(_record)
-    settings.activation_verifier = ""
-
+    accepted = bool(_update_cloud_config(_record))
+    if accepted and expected_verifier is not None:
+        settings.activation_verifier = ""
+    return accepted
 
 def persist_cloud_settings(**values: object) -> None:
     """Write the given [cloud] settings into config.toml.

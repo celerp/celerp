@@ -141,14 +141,9 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
     )
 
 
-def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False,
+def _value_prop_page(iid: str, lang: str = "en",
                      show_partner_claim: bool = False, catalog: dict | None = None) -> FT:
-    """Full value-proposition landing page shown when not connected to cloud.
-
-    `disconnected` marks a sticky Cloud disconnect: the credential is preserved,
-    so the connect section withholds its auto-connect (landing here must not
-    silently undo the disconnect) while the Connect button still reconnects in
-    one click. `show_partner_claim` adds the owner/admin partner-claim card."""
+    """Full value-proposition landing page shown when not connected to cloud."""
     return Div(
         # Hero - explain the relay concept simply
         Div(
@@ -162,7 +157,7 @@ def _value_prop_page(iid: str, lang: str = "en", disconnected: bool = False,
         ),
         _plans_ad(iid, lang=lang, catalog=catalog),
         # Already subscribed / connect section
-        _connect_section(iid, lang=lang, disconnected=disconnected),
+        _connect_section(iid, lang=lang),
         *([_partner_claim_card(lang=lang)] if show_partner_claim else []),
         cls="content-area",
     )
@@ -291,14 +286,13 @@ def _direct_plans(iid: str, lang: str = "en", catalog: dict | None = None) -> FT
             cls="cloud-plans"))
 
 
-def _connect_section(iid: str, lang: str = "en", disconnected: bool = False) -> FT:
+def _connect_section(iid: str, lang: str = "en") -> FT:
     """The Celerp-account surface in its claim-led variant (this page's context
     is an existing/prospective subscriber). ONE component app-wide - see
     ui/routes/account.py. Keeps id="cloud-relay-tab" so the shipped
     cloud-activate/cloud-claim responses replace the same element."""
     from ui.routes.account import account_panel
-    return account_panel(lang, intent="claim", panel_id="cloud-relay-tab",
-                         suppress_autoconnect=disconnected)
+    return account_panel(lang, intent="claim", panel_id="cloud-relay-tab")
 
 
 def _parse_db_url(url: str) -> dict:
@@ -740,12 +734,8 @@ def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -
     )
 
 
-async def _relay_state(token) -> tuple[str, str, str, bool, bool]:
-    """Fetch relay state from the API process (the gateway client lives there).
-
-    Returns (relay_status, public_url, tier, disconnected, token_bound); on an
-    unreachable API, degrades to the local client's status alone.
-    """
+async def _relay_state(token) -> tuple[str, str, str, bool, bool, bool]:
+    """Fetch transport state plus whether entitlement was authoritatively known."""
     from celerp.gateway.client import get_client as _local_get_client
     import ui.api_client as _api
     from ui.api_client import APIError as _APIError
@@ -754,6 +744,7 @@ async def _relay_state(token) -> tuple[str, str, str, bool, bool]:
     tier = ""
     disconnected = False
     token_bound = False
+    entitlement_known = False
     try:
         rs = await _api.get_relay_status(token)
         relay_status = rs.get("relay_status", "inactive")
@@ -761,10 +752,14 @@ async def _relay_state(token) -> tuple[str, str, str, bool, bool]:
         tier = rs.get("tier") or ""
         disconnected = bool(rs.get("cloud_disconnected"))
         token_bound = bool(rs.get("gateway_token_set"))
+        entitlement_known = bool(rs.get("entitlement_known"))
     except (_APIError, Exception):
         lc = _local_get_client()
         relay_status = lc.relay_status if lc else "inactive"
-    return relay_status, public_url, tier, disconnected, token_bound
+    return (
+        relay_status, public_url, tier, disconnected,
+        token_bound, entitlement_known,
+    )
 
 
 def _partner_claim_card(lang: str = "en", error: str | None = None) -> FT:
@@ -879,9 +874,11 @@ def setup_routes(app):
             return Response(status_code=401)
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
-        relay_status, public_url, tier, _, token_bound = await _relay_state(token)
-        return _cloud_relay_tab(relay_status=relay_status, public_url=public_url,
-                                tier=tier, token_bound=token_bound)
+        relay_status, public_url, tier, disconnected, token_bound, known = await _relay_state(token)
+        return _cloud_relay_tab(
+            relay_status=relay_status, public_url=public_url,
+            tier=tier, token_bound=token_bound, entitlement_known=known,
+            disconnected=disconnected)
 
     @app.get("/settings/cloud")
     async def settings_cloud_page(request: Request):
@@ -894,12 +891,14 @@ def setup_routes(app):
         import ui.api_client as _api
         lang = get_lang(request)
         is_owner_admin = _get_role(request) in ("owner", "admin")
-        relay_status, public_url, tier, disconnected, token_bound = await _relay_state(token)
+        relay_status, public_url, tier, disconnected, token_bound, entitlement_known = await _relay_state(token)
         # A free tier is signed in (holds a gateway_token) but never starts the WS
         # client - it has no tunnel to serve - so relay_status stays "inactive".
         # Treat a token-bound instance as connected so a signed-in free account
         # gets the account/disconnect view plus the upgrade ad, not the landing page.
-        gw_ok = relay_status in ("active", "tos_required", "connecting", "error") or token_bound
+        gw_ok = (not disconnected and (
+            relay_status in ("active", "tos_required", "connecting", "error")
+            or token_bound))
 
         # If not connected, show value-prop landing. A sticky-disconnected install
         # keeps its preserved credential, so the connect section withholds its
@@ -926,7 +925,7 @@ def setup_routes(app):
                 _section_breadcrumb(t("settings_cloud.web_access", lang)),
                 page_header(t("settings_cloud.web_access", lang)),
                 _value_prop_page(
-                    iid, lang=lang, disconnected=disconnected,
+                    iid, lang=lang,
                     show_partner_claim=can_claim, catalog=catalog),
                 title=page_title("settings_cloud.web_access"),
                 nav_active="web-access",

@@ -168,7 +168,9 @@ def exchange_api_key_for_jwt(relay_url: str, api_key: str) -> str | None:
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
         token = data.get("access_token")
-        return str(token) if token else None
+        if not token:
+            return None
+        return str(token)
     except Exception:
         return None
 

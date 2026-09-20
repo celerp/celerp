@@ -806,24 +806,54 @@ async def relay_post_with_retry(url: str, json_body: dict):
     return None
 
 
-async def fetch_relay_bearer(http_client, api_key: str | None = None) -> str:
-    """Exchange the instance API key (gateway_token) for a short-lived relay
-    bearer JWT via POST /auth/token.
+class RelayCredentialError(RuntimeError):
+    """A definitive HTTP rejection while exchanging a relay API key."""
 
-    Single source of the relay auth handshake every relay REST call needs.
-    Callers pass their own httpx client so they own the timeout and connection
-    lifecycle, and reuse it for the follow-up request. Raises RuntimeError on a
-    non-200 so each caller degrades in one place.
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+        super().__init__(f"relay auth failed ({status_code})")
+
+
+class RelayProtocolError(RuntimeError):
+    """The relay answered successfully but violated the token response contract."""
+
+
+async def fetch_relay_auth(
+    http_client, api_key: str | None = None,
+) -> tuple[str, str | None]:
+    """Exchange an API key for a bearer plus the identity that key proves.
+
+    Authentication is deliberately observational: it never mutates local
+    identity or consumes a pending activation proof.
     """
     from celerp.config import settings
+
     key = api_key or settings.gateway_token
     if not key:
         raise RuntimeError("relay credential unavailable")
     resp = await http_client.post(
         f"{relay_http_url()}/auth/token", json={"api_key": key})
     if resp.status_code != 200:
-        raise RuntimeError(f"relay auth failed ({resp.status_code})")
-    return resp.json()["access_token"]
+        raise RelayCredentialError(resp.status_code)
+    data = resp.json()
+    token = data.get("access_token") if isinstance(data, dict) else None
+    if not token:
+        raise RelayProtocolError("relay auth response missing access_token")
+    iid_raw = data.get("instance_id") if isinstance(data, dict) else None
+    iid = str(iid_raw).strip() if iid_raw else ""
+    return str(token), (iid or None)
+
+async def fetch_relay_bearer(http_client, api_key: str | None = None) -> str:
+    """Compatibility wrapper returning only the short-lived relay bearer."""
+    bearer, _ = await fetch_relay_auth(http_client, api_key=api_key)
+    return bearer
+
+
+def is_foreign_relay_identity(
+    authenticated_iid: str | None, local_iid: str,
+) -> bool:
+    """Whether a relay credential proves a different concrete instance."""
+    return bool(authenticated_iid and authenticated_iid != local_iid)
 
 
 def _launch_mode() -> str | None:

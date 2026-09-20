@@ -85,29 +85,22 @@ async def test_cloud_status_reports_disconnected_flag(client, owner_h):
     assert r.json()["cloud_disconnected"] is True
 
 
-def test_unconnected_fragment_suppresses_autoconnect_when_disconnected():
-    """The disconnect response must not carry the on-load auto-connect script, or
-    it would instantly re-fire Connect and undo the disconnect; the default
-    (fresh/subscribed install) still auto-connects."""
-    from fasthtml.common import to_xml
-    from ui.routes.settings import _cloud_relay_unconnected
-    on = to_xml(_cloud_relay_unconnected("iid-1"))
-    off = to_xml(_cloud_relay_unconnected("iid-1", suppress_autoconnect=True))
-    assert "cloud_activate_tried" in on
-    assert "cloud_activate_tried" not in off
-    # The Connect button itself stays either way (one-click reconnect).
-    assert "cloud-connect-btn" in off
-
-
-def test_claim_panel_suppresses_autoconnect_when_disconnected():
+def test_connect_panels_never_auto_submit_and_single_flight_mutations():
+    """Opening Connect UI is read-only; explicit controls are single-flight."""
     from fasthtml.common import to_xml
     from ui.routes.account import account_panel
-    on = to_xml(account_panel("en", intent="claim", panel_id="cloud-relay-tab"))
-    off = to_xml(account_panel("en", intent="claim", panel_id="cloud-relay-tab",
-                               suppress_autoconnect=True))
-    assert "cloud_activate_tried" in on
-    assert "cloud_activate_tried" not in off
-    assert "cloud-connect-btn" in off
+    from ui.routes.settings import _cloud_relay_unconnected
+
+    for html in (
+        to_xml(_cloud_relay_unconnected("iid-1")),
+        to_xml(account_panel("en", intent="claim", panel_id="cloud-relay-tab")),
+    ):
+        assert "cloud_activate_tried" not in html
+        assert "sessionStorage" not in html
+        assert "cloud-connect-btn" in html
+        assert 'hx-disabled-elt="this"' in html
+        assert 'hx-sync="#cloud-relay-tab:drop"' in html
+
 
 
 @pytest.mark.asyncio
@@ -328,8 +321,9 @@ def _relay_tab_html(relay_status, token_bound):
     from fasthtml.common import to_xml
     from ui.routes.settings import _cloud_relay_tab
     with patch("celerp.gateway.client.get_client", return_value=None):
-        return to_xml(_cloud_relay_tab(relay_status=relay_status, public_url="",
-                                       tier="free", token_bound=token_bound))
+        return to_xml(_cloud_relay_tab(
+            relay_status=relay_status, public_url="",
+            tier="free", token_bound=token_bound, entitlement_known=True))
 
 
 def test_cloud_tab_connecting_hides_account_view():
@@ -368,6 +362,18 @@ def test_cloud_tab_signed_in_free_shows_account_view():
     html = _relay_tab_html("inactive", token_bound=True)
     assert "Link subscription" in html
     assert "cloud-disconnect" in html
+    assert "Initializing connection" not in html
+
+
+def test_cloud_tab_unknown_entitlement_is_never_rendered_as_free():
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _cloud_relay_tab
+    html = to_xml(_cloud_relay_tab(
+        relay_status="inactive", public_url="", tier="",
+        token_bound=True, entitlement_known=False))
+    assert "Free account" not in html
+    assert "could not be connected" in html
+    assert "Link subscription" in html
 
 
 def test_cloud_tab_active_shows_account_view():

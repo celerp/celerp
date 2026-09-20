@@ -97,38 +97,57 @@ async def test_account_status_proxy_skips_exchange_without_token():
 
 @pytest.mark.asyncio
 async def test_cloud_claim_proves_incumbent_when_gateway_token_present():
-    """An established install proves incumbent machine control when linking an account."""
+    """The incumbent API key supplies bearer proof for an ownership-changing claim."""
     claim_resp = MagicMock()
     claim_resp.status_code = 200
-    claim_resp.json = MagicMock(return_value={"tier": "free", "status": "active"})
+    claim_resp.json.return_value = {"claimed": True}
+    act_resp = MagicMock()
+    act_resp.status_code = 200
+    act_resp.json.return_value = {"gateway_token": "fresh-key"}
+    seen = []
+
+    async def post(url, **kwargs):
+        seen.append((url, kwargs))
+        return claim_resp if "billing/claim" in url else act_resp
 
     client = MagicMock()
-    client.post = AsyncMock(return_value=claim_resp)
+    client.post = AsyncMock(side_effect=post)
     ctx = MagicMock()
     ctx.__aenter__ = AsyncMock(return_value=client)
     ctx.__aexit__ = AsyncMock(return_value=False)
     factory = MagicMock(return_value=ctx)
 
     with (
-        patch("celerp.config.settings.gateway_token", "api-key-123"),
-        patch("celerp.config.ensure_connect_identity", return_value=("i-1", "verifier")),
-        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
-        patch("celerp.gateway.state.fetch_relay_bearer",
-              new=AsyncMock(return_value="instance-jwt")),
         patch("httpx.AsyncClient", factory),
-        patch("celerp.routers.health._activate_after_claim",
-              new=AsyncMock(return_value={"connected": True, "instance_id": "i-1"})),
+        patch(
+            "celerp.services.cloud_entitlement.stored_api_key",
+            new=AsyncMock(return_value="incumbent-key"),
+        ),
+        patch(
+            "celerp.gateway.state.fetch_relay_auth",
+            new=AsyncMock(return_value=("incumbent-jwt", "canonical-iid")),
+        ),
+        patch(
+            "celerp.config.ensure_connect_identity",
+            return_value=("canonical-iid", "approved-proof"),
+        ),
+        patch("celerp.config.set_cloud_disconnected"),
+        patch(
+            "celerp.routers.health._apply_gateway_token_api",
+            new=AsyncMock(return_value=True),
+        ),
+        patch("celerp.gateway.client.get_client", return_value=None),
     ):
         from celerp.routers.health import cloud_claim_api
-        data = await cloud_claim_api({"email": "o@shop.example", "otp_code": "111222"})
+        data = await cloud_claim_api({
+            "email": "paid@example.com",
+            "otp_code": "123456",
+        })
 
     assert data["connected"] is True
-    assert client.post.await_count == 1
-    claim_call = client.post.call_args_list[0]
-    assert claim_call[0][0].endswith("/billing/claim")
-    assert claim_call[1]["headers"]["X-Instance-ID"] == "i-1"
-    assert claim_call[1]["headers"]["Authorization"] == "Bearer instance-jwt"
-
+    claim_call = next(call for call in seen if "billing/claim" in call[0])
+    assert claim_call[1]["headers"]["Authorization"] == "Bearer incumbent-jwt"
+    assert claim_call[1]["headers"]["X-Instance-ID"] == "canonical-iid"
 
 @pytest.mark.asyncio
 async def test_cloud_claim_skips_bearer_without_gateway_token():
@@ -526,3 +545,203 @@ def test_magic_link_timeout_hierarchy_is_outer_to_inner():
     assert api_client.ACCOUNT_METHODS_TIMEOUT >= (
         health.RELAY_ACCOUNT_METHODS_TIMEOUT + 6.0
     )
+
+
+
+@pytest.mark.asyncio
+async def test_account_status_foreign_credential_cannot_retarget_local_destination():
+    """A stored key for another instance never changes which account is polled."""
+    factory, client = _mock_httpx({"email": "l***@shop.example"})
+    with (
+        patch("celerp.config.settings.gateway_token", "foreign-key"),
+        patch("celerp.config.ensure_instance_id", return_value="local-iid"),
+        patch(
+            "celerp.gateway.state.fetch_relay_auth",
+            new=AsyncMock(return_value=("foreign-jwt", "foreign-iid")),
+        ),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import account_status_api
+        data = await account_status_api()
+
+    assert data["email"] == "l***@shop.example"
+    get_call = client.get.call_args_list[0]
+    assert get_call[1]["params"] == {"instance_id": "local-iid"}
+    assert "Authorization" not in get_call[1]["headers"]
+
+
+@pytest.mark.asyncio
+async def test_account_methods_foreign_credential_uses_local_challenge_recovery():
+    """Foreign proof cannot choose the destination of an explicit local bind."""
+    def _get_router(url, **_kw):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json = MagicMock(return_value={
+            "google": True, "free_email_quota": 0, "secure_activation": True,
+        })
+        return resp
+
+    factory, client = _mock_httpx()
+    client.get = AsyncMock(side_effect=_get_router)
+    with (
+        patch(
+            "celerp.services.cloud_entitlement.stored_api_key",
+            new=AsyncMock(return_value="foreign-key"),
+        ),
+        patch("celerp.config.ensure_instance_id", return_value="local-iid"),
+        patch(
+            "celerp.gateway.state.fetch_relay_auth",
+            new=AsyncMock(return_value=("foreign-jwt", "foreign-iid")),
+        ),
+        patch("celerp.config.ensure_activation_verifier", return_value="local-verifier"),
+        patch("celerp.config.activation_challenge", return_value="local-challenge"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import account_methods_api
+        data = await account_methods_api()
+
+    assert data["google"] is True
+    assert data["google_start_url"] == (
+        "https://relay.test/auth/google/start?instance_id=local-iid"
+        "&activation_challenge=local-challenge"
+    )
+    assert [call[0][0] for call in client.get.call_args_list] == [
+        "https://relay.test/auth/methods"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_account_methods_matching_credential_keeps_owner_authenticated_google():
+    """Proof for the local destination still uses the owner-authenticated route."""
+    def _get_router(url, **kw):
+        resp = MagicMock()
+        resp.status_code = 200
+        if url.endswith("/auth/methods"):
+            resp.json = MagicMock(return_value={
+                "google": True, "free_email_quota": 5, "secure_activation": True,
+            })
+        else:
+            assert url.endswith("/auth/google/start-url")
+            assert kw["params"] == {"instance_id": "local-iid"}
+            assert kw["headers"]["Authorization"] == "Bearer local-jwt"
+            resp.json = MagicMock(return_value={
+                "url": "https://accounts.google.test/start"
+            })
+        return resp
+
+    factory, client = _mock_httpx()
+    client.get = AsyncMock(side_effect=_get_router)
+    with (
+        patch(
+            "celerp.services.cloud_entitlement.stored_api_key",
+            new=AsyncMock(return_value="local-key"),
+        ),
+        patch("celerp.config.ensure_instance_id", return_value="local-iid"),
+        patch(
+            "celerp.gateway.state.fetch_relay_auth",
+            new=AsyncMock(return_value=("local-jwt", "local-iid")),
+        ),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import account_methods_api
+        data = await account_methods_api()
+
+    assert data["google_start_url"] == "https://accounts.google.test/start"
+
+
+@pytest.mark.asyncio
+async def test_authenticated_request_suppresses_foreign_key_while_local_verifier_pending():
+    """Pending local proof wins over an incumbent key for another instance."""
+    from celerp.config import settings
+    from celerp.services.cloud_entitlement import authenticated_request
+
+    client = MagicMock()
+    client.request = AsyncMock()
+
+    async def _run(_timeout, operation):
+        return await operation(client)
+
+    with (
+        patch.object(settings, "gateway_token", "foreign-key"),
+        patch.object(settings, "gateway_instance_id", "local-iid"),
+        patch.object(settings, "activation_verifier", "pending-verifier"),
+        patch(
+            "celerp.gateway.state.fetch_relay_auth",
+            new=AsyncMock(return_value=("foreign-jwt", "foreign-iid")),
+        ),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("celerp.gateway.state.with_relay_client", new=_run),
+    ):
+        result = await authenticated_request("GET", "/billing/subscription")
+
+    assert result is None
+    client.request.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_request_allows_incumbent_recovery_without_pending_verifier():
+    """Without a pending proof, the durable incumbent remains valid authority."""
+    from celerp.config import settings
+    from celerp.services.cloud_entitlement import authenticated_request
+
+    response = MagicMock()
+    client = MagicMock()
+    client.request = AsyncMock(return_value=response)
+
+    async def _run(_timeout, operation):
+        return await operation(client)
+
+    with (
+        patch.object(settings, "gateway_token", "incumbent-key"),
+        patch.object(settings, "gateway_instance_id", "local-iid"),
+        patch.object(settings, "activation_verifier", ""),
+        patch(
+            "celerp.gateway.state.fetch_relay_auth",
+            new=AsyncMock(return_value=("incumbent-jwt", "canonical-iid")),
+        ),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("celerp.gateway.state.with_relay_client", new=_run),
+    ):
+        result = await authenticated_request("GET", "/billing/subscription")
+
+    assert result is response
+    client.request.assert_awaited_once_with(
+        "GET",
+        "https://relay.test/billing/subscription",
+        json=None,
+        params=None,
+        headers={"Authorization": "Bearer incumbent-jwt"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_authenticated_request_accepts_local_key_while_local_verifier_pending():
+    """A pending verifier suppresses only foreign authority, never matching proof."""
+    from celerp.config import settings
+    from celerp.services.cloud_entitlement import authenticated_request
+
+    response = MagicMock()
+    client = MagicMock()
+    client.request = AsyncMock(return_value=response)
+
+    async def _run(_timeout, operation):
+        return await operation(client)
+
+    with (
+        patch.object(settings, "gateway_token", "local-key"),
+        patch.object(settings, "gateway_instance_id", "local-iid"),
+        patch.object(settings, "activation_verifier", "pending-verifier"),
+        patch(
+            "celerp.gateway.state.fetch_relay_auth",
+            new=AsyncMock(return_value=("local-jwt", "local-iid")),
+        ),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("celerp.gateway.state.with_relay_client", new=_run),
+    ):
+        result = await authenticated_request("GET", "/billing/subscription")
+
+    assert result is response
+    client.request.assert_awaited_once()
