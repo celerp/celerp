@@ -120,6 +120,25 @@ def _cloud_tabs(active: str, has_team_features: bool = False, lang: str = "en") 
     )
 
 
+def _unconnected_cloud_tabs(active: str, lang: str = "en") -> FT:
+    """Web Access tabs shown only while partner adoption is available."""
+    tabs = [
+        ("status", t("settings_cloud.web_access", lang), "/settings/cloud"),
+        (
+            "partner",
+            t("settings_cloud.partner_claim_title", lang),
+            "/settings/cloud?tab=partner",
+        ),
+    ]
+    return Div(
+        *[
+            A(label, href=href, cls=f"tab {'tab--active' if key == active else ''}")
+            for key, label, href in tabs
+        ],
+        cls="settings-tabs",
+    )
+
+
 def _feature_card(icon: str, title: str, desc: str, lang: str = "en") -> FT:
     return Div(
         Div(icon, cls="cloud-feature-card__icon"),
@@ -142,7 +161,7 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
 
 
 def _value_prop_page(iid: str, lang: str = "en",
-                     show_partner_claim: bool = False, catalog: dict | None = None) -> FT:
+                     catalog: dict | None = None) -> FT:
     """Full value-proposition landing page shown when not connected to cloud."""
     return Div(
         # Hero - explain the relay concept simply
@@ -158,7 +177,6 @@ def _value_prop_page(iid: str, lang: str = "en",
         _plans_ad(iid, lang=lang, catalog=catalog),
         # Already subscribed / connect section
         _connect_section(iid, lang=lang),
-        *([_partner_claim_card(lang=lang)] if show_partner_claim else []),
         cls="content-area",
     )
 
@@ -900,14 +918,8 @@ def setup_routes(app):
             relay_status in ("active", "tos_required", "connecting", "error")
             or token_bound))
 
-        # If not connected, show value-prop landing. A sticky-disconnected install
-        # keeps its preserved credential, so the connect section withholds its
-        # auto-connect (a page visit must not silently undo the disconnect) while
-        # the Connect button still reconnects in one click.
-        # The claim-entry control is offered only to an owner/admin on an install
-        # that is not already partner_managed - a managed install already shows the
-        # partner offer and managed note (via _partner_offer), so the same gate at
-        # both render sites (value-prop landing and status tab) mirrors _plans_ad.
+        # Partner adoption is a pre-connection onboarding/recovery action. It
+        # never shares the normal subscription/Connect surface after connection.
         from celerp.gateway.state import get_commercial_mode
         commercial_mode = get_commercial_mode()
         can_claim = is_owner_admin and commercial_mode != "partner_managed"
@@ -918,15 +930,20 @@ def setup_routes(app):
             except Exception:
                 catalog = {}
 
+        tab = request.query_params.get("tab", "status")
         if not gw_ok:
             from celerp.config import ensure_instance_id
             iid = ensure_instance_id()
+            if tab == "partner" and can_claim:
+                content = _partner_claim_card(lang=lang)
+            else:
+                tab = "status"
+                content = _value_prop_page(iid, lang=lang, catalog=catalog)
             return await base_shell(
                 _section_breadcrumb(t("settings_cloud.web_access", lang)),
                 page_header(t("settings_cloud.web_access", lang)),
-                _value_prop_page(
-                    iid, lang=lang,
-                    show_partner_claim=can_claim, catalog=catalog),
+                *([_unconnected_cloud_tabs(tab, lang=lang)] if can_claim else []),
+                content,
                 title=page_title("settings_cloud.web_access"),
                 nav_active="web-access",
                 lang=lang,
@@ -934,7 +951,6 @@ def setup_routes(app):
             )
 
         # Connected or connecting - show tabs
-        tab = request.query_params.get("tab", "status")
         has_team = _has_team_features(await _commercial_state(request))
         from celerp.gateway.state import get_local_infra_state
         grace_notice = _grace_notice(get_local_infra_state(), lang=lang)
@@ -970,9 +986,8 @@ def setup_routes(app):
                 from celerp.config import ensure_instance_id
                 parts.append(_plans_ad(
                     ensure_instance_id(), lang=lang, catalog=catalog))
-            if is_owner_admin:
-                parts.append(_partner_claim_card(lang=lang) if can_claim
-                             else _partner_managed_note(lang=lang))
+            if is_owner_admin and commercial_mode == "partner_managed":
+                parts.append(_partner_managed_note(lang=lang))
             content = Div(*parts)
             tab = "status"
 

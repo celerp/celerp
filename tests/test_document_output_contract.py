@@ -161,3 +161,22 @@ def test_pdf_prints_customer_fields_but_not_internal_notes():
     assert "PUBLIC PDF TERMS" in text
     assert "PUBLIC PDF CUSTOMER NOTE" in text
     assert "SECRET PDF INTERNAL NOTE" not in text
+
+
+def test_explicit_blank_output_fields_override_live_fallback():
+    """Stored blanks are deliberate overrides, not invitations to resurrect live/legacy data."""
+    from celerp.output.document_context import prepare_document_output
+
+    out = prepare_document_output(
+        {
+            "company_name": "",
+            "contact_name": "",
+            "terms_text": "",
+            "terms": "Legacy terms that must stay suppressed.",
+        },
+        company={"name": "Live Seller"},
+        contact={"name": "Live Buyer"},
+    )
+    assert out["company_name"] == ""
+    assert out["contact_name"] == ""
+    assert out["terms_text"] == ""

@@ -21,7 +21,6 @@ from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.terms import default_terms_for
-from celerp.output.document_context import prepare_document_output
 from celerp_docs.sequences import next_doc_ref
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 
@@ -183,19 +182,6 @@ def _build_router() -> APIRouter:
                 doc_data["terms_text"] = default_terms.get("text") or ""
         if "customer_note" in state:
             doc_data["customer_note"] = state.get("customer_note") or ""
-
-        self_contact: dict = {}
-        self_id = (company.settings or {}).get("self_contact_id")
-        if self_id:
-            self_row = await session.get(Projection, (company_id, self_id))
-            if self_row is not None and self_row.entity_type == "contact":
-                self_contact = self_row.state or {}
-        doc_data = prepare_document_output(
-            doc_data,
-            company={"name": company.name, "settings": company.settings or {}},
-            self_contact=self_contact,
-            contact=contact_state,
-        )
 
         await emit_event(
             session,

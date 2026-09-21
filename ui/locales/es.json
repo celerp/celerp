@@ -3094,7 +3094,7 @@
   "documents.line_label_not_shipped": "No enviado",
   "documents.th_shipped": "Envío",
   "btn.decline": "Rechazar",
-  "settings_cloud.partner_claim_title": "Reclamación de socio",
+  "settings_cloud.partner_claim_title": "Socio de implementación",
   "settings_cloud.partner_claim_desc": "Si un socio le dio un código de reclamación para gestionar esta instalación, péguelo aquí para revisar quién es antes de aceptar.",
   "settings_cloud.partner_claim_label": "Código de reclamación",
   "settings_cloud.partner_claim_token_placeholder": "Pegar código de reclamación",

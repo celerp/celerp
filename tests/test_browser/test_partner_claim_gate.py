@@ -42,11 +42,16 @@ _CARD = "#partner-claim-card"
 
 
 def test_partner_claim_card_visible_to_owner(page, ui_server, seeded_user, browser_context):
-    """The seeded user is the company owner: the partner-claim card renders on
-    /settings/cloud with a claim-token input."""
+    """An eligible owner gets a separate Implementation partner tab; the claim
+    card is absent from the normal Web Access landing and renders only on that tab."""
     _set_cookie(browser_context, seeded_user["access_token"])
     try:
         page.goto(f"{ui_server}/settings/cloud", wait_until="domcontentloaded")
+        page.wait_for_selector('a[href="/settings/cloud?tab=partner"]', timeout=8000)
+        assert page.locator(_CARD).count() == 0
+        assert page.locator('a[href="/settings/cloud?tab=partner"]').inner_text() == "Implementation partner"
+
+        page.goto(f"{ui_server}/settings/cloud?tab=partner", wait_until="domcontentloaded")
         page.wait_for_selector(_CARD, timeout=8000)
         assert page.locator(f'{_CARD} input[name="claim_token"]').count() == 1
     finally:
@@ -75,6 +80,7 @@ def test_partner_claim_card_hidden_from_non_owner_admin(
         # Give the page a moment to render, then assert the card is absent.
         page.wait_for_timeout(500)
         assert page.locator(_CARD).count() == 0
+        assert page.locator('a[href="/settings/cloud?tab=partner"]').count() == 0
 
         # The API refuses the endpoints independently of the UI render gate.
         for path in ("/settings/partner-claim/resolve", "/settings/partner-claim/accept"):

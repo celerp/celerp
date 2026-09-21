@@ -33,7 +33,7 @@ async def test_doc_create_applies_default_terms_atomically(client):
     doc = (await client.get(f"/docs/{r.json()['id']}", headers=_h(token))).json()
     assert doc["terms_template"] == "Standard Sales Terms"
     assert "seller until paid" in doc["terms_text"]
-    assert doc["company_name"] == "Terms Co"
+    assert "company_name" not in doc
 
 
 @pytest.mark.asyncio

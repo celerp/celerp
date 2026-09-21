@@ -1300,26 +1300,6 @@ async def create_doc(
             data["terms_template"] = default_terms.get("name") or ""
             data["terms_text"] = default_terms.get("text") or ""
 
-    # Snapshot the resolved seller identity on every new document. Existing
-    # customer-facing fields always win, and legacy documents without a
-    # snapshot continue to use render-time fallback.
-    self_contact: dict = {}
-    self_id = (company.settings or {}).get("self_contact_id")
-    if self_id:
-        self_row = await session.get(Projection, (company_id, self_id))
-        if self_row is not None and self_row.entity_type == "contact":
-            self_contact = self_row.state or {}
-    contact: dict = {}
-    if payload.contact_id:
-        contact_row = await session.get(Projection, (company_id, payload.contact_id))
-        if contact_row is not None and contact_row.entity_type == "contact":
-            contact = contact_row.state or {}
-    data = prepare_document_output(
-        data,
-        company={"name": company.name, "settings": company.settings or {}},
-        self_contact=self_contact,
-        contact=contact,
-    )
     # Default issue_date to today so date filters and sorting work correctly on new docs
     data.setdefault("issue_date", _date.today().isoformat())
 
@@ -4570,7 +4550,43 @@ async def reprice_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Atomically reprice every catalog-backed line on a draft List."""
+    canonical_request = json.dumps(
+        [entity_id, payload.expected_version, payload.price_list],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    idem_key = f"list:reprice:{hashlib.sha256(canonical_request.encode()).hexdigest()}"
+
+    def _replay_result(replay) -> dict:
+        meta = replay.metadata_ or {}
+        if (
+            replay.event_type != "list.updated"
+            or replay.entity_id != entity_id
+            or meta.get("operation") != "reprice"
+            or meta.get("expected_version") != payload.expected_version
+            or meta.get("price_list") != payload.price_list
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Idempotency key was already used for another operation",
+            )
+        return {
+            "ok": True,
+            "event_id": replay.id,
+            "version": replay.id,
+            "repriced": int(meta.get("repriced") or 0),
+            "skipped": list(meta.get("skipped") or []),
+            "price_list": payload.price_list,
+        }
+
+    replay = await find_event_by_idempotency(session, company_id, idem_key)
+    if replay is not None:
+        return _replay_result(replay)
+
     row = await _get_list_for_update(session, company_id, entity_id)
+    replay = await find_event_by_idempotency(session, company_id, idem_key)
+    if replay is not None:
+        return _replay_result(replay)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
     if row.version != payload.expected_version:
@@ -4643,7 +4659,14 @@ async def reprice_list(
     }
     entry = await _emit_list(
         session, company_id, entity_id, "list.updated",
-        {"fields_changed": fields_changed}, user, None,
+        {"fields_changed": fields_changed}, user, idem_key,
+        meta={
+            "operation": "reprice",
+            "expected_version": payload.expected_version,
+            "price_list": payload.price_list,
+            "repriced": repriced,
+            "skipped": skipped,
+        },
     )
     await session.commit()
     return {

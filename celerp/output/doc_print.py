@@ -219,7 +219,6 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
                           pay_url: str | None = None, auto_print: bool = False,
                           layout: str | None = None,
                           line_identifier: str = "sku") -> str:
-    doc = prepare_document_output(doc)
     """Render the letterhead document page as a standalone HTML string.
 
     ``doc`` must already carry company_* letterhead fields, resolved contact
@@ -234,6 +233,7 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
     (customs values, HS codes, origin, incoterms, declaration). ``layout`` is
     only meaningful for shipping documents; passing it for anything else raises.
     """
+    doc = prepare_document_output(doc)
     entity_id = doc.get("id") or doc.get("entity_id") or ""
     doc_type = doc.get("doc_type", "")
     is_shipping = doc_type == "list" and doc.get("list_type") == SHIPPING_LIST_TYPE

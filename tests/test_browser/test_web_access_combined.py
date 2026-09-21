@@ -1,18 +1,10 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Browser test of the combined Web Access page.
+"""Browser test of the combined connected Web Access page.
 
-Exercises the three commercial surfaces coexisting after the stacked-PR merge:
-the partner-claim card, the grace notice, and the Team-infrastructure tab, all
-on one /settings/cloud page for an owner on a connected install that is in grace
-with team infrastructure. This is the BLOCKER-level proof (P6) that the merge
-dropped none of the surfaces and that the claim-card polish (labelled input,
-real spinner) rendered.
-
-Red at merge-base (origin/main): the commercial Web Access surface does not exist,
-so the status tab renders no #partner-claim-card, no .flash--warning grace banner
-and no ?tab=infrastructure anchor, and ?tab=infrastructure renders no external-DB
-section - every assertion fails.
+A connected owner in Team-infrastructure grace keeps the grace notice and
+infrastructure controls, while the pre-connection Implementation partner action
+is absent from both the status surface and tab bar.
 """
 from __future__ import annotations
 
@@ -42,9 +34,7 @@ def _grace_infra_state() -> dict:
 
 
 def test_web_access_combined_sections(page, ui_server, monkeypatch):
-    """Owner on a connected install in grace sees the claim card, grace banner and
-    infrastructure tab together on the status tab; the infrastructure tab renders
-    the external-DB section with the grace banner above it."""
+    """Connected Team/grace state keeps its normal controls and never offers partner claiming."""
     import ui.routes.settings_cloud as sc
     import celerp.gateway.state as gw_state
 
@@ -57,16 +47,11 @@ def test_web_access_combined_sections(page, ui_server, monkeypatch):
     monkeypatch.setattr(gw_state, "get_local_infra_state", _grace_infra_state)
     monkeypatch.setattr(gw_state, "get_commercial_mode", lambda: "celerp_direct")
 
-    # ── Status tab: the three surfaces coexist ────────────────────────────────
+    # ── Status tab: connected controls remain, partner adoption does not ─────
     page.goto(f"{ui_server}/settings/cloud", wait_until="domcontentloaded")
-    page.wait_for_selector(_CARD, timeout=8000)
-
-    # Partner-claim card with a labelled input (placeholder-only -> real <label>).
-    assert page.locator(f'{_CARD} input[name="claim_token"]').count() == 1
-    assert page.locator(f'{_CARD} input#claim_token').count() == 1
-    assert page.locator(f'{_CARD} label[for="claim_token"]').count() == 1
-    # Real rendering spinner (opacity-only .htmx-indicator -> .spinner animation).
-    assert page.locator(f'{_CARD} #partner-claim-spinner.spinner').count() == 1
+    page.wait_for_selector('a[href*="tab=infrastructure"]', timeout=8000)
+    assert page.locator(_CARD).count() == 0
+    assert page.locator('a[href="/settings/cloud?tab=partner"]').count() == 0
 
     # Grace notice (flash--warning banner) on the status tab.
     assert page.locator(".flash.flash--warning").count() >= 1

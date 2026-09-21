@@ -204,3 +204,31 @@ async def test_reprice_rejects_unknown_list_and_requires_version(client):
         "price_list": "Does not exist", "expected_version": version,
     })
     assert unknown.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_reprice_retry_replays_committed_result_without_second_write(client):
+    token = await _register(client)
+    item_id = await _item(client, token, sku="RETRY-1", retail=100, wholesale=80)
+    list_id, version = await _quotation(client, token, [{
+        "item_id": item_id,
+        "sku": "RETRY-1",
+        "description": "Catalog",
+        "quantity": 1,
+        "unit_price": 100,
+        "line_total": 100,
+    }])
+    payload = {"price_list": "Wholesale", "expected_version": version}
+
+    first = await client.post(
+        f"/lists/{list_id}/reprice", headers=_h(token), json=payload)
+    assert first.status_code == 200, first.text
+
+    replay = await client.post(
+        f"/lists/{list_id}/reprice", headers=_h(token), json=payload)
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == first.json()
+
+    state = (await client.get(f"/lists/{list_id}", headers=_h(token))).json()
+    assert state["version"] == first.json()["version"]
+    assert state["line_items"][0]["unit_price"] == 80.0

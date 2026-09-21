@@ -188,8 +188,7 @@ async def test_generate_now_creates_invoice(client):
     assert "My Sub Template" in doc.get("notes", "")
     assert doc.get("terms_template") == "Standard Sales Terms"
     assert "seller until paid" in doc.get("terms_text", "")
-    assert doc.get("company_name")
-    assert doc.get("company_name") != "Admin"
+    assert "company_name" not in doc
 
 
 @pytest.mark.asyncio

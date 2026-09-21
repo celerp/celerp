@@ -48,7 +48,7 @@ def prepare_document_output(
 
     # "terms" is the historical customer-facing field. Internal "notes" is
     # deliberately never a fallback here.
-    if not out.get("terms_text") and out.get("terms"):
+    if "terms_text" not in out and out.get("terms"):
         out["terms_text"] = out["terms"]
 
     self_billing = _primary_address(self_contact, "billing")
@@ -69,7 +69,7 @@ def prepare_document_output(
         "company_email": self_contact.get("email") or _company_value(company, "email") or "",
     }
     for key, value in seller.items():
-        if not out.get(key) and value:
+        if key not in out and value:
             out[key] = value
 
     billing = _primary_address(contact, "billing")
@@ -86,7 +86,7 @@ def prepare_document_output(
         "shipping_attn": shipping.get("attn") or "",
     }
     for key, value in customer.items():
-        if not out.get(key) and value:
+        if key not in out and value:
             out[key] = value
 
     return out

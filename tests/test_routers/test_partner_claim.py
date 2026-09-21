@@ -560,7 +560,7 @@ async def test_partner_claim_hidden_on_partner_managed():
                 follow_redirects=False,
             ) as c:
                 r = await c.get(
-                    "/settings/cloud",
+                    "/settings/cloud?tab=partner",
                     cookies={"celerp_token": make_test_token(role="owner")})
         assert r.status_code == 200
         # The claim-entry control is withheld: no claim-token input renders.
@@ -571,3 +571,50 @@ async def test_partner_claim_hidden_on_partner_managed():
         assert 'id="partner-managed-note"' in r.text
     finally:
         gw_state._commercial_context = {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("relay_status,tier,public_url,token_bound", [
+    ("inactive", "free", None, True),
+    ("active", "cloud", "https://direct.celerp.com", True),
+])
+async def test_partner_claim_hidden_once_direct_install_is_connected(
+    relay_status, tier, public_url, token_bound,
+):
+    """Connected direct customers never see partner adoption, including free tier;
+    a stale ?tab=partner URL safely falls back to the normal connected status view."""
+    from httpx import ASGITransport, AsyncClient
+    from ui.app import app as ui_app
+    from test_helpers import make_test_token
+
+    neutral_infra = {
+        "in_grace": False,
+        "has_external_url": False,
+        "external_db_entitled": False,
+        "storage_in_grace": False,
+        "has_external_storage": False,
+        "external_storage_entitled": False,
+    }
+    with (
+        patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=(
+            relay_status, public_url, tier, False, True, token_bound,
+        ))),
+        patch("ui.routes.settings_cloud._commercial_state", new=AsyncMock(return_value={})),
+        patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
+        patch("ui.routes.settings_cloud._get_role", return_value="owner"),
+        patch("ui.api_client.get_billing_catalog", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_backup_status", new=AsyncMock(return_value={})),
+        patch("celerp.gateway.state.get_commercial_mode", return_value="celerp_direct"),
+        patch("celerp.gateway.state.get_local_infra_state", return_value=neutral_infra),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui",
+            follow_redirects=False,
+        ) as c:
+            r = await c.get(
+                "/settings/cloud?tab=partner",
+                cookies={"celerp_token": make_test_token(role="owner")},
+            )
+    assert r.status_code == 200
+    assert 'id="partner-claim-card"' not in r.text
+    assert 'href="/settings/cloud?tab=partner"' not in r.text

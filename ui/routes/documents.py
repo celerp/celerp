@@ -4612,11 +4612,18 @@ celerpUpdateBulkAlloc();
                 return _action_error(str(e.detail))
             return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         try:
-            await api.patch_list(token, entity_id, {field: value})
+            result = await api.patch_list(token, entity_id, {field: value})
             lst = await api.get_list(token, entity_id)
         except APIError as e:
             return _action_error(str(e.detail))
-        return _doc_display_cell(entity_id, field, lst.get(field), "list")
+        cell = _doc_display_cell(entity_id, field, lst.get(field), "list")
+        return _R(
+            to_xml(cell),
+            media_type="text/html",
+            headers={"HX-Trigger": _json.dumps({
+                "celerpListVersion": {"version": result.get("version")},
+            })},
+        )
 
     @app.post("/lists/{entity_id}/lines")
     async def save_list_lines(request: Request, entity_id: str):
@@ -7271,6 +7278,13 @@ window._celerpHadLines = {'true' if line_items else 'false'};
 // Optimistic-concurrency token for lists (null for docs). Sent with every line save and
 // refreshed from the save response, so a tab never false-conflicts against its own last write.
 window._celerpListVersion = {_json.dumps(doc.get("version")) if is_list else 'null'};
+if (!window._celerpListVersionListener) {{
+    window._celerpListVersionListener = function(event) {{
+        const version = event.detail && event.detail.version;
+        if (version != null) window._celerpListVersion = version;
+    }};
+    document.body.addEventListener('celerpListVersion', window._celerpListVersionListener);
+}}
 /* Stored-array position of the first rendered row. A list renders one bounded page
    of lines, so a save overwrites exactly the positions this page occupies and leaves
    every off-page row untouched. Docs are never paged (offset 0). */
@@ -8319,7 +8333,7 @@ function _celerpCollectLines() {{
     }}
     return lines;
 }}
-async function _celerpPersist() {{
+async function _celerpPersistOnce() {{
     const lines = _celerpCollectLines();
     // A null return means the collector aborted on an invalid quantity and has
     // already shown the error: send no request and report the save as failed so
@@ -8401,6 +8415,15 @@ async function _celerpPersist() {{
         }}
         return false;
     }}
+}}
+window._celerpPersistTail = window._celerpPersistTail || Promise.resolve(true);
+function _celerpPersist() {{
+    const run = window._celerpPersistTail.then(
+        () => _celerpPersistOnce(),
+        () => _celerpPersistOnce()
+    );
+    window._celerpPersistTail = run.then(() => true, () => false);
+    return run;
 }}
 /* Save the current page, then swap to another page of the same list. Paging a draft must
    never silently drop unsaved edits, so a failed save (including a stale-version conflict)
@@ -8550,6 +8573,9 @@ function _celerpApplyRepriceWarnings() {{
 _celerpApplyRepriceWarnings();
 
 async function celerpReprice(priceList) {{
+    /* A pending blur save is redundant here; the explicit save below owns this transition. */
+    clearTimeout(_celerpSaveTimer);
+    _celerpSaveTimer = null;
     /* Save current lines first; never discard an invalid or stale page to reprice. */
     const ok = await _celerpPersist();
     if (!ok) return;
