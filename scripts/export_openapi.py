@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 
 # The JWT guard in celerp.config raises at import under production settings; the
 # schema export never signs a token, so allow the insecure default like the
@@ -26,11 +27,38 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 import celerp.main
 
 
+def _register_default_modules() -> None:
+    """Attach the first-party module routers, the same ones a fully provisioned
+    instance serves.
+
+    The core app registers only its own routes at import; the business modules
+    (inventory, docs, accounting, contacts, manufacturing, and the rest) attach
+    their routers during startup, keyed off the enabled-module set. app.openapi()
+    reads whatever is registered, so without this the exported schema would omit
+    most of the API. Route registration imports the modules and mounts their
+    routers; it touches no database (the startup migration phase is a
+    Postgres-only step that does not shape the schema)."""
+    module_dir = os.environ.get("MODULE_DIR") or str(
+        Path(celerp.main.__file__).resolve().parent.parent / "default_modules"
+    )
+    lock = Path(module_dir) / "first_party.lock.json"
+    enabled = set(json.loads(lock.read_text(encoding="utf-8")).keys())
+
+    from celerp.modules.loader import load_all, register_api_routes
+
+    loaded = load_all(module_dir, enabled)
+    register_api_routes(celerp.main.app, loaded)
+
+
 def export(path: str) -> dict:
     """Write the exposed OpenAPI schema to ``path`` and return it."""
     # Turn the flag on so the export matches the exposed schema exactly and the
     # non-default exposure is logged, the same as when a server serves it.
     celerp.main.settings.expose_openapi_schema = True
+    _register_default_modules()
+    # openapi() caches on the app; clear it so a re-export after registration
+    # rebuilds the document against the now-complete route set.
+    celerp.main.app.openapi_schema = None
     schema = celerp.main.app.openapi()
     with open(path, "w", encoding="utf-8") as f:
         json.dump(schema, f, indent=2, ensure_ascii=False)

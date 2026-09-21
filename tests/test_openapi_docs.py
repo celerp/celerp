@@ -81,3 +81,16 @@ def test_export_openapi_writes_valid_schema(tmp_path):
     assert schema["info"].get("description"), "exported schema has no info.description"
     assert schema.get("paths"), "exported schema has no paths"
     assert schema.get("tags"), "exported schema has no tag groups"
+
+    # The whole API, not just the core: the business modules must be loaded and
+    # their routes present. A schema missing these means the export ran without
+    # registering the module routers (the reference would omit most endpoints).
+    op_tags = {
+        tag
+        for methods in schema["paths"].values()
+        for op in methods.values()
+        if isinstance(op, dict)
+        for tag in op.get("tags", [])
+    }
+    for tag in ("items", "docs", "accounting", "crm"):
+        assert tag in op_tags, f"module tag {tag!r} missing; modules not loaded"
