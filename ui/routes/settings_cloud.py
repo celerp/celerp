@@ -126,7 +126,7 @@ def _unconnected_cloud_tabs(active: str, lang: str = "en") -> FT:
         ("status", t("settings_cloud.web_access", lang), "/settings/cloud"),
         (
             "partner",
-            t("settings_cloud.partner_claim_title", lang),
+            t("settings_cloud.partner_tab", lang),
             "/settings/cloud?tab=partner",
         ),
     ]
