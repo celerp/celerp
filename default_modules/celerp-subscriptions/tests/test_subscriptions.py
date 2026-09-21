@@ -186,6 +186,24 @@ async def test_generate_now_creates_invoice(client):
     assert doc.get("doc_type") == "invoice"
     assert doc.get("subscription_id") == eid
     assert "My Sub Template" in doc.get("notes", "")
+    assert doc.get("terms_template") == "Standard Sales Terms"
+    assert "seller until paid" in doc.get("terms_text", "")
+    assert doc.get("company_name")
+    assert doc.get("company_name") != "Admin"
+
+
+@pytest.mark.asyncio
+async def test_generate_now_preserves_legacy_customer_terms(client):
+    tok = await _register(client)
+    h = _h(tok)
+    sub = await _create_sub_template(client, h, terms="Legacy subscription customer terms.")
+    eid = sub.get("entity_id") or sub.get("id") or ""
+
+    r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
+    assert r.status_code == 200, r.text
+    doc = (await client.get(f"/docs/{r.json()['doc_id']}", headers=h)).json()
+    assert doc.get("terms_text") == "Legacy subscription customer terms."
+    assert not doc.get("terms_template")
 
 
 # ---------------------------------------------------------------------------

@@ -39,8 +39,10 @@ from celerp.services.permissions import assert_role_permission, get_current_comp
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
-from celerp.services.money import checked_exchange_rate, round_money, to_decimal, to_stored_float
-from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, resolve_price
+from celerp.services.money import checked_exchange_rate, round_money, round_rate, to_decimal, to_stored_float
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, resolve_price
+from celerp.services.terms import default_terms_for
+from celerp.output.document_context import prepare_document_output
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
@@ -144,6 +146,10 @@ class DocCreatePayload(BaseModel):
     # way in. Foreign-currency documents require one before they can finalize.
     conversion_rate: float | None = None
     notes: str | None = None
+    reference: str | None = None
+    terms_template: str | None = None
+    terms_text: str | None = None
+    customer_note: str | None = None
     expected_delivery: str | None = None
     valid_until: str | None = None
     carrier: str | None = None
@@ -1070,6 +1076,21 @@ async def get_doc_pdf(
 
     company_row = await session.get(Company, company_id)
     company = ({"name": company_row.name} | (company_row.settings or {}) if company_row else {}) | {"id": company_id}
+    self_contact: dict = {}
+    if company_row:
+        self_id = (company_row.settings or {}).get("self_contact_id")
+        if self_id:
+            self_row = await session.get(Projection, (company_id, self_id))
+            if self_row is not None:
+                self_contact = self_row.state or {}
+    contact: dict = {}
+    if doc.get("contact_id"):
+        contact_row = await session.get(Projection, (company_id, doc["contact_id"]))
+        if contact_row is not None and contact_row.entity_type == "contact":
+            contact = contact_row.state or {}
+    doc = prepare_document_output(
+        doc, company=company, self_contact=self_contact, contact=contact,
+    )
 
     # When the company shows barcodes on lines, backfill lines saved before
     # barcode stamping from their catalog items (mirror of the share view).
@@ -1271,6 +1292,34 @@ async def create_doc(
     data = payload.model_dump(exclude_none=True)
     data["ref_id"] = ref_id
     data.setdefault("currency", company.settings.get("currency", "USD"))
+    # Defaults are creation policy, not a best-effort UI follow-up. An explicitly
+    # supplied blank is intentional and therefore suppresses the configured default.
+    if not ({"terms_template", "terms_text", "terms"} & payload.model_fields_set):
+        default_terms = default_terms_for(company.settings or {}, payload.doc_type)
+        if default_terms:
+            data["terms_template"] = default_terms.get("name") or ""
+            data["terms_text"] = default_terms.get("text") or ""
+
+    # Snapshot the resolved seller identity on every new document. Existing
+    # customer-facing fields always win, and legacy documents without a
+    # snapshot continue to use render-time fallback.
+    self_contact: dict = {}
+    self_id = (company.settings or {}).get("self_contact_id")
+    if self_id:
+        self_row = await session.get(Projection, (company_id, self_id))
+        if self_row is not None and self_row.entity_type == "contact":
+            self_contact = self_row.state or {}
+    contact: dict = {}
+    if payload.contact_id:
+        contact_row = await session.get(Projection, (company_id, payload.contact_id))
+        if contact_row is not None and contact_row.entity_type == "contact":
+            contact = contact_row.state or {}
+    data = prepare_document_output(
+        data,
+        company={"name": company.name, "settings": company.settings or {}},
+        self_contact=self_contact,
+        contact=contact,
+    )
     # Default issue_date to today so date filters and sorting work correctly on new docs
     data.setdefault("issue_date", _date.today().isoformat())
 
@@ -4502,6 +4551,109 @@ async def patch_list(
     # entry.id is the list's new version (the projection version tracks the latest entry id), so the
     # client refreshes its cached version from here and its next save pins the value it just wrote.
     return {"event_id": entry.id, "version": entry.id}
+
+
+class ListRepriceBody(BaseModel):
+    price_list: str
+    expected_version: int
+
+
+@lists_router.post("/{entity_id}/reprice")
+async def reprice_list(
+    entity_id: str,
+    payload: ListRepriceBody,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Atomically reprice every catalog-backed line on a draft List."""
+    row = await _get_list_for_update(session, company_id, entity_id)
+    if row.state.get("status") != "draft":
+        raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
+    if row.version != payload.expected_version:
+        raise HTTPException(
+            status_code=409,
+            detail="This list was changed by someone else; reload to get the latest before repricing",
+        )
+
+    price_config = await get_price_config(session, company_id)
+    price_lists, _base_name, company_currency = price_config
+    currency = row.state.get("currency") or company_currency
+    configured_names = {str(pl.get("name") or "") for pl in price_lists}
+    if payload.price_list not in configured_names:
+        raise HTTPException(status_code=422, detail=f"Unknown price list: {payload.price_list}")
+    if is_cost_list_name(payload.price_list):
+        assert_role_permission(settings, role, "view_inventory_costs")
+
+    stored_lines = list(row.state.get("line_items") or [])
+    item_ids = {line_item_id(line) for line in stored_lines if isinstance(line, dict)}
+    item_ids.discard(None)
+    items: dict[str, Projection] = {}
+    if item_ids:
+        item_rows = (
+            await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_type == "item",
+                    Projection.entity_id.in_(item_ids),
+                )
+            )
+        ).scalars().all()
+        items = {item.entity_id: item for item in item_rows}
+
+    from celerp_inventory.routes import flatten_item
+
+    repriced = 0
+    skipped: list[dict] = []
+    updated_lines: list[dict] = []
+    for stored_line in stored_lines:
+        line = dict(stored_line)
+        item_id = line_item_id(line)
+        if item_id is None:
+            # Free-text/manual line: it has no catalog identity, so repricing
+            # intentionally leaves it untouched and does not warn.
+            updated_lines.append(line)
+            continue
+        item = items.get(item_id)
+        if item is None:
+            # The item may have been hard-deleted or an import undone after this
+            # line was created. Preserve the document snapshot; never substitute
+            # another same-SKU item.
+            skipped.append({"item_id": item_id, "reason": "item_not_found"})
+            updated_lines.append(line)
+            continue
+        flat = flatten_item(item.state or {}, item.entity_id, price_config=price_config)
+        new_rate = round_rate(resolve_price(flat, payload.price_list), currency)
+        line["unit_price"] = float(new_rate)
+        quantity = to_decimal(line.get("quantity", 0) or 0)
+        discount_pct = to_decimal(line.get("discount_pct", 0) or 0)
+        amount = quantity * new_rate
+        if discount_pct:
+            amount *= to_decimal(1) - discount_pct / 100
+        line["line_total"] = to_stored_float(round_money(amount, currency))
+        repriced += 1
+        updated_lines.append(line)
+
+    fields_changed = {
+        "price_list": {"old": row.state.get("price_list"), "new": payload.price_list},
+        "line_items": {"old": stored_lines, "new": updated_lines},
+    }
+    entry = await _emit_list(
+        session, company_id, entity_id, "list.updated",
+        {"fields_changed": fields_changed}, user, None,
+    )
+    await session.commit()
+    return {
+        "ok": True,
+        "event_id": entry.id,
+        "version": entry.id,
+        "repriced": repriced,
+        "skipped": skipped,
+        "price_list": payload.price_list,
+    }
 
 
 class ListLinePagePatch(BaseModel):

@@ -149,9 +149,8 @@ async def test_public_share_view_is_the_print_layout_with_letterhead(client: Asy
 
     r = await client.get(f"/share/{token}")
     assert r.status_code == 200
-    # Sender letterhead (From): the company identity lives on the self-contact,
-    # which registration seeds with the admin's name - same rule as UI print.
-    assert 'class="dp-company-name">Admin<' in r.text
+    # Sender letterhead uses the self-contact business name, not the owner person's name.
+    assert 'class="dp-company-name">ShareCo<' in r.text
     assert "Bill To" in r.text
     assert "ACME Corp" in r.text
 
@@ -269,6 +268,52 @@ async def test_bundle_download_returns_json(client: AsyncClient):
     assert "doc" in bundle
     assert "exported_at" in bundle
     assert bundle["doc"].get("contact_name") == "ACME Corp"
+
+
+@pytest.mark.asyncio
+async def test_customer_share_excludes_internal_notes_and_preserves_public_fields(client: AsyncClient):
+    tok = await _token(client)
+    payload = {
+        **_doc_payload(),
+        "reference": "PO-PUBLIC-55",
+        "terms_text": "PUBLIC SHARE TERMS",
+        "customer_note": "PUBLIC SHARE NOTE",
+        "notes": "SECRET INTERNAL NOTE - NEVER SEND",
+    }
+    created = await client.post("/docs", json=payload, headers=_h(tok))
+    assert created.status_code == 200, created.text
+    entity_id = created.json()["id"]
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+
+    view = await client.get(f"/share/{token}")
+    assert view.status_code == 200
+    assert "PUBLIC SHARE TERMS" in view.text
+    assert "PUBLIC SHARE NOTE" in view.text
+    assert "PO-PUBLIC-55" in view.text
+    assert "SECRET INTERNAL NOTE - NEVER SEND" not in view.text
+
+    downloaded = await client.get(f"/share/{token}/bundle")
+    assert downloaded.status_code == 200
+    bundle = downloaded.json()
+    exported = bundle["doc"]
+    assert "notes" not in exported
+    assert "account_code" not in str(exported)
+    assert exported["terms_text"] == "PUBLIC SHARE TERMS"
+    assert exported["customer_note"] == "PUBLIC SHARE NOTE"
+    assert exported["reference"] == "PO-PUBLIC-55"
+
+    imported = await client.post(
+        "/docs/import-bundle",
+        json=bundle,
+        headers={**_h(tok), "Content-Type": "application/json"},
+        follow_redirects=False,
+    )
+    assert imported.status_code == 302, imported.text
+    received = (await client.get(imported.headers["location"], headers=_h(tok))).json()
+    assert received["terms_text"] == "PUBLIC SHARE TERMS"
+    assert received["customer_note"] == "PUBLIC SHARE NOTE"
+    assert received["reference"] == "PO-PUBLIC-55"
+    assert not received.get("notes")
 
 
 @pytest.mark.asyncio

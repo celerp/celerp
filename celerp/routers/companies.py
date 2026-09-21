@@ -39,6 +39,7 @@ from celerp.services.permissions import (
     role_has_permission,
 )
 from celerp.tax_regimes import get_regime, TAX_REGIMES
+from celerp.services.terms import DEFAULT_TERMS_CONDITIONS, normalize_terms_templates
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -1325,28 +1326,14 @@ async def patch_contact_defaults(
 # Terms & Conditions templates
 # ---------------------------------------------------------------------------
 
-DEFAULT_TERMS_CONDITIONS: list[dict] = [
-    {"name": "Standard Sales Terms", "text": "Goods remain property of the seller until paid in full.", "doc_types": ["invoice", "receipt", "credit_note"], "default_for": ["invoice", "receipt", "credit_note"]},
-    {"name": "Standard Consignment Out Terms", "text": "Consigned goods remain property of the consignor until sold or returned.", "doc_types": ["memo"], "default_for": ["memo"]},
-    {"name": "Standard Purchase Terms", "text": "Goods must conform to agreed specifications.", "doc_types": ["purchase_order", "bill"], "default_for": ["purchase_order", "bill"]},
-    {"name": "Standard Consignment In Terms", "text": "Consigned goods remain property of the consignor. Unsold goods may be returned per agreed schedule.", "doc_types": ["consignment_in"], "default_for": ["consignment_in"]},
-]
-
-
 @router.get("/me/terms-conditions")
 async def get_terms_conditions(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
-    templates = company.settings.get("terms_conditions") or DEFAULT_TERMS_CONDITIONS
-    # Migrate old is_default boolean to default_for list
-    migrated = False
-    for t in templates:
-        if "default_for" not in t:
-            t["default_for"] = list(t.get("doc_types") or []) if t.pop("is_default", False) else []
-            migrated = True
-        t.pop("is_default", None)
-    if migrated and company.settings.get("terms_conditions"):
+    configured = company.settings.get("terms_conditions")
+    templates = normalize_terms_templates(configured or DEFAULT_TERMS_CONDITIONS)
+    if configured is not None and templates != configured:
         settings = dict(company.settings)
         settings["terms_conditions"] = templates
         company.settings = settings

@@ -21,6 +21,7 @@ from ui.components.table import search_bar, EMPTY, pagination, searchable_select
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.permissions import role_has_permission
+from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_section as _shared_doc_files_section
@@ -29,7 +30,6 @@ from ui.components.files import files_section as _shared_doc_files_section
 from celerp.output.doc_print import (
     IMPORTABLE_DOC_TYPES as _IMPORTABLE_DOC_TYPES,
     INVOICE_LAYOUT_DOC_TYPES as _INVOICE_LAYOUT_DOC_TYPES,
-    compose_address as _compose_company_address,
     render_doc_print_html,
 )
 
@@ -121,15 +121,10 @@ async def _company_letterhead(token: str) -> dict:
                     break
         except Exception:
             pass
-    addrs = contact.get("addresses") or []
-    primary = next((a for a in addrs if a.get("address_type") == "billing"), None) or (addrs[0] if addrs else None)
-    address = (_compose_company_address(primary) if primary else "") or unwrap_address(company.get("address")) or ""
+    prepared = prepare_document_output({}, company=company, self_contact=contact)
     return {
-        "company_name": contact.get("name") or company.get("name") or "",
-        "company_address": address,
-        "company_phone": contact.get("phone") or company.get("phone") or "",
-        "company_tax_id": contact.get("tax_id") or company.get("tax_id") or "",
-        "company_email": contact.get("email") or company.get("email") or "",
+        key: prepared.get(key) or ""
+        for key in ("company_name", "company_address", "company_phone", "company_tax_id", "company_email")
     }
 
 
@@ -1360,27 +1355,6 @@ def setup_routes(app):
                 status_code=200,
                 headers={"HX-Trigger": _json.dumps({"flashError": detail})},
             )
-        # Apply default T&C template in the background (non-blocking).
-        # The user is already redirected; T&C is a nice-to-have not a blocker.
-        import asyncio as _asyncio
-
-        async def _apply_tc():
-            try:
-                tc_templates = await api.get_terms_conditions(token)
-                default_tc = next(
-                    (tc for tc in tc_templates
-                     if doc_type in (tc.get("default_for") or [])),
-                    None,
-                )
-                if default_tc and entity_id:
-                    await api.patch_doc(token, entity_id, {
-                        "terms_template": default_tc["name"],
-                        "terms_text": default_tc.get("text", ""),
-                    })
-            except Exception:
-                pass
-
-        _asyncio.create_task(_apply_tc())
         from starlette.responses import Response as _R
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -1900,11 +1874,17 @@ def setup_routes(app):
             lst["contact_name"] = lst.get("receiver") or lst.get("customer_name") or ""
         if not lst.get("issue_date"):
             lst["issue_date"] = lst.get("created_at") or lst.get("date")
-        if not lst.get("company_name"):
+        if lst.get("contact_id"):
             try:
-                lst.update(await _company_letterhead(token))
+                lst = prepare_document_output(lst, contact=await api.get_contact(token, lst["contact_id"]))
             except Exception:
                 pass
+        try:
+            for _key, _value in (await _company_letterhead(token)).items():
+                if not lst.get(_key) and _value:
+                    lst[_key] = _value
+        except Exception:
+            pass
         _ident_mode = await _line_identifier_mode(token)
         await _enrich_print_lines(token, lst, _ident_mode)
         try:
@@ -1939,21 +1919,17 @@ def setup_routes(app):
             from starlette.responses import HTMLResponse as _HR
             return _HR(f"<p>Error loading document: {e.detail}</p>", status_code=e.status)
         # Inject company fields
-        if not doc.get("company_name"):
-            try:
-                doc = {**doc, **await _company_letterhead(token)}
-            except Exception:
-                pass
-        # Resolve contact
+        try:
+            for _key, _value in (await _company_letterhead(token)).items():
+                if not doc.get(_key) and _value:
+                    doc[_key] = _value
+        except Exception:
+            pass
+        # Fill any missing customer-facing fields independently from the selected contact.
         cid = doc.get("contact_id")
-        if cid and not doc.get("contact_name"):
+        if cid:
             try:
-                contact = await api.get_contact(token, cid)
-                doc["contact_name"] = contact.get("name") or ""
-                doc["contact_company_name"] = contact.get("company_name") or ""
-                doc["contact_email"] = contact.get("email") or ""
-                doc["contact_billing_address"] = contact.get("billing_address") or contact.get("address") or ""
-                doc["contact_tax_id"] = contact.get("tax_id") or ""
+                doc = prepare_document_output(doc, contact=await api.get_contact(token, cid))
             except Exception:
                 pass
         # Source pieces/weight (+ the weight unit) from each line's parcel for the printout.
@@ -2113,11 +2089,12 @@ celerpUpdateBulkAlloc();
             doc = {}
 
         # Inject company fields so "My company info" box is populated
-        if not doc.get("company_name"):
-            try:
-                doc = {**doc, **await _company_letterhead(token)}
-            except Exception:
-                pass
+        try:
+            for _key, _value in (await _company_letterhead(token)).items():
+                if not doc.get(_key) and _value:
+                    doc[_key] = _value
+        except Exception:
+            pass
 
         # Resolve contact details if contact_id set but name missing
         cid = doc.get("contact_id")
@@ -3127,6 +3104,27 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             return JSONResponse({"error": str(e.detail)}, status_code=400)
         return JSONResponse({"ok": True, "repriced": repriced, "price_list": price_list})
+
+    @app.post("/lists/{entity_id}/reprice")
+    async def reprice_list_lines(request: Request, entity_id: str):
+        """Thin UI proxy for the version-guarded whole-List reprice operation."""
+        from starlette.responses import JSONResponse
+        token = _token(request)
+        if not token:
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        try:
+            body = await request.json()
+            price_list = str(body.get("price_list") or "").strip()
+            expected_version = int(body["expected_version"])
+        except (KeyError, TypeError, ValueError):
+            return JSONResponse({"error": "price_list and expected_version are required"}, status_code=400)
+        if not price_list:
+            return JSONResponse({"error": "price_list and expected_version are required"}, status_code=400)
+        try:
+            result = await api.reprice_list(token, entity_id, price_list, expected_version)
+        except APIError as e:
+            return JSONResponse({"error": str(e.detail)}, status_code=e.status or 400)
+        return JSONResponse(result)
 
     # T3: Document actions (finalize, void, send, mark_sent, unmark_sent)
     @app.post("/docs/{entity_id}/action/{action}")
@@ -4431,11 +4429,12 @@ celerpUpdateBulkAlloc();
             lst["issue_date"] = lst.get("created_at") or lst.get("date")
 
         # Inject company fields
-        if not lst.get("company_name"):
-            try:
-                lst.update(await _company_letterhead(token))
-            except Exception:
-                pass
+        try:
+            for _key, _value in (await _company_letterhead(token)).items():
+                if not lst.get(_key) and _value:
+                    lst[_key] = _value
+        except Exception:
+            pass
 
         # Fetch price lists
         price_lists: list[dict] = []
@@ -7331,6 +7330,10 @@ window._L = {_json.dumps({
     "invalid_qty": t("documents.enter_a_number"),
     "dup_on_doc": t("documents.duplicate_item_on_document"),
     "reprice_failed": t("documents.reprice_failed"),
+    "reprice_partial_title": t("documents.reprice_partial_title"),
+    "reprice_partial_one": t("documents.reprice_partial_one"),
+    "reprice_partial_many": t("documents.reprice_partial_many"),
+    "reprice_missing_item_tip": t("documents.reprice_missing_item_tip"),
     "import_failed": t("documents.import_failed"),
     "allow_split_warn": t("documents.allow_split_warn"),
     "reserved_conflict_title": t("documents.reserved_conflict_title"),
@@ -8493,14 +8496,84 @@ function celerpAutoSave() {{
     clearTimeout(_celerpSaveTimer);
     _celerpSaveTimer = setTimeout(_celerpPersist, 400);
 }}
+function _celerpRepriceWarningKey() {{
+    return 'celerp_reprice_skipped:' + _CELERP_EID;
+}}
+function _celerpShowRepriceWarning(updated, skipped) {{
+    const dlg = document.createElement('dialog');
+    dlg.className = 'modal-dialog';
+    const body = document.createElement('div');
+    body.className = 'modal-body';
+    const title = document.createElement('h3');
+    title.className = 'section-title';
+    title.textContent = _L.reprice_partial_title;
+    const msg = document.createElement('p');
+    const tpl = skipped === 1 ? _L.reprice_partial_one : _L.reprice_partial_many;
+    msg.textContent = tpl.replace('{{updated}}', String(updated)).replace('{{skipped}}', String(skipped));
+    const actions = document.createElement('div');
+    actions.className = 'modal-dialog__actions';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'btn btn--primary';
+    close.textContent = _L.close;
+    close.onclick = function() {{ dlg.close(); }};
+    actions.appendChild(close);
+    body.append(title, msg, actions);
+    dlg.appendChild(body);
+    dlg.addEventListener('close', function() {{ dlg.remove(); }});
+    document.body.appendChild(dlg);
+    dlg.showModal();
+}}
+function _celerpApplyRepriceWarnings() {{
+    if (_CELERP_BASE !== '/lists/') return;
+    let state = null;
+    try {{
+        state = JSON.parse(sessionStorage.getItem(_celerpRepriceWarningKey()) || 'null');
+    }} catch (_e) {{
+        sessionStorage.removeItem(_celerpRepriceWarningKey());
+    }}
+    if (!state || !Array.isArray(state.item_ids) || !state.item_ids.length) return;
+    const ids = new Set(state.item_ids);
+    document.querySelectorAll('#{line_body_id} tr').forEach(function(row) {{
+        const itemId = row.querySelector('[data-name="entity_id"]')?.value || '';
+        if (itemId && ids.has(itemId)) {{
+            row.classList.add('doc-line--reprice-warning');
+            row.title = _L.reprice_missing_item_tip;
+        }}
+    }});
+    if (state.show_modal) {{
+        state.show_modal = false;
+        sessionStorage.setItem(_celerpRepriceWarningKey(), JSON.stringify(state));
+        _celerpShowRepriceWarning(Number(state.repriced || 0), Number(state.skipped_count || state.item_ids.length));
+    }}
+}}
+_celerpApplyRepriceWarnings();
+
 async function celerpReprice(priceList) {{
-    /* Save current lines first, then reprice via API and reload */
-    await _celerpPersist();
+    /* Save current lines first; never discard an invalid or stale page to reprice. */
+    const ok = await _celerpPersist();
+    if (!ok) return;
+    const body = {{price_list: priceList}};
+    if (_CELERP_BASE === '/lists/') body.expected_version = _celerpListVersion;
     const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/reprice', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{price_list: priceList}})
+        body: JSON.stringify(body)
     }});
     if (resp.ok) {{
+        if (_CELERP_BASE === '/lists/') {{
+            const data = await resp.json().catch(() => ({{}}));
+            const skipped = Array.isArray(data.skipped) ? data.skipped : [];
+            if (skipped.length) {{
+                sessionStorage.setItem(_celerpRepriceWarningKey(), JSON.stringify({{
+                    item_ids: skipped.map(function(x) {{ return x.item_id; }}).filter(Boolean),
+                    skipped_count: skipped.length,
+                    repriced: Number(data.repriced || 0),
+                    show_modal: true
+                }}));
+            }} else {{
+                sessionStorage.removeItem(_celerpRepriceWarningKey());
+            }}
+        }}
         window.location.reload();
     }} else {{
         const err = await resp.json().catch(() => ({{}}));

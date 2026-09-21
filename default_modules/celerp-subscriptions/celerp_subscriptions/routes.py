@@ -20,6 +20,8 @@ from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.terms import default_terms_for
+from celerp.output.document_context import prepare_document_output
 from celerp_docs.sequences import next_doc_ref
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 
@@ -112,11 +114,13 @@ def _build_router() -> APIRouter:
         contact_id = state.get("contact_id")
         contact_name = ""
         contact_company_name = ""
+        contact_state: dict = {}
         if contact_id:
             contact_proj = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
-            if contact_proj:
-                contact_name = contact_proj.state.get("name") or ""
-                contact_company_name = contact_proj.state.get("company_name") or ""
+            if contact_proj and contact_proj.entity_type == "contact":
+                contact_state = contact_proj.state or {}
+                contact_name = contact_state.get("name") or ""
+                contact_company_name = contact_state.get("company_name") or ""
 
         # Assign proper proforma ref (invoices) or PO ref, build entity_id
         seq_type = "proforma" if target_doc_type == "invoice" else "purchase_order"
@@ -162,6 +166,36 @@ def _build_router() -> APIRouter:
         }
         if due_date:
             doc_data["due_date"] = due_date
+
+        # Template terms win when explicitly present. Otherwise generated
+        # documents use the same company default as an ordinary document create.
+        if "terms_template" in state or "terms_text" in state or "terms" in state:
+            if "terms_template" in state:
+                doc_data["terms_template"] = state.get("terms_template") or ""
+            if "terms_text" in state:
+                doc_data["terms_text"] = state.get("terms_text") or ""
+            elif "terms" in state:
+                doc_data["terms"] = state.get("terms") or ""
+        else:
+            default_terms = default_terms_for(company.settings or {}, target_doc_type)
+            if default_terms:
+                doc_data["terms_template"] = default_terms.get("name") or ""
+                doc_data["terms_text"] = default_terms.get("text") or ""
+        if "customer_note" in state:
+            doc_data["customer_note"] = state.get("customer_note") or ""
+
+        self_contact: dict = {}
+        self_id = (company.settings or {}).get("self_contact_id")
+        if self_id:
+            self_row = await session.get(Projection, (company_id, self_id))
+            if self_row is not None and self_row.entity_type == "contact":
+                self_contact = self_row.state or {}
+        doc_data = prepare_document_output(
+            doc_data,
+            company={"name": company.name, "settings": company.settings or {}},
+            self_contact=self_contact,
+            contact=contact_state,
+        )
 
         await emit_event(
             session,

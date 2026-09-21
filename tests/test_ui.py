@@ -4381,12 +4381,10 @@ class TestSprint4DocActions:
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.lower()
         assert b"<dialog" not in content
-        # Exactly one showModal call is legal on a draft: the reserved-conflict
-        # resolution dialog in the autosave error path. It is owner-directed
-        # error resolution (the save was rejected because a line is reserved
-        # elsewhere), not routine data entry, and it only opens on that API
-        # rejection. Anything beyond that one call is a popup regression.
-        assert content.count(b"showmodal") == 1
+        # Two exceptional dialogs are legal on a draft: reserved-conflict
+        # resolution and the partial-reprice warning for deleted inventory.
+        # Neither opens during routine data entry.
+        assert content.count(b"showmodal") == 2
 
 
 class TestSprint4Payment:
@@ -10944,10 +10942,10 @@ class TestCompanyLetterhead:
         from ui.routes.documents import _company_letterhead
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Workspace", "settings": {"self_contact_id": "contact:self"}})),
-            patch("ui.api_client.get_contact", new=AsyncMock(return_value={"name": "Real Co Ltd", "phone": "555", "tax_id": "TAX9", "email": "x@co.test", "addresses": [{"address_type": "billing", "line1": "1 Main St", "city": "Town"}]})),
+            patch("ui.api_client.get_contact", new=AsyncMock(return_value={"name": "Owner Person", "company_name": "Real Co Ltd", "phone": "555", "tax_id": "TAX9", "email": "x@co.test", "addresses": [{"address_type": "billing", "line1": "1 Main St", "city": "Town"}]})),
         ):
             lh = await _company_letterhead("tok")
-        assert lh["company_name"] == "Real Co Ltd"          # from the self-contact, not the workspace name
+        assert lh["company_name"] == "Real Co Ltd"          # business name, not person/workspace name
         assert lh["company_address"] == "1 Main St, Town"   # composed from the self-contact billing addr
         assert lh["company_tax_id"] == "TAX9"
         assert lh["company_phone"] == "555"

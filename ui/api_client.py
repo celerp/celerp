@@ -2077,6 +2077,14 @@ async def patch_list(token: str, entity_id: str, data: dict, expected_version: i
         return _raise(await c.patch(f"/lists/{entity_id}", json=body)).json()
 
 
+async def reprice_list(token: str, entity_id: str, price_list: str, expected_version: int) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            f"/lists/{entity_id}/reprice",
+            json={"price_list": price_list, "expected_version": expected_version},
+        )).json()
+
+
 async def get_list_page(token: str, entity_id: str, offset: int = 0, limit: int = 100) -> dict:
     """One bounded page of a list's stored lines, with the list header and page metadata.
 
