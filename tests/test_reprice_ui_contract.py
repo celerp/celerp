@@ -51,3 +51,12 @@ def test_list_writes_share_one_version_and_serialized_save_path():
     assert "async function _celerpPersistOnce()" in source
     assert "window._celerpPersistTail" in source
     assert "window._celerpPersistTail.then(" in source
+
+
+def test_cost_reprice_permission_precedes_replay_lookup():
+    source = Path("default_modules/celerp-docs/celerp_docs/routes.py").read_text()
+    start = source.index("async def reprice_list")
+    snippet = source[start:start + 2200]
+    assert snippet.index("if is_cost_list_name(payload.price_list):") < snippet.index(
+        "find_event_by_idempotency(session, company_id, idem_key)"
+    )

@@ -4550,6 +4550,8 @@ async def reprice_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Atomically reprice every catalog-backed line on a draft List."""
+    if is_cost_list_name(payload.price_list):
+        assert_role_permission(settings, role, "view_inventory_costs")
     canonical_request = json.dumps(
         [entity_id, payload.expected_version, payload.price_list],
         separators=(",", ":"),
@@ -4601,9 +4603,6 @@ async def reprice_list(
     configured_names = {str(pl.get("name") or "") for pl in price_lists}
     if payload.price_list not in configured_names:
         raise HTTPException(status_code=422, detail=f"Unknown price list: {payload.price_list}")
-    if is_cost_list_name(payload.price_list):
-        assert_role_permission(settings, role, "view_inventory_costs")
-
     stored_lines = list(row.state.get("line_items") or [])
     item_ids = {line_item_id(line) for line in stored_lines if isinstance(line, dict)}
     item_ids.discard(None)
