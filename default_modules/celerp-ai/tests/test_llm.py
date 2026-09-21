@@ -222,3 +222,11 @@ async def test_call_llm_no_session(monkeypatch):
     with pytest.raises(RelayError) as ei:
         await call_llm("m", "s", "u")
     assert ei.value.code == "no_session"
+
+
+def test_ai_deadline_hierarchy_leaves_transport_margin():
+    from celerp.ai.llm import MODEL_CALL_TIMEOUT_S
+    from celerp.ai.service import AGENT_RUN_TIMEOUT_S
+    from ui.api_client import AI_QUERY_TIMEOUT_S
+
+    assert MODEL_CALL_TIMEOUT_S < AGENT_RUN_TIMEOUT_S < AI_QUERY_TIMEOUT_S

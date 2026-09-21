@@ -239,8 +239,12 @@ async def test_batch_total_failure(session, db_factory, company, user):
 
 @pytest.mark.asyncio
 async def test_batch_creates_notification_on_complete(session, db_factory, company, user):
+    from celerp.ai.conversations import create_conversation
     file_ids = _create_test_files(company.id, user.id, 2)
-    job = await create_batch_job(session, company.id, user.id, "analyze", file_ids)
+    conv = await create_conversation(session, company.id, user.id, title="Receipts")
+    job = await create_batch_job(
+        session, company.id, user.id, "analyze", file_ids, conversation_id=conv.id,
+    )
     await session.commit()
 
     mock_create_notif = AsyncMock()
@@ -256,6 +260,7 @@ async def test_batch_creates_notification_on_complete(session, db_factory, compa
     title = call_args[0][3]  # 4th positional: title
     assert title == "2 of 2 file(s) read"
     assert call_args[1]["priority"] == "high"
+    assert call_args[1]["action_url"] == f"/ai?conversation={conv.id}"
 
 
 @pytest.mark.asyncio

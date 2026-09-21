@@ -757,8 +757,9 @@ async def test_unknown_vendor_dependency_resolves_across_confirmations(auth_clie
             f"/ai/conversations/{conv_id}/confirm", headers=h,
             json={"message_id": proposed["message_id"], "tool_call_id": bill["id"]},
         )
-        assert early.status_code == 409
-        assert early.json()["detail"]["code"] == "action_dependency_not_ready"
+        assert early.status_code == 200
+        assert early.json()["action_status"] == "pending"
+        assert early.json()["error"]["code"] == "action_dependency_not_ready"
         vendor_done = await c.post(
             f"/ai/conversations/{conv_id}/confirm", headers=h,
             json={"message_id": proposed["message_id"], "tool_call_id": vendor["id"]},
@@ -803,6 +804,33 @@ async def test_proposals_require_finished_job_and_documents(auth_client, session
     with patch("celerp_ai.routes.compile_agent_capabilities", return_value={}):
         r = await c.post(f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "capability_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_dismiss_all_is_atomic_and_idempotent(auth_client):
+    c, h = auth_client
+    conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
+    result = AgentResult(
+        answer="Three changes.", model_used="glm", tools_called=[],
+        pending_actions=[_pending(call_id="call_a"), _pending(call_id="call_b"), _pending(call_id="call_c")],
+    )
+    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=result)):
+        created = await c.post(
+            f"/ai/conversations/{conv_id}/query", headers=h, json={"query": "do all"},
+        )
+    message_id = created.json()["pending_actions"][0]["message_id"]
+    url = f"/ai/conversations/{conv_id}/dismiss-all"
+    first = await c.post(url, headers=h, json={
+        "message_id": message_id, "tool_call_ids": ["call_a", "call_c"],
+    })
+    again = await c.post(url, headers=h, json={
+        "message_id": message_id, "tool_call_ids": ["call_a", "call_c"],
+    })
+    assert first.status_code == 200
+    assert first.json()["dismissed"] == ["call_a", "call_c"]
+    assert again.status_code == 200 and again.json()["dismissed"] == []
+    thread = (await c.get(f"/ai/conversations/{conv_id}", headers=h)).json()
+    assert [a["id"] for a in thread["messages"][-1]["pending_actions"]] == ["call_b"]
 
 
 # ── POST /ai/conversations/{id}/confirm-all ──────────────────────────────────

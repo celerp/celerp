@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -100,7 +101,7 @@ def _quota_exceeded_card(detail: dict, user_bubble: FT, lang: str = "en") -> tup
     if is_ai_tier:
         return (
             user_bubble,
-            _msg_bubble("ai", f"You've used all {limit} included AI queries this period."),
+            _msg_bubble("ai", t("ai.credits_exhausted", lang, limit=limit)),
             Div(
                 P(t("msg.need_more_topup_credits_never_expire", lang), cls="ai-upgrade-label"),
                 A(t("msg.buy_more_credits", lang),
@@ -112,7 +113,7 @@ def _quota_exceeded_card(detail: dict, user_bubble: FT, lang: str = "en") -> tup
     upgrade_label = t("msg.get_the_ai_plan", lang)
     return (
         user_bubble,
-        _msg_bubble("ai", f"You've used all {limit} included AI queries."),
+        _msg_bubble("ai", t("ai.credits_exhausted", lang, limit=limit)),
         Div(
             P(t("msg.upgrade_to_keep_your_ai_operator_working", lang), cls="ai-upgrade-label"),
             A(upgrade_label,
@@ -134,43 +135,44 @@ def setup_ui_routes(app) -> None:
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
 
         from celerp.services.permissions import role_has_permission
         try:
             settings = (await api.get_company(token)).get("settings") or {}
         except APIError:
-            settings = {}
+            return await base_shell(
+                Div(_load_error(t("ai.service_unavailable", lang), lang, href="/ai"), cls="ai-page"),
+                title="AI Assistant - Celerp", nav_active="ai", request=request,
+            )
         if not role_has_permission(settings, get_role(request), "use_ai_assistant"):
             return RedirectResponse("/dashboard", status_code=302)
 
-        # Check if AI is available by querying the API (which has the gateway state)
         try:
             status = await api.ai_quota_status(token)
-            has_cloud = (
-                isinstance(status, dict)
-                and not status.get("local")
-                and not status.get("unknown")
-                and not status.get("disconnected")
-                and status.get("tier") in ("cloud", "ai", "team")
-            )
         except Exception:
-            has_cloud = False
-
-        lang = get_lang(request)
-        if not has_cloud:
-            content = _showcase_view(lang=lang)
+            status = {"unknown": True}
+        if not isinstance(status, dict) or status.get("unknown") or status.get("disconnected"):
             return await base_shell(
-                content,
-                title="AI Assistant - Celerp",
-                nav_active="ai",
-                request=request,
+                Div(_load_error(t("ai.service_unavailable", lang), lang, href="/ai"), cls="ai-page"),
+                title="AI Assistant - Celerp", nav_active="ai", request=request,
+            )
+        has_cloud = not status.get("local") and status.get("tier") in ("cloud", "ai", "team")
+        if not has_cloud:
+            return await base_shell(
+                _showcase_view(lang=lang),
+                title="AI Assistant - Celerp", nav_active="ai", request=request,
             )
 
-        # A conversation id in the URL opens that thread; an unknown or foreign
-        # id falls back to the empty state rather than surfacing an error.
         conversation_id = (request.query_params.get("conversation") or "").strip()
+        if conversation_id:
+            try:
+                uuid.UUID(conversation_id)
+            except ValueError:
+                return RedirectResponse("/ai", status_code=302)
         messages: list[dict] = []
         jobs: list[dict] = []
+        load_error: FT | None = None
         if conversation_id:
             from celerp.gateway.state import get_session_token
             session_token = get_session_token()
@@ -178,14 +180,20 @@ def setup_ui_routes(app) -> None:
                 conv = await api.ai_conversation_get(token, session_token, conversation_id)
                 messages = conv.get("messages") or []
                 jobs = conv.get("jobs") or []
-            except APIError:
-                conversation_id = ""
+            except APIError as exc:
+                if exc.status == 404:
+                    return RedirectResponse("/ai", status_code=302)
+                load_error = _load_error(
+                    t("ai.conversation_load_failed", lang), lang,
+                    href=f"/ai?conversation={conversation_id}",
+                )
 
         return await base_shell(
-            _chat_view(messages=messages, jobs=jobs, conversation_id=conversation_id, lang=lang),
-            title="AI Assistant - Celerp",
-            nav_active="ai",
-            request=request,
+            _chat_view(
+                messages=messages, jobs=jobs, conversation_id=conversation_id,
+                lang=lang, load_error=load_error,
+            ),
+            title="AI Assistant - Celerp", nav_active="ai", request=request,
         )
 
     @app.get("/ai/settings")
@@ -264,10 +272,18 @@ def setup_ui_routes(app) -> None:
         session_token = get_session_token()
 
         # An empty conversation id means this is the thread's first message: start
-        # the conversation, then run the query inside it.
-        if not conversation_id:
+        # the conversation, then run the query inside it. Once created, retain that
+        # id even if the query fails so Retry cannot orphan this thread.
+        created_conversation = not conversation_id
+        if created_conversation:
             try:
-                conversation_id = (await api.ai_conversation_create(token, session_token))["id"]
+                title = query[:200] or (
+                    t("ai.query_receipts_title", lang)
+                    if document_mode == "receipts" else t("ai.attached_files", lang)
+                )
+                conversation_id = (
+                    await api.ai_conversation_create(token, session_token, title=title)
+                )["id"]
             except APIError as e:
                 return _failed_reply(user_bubble, e, lang)
 
@@ -278,9 +294,25 @@ def setup_ui_routes(app) -> None:
             )
         except APIError as e:
             if e.status == 402:
-                card_detail = e.detail if isinstance(e.detail, dict) else {}
-                return _quota_exceeded_card(card_detail, user_bubble, lang)
-            return _failed_reply(user_bubble, e, lang)
+                failure = _quota_exceeded_card(
+                    e.detail if isinstance(e.detail, dict) else {}, user_bubble, lang,
+                )
+            else:
+                failure = _failed_reply(user_bubble, e, lang)
+            if not created_conversation:
+                return failure
+            oob_id = Input(
+                type="hidden", name="conversation_id", id="ai-conversation-id",
+                value=conversation_id, hx_swap_oob="true",
+            )
+            oob_history = Div(
+                id="ai-history", hx_swap_oob="true",
+                hx_get="/ai/conversations-list", hx_trigger="load", hx_swap="innerHTML",
+            )
+            return HTMLResponse(
+                to_xml((*failure, oob_id, oob_history)),
+                headers={"HX-Push-Url": f"/ai?conversation={conversation_id}"},
+            )
 
         # Out-of-band swaps keep the hidden id and the sidebar list in step with
         # the (possibly newly created) conversation; HX-Push-Url puts the thread
@@ -344,17 +376,11 @@ def setup_ui_routes(app) -> None:
 
     @app.post("/ai/conversations")
     async def ai_conversation_new(request: Request):
+        """Legacy HTMX target: New is navigation-only and creates no empty row."""
         from starlette.responses import Response as _R
-        token = _token(request)
-        if not token:
+        if not _token(request):
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-        from celerp.gateway.state import get_session_token
-        session_token = get_session_token()
-        try:
-            conv = await api.ai_conversation_create(token, session_token)
-        except APIError as e:
-            return _R("", status_code=e.status or 502)
-        return _R("", headers={"HX-Redirect": f"/ai?conversation={conv['id']}"})
+        return _R("", headers={"HX-Redirect": "/ai"})
 
     @app.post("/ai/confirm-action-ui")
     async def ai_confirm_action_ui(request: Request):
@@ -379,6 +405,11 @@ def setup_ui_routes(app) -> None:
             return _action_panel(_api_error_text(e, lang), ok=False)
         if result.get("action_status") == "retryable":
             return _retry_action_panel(
+                conversation_id, message_id, tool_call_id,
+                _outcome_text(result, lang)[1], lang,
+            )
+        if result.get("action_status") == "pending":
+            return _pending_action_panel(
                 conversation_id, message_id, tool_call_id,
                 _outcome_text(result, lang)[1], lang,
             )
@@ -408,6 +439,28 @@ def setup_ui_routes(app) -> None:
                 return _R("")
             return _action_panel(_api_error_text(e, get_lang(request)), ok=False)
         return _R("")
+
+    @app.post("/ai/dismiss-all-ui/{conversation_id}/{message_id}")
+    async def ai_dismiss_all_ui(request: Request, conversation_id: str, message_id: str):
+        """Dismiss selected open proposals, then reload their canonical thread."""
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        selected = list(dict.fromkeys(
+            str(v).strip() for v in form.getlist("selected") if str(v).strip()
+        ))
+        if not selected:
+            return _action_panel(t("ai.action_expired", get_lang(request)), ok=False)
+        from celerp.gateway.state import get_session_token
+        try:
+            await api.ai_dismiss_all(
+                token, get_session_token(), conversation_id, message_id, selected,
+            )
+        except APIError as exc:
+            return _action_panel(_api_error_text(exc, get_lang(request)), ok=False)
+        return _R("", headers={"HX-Refresh": "true"})
 
     @app.post("/ai/confirm-all-ui/{conversation_id}/{message_id}")
     async def ai_confirm_all_ui(request: Request, conversation_id: str, message_id: str):
@@ -461,14 +514,17 @@ def setup_ui_routes(app) -> None:
             session_token = get_session_token()
             result = await api.ai_conversations_list(token, session_token)
         except Exception:
-            result = []
+            return _load_error(
+                t("ai.conversations_load_failed", get_lang(request)), get_lang(request),
+                hx_get="/ai/conversations-list", target="#ai-history",
+            )
 
         if not result:
             return P(t("msg.no_conversations_yet"), cls="ai-sidebar__empty")
 
         items = []
         for c in result:
-            title = c.get("title") or "New conversation"
+            title = c.get("title") or t("ai.untitled_conversation", get_lang(request))
             open_count = int(c.get("pending_count") or 0)
             badge = [Span(str(open_count), cls="ai-sidebar__badge",
                           title=t("ai.open_proposals", count=open_count))] if open_count else []
@@ -492,7 +548,10 @@ def setup_ui_routes(app) -> None:
             session_token = get_session_token()
             result = await api.ai_memory_get(token, session_token)
         except Exception:
-            result = {"notes": [], "kv": {}}
+            return _load_error(
+                t("ai.memory_load_failed", get_lang(request)), get_lang(request),
+                hx_get="/ai/memory-panel", target="#ai-memory-content",
+            )
 
         # Shared memory affects every user's assistant context. Mirror the API's
         # manage_company_settings gate in the UI so ordinary AI users get a
@@ -636,12 +695,12 @@ async def _quota_section(token: str, session_token: str) -> FT:
         H3(t("page.quota"), cls="ai-settings__section-title"),
         Div(
             Div(
-                Span(t("msg.monthly_limit"), cls="ai-settings__stat-label"),
+                Span(t("ai.included_credits"), cls="ai-settings__stat-label"),
                 Span(str(limit), cls="ai-settings__stat-value"),
                 cls="ai-settings__stat",
             ),
             Div(
-                Span(t("msg.used_this_period"), cls="ai-settings__stat-label"),
+                Span(t("ai.credits_used"), cls="ai-settings__stat-label"),
                 Span(str(used), cls="ai-settings__stat-value"),
                 cls="ai-settings__stat",
             ),
@@ -662,7 +721,12 @@ async def _quota_section(token: str, session_token: str) -> FT:
             cls="ai-settings__progress",
         ),
         Div(
-            Span(f"Resets {resets_at}" if resets_at else "", cls="ai-settings__reset-date"),
+            Span(
+                t("ai.credits_do_not_reset", lang)
+                if str(resets_at).lower() == "never"
+                else (t("ai.resets_on", lang, date=resets_at) if resets_at else ""),
+                cls="ai-settings__reset-date",
+            ),
             A(t("msg.buy_more_credits"), href=topup_url(), target="_blank",
               cls="ai-settings__buy-link"),
             cls="ai-settings__quota-footer",
@@ -737,6 +801,19 @@ def _failed_reply(user_bubble: FT, e: APIError, lang: str) -> tuple[FT, FT]:
     if e.status == 429:
         return user_bubble, _msg_bubble("ai", t("ai.busy", lang))
     return user_bubble, _msg_bubble("ai", _api_error_text(e, lang), error=True)
+
+
+def _load_error(message: str, lang: str = "en", *, href: str | None = None,
+                hx_get: str | None = None, target: str | None = None) -> FT:
+    """Recoverable read failure. Empty-state copy is reserved for successful reads."""
+    if href:
+        retry: FT = A(t("btn.retry", lang), href=href, cls="btn btn--secondary btn--sm")
+    else:
+        retry = Button(
+            t("btn.retry", lang), type="button", cls="btn btn--secondary btn--sm",
+            hx_get=hx_get, hx_target=target, hx_swap="innerHTML",
+        )
+    return Div(P(message, cls="ai-load-error__text"), retry, cls="ai-load-error")
 
 
 def _api_error_code(e: APIError) -> str:
@@ -903,14 +980,11 @@ def _action_card(conversation_id: str, message_id: str, action: dict, lang: str 
     )
 
 
-def _retry_action_panel(conversation_id: str, message_id: str, tool_call_id: str,
-                        error: str, lang: str = "en", *, oob: bool = False) -> FT:
-    """Compact replacement after an ambiguous/transient execution failure.
-
-    The proposal remains server-side as ``retryable``. Both buttons use the
-    original identifiers, so Retry reuses the same idempotency key and Dismiss
-    persists instead of merely hiding DOM state.
-    """
+def _open_action_panel(
+    conversation_id: str, message_id: str, tool_call_id: str,
+    error: str, lang: str = "en", *, retryable: bool, oob: bool = False,
+) -> FT:
+    """Compact actionable replacement for an open pending/retryable proposal."""
     attrs = {"hx_swap_oob": "true"} if oob else {}
     return Div(
         Div(error, cls="ai-action__error"),
@@ -919,7 +993,8 @@ def _retry_action_panel(conversation_id: str, message_id: str, tool_call_id: str
                 Input(type="hidden", name="conversation_id", value=conversation_id),
                 Input(type="hidden", name="message_id", value=message_id),
                 Input(type="hidden", name="tool_call_id", value=tool_call_id),
-                Button(t("btn.retry", lang), type="submit", cls="btn btn--primary"),
+                Button(t("btn.retry", lang) if retryable else t("btn.confirm", lang),
+                       type="submit", cls="btn btn--primary"),
                 hx_post="/ai/confirm-action-ui", hx_target="closest .ai-action__card",
                 hx_swap="outerHTML",
             ),
@@ -934,8 +1009,23 @@ def _retry_action_panel(conversation_id: str, message_id: str, tool_call_id: str
             cls="ai-action__actions",
         ),
         id=_action_dom_id(message_id, tool_call_id),
-        cls="ai-action ai-action__card",
-        **attrs,
+        cls="ai-action ai-action__card", **attrs,
+    )
+
+
+def _retry_action_panel(conversation_id: str, message_id: str, tool_call_id: str,
+                        error: str, lang: str = "en", *, oob: bool = False) -> FT:
+    return _open_action_panel(
+        conversation_id, message_id, tool_call_id, error, lang,
+        retryable=True, oob=oob,
+    )
+
+
+def _pending_action_panel(conversation_id: str, message_id: str, tool_call_id: str,
+                          error: str, lang: str = "en", *, oob: bool = False) -> FT:
+    return _open_action_panel(
+        conversation_id, message_id, tool_call_id, error, lang,
+        retryable=False, oob=oob,
     )
 
 
@@ -955,9 +1045,13 @@ def _summary_field(body: dict, keys: tuple[str, ...]) -> str:
 
 
 def _action_status_cell(action: dict, lang: str = "en") -> list:
-    if action.get("status") == "failed":
+    status = action.get("status", "pending")
+    if status == "failed":
         return [Span(t("ai.action_failed_badge", lang), cls="badge badge--error"),
                 Span(action.get("error") or t("ai.action_failed", lang), cls="ai-action__error")]
+    if status == "retryable":
+        return [Span(t("btn.retry", lang), cls="badge badge--proposal"),
+                Span(action.get("error") or "", cls="ai-action__error")]
     return [Span(t("ai.action_proposal", lang), cls="badge badge--proposal")]
 
 
@@ -973,11 +1067,12 @@ def _action_row(message_id: str, action: dict, lang: str = "en") -> tuple[FT, FT
     body = (action.get("arguments") or {}).get("body")
     body = body if isinstance(body, dict) else {}
     warnings = _action_warnings(action)
-    pending = action.get("status", "pending") == "pending"
+    status = action.get("status", "pending")
+    open_action = status in {"pending", "retryable"}
     pick = []
-    if pending:
+    if open_action:
         box = {"type": "checkbox", "cls": "bulk-select", "name": "selected", "value": tool_call_id}
-        if not warnings:
+        if status == "pending" and not warnings:
             box["checked"] = True
         pick = [Input(**box)]
     row = Tr(
@@ -1015,11 +1110,19 @@ def _action_table(conversation_id: str, message_id: str, actions: list[dict], la
         Tbody(*rows),
         id=table_id, cls="data-table ai-action-table",
     )
-    toolbar = bulk_toolbar(table_id, [{
-        "value": "confirm", "label": t("ai.confirm_selected", lang), "method": "post",
-        "url": f"/ai/confirm-all-ui/{conversation_id}/{message_id}?view=table",
-        "target": f"#ai-tail-{message_id}", "swap": "outerHTML",
-    }])
+    toolbar = bulk_toolbar(table_id, [
+        {
+            "value": "confirm", "label": t("ai.confirm_selected", lang), "method": "post",
+            "url": f"/ai/confirm-all-ui/{conversation_id}/{message_id}?view=table",
+            "target": f"#ai-tail-{message_id}", "swap": "outerHTML",
+        },
+        {
+            "value": "dismiss", "label": t("ai.dismiss_selected", lang), "method": "post",
+            "url": f"/ai/dismiss-all-ui/{conversation_id}/{message_id}",
+            "target": f"#ai-tail-{message_id}", "swap": "outerHTML",
+            "confirm": t("ai.dismiss_selected_confirm", lang, n="{n}"),
+        },
+    ])
     return Div(
         Div(table, cls="table-scroll-wrap"),
         toolbar,
@@ -1084,10 +1187,17 @@ def _outcome_line(outcome: dict, lang: str = "en", *, message_id: str | None = N
 def _outcome_swap(message_id: str, outcome: dict, view: str, lang: str = "en",
                   *, conversation_id: str = "") -> list[FT]:
     """The out-of-band elements that mark one action finished in the thread."""
-    retryable = outcome.get("action_status") == "retryable"
+    action_status = outcome.get("action_status")
+    retryable = action_status == "retryable"
+    pending = action_status == "pending"
     if view != "table":
         if retryable:
             return [_retry_action_panel(
+                conversation_id, message_id, outcome.get("tool_call_id", ""),
+                _outcome_text(outcome, lang)[1], lang, oob=True,
+            )]
+        if pending:
+            return [_pending_action_panel(
                 conversation_id, message_id, outcome.get("tool_call_id", ""),
                 _outcome_text(outcome, lang)[1], lang, oob=True,
             )]
@@ -1095,8 +1205,9 @@ def _outcome_swap(message_id: str, outcome: dict, view: str, lang: str = "en",
     dom_id = _action_dom_id(message_id, outcome.get("tool_call_id", ""))
     ok, text = _outcome_text(outcome, lang)
     link = _record_link(outcome)
-    if retryable:
-        cell = [Span(t("btn.retry", lang), cls="badge badge--proposal"),
+    if retryable or pending:
+        cell = [Span(t("btn.retry", lang) if retryable else t("ai.action_proposal", lang),
+                     cls="badge badge--proposal"),
                 Span(text, cls="ai-action__error")]
         pick = Td(Input(type="checkbox", cls="bulk-select", name="selected",
                         value=outcome.get("tool_call_id", "")),
@@ -1122,9 +1233,13 @@ class _Tally:
     """The running result of a chunked confirm, carried between requests in the
     tail form: counts so far and the ids of the drafts created."""
 
-    def __init__(self, completed: int = 0, failed: int = 0, doc_ids: list[str] | None = None):
+    def __init__(
+        self, completed: int = 0, failed: int = 0, attention: int = 0,
+        doc_ids: list[str] | None = None,
+    ):
         self.completed = completed
         self.failed = failed
+        self.attention = attention
         self.doc_ids = doc_ids or []
 
     @classmethod
@@ -1135,7 +1250,7 @@ class _Tally:
             except (TypeError, ValueError):
                 return 0
         doc_ids = [x.strip() for x in str(form.get("doc_ids") or "").split(",") if x.strip()]
-        return cls(_int("completed"), _int("failed"), doc_ids)
+        return cls(_int("completed"), _int("failed"), _int("attention"), doc_ids)
 
     def add(self, outcomes: list[dict]) -> None:
         for o in outcomes:
@@ -1144,13 +1259,16 @@ class _Tally:
                 data = o.get("data")
                 if "_docs_" in str(o.get("name") or "") and isinstance(data, dict) and data.get("id"):
                     self.doc_ids.append(str(data["id"]))
-            elif o.get("action_status") != "retryable":
+            elif o.get("action_status") in {"pending", "retryable"}:
+                self.attention += 1
+            else:
                 self.failed += 1
 
     def inputs(self) -> list[FT]:
         return [
             Input(type="hidden", name="completed", value=str(self.completed)),
             Input(type="hidden", name="failed", value=str(self.failed)),
+            Input(type="hidden", name="attention", value=str(self.attention)),
             Input(type="hidden", name="doc_ids", value=",".join(self.doc_ids)),
         ]
 
@@ -1163,7 +1281,7 @@ def _confirm_tail(conversation_id: str, message_id: str, view: str, rest: list[s
     that fires on load for the next chunk. Otherwise it is the tally, any error
     that stopped the run, and a link to the drafts the batch created.
     """
-    done = tally.completed + tally.failed
+    done = tally.completed + tally.failed + tally.attention
     if rest and not error:
         return Div(
             P(t("ai.confirm_progress", lang, done=done, total=done + len(rest)), cls="ai-action-group__summary"),
@@ -1177,8 +1295,13 @@ def _confirm_tail(conversation_id: str, message_id: str, view: str, rest: list[s
             ),
             id=f"ai-tail-{message_id}", cls="ai-action-group__footer",
         )
-    children: list = [P(t("ai.confirm_all_result", lang, completed=tally.completed, failed=tally.failed),
-                        cls="ai-action-group__summary")]
+    summary = (
+        t("ai.confirm_all_result_attention", lang, completed=tally.completed,
+          failed=tally.failed, attention=tally.attention)
+        if tally.attention
+        else t("ai.confirm_all_result", lang, completed=tally.completed, failed=tally.failed)
+    )
+    children: list = [P(summary, cls="ai-action-group__summary")]
     if error:
         children.append(Div(error, cls="ai-action__error"))
     if tally.doc_ids:
@@ -1217,8 +1340,12 @@ def _job_bubble(job: dict, conversation_id: str, lang: str = "en") -> FT:
     status = job.get("status")
     ok, failed, total = _job_counts(job)
     if status == "failed":
-        return Div(f"{t('ai.job_failed', lang)} {job.get('error') or ''}".strip(),
-                   cls="ai-msg ai-msg--ai ai-msg--error", data_job_id=job_id)
+        return Div(
+            Div(f"{t('ai.job_failed', lang)} {job.get('error') or ''}".strip()),
+            Button(t("ai.attach_files_again", lang), type="button",
+                   cls="btn btn--secondary btn--sm", onclick="celerpAiOpenFilePicker()"),
+            cls="ai-msg ai-msg--ai ai-msg--error", data_job_id=job_id,
+        )
     if status == "completed" and job.get("proposal_message_id"):
         return _job_done_line(job, lang)
     done = ok + failed
@@ -1265,14 +1392,14 @@ def _action_panel(text: str, *, ok: bool) -> FT:
 def _empty_state(lang: str = "en") -> FT:
     """Chat empty state with example query cards."""
     cards = [
-        Div(
+        Button(
             Span(q["icon"], cls="ai-empty-state__card-icon"),
             Div(
                 Strong(q["title"], cls="ai-empty-state__card-title"),
                 P(q["query"], cls="ai-empty-state__card-query"),
                 cls="ai-empty-state__card-body",
             ),
-            cls="ai-empty-state__card",
+            type="button", cls="ai-empty-state__card",
             onclick=f"celerpAiFillQuery({json.dumps(q['query'])},{'true' if q.get('needs_files') else 'false'})",
         )
         for q in _get_example_queries(lang)
@@ -1407,9 +1534,13 @@ def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: 
     return out
 
 
-def _chat_view(messages: list[dict] | None = None, jobs: list[dict] | None = None,
-               conversation_id: str = "", lang: str = "en") -> FT:
-    if messages or jobs:
+def _chat_view(
+    messages: list[dict] | None = None, jobs: list[dict] | None = None,
+    conversation_id: str = "", lang: str = "en", load_error: FT | None = None,
+) -> FT:
+    if load_error is not None:
+        message_children = [load_error]
+    elif messages or jobs:
         message_children = _thread(messages or [], jobs or [], conversation_id, lang)
     else:
         message_children = [_empty_state(lang)]
@@ -1426,10 +1557,8 @@ def _chat_view(messages: list[dict] | None = None, jobs: list[dict] | None = Non
             ),
             # Expanded action buttons (stacked vertically)
             Div(
-                Button(t("btn._new", lang),
-                    cls="btn btn--secondary ai-sidebar__new",
-                    hx_post="/ai/conversations",
-                ),
+                A(t("btn._new", lang), href="/ai",
+                  cls="btn btn--secondary ai-sidebar__new"),
                 Button(t("btn._memory", lang),
                     cls="btn btn--secondary ai-sidebar__memory-btn",
                     style="width:100%;text-align:left;",
@@ -1442,12 +1571,8 @@ def _chat_view(messages: list[dict] | None = None, jobs: list[dict] | None = Non
             ),
             # Collapsed icon buttons
             Div(
-                Button(
-                    "+",
-                    cls="ai-sidebar__icon-btn",
-                    title=t("ai.new_conversation", lang),
-                    hx_post="/ai/conversations",
-                ),
+                A("+", href="/ai", cls="ai-sidebar__icon-btn",
+                  title=t("ai.new_conversation", lang)),
                 Button(
                     "🧠",
                     cls="ai-sidebar__icon-btn",
@@ -1524,7 +1649,7 @@ def _chat_view(messages: list[dict] | None = None, jobs: list[dict] | None = Non
                         t("ai.query_receipts_title", lang),
                         type="submit", name="document_mode", value="receipts",
                         cls="btn btn--secondary ai-input__receipts",
-                        title=t("ai.query_receipts_title", lang),
+                        title=t("ai.query_receipts_title", lang), disabled=True,
                     ),
                     cls="ai-input__row",
                 ),
@@ -1533,16 +1658,16 @@ def _chat_view(messages: list[dict] | None = None, jobs: list[dict] | None = Non
                     Span("📁", cls="ai-chat-dropzone__icon"),
                     Span(t("msg.drop_files_here_or_click_to_browse", lang), cls="ai-chat-dropzone__label"),
                     Div(id="ai-file-chips", cls="ai-file-chips"),
-                    id="ai-chat-dropzone",
-                    cls="ai-chat-dropzone",
-                    onclick="document.getElementById('ai-file-input').click()",
+                    id="ai-chat-dropzone", cls="ai-chat-dropzone",
+                    role="button", tabindex="0", onclick="celerpAiOpenFilePicker()",
                 ),
                 Div(id="ai-upload-error", cls="ai-upload-error", role="alert"),
                 hx_post="/ai/chat",
                 hx_target="#ai-messages",
                 hx_swap="beforeend",
+                hx_sync="this:drop",
                 hx_on__before_request="celerpAiBeforeRequest();",
-                hx_on__after_request="celerpAiResetForm();",
+                hx_on__after_request="celerpAiAfterRequest(event);",
                 cls="ai-input",
                 id="ai-chat-form",
             ),
@@ -1557,6 +1682,10 @@ def _chat_script(lang: str = "en") -> str:
     text = json.dumps({
         "upload_failed": t("ai.upload_failed", lang),
         "upload_network": t("ai.upload_network_error", lang),
+        "uploading": t("ai.uploading", lang),
+        "remove_file": t("ai.remove_file", lang),
+        "credits_remaining": t("ai.credits_remaining", lang),
+        "quota_unavailable": t("ai.quota_unavailable", lang),
     })
     return "var CELERP_AI_TEXT = " + text + ";" + r"""
 // ── Sidebar collapse ─────────────────────────────────────────────────────────
@@ -1582,7 +1711,50 @@ function celerpAiToggleSidebar() {
     }
 }
 
+var CELERP_AI_UPLOADING = 0;
+var CELERP_AI_REQUESTING = false;
+var CELERP_AI_RECEIPT_FILES = {};
+
+function celerpAiReceiptEligible(file) {
+    return !!file && (
+        file.type === 'image/jpeg' || file.type === 'image/png' ||
+        file.type === 'image/webp' || file.type === 'application/pdf'
+    );
+}
+
+function celerpAiRefreshComposer() {
+    var form = document.getElementById('ai-chat-form');
+    if (!form) return;
+    var blocked = CELERP_AI_REQUESTING || CELERP_AI_UPLOADING > 0;
+    form.classList.toggle('ai-input--busy', blocked);
+    form.setAttribute('aria-busy', CELERP_AI_REQUESTING ? 'true' : 'false');
+    var send = form.querySelector('.ai-input__send');
+    var receipts = form.querySelector('.ai-input__receipts');
+    var fileInput = document.getElementById('ai-file-input');
+    var idsValue = document.getElementById('ai-file-ids').value;
+    var ids = idsValue ? idsValue.split(',').filter(Boolean) : [];
+    var receiptReady = ids.length > 0 && ids.every(function(id) {
+        return CELERP_AI_RECEIPT_FILES[id] === true;
+    });
+    if (send) send.disabled = blocked;
+    if (receipts) receipts.disabled = blocked || !receiptReady;
+    if (fileInput) fileInput.disabled = blocked;
+    var zone = document.getElementById('ai-chat-dropzone');
+    if (zone) {
+        zone.classList.toggle('ai-chat-dropzone--disabled', blocked);
+        zone.setAttribute('aria-disabled', blocked ? 'true' : 'false');
+    }
+}
+
+function celerpAiOpenFilePicker() {
+    if (CELERP_AI_REQUESTING || CELERP_AI_UPLOADING > 0) return;
+    var input = document.getElementById('ai-file-input');
+    if (input) input.click();
+}
+
 function celerpAiBeforeRequest() {
+    CELERP_AI_REQUESTING = true;
+    celerpAiRefreshComposer();
     // Hide empty state on first message
     var es = document.getElementById('ai-empty-state');
     if (es) es.style.display = 'none';
@@ -1622,14 +1794,17 @@ function celerpAiHandleFiles(input) {
     if (!input.files || input.files.length === 0) return;
     var formData = new FormData();
     var fileNames = [];
+    var receiptEligible = [];
     for (var i = 0; i < input.files.length; i++) {
         formData.append('files', input.files[i]);
         fileNames.push(input.files[i].name);
+        receiptEligible.push(celerpAiReceiptEligible(input.files[i]));
     }
-    _celerpAiUploadFormData(formData, fileNames);
+    _celerpAiUploadFormData(formData, fileNames, receiptEligible);
 }
 
 function celerpAiRemoveChip(btn, fileId) {
+    delete CELERP_AI_RECEIPT_FILES[fileId];
     var chip = btn.closest('.ai-file-chip');
     if (chip) chip.remove();
     var fidsInput = document.getElementById('ai-file-ids');
@@ -1639,20 +1814,26 @@ function celerpAiRemoveChip(btn, fileId) {
     if (!chips.children.length) {
         document.getElementById('ai-chat-dropzone').classList.remove('ai-chat-dropzone--has-files');
     }
+    celerpAiRefreshComposer();
 }
 
 function celerpAiResetForm() {
-    var typing = document.getElementById('ai-typing-indicator');
-    if (typing) typing.remove();
-
     document.getElementById('ai-query-input').value = '';
     document.getElementById('ai-file-ids').value = '';
     document.getElementById('ai-file-input').value = '';
     document.getElementById('ai-file-chips').innerHTML = '';
+    CELERP_AI_RECEIPT_FILES = {};
     document.getElementById('ai-chat-dropzone').classList.remove('ai-chat-dropzone--has-files');
+}
 
+function celerpAiAfterRequest(event) {
+    var typing = document.getElementById('ai-typing-indicator');
+    if (typing) typing.remove();
+    CELERP_AI_REQUESTING = false;
+    if (event && event.detail && event.detail.successful) celerpAiResetForm();
+    celerpAiRefreshComposer();
     var m = document.getElementById('ai-messages');
-    m.scrollTop = m.scrollHeight;
+    if (m) m.scrollTop = m.scrollHeight;
 }
 
 // Drag-and-drop handlers on the drop zone
@@ -1673,6 +1854,7 @@ function celerpAiResetForm() {
     });
     zone.addEventListener('drop', function(e) {
         e.preventDefault();
+        if (CELERP_AI_REQUESTING || CELERP_AI_UPLOADING > 0) return;
         zone.classList.remove('ai-chat-dropzone--active');
         var dt = e.dataTransfer;
         if (dt && dt.files && dt.files.length) {
@@ -1681,11 +1863,19 @@ function celerpAiResetForm() {
             // Build FormData directly from dropped files
             var formData = new FormData();
             var fileNames = [];
+            var receiptEligible = [];
             for (var i = 0; i < dt.files.length; i++) {
                 formData.append('files', dt.files[i]);
                 fileNames.push(dt.files[i].name);
+                receiptEligible.push(celerpAiReceiptEligible(dt.files[i]));
             }
-            _celerpAiUploadFormData(formData, fileNames);
+            _celerpAiUploadFormData(formData, fileNames, receiptEligible);
+        }
+    });
+    zone.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            celerpAiOpenFilePicker();
         }
     });
 })();
@@ -1709,7 +1899,10 @@ function _celerpAiUploadError(message) {
     if (box) box.textContent = message || '';
 }
 
-function _celerpAiUploadFormData(formData, fileNames) {
+function _celerpAiUploadFormData(formData, fileNames, receiptEligible) {
+    if (CELERP_AI_REQUESTING || CELERP_AI_UPLOADING > 0) return;
+    CELERP_AI_UPLOADING += 1;
+    celerpAiRefreshComposer();
     var zone = document.getElementById('ai-chat-dropzone');
     var chips = document.getElementById('ai-file-chips');
     _celerpAiUploadError('');
@@ -1719,13 +1912,24 @@ function _celerpAiUploadFormData(formData, fileNames) {
         progressWrap = document.createElement('div');
         progressWrap.id = 'ai-upload-progress';
         progressWrap.className = 'ai-upload-progress';
-        progressWrap.innerHTML = '<div class="ai-upload-progress__bar"></div><span class="ai-upload-progress__text">Uploading...</span>';
+        progressWrap.setAttribute('role', 'status');
+        progressWrap.setAttribute('aria-live', 'polite');
+        progressWrap.innerHTML = '<div class="ai-upload-progress__bar"></div><span class="ai-upload-progress__text"></span>';
         zone.appendChild(progressWrap);
     }
     progressWrap.style.display = 'flex';
     var bar = progressWrap.querySelector('.ai-upload-progress__bar');
     var ptext = progressWrap.querySelector('.ai-upload-progress__text');
     bar.style.width = '0%';
+    ptext.textContent = CELERP_AI_TEXT.uploading;
+
+    function finishUpload() {
+        progressWrap.style.display = 'none';
+        var fileInput = document.getElementById('ai-file-input');
+        if (fileInput) fileInput.value = '';
+        CELERP_AI_UPLOADING = Math.max(0, CELERP_AI_UPLOADING - 1);
+        celerpAiRefreshComposer();
+    }
 
     var xhr = new XMLHttpRequest();
     xhr.upload.addEventListener('progress', function(e) {
@@ -1736,43 +1940,54 @@ function _celerpAiUploadFormData(formData, fileNames) {
         }
     });
     xhr.addEventListener('load', function() {
-        progressWrap.style.display = 'none';
-        if (xhr.status >= 200 && xhr.status < 300) {
-            var data = JSON.parse(xhr.responseText);
-            if (data.file_ids) {
-                var existing = document.getElementById('ai-file-ids').value;
-                var all = existing ? existing.split(',').concat(data.file_ids) : data.file_ids;
-                document.getElementById('ai-file-ids').value = all.join(',');
-                zone.classList.add('ai-chat-dropzone--has-files');
-                data.file_ids.forEach(function(fid, idx) {
-                    var fname = fileNames[idx] || fid;
-                    var chip = document.createElement('span');
-                    chip.className = 'ai-file-chip';
-                    chip.dataset.fileId = fid;
-                    var name = document.createElement('span');
-                    name.className = 'ai-file-chip__name';
-                    name.textContent = fname;
-                    var remove = document.createElement('button');
-                    remove.type = 'button';
-                    remove.className = 'ai-file-chip__remove';
-                    remove.textContent = '✕';
-                    remove.addEventListener('click', function() { celerpAiRemoveChip(remove, fid); });
-                    chip.appendChild(name);
-                    chip.appendChild(remove);
-                    chips.appendChild(chip);
-                });
+        try {
+            if (xhr.status >= 200 && xhr.status < 300) {
+                var data = JSON.parse(xhr.responseText);
+                if (data.file_ids) {
+                    var existing = document.getElementById('ai-file-ids').value;
+                    var all = existing ? existing.split(',').concat(data.file_ids) : data.file_ids;
+                    document.getElementById('ai-file-ids').value = all.join(',');
+                    zone.classList.add('ai-chat-dropzone--has-files');
+                    data.file_ids.forEach(function(fid, idx) {
+                        var fname = fileNames[idx] || fid;
+                        CELERP_AI_RECEIPT_FILES[fid] = receiptEligible[idx] === true;
+                        var chip = document.createElement('span');
+                        chip.className = 'ai-file-chip';
+                        chip.dataset.fileId = fid;
+                        var name = document.createElement('span');
+                        name.className = 'ai-file-chip__name';
+                        name.textContent = fname;
+                        var remove = document.createElement('button');
+                        remove.type = 'button';
+                        remove.className = 'ai-file-chip__remove';
+                        remove.textContent = '✕';
+                        remove.setAttribute('aria-label', CELERP_AI_TEXT.remove_file.replace('{name}', fname));
+                        remove.addEventListener('click', function(e) {
+                            e.stopPropagation();
+                            celerpAiRemoveChip(remove, fid);
+                        });
+                        chip.appendChild(name);
+                        chip.appendChild(remove);
+                        chips.appendChild(chip);
+                    });
+                }
+            } else {
+                var detail = '';
+                try { detail = JSON.parse(xhr.responseText).detail || ''; } catch (_) {}
+                if (typeof detail !== 'string') detail = JSON.stringify(detail);
+                _celerpAiUploadError(CELERP_AI_TEXT.upload_failed.replace('{detail}', detail));
             }
-        } else {
-            var detail = '';
-            try { detail = JSON.parse(xhr.responseText).detail || ''; } catch (_) {}
-            if (typeof detail !== 'string') detail = JSON.stringify(detail);
-            _celerpAiUploadError(CELERP_AI_TEXT.upload_failed.replace('{detail}', detail));
+        } catch (_) {
+            _celerpAiUploadError(CELERP_AI_TEXT.upload_network);
+        } finally {
+            finishUpload();
         }
     });
     xhr.addEventListener('error', function() {
-        progressWrap.style.display = 'none';
         _celerpAiUploadError(CELERP_AI_TEXT.upload_network);
+        finishUpload();
     });
+    xhr.addEventListener('abort', finishUpload);
     xhr.open('POST', '/ai/upload');
     xhr.send(formData);
 }
@@ -1786,16 +2001,20 @@ function _celerpAiUploadFormData(formData, fileNames) {
         var link = document.getElementById('ai-topup-link');
         if (data.local) { badge.textContent = ''; return; }
         var remaining = data.remaining || 0;
-        badge.textContent = remaining + ' credits remaining';
+        badge.textContent = CELERP_AI_TEXT.credits_remaining.replace('{n}', remaining);
         if (remaining < 10) {
             badge.classList.add('ai-quota--low');
         }
-        if (remaining < 20 && (data.tier === 'ai' || data.tier === 'team') && data.topup_url) {
+        if (remaining < 20 && (data.tier === 'cloud' || data.tier === 'ai' || data.tier === 'team') && data.topup_url) {
             link.href = data.topup_url;
             link.style.display = 'inline';
         }
     })
-    .catch(function() {});
+    .catch(function() {
+        var badge = document.getElementById('ai-quota-display');
+        if (badge) badge.textContent = CELERP_AI_TEXT.quota_unavailable;
+    });
+    celerpAiRefreshComposer();
 })();
 """
 

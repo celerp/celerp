@@ -57,6 +57,7 @@ from celerp.ai.conversations import (
     create_conversation,
     delete_conversation,
     dismiss_tool_call,
+    dismiss_tool_calls,
     finalize_tool_call,
     get_conversation,
     get_message,
@@ -413,6 +414,11 @@ class ConfirmAllRequest(BaseModel):
     tool_call_ids: list[str] | None = Field(default=None, max_length=200)
 
 
+class DismissAllRequest(BaseModel):
+    message_id: uuid.UUID
+    tool_call_ids: list[str] = Field(..., min_length=1, max_length=200)
+
+
 class MessageOut(BaseModel):
     id: uuid.UUID
     role: str
@@ -734,7 +740,14 @@ def _resolve_action_arguments(records: list, record: dict) -> tuple[dict | None,
         source = by_id.get(binding.get("source_action_id"))
         key = binding.get("source_result_key")
         path = binding.get("target_path")
-        if not isinstance(source, dict) or source.get("status") != "completed":
+        if not isinstance(source, dict):
+            return None, "This action has an invalid dependency."
+        if source.get("status") in {"dismissed", "failed"}:
+            return None, (
+                "The required earlier action was not applied. Dismiss this proposal "
+                "or ask the assistant to recreate it."
+            )
+        if source.get("status") != "completed":
             return None, "Confirm the required earlier action first."
         summary = source.get("result_summary")
         if not isinstance(summary, dict) or key not in summary:
@@ -810,13 +823,16 @@ async def _run_confirmed_action(
         tool_call_id=tool_call_id, company_id=company_id, user_id=user_id,
     )
     if dependency_error is not None:
-        return {
+        outcome = {
             "tool_call_id": tool_call_id,
             "name": (dependency_record or {}).get("name"),
             "title": (dependency_record or {}).get("title") or (dependency_record or {}).get("name"),
             "ok": False, "status": 409, "data": None,
             "error": dependency_error,
         }
+        if dependency_error.get("code") == "action_dependency_not_ready":
+            outcome["action_status"] = "pending"
+        return outcome
 
     record = await claim_tool_call(
         session,
@@ -906,7 +922,7 @@ def _action_error(result: dict) -> dict | None:
             "message": str(detail) if detail else f"The request failed with status {result.get('status')}."}
 
 
-_ACTION_STATE_CODES = frozenset({"action_not_pending", "capability_unavailable", "action_dependency_not_ready"})
+_ACTION_STATE_CODES = frozenset({"action_not_pending", "capability_unavailable"})
 
 
 @router.post("/conversations/{conversation_id}/confirm")
@@ -956,6 +972,25 @@ async def dismiss_action(
         raise _conflict("action_not_pending", "This action is no longer pending.")
     await session.commit()
     return {"dismissed": True, "tool_call_id": body.tool_call_id}
+
+
+@router.post("/conversations/{conversation_id}/dismiss-all")
+@_limiter.limit("60/minute")
+async def dismiss_all(
+    request: Request,
+    conversation_id: uuid.UUID,
+    body: DismissAllRequest,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Persist dismissal of a selected proposal set under one message-row lock."""
+    dismissed = await dismiss_tool_calls(
+        session, conversation_id=conversation_id, message_id=body.message_id,
+        tool_call_ids=body.tool_call_ids, company_id=company_id, user_id=user.id,
+    )
+    await session.commit()
+    return {"dismissed": dismissed}
 
 
 def _selected_action_ids(records: list[dict], selection: list[str] | None) -> list[str]:
@@ -1017,7 +1052,15 @@ async def confirm_all(
             tool_call_id=tool_call_id, company_id=company_id, user_id=user.id,
         ))
     completed = sum(1 for r in results if r["ok"])
-    return {"results": results, "completed": completed, "failed": len(results) - completed}
+    attention = sum(
+        1 for r in results
+        if not r["ok"] and r.get("action_status") in {"pending", "retryable"}
+    )
+    failed = len(results) - completed - attention
+    return {
+        "results": results, "completed": completed,
+        "failed": failed, "attention": attention,
+    }
 
 
 # ── Bill proposals from a reading job ─────────────────────────────────────────

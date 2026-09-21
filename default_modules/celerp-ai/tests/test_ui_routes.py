@@ -5,8 +5,8 @@
 
 The chat page opens a conversation from the URL, the composer posts into that
 conversation (creating one on the first turn), pending mutations render as action
-cards the user confirms, and every visible string resolves from the catalog. An
-unknown or foreign conversation id degrades to the empty state, never an error.
+cards the user confirms, and every visible string resolves from the catalog.
+Malformed or missing conversation ids return to the canonical empty chat URL.
 """
 
 from __future__ import annotations
@@ -88,19 +88,35 @@ async def test_ai_page_empty_state_without_conversation(ui_client):
 
 
 @pytest.mark.asyncio
-async def test_ai_page_unknown_conversation_renders_empty_state(ui_client):
-    """A garbage or foreign conversation id falls back to the empty state,
-    never a 500."""
+async def test_ai_page_unknown_conversation_redirects_to_empty_chat(ui_client):
+    """A missing/foreign thread returns to the canonical empty chat URL."""
     patches = _patch_page(
         ai_conversation_get=AsyncMock(side_effect=APIError(404, "Conversation not found")),
     )
     _apply(patches)
     try:
-        r = await ui_client.get("/ai?conversation=not-a-real-id", cookies=_authed())
+        r = await ui_client.get(
+            "/ai?conversation=11111111-1111-4111-8111-111111111111",
+            cookies=_authed(),
+        )
     finally:
         _stop(patches)
-    assert r.status_code == 200
-    assert 'id="ai-empty-state"' in r.text
+    assert r.status_code == 302
+    assert r.headers["location"] == "/ai"
+
+
+@pytest.mark.asyncio
+async def test_ai_page_malformed_conversation_redirects_without_api_call(ui_client):
+    get_conversation = AsyncMock()
+    patches = _patch_page(ai_conversation_get=get_conversation)
+    _apply(patches)
+    try:
+        r = await ui_client.get("/ai?conversation=not-a-uuid", cookies=_authed())
+    finally:
+        _stop(patches)
+    assert r.status_code == 302
+    assert r.headers["location"] == "/ai"
+    get_conversation.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -108,7 +124,7 @@ async def test_ai_page_renders_thread_with_action_card(ui_client):
     """An owned conversation renders its bubbles plus one action card per open
     pending action, and seeds the hidden conversation id."""
     detail = {
-        "id": "conv-1",
+        "id": "11111111-1111-4111-8111-111111111111",
         "messages": [
             {"id": "m1", "role": "user", "content": "Add a widget"},
             {"id": "m2", "role": "assistant", "content": "I can add that.",
@@ -118,7 +134,7 @@ async def test_ai_page_renders_thread_with_action_card(ui_client):
     patches = _patch_page(ai_conversation_get=AsyncMock(return_value=detail))
     _apply(patches)
     try:
-        r = await ui_client.get("/ai?conversation=conv-1", cookies=_authed())
+        r = await ui_client.get("/ai?conversation=11111111-1111-4111-8111-111111111111", cookies=_authed())
     finally:
         _stop(patches)
     assert r.status_code == 200
@@ -127,7 +143,7 @@ async def test_ai_page_renders_thread_with_action_card(ui_client):
     assert "ai-action__card" in r.text
     assert 'data-capability="create_item_items_post"' in r.text
     assert "create_item_items_post</" not in r.text  # the raw name is never visible text
-    assert 'value="conv-1"' in r.text  # hidden conversation_id seeded
+    assert 'value="11111111-1111-4111-8111-111111111111"' in r.text  # hidden conversation_id seeded
 
 
 # ── POST /ai/chat ─────────────────────────────────────────────────────────────
@@ -156,8 +172,26 @@ async def test_chat_creates_conversation_on_first_turn(ui_client):
         r = await ui_client.post("/ai/chat", cookies=_authed(),
                                  data={"query": "hi", "conversation_id": ""})
     create.assert_awaited_once()
+    assert create.await_args.kwargs["title"] == "hi"
     assert query.await_args.args[2] == "conv-new"  # queried inside the new conversation
     assert r.headers["HX-Push-Url"] == "/ai?conversation=conv-new"
+
+
+@pytest.mark.asyncio
+async def test_first_turn_query_failure_keeps_created_conversation(ui_client):
+    with patch("celerp_ai.ui_routes.api.ai_conversation_create",
+               AsyncMock(return_value={"id": "conv-new"})), \
+         patch("celerp_ai.ui_routes.api.ai_conversation_query",
+               AsyncMock(side_effect=APIError(502, "down"))):
+        r = await ui_client.post(
+            "/ai/chat", cookies=_authed(),
+            data={"query": "keep this question", "conversation_id": ""},
+        )
+    assert r.status_code == 200
+    assert r.headers["HX-Push-Url"] == "/ai?conversation=conv-new"
+    assert 'id="ai-conversation-id"' in r.text
+    assert 'value="conv-new"' in r.text
+    assert "keep this question" in r.text
 
 
 @pytest.mark.asyncio
@@ -198,11 +232,11 @@ async def test_chat_rate_limited_renders_busy_message(ui_client):
 # ── POST /ai/conversations (new) ─────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_new_conversation_redirects_to_thread(ui_client):
-    with patch("celerp_ai.ui_routes.api.ai_conversation_create",
-               AsyncMock(return_value={"id": "conv-9"})):
+async def test_new_conversation_is_navigation_only(ui_client):
+    with patch("celerp_ai.ui_routes.api.ai_conversation_create", AsyncMock()) as create:
         r = await ui_client.post("/ai/conversations", cookies=_authed())
-    assert r.headers["HX-Redirect"] == "/ai?conversation=conv-9"
+    create.assert_not_awaited()
+    assert r.headers["HX-Redirect"] == "/ai"
 
 
 # ── POST /ai/confirm-action-ui ───────────────────────────────────────────────
@@ -419,6 +453,18 @@ def test_action_table_failed_record_has_no_checkbox():
     assert "Failed" in row and "The model stopped." in row
 
 
+def test_action_table_retryable_is_actionable_but_not_preselected():
+    actions = _bills(6)
+    actions[0] = {**actions[0], "status": "retryable", "error": "Result was uncertain."}
+    html = _group_html(actions)
+    row = html[html.index('id="ai-act-m2-p1"'):html.index('id="ai-act-m2-p2"')]
+    assert 'class="bulk-select"' in row
+    assert "checked" not in row
+    assert "Retry" in row and "Result was uncertain." in row
+    assert "Dismiss selected" in html
+    assert "/ai/dismiss-all-ui/conv-1/m2" in html
+
+
 # ── POST /ai/confirm-all-ui/{conversation}/{message}: chunked bulk confirm ───
 
 def _ok(i: int) -> dict:
@@ -505,6 +551,40 @@ async def test_confirm_all_nothing_pending_shows_expired_tail(ui_client):
 
 
 @pytest.mark.asyncio
+async def test_confirm_all_pending_dependency_stays_actionable(ui_client):
+    result = {
+        "results": [{
+            "tool_call_id": "p1", "name": "create_doc_docs_post",
+            "title": "Create bill", "ok": False, "status": 409,
+            "action_status": "pending", "data": None,
+            "error": {"code": "action_dependency_not_ready",
+                      "message": "Confirm the required earlier action first."},
+        }],
+        "completed": 0, "failed": 0, "attention": 1,
+    }
+    with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(return_value=result)):
+        r = await ui_client.post(
+            "/ai/confirm-all-ui/conv-1/m2?view=table", cookies=_authed(),
+            data={"selected": ["p1"]},
+        )
+    assert "0 applied, 0 failed, 1 need attention." in r.text
+    assert "Confirm the required earlier action first." in r.text
+    assert 'class="bulk-select"' in r.text
+
+
+@pytest.mark.asyncio
+async def test_dismiss_all_refreshes_canonical_thread(ui_client):
+    with patch("celerp_ai.ui_routes.api.ai_dismiss_all",
+               AsyncMock(return_value={"dismissed": ["p1", "p2"]})) as dismiss:
+        r = await ui_client.post(
+            "/ai/dismiss-all-ui/conv-1/m2", cookies=_authed(),
+            data={"selected": ["p1", "p2"]},
+        )
+    assert r.headers["HX-Refresh"] == "true"
+    assert dismiss.await_args.args[-1] == ["p1", "p2"]
+
+
+@pytest.mark.asyncio
 async def test_confirm_all_api_failure_stops_the_run_with_the_tally(ui_client):
     err = APIError(502, "The API is down.", {"code": "upstream_unavailable", "message": "The API is down."})
     with patch("celerp_ai.ui_routes.api.ai_confirm_all", AsyncMock(side_effect=err)):
@@ -520,6 +600,26 @@ async def test_confirm_all_api_failure_stops_the_run_with_the_tally(ui_client):
 # ── Sidebar: conversations with open proposals ───────────────────────────────
 
 @pytest.mark.asyncio
+async def test_conversations_list_failure_is_not_empty_state(ui_client):
+    with patch("celerp_ai.ui_routes.api.ai_conversations_list",
+               AsyncMock(side_effect=APIError(502, "down"))):
+        r = await ui_client.get("/ai/conversations-list", cookies=_authed())
+    assert "Conversations could not be loaded." in r.text
+    assert "Retry" in r.text
+    assert "No conversations yet." not in r.text
+
+
+@pytest.mark.asyncio
+async def test_memory_failure_has_retry_and_no_clear(ui_client):
+    with patch("celerp_ai.ui_routes.api.ai_memory_get",
+               AsyncMock(side_effect=APIError(502, "down"))):
+        r = await ui_client.get("/ai/memory-panel", cookies=_authed())
+    assert "Memory could not be loaded." in r.text
+    assert "Retry" in r.text
+    assert "Clear All Memory" not in r.text
+
+
+@pytest.mark.asyncio
 async def test_conversations_list_shows_pending_count(ui_client):
     convs = [{"id": "c1", "title": "Receipts", "pending_count": 7},
              {"id": "c2", "title": "Questions", "pending_count": 0}]
@@ -531,6 +631,18 @@ async def test_conversations_list_shows_pending_count(ui_client):
 
 
 # ── Reading jobs: /ai/chat 202 and /ai/proposals-ui ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_ai_page_status_failure_is_not_showcase(ui_client):
+    patches = _patch_page(ai_quota_status=AsyncMock(side_effect=APIError(502, "down")))
+    _apply(patches)
+    try:
+        r = await ui_client.get("/ai", cookies=_authed())
+    finally:
+        _stop(patches)
+    assert "Celerp AI is temporarily unavailable." in r.text
+    assert "ai-showcase__terminal" not in r.text
+
 
 @pytest.mark.asyncio
 async def test_chat_with_receipts_renders_progress_bubble(ui_client):
@@ -591,6 +703,7 @@ async def test_proposals_ui_failed_job_is_an_error_bubble(ui_client):
     assert "ai-msg--error" in r.text
     assert "The files could not be read." in r.text
     assert "Every file failed to read." in r.text
+    assert "Attach files and try again" in r.text
     assert "hx-get" not in r.text
 
 
@@ -623,7 +736,7 @@ async def test_thread_orders_jobs_between_messages_and_marks_errors(ui_client):
     patches = _patch_page(ai_conversation_get=AsyncMock(return_value=detail))
     _apply(patches)
     try:
-        r = await ui_client.get("/ai?conversation=conv-1", cookies=_authed())
+        r = await ui_client.get("/ai?conversation=11111111-1111-4111-8111-111111111111", cookies=_authed())
     finally:
         _stop(patches)
     assert r.status_code == 200

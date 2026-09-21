@@ -80,6 +80,15 @@ def _attach(page: Page, files: list[dict]) -> list[str]:
     page.locator("#ai-file-input").set_input_files(files)
     chips = page.locator(".ai-file-chip")
     expect(chips).to_have_count(len(files))
+    receipt_button = page.locator(".ai-input__receipts")
+    receipt_eligible = all(
+        f.get("mimeType") in {"image/jpeg", "image/png", "image/webp", "application/pdf"}
+        for f in files
+    )
+    if receipt_eligible:
+        expect(receipt_button).to_be_enabled()
+    else:
+        expect(receipt_button).to_be_disabled()
     return [chips.nth(i).get_attribute("data-file-id") for i in range(len(files))]
 
 
@@ -95,7 +104,7 @@ def _confirm_card(page: Page, text: str) -> None:
 
 def _send_receipts(page: Page, text: str) -> None:
     page.locator("#ai-query-input").fill(text)
-    page.get_by_role("button", name="Process receipts").click()
+    page.locator(".ai-input__receipts").click()
 
 
 def _call(cap: dict, path: dict | None = None, body: dict | None = None, content: str = "") -> ModelResult:

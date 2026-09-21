@@ -213,6 +213,7 @@ async def run_batch(
     """
     semaphore = asyncio.Semaphore(BATCH_CONCURRENCY)
     results: list[dict] = []
+    conversation_id: uuid.UUID | None = None
     completed = 0
     failed = 0
     credits = 0
@@ -220,6 +221,7 @@ async def run_batch(
     async with db_factory() as session:
         job = await session.get(AIBatchJob, job_id)
         if job:
+            conversation_id = job.conversation_id
             job.status = "running"
             session.add(job)
             await session.commit()
@@ -290,7 +292,9 @@ async def run_batch(
             await create_notification(
                 session, company_id, "ai", title, body,
                 user_id=user_id,
-                action_url="/ai",
+                action_url=(
+                    f"/ai?conversation={conversation_id}" if conversation_id else "/ai"
+                ),
                 priority="high",
             )
             await session.commit()

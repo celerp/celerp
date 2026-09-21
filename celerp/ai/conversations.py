@@ -491,16 +491,24 @@ async def finalize_tool_call(
     await session.flush()
 
 
-async def dismiss_tool_call(
+async def dismiss_tool_calls(
     session: AsyncSession,
     *,
     conversation_id: uuid.UUID,
     message_id: uuid.UUID,
-    tool_call_id: str,
+    tool_call_ids: list[str],
     company_id: uuid.UUID,
     user_id: uuid.UUID,
-) -> bool:
-    """Atomically dismiss a pending/retryable action owned by this user."""
+) -> list[str]:
+    """Atomically dismiss claimable proposals owned by this user.
+
+    The owning message is locked once for the whole selection so bulk dismissal
+    cannot race individual confirmations into partially overwritten JSON state.
+    Unknown or already-terminal ids are harmless and simply omitted.
+    """
+    wanted = set(tool_call_ids)
+    if not wanted:
+        return []
     q = (
         select(AIMessage)
         .join(AIConversation, AIMessage.conversation_id == AIConversation.id)
@@ -514,25 +522,48 @@ async def dismiss_tool_call(
     )
     msg = (await session.execute(q)).scalars().first()
     if msg is None or not msg.tools_called:
-        return False
+        return []
+
     now = datetime.now(timezone.utc)
-    changed = False
+    dismissed_ids: list[str] = []
     updated_items: list = []
     for item in msg.tools_called:
-        if not changed and isinstance(item, dict) and item.get("id") == tool_call_id and _claimable(item, now):
+        item_id = item.get("id") if isinstance(item, dict) else None
+        if item_id in wanted and _claimable(item, now):
             dismissed = {**item, "status": "dismissed", "finished_at": now.isoformat()}
             dismissed.pop("executing_since", None)
             dismissed.pop("error", None)
             updated_items.append(dismissed)
-            changed = True
+            dismissed_ids.append(item_id)
         else:
             updated_items.append(item)
-    if not changed:
-        return False
+    if not dismissed_ids:
+        return []
+
     msg.tools_called = updated_items
     session.add(msg)
     await session.flush()
-    return True
+    return dismissed_ids
+
+
+async def dismiss_tool_call(
+    session: AsyncSession,
+    *,
+    conversation_id: uuid.UUID,
+    message_id: uuid.UUID,
+    tool_call_id: str,
+    company_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> bool:
+    """Dismiss one proposal through the canonical bulk-safe transition."""
+    return bool(await dismiss_tool_calls(
+        session,
+        conversation_id=conversation_id,
+        message_id=message_id,
+        tool_call_ids=[tool_call_id],
+        company_id=company_id,
+        user_id=user_id,
+    ))
 
 
 def build_history_context(messages: list[AIMessage]) -> list[dict[str, str]]:

@@ -126,14 +126,18 @@ def _send(page: Page, text: str) -> None:
 
 # ── Click paths ────────────────────────────────────────────────────────────────
 
-def test_new_conversation_button_creates_thread(page: Page, ui_server):
+def test_new_conversation_button_returns_to_empty_chat_without_creating_row(page: Page, ui_server):
+    _SCRIPT.append(_answer("Existing thread."))
     _open_chat(page, ui_server)
-    page.locator(".ai-sidebar__new").click()
+    _send(page, "existing question")
     page.wait_for_url("**/ai?conversation=*")
-    conv_id = page.url.split("conversation=", 1)[1]
-    assert uuid.UUID(conv_id)  # a real conversation id, not a placeholder
-    history = page.locator("#ai-history")
-    expect(history.locator(".ai-sidebar__item").first).to_be_visible()
+    history_before = page.locator("#ai-history .ai-sidebar__item").count()
+
+    page.locator(".ai-sidebar__new").click()
+    page.wait_for_url("**/ai")
+    assert "conversation=" not in page.url
+    expect(page.locator("#ai-empty-state")).to_be_visible()
+    assert page.locator("#ai-history .ai-sidebar__item").count() == history_before
 
 
 def test_send_creates_conversation_and_pushes_url(page: Page, ui_server):
@@ -145,6 +149,7 @@ def test_send_creates_conversation_and_pushes_url(page: Page, ui_server):
     expect(page.locator(".ai-msg--ai").last).to_contain_text("Here is your summary.")
     page.wait_for_url("**/ai?conversation=*")
     assert uuid.UUID(page.locator("#ai-conversation-id").get_attribute("value"))
+    expect(page.locator("#ai-history .ai-sidebar__item").first).to_contain_text("summarize my month")
 
 
 def test_reload_keeps_thread(page: Page, ui_server):

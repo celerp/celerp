@@ -2755,10 +2755,13 @@ async def disconnect_payments(token: str) -> dict:
 # AI assistant
 # ---------------------------------------------------------------------------
 
-async def ai_conversation_create(token: str, session_token: str) -> dict:
+AI_QUERY_TIMEOUT_S = 150.0
+
+
+async def ai_conversation_create(token: str, session_token: str, title: str | None = None) -> dict:
     """POST /ai/conversations - start a new conversation. Returns {"id", ...}."""
     async with _ai_api_client(token, session_token) as c:
-        return _raise(await c.post("/ai/conversations", json={"title": None})).json()
+        return _raise(await c.post("/ai/conversations", json={"title": title})).json()
 
 
 async def ai_conversation_get(token: str, session_token: str, conversation_id: str) -> dict:
@@ -2782,7 +2785,7 @@ async def ai_conversation_query(token: str, session_token: str, conversation_id:
         payload["file_ids"] = file_ids
     if document_mode != "chat":
         payload["document_mode"] = document_mode
-    async with _ai_api_client(token, session_token, timeout=150.0) as c:
+    async with _ai_api_client(token, session_token, timeout=AI_QUERY_TIMEOUT_S) as c:
         return _raise(await c.post(f"/ai/conversations/{conversation_id}/query", json=payload)).json()
 
 
@@ -2821,9 +2824,20 @@ async def ai_confirm_all(token: str, session_token: str, conversation_id: str,
     body: dict = {"message_id": message_id}
     if tool_call_ids is not None:
         body["tool_call_ids"] = tool_call_ids
-    async with _ai_api_client(token, session_token, timeout=150.0) as c:
+    async with _ai_api_client(token, session_token, timeout=AI_QUERY_TIMEOUT_S) as c:
         return _raise(await c.post(
             f"/ai/conversations/{conversation_id}/confirm-all", json=body,
+        )).json()
+
+
+
+async def ai_dismiss_all(token: str, session_token: str, conversation_id: str,
+                         message_id: str, tool_call_ids: list[str]) -> dict:
+    """POST /ai/conversations/{id}/dismiss-all - dismiss selected proposals."""
+    async with _ai_api_client(token, session_token, timeout=30.0) as c:
+        return _raise(await c.post(
+            f"/ai/conversations/{conversation_id}/dismiss-all",
+            json={"message_id": message_id, "tool_call_ids": tool_call_ids},
         )).json()
 
 
@@ -2847,7 +2861,7 @@ async def ai_batch_status(token: str, session_token: str, job_id: str) -> dict:
 async def ai_conversations_list(token: str, session_token: str) -> list[dict]:
     """GET /ai/conversations - list conversations for sidebar."""
     async with _ai_api_client(token, session_token) as c:
-        return _raise(await c.get("/ai/conversations?limit=20")).json()
+        return _raise(await c.get("/ai/conversations?limit=100")).json()
 
 
 async def ai_memory_get(token: str, session_token: str) -> dict:

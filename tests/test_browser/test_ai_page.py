@@ -245,6 +245,8 @@ class TestChatView:
         btn = page.locator(".ai-sidebar__new")
         expect(btn).to_be_visible()
         assert "New" in btn.inner_text()
+        assert btn.get_attribute("href") == "/ai"
+        assert btn.get_attribute("hx-post") is None
 
     def test_chat_has_memory_button(self, page, ui_server):
         """Memory management button exists in sidebar."""
@@ -262,6 +264,8 @@ class TestChatView:
         assert text_input.get_attribute("placeholder") == "Ask anything about your business data\u2026"
         send_btn = form.locator(".ai-input__send")
         expect(send_btn).to_be_visible()
+        assert form.get_attribute("hx-sync") == "this:drop"
+        expect(form.locator(".ai-input__receipts")).to_be_disabled()
 
     def test_chat_has_file_input(self, page, ui_server):
         """Hidden file input for attachments exists."""
@@ -278,6 +282,18 @@ class TestChatView:
         zone = page.locator("#ai-chat-dropzone")
         expect(zone).to_be_visible()
         assert "Drop files here" in zone.inner_text()
+        assert zone.get_attribute("role") == "button"
+        assert zone.get_attribute("tabindex") == "0"
+
+    def test_chat_composer_wraps_on_mobile(self, page, ui_server):
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.goto(f"{ui_server}/ai", wait_until="domcontentloaded")
+        field = page.locator("#ai-query-input").bounding_box()
+        send = page.locator(".ai-input__send").bounding_box()
+        receipts = page.locator(".ai-input__receipts").bounding_box()
+        assert field and send and receipts
+        assert send["y"] > field["y"]
+        assert abs(send["y"] - receipts["y"]) <= 2
 
     def test_chat_no_paperclip_button(self, page, ui_server):
         """Old paperclip attach button is removed; drop zone replaces it."""
