@@ -4,10 +4,10 @@
 
 The release workflow attaches the output as openapi.json to each release, and the
 website renders a static API reference from it. This is byte-for-byte the schema
-/openapi.json serves when expose_openapi_schema is on: the description and tag
-metadata are always baked into the app (celerp.main._openapi_settings), only the
-served route is gated, and app.openapi() builds the document without a running
-server.
+/openapi.json serves when exposure is enabled: the exposure setting controls only
+whether FastAPI registers that route, while the schema metadata is always baked
+into the app (celerp.main._openapi_settings). app.openapi() builds the document
+without a running server.
 
     python scripts/export_openapi.py               # write openapi.json in place
     python scripts/export_openapi.py --out path     # write elsewhere
@@ -51,15 +51,19 @@ def _register_default_modules() -> None:
 
 
 def export(path: str) -> dict:
-    """Write the exposed OpenAPI schema to ``path`` and return it."""
-    # Turn the flag on so the export matches the exposed schema exactly and the
-    # non-default exposure is logged, the same as when a server serves it.
-    celerp.main.settings.expose_openapi_schema = True
+    """Write the OpenAPI schema to ``path`` and return it."""
     _register_default_modules()
     # openapi() caches on the app; clear it so a re-export after registration
     # rebuilds the document against the now-complete route set.
     celerp.main.app.openapi_schema = None
     schema = celerp.main.app.openapi()
+    internal = sorted(
+        route for route in schema.get("paths", {}) if route.startswith("/__celerp/")
+    )
+    if internal:
+        raise RuntimeError(
+            "OpenAPI export contains internal routes: " + ", ".join(internal)
+        )
     with open(path, "w", encoding="utf-8") as f:
         json.dump(schema, f, indent=2, ensure_ascii=False)
         f.write("\n")

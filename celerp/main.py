@@ -12,6 +12,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from celerp import __version__
 from celerp.db import engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import CodeConflictError
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
@@ -386,27 +387,38 @@ _storage_uri = settings.redis_url or "memory://"
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"], storage_uri=_storage_uri)
 
 _OPENAPI_TAGS = [
-    {"name": "auth", "description": "Sign in, sessions, and access tokens."},
-    {"name": "companies", "description": "Companies, members, and roles."},
-    {"name": "items", "description": "Inventory items, stock, and valuation."},
-    {"name": "docs", "description": "Invoices, purchase orders, quotations, and credit notes."},
-    {"name": "lists", "description": "Shipping documents and packing lists."},
-    {"name": "accounting", "description": "Chart of accounts and journal entries."},
-    {"name": "ledger", "description": "Event-sourced ledger and projections."},
-    {"name": "reports", "description": "Financial statements and aging reports."},
-    {"name": "manufacturing", "description": "Bills of materials and production orders."},
-    {"name": "labels", "description": "Label templates and barcode printing."},
-    {"name": "crm", "description": "Contacts, pipeline, and activity."},
-    {"name": "subscriptions", "description": "Recurring billing and auto-invoicing."},
-    {"name": "connectors", "description": "External integrations."},
-    {"name": "payments", "description": "Payment collection."},
-    {"name": "backup", "description": "Data export and import."},
-    {"name": "notifications", "description": "In-app notifications."},
-    {"name": "events", "description": "Server-sent event stream for live updates."},
-    {"name": "system", "description": "Health, status, and instance metadata."},
+    {"name": "auth", "description": "Authenticate users and manage sessions and access tokens."},
+    {"name": "companies", "description": "Manage companies, members, and roles."},
+    {"name": "items", "description": "Manage inventory items, stock levels, and valuation."},
+    {"name": "docs", "description": "Create and manage invoices, purchase orders, quotations, and credit notes."},
+    {"name": "lists", "description": "Create and manage shipping documents and packing lists."},
+    {"name": "accounting", "description": "Manage the chart of accounts and journal entries."},
+    {"name": "ledger", "description": "Work with the event-sourced ledger and its projections."},
+    {"name": "reports", "description": "Generate financial statements and aging reports."},
+    {"name": "manufacturing", "description": "Manage bills of materials and production orders."},
+    {"name": "labels", "description": "Manage label templates, barcodes, and printing."},
+    {"name": "crm", "description": "Manage contacts, pipeline, and activity."},
+    {"name": "subscriptions", "description": "Manage recurring billing and automatic invoicing."},
+    {"name": "connectors", "description": "Configure and operate external integrations."},
+    {"name": "payments", "description": "Manage payment collection."},
+    {"name": "backup", "description": "Export and import Celerp data."},
+    {"name": "notifications", "description": "Read and manage in-app notifications."},
+    {"name": "events", "description": "Consume server-sent events for live updates."},
+    {"name": "system", "description": "Inspect health, status, and instance metadata."},
 ]
 
-_OPENAPI_DESCRIPTION = "REST API for Celerp, the self-hosted business management platform."
+_OPENAPI_SUMMARY = (
+    "Self-hosted ERP API for inventory, accounting, CRM, documents, manufacturing, "
+    "reporting, and automation."
+)
+
+_OPENAPI_DESCRIPTION = (
+    "The Celerp REST API provides programmatic access to the business operations "
+    "used to integrate and automate a self-hosted Celerp ERP instance, including "
+    "inventory, accounting, CRM, invoices and purchasing documents, manufacturing, "
+    "reporting, and related workflows. Requests use Celerp authentication and "
+    "role-based permissions. API documentation: https://celerp.com/docs/api"
+)
 
 
 def _openapi_settings() -> dict:
@@ -419,13 +431,20 @@ def _openapi_settings() -> dict:
     if expose:
         log.warning("expose_openapi_schema is on: serving the public OpenAPI schema at /openapi.json")
     return {
+        "summary": _OPENAPI_SUMMARY,
         "description": _OPENAPI_DESCRIPTION,
+        "version": __version__,
+        "contact": {
+            "name": "Celerp",
+            "url": "https://celerp.com/about",
+            "email": "hello@celerp.com",
+        },
         "openapi_tags": _OPENAPI_TAGS,
         "openapi_url": "/openapi.json" if expose else None,
     }
 
 
-app = FastAPI(title="Celerp", docs_url=None, redoc_url=None, lifespan=lifespan, **_openapi_settings())
+app = FastAPI(title="Celerp REST API", docs_url=None, redoc_url=None, lifespan=lifespan, **_openapi_settings())
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(DrainMiddleware)

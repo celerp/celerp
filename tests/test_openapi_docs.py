@@ -25,6 +25,7 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from celerp import __version__
 import celerp.main
 from celerp.routers.events import router as events_router
 
@@ -78,9 +79,17 @@ def test_export_openapi_writes_valid_schema(tmp_path):
     )
     schema = json.loads(out.read_text())
     assert schema["openapi"].startswith("3."), schema["openapi"]
+    assert schema["info"]["title"] == "Celerp REST API"
+    assert schema["info"]["version"] == __version__
+    assert schema["info"].get("summary"), "exported schema has no info.summary"
     assert schema["info"].get("description"), "exported schema has no info.description"
+    assert schema["info"]["contact"]["url"] == "https://celerp.com/about"
     assert schema.get("paths"), "exported schema has no paths"
     assert schema.get("tags"), "exported schema has no tag groups"
+    assert all(tag.get("description") for tag in schema["tags"])
+    assert not any(path.startswith("/__celerp/") for path in schema["paths"]), (
+        "internal load-balancer routes leaked into the public OpenAPI schema"
+    )
 
     # The whole API, not just the core: the business modules must be loaded and
     # their routes present. A schema missing these means the export ran without

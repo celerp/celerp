@@ -838,10 +838,31 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Pin package version from tag
+        shell: bash
+        run: echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CELERP=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
       - name: Install the package
         run: pip install uv && uv pip install --system -e .
       - name: Export the OpenAPI schema
         run: python scripts/export_openapi.py --out openapi.json
+      - name: Verify OpenAPI release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+
+          with open("openapi.json", encoding="utf-8") as f:
+              schema = json.load(f)
+
+          expected = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          actual = schema["info"]["version"]
+          if actual != expected:
+              raise SystemExit(
+                  f"OpenAPI version mismatch: tag={expected!r}, schema={actual!r}"
+              )
+          PY
       - name: Attach openapi.json to the draft release
         shell: bash
         env:
@@ -858,6 +879,15 @@ jobs:
           if [ -z "$RELEASE_ID" ]; then
             echo "ERROR: no release found for tag $TAG to attach openapi.json" >&2
             exit 1
+          fi
+          EXISTING_ASSET_ID=$(curl -fsS -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets?per_page=100" \
+            | python3 -c "import sys,json; a=next((a for a in json.load(sys.stdin) if a.get('name')=='openapi.json'), None); print('' if a is None else a['id'])")
+          if [ -n "$EXISTING_ASSET_ID" ]; then
+            echo "Replacing existing openapi.json asset $EXISTING_ASSET_ID"
+            curl -fsS -X DELETE -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/celerp/celerp/releases/assets/$EXISTING_ASSET_ID" \
+              >/dev/null
           fi
           STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
             -H "Authorization: token $GH_TOKEN" \

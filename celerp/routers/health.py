@@ -54,13 +54,13 @@ async def readiness(session: AsyncSession = Depends(get_session)) -> dict:
 
 # ── Internal load-balancer probes (bypasses DrainMiddleware) ─────────────────
 
-@router.get("/__celerp/health")
+@router.get("/__celerp/health", include_in_schema=False)
 async def lb_health() -> dict:
     """Always 200 - used by load balancer liveness probes. No DB check."""
     return {"status": "ok"}
 
 
-@router.get("/__celerp/ready")
+@router.get("/__celerp/ready", include_in_schema=False)
 async def lb_ready(session: AsyncSession = Depends(get_session)) -> dict:
     """503 if DB is unreachable - used by load balancer readiness probes."""
     try:
@@ -71,7 +71,7 @@ async def lb_ready(session: AsyncSession = Depends(get_session)) -> dict:
         raise HTTPException(503, detail="Service not ready.")
 
 
-@router.get("/__celerp/drain")
+@router.get("/__celerp/drain", include_in_schema=False)
 async def drain_status(session: AsyncSession = Depends(get_session)) -> dict:
     """Return current drain state. Used by drain polling in SSE generator."""
     from celerp.services.runtime_state import get_runtime_state
