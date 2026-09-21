@@ -663,4 +663,6 @@ def test_build_workflow_validates_final_macos_dmg_before_distribution():
     assert verify_idx < workflow.index("- name: Upload artifacts (dev builds only)")
     assert "publish-release:" in workflow
     publish_idx = workflow.index("  publish-release:")
-    assert "needs: [build]" in workflow[publish_idx:publish_idx + 300]
+    publish_block = workflow[publish_idx:publish_idx + 300]
+    needs_line = next(l for l in publish_block.splitlines() if l.strip().startswith("needs:"))
+    assert "build" in needs_line
