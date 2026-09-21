@@ -314,6 +314,21 @@ async def lifespan(_app: FastAPI):
         backup_scheduler.start()
         log.debug("Backup scheduler started")
 
+    # AI batch jobs cannot survive a restart: mark any left pending or running
+    # as failed so their owners are told to resend instead of waiting forever.
+    try:
+        from celerp.ai.batch import fail_interrupted_jobs
+        from celerp.db import LifecycleSessionLocal as _BatchSweepSession
+        async with _BatchSweepSession() as _sweep_session:
+            interrupted = await fail_interrupted_jobs(_sweep_session)
+            await _sweep_session.commit()
+        if interrupted:
+            logging.getLogger(__name__).warning(
+                "Marked %d interrupted AI batch job(s) as failed", interrupted
+            )
+    except Exception:
+        logging.getLogger(__name__).exception("AI batch job sweep failed (non-fatal)")
+
     # Start AI file cleanup background task
     from celerp.ai.cleanup import run_cleanup_loop
     cleanup_task = asyncio.create_task(run_cleanup_loop())

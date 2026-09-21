@@ -1,19 +1,37 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 
+import hashlib
+import json
 import uuid
+from dataclasses import dataclass
+from types import SimpleNamespace
 
+from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.events.engine import emit_event
+from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.inventory_codes import (
     BarcodeConflictError,
     RfidEpcConflictError,
     normalize_rfid_epc,
+    validate_barcode,
+    validate_rfid_epc,
 )
-from celerp.models.company import Company
+from celerp.models.company import Company, Location
 from celerp.models.projections import Projection
+from celerp.importers.tabular import CsvImportSpec
+from celerp.services.field_schema import AMOUNT_ITEM_KEYS
+from celerp.services.money import to_stored_float, unit_price_from_total
+from celerp.services.permissions import role_has_permission
+from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key
+from celerp.services.units import (
+    build_unit_map,
+    get_company_units,
+    is_pieces_unit,
+    is_weight_unit,
+)
 
 # Internally assigned SKUs/barcodes are short zero-padded sequences; imported
 # EAN-13/GTIN-14 barcodes (13-14 digits) are excluded from the sequence scan so
@@ -287,3 +305,877 @@ async def upsert_from_connector(company_id: str, item) -> str:
         )
         await session.commit()
         return outcome
+
+
+# ---------------------------------------------------------------------------
+# Semantic catalog import
+# ---------------------------------------------------------------------------
+#
+# One committer, three transports: the browser CSV importer (POST /import/rows),
+# the agent commit (POST /import/commit), and the raw event batch
+# (POST /import/batch) all converge on commit_import_batch below. The business
+# transformation (location resolution, unit canonicalization, quantity/rate
+# derivation, dynamic attributes, idempotency) lives in build_import_records so
+# it is applied identically no matter which transport delivered the rows.
+
+
+class ImportRecord(BaseModel):
+    entity_id: str
+    event_type: str
+    data: dict
+    source: str
+    idempotency_key: str
+    source_ts: str | None = None
+
+
+class BatchImportResult(BaseModel):
+    created: int
+    skipped: int
+    updated: int = 0
+    errors: list[str]
+    batch_id: str | None = None
+
+
+class BatchImportRequest(BaseModel):
+    records: list[ImportRecord] = Field(..., max_length=500)
+    filename: str | None = None
+    upsert: bool = False
+
+
+# Columns with dedicated item fields; everything else on a row is a category
+# attribute. Shared with the UI mapping form (imported from here) so the split
+# between core fields and attributes has one source of truth.
+_CORE_ITEM_COLS: frozenset[str] = frozenset({
+    "sku", "name", "category", "quantity",
+    "weight", "weight_ct", "weight_unit", "gross_weight", "gross_weight_unit",
+    "sell_by", "pieces", "status",
+    "barcode", "hs_code", "short_description", "description", "notes", "location_name",
+    "location_id", "created_at", "updated_at",
+})
+
+# Max distinct values before an attribute column is treated as free-text instead
+# of a select field when a schema is inferred from the import.
+_DROPDOWN_THRESHOLD = 30
+
+
+def _derive_import_qty(row: dict, sell_by: str, unit_map: dict[str, dict]) -> float:
+    """Derive the stock quantity from an import row.
+
+    Priority:
+    1. An explicit ``quantity`` or ``qty`` column is trusted unconditionally.
+    2. Otherwise fall back to the semantic field for the unit type:
+       - pieces-type (e.g. ``piece``) -> ``pieces`` column
+       - weight-type (e.g. ``carat``, ``gram``) -> ``weight`` or ``weight_ct``
+       - other (service, volume, length, unknown) -> 0.0
+
+    Returns a float; never raises.
+    """
+    def _to_float(val) -> float | None:
+        s = str(val).strip() if val is not None else ""
+        if not s:
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    explicit = _to_float(row.get("quantity")) if "quantity" in row else _to_float(row.get("qty"))
+    if explicit is not None:
+        return explicit
+    if is_pieces_unit(sell_by, unit_map):
+        return _to_float(row.get("pieces")) or 0.0
+    if is_weight_unit(sell_by, unit_map):
+        return _to_float(row.get("weight")) or _to_float(row.get("weight_ct")) or 0.0
+    return 0.0
+
+
+def _collect_category_attributes(rows: list[dict]) -> dict[str, dict[str, list[str]]]:
+    """Return {category: {col: [distinct_values]}} for all attribute columns."""
+    result: dict[str, dict[str, list[str]]] = {}
+    for row in rows:
+        cat = str(row.get("category", "") or "").strip() or "_uncategorized"
+        if cat not in result:
+            result[cat] = {}
+        for k, v in row.items():
+            if k in _CORE_ITEM_COLS or k.endswith("_price") or k.endswith("_price_total"):
+                continue
+            v_str = str(v).strip() if v is not None else ""
+            if not v_str:
+                continue
+            if k not in result[cat]:
+                result[cat][k] = []
+            if v_str not in result[cat][k]:
+                result[cat][k].append(v_str)
+    return result
+
+
+def _infer_category_schemas(cat_attr_values: dict[str, dict[str, list[str]]]) -> dict[str, list[dict]]:
+    """Convert collected attribute values into schema field definitions."""
+    schemas: dict[str, list[dict]] = {}
+    for cat, cols in cat_attr_values.items():
+        if cat == "_uncategorized":
+            continue
+        fields = []
+        for key, distinct_vals in cols.items():
+            if len(distinct_vals) <= _DROPDOWN_THRESHOLD:
+                ftype = "select"
+                options = sorted(distinct_vals)
+            else:
+                ftype = "text"
+                options = []
+            fields.append({
+                "key": key,
+                "label": key.replace("_", " ").title(),
+                "type": ftype,
+                "options": options,
+            })
+        if fields:
+            schemas[cat] = fields
+    return schemas
+
+
+# Item import columns, single-sourced here for every transport (the browser
+# mapping UI and the agent preview/commit routes). Price columns are dynamic:
+# one unit-price column per importable price list, plus a virtual "_total"
+# column that back-calculates the unit price at confirm time.
+ITEM_IMPORT_BASE_COLS = ["sku", "name", "sell_by", "category", "quantity"]
+ITEM_IMPORT_TAIL_COLS = [
+    "weight", "weight_unit", "gross_weight", "gross_weight_unit", "pieces",
+    "barcode", "hs_code", "purchase_sku", "purchase_name", "purchase_unit",
+    "purchase_conversion_factor", "short_description", "description", "notes",
+    "location_name",
+]
+
+
+def importable_price_lists(price_lists: list[dict]) -> list[dict]:
+    """Price lists whose values can be imported. Derived lists are computed from
+    the base price list at read time, so the mapper never offers their columns."""
+    return [pl for pl in price_lists if pl.get("name") and not is_derived(pl)]
+
+
+def build_item_import_spec(price_lists: list[dict]) -> CsvImportSpec:
+    """Build the item import spec with dynamic price columns from the company's
+    price lists. Shared by the browser mapper and the agent preview/commit."""
+    price_cols = [price_key(pl["name"]) for pl in importable_price_lists(price_lists)]
+    price_total_cols = [f"{col}_total" for col in price_cols]
+    type_map: dict = {"quantity": float, "weight": float, "pieces": float}
+    for col in price_cols + price_total_cols:
+        type_map[col] = float
+    return CsvImportSpec(
+        cols=ITEM_IMPORT_BASE_COLS + price_cols + price_total_cols + ITEM_IMPORT_TAIL_COLS,
+        required={"name", "sell_by"},
+        type_map=type_map,
+    )
+
+
+@dataclass
+class ImportBuild:
+    records: list[dict]              # ImportRecord-shaped dicts ready for the committer
+    errors: list[dict]              # {"row", "field", "message"}
+    locations_to_create: list[str]
+
+
+async def build_import_records(
+    session: AsyncSession,
+    company_id,
+    rows: list[dict],
+    *,
+    upsert: bool,
+    dry_run: bool,
+    create_missing_locations: bool = False,
+) -> ImportBuild:
+    """Transform mapped business rows into semantic item import records.
+
+    Retry identity and item identity are deliberately separate. Create rows get a
+    per-import row key; upserts first resolve one existing item by physical barcode
+    or an unambiguous SKU, then key the patch by its target and canonical content.
+
+    ``dry_run`` never creates locations. Missing named locations are reported in
+    ``locations_to_create`` and are accepted only when the caller is authorised to
+    create company locations; commit then creates those locations before resolving
+    the rows. An upsert that omits ``location_name`` preserves the target location.
+    """
+    loc_rows = (await session.execute(
+        select(Location).where(Location.company_id == company_id)
+    )).scalars().all()
+    location_map: dict[str, str] = {loc.name: str(loc.id) for loc in loc_rows}
+
+    default_location_id: str | None = None
+    if len(loc_rows) == 1:
+        default_location_id = str(loc_rows[0].id)
+    else:
+        for loc in loc_rows:
+            if loc.is_default:
+                default_location_id = str(loc.id)
+                break
+
+    loc_names_needed: list[str] = []
+    for row in rows:
+        name = str(row.get("location_name", "") or "").strip()
+        if name and name not in location_map and name not in loc_names_needed:
+            loc_names_needed.append(name)
+
+    locations_to_create = list(loc_names_needed)
+    if not dry_run and create_missing_locations:
+        for name in loc_names_needed:
+            loc = Location(id=uuid.uuid4(), company_id=company_id, name=name, type="warehouse")
+            session.add(loc)
+            await session.flush()
+            location_map[name] = str(loc.id)
+
+    company = await session.get(Company, company_id)
+    currency = ((company.settings or {}).get("currency") if company else None) or "USD"
+
+    cat_sell_by: dict[str, str] = {}
+    try:
+        from celerp_verticals.routes import _all_categories  # type: ignore
+        for cat in _all_categories().values():
+            if cat.get("default_sell_by"):
+                cat_sell_by[cat["name"]] = cat["default_sell_by"]
+    except ImportError:
+        pass
+
+    units = await get_company_units(session, company_id)
+    unit_canonical = {u["name"].lower(): u["name"] for u in units}
+    unit_map = build_unit_map(units)
+
+    # Resolve upsert targets once for the batch. Barcode is a physical-lot
+    # identity. SKU is intentionally non-unique and is usable only when exactly
+    # one current item has it.
+    by_barcode: dict[str, Projection] = {}
+    by_sku: dict[str, list[Projection]] = {}
+    if upsert:
+        barcodes = {str(r.get("barcode") or "").strip() for r in rows} - {""}
+        skus = {str(r.get("sku") or "").strip() for r in rows} - {""}
+        predicates = []
+        if barcodes:
+            predicates.append(Projection.state["barcode"].as_string().in_(barcodes))
+        if skus:
+            predicates.append(Projection.state["sku"].as_string().in_(skus))
+        if predicates:
+            matches = (await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_type == "item",
+                    or_(*predicates),
+                )
+            )).scalars().all()
+            for proj in matches:
+                state = proj.state or {}
+                barcode = str(state.get("barcode") or "").strip()
+                sku = str(state.get("sku") or "").strip()
+                if barcode:
+                    by_barcode[barcode] = proj
+                if sku:
+                    by_sku.setdefault(sku, []).append(proj)
+
+    def _has_value(row: dict, key: str) -> bool:
+        return key in row and str(row.get(key) or "").strip() != ""
+
+    records: list[dict] = []
+    errors: list[dict] = []
+    for i, row in enumerate(rows):
+        sku = str(row.get("sku", "") or "").strip()
+        name = str(row.get("name", "") or "").strip()
+        barcode = str(row.get("barcode", "") or "").strip()
+        loc_name = str(row.get("location_name", "") or "").strip()
+
+        target: Projection | None = None
+        if upsert:
+            barcode_target = by_barcode.get(barcode) if barcode else None
+            sku_matches = by_sku.get(sku, []) if sku else []
+            if barcode_target is not None:
+                if len(sku_matches) == 1 and sku_matches[0].entity_id != barcode_target.entity_id:
+                    errors.append({
+                        "row": i + 1,
+                        "field": "sku",
+                        "message": "SKU and barcode resolve to different existing items",
+                    })
+                    continue
+                target = barcode_target
+            elif len(sku_matches) == 1:
+                target = sku_matches[0]
+            elif len(sku_matches) > 1:
+                errors.append({
+                    "row": i + 1,
+                    "field": "sku",
+                    "message": f"SKU '{sku}' matches multiple lots; include a barcode to choose one",
+                })
+                continue
+
+        # Location is required for a new item. Upsert without an explicit location
+        # preserves the target's current location rather than inventing a default.
+        if loc_name:
+            location_id = location_map.get(loc_name)
+            missing_named_location = loc_name in loc_names_needed
+            if not location_id and not (missing_named_location and create_missing_locations):
+                errors.append({
+                    "row": i + 1,
+                    "field": "location_name",
+                    "message": f"Location '{loc_name}' does not exist and your role cannot create locations",
+                })
+                continue
+        elif target is not None:
+            location_id = str(target.location_id) if target.location_id else None
+        else:
+            location_id = default_location_id
+            if not location_id:
+                errors.append({
+                    "row": i + 1,
+                    "field": "location_name",
+                    "message": "No location resolved: add a location_name column or set a default location",
+                })
+                continue
+
+        sell_by = (
+            unit_canonical.get(str(row.get("sell_by", "") or "").strip().lower())
+            or str(row.get("sell_by", "") or "").strip()
+            or cat_sell_by.get(str(row.get("category", "") or "").strip())
+            or ""
+        )
+        qty = _derive_import_qty(row, sell_by, unit_map)
+        amount_source = any(_has_value(row, k) for k in ("quantity", "qty", "pieces", "weight", "weight_ct"))
+
+        def _flt(key: str, _row: dict = row) -> float | None:
+            raw = str(_row.get(key, "") or "").strip()
+            if not raw:
+                return None
+            try:
+                return float(raw)
+            except ValueError:
+                return None
+
+        attrs: dict = {}
+        for key, value in row.items():
+            if key in _CORE_ITEM_COLS or key.endswith("_price") or key.endswith("_price_total"):
+                continue
+            value_s = str(value).strip() if value is not None else ""
+            if value_s:
+                attrs[key] = value_s
+
+        data = {
+            "sku": sku,
+            "name": name,
+            "quantity": qty,
+            "category": str(row.get("category", "") or "").strip() or None,
+            "weight": _flt("weight") or _flt("weight_ct"),
+            "weight_unit": unit_canonical.get(str(row.get("weight_unit", "") or "").strip().lower())
+            or str(row.get("weight_unit", "") or "").strip() or None,
+            "gross_weight": _flt("gross_weight"),
+            "gross_weight_unit": unit_canonical.get(str(row.get("gross_weight_unit", "") or "").strip().lower())
+            or str(row.get("gross_weight_unit", "") or "").strip() or None,
+            "pieces": _flt("pieces"),
+            "sell_by": sell_by or None,
+            "barcode": barcode or None,
+            "hs_code": str(row.get("hs_code", "") or "").strip() or None,
+            "short_description": str(row.get("short_description", "") or "").strip() or None,
+            "description": str(row.get("description", "") or "").strip() or None,
+            "notes": str(row.get("notes", "") or "").strip() or None,
+            "location_id": location_id,
+            "attributes": attrs,
+        }
+
+        # Use the target quantity for total->unit conversion on an upsert that does
+        # not itself change quantity. Otherwise a price-only upsert would divide by 1.
+        price_qty = qty
+        if target is not None and not amount_source:
+            try:
+                price_qty = float((target.state or {}).get("quantity") or 0)
+            except (TypeError, ValueError):
+                price_qty = 0
+
+        for col_key in row:
+            if col_key.endswith("_price_total"):
+                unit_key = col_key[: -len("_total")]
+                total_val = _flt(col_key)
+                if total_val is None or _flt(unit_key) is not None:
+                    continue
+                if unit_key == "cost_price":
+                    data["cost_total"] = total_val
+                    continue
+                data[unit_key] = to_stored_float(
+                    unit_price_from_total(total_val, price_qty or 1, currency)
+                )
+            elif col_key.endswith("_price") and _flt(col_key) is not None:
+                data[col_key] = _flt(col_key)
+
+        if target is None:
+            idem = f"row:{i + 1}"
+            data["idempotency_key"] = idem
+            records.append({
+                "entity_id": f"item:{uuid.uuid4()}",
+                "event_type": "item.created",
+                "data": data,
+                "source": "csv_import",
+                "idempotency_key": idem,
+            })
+            continue
+
+        current = target.state or {}
+        if _has_value(row, "sell_by") and sell_by != str(current.get("sell_by") or "") and not amount_source:
+            errors.append({
+                "row": i + 1,
+                "field": "sell_by",
+                "message": "Changing sell_by during upsert requires quantity, pieces, or weight",
+            })
+            continue
+
+        # Blank cells are non-destructive during upsert. This keeps a narrow CSV
+        # from clearing fields it never intended to manage. Explicit clearing stays
+        # on the normal item edit API where validation and audit semantics exist.
+        patch: dict = {"name": name}
+        if sku:
+            patch["sku"] = sku
+        if _has_value(row, "sell_by"):
+            patch["sell_by"] = sell_by
+        if amount_source:
+            patch["quantity"] = qty
+        for key in (
+            "category", "weight", "weight_unit", "gross_weight", "gross_weight_unit",
+            "pieces", "barcode", "hs_code", "short_description", "description", "notes",
+        ):
+            if _has_value(row, key):
+                value = data.get(key)
+                if value is not None:
+                    patch[key] = value
+        if loc_name:
+            patch["location_id"] = location_id
+        if attrs:
+            merged_attrs = dict(current.get("attributes") or {})
+            merged_attrs.update(attrs)
+            patch["attributes"] = merged_attrs
+        for key, value in data.items():
+            if (key.endswith("_price") or key == "cost_total") and value is not None:
+                patch[key] = value
+
+        canonical_patch = json.dumps(patch, sort_keys=True, separators=(",", ":"), default=str)
+        idem = f"csv:item:{target.entity_id}:patch:{hashlib.sha256(canonical_patch.encode()).hexdigest()}"
+        records.append({
+            "entity_id": target.entity_id,
+            "event_type": "item.patched",
+            "data": patch,
+            "source": "csv_import",
+            "idempotency_key": idem,
+        })
+
+    return ImportBuild(records=records, errors=errors, locations_to_create=locations_to_create)
+
+
+async def import_items(
+    session: AsyncSession,
+    company_id,
+    actor_id,
+    role: str,
+    settings: dict,
+    rows: list[dict],
+    *,
+    upsert: bool,
+    filename: str | None,
+    idempotency_key: str | None,
+) -> BatchImportResult:
+    """Import mapped business rows through the canonical committer.
+
+    Builds records server-side (creating any missing locations), commits them in
+    chunks of 500, then auto-merges any newly discovered attribute columns into
+    the company's category schemas (best-effort, gated on manage_company_settings).
+    Shared by the browser importer and the agent commit path.
+
+    Creates use ``import-attempt + row ordinal`` identity, so equal SKUs and rows
+    without SKUs remain distinct lots while an exact retry of the same attempt is a
+    no-op. Upserts resolve a concrete existing entity first and use a hash of the
+    resulting patch, so the same patch dedupes but a later changed patch still applies.
+    """
+    can_create_locations = role_has_permission(settings, role, "manage_company_settings")
+    build = await build_import_records(
+        session, company_id, rows, upsert=upsert, dry_run=False,
+        create_missing_locations=can_create_locations,
+    )
+
+    # Creation retry identity belongs to the import content + row ordinal, not
+    # SKU/barcode. This keeps same-SKU/no-SKU rows distinct inside one file while
+    # making an exact re-submit of the same mapped rows a no-op. A caller-supplied
+    # key (e.g. the agent preview hash) may pin the same identity explicitly.
+    if idempotency_key:
+        batch_key = idempotency_key
+    else:
+        canonical_batch = json.dumps(
+            {"upsert": upsert, "rows": rows},
+            sort_keys=True, separators=(",", ":"), default=str,
+        )
+        batch_key = f"csv:{hashlib.sha256(canonical_batch.encode()).hexdigest()}"
+    for rec in build.records:
+        if rec["event_type"] == "item.created":
+            rec["idempotency_key"] = f"{batch_key}:{rec['idempotency_key']}"
+            rec["data"]["idempotency_key"] = rec["idempotency_key"]
+
+    user = SimpleNamespace(id=actor_id)
+
+    created = skipped = updated = 0
+    errors: list[str] = [f"Row {e['row']}: {e['message']}" for e in build.errors]
+    batch_id: str | None = None
+
+    _CHUNK = 500
+    all_records = build.records
+    for i in range(0, max(len(all_records), 1), _CHUNK):
+        chunk = all_records[i : i + _CHUNK]
+        if not chunk:
+            break
+        body = BatchImportRequest(
+            records=[ImportRecord(**r) for r in chunk],
+            filename=filename,
+            upsert=upsert,
+        )
+        result = await commit_import_batch(session, company_id, user, role, settings, body)
+        created += result.created
+        skipped += result.skipped
+        updated += result.updated
+        errors.extend(result.errors)
+        if result.batch_id:
+            batch_id = result.batch_id
+
+    # Auto-merge discovered attribute keys into category schemas. Best-effort:
+    # mutating category schemas is a settings change, so the caller's role must
+    # carry manage_company_settings; without it the merge is skipped and the
+    # import still succeeds.
+    if build.records and role_has_permission(settings, role, "manage_company_settings"):
+        inferred = _infer_category_schemas(_collect_category_attributes(rows))
+        if inferred:
+            await _merge_category_schemas(session, company_id, inferred)
+            await session.commit()
+
+    return BatchImportResult(
+        created=created, skipped=skipped, updated=updated, errors=errors, batch_id=batch_id
+    )
+
+
+async def _merge_category_schemas(session: AsyncSession, company_id, incoming: dict[str, list[dict]]) -> None:
+    """Append newly discovered attribute keys to the company's category schemas.
+
+    Never overwrites an existing key (user customizations are preserved). This is
+    the sole path that grows category schemas from imported attribute columns; it
+    stages the change on the company row and leaves the commit to import_items.
+    """
+    company = await session.get(Company, company_id)
+    if company is None:
+        return
+    settings = dict(company.settings)
+    cat_schemas: dict[str, list[dict]] = dict(settings.get("category_schemas") or {})
+    added = False
+    for cat, new_fields in incoming.items():
+        existing = cat_schemas.get(cat) or []
+        existing_keys = {f["key"] for f in existing}
+        max_pos = max((f.get("position", 0) for f in existing), default=-1)
+        appended = []
+        for nf in new_fields:
+            if nf["key"] not in existing_keys:
+                max_pos += 1
+                appended.append({**nf, "position": max_pos, "editable": True, "required": False, "visible_to_roles": [], "show_in_table": True})
+                existing_keys.add(nf["key"])
+        if appended:
+            cat_schemas[cat] = existing + appended
+            added = True
+    if added:
+        settings["category_schemas"] = cat_schemas
+        company.settings = settings
+
+
+async def commit_import_batch(
+    session: AsyncSession,
+    company_id,
+    user,
+    role: str,
+    settings: dict,
+    body: BatchImportRequest,
+) -> BatchImportResult:
+    """Commit item import records through one bounded, company-scoped writer.
+
+    Exact retries resolve through the ledger before any allocation or uniqueness
+    check. ``body.upsert`` keeps the legacy raw-CIF contract, but binds a replay to
+    the entity created by the original ledger event rather than trusting a newly
+    supplied entity id. Semantic upserts arrive as ``item.patched`` records whose
+    idempotency key is already target+content aware.
+    """
+    from sqlalchemy import delete as _delete
+
+    from celerp_inventory.models_import_batch import ImportBatch
+    from celerp.models.ledger import LedgerEntry
+
+    keys = list(dict.fromkeys(r.idempotency_key for r in body.records))
+    existing_rows = []
+    if keys:
+        existing_rows = (await session.execute(
+            select(LedgerEntry).where(
+                LedgerEntry.company_id == company_id,
+                LedgerEntry.idempotency_key.in_(keys),
+            )
+        )).scalars().all()
+    existing: dict[str, LedgerEntry] = {row.idempotency_key: row for row in existing_rows}
+
+    units = await get_company_units(session, company_id)
+    valid_units: frozenset[str] = frozenset(u["name"] for u in units)
+    derived_keys = derived_price_keys((await get_price_config(session, company_id))[0])
+
+    created = skipped = updated = 0
+    errors: list[str] = []
+    created_entity_ids: list[str] = []
+    created_keys: list[str] = []
+
+    for rec in body.records:
+        data = dict(rec.data)
+        data.pop("status", None)
+        data.pop("created_at", None)
+        data.pop("updated_at", None)
+        data.pop("idempotency_key", None)
+        for key in derived_keys:
+            data.pop(key, None)
+        if "allow_splitting" in data and not isinstance(data["allow_splitting"], bool):
+            data["allow_splitting"] = str(data["allow_splitting"]).strip().lower() in (
+                "true", "yes", "1", "y", "t",
+            )
+
+        event_type = rec.event_type
+        entity_id = rec.entity_id
+        idem_key = rec.idempotency_key
+        primary = existing.get(idem_key)
+
+        if event_type == "item.patched":
+            if primary is not None:
+                if primary.event_type == "item.patched" and primary.entity_id == entity_id:
+                    skipped += 1
+                else:
+                    errors.append(f"{entity_id}: idempotency key was already used for another operation")
+                    skipped += 1
+                continue
+        elif event_type == "item.created":
+            if primary is not None:
+                if primary.event_type != "item.created":
+                    errors.append(f"{entity_id}: idempotency key was already used for another operation")
+                    skipped += 1
+                    continue
+                if not body.upsert:
+                    skipped += 1
+                    continue
+                # Legacy raw-CIF upsert: the ledger, not the caller's fresh UUID,
+                # owns the identity of the item created on the first import.
+                entity_id = primary.entity_id
+                event_type = "item.patched"
+                canonical_patch = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
+                idem_key = (
+                    f"{rec.idempotency_key}:upsert:"
+                    f"{hashlib.sha256(canonical_patch.encode()).hexdigest()}"
+                )
+                replay = await find_event_by_idempotency(session, company_id, idem_key)
+                if replay is not None:
+                    if replay.event_type == "item.patched" and replay.entity_id == entity_id:
+                        skipped += 1
+                    else:
+                        errors.append(f"{entity_id}: idempotency key was already used for another operation")
+                        skipped += 1
+                    continue
+        elif event_type == "item.snapshot":
+            if primary is not None:
+                if primary.event_type == "item.snapshot" and primary.entity_id == entity_id:
+                    skipped += 1
+                else:
+                    errors.append(f"{entity_id}: idempotency key was already used for another operation")
+                    skipped += 1
+                continue
+        else:
+            errors.append(f"{entity_id}: event type {event_type!r} is not import-safe")
+            skipped += 1
+            continue
+
+        stored_proj: Projection | None = None
+        if event_type == "item.patched":
+            stored_proj = await session.get(
+                Projection, {"company_id": company_id, "entity_id": entity_id}
+            )
+            if stored_proj is None or stored_proj.entity_type != "item":
+                errors.append(f"{entity_id}: upsert target was not found")
+                skipped += 1
+                continue
+        else:
+            existing_projection = await session.get(
+                Projection, {"company_id": company_id, "entity_id": entity_id}
+            )
+            if existing_projection is not None:
+                errors.append(f"{entity_id}: entity already exists")
+                skipped += 1
+                continue
+
+        # Imported price values modify the same protected business data as the
+        # interactive pricing surfaces. Import/export authority does not imply
+        # permission to set prices.
+        price_keys = {
+            key for key, value in data.items()
+            if value is not None and (key.endswith("_price") or key == "cost_total")
+        }
+        if price_keys and not role_has_permission(settings, role, "set_inventory_prices"):
+            errors.append(
+                f"Row (SKU={data.get('sku', '?')}): editing {sorted(price_keys)} "
+                "requires the set_inventory_prices permission"
+            )
+            skipped += 1
+            continue
+
+        sell_by = str(data.get("sell_by") or "").strip()
+        if event_type != "item.patched" and not sell_by:
+            errors.append(f"Row (SKU={data.get('sku', '?')}): sell_by is required")
+            skipped += 1
+            continue
+        if sell_by and valid_units and sell_by not in valid_units:
+            errors.append(
+                f"Row (SKU={data.get('sku', '?')}): sell_by '{sell_by}' is not a valid unit"
+            )
+            skipped += 1
+            continue
+
+        if event_type == "item.patched" and stored_proj is not None:
+            if not role_has_permission(settings, role, "edit_inventory_amounts"):
+                gated = set(AMOUNT_ITEM_KEYS & set(data))
+                stored_sell_by = str((stored_proj.state or {}).get("sell_by") or "").strip()
+                if sell_by and sell_by != stored_sell_by:
+                    gated.add("sell_by")
+                if gated:
+                    errors.append(
+                        f"Row (SKU={data.get('sku', '?')}): editing {sorted(gated)} "
+                        "requires the edit_inventory_amounts permission"
+                    )
+                    skipped += 1
+                    continue
+
+        negative_amount = None
+        for key in AMOUNT_ITEM_KEYS & set(data):
+            value = data.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                if float(value) < 0:
+                    negative_amount = key
+                    break
+            except (TypeError, ValueError):
+                pass
+        if negative_amount is not None:
+            errors.append(
+                f"Row (SKU={data.get('sku', '?')}): {negative_amount} cannot be negative"
+            )
+            skipped += 1
+            continue
+
+        # Creation follows the ordinary internal-code primitive, after replay
+        # detection, so a retry cannot consume a new SKU/barcode.
+        if event_type == "item.created":
+            await lock_item_code_namespace(session, company_id)
+            if not str(data.get("sku") or "").strip():
+                data["sku"] = (await allocate_internal_codes(session, company_id))[0]
+            sku = str(data.get("sku") or "")
+            if not data.get("barcode") and sku.isdigit():
+                if await _code_in_use(session, company_id, sku):
+                    data["barcode"] = (await allocate_internal_codes(session, company_id))[0]
+                else:
+                    data["barcode"] = sku
+
+        row_barcode = data.get("barcode")
+        row_epc = data.get("rfid_epc")
+        if row_barcode or row_epc:
+            try:
+                validate_barcode(row_barcode)
+                validate_rfid_epc(row_epc)
+                await lock_item_code_namespace(session, company_id)
+                await assert_barcode_available(
+                    session, company_id, row_barcode, exclude_entity_id=entity_id
+                )
+                await assert_rfid_epc_available(
+                    session, company_id, row_epc, exclude_entity_id=entity_id
+                )
+            except (ValueError, BarcodeConflictError, RfidEpcConflictError) as exc:
+                errors.append(f"Row (SKU={data.get('sku', '?')}): {exc}")
+                skipped += 1
+                continue
+
+        if event_type != "item.patched":
+            data["idempotency_key"] = idem_key
+
+        loc_id: uuid.UUID | None = None
+        raw_loc = data.get("location_id")
+        if raw_loc:
+            try:
+                loc_id = uuid.UUID(str(raw_loc))
+            except ValueError:
+                errors.append(f"Row (SKU={data.get('sku', '?')}): invalid location_id")
+                skipped += 1
+                continue
+
+        try:
+            entry = await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=entity_id,
+                entity_type="item",
+                event_type=event_type,
+                data=data,
+                actor_id=user.id,
+                location_id=loc_id,
+                source=rec.source,
+                idempotency_key=idem_key,
+                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
+            )
+        except Exception as exc:
+            if len(errors) < 10:
+                errors.append(f"{entity_id}: {exc}")
+            continue
+
+        existing[idem_key] = entry
+        if getattr(entry, "was_deduped", False):
+            skipped += 1
+            continue
+
+        if event_type == "item.patched":
+            updated += 1
+        else:
+            created_entity_ids.append(entity_id)
+            created_keys.append(idem_key)
+            created += 1
+
+    batch_id: str | None = None
+    if created > 0:
+        new_batch_id = uuid.uuid4()
+        batch = ImportBatch(
+            id=new_batch_id,
+            company_id=company_id,
+            entity_type="item",
+            filename=body.filename,
+            row_count=created,
+            entity_ids=created_entity_ids,
+            idempotency_keys=created_keys,
+            status="active",
+        )
+        session.add(batch)
+        batch_id = str(new_batch_id)
+
+        # Auto-wipe demo items on first real import.
+        demo_eids = (await session.execute(
+            select(LedgerEntry.entity_id).where(
+                LedgerEntry.company_id == company_id,
+                LedgerEntry.source == "demo",
+                LedgerEntry.entity_type == "item",
+            ).distinct()
+        )).scalars().all()
+        if demo_eids:
+            await session.execute(
+                _delete(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_id.in_(demo_eids),
+                )
+            )
+            await session.execute(
+                _delete(LedgerEntry).where(
+                    LedgerEntry.company_id == company_id,
+                    LedgerEntry.entity_id.in_(demo_eids),
+                )
+            )
+
+    await session.commit()
+    return BatchImportResult(
+        created=created, skipped=skipped, updated=updated, errors=errors, batch_id=batch_id
+    )

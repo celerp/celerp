@@ -465,11 +465,16 @@ def detail_from_entry(data: dict, event_type: str, currency: str | None = None) 
 
 
 # Field-type buckets for formatting change-summary values (H11).
-_QTY_FIELD_KEYS = frozenset({"quantity", "pieces", "reserved_quantity", "weight"})
+QTY_FIELD_KEYS = frozenset({"quantity", "pieces", "reserved_quantity", "weight"})
 _MONEY_FIELD_KEYS = frozenset({"cost_total", "cost_price", "total", "subtotal", "tax", "tax_total",
                                "tax_amount", "discount_amount", "amount", "amount_outstanding",
                                "price", "unit_price"})
 _DATE_FIELD_KEYS = frozenset({"due_date", "issue_date", "expiry_date", "date", "payment_date"})
+
+
+def is_money_field(key: str) -> bool:
+    """A field holding a currency amount: the named totals and prices, or any *_price / *_total."""
+    return key in _MONEY_FIELD_KEYS or key.endswith("_price") or key.endswith("_total")
 
 
 def _fmt_field_value(key: str, value, currency: str | None) -> str:
@@ -477,9 +482,9 @@ def _fmt_field_value(key: str, value, currency: str | None) -> str:
     currency money, ISO dates as dates; anything else falls back to capped text."""
     if value is None:
         return t("activity.none")
-    if key in _QTY_FIELD_KEYS:
+    if key in QTY_FIELD_KEYS:
         return fmt_qty(value)
-    if key in _MONEY_FIELD_KEYS or key.endswith("_price") or key.endswith("_total"):
+    if is_money_field(key):
         return fmt_price(value, key, currency)
     if key in _DATE_FIELD_KEYS or key.endswith("_date"):
         return str(value)[:10]

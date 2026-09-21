@@ -11,14 +11,14 @@ from datetime import datetime, timezone
 
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import emit_event
+from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.events.schemas import reject_comma_sku
 from celerp.inventory_codes import (
     BarcodeConflictError,
@@ -30,10 +30,16 @@ from celerp.inventory_codes import (
 )
 from celerp.models.projections import Projection
 from .services import (
+    BatchImportRequest,
+    BatchImportResult,
     _code_in_use,
     allocate_internal_codes,
     assert_barcode_available,
     assert_rfid_epc_available,
+    build_import_records,
+    build_item_import_spec,
+    commit_import_batch,
+    import_items,
     lock_item_code_namespace,
 )
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
@@ -743,7 +749,7 @@ def item_matches_query(record: dict, q: str) -> bool:
     return query_match_reasons(record, q) is not None
 
 
-@router.get("")
+@router.get("", openapi_extra={"x-celerp-agent": True})
 async def list_items(
     request: Request,
     company_id=Depends(get_current_company_id),
@@ -1021,7 +1027,7 @@ async def list_items(
     return resp
 
 
-@router.get("/valuation")
+@router.get("/valuation", openapi_extra={"x-celerp-agent": True})
 async def get_valuation(
     category: str | None = None,
     status: str | None = None,
@@ -1379,7 +1385,252 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     return {"items": result}
 
 
-@router.get("/{entity_id}")
+# ── Import routes ─────────────────────────────────────────────────────────────
+# Declared before GET /{entity_id} so "import" is never captured as an entity id.
+# One committer (services.commit_import_batch), three transports: the browser
+# importer (/import/rows), the agent commit (/import/commit), and the raw event
+# batch (/import/batch). All converge on services.import_items / commit_import_batch.
+
+
+class InventoryImportRows(BaseModel):
+    rows: list[dict] = Field(..., max_length=500)
+    upsert: bool = False
+    filename: str | None = None
+    idempotency_key: str | None = None
+
+
+@router.post(
+    "/import/rows", response_model=BatchImportResult,
+    dependencies=[require_permission("import_export_data"), require_permission("edit_inventory")],
+)
+async def import_rows(
+    body: InventoryImportRows,
+    company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> BatchImportResult:
+    """Commit already-mapped import rows (the browser importer's transport).
+
+    Rows arrive mapped and fixed by the UI. The shared committer owns location
+    resolution and creation, unit and quantity derivation, monetary conversion,
+    idempotency, and the category-schema follow-up. Unmarked: this is the browser
+    transport, not an agent capability (the agent commits through /import/commit).
+    """
+    return await import_items(
+        session, company_id, user.id, role, settings, body.rows,
+        upsert=body.upsert, filename=body.filename, idempotency_key=body.idempotency_key,
+    )
+
+
+# Agent import: preview then commit. The agent uploads a CSV/xlsx, previews the
+# suggested mapping and any row errors, then commits by echoing the preview hash
+# so a file that changed between the two calls is refused rather than silently
+# imported under a stale mapping.
+
+_AI_FILE_ID_RE = re.compile(r"^ai_up_[0-9a-f]{32}$")
+
+
+class InventoryImportPreview(BaseModel):
+    file_id: str
+    sheet: str | None
+    upsert: bool
+    columns: list[str]
+    mapping: dict[str, str]
+    unmapped_required: list[str]
+    row_count: int
+    sample: list[dict]
+    errors: list[dict]
+    locations_to_create: list[str] = Field(default_factory=list)
+    preview_hash: str
+
+
+class InventoryImportPreviewRequest(BaseModel):
+    file_id: str = Field(..., min_length=1, max_length=64)
+    sheet: str | None = Field(None, max_length=64)
+    upsert: bool = False
+    mapping: dict[str, str] | None = None
+
+
+async def _build_item_preview(
+    session, company_id, user_id, role: str, settings: dict, *,
+    file_id: str, sheet: str | None, upsert: bool, mapping: dict[str, str] | None = None,
+) -> dict:
+    """Load an uploaded file, map and validate it, and dry-run the importer.
+
+    Returns the preview payload plus the mapped rows, the flat error list, the
+    original filename, and the preview hash. Recomputed identically by preview
+    and commit so the hash pins the exact bytes, sheet, mapping, and row count.
+
+    Raises 404 when the file id is malformed, missing, or owned by another
+    company; 422 when the bytes cannot be read as a table.
+    """
+    import hashlib
+    import json
+
+    from celerp.ai.files import load_file
+    from celerp.importers.tabular import (
+        TabularError,
+        read_table,
+        remap_rows,
+        suggest_mapping,
+        validate_cell,
+    )
+
+    if not _AI_FILE_ID_RE.match(file_id):
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        data, meta = load_file(file_id, company_id, user_id)
+    except (FileNotFoundError, PermissionError):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    filename = meta.get("filename") or file_id
+    try:
+        cols, rows = read_table(data, filename, sheet=sheet)
+    except TabularError as exc:
+        detail: dict = {"code": "unreadable_file", "message": str(exc)}
+        if exc.sheets:
+            detail["sheets"] = exc.sheets
+        raise HTTPException(status_code=422, detail=detail)
+
+    price_lists, _default_list, _currency = await get_price_config(session, company_id)
+    spec = build_item_import_spec(price_lists)
+    mapping = dict(mapping) if mapping is not None else suggest_mapping(cols, spec.cols)
+    # Ignore mapping keys for columns the file does not contain; reject duplicate
+    # target claims below through the existing required-field validation.
+    mapping = {col: mapping.get(col, "__attr__") for col in cols}
+    new_cols, mapped_rows = remap_rows(cols, rows, mapping)
+
+    errors: list[dict] = []
+    for i, mapped in enumerate(mapped_rows):
+        for col in spec.cols:
+            if not validate_cell(spec, col, str(mapped.get(col, "")), mapped):
+                errors.append({"row": i + 1, "field": col, "message": f"Invalid or missing {col}"})
+    build = await build_import_records(
+        session, company_id, mapped_rows, upsert=upsert, dry_run=True,
+        create_missing_locations=role_has_permission(settings, role, "manage_company_settings"),
+    )
+    errors.extend(build.errors)
+    errors = errors[:50]
+
+    unmapped_required = sorted(r for r in spec.required if r not in set(new_cols))
+    row_count = len(rows)
+    canonical = json.dumps(
+        {
+            "file_id": file_id,
+            "sheet": sheet,
+            "upsert": upsert,
+            "mapping": mapping,
+            "row_count": row_count,
+            "file_sha256": hashlib.sha256(data).hexdigest(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    preview_hash = hashlib.sha256(canonical.encode()).hexdigest()
+
+    return {
+        "payload": InventoryImportPreview(
+            file_id=file_id, sheet=sheet, upsert=upsert, columns=cols,
+            mapping=mapping, unmapped_required=unmapped_required, row_count=row_count,
+            sample=mapped_rows[:5], errors=errors,
+            locations_to_create=build.locations_to_create, preview_hash=preview_hash,
+        ),
+        "errors": errors,
+        "mapped_rows": mapped_rows,
+        "filename": filename,
+        "preview_hash": preview_hash,
+    }
+
+
+@router.get(
+    "/import/preview", response_model=InventoryImportPreview,
+    dependencies=[require_permission("import_export_data")],
+)
+async def import_preview(
+    file_id: str = Query(..., min_length=1, max_length=64),
+    sheet: str | None = Query(None, max_length=64),
+    upsert: bool = Query(False),
+    company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> InventoryImportPreview:
+    """Preview an uploaded item import for the browser UI."""
+    result = await _build_item_preview(
+        session, company_id, user.id, role, settings,
+        file_id=file_id, sheet=sheet, upsert=upsert,
+    )
+    return result["payload"]
+
+
+@router.post(
+    "/import/preview", response_model=InventoryImportPreview,
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-confirm": False},
+    dependencies=[require_permission("import_export_data")],
+)
+async def import_preview_agent(
+    body: InventoryImportPreviewRequest,
+    company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> InventoryImportPreview:
+    """Preview an uploaded catalog with an optional caller-corrected mapping."""
+    result = await _build_item_preview(
+        session, company_id, user.id, role, settings, file_id=body.file_id,
+        sheet=body.sheet, upsert=body.upsert, mapping=body.mapping,
+    )
+    return result["payload"]
+
+
+class InventoryImportCommit(BaseModel):
+    file_id: str = Field(..., min_length=1, max_length=64)
+    sheet: str | None = Field(None, max_length=64)
+    upsert: bool = False
+    mapping: dict[str, str] | None = None
+    preview_hash: str = Field(..., min_length=64, max_length=64)
+
+
+@router.post(
+    "/import/commit", response_model=BatchImportResult,
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+    dependencies=[require_permission("import_export_data"), require_permission("edit_inventory")],
+)
+async def import_commit(
+    body: InventoryImportCommit,
+    company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> BatchImportResult:
+    """Commit an item import previewed via /import/preview.
+
+    Recomputes the preview from the stored bytes; a hash mismatch means the file
+    or its mapping changed since the preview, refused with 409 rather than
+    imported under stale assumptions. Any row validation error is refused with
+    422 and the error list; otherwise the rows go through the shared committer.
+    """
+    result = await _build_item_preview(
+        session, company_id, user.id, role, settings, file_id=body.file_id,
+        sheet=body.sheet, upsert=body.upsert, mapping=body.mapping,
+    )
+    if result["preview_hash"] != body.preview_hash:
+        raise HTTPException(status_code=409, detail={"code": "preview_stale"})
+    if result["errors"]:
+        raise HTTPException(status_code=422, detail={"code": "validation_failed", "errors": result["errors"]})
+    return await import_items(
+        session, company_id, user.id, role, settings, result["mapped_rows"],
+        upsert=body.upsert, filename=result["filename"],
+        idempotency_key=f"preview:{body.preview_hash}",
+    )
+
+
+@router.get("/{entity_id}", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True})
 async def get_item(entity_id: str, company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.models.company import Location
     from celerp.services.field_schema import get_effective_field_schema
@@ -1388,7 +1639,11 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
         raise HTTPException(status_code=404, detail="Not found")
     loc_name: str | None = None
     if row.location_id:
-        loc = await session.get(Location, row.location_id)
+        loc = (await session.execute(
+            select(Location).where(
+                Location.id == row.location_id, Location.company_id == company_id,
+            )
+        )).scalar_one_or_none()
         loc_name = loc.name if loc else None
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
@@ -1417,7 +1672,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     return result
 
 
-@router.get("/{entity_id}/reorder-suggestion")
+@router.get("/{entity_id}/reorder-suggestion", dependencies=[require_permission("view_inventory")], openapi_extra={"x-celerp-agent": True})
 async def get_reorder_suggestion(entity_id: str, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """Suggested reorder_point / reorder_qty from trailing outbound velocity.
 
@@ -1633,8 +1888,39 @@ def _validate_rfid_epc(rfid_epc) -> None:
         raise HTTPException(status_code=422, detail=str(e))
 
 
-@router.post("")
+async def _get_item_projection(session: AsyncSession, company_id, entity_id: str) -> Projection:
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if row is None or row.entity_type != "item":
+        raise HTTPException(status_code=404, detail="Item not found")
+    return row
+
+
+async def _require_company_location(session: AsyncSession, company_id, location_id) -> None:
+    if location_id is None:
+        return
+    from celerp.models.company import Location
+
+    try:
+        parsed = location_id if isinstance(location_id, uuid.UUID) else uuid.UUID(str(location_id))
+    except (TypeError, ValueError, AttributeError):
+        raise HTTPException(status_code=422, detail="Invalid location_id")
+    exists = (await session.execute(
+        select(Location.id).where(Location.id == parsed, Location.company_id == company_id)
+    )).scalar_one_or_none()
+    if exists is None:
+        raise HTTPException(status_code=422, detail="Location not found for this company")
+
+
+@router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    idem_key = payload.idempotency_key or str(uuid.uuid4())
+    if payload.idempotency_key:
+        replay = await find_event_by_idempotency(session, company_id, idem_key)
+        if replay is not None:
+            if replay.event_type != "item.created":
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            return {"event_id": replay.id, "id": replay.entity_id}
+
     # Guard: setting cost fields on creation requires set_inventory_prices, except that a
     # draft's creator authors cost with edit_inventory alone (the gate re-arms at commit) -
     # the same draft_cost_carveout the pricing surfaces use, so the three stay in lockstep.
@@ -1666,11 +1952,17 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     _validate_sku(payload.sku)
     _validate_gtin(payload.gtin)
     _validate_rfid_epc(payload.rfid_epc)
+    await _require_company_location(session, company_id, payload.location_id)
 
     # Serialize all SKU/barcode allocation and the barcode-uniqueness check for this
     # company: two concurrent creates must not mint the same code or both pass the
     # availability check. The lock is held until this request commits.
     await lock_item_code_namespace(session, company_id)
+    replay = await find_event_by_idempotency(session, company_id, idem_key)
+    if replay is not None:
+        if replay.event_type != "item.created":
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        return {"event_id": replay.id, "id": replay.entity_id}
 
     # Auto-assign sequential SKU if not provided
     if not payload.sku:
@@ -1775,11 +2067,15 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         actor_id=user.id,
         location_id=payload.location_id,
         source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
+        idempotency_key=idem_key,
         metadata_={},
     )
 
-    # Emit pricing events for any prices supplied inline
+    if getattr(entry, "was_deduped", False):
+        return {"event_id": entry.id, "id": entry.entity_id}
+
+    # Emit pricing events for any prices supplied inline. Derive their replay identity
+    # from the primary command, so retries cannot create a second price change.
     for price_type, price_val in price_fields.items():
         await emit_event(
             session,
@@ -1791,7 +2087,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
             actor_id=user.id,
             location_id=None,
             source="api",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"{idem_key}:price:{price_type}",
             metadata_={},
         )
 
@@ -1816,8 +2112,15 @@ def is_cost_price_type(price_type: str) -> bool:
     return is_cost_list_name(name)
 
 
-@router.patch("/{entity_id}")
+@router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    if payload.idempotency_key:
+        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+        if replay is not None:
+            if replay.event_type != "item.updated" or replay.entity_id != entity_id:
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            return {"event_id": replay.id}
+
     # Guard: restricted fields require a role at the schema-configured floor.
     from celerp.services.field_schema import get_effective_field_schema
     field_schema = await get_effective_field_schema(session, company_id)
@@ -1827,8 +2130,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # CURRENT status is draft, anyone with edit_inventory finishes authoring the
     # item freely; the status is re-read here on every patch, so an edit landing
     # after another user commits the item is gated like any available item.
-    _proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    _is_draft = str(((_proj.state if _proj else {}) or {}).get("status") or "").lower() == "draft"
+    _proj = await _get_item_projection(session, company_id, entity_id)
+    _is_draft = str((_proj.state or {}).get("status") or "").lower() == "draft"
     # Cost fields are gated by set_inventory_prices, not by the schema role floor:
     # a granted operator edits cost, an ungranted manager still cannot.
     restricted -= COST_ITEM_KEYS
@@ -1884,6 +2187,11 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # A renamed SKU is held to the same rule as a created one: no comma (the OR operator).
     if "sku" in changed_keys:
         _validate_sku((payload.fields_changed["sku"] or {}).get("new"))
+
+    if "location_id" in changed_keys:
+        await _require_company_location(
+            session, company_id, (payload.fields_changed["location_id"] or {}).get("new")
+        )
 
     # Validate sell_by change
     if "sell_by" in changed_keys:
@@ -3553,8 +3861,8 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
     # (edit_inventory) authors its cost while it is still a draft - the same carve-out
     # patch_item applies, so the pricing tab's Cost card works for the person entering
     # the item. Sell prices stay gated, and the gate re-arms once the item is available.
-    _proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    _is_draft = str(((_proj.state if _proj else {}) or {}).get("status") or "").lower() == "draft"
+    _proj = await _get_item_projection(session, company_id, entity_id)
+    _is_draft = str((_proj.state or {}).get("status") or "").lower() == "draft"
     if not (is_cost_price_type(payload.price_type) and draft_cost_carveout(_is_draft, role, settings)):
         if not role_has_permission(settings, role, "set_inventory_prices"):
             raise HTTPException(
@@ -3659,271 +3967,28 @@ async def expire_item(entity_id: str, company_id=Depends(get_current_company_id)
 
 
 # ── Import endpoint (CIF) ─────────────────────────────────────────────────────
-
-class ImportRecord(BaseModel):
-    entity_id: str
-    event_type: str
-    data: dict
-    source: str
-    idempotency_key: str
-    source_ts: str | None = None
-
-
-class BatchImportResult(BaseModel):
-    created: int
-    skipped: int
-    updated: int = 0
-    errors: list[str]
-    batch_id: str | None = None
-
-
-class BatchImportRequest(BaseModel):
-    records: list[ImportRecord] = Field(..., max_length=500)
-    filename: str | None = None
-    upsert: bool = False
+# The request/result models and the committer body live in services.py so every
+# transport shares one implementation; this route is the raw-event-batch transport.
 
 
 @router.post("/import/batch", response_model=BatchImportResult)
 async def batch_import_items(
     body: BatchImportRequest,
     company_id=Depends(get_current_company_id),
-    _: None = require_permission("edit_inventory"),
+    _: None = require_permission("import_export_data"),
+    __: None = require_permission("edit_inventory"),
     role: str = Depends(get_current_role),
     settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    """Batch-import CIF item records. Idempotent on idempotency_key. Max 500 per call."""
-    from sqlalchemy import delete as _delete
+    """Batch-import CIF item records. Idempotent on idempotency_key. Max 500 per call.
 
-    from celerp_inventory.models_import_batch import ImportBatch
-    from celerp.models.ledger import LedgerEntry
-
-    # Scope keys to company to prevent cross-company idempotency collisions
-    # (LedgerEntry.idempotency_key has a table-wide UNIQUE constraint with no company_id scope)
-    scoped_keys = [f"{company_id}:{r.idempotency_key}" for r in body.records]
-    existing = set(
-        (await session.execute(
-            select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(scoped_keys))
-        )).scalars().all()
-    )
-
-    # Fetch valid unit names once for sell_by validation across all records.
-    # Falls back to empty set (no validation) if units cannot be fetched.
-    _units = await _get_company_units(session, company_id)
-    _valid_units: frozenset[str] = frozenset(u["name"] for u in _units)
-    _derived_keys = derived_price_keys((await get_price_config(session, company_id))[0])
-
-    created = skipped = updated = 0
-    errors: list[str] = []
-    created_entity_ids: list[str] = []
-    created_keys: list[str] = []
-
-    for rec in body.records:
-        # Strip system-managed and document-lifecycle fields — never user-settable via import.
-        # status: all imported items must start as available; other statuses require linked docs.
-        rec.data.pop("status", None)
-        # Strip any client-supplied timestamps: created_at is set by ProjectionEngine on INSERT.
-        rec.data.pop("created_at", None)
-        rec.data.pop("updated_at", None)
-        # Derived price lists are computed at read time; a derived column riding along in an
-        # exported file must not be stored (same rule as item create).
-        for _dk in _derived_keys:
-            rec.data.pop(_dk, None)
-        # Normalize allow_splitting to a real bool if the import provided one (CSV
-        # gives strings like "Yes"/"No"). Imports that omit it leave it unset, which
-        # reads as splittable via splitting_allowed; only an explicit False blocks.
-        if "allow_splitting" in rec.data and not isinstance(rec.data["allow_splitting"], bool):
-            rec.data["allow_splitting"] = str(rec.data["allow_splitting"]).strip().lower() in ("true", "yes", "1", "y", "t")
-
-        # Validate sell_by against company units before attempting any DB work.
-        sell_by = str(rec.data.get("sell_by") or "").strip()
-        if not sell_by:
-            errors.append(f"Row (SKU={rec.data.get('sku', '?')}): sell_by is required")
-            skipped += 1
-            continue
-        if _valid_units and sell_by not in _valid_units:
-            errors.append(
-                f"Row (SKU={rec.data.get('sku', '?')}): sell_by '{sell_by}' is not a valid unit"
-            )
-            skipped += 1
-            continue
-
-        # Amount fields must be non-negative: rec.data is untyped and emitted verbatim
-        # as item.created / item.patched with no schema or projection validation, so this
-        # is the only place a negative CSV amount is caught.
-        _neg_amt = None
-        for _k in AMOUNT_ITEM_KEYS & set(rec.data):
-            _v = rec.data.get(_k)
-            if _v in (None, ""):
-                continue
-            try:
-                if float(_v) < 0:
-                    _neg_amt = _k
-                    break
-            except (TypeError, ValueError):
-                pass
-        if _neg_amt is not None:
-            errors.append(f"Row (SKU={rec.data.get('sku', '?')}): {_neg_amt} cannot be negative")
-            skipped += 1
-            continue
-
-        # Barcode and RFID EPC share one physical-code namespace: a value already held in
-        # EITHER slot by another item cannot be imported into either slot of this one.
-        # Interactive create/patch enforce this via assert_barcode_available /
-        # assert_rfid_epc_available; the import writer emits rec.data verbatim, so without
-        # this guard a row could set rfid_epc to a value another item holds as its barcode
-        # (a cross-field collision no single-field unique index catches). Run the same
-        # check under the company code lock so the read-then-write is serialized and
-        # earlier rows in this batch are seen (emit_event flushes projections in-session).
-        # exclude_entity_id is harmless on create and correct on upsert (re-asserting the
-        # item's own value is not a self-collision). A colliding row is skipped, never a 500.
-        _row_barcode = rec.data.get("barcode")
-        _row_epc = rec.data.get("rfid_epc")
-        if _row_barcode or _row_epc:
-            _code_err = None
-            try:
-                validate_barcode(_row_barcode)
-                validate_rfid_epc(_row_epc)
-                await lock_item_code_namespace(session, company_id)
-                await assert_barcode_available(session, company_id, _row_barcode, exclude_entity_id=rec.entity_id)
-                await assert_rfid_epc_available(session, company_id, _row_epc, exclude_entity_id=rec.entity_id)
-            except (ValueError, BarcodeConflictError, RfidEpcConflictError) as exc:
-                _code_err = str(exc)
-            if _code_err is not None:
-                errors.append(f"Row (SKU={rec.data.get('sku', '?')}): {_code_err}")
-                skipped += 1
-                continue
-
-        scoped_key = f"{company_id}:{rec.idempotency_key}"
-        if scoped_key in existing:
-            if body.upsert:
-                # Hand-editing an existing item's amount or sell unit via CSV upsert is
-                # a genuine hand-edit surface, gated by edit_inventory_amounts. A create
-                # (below) defines the item and stays on edit_inventory. The amount keys
-                # are optional per row, so their presence already signals intent to
-                # change; sell_by is required on every row (validated above), so gating
-                # it on mere presence would block every upsert by an ungranted role.
-                # Gate sell_by on a real CHANGE against the stored value instead.
-                if not role_has_permission(settings, role, "edit_inventory_amounts"):
-                    gated = set(AMOUNT_ITEM_KEYS & set(rec.data))
-                    stored_proj = await session.get(Projection, {"company_id": company_id, "entity_id": rec.entity_id})
-                    stored_sell_by = str((stored_proj.state.get("sell_by") if stored_proj else "") or "").strip()
-                    if sell_by != stored_sell_by:
-                        gated.add("sell_by")
-                    if gated:
-                        errors.append(f"Row (SKU={rec.data.get('sku', '?')}): editing {sorted(gated)} requires the edit_inventory_amounts permission")
-                        skipped += 1
-                        continue
-                # Emit patch event with a upsert-specific idempotency key
-                upsert_idem = f"{scoped_key}:upsert"
-                upsert_existing = set(
-                    (await session.execute(
-                        select(LedgerEntry.idempotency_key).where(
-                            LedgerEntry.idempotency_key == upsert_idem
-                        )
-                    )).scalars().all()
-                )
-                if upsert_idem in upsert_existing:
-                    skipped += 1
-                    continue
-                try:
-                    loc_id: uuid.UUID | None = None
-                    raw_loc = rec.data.get("location_id")
-                    if raw_loc:
-                        try:
-                            loc_id = uuid.UUID(str(raw_loc))
-                        except ValueError:
-                            pass
-                    await emit_event(
-                        session,
-                        company_id=company_id,
-                        entity_id=rec.entity_id,
-                        entity_type="item",
-                        event_type="item.patched",
-                        data=rec.data,
-                        actor_id=user.id,
-                        location_id=loc_id,
-                        source=rec.source,
-                        idempotency_key=upsert_idem,
-                        metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
-                    )
-                    updated += 1
-                except Exception as exc:
-                    if len(errors) < 10:
-                        errors.append(f"{rec.entity_id}: {exc}")
-            else:
-                skipped += 1
-            continue
-        try:
-            loc_id: uuid.UUID | None = None
-            raw_loc = rec.data.get("location_id")
-            if raw_loc:
-                try:
-                    loc_id = uuid.UUID(str(raw_loc))
-                except ValueError:
-                    pass
-            await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=rec.entity_id,
-                entity_type="item",
-                event_type=rec.event_type,
-                data=rec.data,
-                actor_id=user.id,
-                location_id=loc_id,
-                source=rec.source,
-                idempotency_key=scoped_key,
-                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
-            )
-            existing.add(scoped_key)
-            created_entity_ids.append(rec.entity_id)
-            created_keys.append(scoped_key)
-            created += 1
-        except Exception as exc:
-            if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {exc}")
-
-    batch_id: str | None = None
-    if created > 0:
-        new_batch_id = uuid.uuid4()
-        batch = ImportBatch(
-            id=new_batch_id,
-            company_id=company_id,
-            entity_type="item",
-            filename=body.filename,
-            row_count=created,
-            entity_ids=created_entity_ids,
-            idempotency_keys=created_keys,
-            status="active",
-        )
-        session.add(batch)
-        batch_id = str(new_batch_id)
-
-        # Auto-wipe demo items on first real import
-        demo_eids = (await session.execute(
-            select(LedgerEntry.entity_id).where(
-                LedgerEntry.company_id == company_id,
-                LedgerEntry.source == "demo",
-                LedgerEntry.entity_type == "item",
-            ).distinct()
-        )).scalars().all()
-        if demo_eids:
-            await session.execute(
-                _delete(Projection).where(
-                    Projection.company_id == company_id,
-                    Projection.entity_id.in_(demo_eids),
-                )
-            )
-            await session.execute(
-                _delete(LedgerEntry).where(
-                    LedgerEntry.company_id == company_id,
-                    LedgerEntry.entity_id.in_(demo_eids),
-                )
-            )
-
-    await session.commit()
-    return BatchImportResult(created=created, skipped=skipped, updated=updated, errors=errors, batch_id=batch_id)
+    The raw-event-batch transport: records arrive already shaped by the caller.
+    The committer lives in services.commit_import_batch, shared with /import/rows
+    and the agent /import/commit.
+    """
+    return await commit_import_batch(session, company_id, user, role, settings, body)
 
 
 # ---------------------------------------------------------------------------
@@ -3934,6 +3999,7 @@ async def batch_import_items(
 @router.get("/import/batches")
 async def list_import_batches(
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("import_export_data"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """List all import batches for this company, newest first."""
@@ -3966,10 +4032,11 @@ async def undo_import_batch(
     batch_id: str,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
-    _: None = require_permission("manage_company_settings"),
+    _: None = require_permission("import_export_data"),
+    __: None = require_permission("edit_inventory"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Undo an import batch: soft-delete all created items, purge idempotency keys."""
+    """Undo an import batch only when none of its created items changed later."""
     from datetime import datetime, timezone as _tz
 
     from sqlalchemy import delete as _delete
@@ -4007,6 +4074,16 @@ async def undo_import_batch(
         if extra:
             modified.append(eid)
 
+    if modified:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "import_items_modified",
+                "message": "This import cannot be undone because imported items were modified later.",
+                "entity_ids": modified,
+            },
+        )
+
     # Delete projections for all entities in this batch
     if entity_ids:
         await session.execute(
@@ -4019,7 +4096,10 @@ async def undo_import_batch(
         ikeys = batch.idempotency_keys or []
         if ikeys:
             await session.execute(
-                _delete(LedgerEntry).where(LedgerEntry.idempotency_key.in_(ikeys))
+                _delete(LedgerEntry).where(
+                    LedgerEntry.company_id == company_id,
+                    LedgerEntry.idempotency_key.in_(ikeys),
+                )
             )
 
     batch.status = "undone"

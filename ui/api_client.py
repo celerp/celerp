@@ -342,6 +342,19 @@ async def batch_import(token: str, path: str, records: list[dict], upsert: bool 
         return r.json()
 
 
+async def import_rows(token: str, rows: list[dict], upsert: bool = False, idempotency_key: str | None = None) -> dict:
+    """POST mapped inventory CSV rows to the shared import committer.
+
+    Rows are raw column-to-value dicts; the server owns location resolution and
+    creation, unit and quantity derivation, monetary conversion, command
+    idempotency, and the category-schema follow-up. Rides the bulk pool for the
+    same reason batch_import does: a large import holds its write connection.
+    """
+    async with _bulk_api_client(token, timeout=300.0) as c:
+        r = _raise(await c.post("/items/import/rows", json={"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key}))
+        return r.json()
+
+
 # ---------------------------------------------------------------------------
 # Auth (no token needed)
 # ---------------------------------------------------------------------------
@@ -790,14 +803,6 @@ async def get_category_schema(token: str, category: str) -> list[dict]:
 async def patch_category_schema(token: str, category: str, fields: list[dict]) -> dict:
     async with _api_client(token) as c:
         result = _raise(await c.patch(f"/companies/me/category-schema/{category}", json={"fields": fields})).json()
-    _invalidate_inventory_metadata()
-    return result
-
-
-async def merge_category_schemas(token: str, schemas: dict[str, list[dict]]) -> dict:
-    """Auto-merge attribute keys from import into category schemas."""
-    async with _api_client(token) as c:
-        result = _raise(await c.post("/companies/me/category-schemas/merge", json={"schemas": schemas})).json()
     _invalidate_inventory_metadata()
     return result
 
@@ -2750,24 +2755,113 @@ async def disconnect_payments(token: str) -> dict:
 # AI assistant
 # ---------------------------------------------------------------------------
 
-async def ai_query(token: str, session_token: str, query: str, file_ids: list[str] | None = None) -> dict:
-    """POST /ai/query — run an AI query against ERP data.
+AI_QUERY_TIMEOUT_S = 150.0
 
-    session_token must be the gateway-issued X-Session-Token.
-    Returns {"answer": str, "model_used": str, "tools_called": list}.
+
+async def ai_conversation_create(token: str, session_token: str, title: str | None = None) -> dict:
+    """POST /ai/conversations - start a new conversation. Returns {"id", ...}."""
+    async with _ai_api_client(token, session_token) as c:
+        return _raise(await c.post("/ai/conversations", json={"title": title})).json()
+
+
+async def ai_conversation_get(token: str, session_token: str, conversation_id: str) -> dict:
+    """GET /ai/conversations/{id} - the conversation with all its messages."""
+    async with _ai_api_client(token, session_token) as c:
+        return _raise(await c.get(f"/ai/conversations/{conversation_id}")).json()
+
+
+async def ai_conversation_query(token: str, session_token: str, conversation_id: str,
+                                query: str, file_ids: list[str] | None = None,
+                                document_mode: str = "chat") -> dict:
+    """POST /ai/conversations/{id}/query - run the agent in a conversation.
+
+    Returns {"answer", "model_used", "tools_called", "pending_actions"}; each
+    pending action carries its own message_id and tool_call_id for confirmation.
+    Receipts and invoices are read as a job instead: the reply is then
+    {"job_id", "message_id"} and the thread polls the job.
     """
-    payload = {"query": query}
+    payload: dict = {"query": query}
     if file_ids:
         payload["file_ids"] = file_ids
+    if document_mode != "chat":
+        payload["document_mode"] = document_mode
+    async with _ai_api_client(token, session_token, timeout=AI_QUERY_TIMEOUT_S) as c:
+        return _raise(await c.post(f"/ai/conversations/{conversation_id}/query", json=payload)).json()
 
+
+async def ai_confirm_action(token: str, session_token: str, conversation_id: str,
+                            message_id: str, tool_call_id: str) -> dict:
+    """POST /ai/conversations/{id}/confirm - execute one confirmed pending action.
+
+    Sends IDs only, never business arguments.
+    Returns {"tool_call_id", "title", "ok", "status", "data", "error"}.
+    """
     async with _ai_api_client(token, session_token, timeout=60.0) as c:
-        return _raise(await c.post("/ai/query", json=payload)).json()
+        return _raise(await c.post(
+            f"/ai/conversations/{conversation_id}/confirm",
+            json={"message_id": message_id, "tool_call_id": tool_call_id},
+        )).json()
+
+
+async def ai_dismiss_action(token: str, session_token: str, conversation_id: str,
+                            message_id: str, tool_call_id: str) -> dict:
+    """POST /ai/conversations/{id}/dismiss - persist dismissal of one proposal."""
+    async with _ai_api_client(token, session_token, timeout=30.0) as c:
+        return _raise(await c.post(
+            f"/ai/conversations/{conversation_id}/dismiss",
+            json={"message_id": message_id, "tool_call_id": tool_call_id},
+        )).json()
+
+
+async def ai_confirm_all(token: str, session_token: str, conversation_id: str,
+                         message_id: str, tool_call_ids: list[str] | None = None) -> dict:
+    """POST /ai/conversations/{id}/confirm-all - execute the pending actions on one
+    message, or only the selected ``tool_call_ids``, in proposal order.
+
+    Returns {"results": [{"tool_call_id", "name", "title", "ok", "status", "data", "error"}],
+    "completed", "failed"}.
+    """
+    body: dict = {"message_id": message_id}
+    if tool_call_ids is not None:
+        body["tool_call_ids"] = tool_call_ids
+    async with _ai_api_client(token, session_token, timeout=AI_QUERY_TIMEOUT_S) as c:
+        return _raise(await c.post(
+            f"/ai/conversations/{conversation_id}/confirm-all", json=body,
+        )).json()
+
+
+
+async def ai_dismiss_all(token: str, session_token: str, conversation_id: str,
+                         message_id: str, tool_call_ids: list[str]) -> dict:
+    """POST /ai/conversations/{id}/dismiss-all - dismiss selected proposals."""
+    async with _ai_api_client(token, session_token, timeout=30.0) as c:
+        return _raise(await c.post(
+            f"/ai/conversations/{conversation_id}/dismiss-all",
+            json={"message_id": message_id, "tool_call_ids": tool_call_ids},
+        )).json()
+
+
+async def ai_job_proposals(token: str, session_token: str, conversation_id: str, job_id: str) -> dict:
+    """POST /ai/conversations/{id}/jobs/{job}/proposals - bill proposals from a finished reading job.
+
+    Returns {"message_id", "answer", "pending_actions"}; calling again returns the same.
+    """
+    async with _ai_api_client(token, session_token, timeout=60.0) as c:
+        return _raise(await c.post(
+            f"/ai/conversations/{conversation_id}/jobs/{job_id}/proposals",
+        )).json()
+
+
+async def ai_batch_status(token: str, session_token: str, job_id: str) -> dict:
+    """GET /ai/batch/{id} - status and per-file results of a reading job."""
+    async with _ai_api_client(token, session_token) as c:
+        return _raise(await c.get(f"/ai/batch/{job_id}")).json()
 
 
 async def ai_conversations_list(token: str, session_token: str) -> list[dict]:
     """GET /ai/conversations - list conversations for sidebar."""
     async with _ai_api_client(token, session_token) as c:
-        return _raise(await c.get("/ai/conversations?limit=20")).json()
+        return _raise(await c.get("/ai/conversations?limit=100&include_protected=true")).json()
 
 
 async def ai_memory_get(token: str, session_token: str) -> dict:
@@ -2791,12 +2885,6 @@ async def ai_upload(token: str, session_token: str, files: list[tuple[str, bytes
     multipart = [("files", (name, data, ct)) for name, data, ct in files]
     async with _ai_api_client(token, session_token, timeout=60.0, bulk=True) as c:
         return _raise(await c.post("/ai/upload", files=multipart)).json()
-
-
-async def ai_confirm_bills(token: str, session_token: str, bills: list[dict]) -> dict:
-    """POST /ai/confirm-bills - confirm and create draft bills proposed by AI."""
-    async with _ai_api_client(token, session_token, timeout=60.0) as c:
-        return _raise(await c.post("/ai/confirm-bills", json={"bills": bills})).json()
 
 
 async def ai_usage_stats(token: str, session_token: str = "") -> dict:

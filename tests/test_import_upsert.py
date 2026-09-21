@@ -164,12 +164,20 @@ async def test_docs_upsert_true_emits_patch(client, session):
     r1 = await client.post("/docs/import/batch", headers=headers, json={"records": [record]})
     assert r1.json()["created"] == 1
 
-    r2 = await client.post("/docs/import/batch", headers=headers, json={"records": [record], "upsert": True})
+    changed = {**record, "entity_id": f"doc:fresh-{uuid.uuid4().hex[:8]}",
+               "data": {**record["data"], "notes": "updated through canonical patch"}}
+    r2 = await client.post("/docs/import/batch", headers=headers, json={"records": [changed], "upsert": True})
     assert r2.status_code == 200
     body = r2.json()
     assert body["created"] == 0
     assert body["updated"] == 1
     assert body["skipped"] == 0
+
+    # Exact replay is a no-op and never follows the fresh caller entity id.
+    r3 = await client.post("/docs/import/batch", headers=headers, json={"records": [changed], "upsert": True})
+    assert r3.status_code == 200
+    assert r3.json()["updated"] == 0
+    assert r3.json()["skipped"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -212,12 +220,53 @@ async def test_lists_upsert_true_emits_patch(client, session):
     r1 = await client.post("/lists/import/batch", headers=headers, json={"records": [record]})
     assert r1.json()["created"] == 1
 
-    r2 = await client.post("/lists/import/batch", headers=headers, json={"records": [record], "upsert": True})
+    changed = {**record, "entity_id": f"list:fresh-{uuid.uuid4().hex[:8]}",
+               "data": {**record["data"], "notes": "updated through canonical patch"}}
+    r2 = await client.post("/lists/import/batch", headers=headers, json={"records": [changed], "upsert": True})
     assert r2.status_code == 200
     body = r2.json()
     assert body["created"] == 0
     assert body["updated"] == 1
     assert body["skipped"] == 0
+
+    r3 = await client.post("/lists/import/batch", headers=headers, json={"records": [changed], "upsert": True})
+    assert r3.status_code == 200
+    assert r3.json()["updated"] == 0
+    assert r3.json()["skipped"] == 1
+
+
+@pytest.mark.asyncio
+async def test_doc_import_rejects_raw_lifecycle_event(client, session):
+    _, _, token = await _setup(session)
+    headers = {"Authorization": f"Bearer {token}"}
+    record = {
+        "entity_id": f"doc:unsafe-{uuid.uuid4().hex[:8]}",
+        "event_type": "doc.payment.received",
+        "data": {"amount": 10, "payment_date": "2026-09-20", "bank_account": "1111"},
+        "source": "csv_import",
+        "idempotency_key": str(uuid.uuid4()),
+    }
+    r = await client.post("/docs/import/batch", headers=headers, json={"records": [record]})
+    assert r.status_code == 200
+    assert r.json()["created"] == 0
+    assert r.json()["errors"]
+
+
+@pytest.mark.asyncio
+async def test_list_import_rejects_raw_lifecycle_event(client, session):
+    _, _, token = await _setup(session)
+    headers = {"Authorization": f"Bearer {token}"}
+    record = {
+        "entity_id": f"list:unsafe-{uuid.uuid4().hex[:8]}",
+        "event_type": "list.finalized",
+        "data": {"status": "finalized"},
+        "source": "csv_import",
+        "idempotency_key": str(uuid.uuid4()),
+    }
+    r = await client.post("/lists/import/batch", headers=headers, json={"records": [record]})
+    assert r.status_code == 200
+    assert r.json()["created"] == 0
+    assert r.json()["errors"]
 
 
 # ---------------------------------------------------------------------------

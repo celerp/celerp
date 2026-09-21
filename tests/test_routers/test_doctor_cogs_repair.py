@@ -27,6 +27,27 @@ def _h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+async def _emit_legacy_doc_event(client, session, token: str, entity_id: str,
+                                 event_type: str, data: dict) -> None:
+    from celerp.events.engine import emit_event
+
+    company = (await client.get("/companies/me", headers=_h(token))).json()
+    await emit_event(
+        session,
+        company_id=uuid.UUID(company["id"]),
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type=event_type,
+        data=data,
+        actor_id=None,
+        location_id=None,
+        source="import:test",
+        idempotency_key=f"legacy-{uuid.uuid4().hex}",
+        metadata_={},
+    )
+    await session.commit()
+
+
 @pytest.mark.asyncio
 async def test_doctor_finalize_repair_includes_cogs(client, session):
     """An imported old-style invoice repaired by the doctor gets one finalize JE
@@ -45,11 +66,7 @@ async def test_doctor_finalize_repair_includes_cogs(client, session):
     })
     assert r.status_code == 200
 
-    r = await client.post("/docs/import", headers=_h(token), json={
-        "entity_id": entity_id, "event_type": "doc.finalized", "data": {},
-        "source": "import:test", "idempotency_key": f"idem-df-{uuid.uuid4().hex[:8]}",
-    })
-    assert r.status_code == 200
+    await _emit_legacy_doc_event(client, session, token, entity_id, "doc.finalized", {})
 
     doc_proj = (await session.execute(select(Projection).where(
         Projection.entity_id == entity_id,

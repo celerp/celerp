@@ -18,7 +18,7 @@ from celerp_accounting.routes import router
 READ = "view_financial_reports"
 WRITE = "manage_accounting"
 
-EXPECTED: dict[tuple[str, str], str] = {
+EXPECTED: dict[tuple[str, str], str | frozenset[str]] = {
     # Reports. Reading these is what view_financial_reports means.
     ("GET", "/chart"): READ,
     ("GET", "/journal"): READ,
@@ -30,11 +30,12 @@ EXPECTED: dict[tuple[str, str], str] = {
     ("GET", "/balance-sheet"): READ,
     ("GET", "/soa/{contact_id}"): READ,
     ("GET", "/cash-flow"): READ,
+    ("POST", "/import/batch"): frozenset({WRITE, "import_export_data"}),
 }
 
 
-def _declared_permission(route) -> str | None:
-    """The permission a route requires, read off its dependency callables."""
+def _declared_permissions(route) -> frozenset[str]:
+    """The permissions a route requires, read off its dependency callables."""
     seen = set()
     stack = list(getattr(getattr(route, "dependant", None), "dependencies", []) or [])
     while stack:
@@ -43,10 +44,7 @@ def _declared_permission(route) -> str | None:
         if isinstance(val, str):
             seen.add(val)
         stack.extend(getattr(dep, "dependencies", []) or [])
-    if not seen:
-        return None
-    assert len(seen) == 1, f"{route.path} requires more than one permission: {seen}"
-    return seen.pop()
+    return frozenset(seen)
 
 
 def test_every_endpoint_requires_exactly_the_permission_declared_for_it():
@@ -62,14 +60,15 @@ def test_every_endpoint_requires_exactly_the_permission_declared_for_it():
     for route in router.routes:
         path = getattr(route, "path", "")
         for method in sorted(getattr(route, "methods", set()) - {"HEAD", "OPTIONS"}):
-            found[(method, path)] = _declared_permission(route)
+            found[(method, path)] = _declared_permissions(route)
 
     missing = sorted(k for k in EXPECTED if k not in found)
     assert not missing, f"declared endpoints that no longer exist: {missing}"
 
-    wrong = {
-        key: (EXPECTED.get(key, WRITE), got)
-        for key, got in sorted(found.items())
-        if got != EXPECTED.get(key, WRITE)
-    }
+    wrong = {}
+    for key, got in sorted(found.items()):
+        expected = EXPECTED.get(key, WRITE)
+        expected_set = expected if isinstance(expected, frozenset) else frozenset({expected})
+        if got != expected_set:
+            wrong[key] = (expected_set, got)
     assert not wrong, f"expected vs found, per endpoint: {wrong}"

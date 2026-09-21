@@ -1433,6 +1433,21 @@ class TestDocsPage:
         assert b"INV-001" in r.content
 
     @pytest.mark.asyncio
+    async def test_docs_drafts_view_with_ids_lists_only_that_batch(self, ui_client):
+        """The drafts link from a bulk confirm passes the batch ids through and
+        drops the date preset, since receipt dates may fall outside it."""
+        with (
+            patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": _DOCS, "total": len(_DOCS)})) as listed,
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
+        ):
+            r = await ui_client.get("/docs?view=drafts&ids=doc:1,doc:2", cookies=_authed())
+        assert r.status_code == 200
+        params = listed.await_args.kwargs.get("params") or listed.await_args.args[-1]
+        assert params["ids"] == "doc:1,doc:2"
+        assert params["status"] == "draft"
+        assert not params.get("date_from") and not params.get("date_to")
+
+    @pytest.mark.asyncio
     async def test_docs_search(self, ui_client):
         with patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": _DOCS, "total": len(_DOCS)})):
             r = await ui_client.get("/docs/search?q=INV", cookies=_authed())
@@ -7644,14 +7659,9 @@ class TestInventoryImportFlow:
 
     @pytest.mark.asyncio
     async def test_import_confirm_all_valid_imports(self, ui_client):
-        """Confirm with all-valid rows (preview already validated) → all imported."""
-        known_loc = {"id": "loc:main", "name": "Main Office", "type": "store"}
+        """Confirm forwards mapped rows to the server importer and renders the outcome."""
         csv_data = "sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\nS2,Ring,Main Office,piece\n"
-        with (
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [known_loc], "total": 1})),
-            patch("ui.api_client.batch_import", new=AsyncMock(return_value={"created": 2, "skipped": 0, "errors": []})),
-            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
-        ):
+        with patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 2, "skipped": 0, "updated": 0, "errors": []})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
@@ -7663,15 +7673,9 @@ class TestInventoryImportFlow:
 
     @pytest.mark.asyncio
     async def test_import_confirm_unknown_location_auto_created(self, ui_client):
-        """Unknown location_name in CSV → auto-created during confirm, import succeeds."""
+        """An unknown location_name is resolved server-side; the browser just renders the result."""
         csv_data = "sku,name,location_name,sell_by\nS1,Widget,New Warehouse,piece\n"
-        created_loc = {"id": "loc:new", "name": "New Warehouse", "type": "warehouse"}
-        with (
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.create_location", new=AsyncMock(return_value=created_loc)),
-            patch("ui.api_client.batch_import", new=AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})),
-            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
-        ):
+        with patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
@@ -7682,14 +7686,9 @@ class TestInventoryImportFlow:
 
     @pytest.mark.asyncio
     async def test_import_confirm_no_location_column_uses_default(self, ui_client):
-        """CSV with no location_name column and single location → uses that location."""
-        default_loc = {"id": "loc:hq", "name": "Head Office", "type": "office", "is_default": True}
+        """A CSV with no location_name column relies on the server's default-location resolution."""
         csv_data = "sku,name,sell_by\nS1,Widget,piece\n"
-        with (
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [default_loc], "total": 1})),
-            patch("ui.api_client.batch_import", new=AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})),
-            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
-        ):
+        with patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
@@ -7699,65 +7698,56 @@ class TestInventoryImportFlow:
         assert b"import-card--success" in r.content
 
     @pytest.mark.asyncio
-    async def test_import_confirm_no_location_multiple_locs_aborts(self, ui_client):
-        """CSV with no location_name and multiple locations → error (ambiguous)."""
-        locs = [
-            {"id": "loc:a", "name": "Warehouse A", "type": "warehouse"},
-            {"id": "loc:b", "name": "Warehouse B", "type": "warehouse"},
-        ]
+    async def test_import_confirm_unresolved_location_reported_per_row(self, ui_client):
+        """When the server cannot resolve a row's location it returns a per-row error, rendered in the result."""
         csv_data = "sku,name,sell_by\nS1,Widget,piece\n"
-        with patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": locs, "total": 2})):
+        server_result = {
+            "created": 0, "skipped": 0, "updated": 0,
+            "errors": ["Row 1: No location resolved: add a location_name column or set a default location"],
+        }
+        with patch("ui.api_client.import_rows", new=AsyncMock(return_value=server_result)):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
                 data={"csv_data": csv_data},
             )
         assert r.status_code == 200
-        assert b"location_name" in r.content.lower() or b"location" in r.content.lower()
+        assert b"import-card--error" in r.content
+        assert b"location" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_import_confirm_chunks_large_csv(self, ui_client):
-        """600-row CSV must call batch_import twice (500-row chunk + 100-row chunk).
+        """A 600-row CSV must call import_rows twice (500-row chunk + 100-row chunk).
 
-        The UI route must chunk records into ≤500 batches before sending to the API,
-        because the server enforces max_length=500 on BatchImportRequest.records.
+        The server caps a single import call at 500 rows, so the browser transport
+        chunks the mapped rows before forwarding them.
         """
-        known_loc = {"id": "loc:main", "name": "Main Office", "type": "store"}
         rows = "\n".join(f"SKU{i:04d},Item {i},Main Office,piece" for i in range(600))
         csv_data = f"sku,name,location_name,sell_by\n{rows}\n"
 
-        batch_import_mock = AsyncMock(return_value={"created": 0, "skipped": 0, "updated": 0, "errors": []})
-        with (
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [known_loc], "total": 1})),
-            patch("ui.api_client.batch_import", new=batch_import_mock),
-            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
-        ):
+        import_rows_mock = AsyncMock(return_value={"created": 0, "skipped": 0, "updated": 0, "errors": []})
+        with patch("ui.api_client.import_rows", new=import_rows_mock):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
                 data={"csv_data": csv_data},
             )
         assert r.status_code == 200
-        assert batch_import_mock.call_count == 2, (
-            f"Expected 2 batch_import calls for 600 rows, got {batch_import_mock.call_count}"
+        assert import_rows_mock.call_count == 2, (
+            f"Expected 2 import_rows calls for 600 rows, got {import_rows_mock.call_count}"
         )
-        # First call: 500 records, second call: 100 records
-        first_records = batch_import_mock.call_args_list[0].args[2]
-        second_records = batch_import_mock.call_args_list[0].args[2] if batch_import_mock.call_count < 2 else batch_import_mock.call_args_list[1].args[2]
-        assert len(first_records) == 500
-        assert len(second_records) == 100
+        # First call: 500 rows, second call: 100 rows (positional arg 1 is the row chunk)
+        first_rows = import_rows_mock.call_args_list[0].args[1]
+        second_rows = import_rows_mock.call_args_list[1].args[1]
+        assert len(first_rows) == 500
+        assert len(second_rows) == 100
 
     @pytest.mark.asyncio
     async def test_import_confirm_timeout_shows_friendly_error(self, ui_client):
-        """A 504 APIError (timeout) from batch_import renders an informative error message."""
+        """A 504 APIError (timeout) from the server importer renders an informative error message."""
         from ui.api_client import APIError
-        known_loc = {"id": "loc:main", "name": "Main Office", "type": "store"}
         csv_data = "sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\n"
-
-        with (
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [known_loc], "total": 1})),
-            patch("ui.api_client.batch_import", new=AsyncMock(side_effect=APIError(504, "Request timed out"))),
-        ):
+        with patch("ui.api_client.import_rows", new=AsyncMock(side_effect=APIError(504, "Request timed out"))):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
@@ -7766,151 +7756,15 @@ class TestInventoryImportFlow:
         assert r.status_code == 200
         assert b"timed out" in r.content.lower() or b"504" in r.content or b"failed" in r.content.lower()
 
-    # ── qty derivation tests ──────────────────────────────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_import_confirm_pieces_col_used_when_qty_absent(self, ui_client):
-        """CSV with sell_by=piece and pieces col (no qty) → quantity=pieces in batch payload."""
-        from celerp.services.units import DEFAULT_UNITS
-        loc = {"id": "loc:main", "name": "Main", "type": "store"}
-        csv_data = "sku,name,location_name,sell_by,pieces\nS1,Widget,Main,piece,7\n"
-        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
-        with (
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
-            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
-            patch("ui.api_client.batch_import", new=batch_mock),
-            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
-        ):
-            r = await ui_client.post(
-                "/inventory/import/confirm",
-                cookies=_authed(),
-                data={"csv_data": csv_data},
-            )
-        assert r.status_code == 200
-        records = batch_mock.call_args[0][2]
-        assert records[0]["data"]["quantity"] == 7.0
-
-    @pytest.mark.asyncio
-    async def test_import_confirm_qty_col_wins_over_pieces(self, ui_client):
-        """CSV with both qty and pieces: qty is explicit so it wins."""
-        from celerp.services.units import DEFAULT_UNITS
-        loc = {"id": "loc:main", "name": "Main", "type": "store"}
-        csv_data = "sku,name,location_name,sell_by,pieces,quantity\nS1,Widget,Main,piece,5,99\n"
-        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
-        with (
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
-            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
-            patch("ui.api_client.batch_import", new=batch_mock),
-            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
-        ):
-            r = await ui_client.post(
-                "/inventory/import/confirm",
-                cookies=_authed(),
-                data={"csv_data": csv_data},
-            )
-        assert r.status_code == 200
-        records = batch_mock.call_args[0][2]
-        assert records[0]["data"]["quantity"] == 99.0
-
-    @pytest.mark.asyncio
-    async def test_import_confirm_weight_col_used_for_weight_unit(self, ui_client):
-        """CSV with sell_by=carat and weight col (no qty) → quantity=weight in batch payload."""
-        from celerp.services.units import DEFAULT_UNITS
-        loc = {"id": "loc:main", "name": "Main", "type": "store"}
-        csv_data = "sku,name,location_name,sell_by,weight\nS1,Ring,Main,carat,2.5\n"
-        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
-        with (
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
-            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
-            patch("ui.api_client.batch_import", new=batch_mock),
-            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
-        ):
-            r = await ui_client.post(
-                "/inventory/import/confirm",
-                cookies=_authed(),
-                data={"csv_data": csv_data},
-            )
-        assert r.status_code == 200
-        records = batch_mock.call_args[0][2]
-        assert records[0]["data"]["quantity"] == 2.5
-
-    @pytest.mark.asyncio
-    async def test_import_confirm_no_qty_no_pieces_defaults_zero(self, ui_client):
-        """CSV with sell_by=piece and no qty/pieces → quantity=0, no crash."""
-        from celerp.services.units import DEFAULT_UNITS
-        loc = {"id": "loc:main", "name": "Main", "type": "store"}
-        csv_data = "sku,name,location_name,sell_by\nS1,Widget,Main,piece\n"
-        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
-        with (
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
-            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
-            patch("ui.api_client.batch_import", new=batch_mock),
-            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
-        ):
-            r = await ui_client.post(
-                "/inventory/import/confirm",
-                cookies=_authed(),
-                data={"csv_data": csv_data},
-            )
-        assert r.status_code == 200
-        records = batch_mock.call_args[0][2]
-        assert records[0]["data"]["quantity"] == 0.0
-
-    @pytest.mark.asyncio
-    async def test_import_confirm_pieces_col_included_in_data(self, ui_client):
-        """CSV with sell_by=carat, weight=100, pieces=5 → data contains pieces=5."""
-        from celerp.services.units import DEFAULT_UNITS
-        loc = {"id": "loc:main", "name": "Main", "type": "store"}
-        csv_data = "sku,name,location_name,sell_by,weight,pieces\nS1,Ring,Main,carat,100,5\n"
-        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
-        with (
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
-            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
-            patch("ui.api_client.batch_import", new=batch_mock),
-            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
-        ):
-            r = await ui_client.post(
-                "/inventory/import/confirm",
-                cookies=_authed(),
-                data={"csv_data": csv_data},
-            )
-        assert r.status_code == 200
-        records = batch_mock.call_args[0][2]
-        assert records[0]["data"]["pieces"] == 5.0
-
-    @pytest.mark.asyncio
-    async def test_import_confirm_pieces_col_absent_not_in_data(self, ui_client):
-        """CSV with sell_by=carat, no pieces col → pieces key absent from data."""
-        from celerp.services.units import DEFAULT_UNITS
-        loc = {"id": "loc:main", "name": "Main", "type": "store"}
-        csv_data = "sku,name,location_name,sell_by,weight\nS1,Ring,Main,carat,100\n"
-        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
-        with (
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
-            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
-            patch("ui.api_client.batch_import", new=batch_mock),
-            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
-        ):
-            r = await ui_client.post(
-                "/inventory/import/confirm",
-                cookies=_authed(),
-                data={"csv_data": csv_data},
-            )
-        assert r.status_code == 200
-        records = batch_mock.call_args[0][2]
-        assert records[0]["data"].get("pieces") is None
-
     @pytest.mark.asyncio
     async def test_import_weight_unit_invalid_fails_validation(self, ui_client):
-        """weight_unit value not in company units fails validation and renders dropdown."""
+        """weight_unit value not in company units fails preview validation and renders the fix path."""
         from celerp.services.units import DEFAULT_UNITS
-        from fasthtml.common import Select
         csv_data = "sku,name,sell_by,weight,weight_unit\nS1,Ring,carat,100,badunit\n"
         with (
             patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
-            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
         ):
             r = await ui_client.post(
                 "/inventory/import/preview",
@@ -7921,51 +7775,6 @@ class TestInventoryImportFlow:
         # "badunit" is not a valid unit → fix table shown (error path)
         body = r.text
         assert "badunit" in body or "fix" in body.lower() or "error" in body.lower()
-
-    @pytest.mark.asyncio
-    async def test_import_weight_unit_valid_canonicalized(self, ui_client):
-        """weight_unit present and valid → stored with canonical name (case-insensitive)."""
-        from celerp.services.units import DEFAULT_UNITS
-        loc = {"id": "loc:main", "name": "Main", "type": "store"}
-        # Use 'Gram' (capital G) - canonical is 'gram'
-        csv_data = "sku,name,location_name,sell_by,weight,weight_unit\nS1,Ring,Main,carat,100,Gram\n"
-        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
-        with (
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
-            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
-            patch("ui.api_client.batch_import", new=batch_mock),
-            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
-        ):
-            r = await ui_client.post(
-                "/inventory/import/confirm",
-                cookies=_authed(),
-                data={"csv_data": csv_data},
-            )
-        assert r.status_code == 200
-        records = batch_mock.call_args[0][2]
-        assert records[0]["data"]["weight_unit"] == "gram"
-
-    @pytest.mark.asyncio
-    async def test_import_weight_unit_absent_is_valid(self, ui_client):
-        """weight_unit absent from CSV → stored as None, no validation error."""
-        from celerp.services.units import DEFAULT_UNITS
-        loc = {"id": "loc:main", "name": "Main", "type": "store"}
-        csv_data = "sku,name,location_name,sell_by,weight\nS1,Ring,Main,carat,100\n"
-        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
-        with (
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
-            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
-            patch("ui.api_client.batch_import", new=batch_mock),
-            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
-        ):
-            r = await ui_client.post(
-                "/inventory/import/confirm",
-                cookies=_authed(),
-                data={"csv_data": csv_data},
-            )
-        assert r.status_code == 200
-        records = batch_mock.call_args[0][2]
-        assert records[0]["data"].get("weight_unit") is None
 
     @pytest.mark.asyncio
     async def test_locations_preview_clean_shows_import(self, ui_client):
@@ -15264,13 +15073,14 @@ class TestAIPage:
     """Tests for AI page components, showcase, chat, modular arch."""
 
     def test_showcase_view_has_scenarios_and_cta(self):
-        """Showcase view renders 4 scenario tabs and both tier CTAs."""
+        """Showcase view renders the five scenario tabs and both tier CTAs."""
         from celerp_ai.ui_routes import _showcase_view
         from fasthtml.common import to_xml
         html = to_xml(_showcase_view())
         assert "ai-showcase" in html
         assert "Meet your AI operator" in html
-        assert "Batch Bill Entry" in html
+        assert "Receipts to bills" in html
+        assert "Statement reconciliation" in html
         assert "Smart Restock" in html
         assert "Discrepancy Audit" in html
         assert "Bulk Catalog Import" in html
@@ -15304,12 +15114,11 @@ class TestAIPage:
         assert "I can help" in html
 
     def test_scenarios_match_plan(self):
-        """All 4 scenarios from the v7 plan are present."""
+        """All five showcase scenarios are present, receipts first."""
         from celerp_ai.ui_routes import _get_scenarios
         scenarios = _get_scenarios("en")
-        assert len(scenarios) == 4
-        ids = {s["id"] for s in scenarios}
-        assert ids == {"batch-bills", "smart-restock", "discrepancy-audit", "bulk-catalog"}
+        assert [s["id"] for s in scenarios] == [
+            "batch-bills", "reconcile", "smart-restock", "discrepancy-audit", "bulk-catalog"]
         for s in scenarios:
             assert s.get("user"), f"Scenario {s['id']} missing user prompt"
             assert s.get("thinking"), f"Scenario {s['id']} missing thinking text"
@@ -20435,12 +20244,6 @@ class TestCommercialPartnerManagedInvariant:
                   "upgrade_url": "https://celerp.com/subscribe?plan=ai"}
         html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
         self._assert_clean(html, "AI quota card with relay upgrade_url")
-
-    def test_ai_403_body_partner_clean(self):
-        from celerp_ai.routes import _batch_upgrade_url
-        url = _batch_upgrade_url()
-        for bad in self._FORBIDDEN:
-            assert bad not in url, f"AI 403 body leaked {bad!r}: {url}"
 
     def test_session_gate_401_partner_clean(self):
         from celerp.gateway.state import build_commercial_handoff

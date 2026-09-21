@@ -22,7 +22,7 @@ import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
-from celerp.events.engine import emit_event
+from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.company import Company
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
@@ -48,6 +48,9 @@ from celerp.services.list_behavior import (
 from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+# Longest explicit id list the list route accepts; a batch of AI drafts is far below it.
+MAX_IDS_FILTER = 500
 
 # Bulk payment bounds each per-doc row-lock wait so a contended doc skips rather than
 # blocking the worker. 3s sits above a normal per-doc lock hold (no false skip under
@@ -328,6 +331,26 @@ async def _get_doc(session: AsyncSession, company_id, entity_id: str, *, for_upd
     if row is None or row.entity_type != "doc":
         raise HTTPException(status_code=404, detail="Document not found")
     return row
+
+
+async def _validate_doc_contact_reference(session: AsyncSession, company_id, contact_id: str) -> None:
+    """Reject a reference that resolves to the wrong/deleted local projection.
+
+    Documents deliberately support snapshot/external contact identifiers that do
+    not have a local CRM projection (imports and historical records rely on it),
+    so absence is valid. If an id *does* resolve locally, however, it must name a
+    live contact rather than another entity type.
+    """
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
+    if row is None:
+        return
+    if row.entity_type != "contact":
+        raise HTTPException(status_code=422, detail="contact_id refers to a non-contact record")
+    if (row.state or {}).get("deleted"):
+        raise HTTPException(
+            status_code=422,
+            detail="This contact has been deleted and cannot be used on documents.",
+        )
 
 
 async def _get_docs_for_update(session: AsyncSession, company_id, entity_ids) -> dict[str, Projection]:
@@ -626,7 +649,7 @@ async def _assert_ref_id_unique(
         raise HTTPException(status_code=409, detail=f"Document number '{ref_id}' already exists")
 
 
-@router.get("")
+@router.get("", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def list_docs(
     doc_type: str | None = None,
     status: str | None = None,
@@ -646,11 +669,15 @@ async def list_docs(
     not_restocked: bool = False,
     not_stocked: bool = False,
     converted_to_type: str | None = None,
+    ids: str | None = None,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     from datetime import date as _date_cls
     today = _date_cls.today().isoformat()
+    id_list = [x.strip() for x in ids.split(",") if x.strip()] if ids else []
+    if len(id_list) > MAX_IDS_FILTER:
+        raise HTTPException(status_code=422, detail=f"ids accepts at most {MAX_IDS_FILTER} document ids")
 
     # Build SQL WHERE conditions - push all indexable filters into the DB.
     # Complex post-filters (overdue_only, unfulfilled_only, etc.) still run in
@@ -670,6 +697,8 @@ async def list_docs(
         base_where.append(Projection.state["status"].as_string() != exclude_status)
     if contact_id:
         base_where.append(Projection.state["contact_id"].as_string() == contact_id)
+    if id_list:
+        base_where.append(Projection.entity_id.in_(id_list))
     if date_from:
         base_where.append(Projection.state["issue_date"].as_string() >= date_from)
     if date_to:
@@ -735,7 +764,7 @@ async def list_docs(
     return {"items": out, "total": total}
 
 
-@router.get("/summary")
+@router.get("/summary", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc_summary(
     doc_type: str | None = None,
     company_id: str = Depends(get_current_company_id),
@@ -1007,7 +1036,7 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
     return {eid: _label(eid) for eid in item_eids}
 
 
-@router.get("/{entity_id}")
+@router.get("/{entity_id}", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     doc = row.state | {"id": row.entity_id}
@@ -1153,7 +1182,7 @@ async def _assert_no_draft_items(session: AsyncSession, company_id, eids) -> Non
         )
 
 
-@router.post("")
+@router.post("", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def create_doc(
     payload: DocCreatePayload,
     company_id: str = Depends(get_current_company_id),
@@ -1163,17 +1192,22 @@ async def create_doc(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    idem_key = payload.idempotency_key or str(uuid.uuid4())
+    if payload.idempotency_key:
+        replay = await find_event_by_idempotency(session, company_id, idem_key)
+        if replay is not None:
+            if replay.event_type != "doc.created":
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            return {"event_id": replay.id, "id": replay.entity_id}
+
     if payload.doc_type == "credit_note" and payload.original_doc_id:
         inv = await _get_doc(session, company_id, payload.original_doc_id)
         original_total = float(inv.state.get("total", 0) or 0)
         if payload.total > original_total + 1e-9:
             raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
 
-    # Reject if contact is deleted
     if payload.contact_id:
-        contact_row = await session.get(Projection, {"company_id": company_id, "entity_id": payload.contact_id})
-        if contact_row is not None and contact_row.state.get("deleted"):
-            raise HTTPException(status_code=422, detail="This contact has been deleted and cannot be used on new documents.")
+        await _validate_doc_contact_reference(session, company_id, payload.contact_id)
 
     if payload.currency and payload.currency not in CURRENCY_CODES:
         raise HTTPException(status_code=422, detail=f"Invalid currency code: {payload.currency}")
@@ -1215,6 +1249,15 @@ async def create_doc(
             select(Company).where(Company.id == company_id).with_for_update()
         )
     ).scalar_one_or_none()
+    # Re-check under the same serialization lock that owns numbering. A concurrent
+    # retry can only reach this point before the first request commits; once it does,
+    # the second request observes the original event and returns without consuming a
+    # second document number.
+    replay = await find_event_by_idempotency(session, company_id, idem_key)
+    if replay is not None:
+        if replay.event_type != "doc.created":
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        return {"event_id": replay.id, "id": replay.entity_id}
     # Invoices get proforma numbering at draft stage; real INV number assigned on finalize
     seq_type = "proforma" if payload.doc_type == "invoice" and not payload.ref_id else payload.doc_type
     ref_id = payload.ref_id or next_doc_ref(company, seq_type)
@@ -1296,9 +1339,12 @@ async def create_doc(
         actor_id=user.id,
         location_id=None,
         source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
+        idempotency_key=idem_key,
         metadata_={},
     )
+
+    if getattr(entry, "was_deduped", False):
+        return {"event_id": entry.id, "id": entry.entity_id}
 
     if payload.doc_type == "credit_note" and payload.original_doc_id:
         inv = await _get_doc(session, company_id, payload.original_doc_id)
@@ -1313,15 +1359,21 @@ async def create_doc(
             actor_id=user.id,
             location_id=None,
             source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={"source_credit_note": entity_id},
+            idempotency_key=f"{idem_key}:credit-note-original",
+            metadata_={"source_credit_note": entry.entity_id},
         )
     await session.commit()
-    return {"event_id": entry.id, "id": entity_id}
+    return {"event_id": entry.id, "id": entry.entity_id}
 
 
-@router.patch("/{entity_id}")
+@router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    if payload.idempotency_key:
+        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+        if replay is not None:
+            if replay.event_type != "doc.updated" or replay.entity_id != entity_id:
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            return {"event_id": replay.id}
     # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
     _FINALIZED_EDITABLE_FIELDS = {
         "description", "customer_note", "internal_note",
@@ -1340,6 +1392,9 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
             detail=f"Fields {sorted(protected_attempted)} cannot be changed via patch. Use the appropriate lifecycle endpoints.",
         )
     row = await _get_doc(session, company_id, entity_id)
+    new_contact_id = (payload.fields_changed.get("contact_id") or {}).get("new")
+    if new_contact_id:
+        await _validate_doc_contact_reference(session, company_id, str(new_contact_id))
     # Price-override gate: reject unit_price changes when the caller lacks
     # set_sales_doc_prices, comparing incoming lines against the stored lines by
     # index. Runs for drafts and finalized documents alike, before the draft branch.
@@ -2151,6 +2206,14 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     path and across connections, so two recorders on one doc are ordered at the row
     and cannot compute a duplicate or colliding payment_index."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    replay = await find_event_by_idempotency(session, company_id, idempotency_key)
+    if replay is not None:
+        if replay.event_type != "doc.payment.received" or replay.entity_id != entity_id:
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        # Match emit_event's duplicate-race contract so callers can distinguish a
+        # replay from a newly applied payment without changing this function's return shape.
+        replay.was_deduped = True
+        return replay, float((replay.data or {}).get("amount") or 0)
     doc_state = dict(row.state)
     if doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
         raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
@@ -2222,6 +2285,8 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         data=body, actor_id=actor_id, location_id=None, source=source,
         idempotency_key=idempotency_key, metadata_={},
     )
+    if getattr(entry, "was_deduped", False):
+        return entry, float((entry.data or {}).get("amount") or 0)
     await auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=actor_id, doc_id=entity_id,
         amount=amount, payment_index=payment_index,
@@ -2247,7 +2312,11 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     return entry, amount
 
 
-@router.post("/{entity_id}/payment")
+@router.post(
+    "/{entity_id}/payment",
+    summary="Record a payment on a document",
+    openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True},
+)
 async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # apply_doc_payment takes the doc row FOR UPDATE and validates against that fresh
     # read, rejecting a closed memo via its status allowlist; the row lock serializes
@@ -3629,34 +3698,32 @@ async def import_doc(
     body: DocImportRecord,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
+    __: None = require_permission("import_export_data"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    # Entity guard: reject duplicate doc.created for same entity_id.
-    # Exception: allow idempotent retry (same idempotency_key already exists).
-    if body.event_type == "doc.created":
-        existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})
-        if existing is not None:
-            from sqlalchemy import select as _select
+    # Raw import is a snapshot-create transport, not a lifecycle/event escape hatch.
+    # Updates go through PATCH and state transitions through their dedicated endpoints.
+    if body.event_type != "doc.created":
+        raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
+    _assert_doc_import_permissions(settings, role, body.data)
 
-            from celerp.models.ledger import LedgerEntry
+    replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
+    if replay is not None:
+        if replay.event_type != "doc.created":
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
 
-            existing_event = (
-                await session.execute(
-                    _select(LedgerEntry).where(
-                        LedgerEntry.company_id == company_id,
-                        LedgerEntry.idempotency_key == body.idempotency_key,
-                    )
-                )
-            ).scalar_one_or_none()
-            if existing_event is not None:
-                return {"event_id": existing_event.id, "id": body.entity_id, "idempotency_hit": True}
-
-            raise HTTPException(
-                status_code=409,
-                detail=f"Document {body.entity_id} already exists (status: {existing.state.get('status', 'unknown')}). "
-                f"Use PATCH to update or lifecycle endpoints to advance its state.",
-            )
+    # Entity guard: one create event per document identity.
+    existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Document {body.entity_id} already exists (status: {existing.state.get('status', 'unknown')}). "
+            f"Use PATCH to update or lifecycle endpoints to advance its state.",
+        )
 
     entry = await emit_event(
         session,
@@ -3679,7 +3746,45 @@ async def import_doc(
         await _import_auto_je(session, company_id, user.id, body.entity_id, body.data, base_currency=_imp_base_currency)
 
     await session.commit()
-    return {"event_id": entry.id, "id": body.entity_id, "idempotency_hit": False}
+    return {"event_id": entry.id, "id": entry.entity_id, "idempotency_hit": False}
+
+
+def _assert_doc_import_permissions(settings: dict, role: str, data: dict) -> None:
+    """Require the normal lifecycle permissions for snapshot state an import bypasses.
+
+    ``import_export_data`` authorizes moving data, not issuing documents or recording
+    payments.  Draft snapshots need only edit permission; non-draft/payment snapshots
+    additionally require the same permissions as their normal product operations.
+    """
+    status = str(data.get("status") or "draft")
+    if status != "draft" or data.get("finalized"):
+        assert_role_permission(settings, role, "finalize_documents")
+    amount_paid = float(data.get("amount_paid") or 0)
+    if amount_paid > 0 or status in {"partial", "paid", "partially_received"}:
+        assert_role_permission(settings, role, "record_payments")
+
+
+_DOC_IMPORT_UPSERT_EXCLUDED = frozenset({
+    # Lifecycle/accounting state is owned by dedicated document operations.
+    "status", "amount_paid", "amount_outstanding", "finalized",
+    # Identity/type are established by the original create and never rewritten by import-upsert.
+    "entity_type", "company_id", "doc_type", "doc_number", "ref_id",
+})
+
+
+def _doc_import_fields_changed(state: dict, incoming: dict) -> dict[str, dict]:
+    """Translate an imported snapshot into the canonical PATCH shape.
+
+    Import-upsert may refresh editable document data, but cannot manufacture lifecycle
+    transitions or replace the document's identity/type.  The normal ``patch_doc``
+    implementation remains authoritative for draft/finalized edit rules, line validation,
+    price permissions, dates and foreign-reservation checks.
+    """
+    return {
+        key: {"old": state.get(key), "new": value}
+        for key, value in incoming.items()
+        if key not in _DOC_IMPORT_UPSERT_EXCLUDED and state.get(key) != value
+    }
 
 
 async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id: str, data: dict, base_currency: str = "USD") -> None:
@@ -3725,6 +3830,9 @@ async def batch_import_docs(
     body: DocBatchImportRequest,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
+    __: None = require_permission("import_export_data"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
@@ -3756,52 +3864,69 @@ async def batch_import_docs(
     errors: list[str] = []
     _batch_company = await session.get(Company, company_id)
     _batch_base_currency = (_batch_company.settings.get("currency", "USD") if _batch_company else "USD")
+    # Fail authorization before the first row writes, so a mixed-status import cannot
+    # partially apply before discovering that the caller lacks a lifecycle permission.
     for rec in body.records:
+        if rec.event_type == "doc.created":
+            _assert_doc_import_permissions(settings, role, rec.data)
+    for rec in body.records:
+        if rec.event_type != "doc.created":
+            if len(errors) < 10:
+                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+            skipped += 1
+            continue
+
         if rec.idempotency_key in existing_keys:
-            if body.upsert:
-                upsert_idem = f"{rec.idempotency_key}:upsert"
-                upsert_already = set(
-                    (await session.execute(
-                        _select(LedgerEntry.idempotency_key).where(
-                            LedgerEntry.company_id == company_id,
-                            LedgerEntry.idempotency_key == upsert_idem,
-                        )
-                    )).scalars().all()
-                )
-                if upsert_idem in upsert_already:
+            replay = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
+            if replay is None or replay.event_type != "doc.created":
+                if len(errors) < 10:
+                    errors.append(f"{rec.entity_id}: idempotency key belongs to another operation")
+                skipped += 1
+                continue
+            if not body.upsert:
+                skipped += 1
+                continue
+
+            try:
+                row = await _get_doc(session, company_id, replay.entity_id)
+                fields_changed = _doc_import_fields_changed(row.state, rec.data)
+                if not fields_changed:
                     skipped += 1
                     continue
-                try:
-                    await emit_event(
-                        session,
-                        company_id=company_id,
-                        entity_id=rec.entity_id,
-                        entity_type="doc",
-                        event_type="doc.patched",
-                        data=rec.data,
-                        actor_id=user.id,
-                        location_id=None,
-                        source=rec.source,
-                        idempotency_key=upsert_idem,
-                        metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
-                    )
+                canonical_patch = json.dumps(fields_changed, sort_keys=True, separators=(",", ":"), default=str)
+                upsert_idem = (
+                    f"{rec.idempotency_key}:upsert:"
+                    f"{hashlib.sha256(canonical_patch.encode()).hexdigest()}"
+                )
+                result = await patch_doc(
+                    replay.entity_id,
+                    DocPatch(fields_changed=fields_changed, idempotency_key=upsert_idem),
+                    company_id=company_id,
+                    _=None,
+                    role=role,
+                    settings=settings,
+                    user=user,
+                    session=session,
+                )
+                if result.get("event_id") is None:
+                    skipped += 1
+                else:
                     updated += 1
-                except Exception as exc:
-                    if len(errors) < 10:
-                        errors.append(f"{rec.entity_id}: {exc}")
-            else:
-                skipped += 1
+            except Exception as exc:
+                if len(errors) < 10:
+                    errors.append(f"{replay.entity_id}: {exc}")
             continue
-        if rec.event_type == "doc.created" and rec.entity_id in existing_entities:
+
+        if rec.entity_id in existing_entities:
             skipped_existing += 1
             continue
         try:
-            await emit_event(
+            entry = await emit_event(
                 session,
                 company_id=company_id,
                 entity_id=rec.entity_id,
                 entity_type="doc",
-                event_type=rec.event_type,
+                event_type="doc.created",
                 data=rec.data,
                 actor_id=user.id,
                 location_id=None,
@@ -3810,10 +3935,15 @@ async def batch_import_docs(
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
             )
             existing_keys.add(rec.idempotency_key)
-            if rec.event_type == "doc.created":
-                existing_entities.add(rec.entity_id)
-                await _import_auto_je(session, company_id, user.id, rec.entity_id, rec.data, base_currency=_batch_base_currency)
-            created += 1
+            existing_entities.add(entry.entity_id)
+            if not getattr(entry, "was_deduped", False):
+                await _import_auto_je(
+                    session, company_id, user.id, entry.entity_id, rec.data,
+                    base_currency=_batch_base_currency,
+                )
+                created += 1
+            else:
+                skipped += 1
         except Exception as exc:
             if len(errors) < 10:
                 errors.append(f"{rec.entity_id}: {exc}")
@@ -4786,37 +4916,58 @@ async def delete_list_note(
 
 
 
+_LIST_IMPORT_UPSERT_EXCLUDED = frozenset({
+    "status", "result", "entity_type", "company_id", "list_type", "ref_id",
+    "finalized_at", "sent_at", "issued_at", "accepted_at",
+})
+
+
+def _list_import_fields_changed(state: dict, incoming: dict) -> dict[str, dict]:
+    return {
+        key: {"old": state.get(key), "new": value}
+        for key, value in incoming.items()
+        if key not in _LIST_IMPORT_UPSERT_EXCLUDED and state.get(key) != value
+    }
+
+
+def _assert_list_import_permissions(settings: dict, role: str, data: dict) -> None:
+    if str(data.get("status") or "draft") != "draft":
+        assert_role_permission(settings, role, "finalize_documents")
+
+
 @lists_router.post("/import")
 async def import_list(
     body: ListImportRecord,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
+    __: None = require_permission("import_export_data"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    if body.event_type == "list.created":
-        existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})
-        if existing is not None:
-            from sqlalchemy import select as _select
-            from celerp.models.ledger import LedgerEntry
-            existing_event = (await session.execute(
-                _select(LedgerEntry).where(
-                    LedgerEntry.company_id == company_id,
-                    LedgerEntry.idempotency_key == body.idempotency_key,
-                )
-            )).scalar_one_or_none()
-            if existing_event is not None:
-                return {"event_id": existing_event.id, "id": body.entity_id, "idempotency_hit": True}
-            raise HTTPException(status_code=409, detail=f"List {body.entity_id} already exists")
+    if body.event_type != "list.created":
+        raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
+    _assert_list_import_permissions(settings, role, body.data)
+
+    replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
+    if replay is not None:
+        if replay.event_type != "list.created":
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
+
+    existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})
+    if existing is not None:
+        raise HTTPException(status_code=409, detail=f"List {body.entity_id} already exists")
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=body.entity_id, entity_type="list",
-        event_type=body.event_type, data=body.data, actor_id=user.id, location_id=None,
+        event_type="list.created", data=body.data, actor_id=user.id, location_id=None,
         source=body.source, idempotency_key=body.idempotency_key,
         metadata_={"source_ts": body.source_ts} if body.source_ts else {},
     )
     await session.commit()
-    return {"event_id": entry.id, "id": body.entity_id, "idempotency_hit": False}
+    return {"event_id": entry.id, "id": entry.entity_id, "idempotency_hit": False}
 
 
 @lists_router.get("/import/template", include_in_schema=False)
@@ -4834,6 +4985,9 @@ async def batch_import_lists(
     body: ListBatchImportRequest,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
+    __: None = require_permission("import_export_data"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
@@ -4860,49 +5014,68 @@ async def batch_import_lists(
 
     created = skipped = updated = 0
     errors: list[str] = []
+    # Authorization is checked for the whole batch before the first write.
     for rec in body.records:
+        if rec.event_type == "list.created":
+            _assert_list_import_permissions(settings, role, rec.data)
+
+    for rec in body.records:
+        if rec.event_type != "list.created":
+            if len(errors) < 10:
+                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
+            skipped += 1
+            continue
         if rec.idempotency_key in existing_keys:
-            if body.upsert:
-                upsert_idem = f"{rec.idempotency_key}:upsert"
-                upsert_already = set(
-                    (await session.execute(
-                        _select(LedgerEntry.idempotency_key).where(
-                            LedgerEntry.company_id == company_id,
-                            LedgerEntry.idempotency_key == upsert_idem,
-                        )
-                    )).scalars().all()
-                )
-                if upsert_idem in upsert_already:
+            replay = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
+            if replay is None or replay.event_type != "list.created":
+                if len(errors) < 10:
+                    errors.append(f"{rec.entity_id}: idempotency key belongs to another operation")
+                skipped += 1
+                continue
+            if not body.upsert:
+                skipped += 1
+                continue
+            try:
+                row = await _get_list(session, company_id, replay.entity_id)
+                fields_changed = _list_import_fields_changed(row.state, rec.data)
+                if not fields_changed:
                     skipped += 1
                     continue
-                try:
-                    await emit_event(
-                        session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
-                        event_type="list.patched", data=rec.data, actor_id=user.id, location_id=None,
-                        source=rec.source, idempotency_key=upsert_idem,
-                        metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
-                    )
+                canonical = json.dumps(fields_changed, sort_keys=True, separators=(",", ":"), default=str)
+                upsert_idem = f"{rec.idempotency_key}:upsert:{hashlib.sha256(canonical.encode()).hexdigest()}"
+                result = await patch_list(
+                    replay.entity_id,
+                    ListPatch(
+                        fields_changed=fields_changed,
+                        idempotency_key=upsert_idem,
+                        expected_version=row.version if "line_items" in fields_changed else None,
+                    ),
+                    company_id=company_id, _=None, user=user, session=session,
+                )
+                if result.get("event_id") is None:
+                    skipped += 1
+                else:
                     updated += 1
-                except Exception as exc:
-                    if len(errors) < 10:
-                        errors.append(f"{rec.entity_id}: {exc}")
-            else:
-                skipped += 1
+            except Exception as exc:
+                if len(errors) < 10:
+                    errors.append(f"{replay.entity_id}: {exc}")
             continue
-        if rec.event_type == "list.created" and rec.entity_id in existing_entities:
+        if rec.entity_id in existing_entities:
             skipped += 1
             continue
         try:
-            await emit_event(
+            entry = await emit_event(
                 session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
-                event_type=rec.event_type, data=rec.data, actor_id=user.id, location_id=None,
+                event_type="list.created", data=rec.data, actor_id=user.id, location_id=None,
                 source=rec.source, idempotency_key=rec.idempotency_key,
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
             )
             existing_keys.add(rec.idempotency_key)
-            if rec.event_type == "list.created":
-                existing_entities.add(rec.entity_id)
-            created += 1
+            existing_entities.add(entry.entity_id)
+            if getattr(entry, "was_deduped", False):
+                skipped += 1
+            else:
+                created += 1
         except Exception as exc:
             if len(errors) < 10:
                 errors.append(f"{rec.entity_id}: {exc}")

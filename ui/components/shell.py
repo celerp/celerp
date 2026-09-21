@@ -857,6 +857,10 @@ document.addEventListener('DOMContentLoaded', function() {
     es.addEventListener('notification', function(e) {
       try {
         var data = JSON.parse(e.data);
+        if (data.type === 'batch_progress') {
+          document.dispatchEvent(new CustomEvent('celerp:batch-progress', { detail: data }));
+          return;
+        }
         loadNotifications();
         if (data.priority === 'high' && Notification.permission === 'granted') {
           new Notification(data.title, { body: data.body });

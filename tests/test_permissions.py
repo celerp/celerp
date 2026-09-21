@@ -1038,12 +1038,6 @@ class TestAdminOnlyOps:
         )
         assert r.status_code == 200
 
-    async def test_manager_cannot_undo_import(self, client, session):
-        ctx = await _setup(client, session)
-        # Non-existent batch — 403 should fire before 404
-        r = await client.post("/items/import/batches/fake-id/undo", headers=ctx["manager_h"])
-        assert r.status_code == 403
-
     async def test_manager_cannot_patch_item_schema(self, client, session):
         ctx = await _setup(client, session)
         r = await client.patch(

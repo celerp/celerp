@@ -3,10 +3,7 @@
 
 """Tests for celerp/ai/page_count.py.
 
-Covers:
-  - count_pages: PDF (real + corrupt), images, unknown file types
-  - credits_for_pages: boundary cases
-  - calculate_credits: no files (pure text), single file, multiple files
+Covers count_pages for PDFs, images, and unknown file types.
 """
 
 from __future__ import annotations
@@ -16,12 +13,7 @@ import math
 import struct
 import pytest
 
-from celerp.ai.page_count import (
-    _BYTES_PER_PAGE,
-    calculate_credits,
-    count_pages,
-    credits_for_pages,
-)
+from celerp.ai.page_count import _BYTES_PER_PAGE, count_pages
 
 
 # ── Helpers to build minimal valid files ─────────────────────────────────────
@@ -121,52 +113,3 @@ def test_count_pages_unknown_three_pages():
 def test_count_pages_never_zero():
     """Even empty data returns at least 1."""
     assert count_pages(b"", "application/octet-stream") == 1
-
-
-# ── credits_for_pages ─────────────────────────────────────────────────────────
-
-@pytest.mark.parametrize("pages,expected_credits", [
-    (1, 1),
-    (4, 1),
-    (5, 1),
-    (6, 2),
-    (10, 2),
-    (11, 3),
-    (25, 5),
-    (26, 6),
-    (100, 20),
-])
-def test_credits_for_pages(pages, expected_credits):
-    assert credits_for_pages(pages) == expected_credits
-
-
-# ── calculate_credits ─────────────────────────────────────────────────────────
-
-def test_calculate_credits_no_files():
-    """Pure text query = 1 credit."""
-    assert calculate_credits([]) == 1
-
-
-def test_calculate_credits_single_image():
-    """1 image file (1 page) = 1 credit."""
-    assert calculate_credits([1]) == 1
-
-
-def test_calculate_credits_five_images():
-    """5 image files (1 page each) = 5 credits."""
-    assert calculate_credits([1, 1, 1, 1, 1]) == 5
-
-
-def test_calculate_credits_mixed():
-    """3 files: 1 page, 5 pages, 10 pages → 1 + 1 + 2 = 4 credits."""
-    assert calculate_credits([1, 5, 10]) == 4
-
-
-def test_calculate_credits_large_pdf():
-    """Single 25-page PDF → 5 credits."""
-    assert calculate_credits([25]) == 5
-
-
-def test_calculate_credits_100_receipts():
-    """100 single-page images = 100 credits."""
-    assert calculate_credits([1] * 100) == 100

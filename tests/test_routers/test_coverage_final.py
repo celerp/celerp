@@ -633,7 +633,7 @@ async def test_lists_batch_import_skip_existing_and_error(client):
     ]})
     assert r2.status_code == 200
     body = r2.json()
-    assert body["skipped"] == 1
+    assert body["skipped"] == 2  # duplicate + rejected non-create record
     assert len(body["errors"]) >= 1
 
 
@@ -692,7 +692,7 @@ async def test_manufacturing_create_order_empty_description(client):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_manufacturing_start_order_already_completed(client):
+async def test_manufacturing_start_order_already_completed(client, session):
     """POST /manufacturing/{id}/start on completed order → 409 (line 359)."""
     tok = await _reg(client)
 
@@ -709,16 +709,18 @@ async def test_manufacturing_start_order_already_completed(client):
     assert r.status_code == 200
     order_id = r.json()["id"]
 
-    # Mark as completed via batch import
-    await client.post("/manufacturing/import/batch", headers=_h(tok), json={"records": [
-        {
-            "entity_id": order_id,
-            "event_type": "mfg.order.completed",
-            "data": {"completed_by": str(uuid.UUID(int=0))},
-            "source": "test",
-            "idempotency_key": f"cmp-{uuid.uuid4().hex}",
-        },
-    ]})
+    # Seed historical completed state directly; raw import is creation-only and
+    # this test is about the start guard, not the completion workflow.
+    from celerp.events.engine import emit_event
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(tok))).json()["id"])
+    await emit_event(
+        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
+        event_type="mfg.order.completed",
+        data={"completed_by": str(uuid.UUID(int=0))},
+        actor_id=None, location_id=None, source="test",
+        idempotency_key=f"cmp-{uuid.uuid4().hex}", metadata_={},
+    )
+    await session.commit()
 
     r2 = await client.post(f"/manufacturing/{order_id}/start", headers=_h(tok))
     assert r2.status_code == 409

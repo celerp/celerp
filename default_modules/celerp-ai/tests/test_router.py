@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.main import app
-from celerp.ai.service import AIResponse
+from celerp.ai.service import AgentResult
 import celerp.gateway.state as gw_state
 
 
@@ -109,8 +109,8 @@ async def test_ai_query_requires_session_token(session):
 @pytest.mark.asyncio
 async def test_ai_query_success(auth_client):
     c, headers = auth_client
-    mock_result = AIResponse(answer="You have 3 items.", model_used="claude-haiku-4-5", tools_called=["dashboard_kpis"])
-    with patch("celerp_ai.routes.run_query", AsyncMock(return_value=mock_result)):
+    mock_result = AgentResult(answer="You have 3 items.", model_used="claude-haiku-4-5", tools_called=["dashboard_kpis"], pending_actions=[])
+    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=mock_result)):
         r = await c.post("/ai/query", json={"query": "how many items"}, headers=headers)
     if r.status_code != 200:
         print(f"\nFAIL detail: {r.status_code} {r.text[:300]}")
@@ -124,8 +124,8 @@ async def test_ai_query_success(auth_client):
 @pytest.mark.asyncio
 async def test_ai_query_error_502(auth_client):
     c, headers = auth_client
-    mock_result = AIResponse(answer="", model_used="claude-haiku-4-5", tools_called=[], error="API timeout")
-    with patch("celerp_ai.routes.run_query", AsyncMock(return_value=mock_result)):
+    mock_result = AgentResult(answer="", model_used="claude-haiku-4-5", tools_called=[], pending_actions=[], error="API timeout")
+    with patch("celerp_ai.routes.run_agent", AsyncMock(return_value=mock_result)):
         r = await c.post("/ai/query", json={"query": "test"}, headers=headers)
     assert r.status_code == 502
     assert "timeout" in r.json()["detail"]
@@ -203,61 +203,35 @@ async def test_clear_memory(auth_client):
     assert r2.json()["kv"] == {}
 
 
-# ── Cloud tier file limit enforcement ────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_cloud_tier_multi_file_blocked(auth_client):
-    """Cloud tier users submitting >1 file get 403 with upsell message."""
-    c, headers = auth_client
-    with patch("celerp_ai.routes.get_subscription_tier", AsyncMock(return_value="cloud")):
-        r = await c.post(
-            "/ai/query",
-            json={"query": "process these", "file_ids": ["ai_up_aaa", "ai_up_bbb"]},
-            headers=headers,
-        )
-    assert r.status_code == 403
-    detail = r.json()["detail"]
-    assert "Connect + AI" in detail
-    assert "celerp.com" in detail
-
+# ── Multi-file queries ───────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_ai_tier_multi_file_allowed(auth_client):
-    """AI tier users can submit multiple files."""
+    """Several files can go with one question."""
     c, headers = auth_client
-    mock_result = AIResponse(answer="Done.", model_used="claude-sonnet-4-5", tools_called=[])
+    mock_result = AgentResult(answer="Done.", model_used="claude-sonnet-4-5", tools_called=[], pending_actions=[])
 
-    import tempfile, json as _json
-    from pathlib import Path
-    from celerp.config import settings
+    upload = await c.post(
+        "/ai/upload",
+        headers=headers,
+        files=[
+            ("files", ("test_a.jpg", b"fake image data", "image/jpeg")),
+            ("files", ("test_b.jpg", b"fake image data", "image/jpeg")),
+        ],
+    )
+    assert upload.status_code == 201
+    file_ids = upload.json()["file_ids"]
 
-    upload_dir = settings.data_dir / "ai_uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create two fake file entries
-    file_ids = []
-    company_id_placeholder = "00000000-0000-0000-0000-000000000001"
-    for name in ("test_a", "test_b"):
-        fid = f"ai_up_{name}"
-        (upload_dir / f"{fid}.bin").write_bytes(b"fake image data")
-        (upload_dir / f"{fid}.meta").write_text(_json.dumps({
-            "filename": f"{name}.jpg",
-            "content_type": "image/jpeg",
-            "size": 15,
-            "company_id": company_id_placeholder,
-        }))
-        file_ids.append(fid)
-
-    with patch("celerp_ai.routes.get_subscription_tier", AsyncMock(return_value="ai")):
-        with patch("celerp_ai.routes.run_query", AsyncMock(return_value=mock_result)):
-            with patch("celerp_ai.routes._load_file_http") as mock_load:
-                mock_load.return_value = (b"fake image data", {"content_type": "image/jpeg", "filename": "test.jpg", "company_id": company_id_placeholder})
-                r = await c.post(
-                    "/ai/query",
-                    json={"query": "process these", "file_ids": file_ids},
-                    headers=headers,
-                )
+    mocked = AsyncMock(return_value=mock_result)
+    with patch("celerp_ai.routes.run_agent", mocked):
+        r = await c.post(
+            "/ai/query",
+            json={"query": "process these", "file_ids": file_ids},
+            headers=headers,
+        )
     assert r.status_code == 200
+    assert mocked.await_args.kwargs["file_ids"] == file_ids
+    assert mocked.await_args.kwargs["read_only"] is True
 
 
 # ── POST /ai/estimate-credits ─────────────────────────────────────────────────
@@ -266,17 +240,16 @@ async def test_ai_tier_multi_file_allowed(auth_client):
 async def test_estimate_credits_images(auth_client):
     """Estimate credits for 3 image files → 3 credits (1 per image)."""
     c, headers = auth_client
-    with patch("celerp_ai.routes.get_subscription_tier", AsyncMock(return_value="ai")):
-        with patch("celerp_ai.routes._load_file_http") as mock_load:
-            mock_load.return_value = (b"fake jpeg data", {
-                "content_type": "image/jpeg",
-                "filename": "receipt.jpg",
-            })
-            r = await c.post(
-                "/ai/estimate-credits",
-                json={"file_ids": ["ai_up_1", "ai_up_2", "ai_up_3"]},
-                headers=headers,
-            )
+    with patch("celerp_ai.routes._load_file_http") as mock_load:
+        mock_load.return_value = (b"fake jpeg data", {
+            "content_type": "image/jpeg",
+            "filename": "receipt.jpg",
+        })
+        r = await c.post(
+            "/ai/estimate-credits",
+            json={"file_ids": ["ai_up_1", "ai_up_2", "ai_up_3"]},
+            headers=headers,
+        )
     assert r.status_code == 200
     data = r.json()
     assert data["total_credits"] == 3
@@ -286,14 +259,37 @@ async def test_estimate_credits_images(auth_client):
 
 
 @pytest.mark.asyncio
-async def test_estimate_credits_cloud_multi_file_blocked(auth_client):
-    """Cloud tier user requesting estimate with >1 file gets 403."""
+async def test_estimate_credits_is_per_unique_file_not_pages(auth_client):
+    """Page count is informational; one unique file is one billed model call."""
     c, headers = auth_client
-    with patch("celerp_ai.routes.get_subscription_tier", AsyncMock(return_value="cloud")):
+    with (
+        patch("celerp_ai.routes._load_file_http") as mock_load,
+        patch("celerp_ai.routes.count_pages", return_value=15),
+    ):
+        mock_load.return_value = (b"pdf", {
+            "content_type": "application/pdf",
+            "filename": "statement.pdf",
+        })
         r = await c.post(
             "/ai/estimate-credits",
-            json={"file_ids": ["ai_up_a", "ai_up_b"]},
+            json={"file_ids": ["ai_up_pdf", "ai_up_pdf"]},
             headers=headers,
         )
-    assert r.status_code == 403
-    assert "Connect + AI" in r.json()["detail"]
+    assert r.status_code == 200
+    assert r.json() == {
+        "total_credits": 1,
+        "files": [{
+            "file_id": "ai_up_pdf",
+            "filename": "statement.pdf",
+            "pages": 15,
+            "credits": 1,
+        }],
+    }
+
+
+@pytest.mark.asyncio
+async def test_estimate_credits_empty_file_set_is_zero(auth_client):
+    c, headers = auth_client
+    r = await c.post("/ai/estimate-credits", json={"file_ids": []}, headers=headers)
+    assert r.status_code == 200
+    assert r.json() == {"total_credits": 0, "files": []}

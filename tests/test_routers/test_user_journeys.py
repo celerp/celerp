@@ -1855,9 +1855,11 @@ async def test_ie_import_partial_with_errors_reports_them(client):
     ]
     r = await client.post("/items/import/batch", headers=h, json={"records": records})
     assert r.status_code == 200
-    # Either we get 1 created + 1 error, or the bad one just creates with unknown type - both ok
     result = r.json()
-    assert result["created"] + result["skipped"] + len(result.get("errors", [])) == 2
+    assert result["created"] == 1
+    assert result["skipped"] == 1
+    assert len(result.get("errors", [])) == 1
+    assert "not import-safe" in result["errors"][0]
 
 
 @pytest.mark.asyncio
