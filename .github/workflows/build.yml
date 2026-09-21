@@ -822,6 +822,54 @@ jobs:
           draft: false
           prerelease: true
 
+  # ── Attach the OpenAPI schema as a release asset (tag builds only) ────────
+  # The website renders a static API reference from this schema, fetching
+  # openapi.json from the latest release. Generated without booting a server:
+  # app.openapi() builds the same document /openapi.json serves when the schema
+  # is exposed. Uploaded to the still-draft release before publish-release flips
+  # it live, so every published release carries it alongside the platform
+  # binaries; a failure here leaves the release a draft, like any platform build.
+  openapi-asset:
+    needs: [build]
+    if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the package
+        run: pip install uv && uv pip install --system -e .
+      - name: Export the OpenAPI schema
+        run: python scripts/export_openapi.py --out openapi.json
+      - name: Attach openapi.json to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          # The release is still a draft (platform builds publish to a draft);
+          # get-release-by-tag returns only published releases, so list and match
+          # on tag_name, the same way publish-release does.
+          RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/celerp/celerp/releases?per_page=100" \
+            | python3 -c "import sys,json; tag='$TAG'; r=next((r for r in json.load(sys.stdin) if r['tag_name']==tag), None); print('' if r is None else r['id'])" 2>/dev/null || true)
+          if [ -z "$RELEASE_ID" ]; then
+            echo "ERROR: no release found for tag $TAG to attach openapi.json" >&2
+            exit 1
+          fi
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary @openapi.json \
+            "https://uploads.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets?name=openapi.json")
+          if [ "$STATUS" -ge 300 ]; then
+            echo "ERROR: openapi.json upload returned HTTP $STATUS" >&2
+            exit 1
+          fi
+          echo "Attached openapi.json to release $RELEASE_ID ($TAG)."
+
   # ── Publish the release (tag builds only) ────────────────────────────────
   # Platform builds upload their assets to a DRAFT release (electron-builder
   # publish releaseType=draft). Only once EVERY platform job has succeeded do we
@@ -830,7 +878,7 @@ jobs:
   # release stays a draft, and /releases/latest keeps serving the previous
   # complete release: no 404 window during a build, and no partial release.
   publish-release:
-    needs: [build]
+    needs: [build, openapi-asset]
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
@@ -884,7 +932,7 @@ jobs:
   # This is the only signal that e.g. macOS notarization broke (Apple agreement
   # expiry) - after which NO platform ships until it is fixed and the tag re-pushed.
   notify-release-failure:
-    needs: [prepare-release, setup-matrix, build, publish-release]
+    needs: [prepare-release, setup-matrix, build, openapi-asset, publish-release]
     if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     permissions:
