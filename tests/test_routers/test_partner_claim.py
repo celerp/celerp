@@ -618,3 +618,67 @@ async def test_partner_claim_hidden_once_direct_install_is_connected(
     assert r.status_code == 200
     assert 'id="partner-claim-card"' not in r.text
     assert 'href="/settings/cloud?tab=partner"' not in r.text
+
+
+# -- unconnected Web Access recovery invariant -------------------------------
+
+_UNCONNECTED_WEB_ACCESS_STATES = [
+    (relay_status, disconnected, token_bound)
+    for relay_status in ("inactive", "active", "tos_required", "connecting", "error")
+    for disconnected in (False, True)
+    for token_bound in (False, True)
+    if not (
+        not disconnected
+        and (
+            relay_status in ("active", "tos_required", "connecting", "error")
+            or token_bound
+        )
+    )
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "admin"])
+@pytest.mark.parametrize(
+    "relay_status,disconnected,token_bound",
+    _UNCONNECTED_WEB_ACCESS_STATES,
+)
+async def test_unconnected_direct_owner_admin_always_has_subscription_recovery(
+    role, relay_status, disconnected, token_bound,
+):
+    """Every normal unconnected direct-customer Web Access view retains an
+    explicit subscription recovery action, regardless of how it became
+    unconnected. Partner adoption is available only as a separate tab and never
+    replaces the normal Connect/Link-subscription surface."""
+    from httpx import ASGITransport, AsyncClient
+    from ui.app import app as ui_app
+    from test_helpers import make_test_token
+
+    with (
+        patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=(
+            relay_status, "", "", disconnected, token_bound, False,
+        ))),
+        patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
+        patch("ui.routes.settings_cloud._get_role", return_value=role),
+        patch("ui.api_client.get_billing_catalog", new=AsyncMock(return_value={})),
+        patch("celerp.gateway.state.get_commercial_mode", return_value="celerp_direct"),
+        patch("celerp.config.ensure_instance_id", return_value="instance-recovery-test"),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui",
+            follow_redirects=False,
+        ) as c:
+            r = await c.get(
+                "/settings/cloud",
+                cookies={"celerp_token": make_test_token(role=role)},
+            )
+
+    assert r.status_code == 200
+    has_auto_connect = 'id="cloud-connect-btn"' in r.text
+    has_link_subscription = 'hx-post="/settings/cloud-send-otp"' in r.text
+    assert has_auto_connect or has_link_subscription
+
+    # Partner claiming never displaces or co-renders inside the normal recovery
+    # surface. Eligible owner/admin users reach it only through its own tab.
+    assert 'id="partner-claim-card"' not in r.text
+    assert 'href="/settings/cloud?tab=partner"' in r.text
