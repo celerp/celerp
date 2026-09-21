@@ -645,6 +645,15 @@ async def test_ai_page_status_failure_is_not_showcase(ui_client):
 
 
 @pytest.mark.asyncio
+async def test_quota_status_proxy_failure_is_unknown(ui_client):
+    with patch("celerp_ai.ui_routes.api.ai_quota_status",
+               AsyncMock(side_effect=APIError(502, "down"))):
+        r = await ui_client.get("/ai/quota-status", cookies=_authed())
+    assert r.status_code == 200
+    assert r.json() == {"unknown": True}
+
+
+@pytest.mark.asyncio
 async def test_chat_with_receipts_renders_progress_bubble(ui_client):
     with patch("celerp_ai.ui_routes.api.ai_conversation_query",
                AsyncMock(return_value={"job_id": "job-1", "message_id": "m1"})):

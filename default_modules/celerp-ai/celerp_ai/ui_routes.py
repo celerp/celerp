@@ -659,7 +659,7 @@ def setup_ui_routes(app) -> None:
                 result = {**result, "topup_url": topup_url()}
             return JSONResponse(result)
         except Exception:
-            return JSONResponse({"local": True})
+            return JSONResponse({"unknown": True})
 
 
 # ---------------------------------------------------------------------------
@@ -1999,6 +1999,10 @@ function _celerpAiUploadFormData(formData, fileNames, receiptEligible) {
     .then(function(data) {
         var badge = document.getElementById('ai-quota-display');
         var link = document.getElementById('ai-topup-link');
+        if (data.unknown || data.disconnected) {
+            badge.textContent = CELERP_AI_TEXT.quota_unavailable;
+            return;
+        }
         if (data.local) { badge.textContent = ''; return; }
         var remaining = data.remaining || 0;
         badge.textContent = CELERP_AI_TEXT.credits_remaining.replace('{n}', remaining);
