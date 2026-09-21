@@ -12,8 +12,12 @@ renders grouped and labelled.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import subprocess
+import sys
+from pathlib import Path
 
 # The JWT guard fires from celerp.config at import; keep it quiet.
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
@@ -21,8 +25,11 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from celerp import __version__
 import celerp.main
 from celerp.routers.events import router as events_router
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_openapi_hidden_by_default():
@@ -58,3 +65,41 @@ def test_openapi_grouped_when_exposed(monkeypatch, caplog):
         "openapi" in r.message.lower() and r.levelno >= logging.WARNING
         for r in caplog.records
     ), "no warning emitted when the public OpenAPI schema is exposed"
+
+
+def test_export_openapi_writes_valid_schema(tmp_path):
+    # The release workflow runs this script to attach openapi.json as an asset;
+    # the website renders the API reference from it. It must produce a complete,
+    # grouped 3.1 document without a running server.
+    out = tmp_path / "openapi.json"
+    subprocess.run(
+        [sys.executable, "scripts/export_openapi.py", "--out", str(out)],
+        cwd=_REPO_ROOT,
+        check=True,
+    )
+    schema = json.loads(out.read_text())
+    assert schema["openapi"].startswith("3."), schema["openapi"]
+    assert schema["info"]["title"] == "Celerp REST API"
+    assert schema["info"]["version"] == __version__
+    assert schema["info"].get("summary"), "exported schema has no info.summary"
+    assert schema["info"].get("description"), "exported schema has no info.description"
+    assert schema["info"]["contact"]["url"] == "https://celerp.com/about"
+    assert schema.get("paths"), "exported schema has no paths"
+    assert schema.get("tags"), "exported schema has no tag groups"
+    assert all(tag.get("description") for tag in schema["tags"])
+    assert not any(path.startswith("/__celerp/") for path in schema["paths"]), (
+        "internal load-balancer routes leaked into the public OpenAPI schema"
+    )
+
+    # The whole API, not just the core: the business modules must be loaded and
+    # their routes present. A schema missing these means the export ran without
+    # registering the module routers (the reference would omit most endpoints).
+    op_tags = {
+        tag
+        for methods in schema["paths"].values()
+        for op in methods.values()
+        if isinstance(op, dict)
+        for tag in op.get("tags", [])
+    }
+    for tag in ("items", "docs", "accounting", "crm"):
+        assert tag in op_tags, f"module tag {tag!r} missing; modules not loaded"

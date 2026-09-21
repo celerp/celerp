@@ -663,4 +663,24 @@ def test_build_workflow_validates_final_macos_dmg_before_distribution():
     assert verify_idx < workflow.index("- name: Upload artifacts (dev builds only)")
     assert "publish-release:" in workflow
     publish_idx = workflow.index("  publish-release:")
-    assert "needs: [build]" in workflow[publish_idx:publish_idx + 300]
+    publish_block = workflow[publish_idx:publish_idx + 300]
+    needs_line = next(l for l in publish_block.splitlines() if l.strip().startswith("needs:"))
+    assert needs_line.strip() == "needs: [build, openapi-asset]"
+
+
+def test_build_workflow_exports_versioned_openapi_before_publish():
+    """Tag releases must publish one rerunnable, version-matched OpenAPI asset."""
+    workflow = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
+
+    openapi_idx = workflow.index("  openapi-asset:")
+    publish_idx = workflow.index("  publish-release:")
+    openapi_block = workflow[openapi_idx:publish_idx]
+
+    assert "needs: [build]" in openapi_block
+    assert "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CELERP=${GITHUB_REF_NAME#v}" in openapi_block
+    assert "python scripts/export_openapi.py --out openapi.json" in openapi_block
+    assert 'schema["info"]["version"]' in openapi_block
+    assert 'expected = os.environ["GITHUB_REF_NAME"].removeprefix("v")' in openapi_block
+    assert "EXISTING_ASSET_ID=" in openapi_block
+    assert "/releases/assets/$EXISTING_ASSET_ID" in openapi_block
+    assert "assets?name=openapi.json" in openapi_block
