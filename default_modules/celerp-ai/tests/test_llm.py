@@ -174,6 +174,45 @@ async def test_complete_maps_recorded_402_409_429(relay):
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_structured_503_maps_to_service_unavailable(relay):
+    message = (
+        "Celerp AI is temporarily unavailable due to a service issue. "
+        "Our team has already been notified of the issue. Please try again later."
+    )
+    respx.post(f"{_RELAY}/ai/complete").mock(return_value=httpx.Response(
+        503, json={"detail": {"code": "service_unavailable", "message": message}},
+    ))
+    with pytest.raises(RelayError) as ei:
+        await complete([{"role": "user", "content": "x"}])
+    assert (ei.value.code, ei.value.status) == ("service_unavailable", 503)
+    assert str(ei.value) == message
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_plain_503_remains_busy(relay):
+    respx.post(f"{_RELAY}/ai/complete").mock(
+        return_value=httpx.Response(503, json={"detail": "AI busy, retry shortly"}))
+    with pytest.raises(RelayError) as ei:
+        await complete([{"role": "user", "content": "x"}])
+    assert (ei.value.code, ei.value.status) == ("busy", 503)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_plain_402_keeps_quota_code(relay):
+    respx.post(f"{_RELAY}/ai/complete").mock(
+        return_value=httpx.Response(402, json={"detail": "AI is not available on this plan"}))
+    with pytest.raises(HTTPException) as ei:
+        await complete([{"role": "user", "content": "x"}])
+    assert ei.value.detail == {
+        "code": "quota_exceeded",
+        "message": "AI is not available on this plan",
+    }
+
+
+@pytest.mark.asyncio
 async def test_complete_no_session(monkeypatch):
     monkeypatch.setattr(llm_mod, "relay_session_headers", lambda: {"X-Session-Token": "", "X-Instance-ID": ""})
     with pytest.raises(RelayError) as ei:

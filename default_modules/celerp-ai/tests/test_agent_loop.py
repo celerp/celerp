@@ -495,8 +495,7 @@ async def test_timeout_maps_to_error(monkeypatch):
     monkeypatch.setattr(service, "complete", _slow)
     monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
     result = await _run()
-    assert result.error is not None
-    assert "too long" in result.error
+    assert result.error == "Celerp AI could not complete this request in time. Please try again."
 
 
 @pytest.mark.asyncio
@@ -520,6 +519,22 @@ async def test_relay_busy_maps_to_retry_text(monkeypatch):
     monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
     result = await _run()
     assert result.error == "The AI service is temporarily busy. Please try again in a moment."
+
+
+@pytest.mark.asyncio
+async def test_service_unavailable_message_survives_agent_boundary(monkeypatch):
+    message = (
+        "Celerp AI is temporarily unavailable due to a service issue. "
+        "Our team has already been notified of the issue. Please try again later."
+    )
+
+    async def _raise(messages, *, tools=None, tool_choice=None, reservation_id=None, **kw):
+        raise RelayError("service_unavailable", message, status=503)
+
+    monkeypatch.setattr(service, "complete", _raise)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
+    result = await _run()
+    assert result.error == message
 
 
 @pytest.mark.asyncio

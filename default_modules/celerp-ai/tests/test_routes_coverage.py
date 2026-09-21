@@ -228,6 +228,26 @@ async def test_conversation_lifecycle(auth_client):
 
 
 @pytest.mark.asyncio
+async def test_conversation_list_include_protected_uses_history_surface(auth_client):
+    c, h = auth_client
+    history = AsyncMock(return_value=[])
+    with patch("celerp_ai.routes.list_conversation_history", history), \
+         patch("celerp_ai.routes.list_conversations", AsyncMock()) as ordinary:
+        r = await c.get("/ai/conversations?limit=100&include_protected=true", headers=h)
+    assert r.status_code == 200
+    history.assert_awaited_once()
+    ordinary.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_include_protected_rejects_nonzero_offset(auth_client):
+    c, h = auth_client
+    r = await c.get("/ai/conversations?include_protected=true&offset=1", headers=h)
+    assert r.status_code == 400
+    assert r.json()["detail"] == "include_protected requires offset=0"
+
+
+@pytest.mark.asyncio
 async def test_get_conversation_404(auth_client):
     c, h = auth_client
     fake_id = str(uuid.uuid4())

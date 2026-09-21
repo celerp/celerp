@@ -62,6 +62,7 @@ from celerp.ai.conversations import (
     get_conversation,
     get_message,
     get_messages,
+    list_conversation_history,
     list_conversations,
     message_error,
     pending_action_counts,
@@ -521,12 +522,22 @@ async def list_convs(
     request: Request,
     limit: int = 20,
     offset: int = 0,
+    include_protected: bool = False,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[ConversationOut]:
     """List conversations, newest first, each with its count of open proposals."""
-    convs = await list_conversations(session, company_id, user.id, limit=limit, offset=offset)
+    if include_protected:
+        if offset:
+            raise HTTPException(status_code=400, detail="include_protected requires offset=0")
+        convs = await list_conversation_history(
+            session, company_id, user.id, limit=limit,
+        )
+    else:
+        convs = await list_conversations(
+            session, company_id, user.id, limit=limit, offset=offset,
+        )
     open_counts = await pending_action_counts(session, [c.id for c in convs])
     return [
         ConversationOut(

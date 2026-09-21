@@ -16,7 +16,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company, User
-from celerp.models.ai import AIConversation, AIMessage
+from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
 from types import SimpleNamespace
 
 from celerp.ai.conversations import (
@@ -35,6 +35,7 @@ from celerp.ai.conversations import (
     finalize_tool_call,
     get_conversation,
     get_messages,
+    list_conversation_history,
     list_conversations,
     pending_actions,
     rename_conversation,
@@ -578,3 +579,201 @@ async def test_list_conversations_stable_order_when_updated_at_ties(session, com
         paged += [c.id for c in page]
     assert sorted(paged) == sorted(ids)
     assert len(paged) == len(set(paged))
+
+
+# ── sidebar history retention ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_normal_conversation_list_preserves_limit_semantics(session, company, user):
+    stamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    rows = [
+        AIConversation(
+            id=uuid.UUID(int=i + 1),
+            company_id=company.id,
+            user_id=user.id,
+            title=f"C{i}",
+            created_at=stamp + timedelta(seconds=i),
+            updated_at=stamp + timedelta(seconds=i),
+        )
+        for i in range(MAX_CONVERSATIONS_PER_USER + 1)
+    ]
+    session.add_all(rows)
+    await session.commit()
+
+    listed = await list_conversations(
+        session, company.id, user.id, limit=MAX_CONVERSATIONS_PER_USER,
+    )
+    assert len(listed) == MAX_CONVERSATIONS_PER_USER
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["pending", "retryable", "executing"])
+async def test_history_includes_old_unresolved_action_beyond_limit(
+    session, company, user, status,
+):
+    old = AIConversation(
+        company_id=company.id, user_id=user.id, title="old",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    recent = AIConversation(
+        company_id=company.id, user_id=user.id, title="recent",
+        created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    session.add_all([old, recent])
+    await session.flush()
+    record = _pending_record("keep")
+    if status == "retryable":
+        record["status"] = "retryable"
+    elif status == "executing":
+        record["status"] = "executing"
+        record["executing_since"] = datetime.now(timezone.utc).isoformat()
+    session.add(AIMessage(
+        conversation_id=old.id, role="assistant", content="work",
+        tools_called=[record],
+    ))
+    await session.commit()
+
+    history = await list_conversation_history(session, company.id, user.id, limit=1)
+    assert [c.id for c in history] == [recent.id, old.id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["pending", "running"])
+async def test_history_includes_old_active_batch_job_beyond_limit(
+    session, company, user, status,
+):
+    old = AIConversation(
+        company_id=company.id, user_id=user.id, title="old",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    recent = AIConversation(
+        company_id=company.id, user_id=user.id, title="recent",
+        created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    session.add_all([old, recent])
+    await session.flush()
+    session.add(AIBatchJob(
+        conversation_id=old.id,
+        company_id=company.id,
+        user_id=user.id,
+        status=status,
+        total_files=1,
+        query="read",
+        file_ids=["f1"],
+    ))
+    await session.commit()
+
+    history = await list_conversation_history(session, company.id, user.id, limit=1)
+    assert [c.id for c in history] == [recent.id, old.id]
+
+
+@pytest.mark.asyncio
+async def test_history_does_not_restore_old_resolved_conversation(session, company, user):
+    old = AIConversation(
+        company_id=company.id, user_id=user.id, title="old",
+        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    recent = AIConversation(
+        company_id=company.id, user_id=user.id, title="recent",
+        created_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+    )
+    session.add_all([old, recent])
+    await session.flush()
+    session.add(AIMessage(
+        conversation_id=old.id, role="assistant", content="done",
+        tools_called=[{**_pending_record("done"), "status": "completed"}],
+    ))
+    await session.commit()
+
+    history = await list_conversation_history(session, company.id, user.id, limit=1)
+    assert [c.id for c in history] == [recent.id]
+
+
+@pytest.mark.asyncio
+async def test_history_protected_tail_is_deduplicated_and_sorted(session, company, user):
+    stamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ids = [uuid.UUID(int=i) for i in (1, 2, 3)]
+    rows = [
+        AIConversation(
+            id=cid, company_id=company.id, user_id=user.id, title=str(cid.int),
+            created_at=stamp, updated_at=stamp,
+        )
+        for cid in ids
+    ]
+    session.add_all(rows)
+    await session.flush()
+    session.add(AIMessage(
+        conversation_id=ids[0], role="assistant", content="pending",
+        tools_called=[_pending_record("old")],
+    ))
+    await session.commit()
+
+    history = await list_conversation_history(session, company.id, user.id, limit=2)
+    assert [c.id for c in history] == [ids[2], ids[1], ids[0]]
+    assert len({c.id for c in history}) == len(history)
+
+
+@pytest.mark.asyncio
+async def test_protected_history_is_user_and_company_scoped(
+    session, company, user, user_b, company_b, user_b_co,
+):
+    stamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    recent = AIConversation(
+        company_id=company.id, user_id=user.id, title="recent",
+        created_at=stamp + timedelta(days=2), updated_at=stamp + timedelta(days=2),
+    )
+    own_old = AIConversation(
+        company_id=company.id, user_id=user.id, title="own",
+        created_at=stamp, updated_at=stamp,
+    )
+    other_user = AIConversation(
+        company_id=company.id, user_id=user_b.id, title="other-user",
+        created_at=stamp, updated_at=stamp,
+    )
+    other_company = AIConversation(
+        company_id=company_b.id, user_id=user_b_co.id, title="other-company",
+        created_at=stamp, updated_at=stamp,
+    )
+    session.add_all([recent, own_old, other_user, other_company])
+    await session.flush()
+    for target in (own_old, other_user, other_company):
+        session.add(AIMessage(
+            conversation_id=target.id, role="assistant", content="pending",
+            tools_called=[_pending_record(str(target.id))],
+        ))
+    await session.commit()
+
+    history = await list_conversation_history(session, company.id, user.id, limit=1)
+    assert {c.id for c in history} == {recent.id, own_old.id}
+
+
+@pytest.mark.asyncio
+async def test_pruning_and_history_share_same_protection_rule(session, company, user):
+    protected = await create_conversation(session, company.id, user.id, title="executing")
+    record = {
+        **_pending_record("running"),
+        "status": "executing",
+        "executing_since": datetime.now(timezone.utc).isoformat(),
+    }
+    await add_message(
+        session, protected.id, "assistant", "Applying.",
+        tools_called=[record],
+    )
+    await session.commit()
+    protected_id = protected.id
+
+    for i in range(MAX_CONVERSATIONS_PER_USER):
+        await create_conversation(session, company.id, user.id, title=f"new {i}")
+    await session.commit()
+
+    assert await get_conversation(session, protected_id, company.id, user.id) is not None
+    history = await list_conversation_history(
+        session, company.id, user.id, limit=MAX_CONVERSATIONS_PER_USER,
+    )
+    assert protected_id in {c.id for c in history}

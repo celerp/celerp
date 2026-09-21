@@ -338,7 +338,14 @@ def setup_ui_routes(app) -> None:
         actions = result.get("pending_actions") or []
         message_id = str(actions[0].get("message_id", "")) if actions else ""
         groups = [_action_group(conversation_id, message_id, actions, lang)] if actions else []
-        reply = (user_bubble, _msg_bubble("ai", result.get("answer", "")), *groups, oob_id, oob_history)
+        error = result.get("error")
+        reply = (
+            user_bubble,
+            _msg_bubble("ai", error or result.get("answer", ""), error=bool(error)),
+            *groups,
+            oob_id,
+            oob_history,
+        )
         return HTMLResponse(to_xml(reply), headers=headers)
 
     @app.get("/ai/proposals-ui")

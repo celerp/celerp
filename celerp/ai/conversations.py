@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Literal, Sequence
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,35 @@ EXECUTING_STALE_S = 5 * 60
 UNFINISHED_ACTION_TEXT = (
     "The previous attempt did not return a definite result. Retry safely to check or finish it."
 )
+
+
+async def _protected_conversation_ids(
+    session: AsyncSession,
+    conversation_ids: Sequence[uuid.UUID],
+) -> set[uuid.UUID]:
+    """Conversation ids whose unresolved work must remain reachable."""
+    ids = list(conversation_ids)
+    if not ids:
+        return set()
+
+    active_ids = set((await session.execute(
+        select(AIBatchJob.conversation_id).where(
+            AIBatchJob.conversation_id.in_(ids),
+            AIBatchJob.status.in_(("pending", "running")),
+        )
+    )).scalars().all())
+    action_rows = await session.execute(
+        select(AIMessage.conversation_id, AIMessage.tools_called).where(
+            AIMessage.conversation_id.in_(ids),
+            AIMessage.tools_called.isnot(None),
+        )
+    )
+    action_ids = {
+        conversation_id
+        for conversation_id, tools_called in action_rows.all()
+        if _has_protected_action(tools_called)
+    }
+    return active_ids | action_ids
 
 
 async def create_conversation(
@@ -67,36 +96,15 @@ async def create_conversation(
                 AIConversation.company_id == company_id,
                 AIConversation.user_id == user_id,
             )
-            .order_by(AIConversation.updated_at.desc())
+            .order_by(AIConversation.updated_at.desc(), AIConversation.id.desc())
             .offset(MAX_CONVERSATIONS_PER_USER)
         )
         old_ids = list((await session.execute(oldest_q)).scalars().all())
         if old_ids:
-            active_ids = set((await session.execute(
-                select(AIBatchJob.conversation_id).where(
-                    AIBatchJob.conversation_id.in_(old_ids),
-                    AIBatchJob.status.in_(("pending", "running")),
-                )
-            )).scalars().all())
-            # Do not silently discard a conversation that still contains a user
-            # decision or an ambiguous write awaiting a safe retry. It is better to
-            # exceed the soft conversation cap briefly than to destroy unresolved
-            # action state.
-            action_rows = await session.execute(
-                select(AIMessage.conversation_id, AIMessage.tools_called).where(
-                    AIMessage.conversation_id.in_(old_ids),
-                    AIMessage.tools_called.isnot(None),
-                )
-            )
-            protected_ids = {
-                conversation_id
-                for conversation_id, tools_called in action_rows.all()
-                if pending_actions(tools_called)
-            }
-            prunable = [
-                conversation_id for conversation_id in old_ids
-                if conversation_id not in active_ids and conversation_id not in protected_ids
-            ]
+            # Prefer exceeding the soft cap briefly over destroying unresolved
+            # actions or active file processing.
+            protected_ids = await _protected_conversation_ids(session, old_ids)
+            prunable = [cid for cid in old_ids if cid not in protected_ids]
             if prunable:
                 await session.execute(delete(AIConversation).where(AIConversation.id.in_(prunable)))
 
@@ -123,6 +131,47 @@ async def list_conversations(
         .offset(offset)
     )
     return list((await session.execute(q)).scalars().all())
+
+
+async def list_conversation_history(
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    user_id: uuid.UUID,
+    *,
+    limit: int = MAX_CONVERSATIONS_PER_USER,
+) -> list[AIConversation]:
+    """Recent history plus older conversations whose unresolved state must stay reachable."""
+    recent = await list_conversations(
+        session, company_id, user_id, limit=limit, offset=0,
+    )
+    if limit <= 0 or len(recent) < limit:
+        return recent
+
+    recent_ids = {c.id for c in recent}
+    older_ids = list((await session.execute(
+        select(AIConversation.id)
+        .where(
+            AIConversation.company_id == company_id,
+            AIConversation.user_id == user_id,
+        )
+        .order_by(AIConversation.updated_at.desc(), AIConversation.id.desc())
+        .offset(limit)
+    )).scalars().all())
+    protected_ids = await _protected_conversation_ids(session, older_ids)
+    protected_ids.difference_update(recent_ids)
+    if not protected_ids:
+        return recent
+
+    protected = list((await session.execute(
+        select(AIConversation).where(
+            AIConversation.id.in_(protected_ids),
+            AIConversation.company_id == company_id,
+            AIConversation.user_id == user_id,
+        )
+    )).scalars().all())
+    combined = [*recent, *protected]
+    combined.sort(key=lambda c: (c.updated_at, c.id.int), reverse=True)
+    return combined
 
 
 async def get_conversation(
@@ -343,6 +392,19 @@ def _claimable(record: object, now: datetime) -> bool:
         return False
     status = record.get("status", "pending")
     return _still_pending(record, now) or status == "retryable" or _stale_executing(record, now)
+
+
+def _has_protected_action(tools_called: list | None) -> bool:
+    """True while an action must keep its conversation reachable."""
+    if not tools_called:
+        return False
+    now = datetime.now(timezone.utc)
+    for record in tools_called:
+        if _still_pending(record, now):
+            return True
+        if isinstance(record, dict) and record.get("status") in {"retryable", "executing"}:
+            return True
+    return False
 
 
 def pending_actions(tools_called: list | None) -> list[dict]:

@@ -2861,7 +2861,7 @@ async def ai_batch_status(token: str, session_token: str, job_id: str) -> dict:
 async def ai_conversations_list(token: str, session_token: str) -> list[dict]:
     """GET /ai/conversations - list conversations for sidebar."""
     async with _ai_api_client(token, session_token) as c:
-        return _raise(await c.get("/ai/conversations?limit=100")).json()
+        return _raise(await c.get("/ai/conversations?limit=100&include_protected=true")).json()
 
 
 async def ai_memory_get(token: str, session_token: str) -> dict:

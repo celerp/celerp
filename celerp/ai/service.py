@@ -96,7 +96,7 @@ _RELAY_ERROR_TEXT = {
     "busy": "The AI service is temporarily busy. Please try again in a moment.",
     "gateway_error": "The AI service is temporarily unavailable. Please try again shortly.",
 }
-_TIMEOUT_TEXT = "The query took too long. Please try a simpler question."
+_TIMEOUT_TEXT = "Celerp AI could not complete this request in time. Please try again."
 _SESSION_EXPIRED_TEXT = "Your session expired, sign in again."
 
 
@@ -109,6 +109,8 @@ def _user_error(exc: BaseException) -> str:
     if isinstance(exc, asyncio.TimeoutError):
         return _TIMEOUT_TEXT
     if isinstance(exc, RelayError):
+        if exc.code == "service_unavailable":
+            return str(exc)
         return _RELAY_ERROR_TEXT[exc.code]
     if isinstance(exc, httpx.TimeoutException):
         return "The AI service took too long to respond. Please try again."

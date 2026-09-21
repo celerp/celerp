@@ -159,7 +159,28 @@ async def test_chat_returns_user_and_assistant_bubbles(ui_client):
     assert r.status_code == 200
     assert "ai-msg--user" in r.text
     assert "Here is your summary." in r.text
+    assert "ai-msg--error" not in r.text
     assert r.headers["HX-Push-Url"] == "/ai?conversation=conv-1"
+
+
+@pytest.mark.asyncio
+async def test_chat_renders_agent_error_instead_of_blank_bubble(ui_client):
+    message = (
+        "Celerp AI is temporarily unavailable due to a service issue. "
+        "Our team has already been notified of the issue. Please try again later."
+    )
+    result = {
+        "answer": "", "error": message, "model_used": "m",
+        "tools_called": [], "pending_actions": [],
+    }
+    with patch("celerp_ai.ui_routes.api.ai_conversation_query",
+               AsyncMock(return_value=result)):
+        r = await ui_client.post("/ai/chat", cookies=_authed(),
+                                 data={"query": "summarize", "conversation_id": "conv-1"})
+    assert r.status_code == 200
+    assert "ai-msg--user" in r.text
+    assert "ai-msg--error" in r.text
+    assert message in r.text
 
 
 @pytest.mark.asyncio

@@ -36,7 +36,8 @@ class RelayError(RuntimeError):
 
     Codes: ``no_session`` (no active cloud session), ``unexpected_reply`` (a
     200 without a structured assistant message), ``continuation_expired``
-    (the relay dropped the reservation), ``busy`` (429 or 503), and
+    (the relay dropped the reservation), ``service_unavailable`` (a Celerp-owned
+    upstream/service failure), ``busy`` (429 or an unstructured 503), and
     ``gateway_error`` (any other non-2xx status, carried in ``status``).
     """
 
@@ -53,6 +54,22 @@ class ModelResult:
     usage: dict
     reservation_id: str | None
     remaining: int | None
+
+
+def _error_detail(resp: httpx.Response) -> dict:
+    """Return the relay detail without parsing a failure response more than once."""
+    try:
+        payload = resp.json()
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    value = payload.get("detail")
+    if isinstance(value, dict):
+        return value
+    if value not in (None, ""):
+        return {"message": str(value)}
+    return {}
 
 
 def _build_user_content(
@@ -155,15 +172,20 @@ async def complete(
             remaining=data.get("remaining"),
         )
 
+    detail = _error_detail(resp)
+
     if resp.status_code == 402:
         from fastapi import HTTPException
-        try:
-            detail = resp.json().get("detail", {})
-        except Exception:
-            detail = {}
-        if not isinstance(detail, dict):
-            detail = {"code": "quota_exceeded", "message": str(detail)}
+        if "code" not in detail:
+            detail = {"code": "quota_exceeded", **detail}
         raise HTTPException(status_code=402, detail=detail)
+
+    if resp.status_code == 503 and detail.get("code") == "service_unavailable":
+        raise RelayError(
+            "service_unavailable",
+            detail.get("message") or "Celerp AI is temporarily unavailable.",
+            status=503,
+        )
 
     if resp.status_code == 409:
         raise RelayError("continuation_expired", "continuation_expired", status=409)
