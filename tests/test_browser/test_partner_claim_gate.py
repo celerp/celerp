@@ -55,6 +55,8 @@ def test_partner_claim_card_visible_to_owner(page, ui_server, seeded_user, brows
         page.wait_for_selector(_CARD, timeout=8000)
         assert page.locator(f'{_CARD} input[name="claim_token"]').count() == 1
         assert page.locator(f"{_CARD} h3").inner_text() == "Partner claim"
+        assert page.locator(".cloud-plans").count() == 0
+        assert page.locator("#cloud-relay-tab").count() == 0
     finally:
         _set_cookie(browser_context, seeded_user["access_token"])
 
