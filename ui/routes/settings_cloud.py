@@ -910,13 +910,13 @@ def setup_routes(app):
         lang = get_lang(request)
         is_owner_admin = _get_role(request) in ("owner", "admin")
         relay_status, public_url, tier, disconnected, token_bound, entitlement_known = await _relay_state(token)
-        # A free tier is signed in (holds a gateway_token) but never starts the WS
-        # client - it has no tunnel to serve - so relay_status stays "inactive".
-        # Treat a token-bound instance as connected so a signed-in free account
-        # gets the account/disconnect view plus the upgrade ad, not the landing page.
+        # Credential presence alone is not proof that the relay accepted it.
+        # Non-inactive transport states keep their dedicated status/recovery
+        # surface; an inactive stored credential counts as account-bound only
+        # after entitlement was authoritatively read.
         gw_ok = (not disconnected and (
             relay_status in ("active", "tos_required", "connecting", "error")
-            or token_bound))
+            or (token_bound and entitlement_known)))
 
         # Partner adoption is a pre-connection onboarding/recovery action. It
         # never shares the normal subscription/Connect surface after connection.
@@ -973,7 +973,10 @@ def setup_routes(app):
             parts = []
             if grace_notice is not None:
                 parts.append(grace_notice)
-            parts.append(_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier, token_bound=token_bound))
+            parts.append(_cloud_relay_tab(
+                relay_status=relay_status, public_url=public_url, tier=tier,
+                token_bound=token_bound, entitlement_known=entitlement_known,
+                disconnected=disconnected))
             backup_card = _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)
             if backup_card is not None:
                 parts.append(backup_card)

@@ -336,11 +336,38 @@ def test_cloud_tab_connecting_hides_account_view():
 
 
 def test_cloud_tab_error_shows_recovery_only():
-    """A failed connection shows the failure and the disconnect recovery path,
-    never the account view."""
+    """A failed known connection keeps its status plus retry and disconnect."""
     html = _relay_tab_html("error", token_bound=True)
     assert "Connection failed" in html
+    assert "cloud-connect-btn" in html
     assert "cloud-disconnect" in html
+    assert "Link subscription" not in html
+
+
+@pytest.mark.parametrize("token_bound", [False, True])
+def test_cloud_tab_error_unknown_entitlement_offers_link_recovery(token_bound):
+    """Rejected/unverifiable credentials never terminate without recovery."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _cloud_relay_tab
+    html = to_xml(_cloud_relay_tab(
+        relay_status="error", public_url="", tier="",
+        token_bound=token_bound, entitlement_known=False))
+    assert "Connection failed" in html
+    assert "cloud-connect-btn" in html
+    assert "Link subscription" in html
+    assert ("cloud-disconnect" in html) is token_bound
+
+
+def test_cloud_tab_connecting_unknown_entitlement_keeps_polling():
+    """A separate entitlement-read outage must not override transient transport."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _cloud_relay_tab
+    html = to_xml(_cloud_relay_tab(
+        relay_status="connecting", public_url="", tier="",
+        token_bound=True, entitlement_known=False))
+    assert "Establishing connection" in html
+    assert 'hx-get="/settings/cloud-relay-tab"' in html
+    assert "could not be connected" not in html
     assert "Link subscription" not in html
 
 
@@ -373,7 +400,32 @@ def test_cloud_tab_unknown_entitlement_is_never_rendered_as_free():
         token_bound=True, entitlement_known=False))
     assert "Free account" not in html
     assert "could not be connected" in html
+    assert "cloud-connect-btn" in html
     assert "Link subscription" in html
+
+
+def test_cloud_tab_inactive_paid_offers_reconnect():
+    """Known paid entitlement that failed to self-heal is never Disconnect-only."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _cloud_relay_tab
+    html = to_xml(_cloud_relay_tab(
+        relay_status="inactive", public_url="", tier="cloud",
+        token_bound=True, entitlement_known=True))
+    assert "Initializing connection" in html
+    assert "cloud-connect-btn" in html
+    assert "cloud-disconnect" in html
+
+
+def test_cloud_tab_active_unknown_entitlement_keeps_authenticated_view():
+    """An accepted transport remains authoritative during a billing-read outage."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _cloud_relay_tab
+    html = to_xml(_cloud_relay_tab(
+        relay_status="active", public_url="https://demo.celerp.com", tier="",
+        token_bound=True, entitlement_known=False))
+    assert ">Active<" in html
+    assert "cloud-disconnect" in html
+    assert "could not be connected" not in html
 
 
 def test_cloud_tab_active_shows_account_view():
