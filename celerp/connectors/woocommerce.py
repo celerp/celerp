@@ -64,6 +64,11 @@ def _link_needs_rediscovery(link: dict) -> bool:
     return bool(link and link.get("remote_deleted") is True)
 
 
+def _deleted_variation_requires_import(link: dict) -> bool:
+    """Never guess a new parent by recreating a deleted variation as a simple product."""
+    return _link_needs_rediscovery(link) and bool(link.get("variation_id"))
+
+
 def _link_matches_deleted_product(
     link: dict, product_id: str, variation_id: str | None
 ) -> bool:
@@ -344,6 +349,11 @@ class WooCommerceConnector(ConnectorBase):
                 resp.raise_for_status()
                 remote = resp.json()
         if remote is None:
+            if _deleted_variation_requires_import(link):
+                raise ValueError(
+                    "The linked WooCommerce variation no longer exists; "
+                    "run product sync after recreating/importing the exact variation"
+                )
             async with RateLimitedClient() as client:
                 resp = await client.get(f"{base_url}/products", auth=auth, params={"sku": sku, "per_page": 100})
                 resp.raise_for_status()
