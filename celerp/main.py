@@ -388,6 +388,11 @@ async def lifespan(_app: FastAPI):
     except Exception:
         pass
 
+    # Cancel response-safe entitlement handoffs before the gateway lifecycle is
+    # torn down, so a deferred restart cannot revive Connect during shutdown.
+    from celerp.services.cloud_entitlement import shutdown_runtime_transitions
+    await shutdown_runtime_transitions()
+
     # Close the tunnel and its run task, whoever started it (boot gate, auto-activate,
     # or a runtime share-create) - the gateway package owns that lifecycle now.
     from celerp.gateway import shutdown as _gateway_shutdown
