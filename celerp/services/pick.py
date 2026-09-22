@@ -85,6 +85,37 @@ def _sorted_inventory(inventory: list[dict], strategy: str) -> list[dict]:
     return sorted(inventory, key=lambda it: it.get("created_at") or "")  # fifo
 
 
+
+def consolidate_sales_lots(items: list[dict], company_settings: dict) -> list[dict]:
+    """Collapse splittable same-SKU lots to the canonical pick-order representative.
+
+    The representative binds a sales line to the first stocked lot in FIFO/FEFO/LIFO
+    order while exposing aggregate same-SKU quantity. Non-splittable products remain
+    one option per physical unit so callers must choose the exact item.
+    """
+    by_sku: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for item in items:
+        sku = str(item.get("sku") or "")
+        if sku not in by_sku:
+            by_sku[sku] = []
+            order.append(sku)
+        by_sku[sku].append(item)
+
+    out: list[dict] = []
+    for sku in order:
+        group = by_sku[sku]
+        if len(group) == 1 or not all(splitting_allowed(item) for item in group):
+            out.extend(group)
+            continue
+        method = resolve_pick_method(group[0], company_settings)
+        sorted_lots = _sorted_inventory(group, method)
+        stocked = [item for item in sorted_lots if float(item.get("quantity") or 0) > 0]
+        rep = dict((stocked or sorted_lots)[0])
+        rep["quantity"] = sum(float(item.get("quantity") or 0) for item in group)
+        out.append(rep)
+    return out
+
 def plan_lot_draws(
     primary: dict,
     needed: float,

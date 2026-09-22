@@ -44,22 +44,21 @@ PLUGIN_MANIFEST = {
                 "handler": "celerp.projections.handlers.shopify:apply_shop_sync_event",
             },
         ],
-        # Inventory bulk actions to opt items into / out of outbound Shopify sync.
+        "catalog_channel": [
+            {"id": "woocommerce", "label": "WooCommerce", "marker": "W",
+             "requires_connector": "woocommerce", "write_permission": "adjust_inventory", "can_create": True},
+            {"id": "shopify", "label": "Shopify", "marker": "S",
+             "requires_connector": "shopify", "write_permission": "adjust_inventory", "can_create": False},
+        ],
         "bulk_action": [
-            {
-                "label": "Enable Shopify sync",
-                "form_action": "/api/items/bulk/shopify-sync/enable",
-                "icon": "🛍",
-                "action_type": "htmx",
-                "permission": "adjust_inventory",
-            },
-            {
-                "label": "Disable Shopify sync",
-                "form_action": "/api/items/bulk/shopify-sync/disable",
-                "icon": "🛍",
-                "action_type": "htmx",
-                "permission": "adjust_inventory",
-            },
+            {"label": "Sync with WooCommerce", "form_action": "/api/items/bulk/channel-sync/woocommerce/enable",
+             "action_type": "htmx", "permission": "adjust_inventory", "requires_connector": "woocommerce"},
+            {"label": "Stop WooCommerce sync", "form_action": "/api/items/bulk/channel-sync/woocommerce/disable",
+             "action_type": "htmx", "permission": "adjust_inventory", "requires_connector": "woocommerce"},
+            {"label": "Sync with Shopify", "form_action": "/api/items/bulk/channel-sync/shopify/enable",
+             "action_type": "htmx", "permission": "adjust_inventory", "requires_connector": "shopify"},
+            {"label": "Stop Shopify sync", "form_action": "/api/items/bulk/channel-sync/shopify/disable",
+             "action_type": "htmx", "permission": "adjust_inventory", "requires_connector": "shopify"},
         ],
     },
 }

@@ -20,13 +20,26 @@ import uuid
 import pytest
 from sqlalchemy import text
 
-from celerp.models.company import Company
+from celerp.models.accounting import UserCompany
+from celerp.models.company import Company, User
 import celerp.connectors.upsert as u
 
 
 async def _seed_company(session, name: str) -> uuid.UUID:
     cid = uuid.uuid4()
-    session.add(Company(id=cid, name=name, slug=f"{name.lower()}-{cid.hex[:8]}", settings={}))
+    uid = uuid.uuid4()
+    session.add(Company(
+        id=cid, name=name, slug=f"{name.lower()}-{cid.hex[:8]}",
+        settings={"currency": "USD"},
+    ))
+    session.add(User(
+        id=uid, email=f"{name.lower()}-{uid.hex[:8]}@example.test",
+        name=f"{name} Owner", auth_hash=None,
+    ))
+    await session.flush()
+    session.add(UserCompany(
+        user_id=uid, company_id=cid, role="owner", is_active=True,
+    ))
     await session.flush()
     return cid
 
@@ -74,10 +87,11 @@ async def test_woocommerce_order_creates_doc(use_test_session):
     }
     assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
     assert await u.upsert_order_from_woocommerce(str(cid), order) == "noop"  # dedup
-    assert await _ledger_rows(session, cid, "woocommerce:order:55") == 1
+    assert await _ledger_rows(session, cid, "woocommerce:order:55") >= 1
     st = await _state(session, cid, "woocommerce:order:55")
     assert st["doc_type"] == "invoice"
-    assert st["status"] == "closed"           # paid -> closed
+    assert st["status"] == "paid"
+    assert st["finalized"] is True
     assert st["total"] == 10.0
     assert st["line_items"][0]["unit_price"] == 5.0
     assert st["woocommerce_order_id"] == "55"

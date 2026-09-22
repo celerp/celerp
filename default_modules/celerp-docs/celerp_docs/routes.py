@@ -1683,15 +1683,23 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/finalize")
-async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def _finalize_doc_impl(
+    entity_id: str,
+    company_id: str,
+    user,
+    session: AsyncSession,
+    *,
+    commit: bool = True,
+) -> dict:
+    """Finalize with caller-owned transaction support for domain integrations."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
-    # A closed memo is terminal, settled paperwork; finalize maps closed->final in the
-    # reducer, silently stripping the terminal status and its close metadata. Refuse under
-    # the row lock, same as the other post-close mutations; the user reopens first.
+    # Terminal document states keep their established rejection semantics. Only an
+    # otherwise-finalizable document that was already issued is an idempotent no-op.
     _reject_if_closed(row.state, "finalize it")
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Cannot finalize void document")
+    if row.state.get("finalized"):
+        return {"event_id": None, "already_finalized": True}
     if not (row.state.get("line_items") or []):
         raise HTTPException(status_code=422, detail="Add at least one line item before finalizing this document.")
 
@@ -1813,8 +1821,22 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
         user_id=_user_id,
         doc_type=doc_type,
     )
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"event_id": entry.id}
+
+
+@router.post("/{entity_id}/finalize")
+async def finalize_doc(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("finalize_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await _finalize_doc_impl(
+        entity_id, company_id, user, session, commit=True
+    )
 
 
 @router.post("/{entity_id}/void")
@@ -2223,7 +2245,7 @@ async def _alloc_payment_index(session, company_id, payments: list,
 
 async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                             *, source: str, actor_id, idempotency_key: str,
-                            clamp_overshoot: bool = False):
+                            clamp_overshoot: bool = False, commit: bool = True):
     """Record a payment against a doc: guard, emit doc.payment.received, post the cash
     JE, fire the payment lifecycle hook. Shared by the manual route and online payment
     so a Stripe payment lands identically to a hand-entered one. Commits per success and
@@ -2334,8 +2356,10 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         "on_doc_payment", session=session, company_id=company_id, user_id=actor_id,
         doc_id=entity_id, doc=doc_state, amount=amount, bank_account_code=bank_code,
     )
-    # Commit so this recorder's write is visible to the next holder of the row lock.
-    await session.commit()
+    # Interactive/online callers commit here; domain integrations may compose this
+    # payment atomically with finalize/fulfillment and commit the enclosing transaction.
+    if commit:
+        await session.commit()
     # Return the applied amount (post-clamp) alongside the event so callers report
     # and decrement off what actually landed under the row lock, not a stale pre-read.
     return entry, amount
@@ -5672,14 +5696,14 @@ async def _apply_split_plan(
     return remap
 
 
-@router.post("/{entity_id}/fulfill-lines")
-async def fulfill_lines(
+async def _fulfill_lines_impl(
     entity_id: str,
     body: FulfillLinesRequest,
-    company_id: str = Depends(get_current_company_id),
-    _: None = require_permission("fulfill_documents"),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    company_id: str,
+    user,
+    session: AsyncSession,
+    *,
+    commit: bool = True,
 ) -> dict:
     """Fulfill specific line items by entity_id. Valid for memo and invoice docs only.
 
@@ -5957,8 +5981,23 @@ async def fulfill_lines(
         metadata_={},
     )
 
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"fulfillment_status": doc_fulfillment_status, "fulfilled": to_fulfill}
+
+
+@router.post("/{entity_id}/fulfill-lines")
+async def fulfill_lines(
+    entity_id: str,
+    body: FulfillLinesRequest,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("fulfill_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await _fulfill_lines_impl(
+        entity_id, body, company_id, user, session, commit=True
+    )
 
 
 async def _reverse_whole_lines(
@@ -6182,7 +6221,7 @@ async def revert_lines(
     }
 
 
-async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user, session) -> dict:
+async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user, session, *, commit: bool = True) -> dict:
     """Set selected lines to ``reserved`` or ``available`` (ledger-neutral for available lines).
 
     All-or-nothing: every selected line is pre-validated first; if any line fails its guard the
@@ -6302,7 +6341,8 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
             idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
         )
 
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"new_status": new_status, "reserved": reserved_eids}
 
 

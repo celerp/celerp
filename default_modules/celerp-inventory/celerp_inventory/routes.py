@@ -148,6 +148,8 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
     "sku",
     "barcode",      # recalculated: new entity needs a new unique barcode
     "rfid_epc",     # physical RFID/EPC tag: bound to one physical unit, never inherited by a new one
+    "idempotency_key", # connector identity belongs to the catalog/product anchor
+    "external_links",  # external channel identity must never be cloned onto a physical child
     # Quantity / cost — set by split math or pricing events
     "quantity",
     "weight",
@@ -880,15 +882,11 @@ async def list_items(
                 [(d.entity_id, d.state) for d in sold_docs],
             )
 
-    # Connector source: items linked to a platform encode it in the idempotency key
-    # (e.g. "shopify:123:456"). Powers the connector detail "View N synced products" link.
-    # idempotency_key is never a schema field, so it carries no visible_to_roles floor and
-    # is safe to filter here; category/inventory_type/location_id ARE schema fields a role
-    # may be denied, so their filters run after apply_field_visibility (below) to avoid a
-    # membership oracle.
+    # Explicit external_links are authoritative; legacy idempotency keys remain readable.
     if source:
-        _prefix = f"{source.strip().lower()}:"
-        result = [r for r in result if str(r.get("idempotency_key") or "").lower().startswith(_prefix)]
+        from celerp_inventory.services import external_link_for_state
+        _platform = source.strip().lower()
+        result = [r for r in result if external_link_for_state(r, _platform)]
 
     # Apply visible_to_roles filtering from the effective field schema BEFORE any
     # membership-affecting step (category/inventory_type/location filters, facets, attr.*
@@ -1018,7 +1016,12 @@ async def list_items(
     )
 
     total = len(result)
-    resp: dict = {"items": result[offset: offset + limit], "total": total,
+    page_items = result[offset: offset + limit]
+    from celerp_inventory.services import build_channel_states
+    _channel_states = build_channel_states(rows)
+    for _item in page_items:
+        _item["_channel_state"] = _channel_states.get(_item.get("id"), {})
+    resp: dict = {"items": page_items, "total": total,
                   "attribute_facets": attribute_facets}
     if holding_scoped and not gate_cost:
         # Total over the whole scoped set (post-filter, pre-pagination) so the contact

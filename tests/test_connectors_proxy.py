@@ -49,9 +49,8 @@ async def test_connectors_tab_shows_trial_cta_when_relay_gates_on_plan():
     from ui.routes.settings_connectors import connectors_tab_content
 
     with patch("ui.routes.settings_connectors._fetch_catalog",
-               AsyncMock(return_value=([], "Connectors need an active plan.", True))), \
-         patch("celerp.config.ensure_instance_id", return_value="iid-x"):
-        panel = await connectors_tab_content("en", token="tok", category="website")
+               AsyncMock(return_value=([], "Connectors need an active plan.", True))):
+        panel = await connectors_tab_content("en", token="tok", category="website", company_id="co-test")
 
     from fasthtml.common import to_xml
     html = to_xml(panel)
@@ -76,9 +75,8 @@ async def test_connectors_tab_shows_fetch_error_detail():
     from ui.routes.settings_connectors import connectors_tab_content
 
     with patch("ui.routes.settings_connectors._fetch_catalog",
-               AsyncMock(return_value=([], "Relay timed out.", False))), \
-         patch("celerp.config.ensure_instance_id", return_value="iid-x"):
-        panel = await connectors_tab_content("en", token="tok", category="website")
+               AsyncMock(return_value=([], "Relay timed out.", False))):
+        panel = await connectors_tab_content("en", token="tok", category="website", company_id="co-test")
 
     from fasthtml.common import to_xml
     html = to_xml(panel)
@@ -98,9 +96,8 @@ async def test_connectors_tab_renders_single_category():
     with patch("ui.routes.settings_connectors._fetch_catalog",
                AsyncMock(return_value=(catalog, None, False))), \
          patch("ui.routes.settings_connectors._get_last_runs",
-               AsyncMock(return_value={})), \
-         patch("celerp.config.ensure_instance_id", return_value="iid-x"):
-        panel = await connectors_tab_content("en", token="tok", category="website")
+               AsyncMock(return_value={})):
+        panel = await connectors_tab_content("en", token="tok", category="website", company_id="co-test")
 
     from fasthtml.common import to_xml
     html = to_xml(panel)
@@ -117,9 +114,8 @@ async def test_connectors_tab_empty_category_degrades_honestly():
 
     catalog = [{"id": "shopify", "name": "Shopify", "category": "website"}]
     with patch("ui.routes.settings_connectors._fetch_catalog",
-               AsyncMock(return_value=(catalog, None, False))), \
-         patch("celerp.config.ensure_instance_id", return_value="iid-x"):
-        panel = await connectors_tab_content("en", token="tok", category="accounting")
+               AsyncMock(return_value=(catalog, None, False))):
+        panel = await connectors_tab_content("en", token="tok", category="accounting", company_id="co-test")
 
     from fasthtml.common import to_xml
     html = to_xml(panel)
@@ -150,7 +146,7 @@ async def test_connector_backlinks_target_cloud_tab():
              patch("ui.routes.settings_connectors._entity_runs",
                    AsyncMock(return_value={})), \
              patch("ui.api_client.get_company",
-                   AsyncMock(return_value={"settings": {}, "current_role": "owner"})), \
+                   AsyncMock(return_value={"id": "00000000-0000-0000-0000-000000000002", "settings": {}, "current_role": "owner"})), \
              patch("celerp.config.ensure_instance_id", return_value="iid-x"):
             r = await ui_client.get("/settings/connectors/woocommerce", cookies=cookies)
             r_invalid = await ui_client.get("/settings/connectors/not-a-platform",

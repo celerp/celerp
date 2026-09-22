@@ -631,7 +631,10 @@ async def test_woocommerce_sync_products(wc, wc_ctx):
             {"id": 2, "sku": "", "name": "No SKU Item", "regular_price": "10.00"},
         ], headers={"X-WP-TotalPages": "1"})
     )
-    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")):
+    with patch(
+        "celerp_inventory.services.upsert_external_product",
+        new=AsyncMock(return_value=("created", "item:test")),
+    ):
         result = await wc.sync_products(wc_ctx)
     assert result.ok
     assert result.created == 2  # both get SKUs (second gets WC-2 fallback)

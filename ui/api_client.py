@@ -2441,6 +2441,16 @@ async def bulk_shopify_sync(token: str, entity_ids: list[str], enable: bool) -> 
     async with _api_client(token) as c:
         return _raise(await c.post("/items/bulk/shopify-sync", json={"entity_ids": entity_ids, "enable": enable})).json()
 
+async def set_connector_item_sync(
+    token: str, platform: str, entity_ids: list[str], enable: bool
+) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            f"/connector-items/{platform}/sync",
+            json={"entity_ids": entity_ids, "enable": enable},
+        )).json()
+
+
 
 async def bulk_transfer(token: str, entity_ids: list[str], to_location_id: str) -> dict:
     async with _api_client(token) as c:

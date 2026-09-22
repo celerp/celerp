@@ -26,17 +26,11 @@ log = logging.getLogger(__name__)
 
 
 async def _register_woocommerce_webhooks(
-    iid: str, store_url: str, consumer_key: str, consumer_secret: str
+    company_id: str, store_url: str, consumer_key: str, consumer_secret: str
 ) -> None:
-    """Best-effort: subscribe the WooCommerce store to webhooks delivered to the
-    relay, which forwards them to this instance over the gateway. Persists the
-    signing secret so the instance can verify each delivery locally. Never raises
-    into the connect flow; the scheduled reconciliation backstops any miss."""
-    import json
+    """Register the complete WooCommerce webhook set before declaring success."""
     import secrets as _secrets
-
     import sqlalchemy as sa
-
     from celerp.connectors.base import ConnectorContext
     from celerp.connectors.woocommerce import WooCommerceConnector
     from celerp.db import get_session_ctx
@@ -46,7 +40,7 @@ async def _register_woocommerce_webhooks(
     delivery_url = f"{RELAY_URL.rstrip('/')}/webhooks/woocommerce/events"
     secret = _secrets.token_hex(32)
     ctx = ConnectorContext(
-        company_id=str(iid),
+        company_id=str(company_id),
         access_token=f"{consumer_key}:{consumer_secret}",
         store_handle=store_url,
     )
@@ -54,8 +48,8 @@ async def _register_woocommerce_webhooks(
     async with get_session_ctx() as session:
         await session.execute(
             sa.update(ConnectorConfig)
-            .where(ConnectorConfig.company_id == iid, ConnectorConfig.connector == "woocommerce")
-            .values(webhook_secret=secret, webhook_ids_json=json.dumps(ids) if ids else None)
+            .where(ConnectorConfig.company_id == company_id, ConnectorConfig.connector == "woocommerce")
+            .values(webhook_secret=secret, webhook_ids_json=json.dumps(ids))
         )
         await session.commit()
 
@@ -238,24 +232,53 @@ async def _get_last_runs(company_id: str) -> dict[str, object]:
     return result
 
 
+def _request_company_id(request: Request) -> str:
+    """Return the API-verified company id cached by the permission gate."""
+    company = getattr(request.state, "auth_company", None)
+    company_id = company.get("id") if isinstance(company, dict) else None
+    if not company_id:
+        raise RuntimeError("Current company is unavailable")
+    return str(company_id)
+
+
 async def _get_connector_config(company_id: str, connector: str):
-    """Return ConnectorConfig or None."""
+    """Return company-scoped config, adopting a legacy row only when ownership is unambiguous."""
+    from celerp.config import ensure_instance_id
     from celerp.db import get_session_ctx
+    from celerp.models.company import Company
     from celerp.models.connector_config import ConnectorConfig
     import sqlalchemy as sa
 
-    try:
-        async with get_session_ctx() as session:
-            result = await session.execute(
-                sa.select(ConnectorConfig).where(
-                    ConnectorConfig.company_id == company_id,
-                    ConnectorConfig.connector == connector,
-                )
-            )
-            row = result.first()
-            return row[0] if row else None
-    except Exception:
-        return None
+    async with get_session_ctx() as session:
+        row = await session.scalar(
+            sa.select(ConnectorConfig).where(
+                ConnectorConfig.company_id == str(company_id),
+                ConnectorConfig.connector == connector,
+            ).limit(1)
+        )
+        if row is not None:
+            return row
+
+        legacy_id = ensure_instance_id()
+        if legacy_id == str(company_id):
+            return None
+
+        companies = (await session.execute(sa.select(Company.id).limit(2))).scalars().all()
+        if len(companies) != 1 or str(companies[0]) != str(company_id):
+            return None
+
+        legacy = await session.scalar(
+            sa.select(ConnectorConfig).where(
+                ConnectorConfig.company_id == legacy_id,
+                ConnectorConfig.connector == connector,
+            ).limit(1)
+        )
+        if legacy is None:
+            return None
+        legacy.company_id = str(company_id)
+        await session.commit()
+        await session.refresh(legacy)
+        return legacy
 
 
 async def _ensure_connector_config(company_id: str, connector: str, category: str):
@@ -305,36 +328,35 @@ async def _clear_connector_config(company_id: str, connector: str) -> None:
         log.warning("failed to clear ConnectorConfig (%s)", connector, exc_info=True)
 
 
-async def _kickoff_connector_sync(iid: str, platform: str, token: str) -> None:
-    """Fetch the live token and start a background sync of all supported entities.
-    Raises on setup failure (bad token, unknown connector); per-entity errors are captured
-    in each SyncRun. Shared by 'Sync now' and auto-sync-on-connect."""
-    from celerp.connectors.base import ConnectorContext
+async def _kickoff_connector_sync(company_id: str, platform: str, token: str) -> None:
+    """Start the connector's canonical direction-aware sync plan in background."""
+    from celerp.connectors.base import ConnectorContext, SyncDirection
     from celerp.connectors.registry import get as get_connector
-    from celerp.connectors.sync_runner import run_sync
+    from celerp.connectors.sync_runner import run_connector_sync
 
     connector = get_connector(platform)
     token_data = await _fetch_access_token(platform, token)
     ctx = ConnectorContext(
-        company_id=iid,
+        company_id=company_id,
         access_token=token_data["access_token"],
         store_handle=token_data.get("store_handle"),
     )
+    config = await _get_connector_config(company_id, platform)
+    direction = SyncDirection(config.direction if config else connector.direction.value)
 
     async def _do_sync():
-        for entity_enum in connector.supported_entities:
-            try:
-                await run_sync(connector, ctx, entity_enum.value)
-            except Exception as exc:
-                log.warning("connector sync %s/%s failed: %s", platform, entity_enum.value, exc)
+        try:
+            await run_connector_sync(connector, ctx, direction=direction)
+        except Exception as exc:
+            log.warning("connector sync %s failed: %s", platform, exc)
 
     spawn_background(_do_sync())
 
 
-async def _autosync_once(iid: str, platform: str, token: str) -> None:
+async def _autosync_once(company_id: str, platform: str, token: str) -> None:
     """Best-effort background sync kickoff that never raises into a render path."""
     try:
-        await _kickoff_connector_sync(iid, platform, token)
+        await _kickoff_connector_sync(company_id, platform, token)
     except Exception:
         log.warning("auto-sync on first view failed (non-fatal) for %s", platform, exc_info=True)
 
@@ -711,16 +733,13 @@ def _entitlement_cta(lang: str = "en") -> FT:
     )
 
 
-async def connectors_tab_content(lang: str, token: str, category: str) -> FT:
+async def connectors_tab_content(lang: str, token: str, category: str, company_id: str) -> FT:
     """Render one connectors tab: the catalog entries of a single category
     ("website" or "accounting" - each has its own tab on the Web Access page)."""
-    from celerp.config import ensure_instance_id
     from ui.config import RELAY_URL
 
     relay_url = RELAY_URL
-    iid = ensure_instance_id()
-
-    catalog, fetch_err, needs_plan = await _fetch_catalog(relay_url, iid, token=token)
+    catalog, fetch_err, needs_plan = await _fetch_catalog(relay_url, company_id, token=token)
 
     if not catalog:
         if needs_plan:
@@ -741,13 +760,13 @@ async def connectors_tab_content(lang: str, token: str, category: str) -> FT:
             cls="settings-card",
         )
 
-    last_runs = await _get_last_runs(iid)
+    last_runs = await _get_last_runs(company_id)
 
     # Load configs for all connected connectors
     configs: dict[str, object] = {}
     for c in catalog:
         if c.get("connected"):
-            cfg = await _ensure_connector_config(iid, c["id"], c.get("category", "website"))
+            cfg = await _ensure_connector_config(company_id, c["id"], c.get("category", "website"))
             configs[c["id"]] = cfg
 
     # Auto-sync a freshly connected store that has never synced (e.g. just returned from
@@ -756,11 +775,11 @@ async def connectors_tab_content(lang: str, token: str, category: str) -> FT:
     # re-render, and once any run exists this branch no longer fires.
     for c in catalog:
         if c.get("connected") and last_runs.get(c["id"]) is None:
-            spawn_background(_autosync_once(iid, c["id"], token))
+            spawn_background(_autosync_once(company_id, c["id"], token))
 
     # The tab label already names the category, so the cards render directly.
     cards = [
-        _connector_card(c, last_runs.get(c["id"]), relay_url, iid,
+        _connector_card(c, last_runs.get(c["id"]), relay_url, company_id,
                       config=configs.get(c["id"]), lang=lang)
         for c in catalog
     ]
@@ -826,14 +845,13 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.config import ensure_instance_id
         from celerp.db import get_session_ctx
         from celerp.models.connector_config import ConnectorConfig
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
         import sqlalchemy as sa
 
-        iid = ensure_instance_id()
+        company_id = _request_company_id(request)
         lang = get_lang(request)
         form = await request.form()
         frequency = form.get("sync_frequency", "manual")
@@ -845,18 +863,18 @@ def setup_routes(app):
             await session.execute(
                 sa.update(ConnectorConfig)
                 .where(
-                    ConnectorConfig.company_id == iid,
+                    ConnectorConfig.company_id == company_id,
                     ConnectorConfig.connector == platform,
                 )
                 .values(sync_frequency=frequency)
             )
             await session.commit()
 
-        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
-        last_runs = await _get_last_runs(iid)
-        config = await _get_connector_config(iid, platform)
-        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid,
+        last_runs = await _get_last_runs(company_id)
+        config = await _get_connector_config(company_id, platform)
+        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id,
                               config=config, lang=lang)
 
     @app.post("/settings/connectors/{platform}/direction")
@@ -870,14 +888,13 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.config import ensure_instance_id
         from celerp.db import get_session_ctx
         from celerp.models.connector_config import ConnectorConfig
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
         import sqlalchemy as sa
 
-        iid = ensure_instance_id()
+        company_id = _request_company_id(request)
         lang = get_lang(request)
         form = await request.form()
         direction = form.get("direction", "both")
@@ -888,18 +905,18 @@ def setup_routes(app):
             await session.execute(
                 sa.update(ConnectorConfig)
                 .where(
-                    ConnectorConfig.company_id == iid,
+                    ConnectorConfig.company_id == company_id,
                     ConnectorConfig.connector == platform,
                 )
                 .values(direction=direction)
             )
             await session.commit()
 
-        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
-        last_runs = await _get_last_runs(iid)
-        config = await _get_connector_config(iid, platform)
-        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid,
+        last_runs = await _get_last_runs(company_id)
+        config = await _get_connector_config(company_id, platform)
+        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id,
                               config=config, lang=lang)
 
     @app.delete("/settings/connectors/{platform}/disconnect")
@@ -913,12 +930,28 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.config import ensure_instance_id
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
 
-        iid = ensure_instance_id()
+        company_id = _request_company_id(request)
         lang = get_lang(request)
+
+        cleanup_warning = ""
+        config = await _get_connector_config(company_id, platform)
+        if platform == "woocommerce" and config and config.webhook_ids:
+            try:
+                token_data = await _fetch_access_token(platform, token)
+                from celerp.connectors.base import ConnectorContext
+                from celerp.connectors.woocommerce import WooCommerceConnector
+                ctx = ConnectorContext(
+                    company_id=company_id,
+                    access_token=token_data["access_token"],
+                    store_handle=token_data.get("store_handle"),
+                )
+                await WooCommerceConnector().deregister_webhooks(ctx, config.webhook_ids)
+            except Exception as exc:
+                cleanup_warning = str(exc)
+                log.warning("WooCommerce webhook cleanup failed during disconnect", exc_info=True)
 
         # Revoke on the relay via the API process proxy (which holds the relay session).
         from ui.api_client import delete_connector_credentials
@@ -932,17 +965,17 @@ def setup_routes(app):
             )
 
         # Clear local connector state so a later reconnect starts clean.
-        await _clear_connector_config(iid, platform)
+        await _clear_connector_config(company_id, platform)
 
         if request.query_params.get("redirect"):
             # Disconnected from the full-page detail view -> return to the overview tab.
             from starlette.responses import Response
             return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud?tab=website"})
 
-        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
-        last_runs = await _get_last_runs(iid)
-        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid, lang=lang)
+        last_runs = await _get_last_runs(company_id)
+        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id, lang=lang)
 
     @app.post("/settings/connectors/{platform}/sync")
     async def connector_sync_now(request: Request, platform: str):
@@ -957,19 +990,18 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.config import ensure_instance_id
-
-        iid = ensure_instance_id()
+    
+        company_id = _request_company_id(request)
         lang = get_lang(request)
 
         try:
-            await _kickoff_connector_sync(iid, platform, token)
+            await _kickoff_connector_sync(company_id, platform, token)
         except Exception as exc:
             return Span(f"✗ {exc}", cls="flash flash--warning")
 
         # Force the first poll so the view picks up the in-progress rows the background
         # task is writing.
-        runs = await _entity_runs(iid, platform)
+        runs = await _entity_runs(company_id, platform)
         return _connector_status_view(platform, runs, lang, force_poll=True)
 
     @app.get("/settings/connectors/{platform}/status")
@@ -985,11 +1017,10 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.config import ensure_instance_id
-
-        iid = ensure_instance_id()
+    
+        company_id = _request_company_id(request)
         lang = get_lang(request)
-        runs = await _entity_runs(iid, platform)
+        runs = await _entity_runs(company_id, platform)
         view = _connector_status_view(platform, runs, lang)
         polling = request.query_params.get("polling") == "1"
         if polling and runs and not _any_in_progress(runs):
@@ -1016,18 +1047,17 @@ def setup_routes(app):
         if _validate_platform(platform) is not None:
             return RedirectResponse("/settings/cloud?tab=website", status_code=302)
 
-        from celerp.config import ensure_instance_id
         from ui.components.shell import base_shell, page_header
         from ui.components.table import breadcrumbs
         from ui.config import RELAY_URL
 
-        iid = ensure_instance_id()
+        company_id = _request_company_id(request)
         lang = get_lang(request)
-        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c = next((x for x in catalog if x["id"] == platform),
                  {"id": platform, "name": platform.title(), "category": "website"})
-        config = await _get_connector_config(iid, platform)
-        runs = await _entity_runs(iid, platform)
+        config = await _get_connector_config(company_id, platform)
+        runs = await _entity_runs(company_id, platform)
         icon = _CONNECTOR_ICONS.get(platform, "🔌")
         name = c.get("name", platform.title())
         return await base_shell(
@@ -1054,11 +1084,10 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.config import ensure_instance_id
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
 
-        iid = ensure_instance_id()
+        company_id = _request_company_id(request)
         lang = get_lang(request)
         form = await request.form()
         # Canonicalise (no trailing slash) so the stored handle matches the store
@@ -1089,7 +1118,7 @@ def setup_routes(app):
         # session (the UI process has none). The proxy probes the store first, so a
         # bad key/secret/URL fails here with a clear message instead of silently
         # failing on the first background sync.
-        from ui.api_client import store_connector_credentials
+        from ui.api_client import delete_connector_credentials, store_connector_credentials
         try:
             result = await store_connector_credentials(
                 token, platform, consumer_key, consumer_secret, store_url)
@@ -1117,25 +1146,43 @@ def setup_routes(app):
             )
 
         # Create connector config with defaults
-        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
-        config = await _ensure_connector_config(iid, platform, c_data.get("category", "website"))
+        config = await _ensure_connector_config(company_id, platform, c_data.get("category", "website"))
 
-        # Subscribe WooCommerce to real-time webhooks (best-effort; the scheduled
-        # reconciliation backstops it). Never block the connect on it.
+        # A WooCommerce connection is not healthy until all required webhooks
+        # can be created. Roll back both local config and relay credentials on failure.
         if platform == "woocommerce":
             try:
-                await _register_woocommerce_webhooks(iid, store_url, consumer_key, consumer_secret)
-            except Exception:
-                log.warning("woocommerce webhook registration failed (non-fatal)", exc_info=True)
+                await _register_woocommerce_webhooks(
+                    company_id, store_url, consumer_key, consumer_secret
+                )
+            except Exception as exc:
+                log.warning("woocommerce webhook registration failed", exc_info=True)
+                try:
+                    await delete_connector_credentials(token, platform)
+                except Exception:
+                    log.warning("failed to roll back WooCommerce relay credentials", exc_info=True)
+                await _clear_connector_config(company_id, platform)
+                return Div(
+                    Span(
+                        t(
+                            "connectors.connect_check_failed", lang,
+                            detail=f"Webhook setup failed: {exc}",
+                        ),
+                        cls="flash flash--warning",
+                    ),
+                    id=f"connector-card-{platform}",
+                    cls="connector-card",
+                )
 
         # Auto-sync on connect so the merchant's data appears without a manual step
         # (the activation moment). Best-effort: a failure here doesn't block the connect.
         try:
-            await _kickoff_connector_sync(iid, platform, token)
+            await _kickoff_connector_sync(company_id, platform, token)
         except Exception:
             log.warning("auto-sync on connect failed (non-fatal) for %s", platform, exc_info=True)
 
-        last_runs = await _get_last_runs(iid)
-        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid,
+        last_runs = await _get_last_runs(company_id)
+        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id,
                               config=config, lang=lang)

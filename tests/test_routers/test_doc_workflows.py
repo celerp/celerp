@@ -2729,3 +2729,20 @@ async def test_finalized_flag_cleared_on_revert(client, session):
         doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
         assert doc["status"] == "draft"
         assert doc["finalized"] is False
+
+
+@pytest.mark.asyncio
+async def test_finalize_twice_without_revert_is_noop(client, session):
+    token = await _register(client)
+    inv_id = await _create_invoice(client, token, subtotal=25, tax=0, total=25)
+
+    first = await client.post(f"/docs/{inv_id}/finalize", headers=_h(token))
+    assert first.status_code == 200, first.text
+    first_state = (await client.get(f"/docs/{inv_id}", headers=_h(token))).json()
+    first_ref = first_state["ref_id"]
+
+    second = await client.post(f"/docs/{inv_id}/finalize", headers=_h(token))
+    assert second.status_code == 200, second.text
+    assert second.json().get("already_finalized") is True
+    second_state = (await client.get(f"/docs/{inv_id}", headers=_h(token))).json()
+    assert second_state["ref_id"] == first_ref
