@@ -81,8 +81,45 @@ def get_feature_flags() -> dict:
     return dict(_feature_flags)
 
 
+_REQUIRED_FEATURE_FLAG_BOOLS = (
+    "payments_enabled", "external_db", "external_storage")
+
+
+def valid_feature_flags(flags) -> bool:
+    """Validate the complete relay feature snapshot before applying it."""
+    if not isinstance(flags, dict):
+        return False
+    for key in _REQUIRED_FEATURE_FLAG_BOOLS:
+        if not isinstance(flags.get(key), bool):
+            return False
+    grace = flags.get("grace_period_ends")
+    if grace is None:
+        return True
+    if not isinstance(grace, str):
+        return False
+    from datetime import datetime
+    try:
+        parsed = datetime.fromisoformat(grace)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def entitlement_snapshot(data) -> tuple[bool, dict] | None:
+    """Return the canonical relay entitlement snapshot, or None if malformed."""
+    if not isinstance(data, dict):
+        return None
+    entitled = data.get("connect_entitled")
+    flags = data.get("feature_flags")
+    if not isinstance(entitled, bool) or not valid_feature_flags(flags):
+        return None
+    return entitled, dict(flags)
+
+
 async def apply_feature_flags_async(flags: dict, *, persist: bool = True) -> None:
     """Apply one authoritative feature snapshot and optionally persist it."""
+    if not valid_feature_flags(flags):
+        raise ValueError("Malformed relay feature_flags")
     set_feature_flags(flags)
     if not persist:
         return
@@ -798,248 +835,3 @@ async def relay_post_with_retry(url: str, json_body: dict):
 
     async def _post(client):
         return await client.post(url, json=json_body)
-
-    httpx_log = logging.getLogger("httpx")
-    prev_level = httpx_log.level
-    httpx_log.setLevel(logging.WARNING)
-    try:
-        for delay in _RELAY_POST_RETRY_DELAYS:
-            if delay:
-                await asyncio.sleep(delay)
-            try:
-                return await with_relay_client(_RELAY_POST_TIMEOUT_S, _post)
-            except httpx.HTTPError as exc:
-                log.debug("Relay POST transient transport error (%s); retrying.",
-                          type(exc).__name__)
-                continue
-    finally:
-        httpx_log.setLevel(prev_level)
-    return None
-
-
-class RelayCredentialError(RuntimeError):
-    """A definitive HTTP rejection while exchanging a relay API key."""
-
-    def __init__(self, status_code: int):
-        self.status_code = status_code
-        super().__init__(f"relay auth failed ({status_code})")
-
-
-class RelayProtocolError(RuntimeError):
-    """The relay answered successfully but violated the token response contract."""
-
-
-async def fetch_relay_auth(
-    http_client, api_key: str | None = None,
-) -> tuple[str, str | None]:
-    """Exchange an API key for a bearer plus the identity that key proves.
-
-    Authentication is deliberately observational: it never mutates local
-    identity or consumes a pending activation proof.
-    """
-    from celerp.config import settings
-
-    key = api_key or settings.gateway_token
-    if not key:
-        raise RuntimeError("relay credential unavailable")
-    resp = await http_client.post(
-        f"{relay_http_url()}/auth/token", json={"api_key": key})
-    if resp.status_code != 200:
-        raise RelayCredentialError(resp.status_code)
-    data = resp.json()
-    token = data.get("access_token") if isinstance(data, dict) else None
-    if not token:
-        raise RelayProtocolError("relay auth response missing access_token")
-    iid_raw = data.get("instance_id") if isinstance(data, dict) else None
-    iid = str(iid_raw).strip() if iid_raw else ""
-    return str(token), (iid or None)
-
-async def fetch_relay_bearer(http_client, api_key: str | None = None) -> str:
-    """Compatibility wrapper returning only the short-lived relay bearer."""
-    bearer, _ = await fetch_relay_auth(http_client, api_key=api_key)
-    return bearer
-
-
-def is_foreign_relay_identity(
-    authenticated_iid: str | None, local_iid: str,
-) -> bool:
-    """Whether a relay credential proves a different concrete instance."""
-    return bool(authenticated_iid and authenticated_iid != local_iid)
-
-
-def _launch_mode() -> str | None:
-    """The launch channel, when the launcher told us one. Electron sets
-    CELERP_MODE=desktop; a headless service sets headless. A bare or dev run
-    reports nothing rather than guessing: the relay treats a real install with
-    no channel as pypi, and dev builds are already excluded by version."""
-    import os
-    return os.environ.get("CELERP_MODE")
-
-
-def activate_payload(
-    instance_id: str, *, first_boot: bool | None = None,
-    activation_verifier: str | None = None,
-) -> dict:
-    """Build the activation/check-in request metadata.
-
-    activation_verifier is included only for a challenge-approved recovery. The
-    verifier never appears in email/browser proof requests.
-    """
-    import platform as _platform
-
-    from celerp import __version__
-
-    payload = {
-        "instance_id": instance_id,
-        "version": __version__,
-        "platform": _platform.system(),
-        "mode": _launch_mode(),
-    }
-    if first_boot is not None:
-        payload["first_boot"] = first_boot
-    if activation_verifier:
-        payload["activation_verifier"] = activation_verifier
-    from celerp.config import settings as _settings
-    if _settings.backup_encryption_key:
-        payload["backup_encryption_key"] = _settings.backup_encryption_key
-    return payload
-
-
-def relay_session_headers() -> dict[str, str]:
-    """Return X-Session-Token + X-Instance-ID headers for relay REST calls.
-
-    Always uses the relay-canonical instance_id (set on hello_ack), with the
-    config value as fallback. The relay keys its session table on the canonical
-    id — using the config id directly causes 401 when they differ.
-    """
-    from celerp.config import settings
-    return {
-        "X-Session-Token": _session_token,
-        "X-Instance-ID": _instance_id or settings.gateway_instance_id,
-    }
-
-
-HANDOFF_BASE = "https://celerp.com"
-
-
-def build_handoff_url(path: str, *, medium: str = "inapp", lead: str = "", extra: str = "") -> str:
-    """Single source of truth for celerp.com handoff links (subscribe, github, ...).
-
-    Keeps the format identical everywhere: an optional ``lead`` param first (e.g.
-    ``instance_id=...``, so attribution tags never bury it), then the UTM tags
-    (``utm_source=app`` + the caller's ``medium``), then any ``extra`` params.
-    Everything travels as query params, never fragments - fragments are invisible
-    to the server, so they can't attribute which CTA drove the click.
-    """
-    params = ([lead] if lead else []) + [f"utm_source=app&utm_medium={medium}"]
-    if extra:
-        params.append(extra.lstrip("?&"))
-    return f"{HANDOFF_BASE}{path}?{'&'.join(params)}"
-
-
-def build_subscribe_url(instance_id: str = "", *, topup: bool = False, extra: str = "") -> str:
-    """In-app celerp.com/subscribe handoff URL. Thin caller of build_handoff_url.
-
-    ``topup=True`` selects the /subscribe/topup variant. Callers resolve the instance
-    id however they need (the gateway id, ``ensure_instance_id()``, or a payload value).
-    """
-    path = "/subscribe/topup" if topup else "/subscribe"
-    lead = f"instance_id={instance_id}" if instance_id else ""
-    return build_handoff_url(path, medium="inapp", lead=lead, extra=extra)
-
-
-def build_commercial_handoff(instance_id: str, intent: str, sku: str = "") -> str:
-    """Single policy point resolving every core-app commercial CTA to its correct
-    destination, layered above the URL builders (never changing their signatures).
-
-    Keyed on the install's commercial mode and the requested sku:
-      - partner_managed: the partner's support URL when set, else the Enterprise
-        acquisition route. Never a direct Celerp checkout, so a partner-managed
-        install can never be sent to self-serve billing.
-      - a team sku (direct install, no partner): the Enterprise route; the app
-        never emits a direct plan=team checkout.
-      - celerp_direct with a cloud/ai sku: the same direct subscribe URL the app
-        has always produced for that plan (behavior-preserving).
-      - celerp_direct with an empty or unknown sku: the generic subscribe URL.
-
-    ``intent`` is the acquisition intent the CTA carries: "subscribe" for an
-    upgrade/subscribe CTA, "topup" for a credit top-up. It selects the direct
-    variant only on the celerp_direct path; a partner-managed or unknown mode
-    never reaches a direct checkout regardless of intent.
-
-    Fails closed: only the explicit ``celerp_direct`` mode reaches a direct
-    subscribe URL. partner_managed routes to the partner support URL (re-validated
-    at egress) or the Enterprise route; any other or unknown mode routes to
-    Enterprise. The returned URL is always non-empty, so callers need no per-site
-    empty-href guard.
-    """
-    mode = get_commercial_mode()
-    if mode == "partner_managed":
-        # Egress re-validation: an auto-updated binary may read an on-disk cache
-        # written by a prior binary that predates the ingress guard, so trust the
-        # stored support_url only after re-checking it here too.
-        support_url = safe_support_url((get_partner_identity() or {}).get("support_url"))
-        if support_url:
-            return support_url
-        return _enterprise_handoff(instance_id)
-    if mode != "celerp_direct":
-        return _enterprise_handoff(instance_id)
-    if sku == "team":
-        return _enterprise_handoff(instance_id)
-    if intent == "topup":
-        return build_subscribe_url(instance_id, topup=True)
-    if sku in ("cloud", "ai"):
-        return build_subscribe_url(instance_id, extra=f"plan={sku}")
-    return build_subscribe_url(instance_id)
-
-
-def _enterprise_handoff(instance_id: str) -> str:
-    """The Enterprise/partner acquisition route, attributed to the instance."""
-    lead = f"instance_id={instance_id}" if instance_id else ""
-    return build_handoff_url("/enterprise", medium="inapp", lead=lead)
-
-
-def enterprise_url(instance_id: str = "") -> str:
-    """Public entry point for the Enterprise/partner acquisition route."""
-    return _enterprise_handoff(instance_id)
-
-
-def build_public_acquisition_url(sku: str = "") -> str:
-    """Resolve a pre-auth / external acquisition URL - the destination an
-    unauthenticated screen or a backend API error message points at, where the
-    click-time /commercial/checkout mint route (which needs an authenticated app
-    session) is unavailable.
-
-    Keyed on the install's commercial mode and the requested sku:
-      - partner_managed: the partner support URL, then a mailto: to the support
-        email, then the Enterprise route - never a direct Celerp checkout;
-      - celerp_direct with a cloud/ai sku: the anonymous celerp.com/subscribe URL
-        with NO instance_id, so the website opens an anonymous self-serve
-        purchase and never posts a named instance without a handoff token;
-      - a team sku, a top-up, or any unknown mode: the Enterprise route.
-
-    Fails closed like build_commercial_handoff: only the explicit celerp_direct
-    mode with a cloud/ai sku reaches a direct subscribe URL, and it is always
-    anonymous. A top-up must never resolve here (a named credit purchase needs a
-    handoff token this pre-auth path cannot mint), so it degrades to Enterprise.
-    The returned URL is always non-empty.
-    """
-    mode = get_commercial_mode()
-    if mode == "partner_managed":
-        identity = get_partner_identity() or {}
-        support_url = safe_support_url(identity.get("support_url"))
-        if support_url:
-            return support_url
-        support_email = safe_support_email(identity.get("support_email"))
-        if support_email:
-            return f"mailto:{support_email}"
-        return enterprise_url()
-    if mode != "celerp_direct":
-        return enterprise_url()
-    if sku in ("cloud", "ai"):
-        # Anonymous: no instance_id, so the website never posts a named instance
-        # without a handoff token this pre-auth path cannot mint.
-        return build_subscribe_url("", extra=f"plan={sku}")
-    # Team, top-up, or an empty/unknown sku: Enterprise, never a named or
-    # anonymous direct checkout.
-    return enterprise_url()
