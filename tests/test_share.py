@@ -490,6 +490,77 @@ async def test_list_bundle_download(client: AsyncClient):
     assert bundle["doc"].get("contact_name") == "Bob's Shop"
 
 
+@pytest.mark.asyncio
+async def test_list_share_resolves_live_contact_when_snapshot_name_is_absent(client: AsyncClient):
+    """A List linked only by contact_id still renders the customer on its public share."""
+    tok = await _token(client)
+    contact = await client.post(
+        "/crm/contacts",
+        json={"name": "Live List Customer", "contact_type": "customer"},
+        headers=_h(tok),
+    )
+    assert contact.status_code == 200, contact.text
+    contact_id = contact.json()["id"]
+
+    created = await client.post(
+        "/lists",
+        json={
+            "list_type": "quote",
+            "contact_id": contact_id,
+            "line_items": [],
+            "currency": "THB",
+        },
+        headers=_h(tok),
+    )
+    assert created.status_code == 200, created.text
+    list_id = created.json()["id"]
+    token = (await client.post(f"/docs/{list_id}/share", headers=_h(tok))).json()["token"]
+
+    view = await client.get(f"/share/{token}")
+    assert view.status_code == 200
+    assert "Live List Customer" in view.text
+
+    bundle = await client.get(f"/share/{token}/bundle")
+    assert bundle.status_code == 200
+    assert bundle.json()["doc"]["contact_name"] == "Live List Customer"
+
+
+@pytest.mark.asyncio
+async def test_list_share_preserves_explicit_blank_contact_name(client: AsyncClient):
+    """An explicit List customer-name blank remains an output override."""
+    tok = await _token(client)
+    contact = await client.post(
+        "/crm/contacts",
+        json={"name": "Hidden Live List Customer", "contact_type": "customer"},
+        headers=_h(tok),
+    )
+    assert contact.status_code == 200, contact.text
+    contact_id = contact.json()["id"]
+
+    created = await client.post(
+        "/lists",
+        json={
+            "list_type": "quote",
+            "contact_id": contact_id,
+            "contact_name": "",
+            "line_items": [],
+            "currency": "THB",
+        },
+        headers=_h(tok),
+    )
+    assert created.status_code == 200, created.text
+    list_id = created.json()["id"]
+    token = (await client.post(f"/docs/{list_id}/share", headers=_h(tok))).json()["token"]
+
+    view = await client.get(f"/share/{token}")
+    assert view.status_code == 200
+    assert "Hidden Live List Customer" not in view.text
+
+    bundle = await client.get(f"/share/{token}/bundle")
+    assert bundle.status_code == 200
+    assert bundle.json()["doc"]["contact_name"] == ""
+
+
 # ---------------------------------------------------------------------------
 # Bundle import endpoint (POST /docs/import-bundle)
 # ---------------------------------------------------------------------------

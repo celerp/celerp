@@ -2681,7 +2681,14 @@ celerpUpdateBulkAlloc();
             display_value = _resolve_contact_display(doc, field)
         else:
             display_value = doc.get(field)
-        return _doc_display_cell(entity_id, field, display_value)
+        from starlette.responses import Response as _R
+        return _R(
+            to_xml(_doc_display_cell(entity_id, field, display_value)),
+            media_type="text/html",
+            headers={"HX-Trigger": _json.dumps({
+                "celerpListVersion": {"version": doc.get("version")},
+            })},
+        )
 
     # Line-item fields editable on finalized docs (description, account_code)
     _LI_FINALIZED_EDITABLE = {"description", "account_code"}
@@ -2797,11 +2804,19 @@ celerpUpdateBulkAlloc();
         form = await request.form()
         # Field name may come as the field name itself or as 'value'
         value = str(form.get(field, form.get("value", "")))
+        version = None
         try:
-            await api.patch_doc(token, entity_id, {field: value})
+            result = await api.patch_doc(token, entity_id, {field: value})
+            version = result.get("event_id")
         except APIError:
             pass  # silent autosave failure
-        return _R("", status_code=204)
+        headers = (
+            {"HX-Trigger": _json.dumps({
+                "celerpListVersion": {"version": version},
+            })}
+            if version is not None else {}
+        )
+        return _R("", status_code=204, headers=headers)
 
     @app.post("/docs/{entity_id}/notes")
     async def doc_add_note(request: Request, entity_id: str):
@@ -7156,8 +7171,8 @@ window._CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
 // Did this document render with any line items? Drives whether emptying the table
 // persists (deleting the last line must stick) vs. a blank never-used doc (skip).
 window._celerpHadLines = {'true' if line_items else 'false'};
-// Optimistic-concurrency token shared by Docs and Lists. Sent with line saves/repricing
-// and refreshed from successful writes so neither surface can overwrite a stale snapshot.
+// Entity version used by repricing and by List line saves. Refresh it after successful
+// in-tab writes so the next guarded operation pins the state this tab just produced.
 window._celerpEntityVersion = {_json.dumps(doc.get("version"))};
 if (!window._celerpEntityVersionListener) {{
     window._celerpEntityVersionListener = function(event) {{
@@ -8456,36 +8471,54 @@ if (!window._celerpRepriceWarningAfterSwap) {{
     document.body.addEventListener('htmx:afterSwap', window._celerpRepriceWarningAfterSwap);
 }}
 
+const _CELERP_AUTHORITATIVE_PRICE_LIST = {_json.dumps(_current_pl)};
+function _celerpRestorePriceList() {{
+    const select = document.getElementById('doc-price-list');
+    if (select) select.value = _CELERP_AUTHORITATIVE_PRICE_LIST;
+}}
 async function celerpReprice(priceList) {{
     /* A pending blur save is redundant here; the explicit save below owns this transition. */
     clearTimeout(_celerpSaveTimer);
     _celerpSaveTimer = null;
     /* Save current lines first; never discard an invalid or stale page to reprice. */
     const ok = await _celerpPersist();
-    if (!ok) return;
+    if (!ok) {{
+        _celerpRestorePriceList();
+        return;
+    }}
     const body = {{price_list: priceList, expected_version: _celerpEntityVersion}};
-    const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/reprice', {{
-        method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify(body)
-    }});
-    if (resp.ok) {{
-        const data = await resp.json().catch(() => ({{}}));
-        if (data && data.version != null) _celerpEntityVersion = data.version;
-        const skipped = Array.isArray(data.skipped) ? data.skipped : [];
-        if (skipped.length) {{
-            sessionStorage.setItem(_celerpRepriceWarningKey(), JSON.stringify({{
-                item_ids: skipped.map(function(x) {{ return x.item_id; }}).filter(Boolean),
-                skipped_count: skipped.length,
-                repriced: Number(data.repriced || 0),
-                show_modal: true
-            }}));
-        }} else {{
-            sessionStorage.removeItem(_celerpRepriceWarningKey());
+    try {{
+        const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/reprice', {{
+            method: 'POST', headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify(body)
+        }});
+        if (resp.ok) {{
+            const data = await resp.json().catch(() => ({{}}));
+            if (data && data.version != null) _celerpEntityVersion = data.version;
+            const skipped = Array.isArray(data.skipped) ? data.skipped : [];
+            if (skipped.length) {{
+                sessionStorage.setItem(_celerpRepriceWarningKey(), JSON.stringify({{
+                    item_ids: skipped.map(function(x) {{ return x.item_id; }}).filter(Boolean),
+                    skipped_count: skipped.length,
+                    repriced: Number(data.repriced || 0),
+                    show_modal: true
+                }}));
+            }} else {{
+                sessionStorage.removeItem(_celerpRepriceWarningKey());
+            }}
+            window.location.reload();
+            return;
         }}
-        window.location.reload();
-    }} else {{
         const err = await resp.json().catch(() => ({{}}));
         alert(err.error || _L.reprice_failed);
+        /* The line save above succeeded, so reloading cannot discard edits and
+           guarantees the selector/version reflect authoritative server state. */
+        window.location.reload();
+    }} catch (err) {{
+        /* The reprice outcome is ambiguous after transport loss. The lines are
+           already saved; reload to reconcile instead of guessing the price list. */
+        alert(_L.reprice_failed + ': ' + err.message);
+        window.location.reload();
     }}
 }}
 /* ── CSV import ── */

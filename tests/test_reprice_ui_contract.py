@@ -108,3 +108,31 @@ def test_sales_price_permission_is_shared_by_doc_and_quotation_write_boundaries(
         start = source.index(f"async def {name}(")
         snippet = source[start:start + 5200]
         assert "_assert_sales_line_price_permission(" in snippet
+
+
+
+def test_inline_doc_writes_advance_cached_reprice_version():
+    source = Path("ui/routes/documents.py").read_text()
+
+    field_start = source.index('async def doc_field_patch(')
+    field_end = source.index('# Line-item fields editable on finalized docs', field_start)
+    field_snippet = source[field_start:field_end]
+    assert '"celerpListVersion": {"version": doc.get("version")}' in field_snippet
+
+    autosave_start = source.index('async def doc_field_post(')
+    autosave_end = source.index('@app.post("/docs/{entity_id}/notes")', autosave_start)
+    autosave_snippet = source[autosave_start:autosave_end]
+    assert 'version = result.get("event_id")' in autosave_snippet
+    assert '"celerpListVersion": {"version": version}' in autosave_snippet
+
+
+def test_reprice_failure_never_leaves_selector_in_uncommitted_state():
+    source = Path("ui/routes/documents.py").read_text()
+    start = source.index("const _CELERP_AUTHORITATIVE_PRICE_LIST")
+    end = source.index("/* ── CSV import ── */", start)
+    snippet = source[start:end]
+    assert "function _celerpRestorePriceList()" in snippet
+    assert "if (!ok) {" in snippet
+    assert "_celerpRestorePriceList();" in snippet
+    assert "try {" in snippet and "catch (err)" in snippet
+    assert snippet.count("window.location.reload();") >= 2
