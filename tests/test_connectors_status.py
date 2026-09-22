@@ -169,3 +169,21 @@ async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
             )
             await session.execute(sa.delete(Company).where(Company.id == company_uuid))
             await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_connector_claim_rejects_different_company_owner(_db_engine):
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+    from ui.routes.settings_connectors import _claim_connector_for_company
+
+    async with get_session_ctx() as session:
+        session.add(ConnectorConfig(
+            company_id="company-a",
+            connector="woocommerce",
+            direction="both",
+        ))
+        await session.commit()
+
+    assert await _claim_connector_for_company("company-b", "woocommerce") is False
+    assert await _claim_connector_for_company("company-a", "woocommerce") is True
