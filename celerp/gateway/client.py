@@ -27,7 +27,6 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from celerp.config import settings
-from celerp.config_store import merge_packaged_config
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +98,9 @@ class GatewayClient:
         self._url = gateway_url
         self._ws: Any = None
         self._running = False
+        # Once the package lifecycle retires this generation, inbound frames
+        # and teardown from it are stale and may not mutate process-global state.
+        self._retired = False
         self._stop_event = asyncio.Event()
         # Reaper wakeup, separate from _stop_event so the teardown timer is
         # independent of the connect/backoff loop's own stop signalling.
@@ -275,6 +277,12 @@ class GatewayClient:
         self._stop_event.set()
         self._reaper_stop.set()
 
+    def retire(self) -> None:
+        """Fence this generation before an async replacement or shutdown."""
+        self._retired = True
+        self.stop()
+        self._set_status("inactive")
+
     async def close(self) -> None:
         """Async-safe shutdown: signal stop and close the active websocket immediately.
 
@@ -330,7 +338,6 @@ class GatewayClient:
             if await self._should_reap():
                 log.info("Gateway: no active share and idle past grace; dropping tunnel.")
                 await self.close()
-                set_client(None)
                 return
 
     @property
@@ -441,9 +448,14 @@ class GatewayClient:
                 self._proxied_count, self._cancelled_count,
                 self._timeout_count, self._stale_dropped_count,
             )
-            from celerp.gateway.state import set_session_token
-            set_session_token("")
-            self._set_status("inactive")
+            if not self._retired and get_client() is self:
+                from celerp.gateway.state import set_session_token
+                set_session_token("")
+                self._set_status("inactive")
+            else:
+                # Keep this stale object internally accurate without clearing a
+                # successor's session token or emitting a global relay sentinel.
+                self._relay_status = "inactive"
 
     def _build_hello_payload(self, tos_version: str, app_version: str) -> dict:
         """Build the hello frame payload.
@@ -460,6 +472,8 @@ class GatewayClient:
         }
 
     async def _dispatch(self, msg: dict) -> None:
+        if self._retired:
+            return
         msg_type = msg.get("type", "")
         payload = msg.get("payload", {})
 
@@ -488,9 +502,8 @@ class GatewayClient:
             log.debug("Gateway handshake complete (instance_id=%s)", self._instance_id)
             feature_flags = payload.get("feature_flags", {})
             if feature_flags:
-                from celerp.gateway.state import set_feature_flags
-                set_feature_flags(feature_flags)
-                await self._persist_feature_flags(feature_flags)
+                from celerp.gateway.state import apply_feature_flags_async
+                await apply_feature_flags_async(feature_flags)
             # commercial_context rides hello_ack when present; its absence must
             # leave any cached partner_managed identity intact, so the read is
             # presence-guarded rather than defaulted.
@@ -546,9 +559,8 @@ class GatewayClient:
             feature_flags = payload.get("feature_flags", {})
             log.info("Subscription updated: tier=%s status=%s", tier, status)
             if feature_flags:
-                from celerp.gateway.state import set_feature_flags
-                set_feature_flags(feature_flags)
-                await self._persist_feature_flags(feature_flags)
+                from celerp.gateway.state import apply_feature_flags_async
+                await apply_feature_flags_async(feature_flags)
             from celerp.gateway.state import set_subscription_state
             set_subscription_state(tier, status)
 
@@ -590,15 +602,6 @@ class GatewayClient:
 
         else:
             log.debug("Unhandled gateway message type: %s", msg_type)
-
-    async def _persist_feature_flags(self, feature_flags: dict) -> None:
-        """Write feature_flags into Electron's celerp-config.json.
-
-        Best-effort: only works inside Electron where CELERP_DATA_DIR is set; a
-        no-op in dev/server mode. Delegates to the shared atomic, 0600-forcing
-        writer so the co-resident secrets are never broadened.
-        """
-        merge_packaged_config({"feature_flags": feature_flags})
 
     async def _handle_shopify_webhook(self, payload: dict) -> None:
         """A Shopify webhook the relay forwarded. Trigger a targeted incremental
