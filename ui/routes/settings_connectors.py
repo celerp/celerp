@@ -281,6 +281,55 @@ async def _get_connector_config(company_id: str, connector: str):
         return legacy
 
 
+async def _claim_connector_for_company(company_id: str, connector: str) -> bool:
+    """Claim the instance-scoped connector for one ERP company.
+
+    Relay credentials are unique per installation/platform, so two companies must
+    never silently overwrite each other's credentials. A lone legacy installation-
+    scoped config is safe to adopt on an explicit connect action because that action
+    identifies the intended owner.
+    """
+    import sqlalchemy as sa
+
+    from celerp.config import ensure_instance_id
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+
+    legacy_id = ensure_instance_id()
+    async with get_session_ctx() as session:
+        rows = (await session.execute(
+            sa.select(ConnectorConfig).where(
+                ConnectorConfig.connector == connector
+            )
+        )).scalars().all()
+
+        other_companies = {
+            str(row.company_id)
+            for row in rows
+            if str(row.company_id) not in {str(company_id), legacy_id}
+        }
+        if other_companies:
+            return False
+
+        current = next(
+            (row for row in rows if str(row.company_id) == str(company_id)), None
+        )
+        legacy = next(
+            (row for row in rows if str(row.company_id) == legacy_id), None
+        )
+        if legacy is not None and current is None:
+            legacy.company_id = str(company_id)
+            await session.commit()
+        elif legacy is not None and current is not None:
+            # Both rows can exist only across the old/new scoping boundary. Preserve
+            # every known webhook id so a later disconnect can clean up all hooks.
+            merged_ids = list(dict.fromkeys(current.webhook_ids + legacy.webhook_ids))
+            current.webhook_ids_json = json.dumps(merged_ids)
+            await session.delete(legacy)
+            await session.commit()
+        return True
+
+
 async def _ensure_connector_config(company_id: str, connector: str, category: str):
     """Get or create ConnectorConfig with sensible defaults."""
     from celerp.db import get_session_ctx
@@ -1112,6 +1161,25 @@ def setup_routes(app):
             return Div(
                 Span(t(url_err, lang, default=_defaults[url_err]), cls="flash flash--warning"),
                 id=f"connector-card-{platform}", cls="connector-card",
+            )
+
+        # Relay credentials are instance/platform scoped. Claim this connector for
+        # exactly one ERP company before writing credentials so another company
+        # cannot silently replace a live store connection.
+        if not await _claim_connector_for_company(company_id, platform):
+            return Div(
+                Span(
+                    t(
+                        "connectors.connect_check_failed", lang,
+                        detail=(
+                            "This connector is already connected to another company "
+                            "on this installation. Disconnect it there before connecting here."
+                        ),
+                    ),
+                    cls="flash flash--warning",
+                ),
+                id=f"connector-card-{platform}",
+                cls="connector-card",
             )
 
         # Validation + storage run in the API process, which holds the live relay
