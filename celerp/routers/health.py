@@ -105,17 +105,8 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
     api_key = await stored_api_key()
     persisted_key = await persisted_api_key()
     verifier = _s.activation_verifier or ""
-    authority = {"kind": "legacy"}
+    authority = {"kind": "none"}
     target = {"iid": local_iid}
-
-    async def _secure_methods(c) -> bool | None:
-        methods_r = await c.get(f"{relay_base}/auth/methods")
-        if methods_r.status_code == 404:
-            return False
-        if methods_r.status_code != 200:
-            return None
-        data = methods_r.json()
-        return bool(data.get("secure_activation", False)) if isinstance(data, dict) else None
 
     async def _verifier_activate(c):
         authority["kind"] = "verifier"
@@ -133,24 +124,15 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
                 jwt, authenticated_iid = await fetch_relay_auth(
                     c, api_key=api_key)
             except RelayCredentialError as exc:
-                if exc.status_code not in (401, 403):
-                    return {"error": "Could not verify the stored relay credential. Try again."}
-                secure = await _secure_methods(c)
-                if secure is None:
-                    return {"error": "Could not verify relay activation protocol. Try again."}
-                if secure:
-                    if not verifier:
-                        return {
-                            "error": "This computer needs a fresh account verification before it can reconnect. "
-                                     "Use the Link Subscription field below.",
-                            "instance_id": local_iid,
-                        }
-                    return await _verifier_activate(c)
-                authority["kind"] = "legacy"
-                return await c.post(
-                    f"{relay_base}/auth/activate",
-                    json=activate_payload(local_iid),
-                )
+                if exc.status_code in (401, 403):
+                    if verifier:
+                        return await _verifier_activate(c)
+                    return {
+                        "error": "This computer needs a fresh account verification before it can reconnect. "
+                                 "Use the Link Subscription field below.",
+                        "instance_id": local_iid,
+                    }
+                return {"error": "Could not verify the stored relay credential. Try again."}
 
             if authenticated_iid and authenticated_iid != local_iid and verifier:
                 return await _verifier_activate(c)
@@ -162,21 +144,18 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
                 json=activate_payload(target["iid"]),
                 headers={"Authorization": f"Bearer {jwt}"},
             )
-            if (response.status_code == 403 and not authenticated_iid
-                    and verifier):
-                secure = await _secure_methods(c)
-                if secure:
-                    return await _verifier_activate(c)
+            if response.status_code in (401, 403) and verifier:
+                return await _verifier_activate(c)
             return response
 
         if verifier:
             return await _verifier_activate(c)
 
-        authority["kind"] = "legacy"
-        return await c.post(
-            f"{relay_base}/auth/activate",
-            json=activate_payload(local_iid),
-        )
+        return {
+            "error": "This computer needs account verification before it can connect. "
+                     "Use the Link Subscription field below.",
+            "instance_id": local_iid,
+        }
 
     try:
         r = await with_relay_client(RELAY_CONTROL_TIMEOUT, _activate)
