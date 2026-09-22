@@ -109,7 +109,7 @@ async def apply_activation_state(
     tos_version: str | None = None,
     backup_encryption_key: str | None = None,
     tier: str | None = None, status: str | None = None,
-    connect_entitled: bool | None = None,
+    connect_entitled: bool,
     feature_flags: dict | None = None,
     authoritative_public_url: bool = True,
     persist_state: bool = True,
@@ -124,6 +124,9 @@ async def apply_activation_state(
     from celerp.gateway.state import (
         apply_feature_flags_async, relay_session_headers)
     from celerp.services import backup_scheduler
+
+    if not isinstance(connect_entitled, bool):
+        raise ValueError("connect_entitled must be a bool")
 
     effective_public_url = (
         public_url if authoritative_public_url else
@@ -176,11 +179,7 @@ async def apply_activation_state(
         settings.cloud_disconnected = False
 
     from celerp.gateway import ensure_running, has_active_share
-    should_serve = (
-        connect_entitled
-        if isinstance(connect_entitled, bool)
-        else bool(settings.celerp_public_url)
-    )
+    should_serve = connect_entitled
     if not should_serve:
         should_serve = await has_active_share()
 
@@ -190,12 +189,7 @@ async def apply_activation_state(
             and existing.relay_status == "active"):
         runtime_paid = bool(
             relay_session_headers().get("X-Session-Token", ""))
-        authoritative_paid = (
-            connect_entitled
-            if isinstance(connect_entitled, bool)
-            else bool(effective_public_url)
-        )
-        transport_mismatch = runtime_paid != authoritative_paid
+        transport_mismatch = runtime_paid != connect_entitled
 
     restart_required = bool(
         existing is not None
