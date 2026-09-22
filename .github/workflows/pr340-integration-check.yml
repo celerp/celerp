@@ -61,6 +61,8 @@ jobs:
 
       - name: Apply connector hardening
         shell: bash
+        env:
+          DOWN_REVISION: z9a0b1c2d3e4
         run: |
           set -euo pipefail
           python /tmp/pr340_harden.py
