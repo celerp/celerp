@@ -50,6 +50,26 @@ def _auth(ctx: ConnectorContext) -> tuple[str, str]:
     key, secret = ctx.access_token.split(":", 1)
     return (key, secret)
 
+def _direction_allows_remote_product_create(direction) -> bool:
+    """Only outbound-capable connector modes may publish a new remote product."""
+    try:
+        resolved = direction if isinstance(direction, SyncDirection) else SyncDirection(direction)
+    except (TypeError, ValueError):
+        return False
+    return resolved in (SyncDirection.OUTBOUND, SyncDirection.BOTH)
+
+
+def _link_matches_deleted_product(
+    link: dict, product_id: str, variation_id: str | None
+) -> bool:
+    """Match an exact deleted variation or every variation under a deleted parent."""
+    if str(link.get("product_id") or "") != str(product_id):
+        return False
+    if variation_id is None:
+        return True
+    return str(link.get("variation_id") or "") == str(variation_id)
+
+
 
 class WooCommerceConnector(ConnectorBase):
     name = "woocommerce"
@@ -274,6 +294,8 @@ class WooCommerceConnector(ConnectorBase):
         """Enable one item, linking or creating a simple WooCommerce product safely."""
         from decimal import Decimal
         from celerp.db import SessionLocal as AsyncSessionLocal
+        from celerp.models.connector_config import ConnectorConfig
+        from sqlalchemy import select
         from celerp_inventory.services import (
             aggregate_sellable_quantity_for_sku, external_link_for_state,
             resolve_catalog_anchor_for_item, set_external_link, set_external_link_state,
@@ -287,6 +309,15 @@ class WooCommerceConnector(ConnectorBase):
                 raise ValueError("A SKU is required before this item can sync with WooCommerce")
             link = external_link_for_state(state, "woocommerce")
             qty = await aggregate_sellable_quantity_for_sku(session, ctx.company_id, sku)
+            config = await session.scalar(
+                select(ConnectorConfig).where(
+                    ConnectorConfig.company_id == str(ctx.company_id),
+                    ConnectorConfig.connector == "woocommerce",
+                ).limit(1)
+            )
+            allow_create = _direction_allows_remote_product_create(
+                config.direction if config is not None else None
+            )
         base_url, auth = _base_url(ctx), _auth(ctx)
         remote: dict | None = None
         if link:
@@ -314,6 +345,11 @@ class WooCommerceConnector(ConnectorBase):
                     if remote.get("type") == "variable":
                         raise ValueError("This SKU belongs to a variable WooCommerce product; import the exact variation first")
                 else:
+                    if not allow_create:
+                        raise ValueError(
+                            f"No WooCommerce product with SKU {sku!r} exists; "
+                            "this connector direction does not allow publishing new products"
+                        )
                     stocked = str(state.get("inventory_type") or "stocked") == "stocked"
                     q = Decimal(str(qty))
                     if stocked and q != q.to_integral_value():
@@ -583,27 +619,48 @@ class WooCommerceConnector(ConnectorBase):
     ]
 
     async def handle_product_deleted(self, ctx: ConnectorContext, payload: dict) -> None:
-        """Mark exactly the deleted remote product/variation without deleting Celerp stock."""
+        """Mark an exact deleted variation or every linked variation under a deleted parent."""
+        from sqlalchemy import select
+
         from celerp.db import SessionLocal as AsyncSessionLocal
-        from celerp_inventory.services import resolve_external_product, set_external_link_state
+        from celerp.models.projections import Projection
+        from celerp_inventory.services import (
+            external_link_for_state,
+            set_external_link_state,
+        )
 
         remote_id = payload.get("id")
         parent_id = payload.get("parent_id")
         if remote_id in (None, ""):
             return
-        product_id = str(parent_id) if parent_id not in (None, "", 0, "0") else str(remote_id)
-        variation_id = str(remote_id) if parent_id not in (None, "", 0, "0") else None
+
+        is_variation = parent_id not in (None, "", 0, "0")
+        product_id = str(parent_id) if is_variation else str(remote_id)
+        variation_id = str(remote_id) if is_variation else None
+
         async with AsyncSessionLocal() as session:
-            row = await resolve_external_product(
-                session, ctx.company_id, "woocommerce", product_id, variation_id
-            )
-            if row is None:
-                return
-            await set_external_link_state(
-                session, ctx.company_id, row.entity_id, "woocommerce",
-                sync_enabled=False, remote_deleted=True, source="connector",
-            )
-            await session.commit()
+            rows = (await session.execute(
+                select(Projection).where(
+                    Projection.company_id == ctx.company_id,
+                    Projection.entity_type == "item",
+                )
+            )).scalars().all()
+            matches = [
+                row for row in rows
+                if _link_matches_deleted_product(
+                    external_link_for_state(row.state or {}, "woocommerce"),
+                    product_id,
+                    variation_id,
+                )
+            ]
+            for row in matches:
+                await set_external_link_state(
+                    session, ctx.company_id, row.entity_id, "woocommerce",
+                    sync_enabled=False, remote_deleted=True, source="connector",
+                )
+            if matches:
+                await session.commit()
+
 
     async def register_webhooks(
         self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None
