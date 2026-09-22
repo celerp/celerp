@@ -81,6 +81,17 @@ def get_feature_flags() -> dict:
     return dict(_feature_flags)
 
 
+async def apply_feature_flags_async(flags: dict, *, persist: bool = True) -> None:
+    """Apply one authoritative feature snapshot and optionally persist it."""
+    set_feature_flags(flags)
+    if not persist:
+        return
+    import asyncio
+    from celerp.config_store import merge_packaged_config
+    await asyncio.to_thread(
+        merge_packaged_config, {"feature_flags": dict(flags)})
+
+
 def _valid_int(value) -> bool:
     """A real JSON integer, not a bool (True/False are int subclasses and must
     never pass as a version or schema_version)."""
