@@ -121,16 +121,7 @@ async def cloud_status() -> dict:
     tier = authoritative_tier or ws_tier or None
     sub_status = (authoritative or {}).get("status") or ws_status or None
     known = authoritative is not None
-    raw_entitled = (authoritative or {}).get("connect_entitled")
-    if isinstance(raw_entitled, bool):
-        entitled = raw_entitled
-    elif known:
-        entitled = (
-            sub_status in ("active", "trialing")
-            and tier not in (None, "", "free")
-        )
-    else:
-        entitled = None
+    entitled = authoritative["connect_entitled"] if known else None
 
     runtime_iid = get_instance_id()
     runtime_headers = relay_session_headers()
@@ -468,6 +459,11 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
         return {"error": f"Relay returned {r.status_code}: {r.text[:120]}"}
 
     data = r.json()
+    from celerp.gateway.state import entitlement_snapshot
+    snapshot = entitlement_snapshot(data)
+    if snapshot is None:
+        return {"error": "Relay returned an invalid entitlement snapshot."}
+    connect_entitled, feature_flags = snapshot
     token = data.get("gateway_token") or (
         api_key if authority["kind"] == "credential" else "")
     if not token:
@@ -482,8 +478,8 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
         tos_version=data.get("tos_version"),
         backup_encryption_key=data.get("backup_encryption_key"),
         tier=data.get("tier"), status=data.get("status"),
-        connect_entitled=data.get("connect_entitled"),
-        feature_flags=data.get("feature_flags"),
+        connect_entitled=connect_entitled,
+        feature_flags=feature_flags,
         expected_api_key=expected_key,
         expected_verifier=verifier if authority["kind"] == "verifier" else None,
         keep_disconnected=keep_disconnected,
@@ -963,6 +959,11 @@ async def _activate_after_claim(
     if resp.status_code != 200:
         return None
     data = resp.json()
+    from celerp.gateway.state import entitlement_snapshot
+    snapshot = entitlement_snapshot(data)
+    if snapshot is None:
+        return None
+    connect_entitled, feature_flags = snapshot
     token = data.get("gateway_token")
     if not token:
         return None
@@ -971,8 +972,8 @@ async def _activate_after_claim(
         tos_version=data.get("tos_version"),
         backup_encryption_key=data.get("backup_encryption_key"),
         tier=data.get("tier"), status=data.get("status"),
-        connect_entitled=data.get("connect_entitled"),
-        feature_flags=data.get("feature_flags"),
+        connect_entitled=connect_entitled,
+        feature_flags=feature_flags,
         expected_verifier=verifier,
         keep_disconnected=keep_disconnected,
     )
