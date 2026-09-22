@@ -2160,10 +2160,11 @@ write(doc_path, doc)
 # Long remote connector operations must not occupy the request DB pool.
 op_path = "celerp/connectors/operation_lock.py"
 op = read(op_path)
-op = op.replace("from celerp.db import engine", "from celerp.db import lifecycle_engine")
-op = op.replace("engine.dialect.name", "lifecycle_engine.dialect.name")
-op = op.replace("engine.connect()", "lifecycle_engine.connect()")
-if "lifecycle_engine" not in op:
+if "from celerp.db import engine" in op:
+    op = op.replace("from celerp.db import engine", "from celerp.db import lifecycle_engine", 1)
+    op = op.replace("    if engine.dialect.name != \"postgresql\":", "    if lifecycle_engine.dialect.name != \"postgresql\":", 1)
+    op = op.replace("    async with engine.connect() as conn:", "    async with lifecycle_engine.connect() as conn:", 1)
+if "from celerp.db import lifecycle_engine" not in op:
     raise SystemExit("operation_lock: lifecycle engine normalization failed")
 write(op_path, op)
 
