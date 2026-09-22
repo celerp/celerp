@@ -150,6 +150,7 @@ async def claim_connector(
             session.add(current)
         else:
             current.claimed_at = current.claimed_at or _now()
+            current.activated_at = None
             if sync_frequency and not current.sync_frequency:
                 current.sync_frequency = sync_frequency
 
@@ -347,6 +348,7 @@ async def connector_operation(company_id: str, connector: str):
             yield
         finally:
             lock.release()
+            _local_locks.pop(key, None)
         return
 
     async with engine.connect() as conn:
@@ -971,12 +973,10 @@ new = '''    cid = uuid.UUID(str(company_id))
 '''
 replace_once("default_modules/celerp-inventory/celerp_inventory/services.py", old, new)
 # Remove pre-row lock from set_external_link_state to keep identity-lock -> row-lock order.
-replace_once(
+regex_once(
     "default_modules/celerp-inventory/celerp_inventory/services.py",
-    '''    row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True)
-''',
-    '''    row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id})
-''',
+    r'''(async def set_external_link_state\(.*?cid = uuid\.UUID\(str\(company_id\)\)\n)    row = await session\.get\(Projection, \{"company_id": cid, "entity_id": entity_id\}, with_for_update=True\)''',
+    r'''\1    row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id})''',
 )
 
 # ---------------------------------------------------------------------------
@@ -1330,7 +1330,7 @@ new = '''    # Relay connected is installation-scoped. Local ownership is author
             spawn_background(_autosync_once(company_id, c["id"], token))
 '''
 replace_once("ui/routes/settings_connectors.py", old, new)
-# OAuth claim before URL generation.
+# OAuth ownership is enforced in the API authorize-url boundary.
 replace_once(
     "ui/routes/settings_connectors.py",
     '''        lang = get_lang(request)
@@ -1340,12 +1340,6 @@ replace_once(
     '''        lang = get_lang(request)
         if (err := _validate_platform(platform)):
             return err
-        company_id = _request_company_id(request)
-        if not await _claim_connector_for_company(company_id, platform):
-            return Span(
-                "This connector is already owned by another company on this installation.",
-                cls="flash flash--warning",
-            )
 
         from ui.api_client import APIError, get_connector_authorize_url
 ''',
@@ -1381,44 +1375,27 @@ replace_once(
             await _kickoff_connector_sync(company_id, platform, token, activation=True)
 ''',
 )
-# Disconnect: cleanup must complete before credential/config destruction, all under operation lease.
+# Disconnect is intentionally thin. The API credential boundary owns serialized
+# webhook cleanup, relay revocation, and local ownership deletion.
 start = read("ui/routes/settings_connectors.py").index('    @app.delete("/settings/connectors/{platform}/disconnect")')
 end = read("ui/routes/settings_connectors.py").index('    @app.post("/settings/connectors/{platform}/sync")', start)
-oldblock = read("ui/routes/settings_connectors.py")[start:end]
-# Keep decorator/function prefix through lang assignment, replace cleanup core to render tail.
-prefix_end = oldblock.index("        cleanup_warning =")
-tail_start = oldblock.index("        if request.query_params.get", prefix_end)
-prefix = oldblock[:prefix_end]
-tail = oldblock[tail_start:]
-core = r'''        from celerp.connectors.operation_lock import ConnectorBusy, connector_operation
-        from ui.api_client import delete_connector_credentials
+block = read("ui/routes/settings_connectors.py")[start:end]
+cleanup_start = block.index("        cleanup_warning =")
+tail_start = block.index("        if request.query_params.get", cleanup_start)
+prefix = block[:cleanup_start]
+tail = block[tail_start:]
+core = r'''        from ui.api_client import delete_connector_credentials
         try:
-            async with connector_operation(company_id, platform):
-                config = await _get_connector_config(company_id, platform)
-                if platform == "woocommerce" and config:
-                    token_data = await _fetch_access_token(platform, token)
-                    from celerp.connectors.base import ConnectorContext
-                    from celerp.connectors.woocommerce import WooCommerceConnector
-                    ctx = ConnectorContext(
-                        company_id=company_id,
-                        access_token=token_data["access_token"],
-                        store_handle=token_data.get("store_handle"),
-                    )
-                    delivery_url = f"{RELAY_URL.rstrip('/')}/webhooks/woocommerce/events"
-                    await WooCommerceConnector().deregister_webhooks(
-                        ctx, config.webhook_ids, webhook_url=delivery_url
-                    )
-                await delete_connector_credentials(token, platform)
-                await _clear_connector_config(company_id, platform)
-        except ConnectorBusy as exc:
+            result = await delete_connector_credentials(token, platform)
+        except Exception as exc:
             return Div(
-                Span(str(exc), cls="flash flash--warning"),
+                Span(f"✗ {exc}", cls="flash flash--warning"),
                 id=f"connector-card-{platform}", cls="connector-card",
             )
-        except Exception as exc:
-            log.warning("connector disconnect cleanup failed", exc_info=True)
+        if not result.get("ok", True):
             return Div(
-                Span(f"Disconnect could not safely complete: {exc}", cls="flash flash--warning"),
+                Span(result.get("detail") or result.get("error") or "Disconnect failed",
+                     cls="flash flash--warning"),
                 id=f"connector-card-{platform}", cls="connector-card",
             )
 
