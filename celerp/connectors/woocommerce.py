@@ -59,6 +59,11 @@ def _direction_allows_remote_product_create(direction) -> bool:
     return resolved in (SyncDirection.OUTBOUND, SyncDirection.BOTH)
 
 
+def _link_needs_rediscovery(link: dict) -> bool:
+    """A remotely deleted identity may be safely replaced by an exact-SKU match."""
+    return bool(link and link.get("remote_deleted") is True)
+
+
 def _link_matches_deleted_product(
     link: dict, product_id: str, variation_id: str | None
 ) -> bool:
@@ -320,20 +325,25 @@ class WooCommerceConnector(ConnectorBase):
             )
         base_url, auth = _base_url(ctx), _auth(ctx)
         remote: dict | None = None
-        if link:
+        rediscover = _link_needs_rediscovery(link)
+        if link and not rediscover:
             item = {"woocommerce_product_id": link.get("product_id"),
                     "woocommerce_variation_id": link.get("variation_id")}
             async with RateLimitedClient() as client:
                 resp = await client.get(f"{base_url}{self._product_path(item)}", auth=auth)
             if resp.status_code == 404:
                 async with AsyncSessionLocal() as session:
-                    await set_external_link_state(session, ctx.company_id, anchor_id, "woocommerce",
-                        sync_enabled=False, remote_deleted=True, actor_id=actor_id, source="connector_ui")
+                    await set_external_link_state(
+                        session, ctx.company_id, anchor_id, "woocommerce",
+                        sync_enabled=False, remote_deleted=True, actor_id=actor_id,
+                        source="connector_ui",
+                    )
                     await session.commit()
-                raise ValueError("The linked WooCommerce product no longer exists")
-            resp.raise_for_status()
-            remote = resp.json()
-        else:
+                rediscover = True
+            else:
+                resp.raise_for_status()
+                remote = resp.json()
+        if remote is None:
             async with RateLimitedClient() as client:
                 resp = await client.get(f"{base_url}/products", auth=auth, params={"sku": sku, "per_page": 100})
                 resp.raise_for_status()
@@ -370,14 +380,18 @@ class WooCommerceConnector(ConnectorBase):
         new_link = {"product_id": str(remote["id"]), "sync_enabled": True,
                     "remote_deleted": False, "manage_stock": remote.get("manage_stock")}
         async with AsyncSessionLocal() as session:
-            if link:
-                await set_external_link_state(session, ctx.company_id, anchor_id, "woocommerce",
+            if link and not rediscover:
+                await set_external_link_state(
+                    session, ctx.company_id, anchor_id, "woocommerce",
                     sync_enabled=True, remote_deleted=False,
                     link_updates={"manage_stock": remote.get("manage_stock")},
-                    actor_id=actor_id, source="connector_ui")
+                    actor_id=actor_id, source="connector_ui",
+                )
             else:
-                await set_external_link(session, ctx.company_id, anchor_id, "woocommerce", new_link,
-                                        actor_id=actor_id, source="connector_ui")
+                await set_external_link(
+                    session, ctx.company_id, anchor_id, "woocommerce", new_link,
+                    actor_id=actor_id, source="connector_ui",
+                )
             await session.commit()
         return anchor_id
 
