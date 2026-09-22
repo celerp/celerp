@@ -593,7 +593,7 @@ async def _catalog_unit_price(session: AsyncSession, company_id, line: dict, pri
     return resolve_price(flatten_item(proj.state, proj.entity_id, price_config=price_config), base_name)
 
 
-async def _assert_doc_price_permission(
+async def _assert_sales_line_price_permission(
     session: AsyncSession,
     company_id,
     settings: dict,
@@ -601,7 +601,7 @@ async def _assert_doc_price_permission(
     incoming_lines: list[dict],
     stored_by_idx: dict[int, dict] | None,
 ) -> None:
-    """Reject a sales-document price override when the caller lacks set_sales_doc_prices.
+    """Reject a sales-document or quotation price change without set_sales_doc_prices.
 
     A line's unit_price is an override when it differs from its reference price: the
     stored line at the same index when editing an existing document, otherwise the
@@ -1257,7 +1257,7 @@ async def create_doc(
         # catalog price is a price override, rejected when the caller lacks
         # set_sales_doc_prices. This closes the create path so the gate cannot be
         # bypassed by making a new draft with overridden prices.
-        await _assert_doc_price_permission(
+        await _assert_sales_line_price_permission(
             session, company_id, settings, role,
             [li.model_dump() for li in payload.line_items], None,
         )
@@ -1430,7 +1430,7 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     _incoming_lines = (payload.fields_changed.get("line_items") or {}).get("new")
     if isinstance(_incoming_lines, list):
         _stored_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
-        await _assert_doc_price_permission(session, company_id, settings, role, _incoming_lines, _stored_by_idx)
+        await _assert_sales_line_price_permission(session, company_id, settings, role, _incoming_lines, _stored_by_idx)
     is_draft = row.state.get("status") == "draft"
     if not is_draft:
         locked_fields = set(payload.fields_changed) - _FINALIZED_EDITABLE_FIELDS
@@ -4455,6 +4455,8 @@ async def create_list(
     payload: ListCreatePayload,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4478,6 +4480,10 @@ async def create_list(
         data.get("line_items") or [], session, company_id,
         require_positive=(payload.list_type != "audit"),
     )
+    if is_money_list(payload.list_type):
+        await _assert_sales_line_price_permission(
+            session, company_id, settings, role, data.get("line_items") or [], None,
+        )
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
     await session.commit()
     return {"event_id": entry.id, "id": entity_id}
@@ -4489,6 +4495,8 @@ async def patch_list(
     payload: ListPatch,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4523,6 +4531,11 @@ async def patch_list(
             _new_lines, session, company_id,
             require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
         )
+        if is_money_list(row.state.get("list_type")):
+            await _assert_sales_line_price_permission(
+                session, company_id, settings, role, _new_lines,
+                {i: line for i, line in enumerate(row.state.get("line_items") or [])},
+            )
     # expected_version is a concurrency guard, not list data - it never enters the event payload.
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
                              payload.model_dump(exclude_none=True, exclude={"expected_version"}),
@@ -4790,7 +4803,7 @@ async def reprice_doc(
     # Preserve the canonical document price-override authorization that the old
     # patch-based repricer inherited indirectly. Repricing is not a bypass around
     # set_sales_doc_prices; no-op prices remain allowed exactly as patch_doc allows.
-    await _assert_doc_price_permission(
+    await _assert_sales_line_price_permission(
         session, company_id, settings, role, updated_lines,
         {i: line for i, line in enumerate(stored_lines)},
     )
@@ -4877,9 +4890,14 @@ async def reprice_list(
             detail="This list was changed by someone else; reload to get the latest before repricing",
         )
 
+    stored_lines = list(row.state.get("line_items") or [])
     updated_lines, repriced, skipped, _currency = await _reprice_catalog_lines(
-        session, company_id, list(row.state.get("line_items") or []),
+        session, company_id, stored_lines,
         payload.price_list, currency=row.state.get("currency"),
+    )
+    await _assert_sales_line_price_permission(
+        session, company_id, settings, role, updated_lines,
+        {i: line for i, line in enumerate(stored_lines)},
     )
     fields_changed = {
         "price_list": {"old": row.state.get("price_list"), "new": payload.price_list},
@@ -4925,6 +4943,8 @@ async def patch_list_line_page(
     payload: ListLinePagePatch,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4996,6 +5016,12 @@ async def patch_list_line_page(
         page, session, company_id,
         require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
     )
+    if is_money_list(row.state.get("list_type")):
+        stored_window = stored[offset:offset + original_count]
+        await _assert_sales_line_price_permission(
+            session, company_id, settings, role, page,
+            {i: line for i, line in enumerate(stored_window)},
+        )
 
     # Slice-splice: replace exactly the originally-loaded window. A shorter page truncates, a longer
     # one inserts; positional overwrite/append could never delete a tail row.

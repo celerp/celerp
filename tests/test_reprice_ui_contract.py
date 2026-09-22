@@ -98,4 +98,13 @@ def test_doc_reprice_reuses_canonical_price_override_permission_gate():
     start = source.index("async def reprice_doc(")
     end = source.index("@lists_router.post", start)
     snippet = source[start:end]
-    assert "await _assert_doc_price_permission(" in snippet
+    assert "await _assert_sales_line_price_permission(" in snippet
+
+
+def test_sales_price_permission_is_shared_by_doc_and_quotation_write_boundaries():
+    source = Path("default_modules/celerp-docs/celerp_docs/routes.py").read_text()
+    assert source.count("await _assert_sales_line_price_permission(") >= 7
+    for name in ("create_list", "patch_list", "reprice_list", "patch_list_line_page"):
+        start = source.index(f"async def {name}(")
+        snippet = source[start:start + 5200]
+        assert "_assert_sales_line_price_permission(" in snippet
