@@ -49,8 +49,8 @@ def reset_client_singleton():
 
 @pytest.mark.asyncio
 async def test_gateway_idles_out_when_no_active_share(free_settings, monkeypatch):
-    """No live share and nothing served past the grace window -> the reaper drops
-    the tunnel and clears the client singleton."""
+    """No live share and nothing served past the grace window -> the reaper closes
+    its socket; package lifecycle cleanup owns the client singleton."""
     import celerp.gateway as gateway
     import celerp.gateway.client as client_mod
 
@@ -71,7 +71,7 @@ async def test_gateway_idles_out_when_no_active_share(free_settings, monkeypatch
 
     await client._reaper_loop()
 
-    assert get_client() is None
+    assert get_client() is client
     assert client._running is False
 
 
