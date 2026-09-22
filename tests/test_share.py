@@ -149,9 +149,8 @@ async def test_public_share_view_is_the_print_layout_with_letterhead(client: Asy
 
     r = await client.get(f"/share/{token}")
     assert r.status_code == 200
-    # Sender letterhead (From): the company identity lives on the self-contact,
-    # which registration seeds with the admin's name - same rule as UI print.
-    assert 'class="dp-company-name">Admin<' in r.text
+    # Sender letterhead uses the self-contact business name, not the owner person's name.
+    assert 'class="dp-company-name">ShareCo<' in r.text
     assert "Bill To" in r.text
     assert "ACME Corp" in r.text
 
@@ -272,6 +271,115 @@ async def test_bundle_download_returns_json(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_customer_share_excludes_internal_notes_and_preserves_public_fields(client: AsyncClient):
+    tok = await _token(client)
+    payload = {
+        **_doc_payload(),
+        "reference": "PO-PUBLIC-55",
+        "terms_text": "PUBLIC SHARE TERMS",
+        "customer_note": "PUBLIC SHARE NOTE",
+        "notes": "SECRET INTERNAL NOTE - NEVER SEND",
+        "amount_paid": 25,
+        "amount_outstanding": 75,
+    }
+    created = await client.post("/docs", json=payload, headers=_h(tok))
+    assert created.status_code == 200, created.text
+    entity_id = created.json()["id"]
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+
+    view = await client.get(f"/share/{token}")
+    assert view.status_code == 200
+    assert "PUBLIC SHARE TERMS" in view.text
+    assert "PUBLIC SHARE NOTE" in view.text
+    assert "PO-PUBLIC-55" in view.text
+    assert "SECRET INTERNAL NOTE - NEVER SEND" not in view.text
+
+    downloaded = await client.get(f"/share/{token}/bundle")
+    assert downloaded.status_code == 200
+    bundle = downloaded.json()
+    exported = bundle["doc"]
+    assert "notes" not in exported
+    assert "account_code" not in str(exported)
+    assert "amount_paid" not in exported
+    assert "amount_outstanding" not in exported
+    assert exported["terms_text"] == "PUBLIC SHARE TERMS"
+    assert exported["customer_note"] == "PUBLIC SHARE NOTE"
+    assert exported["reference"] == "PO-PUBLIC-55"
+
+    imported = await client.post(
+        "/docs/import-bundle",
+        json=bundle,
+        headers={**_h(tok), "Content-Type": "application/json"},
+        follow_redirects=False,
+    )
+    assert imported.status_code == 302, imported.text
+    received = (await client.get(imported.headers["location"], headers=_h(tok))).json()
+    assert received["terms_text"] == "PUBLIC SHARE TERMS"
+    assert received["customer_note"] == "PUBLIC SHARE NOTE"
+    assert received["reference"] == "PO-PUBLIC-55"
+    assert not received.get("notes")
+
+
+def test_legacy_bundle_terms_are_canonicalized_at_public_boundary():
+    from celerp_docs.routes_share import _MAX_NOTES, _MAX_STR, _public_bundle_doc
+
+    legacy = "L" * (_MAX_STR + 50)
+    public = _public_bundle_doc({
+        "doc_type": "invoice",
+        "terms": legacy,
+        "line_items": [],
+    })
+    assert "terms" not in public
+    assert public["terms_text"] == legacy
+    assert len(public["terms_text"]) <= _MAX_NOTES
+
+
+@pytest.mark.asyncio
+async def test_import_legacy_bundle_terms_stores_only_canonical_field(client: AsyncClient):
+    tok = await _token(client)
+    bundle = {
+        "version": 1,
+        "doc": {
+            "doc_type": "invoice",
+            "terms": "Legacy imported customer terms.",
+            "line_items": [],
+        },
+    }
+    imported = await client.post(
+        "/docs/import-bundle",
+        json=bundle,
+        headers={**_h(tok), "Content-Type": "application/json"},
+        follow_redirects=False,
+    )
+    assert imported.status_code == 302, imported.text
+    received = (await client.get(imported.headers["location"], headers=_h(tok))).json()
+    assert received["terms_text"] == "Legacy imported customer terms."
+    assert "terms" not in received
+
+
+@pytest.mark.asyncio
+async def test_share_preserves_explicit_blank_seller_identity(client: AsyncClient):
+    """A stored blank is an explicit document override, not a request to inject
+    the company's current live identity into an old/shared document."""
+    tok = await _token(client)
+    created = await client.post("/docs", json={
+        **_doc_payload(),
+        "company_name": "",
+    }, headers=_h(tok))
+    assert created.status_code == 200, created.text
+    entity_id = created.json()["id"]
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+
+    view = await client.get(f"/share/{token}")
+    assert view.status_code == 200
+    assert 'class="dp-company-name">ShareCo<' not in view.text
+
+    downloaded = await client.get(f"/share/{token}/bundle")
+    assert downloaded.status_code == 200
+    assert downloaded.json()["doc"]["company_name"] == ""
+
+
+@pytest.mark.asyncio
 async def test_bundle_download_has_cors_header(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
@@ -380,6 +488,77 @@ async def test_list_bundle_download(client: AsyncClient):
     bundle = r.json()
     assert bundle["version"] == 1
     assert bundle["doc"].get("contact_name") == "Bob's Shop"
+
+
+@pytest.mark.asyncio
+async def test_list_share_resolves_live_contact_when_snapshot_name_is_absent(client: AsyncClient):
+    """A List linked only by contact_id still renders the customer on its public share."""
+    tok = await _token(client)
+    contact = await client.post(
+        "/crm/contacts",
+        json={"name": "Live List Customer", "contact_type": "customer"},
+        headers=_h(tok),
+    )
+    assert contact.status_code == 200, contact.text
+    contact_id = contact.json()["id"]
+
+    created = await client.post(
+        "/lists",
+        json={
+            "list_type": "quote",
+            "contact_id": contact_id,
+            "line_items": [],
+            "currency": "THB",
+        },
+        headers=_h(tok),
+    )
+    assert created.status_code == 200, created.text
+    list_id = created.json()["id"]
+    token = (await client.post(f"/docs/{list_id}/share", headers=_h(tok))).json()["token"]
+
+    view = await client.get(f"/share/{token}")
+    assert view.status_code == 200
+    assert "Live List Customer" in view.text
+
+    bundle = await client.get(f"/share/{token}/bundle")
+    assert bundle.status_code == 200
+    assert bundle.json()["doc"]["contact_name"] == "Live List Customer"
+
+
+@pytest.mark.asyncio
+async def test_list_share_preserves_explicit_blank_contact_name(client: AsyncClient):
+    """An explicit List customer-name blank remains an output override."""
+    tok = await _token(client)
+    contact = await client.post(
+        "/crm/contacts",
+        json={"name": "Hidden Live List Customer", "contact_type": "customer"},
+        headers=_h(tok),
+    )
+    assert contact.status_code == 200, contact.text
+    contact_id = contact.json()["id"]
+
+    created = await client.post(
+        "/lists",
+        json={
+            "list_type": "quote",
+            "contact_id": contact_id,
+            "contact_name": "",
+            "line_items": [],
+            "currency": "THB",
+        },
+        headers=_h(tok),
+    )
+    assert created.status_code == 200, created.text
+    list_id = created.json()["id"]
+    token = (await client.post(f"/docs/{list_id}/share", headers=_h(tok))).json()["token"]
+
+    view = await client.get(f"/share/{token}")
+    assert view.status_code == 200
+    assert "Hidden Live List Customer" not in view.text
+
+    bundle = await client.get(f"/share/{token}/bundle")
+    assert bundle.status_code == 200
+    assert bundle.json()["doc"]["contact_name"] == ""
 
 
 # ---------------------------------------------------------------------------
@@ -1073,3 +1252,23 @@ async def test_gateway_connects_on_share_create(client: AsyncClient, monkeypatch
     r = await client.post(f"/docs/{entity_id}/share", headers=_h(tok))
     assert r.status_code == 200
     assert spy.called
+
+
+@pytest.mark.asyncio
+async def test_share_preserves_company_website(client: AsyncClient):
+    tok = await _token(client)
+    created = await client.post("/docs", json={
+        **_doc_payload(),
+        "company_website": "https://seller.example",
+    }, headers=_h(tok))
+    assert created.status_code == 200, created.text
+    entity_id = created.json()["id"]
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+
+    view = await client.get(f"/share/{token}")
+    assert view.status_code == 200
+    assert "https://seller.example" in view.text
+
+    downloaded = await client.get(f"/share/{token}/bundle")
+    assert downloaded.status_code == 200
+    assert downloaded.json()["doc"]["company_website"] == "https://seller.example"

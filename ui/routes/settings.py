@@ -3788,19 +3788,22 @@ PAID_TIERS = frozenset({"cloud", "ai", "team"})
 
 def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None,
                       tier: str | None = None, token_bound: bool = False,
-                      entitlement_known: bool = True,
+                      entitlement_known: bool = False,
+                      entitled: bool | None = None,
                       disconnected: bool = False) -> FT:
     """Celerp Connect settings tab.
 
     relay_status: caller-supplied (cross-process split); falls back to local get_client().
     public_url: caller-supplied; falls back to local config.
     tier: caller-supplied billing tier ("free", "cloud", "ai", "team").
-    entitlement_known: whether the relay authoritatively supplied that tier.
+    entitlement_known: whether the relay authoritatively supplied account state.
+    entitled: authoritative paid-entitlement result when known; False covers
+    lapsed paid accounts as well as Free.
     Unknown entitlement is never presented as Free.
-    token_bound: the instance holds a gateway_token (it is signed in), which a
-    free tier does WITHOUT a live tunnel - the WS client never starts for it, so
-    relay_status stays "inactive". Treat that as connected so a signed-in free
-    account still gets the account/disconnect view, not the subscribe/claim page.
+    token_bound: a gateway credential exists in memory or preserved on disk.
+    On an inactive transport it counts as account-bound only together with an
+    authoritative entitlement; credential presence alone is not authentication
+    proof. A known Free account intentionally remains inactive without a tunnel.
     """
     from celerp.config import settings as _cfg, ensure_instance_id
     from celerp.gateway.client import get_client
@@ -3832,43 +3835,67 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
         style="margin-top:12px;",
     )
 
-    if token_bound and not entitlement_known:
+    def _reconnect_controls() -> FT:
         return Div(
-            H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
-            P(t("account.activate_failed"), cls="text-error"),
             Button(
-                t("btn.link_subscription"), type="button",
-                hx_get="/account/panel?intent=claim&panel=account-gate-panel&modal=1",
-                hx_target="#account-gate-host", hx_swap="outerHTML",
-                cls="btn btn--sm btn--outline",
+                t("btn.connect_automatically"),
+                cls="btn btn--sm btn--primary",
+                id="cloud-connect-btn",
+                hx_post="/settings/cloud-activate",
+                hx_target="#cloud-relay-tab",
+                hx_swap="outerHTML",
+                hx_indicator="#cloud-connecting",
+                hx_disabled_elt="this",
+                hx_sync="#cloud-relay-tab:drop",
             ),
-            disconnect_button,
-            id="cloud-relay-tab",
-            cls="settings-card",
+            Span(
+                t("settings.connecting"),
+                id="cloud-connecting",
+                cls="settings-hint htmx-indicator",
+                style="margin-left:12px;display:none;",
+            ),
+            style="display:flex;align-items:center;margin-top:12px;",
         )
 
+    def _link_subscription_button(*, style: str | None = None) -> FT:
+        return Button(
+            t("btn.link_subscription"), type="button",
+            hx_get="/account/panel?intent=claim&panel=account-gate-panel&modal=1",
+            hx_target="#account-gate-host", hx_swap="outerHTML",
+            cls="btn btn--sm btn--outline", style=style,
+        )
+
+    if relay_status == "inactive" and token_bound and not entitlement_known:
+        # A credential exists but could not authenticate strongly enough to read
+        # entitlement. Reuse the canonical recovery surface instead of treating
+        # stored bytes as a connected account.
+        return _cloud_relay_unconnected(
+            ensure_instance_id(), error=t("account.activate_failed"))
+
     if relay_status in ("connecting", "error"):
-        # The relay has not accepted this instance's credentials yet (or has
-        # refused them): show only the connection state. Account details and
-        # tier content render once authentication succeeds; a failed connection
-        # offers disconnect as the recovery path.
+        # Connecting is transient and keeps polling. Error is terminal: preserve
+        # the useful failure status but always leave an explicit retry path.
         badge_cls = "badge--warning" if relay_status == "connecting" else "badge--error"
         status_hint = (t("settings.establishing_connection") if relay_status == "connecting"
                        else t("settings.connection_failed"))
-        # While connecting, the card polls itself so the outcome (account view
-        # or the failure card) appears without a manual reload; the swap
-        # replaces the element, so a terminal state stops the polling.
         poll_attrs = ({"hx_get": "/settings/cloud-relay-tab",
                        "hx_trigger": "every 2s",
                        "hx_swap": "outerHTML"}
                       if relay_status == "connecting" else {})
+        recovery: list = []
+        if relay_status == "error":
+            recovery.append(_reconnect_controls())
+            if not entitlement_known or entitled is False:
+                recovery.append(_link_subscription_button(style="margin-top:8px;"))
+            if token_bound:
+                recovery.append(disconnect_button)
         return Div(
             H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
             Table(Tr(Td(t("th.status"), cls="detail-label"), Td(
                 Span(relay_status.capitalize(), cls=f"badge {badge_cls}"),
                 Span(f" - {status_hint}", cls="settings-hint"),
             )), cls="detail-table"),
-            disconnect_button if relay_status == "error" else "",
+            *recovery,
             id="cloud-relay-tab",
             cls="settings-card",
             **poll_attrs,
@@ -3880,7 +3907,8 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
         # A Free account intentionally has no persistent Web Access tunnel.
         status_hint = (
             t("settings.initializing_connection")
-            if relay_status == "inactive" and tier in PAID_TIERS else "")
+            if (relay_status == "inactive" and entitlement_known
+                and tier != "free" and entitled is not False) else "")
         status_label = (
             t("account.plan_free")
             if relay_status == "inactive" and entitlement_known and tier == "free"
@@ -3913,10 +3941,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
                 Li(t("cloud.free_b4")),
                 style="margin:6px 0 0;padding-left:20px;",
             ),
-            Button(t("btn.link_subscription"), type="button",
-                   hx_get="/account/panel?intent=claim&panel=account-gate-panel&modal=1",
-                   hx_target="#account-gate-host", hx_swap="outerHTML",
-                   cls="btn btn--sm btn--outline", style="margin-top:8px;"),
+            _link_subscription_button(style="margin-top:8px;"),
             style="margin-top:12px;",
         ) if entitlement_known and tier == "free" else ""
 
@@ -3924,6 +3949,12 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
             H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
             Table(*rows, cls="detail-table"),
             free_tier_note,
+            _reconnect_controls()
+            if relay_status == "inactive" and entitlement_known and tier != "free"
+            else "",
+            _link_subscription_button(style="margin-top:8px;")
+            if entitlement_known and entitled is False and tier != "free"
+            else "",
             disconnect_button,
             id="cloud-relay-tab",
             cls="settings-card",

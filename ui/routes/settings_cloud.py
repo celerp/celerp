@@ -33,6 +33,18 @@ from ui.routes.settings_general import _section_breadcrumb
 _VALID_STORAGE_BACKENDS = {"local", "s3"}
 
 
+def _relay_has_paid_access(status: dict) -> bool:
+    """Interpret /cloud-status once for UI capability gating.
+
+    Authoritative entitlement wins when available. The legacy transport/token
+    fallback is retained only for status-read gaps so existing UI behavior does
+    not change; this helper is not an authorization boundary.
+    """
+    if status.get("entitlement_known"):
+        return bool(status.get("entitled"))
+    return bool(status.get("connected") or status.get("gateway_token_set"))
+
+
 def _has_team_features(state: dict) -> bool:
     """Whether Team-tier infrastructure controls should be shown.
 
@@ -120,6 +132,25 @@ def _cloud_tabs(active: str, has_team_features: bool = False, lang: str = "en") 
     )
 
 
+def _unconnected_cloud_tabs(active: str, lang: str = "en") -> FT:
+    """Web Access tabs shown only while partner adoption is available."""
+    tabs = [
+        ("status", t("settings_cloud.web_access", lang), "/settings/cloud"),
+        (
+            "partner",
+            t("settings_cloud.partner_tab", lang),
+            "/settings/cloud?tab=partner",
+        ),
+    ]
+    return Div(
+        *[
+            A(label, href=href, cls=f"tab {'tab--active' if key == active else ''}")
+            for key, label, href in tabs
+        ],
+        cls="settings-tabs",
+    )
+
+
 def _feature_card(icon: str, title: str, desc: str, lang: str = "en") -> FT:
     return Div(
         Div(icon, cls="cloud-feature-card__icon"),
@@ -142,7 +173,7 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
 
 
 def _value_prop_page(iid: str, lang: str = "en",
-                     show_partner_claim: bool = False, catalog: dict | None = None) -> FT:
+                     catalog: dict | None = None) -> FT:
     """Full value-proposition landing page shown when not connected to cloud."""
     return Div(
         # Hero - explain the relay concept simply
@@ -158,7 +189,6 @@ def _value_prop_page(iid: str, lang: str = "en",
         _plans_ad(iid, lang=lang, catalog=catalog),
         # Already subscribed / connect section
         _connect_section(iid, lang=lang),
-        *([_partner_claim_card(lang=lang)] if show_partner_claim else []),
         cls="content-area",
     )
 
@@ -734,8 +764,8 @@ def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -
     )
 
 
-async def _relay_state(token) -> tuple[str, str, str, bool, bool, bool]:
-    """Fetch transport state plus whether entitlement was authoritatively known."""
+async def _relay_state(token) -> tuple[str, str, str, bool, bool, bool, bool | None]:
+    """Fetch transport state plus authoritative entitlement state when known."""
     from celerp.gateway.client import get_client as _local_get_client
     import ui.api_client as _api
     from ui.api_client import APIError as _APIError
@@ -745,6 +775,7 @@ async def _relay_state(token) -> tuple[str, str, str, bool, bool, bool]:
     disconnected = False
     token_bound = False
     entitlement_known = False
+    entitled: bool | None = None
     try:
         rs = await _api.get_relay_status(token)
         relay_status = rs.get("relay_status", "inactive")
@@ -753,12 +784,14 @@ async def _relay_state(token) -> tuple[str, str, str, bool, bool, bool]:
         disconnected = bool(rs.get("cloud_disconnected"))
         token_bound = bool(rs.get("gateway_token_set"))
         entitlement_known = bool(rs.get("entitlement_known"))
+        if entitlement_known and rs.get("entitled") is not None:
+            entitled = bool(rs.get("entitled"))
     except (_APIError, Exception):
         lc = _local_get_client()
         relay_status = lc.relay_status if lc else "inactive"
     return (
         relay_status, public_url, tier, disconnected,
-        token_bound, entitlement_known,
+        token_bound, entitlement_known, entitled,
     )
 
 
@@ -874,11 +907,11 @@ def setup_routes(app):
             return Response(status_code=401)
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
-        relay_status, public_url, tier, disconnected, token_bound, known = await _relay_state(token)
+        relay_status, public_url, tier, disconnected, token_bound, known, entitled = await _relay_state(token)
         return _cloud_relay_tab(
             relay_status=relay_status, public_url=public_url,
             tier=tier, token_bound=token_bound, entitlement_known=known,
-            disconnected=disconnected)
+            entitled=entitled, disconnected=disconnected)
 
     @app.get("/settings/cloud")
     async def settings_cloud_page(request: Request):
@@ -891,26 +924,25 @@ def setup_routes(app):
         import ui.api_client as _api
         lang = get_lang(request)
         is_owner_admin = _get_role(request) in ("owner", "admin")
-        relay_status, public_url, tier, disconnected, token_bound, entitlement_known = await _relay_state(token)
-        # A free tier is signed in (holds a gateway_token) but never starts the WS
-        # client - it has no tunnel to serve - so relay_status stays "inactive".
-        # Treat a token-bound instance as connected so a signed-in free account
-        # gets the account/disconnect view plus the upgrade ad, not the landing page.
+        relay_status, public_url, tier, disconnected, token_bound, entitlement_known, entitled = await _relay_state(token)
+        # Credential presence alone is not proof that the relay accepted it.
+        # Non-inactive transport states keep their dedicated status/recovery
+        # surface; an inactive stored credential counts as account-bound only
+        # after entitlement was authoritatively read.
         gw_ok = (not disconnected and (
             relay_status in ("active", "tos_required", "connecting", "error")
-            or token_bound))
+            or (token_bound and entitlement_known)))
 
-        # If not connected, show value-prop landing. A sticky-disconnected install
-        # keeps its preserved credential, so the connect section withholds its
-        # auto-connect (a page visit must not silently undo the disconnect) while
-        # the Connect button still reconnects in one click.
-        # The claim-entry control is offered only to an owner/admin on an install
-        # that is not already partner_managed - a managed install already shows the
-        # partner offer and managed note (via _partner_offer), so the same gate at
-        # both render sites (value-prop landing and status tab) mirrors _plans_ad.
+        # Partner adoption is a pre-connection onboarding/recovery action. It
+        # never shares the normal subscription/Connect surface after connection.
         from celerp.gateway.state import get_commercial_mode
         commercial_mode = get_commercial_mode()
-        can_claim = is_owner_admin and commercial_mode != "partner_managed"
+        can_claim = (
+            is_owner_admin
+            and commercial_mode != "partner_managed"
+            and disconnected
+            and token_bound
+        )
         catalog: dict = {}
         if commercial_mode == "celerp_direct":
             try:
@@ -918,15 +950,20 @@ def setup_routes(app):
             except Exception:
                 catalog = {}
 
+        tab = request.query_params.get("tab", "status")
         if not gw_ok:
             from celerp.config import ensure_instance_id
             iid = ensure_instance_id()
+            if tab == "partner" and can_claim:
+                content = _partner_claim_card(lang=lang)
+            else:
+                tab = "status"
+                content = _value_prop_page(iid, lang=lang, catalog=catalog)
             return await base_shell(
                 _section_breadcrumb(t("settings_cloud.web_access", lang)),
                 page_header(t("settings_cloud.web_access", lang)),
-                _value_prop_page(
-                    iid, lang=lang,
-                    show_partner_claim=can_claim, catalog=catalog),
+                *([_unconnected_cloud_tabs(tab, lang=lang)] if can_claim else []),
+                content,
                 title=page_title("settings_cloud.web_access"),
                 nav_active="web-access",
                 lang=lang,
@@ -934,7 +971,6 @@ def setup_routes(app):
             )
 
         # Connected or connecting - show tabs
-        tab = request.query_params.get("tab", "status")
         has_team = _has_team_features(await _commercial_state(request))
         from celerp.gateway.state import get_local_infra_state
         grace_notice = _grace_notice(get_local_infra_state(), lang=lang)
@@ -957,22 +993,22 @@ def setup_routes(app):
             parts = []
             if grace_notice is not None:
                 parts.append(grace_notice)
-            parts.append(_cloud_relay_tab(relay_status=relay_status, public_url=public_url, tier=tier, token_bound=token_bound))
+            parts.append(_cloud_relay_tab(
+                relay_status=relay_status, public_url=public_url, tier=tier,
+                token_bound=token_bound, entitlement_known=entitlement_known,
+                entitled=entitled, disconnected=disconnected))
             backup_card = _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)
             if backup_card is not None:
                 parts.append(backup_card)
-            # A connected free-tier account keeps its free tabs but still sees
-            # the paid-plan advertisement the not-connected page carries - the
-            # plans are exactly what the free tier is missing. An unknown tier
-            # (status round trip failed/pending) degrades to showing the ad,
-            # never to silently hiding it - only a confirmed paid tier suppresses it.
-            if tier not in PAID_TIERS:
+            # Only an authoritatively entitled paid account suppresses the plan
+            # offers. Free, lapsed, and unknown accounts keep a visible purchase/
+            # renewal path even when their last-known tier name is paid.
+            if entitled is not True:
                 from celerp.config import ensure_instance_id
                 parts.append(_plans_ad(
                     ensure_instance_id(), lang=lang, catalog=catalog))
-            if is_owner_admin:
-                parts.append(_partner_claim_card(lang=lang) if can_claim
-                             else _partner_managed_note(lang=lang))
+            if is_owner_admin and commercial_mode == "partner_managed":
+                parts.append(_partner_managed_note(lang=lang))
             content = Div(*parts)
             tab = "status"
 

@@ -214,7 +214,10 @@ def _files_section(contact: dict, contact_id: str, docs: list[dict] | None = Non
     return _shared_files_section("contact", contact_id, merged, **kwargs)
 
 
-def _contact_info_card(c: dict, *, oob: bool = False, hide_fields: tuple = ()) -> FT:
+def _contact_info_card(
+    c: dict, *, oob: bool = False, hide_fields: tuple = (),
+    company_name_help: str = "",
+) -> FT:
     """Left-column contact info: click-to-edit fields. hide_fields drops rows that would be redundant in
     a given context (e.g. the Company Details page hides Currency - it's in the Settings card - and the
     Billing/Shipping text fields, which the dedicated two-column address book already covers)."""
@@ -227,9 +230,20 @@ def _contact_info_card(c: dict, *, oob: bool = False, hide_fields: tuple = ()) -
     ]
     fields = [(k, lbl) for k, lbl in fields if k not in hide_fields]
     attrs = {"hx_swap_oob": "outerHTML:#contact-info-card"} if oob else {}
+    def _label_cell(key: str, label: str) -> FT:
+        help_tip = (
+            Span("ⓘ", cls="info-tip", tabindex="0", role="img",
+                 **{"aria-label": company_name_help, "data-tip": company_name_help})
+            if key == "company_name" and company_name_help else None
+        )
+        return Td(label, help_tip, cls="detail-label")
+
     return Div(
         H3(t("page.contact_info"), cls="section-title"),
-        Table(*[Tr(Td(label, cls="detail-label"), _contact_display_cell(cid, key, c.get(key))) for key, label in fields], cls="detail-table"),
+        Table(*[
+            Tr(_label_cell(key, label), _contact_display_cell(cid, key, c.get(key)))
+            for key, label in fields
+        ], cls="detail-table"),
         cls="detail-card section-card",
         id="contact-info-card",
         **attrs,
@@ -1271,8 +1285,11 @@ def setup_routes(app):
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("settings.company_details"), None)]),
             page_header("🏢 " + t("settings.company_details")),
             Div(
-                Div(_contact_info_card(contact, hide_fields=("currency", "billing_address", "shipping_address")),
-                    cls="detail-col-left"),
+                Div(_contact_info_card(
+                    contact,
+                    hide_fields=("currency", "billing_address", "shipping_address"),
+                    company_name_help=t("contacts.company_name_help"),
+                ), cls="detail-col-left"),
                 Div(_company_settings_card(company, get_lang(request)), cls="detail-col-right"),
                 cls="detail-layout",
             ),

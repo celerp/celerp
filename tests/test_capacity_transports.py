@@ -119,6 +119,31 @@ async def test_upstream_timeout_still_maps_to_504(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        httpx.ConnectError,
+        httpx.ReadError,
+        httpx.WriteError,
+        httpx.CloseError,
+        httpx.RemoteProtocolError,
+    ],
+)
+async def test_local_transport_errors_map_to_503(error_type, monkeypatch):
+    """Interrupted local API transports stay inside the APIError abstraction.
+
+    A read/write/close failure is the same availability class as a failed
+    connect for callers: page views may degrade, while mutations surface a
+    retryable failure without being automatically replayed.
+    """
+    monkeypatch.setattr(api, "_client", _raising_client(error_type("network")))
+    with pytest.raises(APIError) as exc:
+        async with api._api_client("tok") as _c:
+            pass
+    assert exc.value.status == 503
+
+
+@pytest.mark.asyncio
 async def test_anon_pool_saturation_maps_to_503(monkeypatch):
     monkeypatch.setattr(api, "_anon_client", _raising_client(httpx.PoolTimeout("pool")))
     with pytest.raises(APIError) as exc:
@@ -210,6 +235,14 @@ def test_configured_client_has_a_finite_pool_bound():
 
 def test_bulk_and_interactive_transports_are_distinct():
     assert api._get_transport() is not api._get_bulk_transport()
+
+
+def test_local_transports_expire_keepalive_before_server_boundary():
+    # The local Uvicorn API closes idle HTTP/1.1 connections after 5 seconds.
+    # Client pools must retire them first so an idle-gap request never races a
+    # server-side close and surfaces ReadError/RemoteProtocolError.
+    assert api._get_transport()._pool._keepalive_expiry == 3.0
+    assert api._get_bulk_transport()._pool._keepalive_expiry == 3.0
 
 
 # --- Section 10: every local file-body transfer selects the bulk transport ---

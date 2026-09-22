@@ -20,6 +20,7 @@ from fasthtml.common import (
 )
 
 from celerp.output.branding import BRAND_TEXT as _BRAND_LABEL, brand_url as _brand_url
+from celerp.output.document_context import prepare_document_output
 from celerp.services.line_measures import line_identifier as _line_identifier, measure_sublines, qty_label
 from celerp.services.shipping import REASON_EXPORT_LABELS, SHIPPING_LIST_TYPE
 from celerp.services.units import DEFAULT_UNITS, build_unit_map
@@ -232,6 +233,7 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
     (customs values, HS codes, origin, incoterms, declaration). ``layout`` is
     only meaningful for shipping documents; passing it for anything else raises.
     """
+    doc = prepare_document_output(doc)
     entity_id = doc.get("id") or doc.get("entity_id") or ""
     doc_type = doc.get("doc_type", "")
     is_shipping = doc_type == "list" and doc.get("list_type") == SHIPPING_LIST_TYPE
@@ -249,6 +251,9 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         title = doc_type.replace("_", " ").title() if doc_type else "Document"
     issue_date = (doc.get("issue_date") or "")[:10]
     due_date = (doc.get("due_date") or "")[:10]
+    reference = str(doc.get("reference") or "")
+    valid_until = str(doc.get("valid_until") or "")[:10]
+    is_quotation = doc_type == "quotation" or doc.get("list_type") in ("quote", "quotation")
     currency = doc.get("currency") or "USD"
 
     company_name = doc.get("company_name") or ""
@@ -256,13 +261,15 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
     company_tax_id = doc.get("company_tax_id") or ""
     company_email = doc.get("company_email") or ""
     company_phone = doc.get("company_phone") or ""
+    company_website = doc.get("company_website") or ""
 
-    contact_name = doc.get("contact_name") or doc.get("customer_name") or ""
+    contact_name = doc.get("contact_name", doc.get("customer_name") or "")
     contact_company = doc.get("contact_company_name") or ""
-    contact_address = doc.get("contact_billing_address") or doc.get("contact_address") or ""
+    contact_address = doc.get("contact_billing_address", "")
     contact_tax_id = doc.get("contact_tax_id") or ""
     contact_email = doc.get("contact_email") or ""
     ship_to_address = doc.get("contact_shipping_address") or ""
+    billing_attn = doc.get("contact_billing_attn") or ""
     shipping_attn = doc.get("shipping_attn") or ""
 
     line_items = doc.get("line_items") or []
@@ -380,7 +387,8 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
     subtotal = doc.get("subtotal") or 0
     tax_total = doc.get("tax_total") or doc.get("tax") or 0
     grand_total = doc.get("grand_total") or doc.get("total") or 0
-    notes_text = doc.get("notes") or doc.get("terms") or ""
+    terms_text = doc.get("terms_text") or ""
+    customer_note = doc.get("customer_note") or ""
 
     if ship_layout == "delivery_note":
         totals_section = None  # no money on the paper that travels with the goods
@@ -421,6 +429,10 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         totals_section = Div(Table(*totals_rows), cls="dp-totals")
 
     is_purchasing = doc_type in ("bill", "purchase_order", "consignment_in")
+    contact_primary = contact_company or contact_name
+    contact_person = contact_name if contact_company and contact_name and contact_name != contact_company else ""
+    billing_person = "" if billing_attn else contact_person
+    shipping_person = "" if shipping_attn else contact_person
 
     # Shipment paperwork blocks. The commercial invoice follows the layout of the
     # standard carrier form (FedEx-style): a bordered header grid (date of export /
@@ -454,8 +466,8 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         )
         _deliver_addr = ship_to_address or contact_address
         _recipient = Div(
-            P(contact_name, style="font-weight:600;") if contact_name else None,
-            P(contact_company) if contact_company and contact_company != contact_name else None,
+            P(contact_primary, style="font-weight:600;") if contact_primary else None,
+            P(shipping_person) if shipping_person else None,
             P(shipping_attn) if shipping_attn else None,
             P(_deliver_addr) if _deliver_addr else None,
             P(f"Tax ID: {contact_tax_id}") if contact_tax_id else None,
@@ -502,9 +514,9 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         _deliver_addr = ship_to_address or contact_address
         parties_section = Div(Div(
             P("Deliver To", cls="dp-party-label"),
-            P(contact_name, cls="dp-party-name") if contact_name else None,
+            P(contact_primary, cls="dp-party-name") if contact_primary else None,
             Div(
-                P(contact_company) if contact_company and contact_company != contact_name else None,
+                P(shipping_person) if shipping_person else None,
                 P(shipping_attn) if shipping_attn else None,
                 P(_deliver_addr) if _deliver_addr else None,
                 P(contact_email) if contact_email else None,
@@ -516,15 +528,16 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         # Vendor = the contact (supplier); Bill To = us (the company)
         vendor_box = Div(
             P("Vendor", cls="dp-party-label"),
-            P(contact_name, cls="dp-party-name") if contact_name else None,
+            P(contact_primary, cls="dp-party-name") if contact_primary else None,
             Div(
-                P(contact_company) if contact_company and contact_company != contact_name else None,
+                P(billing_person) if billing_person else None,
+                P(f"Attn: {billing_attn}") if billing_attn else None,
                 P(contact_address) if contact_address else None,
                 P(f"Tax ID: {contact_tax_id}") if contact_tax_id else None,
                 P(contact_email) if contact_email else None,
                 cls="dp-party-sub",
             ),
-        ) if contact_name else None
+        ) if contact_primary else None
         bill_to_box = Div(
             P("Bill To", cls="dp-party-label"),
             P(company_name, cls="dp-party-name") if company_name else None,
@@ -549,15 +562,16 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         parties_section = Div(
             Div(
                 P("Bill To", cls="dp-party-label"),
-                P(contact_name, cls="dp-party-name") if contact_name else None,
+                P(contact_primary, cls="dp-party-name") if contact_primary else None,
                 Div(
-                    P(contact_company) if contact_company and contact_company != contact_name else None,
+                    P(billing_person) if billing_person else None,
+                    P(f"Attn: {billing_attn}") if billing_attn else None,
                     P(contact_address) if contact_address else None,
                     P(f"Tax ID: {contact_tax_id}") if contact_tax_id else None,
                     P(contact_email) if contact_email else None,
                     cls="dp-party-sub",
                 ),
-            ) if contact_name else None,
+            ) if contact_primary else None,
             Div(
                 P("Ship To", cls="dp-party-label"),
                 P(shipping_attn, cls="dp-party-name") if shipping_attn else None,
@@ -583,6 +597,7 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
                         P(f"Tax ID: {company_tax_id}") if company_tax_id else None,
                         P(company_email) if company_email else None,
                         P(company_phone) if company_phone else None,
+                        P(company_website) if company_website else None,
                         cls="dp-company-sub",
                     ),
                 ),
@@ -590,8 +605,10 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
                     P(title, cls="dp-doc-title"),
                     Div(
                         P(Strong("No.: "), doc_number),
+                        P(Strong("Reference: "), reference) if reference else None,
                         P(Strong("Date: "), issue_date) if issue_date else None,
-                        P(Strong("Due: "), due_date) if due_date and not ship_layout else None,
+                        P(Strong("Due: "), due_date) if due_date and not ship_layout and not is_quotation else None,
+                        P(Strong("Valid until: "), valid_until) if is_quotation and valid_until else None,
                         cls="dp-doc-meta",
                     ),
                 ),
@@ -601,7 +618,8 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
             shipmeta_section,
             Table(Thead(headers), Tbody(*rows), cls="dp-lines") if rows else P("No line items.", style="font-size:9pt;color:#888;margin-bottom:4mm;"),
             totals_section,
-            Div(P("Notes", cls="dp-notes-label"), P(notes_text), cls="dp-notes") if notes_text else None,
+            Div(P("Terms & Conditions", cls="dp-notes-label"), P(terms_text), cls="dp-notes") if terms_text else None,
+            Div(P("Note to Customer", cls="dp-notes-label"), P(customer_note), cls="dp-notes") if customer_note else None,
             declaration_section,
             signature_section,
             _doc_footer(import_url),

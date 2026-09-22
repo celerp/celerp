@@ -466,7 +466,8 @@ async def test_scan_versus_versioned_save_never_drops_scanned_line(_db_engine):
                     list_id,
                     ListPatch(fields_changed={"line_items": {"new": [
                         {"item_id": y_id, "sku": "Y", "quantity": 1}]}}, expected_version=v0),
-                    company_id=company_id, _=None, user=user, session=session)
+                    company_id=company_id, _=None, role="owner", settings={},
+                    user=user, session=session)
             except Exception as exc:  # noqa: BLE001 - a stale-version 409 is an allowed outcome
                 outcome["patch"] = exc
                 await session.rollback()

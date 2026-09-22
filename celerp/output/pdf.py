@@ -30,6 +30,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas as _rl_canvas
 
 from celerp.output.branding import BRAND_TEXT as _BRAND_TEXT, brand_url as _brand_url
+from celerp.output.document_context import prepare_document_output
 
 # Register DejaVu Sans (Unicode-capable - supports currency symbols like ฿, ₹, €, etc.)
 _FONT = "DejaVuSans"
@@ -153,6 +154,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     pass it only while the document's share link is live so saved PDFs never
     carry a URL that 404s. Returns raw PDF bytes.
     """
+    doc = prepare_document_output(doc, company=company)
     buf = io.BytesIO()
     page_w, page_h = A4
     margin = 18 * mm
@@ -173,31 +175,37 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     raw_doc_type = doc.get("doc_type") or "document"
 
     # --- Header: company name + doc type/ref ---
-    company_name = (company or {}).get("name", "") or "Your Company"
+    company_name = doc.get("company_name", "Your Company")
     doc_type_label = _DOC_TYPE_LABELS.get(raw_doc_type, raw_doc_type.replace("_", " ").title())
     doc_ref = doc.get("ref_id") or doc.get("doc_number") or doc.get("ref") or doc.get("entity_id", "")
+    reference = str(doc.get("reference") or "")
+    doc_ref_text = _xml_escape(str(doc_ref))
+    if reference:
+        doc_ref_text += f"<br/><font size='8'>Reference: {_xml_escape(reference)}</font>"
 
-    # Build company detail lines (address, tax ID, phone, email)
-    _co = company or {}
+    # Build company detail lines (address, tax ID, phone, email, website)
     co_detail_parts: list[str] = []
-    co_address = _co.get("address", "")
+    co_address = doc.get("company_address", "")
     if co_address:
         co_detail_parts.append(str(co_address))
-    co_tax_id = _co.get("tax_id", "")
+    co_tax_id = doc.get("company_tax_id", "")
     if co_tax_id:
         co_detail_parts.append(f"Tax ID: {co_tax_id}")
-    co_phone = _co.get("phone", "")
+    co_phone = doc.get("company_phone", "")
     if co_phone:
         co_detail_parts.append(f"Tel: {co_phone}")
-    co_email = _co.get("email", "")
+    co_email = doc.get("company_email", "")
     if co_email:
         co_detail_parts.append(co_email)
-    co_detail_text = "<br/>".join(co_detail_parts)
+    co_website = doc.get("company_website", "")
+    if co_website:
+        co_detail_parts.append(co_website)
+    co_detail_text = "<br/>".join(_xml_escape(str(part)) for part in co_detail_parts)
 
     header_data = [
         [Paragraph(company_name, s["title"]), Paragraph(doc_type_label, s["title"])],
         [Paragraph(co_detail_text, s["label"]),
-         Paragraph(doc_ref, s["subtitle"])],
+         Paragraph(doc_ref_text, s["subtitle"])],
     ]
     header_table = Table(header_data, colWidths=[page_w * 0.55 - margin, page_w * 0.45 - margin])
     header_table.setStyle(TableStyle([
@@ -210,16 +218,24 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
 
     # --- Meta: contact + dates ---
     contact_label = _CONTACT_LABELS.get(raw_doc_type, "Bill To")
-    contact = doc.get("contact_name") or doc.get("contact_id") or "-"
+    contact_company = doc.get("contact_company_name") or ""
+    contact_name = doc.get("contact_name") or ""
+    contact = contact_company or (contact_name if "contact_name" in doc else doc.get("contact_id")) or "-"
     issue_date = _fmt_date(doc.get("issue_date") or doc.get("created_at"))
-    due_date = _fmt_date(doc.get("due_date") or doc.get("payment_due_date"))
+    is_quotation = raw_doc_type == "quotation" or doc.get("list_type") in ("quote", "quotation")
+    due_label = "Valid Until" if is_quotation else "Due Date"
+    due_value = (
+        _fmt_date(doc.get("valid_until"))
+        if is_quotation
+        else _fmt_date(doc.get("due_date") or doc.get("payment_due_date"))
+    )
     status = (doc.get("status") or "").replace("_", " ").title()
 
     meta_data = [
         [Paragraph(contact_label, s["label"]), Paragraph("Date", s["label"]),
-         Paragraph("Due Date", s["label"]), Paragraph("Status", s["label"])],
+         Paragraph(due_label, s["label"]), Paragraph("Status", s["label"])],
         [Paragraph(contact, s["value"]), Paragraph(issue_date, s["value"]),
-         Paragraph(due_date, s["value"]), Paragraph(status, s["value"])],
+         Paragraph(due_value, s["value"]), Paragraph(status, s["value"])],
     ]
     col_w = (page_w - 2 * margin) / 4
     meta_table = Table(meta_data, colWidths=[col_w] * 4)
@@ -231,19 +247,27 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     story.append(meta_table)
 
     # --- Customer details (billing/shipping address, phone, email, tax ID) ---
-    billing_addr = doc.get("contact_billing_address") or doc.get("contact_address") or ""
+    billing_addr = doc.get("contact_billing_address", "")
     shipping_addr = doc.get("contact_shipping_address") or ""
     contact_phone = doc.get("contact_phone") or ""
     contact_email = doc.get("contact_email") or ""
     contact_tax_id = doc.get("contact_tax_id") or ""
-    contact_company = doc.get("contact_company_name") or ""
+    billing_attn = doc.get("contact_billing_attn") or ""
+    shipping_attn = doc.get("shipping_attn") or ""
 
-    has_customer_details = any([billing_addr, shipping_addr, contact_phone, contact_email, contact_tax_id, contact_company])
+    has_customer_details = any([
+        contact_name, contact_company, billing_addr, shipping_addr,
+        contact_phone, contact_email, contact_tax_id, billing_attn, shipping_attn,
+    ])
     if has_customer_details:
         # Build left column: billing details
         left_parts: list[str] = []
         if contact_company:
             left_parts.append(f"<b>{contact_company}</b>")
+        if billing_attn:
+            left_parts.append(f"Attn: {billing_attn}")
+        elif contact_company and contact_name and contact_name != contact_company:
+            left_parts.append(str(contact_name))
         if billing_addr:
             left_parts.append(str(billing_addr))
         if contact_tax_id:
@@ -256,6 +280,8 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
 
         # Build right column: shipping address (only if different from billing)
         right_parts: list[str] = []
+        if shipping_attn:
+            right_parts.append(str(shipping_attn))
         if shipping_addr and shipping_addr != billing_addr:
             right_parts.append(str(shipping_addr))
         right_text = "<br/>".join(right_parts) if right_parts else ""
@@ -446,14 +472,6 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
         story.append(HRFlowable(width="100%", thickness=0.5, color=_BORDER, spaceAfter=3 * mm))
         story.append(Paragraph("Note to Customer", s["label"]))
         story.append(Paragraph(str(customer_note), s["value"]))
-
-    # Internal notes (legacy field - not customer-facing but kept for backward compat)
-    notes = doc.get("notes") or ""
-    if notes:
-        story.append(Spacer(1, 4 * mm))
-        story.append(HRFlowable(width="100%", thickness=0.5, color=_BORDER, spaceAfter=3 * mm))
-        story.append(Paragraph("Notes", s["label"]))
-        story.append(Paragraph(str(notes), s["value"]))
 
     # --- Footer with branding (added via onFirstPage/onLaterPages) ---
     _fulfillment_stamp = doc.get("fulfillment_status") == "fulfilled"

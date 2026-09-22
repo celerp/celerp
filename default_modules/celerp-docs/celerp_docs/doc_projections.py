@@ -354,7 +354,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             li.pop("entity_id", None)
     elif event_type == "doc.shared_import":
         # Inbound doc received via p2p share / bundle upload.
-        # Carries the sender's full doc state; status forced to "received".
+        # Carries the allowlisted shared-document fields; status forced to "received".
         current.update({"entity_type": "doc", **data})
         current["status"] = "received"
         current.setdefault("linked", [])

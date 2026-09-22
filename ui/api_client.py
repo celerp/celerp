@@ -22,6 +22,11 @@ _BULK_MAX_CONNECTIONS = 2
 # indefinite stall.
 _POOL_ACQUIRE_TIMEOUT = 2.0
 
+# Uvicorn's local API keep-alive window is 5 seconds. Drop idle client sockets
+# comfortably before that boundary so a request after an idle gap never races a
+# server-side close and reuses a stale connection.
+_LOCAL_KEEPALIVE_EXPIRY = 3.0
+
 # One source of truth for the temporary-failure copy every local client surfaces,
 # so the interactive, anonymous, AI, and bulk context managers cannot drift apart.
 SATURATION_MESSAGE = (
@@ -97,7 +102,9 @@ def _get_transport() -> _SharedTransport:
     if _shared_transport is None:
         _shared_transport = _SharedTransport(
             limits=httpx.Limits(
-                max_connections=REQUEST_DB_POOL_SIZE, max_keepalive_connections=8
+                max_connections=REQUEST_DB_POOL_SIZE,
+                max_keepalive_connections=8,
+                keepalive_expiry=_LOCAL_KEEPALIVE_EXPIRY,
             ),
         )
     return _shared_transport
@@ -113,7 +120,9 @@ def _get_bulk_transport() -> _SharedTransport:
     if _bulk_transport is None:
         _bulk_transport = _SharedTransport(
             limits=httpx.Limits(
-                max_connections=_BULK_MAX_CONNECTIONS, max_keepalive_connections=1
+                max_connections=_BULK_MAX_CONNECTIONS,
+                max_keepalive_connections=1,
+                keepalive_expiry=_LOCAL_KEEPALIVE_EXPIRY,
             ),
         )
     return _bulk_transport
@@ -226,7 +235,7 @@ async def _local_error_mapping():
         raise APIError(503, SATURATION_MESSAGE) from exc
     except httpx.TimeoutException as exc:
         raise APIError(504, TIMEOUT_MESSAGE) from exc
-    except httpx.ConnectError as exc:
+    except httpx.TransportError as exc:
         raise APIError(503, _connect_message()) from exc
 
 
@@ -2075,6 +2084,24 @@ async def patch_list(token: str, entity_id: str, data: dict, expected_version: i
         if expected_version is not None:
             body["expected_version"] = expected_version
         return _raise(await c.patch(f"/lists/{entity_id}", json=body)).json()
+
+
+async def _reprice_entity(
+    token: str, resource: str, entity_id: str, price_list: str, expected_version: int,
+) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            f"/{resource}/{entity_id}/reprice",
+            json={"price_list": price_list, "expected_version": expected_version},
+        )).json()
+
+
+async def reprice_doc(token: str, entity_id: str, price_list: str, expected_version: int) -> dict:
+    return await _reprice_entity(token, "docs", entity_id, price_list, expected_version)
+
+
+async def reprice_list(token: str, entity_id: str, price_list: str, expected_version: int) -> dict:
+    return await _reprice_entity(token, "lists", entity_id, price_list, expected_version)
 
 
 async def get_list_page(token: str, entity_id: str, offset: int = 0, limit: int = 100) -> dict:

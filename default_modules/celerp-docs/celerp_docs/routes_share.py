@@ -44,9 +44,10 @@ from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
 from celerp.output.doc_print import (
     IMPORTABLE_DOC_TYPES, INVOICE_LAYOUT_DOC_TYPES,
-    compose_address, render_doc_print_html, unwrap_address,
+    render_doc_print_html,
 )
 from celerp.output.share_render import _not_found_page
+from celerp.output.document_context import prepare_document_output
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 
 # Authenticated router — share token generation requires login
@@ -72,15 +73,19 @@ _IMPORTABLE_DOC_TYPES = frozenset({
     "credit_note", "bill", "memo", "consignment_in",
 })
 _DOC_STR_FIELDS = frozenset({
-    "doc_type", "ref_id", "doc_number", "issue_date", "due_date", "valid_until",
-    "expected_delivery", "currency", "contact_name", "contact_company_name",
-    "contact_email", "contact_billing_address", "contact_shipping_address",
-    "contact_tax_id", "shipping_attn", "terms", "payment_terms",
-    "discount_type", "carrier", "tracking",
+    "doc_type", "list_type", "ref_id", "doc_number", "reference", "issue_date", "due_date", "valid_until",
+    "expected_delivery", "currency", "company_name", "company_address", "company_phone",
+    "company_tax_id", "company_email", "company_website", "contact_name", "contact_company_name",
+    "contact_email", "contact_phone", "contact_billing_address", "contact_shipping_address",
+    "contact_tax_id", "contact_billing_attn", "shipping_attn", "terms", "terms_template", "terms_text",
+    "customer_note", "payment_terms", "discount_type", "carrier", "tracking",
+})
+_DOC_NUM_FIELDS = frozenset({
+    "discount", "shipping", "subtotal", "tax", "total",
 })
 _LINE_STR_FIELDS = frozenset({
     "sku", "name", "description", "unit", "sell_by", "weight_unit",
-    "hs_code", "country_of_origin", "account_code", "tax_code",
+    "hs_code", "country_of_origin", "tax_code",
 })
 _LINE_NUM_FIELDS = frozenset({
     "quantity", "unit_price", "pieces", "weight", "tax_rate", "discount_pct",
@@ -170,6 +175,73 @@ def _sanitize_taxes(raw) -> list[TaxApplication]:
     return out
 
 
+def _public_taxes(raw) -> list[dict]:
+    if not isinstance(raw, list):
+        return []
+    return [
+        {
+            "code": str(t.get("code") or "")[:64],
+            "rate": _num(t.get("rate")),
+            "amount": _num(t.get("amount")),
+            "order": int(_num(t.get("order"))),
+            "is_compound": bool(t.get("is_compound")),
+            "label": str(t.get("label") or "")[:64],
+        }
+        for t in raw[:20] if isinstance(t, dict)
+    ]
+
+
+def _public_bundle_doc(doc: dict) -> dict:
+    """Allowlisted customer-facing bundle state; internal projection fields never leave the sender."""
+    if not isinstance(doc, dict):
+        raise HTTPException(status_code=422, detail="Bundle document is malformed")
+    out: dict = {}
+    for key in _DOC_STR_FIELDS:
+        value = _str(
+            doc.get(key),
+            _MAX_NOTES if key in {"terms", "terms_text", "customer_note"} else _MAX_STR,
+        )
+        if value is not None:
+            out[key] = value
+    # Bundles may originate from pre-terms_text installations. Keep accepting
+    # the historical alias, but publish/import one canonical customer-facing
+    # field. An explicit canonical blank deliberately suppresses legacy text.
+    if "terms_text" not in out and "terms" in out:
+        out["terms_text"] = out["terms"]
+    out.pop("terms", None)
+    for key in _DOC_NUM_FIELDS:
+        if key in doc:
+            out[key] = _num(doc.get(key))
+
+    raw_lines = doc.get("line_items")
+    if not isinstance(raw_lines, list):
+        raw_lines = []
+    if len(raw_lines) > _MAX_LINE_ITEMS:
+        raise HTTPException(status_code=422, detail="Too many line items in bundle")
+    lines: list[dict] = []
+    for raw in raw_lines:
+        if not isinstance(raw, dict):
+            continue
+        line: dict = {}
+        for key in _LINE_STR_FIELDS:
+            value = _str(raw.get(key), _MAX_STR)
+            if value is not None:
+                line[key] = value
+        for key in _LINE_NUM_FIELDS | {"line_total"}:
+            if key in raw:
+                line[key] = _num(raw.get(key))
+        taxes = _public_taxes(raw.get("taxes"))
+        if taxes:
+            line["taxes"] = taxes
+        lines.append(line)
+    out["line_items"] = lines
+
+    doc_taxes = _public_taxes(doc.get("doc_taxes"))
+    if doc_taxes:
+        out["doc_taxes"] = doc_taxes
+    return out
+
+
 def _sanitize_bundle_doc(doc: dict) -> dict:
     """Rebuild a doc from an allowlist and recompute every monetary value locally.
 
@@ -183,18 +255,18 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     if doc_type not in _IMPORTABLE_DOC_TYPES:
         raise HTTPException(status_code=422, detail="Unsupported document type in bundle")
 
-    currency = _str(doc.get("currency"), 8) or "USD"
-    out: dict = {}
-    for k in _DOC_STR_FIELDS:
-        val = _str(doc.get(k), _MAX_STR)
-        if val is not None:
-            out[k] = val
-    out["notes"] = _str(doc.get("notes"), _MAX_NOTES) or ""
+    public = _public_bundle_doc(doc)
+    currency = _str(public.get("currency"), 8) or "USD"
+    # Payment state and derived totals are local accounting facts. Never
+    # accept them from an untrusted sender; totals are recomputed below and
+    # payment/outstanding state starts clean on the received document.
+    derived = {"line_items", "doc_taxes", "subtotal", "tax", "total", "amount_paid", "amount_outstanding"}
+    out: dict = {k: v for k, v in public.items() if k not in derived}
     out["currency"] = currency
-    out["discount"] = _num(doc.get("discount"))
-    out["shipping"] = _num(doc.get("shipping"))
+    out["discount"] = _num(public.get("discount"))
+    out["shipping"] = _num(public.get("shipping"))
 
-    raw_lines = doc.get("line_items")
+    raw_lines = public.get("line_items")
     if not isinstance(raw_lines, list):
         raw_lines = []
     if len(raw_lines) > _MAX_LINE_ITEMS:
@@ -230,7 +302,7 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     out["line_items"] = lines
 
     subtotal_d = subtotal_d - round_money(out["discount"], currency)
-    doc_taxes = _sanitize_taxes(doc.get("doc_taxes"))
+    doc_taxes = _sanitize_taxes(public.get("doc_taxes"))
     if doc_taxes:
         resolved = compute_tax_amounts(doc_taxes, to_stored_float(subtotal_d), currency)
         out["doc_taxes"] = [t.model_dump() for t in resolved]
@@ -241,6 +313,10 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     out["subtotal"] = to_stored_float(round_money(subtotal_d, currency))
     out["tax"] = to_stored_float(round_money(tax_d, currency))
     out["total"] = to_stored_float(round_money(subtotal_d + tax_d + shipping_d, currency))
+    # Payment state belongs to the recipient. Never credit payment data from an
+    # untrusted shared bundle.
+    out["amount_paid"] = 0.0
+    out["amount_outstanding"] = out["total"]
     return out
 
 
@@ -454,17 +530,14 @@ async def _letterhead(session: AsyncSession, company_id) -> dict:
     self_id = cfg.get("self_contact_id")
     if self_id:
         crow = await session.get(Projection, (company_id, self_id))
-        if crow is not None:
+        if crow is not None and crow.entity_type == "contact":
             contact_state = crow.state or {}
-    addrs = contact_state.get("addresses") or []
-    primary = next((a for a in addrs if a.get("address_type") == "billing"), None) or (addrs[0] if addrs else None)
-    address = (compose_address(primary) if primary else "") or unwrap_address(cfg.get("address")) or ""
+    prepared = prepare_document_output(
+        {}, company={"name": company.name, "settings": cfg}, self_contact=contact_state,
+    )
     return {
-        "company_name": contact_state.get("name") or company.name or "",
-        "company_address": address,
-        "company_phone": contact_state.get("phone") or cfg.get("phone") or "",
-        "company_tax_id": contact_state.get("tax_id") or cfg.get("tax_id") or "",
-        "company_email": contact_state.get("email") or cfg.get("email") or "",
+        key: prepared.get(key) or ""
+        for key in ("company_name", "company_address", "company_phone", "company_tax_id", "company_email", "company_website")
     }
 
 
@@ -472,17 +545,12 @@ async def _resolve_share_contact(session: AsyncSession, company_id, state: dict)
     """Fill the Bill-To block from the contact projection when the doc state
     only carries a contact_id."""
     cid = state.get("contact_id")
-    if not cid or state.get("contact_name"):
+    if not cid:
         return
     crow = await session.get(Projection, (company_id, cid))
-    if crow is None:
+    if crow is None or crow.entity_type != "contact":
         return
-    contact = crow.state or {}
-    state["contact_name"] = contact.get("name") or ""
-    state["contact_company_name"] = contact.get("company_name") or ""
-    state["contact_email"] = contact.get("email") or ""
-    state["contact_billing_address"] = contact.get("billing_address") or contact.get("address") or ""
-    state["contact_tax_id"] = contact.get("tax_id") or ""
+    state.update(prepare_document_output(state, contact=crow.state or {}))
 
 
 async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) -> str:
@@ -515,7 +583,7 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
         if not eid:
             continue
         irow = await session.get(Projection, (company_id, eid))
-        if irow is None:
+        if irow is None or irow.entity_type != "item":
             continue
         if ident_mode != "sku":
             identifier_backfill(li, irow.state or {})
@@ -550,12 +618,15 @@ async def view_shared_doc(
     state = dict(row.state or {})
     if row.entity_type == "list":
         state.setdefault("doc_type", "list")
-        if not state.get("contact_name"):
-            state["contact_name"] = state.get("receiver") or state.get("customer_name") or ""
+        if "contact_name" not in state:
+            fallback_name = state.get("receiver") or state.get("customer_name")
+            if fallback_name:
+                state["contact_name"] = fallback_name
         if not state.get("issue_date"):
             state["issue_date"] = state.get("created_at") or state.get("date")
-    if not state.get("company_name"):
-        state.update(await _letterhead(session, share_row.company_id))
+    for key, value in (await _letterhead(session, share_row.company_id)).items():
+        if key not in state and value:
+            state[key] = value
     await _resolve_share_contact(session, share_row.company_id, state)
     ident_mode = await _enrich_share_lines(session, share_row.company_id, state)
 
@@ -602,11 +673,18 @@ async def download_share_bundle(
     if row is None:
         raise HTTPException(status_code=404, detail="Document no longer exists")
 
-    doc = row.state
-    ref = doc.get("ref_id") or doc.get("doc_number") or share_row.entity_id
+    doc = dict(row.state or {})
+    if row.entity_type == "list":
+        doc.setdefault("doc_type", "quotation" if doc.get("list_type") in ("quote", "quotation") else "list")
+    for key, value in (await _letterhead(session, share_row.company_id)).items():
+        if key not in doc and value:
+            doc[key] = value
+    await _resolve_share_contact(session, share_row.company_id, doc)
+    public_doc = _public_bundle_doc(doc)
+    ref = public_doc.get("ref_id") or public_doc.get("doc_number") or share_row.entity_id
     bundle = {
         "version": 1,
-        "doc": doc,
+        "doc": public_doc,
         "exported_at": datetime.now(timezone.utc).isoformat(),
     }
     filename = f"{ref}.celerp"

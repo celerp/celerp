@@ -678,7 +678,7 @@ class DocSharedImport(BaseModel):
     source_share_token: str | None = None
     source_origin: str | None = None
 
-    model_config = {"extra": "allow"}  # carries full sender doc state
+    model_config = {"extra": "allow"}  # carries the allowlisted shared-document fields
 
 
 class DocNoteAdded(BaseModel):

@@ -21,6 +21,7 @@ from ui.components.table import search_bar, EMPTY, pagination, searchable_select
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.permissions import role_has_permission
+from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_section as _shared_doc_files_section
@@ -29,7 +30,6 @@ from ui.components.files import files_section as _shared_doc_files_section
 from celerp.output.doc_print import (
     IMPORTABLE_DOC_TYPES as _IMPORTABLE_DOC_TYPES,
     INVOICE_LAYOUT_DOC_TYPES as _INVOICE_LAYOUT_DOC_TYPES,
-    compose_address as _compose_company_address,
     render_doc_print_html,
 )
 
@@ -100,10 +100,10 @@ def _relay_rejected(rs: dict) -> bool:
 
 
 async def _company_letterhead(token: str) -> dict:
-    """The company's letterhead identity (name/address/phone/tax_id/email) for documents.
+    """The company's letterhead identity (name/address/phone/tax_id/email/website) for documents.
 
     The company's identity is edited on its self-contact (the Contact Info card + address book on Finance
-    > Company Details), so name/phone/tax_id/email and the billing address are read from there - falling
+    > Company Details), so name/phone/tax_id/email/website and the billing address are read from there - falling
     back to company settings for legacy/unmigrated data."""
     company = await api.get_company(token)
     self_id = (company.get("settings") or {}).get("self_contact_id")
@@ -121,16 +121,28 @@ async def _company_letterhead(token: str) -> dict:
                     break
         except Exception:
             pass
-    addrs = contact.get("addresses") or []
-    primary = next((a for a in addrs if a.get("address_type") == "billing"), None) or (addrs[0] if addrs else None)
-    address = (_compose_company_address(primary) if primary else "") or unwrap_address(company.get("address")) or ""
+    prepared = prepare_document_output({}, company=company, self_contact=contact)
     return {
-        "company_name": contact.get("name") or company.get("name") or "",
-        "company_address": address,
-        "company_phone": contact.get("phone") or company.get("phone") or "",
-        "company_tax_id": contact.get("tax_id") or company.get("tax_id") or "",
-        "company_email": contact.get("email") or company.get("email") or "",
+        key: prepared.get(key) or ""
+        for key in ("company_name", "company_address", "company_phone", "company_tax_id", "company_email", "company_website")
     }
+
+
+async def _merge_company_letterhead(token: str, state: dict) -> dict:
+    """Fill only missing seller fields from the live company identity.
+
+    Presence, not truthiness, is the invariant: an explicitly stored blank is a
+    document snapshot and must never be resurrected from today's company data.
+    Output routes are fail-soft on live identity lookup because the stored
+    document remains printable without it.
+    """
+    try:
+        for key, value in (await _company_letterhead(token)).items():
+            if key not in state and value:
+                state[key] = value
+    except Exception:
+        pass
+    return state
 
 
 def _measure_pcs_field(val, *, locked: bool, show: bool, avail=None):
@@ -1360,27 +1372,6 @@ def setup_routes(app):
                 status_code=200,
                 headers={"HX-Trigger": _json.dumps({"flashError": detail})},
             )
-        # Apply default T&C template in the background (non-blocking).
-        # The user is already redirected; T&C is a nice-to-have not a blocker.
-        import asyncio as _asyncio
-
-        async def _apply_tc():
-            try:
-                tc_templates = await api.get_terms_conditions(token)
-                default_tc = next(
-                    (tc for tc in tc_templates
-                     if doc_type in (tc.get("default_for") or [])),
-                    None,
-                )
-                if default_tc and entity_id:
-                    await api.patch_doc(token, entity_id, {
-                        "terms_template": default_tc["name"],
-                        "terms_text": default_tc.get("text", ""),
-                    })
-            except Exception:
-                pass
-
-        _asyncio.create_task(_apply_tc())
         from starlette.responses import Response as _R
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
@@ -1900,11 +1891,12 @@ def setup_routes(app):
             lst["contact_name"] = lst.get("receiver") or lst.get("customer_name") or ""
         if not lst.get("issue_date"):
             lst["issue_date"] = lst.get("created_at") or lst.get("date")
-        if not lst.get("company_name"):
+        if lst.get("contact_id"):
             try:
-                lst.update(await _company_letterhead(token))
+                lst = prepare_document_output(lst, contact=await api.get_contact(token, lst["contact_id"]))
             except Exception:
                 pass
+        lst = await _merge_company_letterhead(token, lst)
         _ident_mode = await _line_identifier_mode(token)
         await _enrich_print_lines(token, lst, _ident_mode)
         try:
@@ -1939,21 +1931,12 @@ def setup_routes(app):
             from starlette.responses import HTMLResponse as _HR
             return _HR(f"<p>Error loading document: {e.detail}</p>", status_code=e.status)
         # Inject company fields
-        if not doc.get("company_name"):
-            try:
-                doc = {**doc, **await _company_letterhead(token)}
-            except Exception:
-                pass
-        # Resolve contact
+        doc = await _merge_company_letterhead(token, doc)
+        # Fill any missing customer-facing fields independently from the selected contact.
         cid = doc.get("contact_id")
-        if cid and not doc.get("contact_name"):
+        if cid:
             try:
-                contact = await api.get_contact(token, cid)
-                doc["contact_name"] = contact.get("name") or ""
-                doc["contact_company_name"] = contact.get("company_name") or ""
-                doc["contact_email"] = contact.get("email") or ""
-                doc["contact_billing_address"] = contact.get("billing_address") or contact.get("address") or ""
-                doc["contact_tax_id"] = contact.get("tax_id") or ""
+                doc = prepare_document_output(doc, contact=await api.get_contact(token, cid))
             except Exception:
                 pass
         # Source pieces/weight (+ the weight unit) from each line's parcel for the printout.
@@ -2113,72 +2096,23 @@ celerpUpdateBulkAlloc();
             doc = {}
 
         # Inject company fields so "My company info" box is populated
-        if not doc.get("company_name"):
-            try:
-                doc = {**doc, **await _company_letterhead(token)}
-            except Exception:
-                pass
+        doc = await _merge_company_letterhead(token, doc)
 
-        # Resolve contact details if contact_id set but name missing
+        # Resolve the live contact once, then use the same key-presence fallback
+        # policy as print/PDF/share. Stored document snapshots, including explicit
+        # blanks, always win; the address list is retained separately for editing.
         cid = doc.get("contact_id")
-        _resolved_contact: dict | None = None
-        if cid and not doc.get("contact_name"):
+        contact_shipping_addresses: list[dict] = []
+        if cid:
             try:
                 _resolved_contact = await api.get_contact(token, cid)
-                doc["contact_name"] = _resolved_contact.get("name") or ""
-                doc["contact_company_name"] = _resolved_contact.get("company_name") or ""
-                doc["contact_email"] = _resolved_contact.get("email") or ""
-                doc["contact_phone"] = _resolved_contact.get("phone") or ""
-                doc["contact_tax_id"] = _resolved_contact.get("tax_id") or ""
+                doc = prepare_document_output(doc, contact=_resolved_contact)
+                contact_shipping_addresses = [
+                    a for a in (_resolved_contact.get("addresses") or [])
+                    if isinstance(a, dict) and a.get("address_type") == "shipping"
+                ]
             except Exception:
                 pass
-
-        # Resolve default billing/shipping address from contact if not yet stored on doc
-        contact_shipping_addresses: list[dict] = []
-        if cid and (not doc.get("contact_billing_address") or not doc.get("contact_shipping_address")):
-            try:
-                contact = _resolved_contact or await api.get_contact(token, cid)
-                addresses = contact.get("addresses") or []
-                contact_shipping_addresses = [a for a in addresses if a.get("address_type") == "shipping"]
-                def _resolve_addr(addr_type: str) -> str:
-                    default = next((a for a in addresses if a.get("address_type") == addr_type and a.get("is_default")), None)
-                    if default:
-                        return default.get("full_address") or default.get("address") or default.get("label") or ""
-                    first = next((a for a in addresses if a.get("address_type") == addr_type), None)
-                    if first:
-                        return first.get("full_address") or first.get("address") or first.get("label") or ""
-                    return contact.get(f"{addr_type}_address") or ""
-                if not doc.get("contact_billing_address"):
-                    doc["contact_billing_address"] = doc.get("contact_address") or _resolve_addr("billing")
-                if not doc.get("contact_shipping_address"):
-                    doc["contact_shipping_address"] = _resolve_addr("shipping")
-                # Also resolve shipping attn from contact address
-                if not doc.get("shipping_attn"):
-                    default_ship = next((a for a in addresses if a.get("address_type") == "shipping" and a.get("is_default")), None)
-                    first_ship = default_ship or next((a for a in addresses if a.get("address_type") == "shipping"), None)
-                    if first_ship and first_ship.get("attn"):
-                        doc["shipping_attn"] = first_ship["attn"]
-            except Exception:
-                pass
-        elif cid:
-            # Already have addresses on doc - still fetch shipping list for dropdown
-            try:
-                contact = _resolved_contact or await api.get_contact(token, cid)
-                contact_shipping_addresses = [a for a in (contact.get("addresses") or []) if a.get("address_type") == "shipping"]
-            except Exception:
-                pass
-        # The Bill To block and the send modal prefill from the contact's email
-        # even when the doc already carries a name (docs created before email
-        # was stored on the state have the name but not the email).
-        if cid and not doc.get("contact_email"):
-            try:
-                _c = _resolved_contact or await api.get_contact(token, cid)
-                doc["contact_email"] = _c.get("email") or ""
-            except Exception:
-                pass
-        # Backward compat: migrate contact_address → contact_billing_address
-        if not doc.get("contact_billing_address") and doc.get("contact_address"):
-            doc["contact_billing_address"] = doc["contact_address"]
 
         # Fetch locations for receive-goods dropdown (PO + consignment_in) + company address picker
         locations: list[dict] = []
@@ -2713,41 +2647,24 @@ celerpUpdateBulkAlloc();
                         patch["commission_contact_name"] = name
                 except APIError:
                     pass
+            # Price-list changes are one domain operation: remove the header field
+            # from the ordinary patch and let the backend repricer update header + lines
+            # atomically. This also covers contact-driven/default price-list changes.
+            new_pl = patch.pop("price_list", None)
             # ref_id edits go through /renumber (works on finalized docs; patch_doc rejects them)
             if field == "ref_id":
                 await api.renumber_doc(token, entity_id, value)
-            else:
+            elif patch:
                 await api.patch_doc(token, entity_id, patch)
-            # Reprice line items when price_list changed
-            new_pl = patch.get("price_list")
             if new_pl:
-                try:
-                    doc_pre = await api.get_doc(token, entity_id)
-                    lines = doc_pre.get("line_items") or []
-                    if lines:
-                        updated = []
-                        repriced = 0
-                        for line in lines:
-                            sku = (line.get("sku") or "").strip()
-                            eid = (line.get("item_id") or line.get("entity_id") or "").strip()
-                            if sku or eid:
-                                try:
-                                    item = await api.get_item(token, eid) if eid else None
-                                    if item is None and sku:
-                                        resp = await api.list_items(token, {"sku": sku, "limit": 1})
-                                        items = resp.get("items", []) if isinstance(resp, dict) else resp
-                                        item = items[0] if items else None
-                                    if item is not None:
-                                        new_price = resolve_price(item, new_pl)
-                                        line = {**line, "unit_price": new_price, "price_list": new_pl}
-                                        repriced += 1
-                                except Exception:
-                                    pass
-                            updated.append(line)
-                        if repriced:
-                            await api.patch_doc(token, entity_id, {"line_items": updated})
-                except Exception:
-                    pass  # reprice failure is non-fatal
+                # Read the projection after any companion patch and pin repricing to
+                # that authoritative version. Do not infer projection state from a
+                # transport return value.
+                current = await api.get_doc(token, entity_id)
+                expected_version = current.get("version")
+                if expected_version is None:
+                    raise APIError(409, "Reload the document before repricing")
+                await api.reprice_doc(token, entity_id, new_pl, int(expected_version))
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return _action_error(str(e.detail))
@@ -2760,7 +2677,14 @@ celerpUpdateBulkAlloc();
             display_value = _resolve_contact_display(doc, field)
         else:
             display_value = doc.get(field)
-        return _doc_display_cell(entity_id, field, display_value)
+        from starlette.responses import Response as _R
+        return _R(
+            to_xml(_doc_display_cell(entity_id, field, display_value)),
+            media_type="text/html",
+            headers={"HX-Trigger": _json.dumps({
+                "celerpListVersion": {"version": doc.get("version")},
+            })},
+        )
 
     # Line-item fields editable on finalized docs (description, account_code)
     _LI_FINALIZED_EDITABLE = {"description", "account_code"}
@@ -2876,11 +2800,19 @@ celerpUpdateBulkAlloc();
         form = await request.form()
         # Field name may come as the field name itself or as 'value'
         value = str(form.get(field, form.get("value", "")))
+        version = None
         try:
-            await api.patch_doc(token, entity_id, {field: value})
+            result = await api.patch_doc(token, entity_id, {field: value})
+            version = result.get("event_id")
         except APIError:
             pass  # silent autosave failure
-        return _R("", status_code=204)
+        headers = (
+            {"HX-Trigger": _json.dumps({
+                "celerpListVersion": {"version": version},
+            })}
+            if version is not None else {}
+        )
+        return _R("", status_code=204, headers=headers)
 
     @app.post("/docs/{entity_id}/notes")
     async def doc_add_note(request: Request, entity_id: str):
@@ -3051,7 +2983,7 @@ celerpUpdateBulkAlloc();
             patch_data["discount_type"] = body.get("discount_type") or "flat"
             patch_data["discount_amount"] = float(body.get("discount_amount") or 0)
         try:
-            await api.patch_doc(token, entity_id, patch_data)
+            result = await api.patch_doc(token, entity_id, patch_data)
         except APIError as e:
             payload = {"error": str(e.detail)}
             # Foreign-reserved rejection: pass the structured conflict list through
@@ -3059,74 +2991,37 @@ celerpUpdateBulkAlloc();
             if isinstance(e.data, dict) and e.data.get("conflicts"):
                 payload["reserved_conflicts"] = e.data["conflicts"]
             return JSONResponse(payload, status_code=400)
-        return JSONResponse({"ok": True})
+        return JSONResponse({"ok": True, "version": result.get("event_id")})
 
-    # T2b: Reprice line items from a given price list
-    @app.post("/docs/{entity_id}/reprice")
-    async def reprice_doc_lines(request: Request, entity_id: str):
-        """Re-resolve unit_price for all line items that came from inventory.
-
-        Body: {"price_list": "Retail"}
-
-        Only lines with a `sku` field (i.e. sourced from inventory) are repriced.
-        Lines without a sku (manually entered) are left unchanged.
-        """
+    async def _proxy_reprice(request: Request, entity_id: str, reprice_fn):
+        """Transport-only Web UI adapter; all repricing semantics live in celerp-docs."""
         from starlette.responses import JSONResponse
         token = _token(request)
         if not token:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
         try:
             body = await request.json()
-        except Exception:
-            return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-        price_list = (body.get("price_list") or "").strip()
+            price_list = str(body.get("price_list") or "").strip()
+            expected_version = int(body["expected_version"])
+        except (KeyError, TypeError, ValueError):
+            return JSONResponse(
+                {"error": "price_list and expected_version are required"}, status_code=400)
         if not price_list:
-            return JSONResponse({"error": "price_list is required"}, status_code=400)
+            return JSONResponse(
+                {"error": "price_list and expected_version are required"}, status_code=400)
         try:
-            doc = await api.get_doc(token, entity_id)
+            result = await reprice_fn(token, entity_id, price_list, expected_version)
         except APIError as e:
-            return JSONResponse({"error": str(e.detail)}, status_code=400)
-        existing_lines: list[dict] = doc.get("line_items") or []
-        if not existing_lines:
-            return JSONResponse({"ok": True, "repriced": 0})
-        repriced = 0
-        updated_lines = []
-        for line in existing_lines:
-            sku = (line.get("sku") or "").strip()
-            eid = (line.get("item_id") or line.get("entity_id") or "").strip()
-            if sku or eid:
-                try:
-                    item = await api.get_item(token, eid) if eid else None
-                    if item is None and sku:
-                        resp = await api.list_items(token, {"sku": sku, "limit": 1})
-                        items = resp.get("items", []) if isinstance(resp, dict) else resp
-                        item = items[0] if items else None
-                    if item is not None:
-                        new_price = resolve_price(item, price_list)
-                        line = {**line, "unit_price": new_price, "price_list": price_list}
-                        repriced += 1
-                except APIError:
-                    pass  # leave line unchanged on lookup failure
-            updated_lines.append(line)
-        # Recalculate totals
-        subtotal = sum(
-            float(l.get("unit_price", 0)) * float(l.get("quantity", 0))
-            for l in updated_lines
-        )
-        tax_rate = float(doc.get("tax_rate", 0) or 0)
-        tax = round(subtotal * tax_rate / 100, 2)
-        total = round(subtotal + tax, 2)
-        try:
-            await api.patch_doc(token, entity_id, {
-                "line_items": updated_lines,
-                "price_list": price_list,
-                "subtotal": round(subtotal, 2),
-                "tax": tax,
-                "total": total,
-            })
-        except APIError as e:
-            return JSONResponse({"error": str(e.detail)}, status_code=400)
-        return JSONResponse({"ok": True, "repriced": repriced, "price_list": price_list})
+            return JSONResponse({"error": str(e.detail)}, status_code=e.status or 400)
+        return JSONResponse(result)
+
+    @app.post("/docs/{entity_id}/reprice")
+    async def reprice_doc_lines(request: Request, entity_id: str):
+        return await _proxy_reprice(request, entity_id, api.reprice_doc)
+
+    @app.post("/lists/{entity_id}/reprice")
+    async def reprice_list_lines(request: Request, entity_id: str):
+        return await _proxy_reprice(request, entity_id, api.reprice_list)
 
     # T3: Document actions (finalize, void, send, mark_sent, unmark_sent)
     @app.post("/docs/{entity_id}/action/{action}")
@@ -4431,11 +4326,7 @@ celerpUpdateBulkAlloc();
             lst["issue_date"] = lst.get("created_at") or lst.get("date")
 
         # Inject company fields
-        if not lst.get("company_name"):
-            try:
-                lst.update(await _company_letterhead(token))
-            except Exception:
-                pass
+        lst = await _merge_company_letterhead(token, lst)
 
         # Fetch price lists
         price_lists: list[dict] = []
@@ -4553,15 +4444,15 @@ celerpUpdateBulkAlloc();
             input_el = Select(
                 *[Option(_list_behavior(lt).label, value=lt, selected=(lt == value)) for lt in _LIST_TYPES],
                 name="value",
-                hx_patch=patch_url, hx_target="closest .editable-cell", hx_swap="outerHTML", hx_trigger="change",
                 cls="cell-input cell-input--select", autofocus=True,
+                onchange=f"_celerpPatchListField(this, {_json.dumps(patch_url)}, {_json.dumps(lst.get('status') == 'draft')})",
                 onkeydown=esc_js,
             )
         elif field in _LIST_DATE_FIELDS or field in ("issue_date",):
             input_el = Input(
                 type="date", name="value", value=value[:10] if value else "",
-                hx_patch=patch_url, hx_target="closest .editable-cell", hx_swap="outerHTML",
-                hx_trigger="blur delay:200ms", cls="cell-input", autofocus=True,
+                cls="cell-input", autofocus=True,
+                onblur=f"setTimeout(()=>_celerpPatchListField(this, {_json.dumps(patch_url)}), 200)",
                 onkeydown=esc_js + enter_js,
             )
         elif field == "status":
@@ -4571,15 +4462,15 @@ celerpUpdateBulkAlloc();
             input_el = Select(
                 *[Option(s.replace("_", " ").title(), value=s, selected=(s == value)) for s in _list_statuses],
                 name="value",
-                hx_patch=patch_url, hx_target="closest .editable-cell", hx_swap="outerHTML",
-                hx_trigger="change", cls="cell-input cell-input--select", autofocus=True,
+                cls="cell-input cell-input--select", autofocus=True,
+                onchange=f"_celerpPatchListField(this, {_json.dumps(patch_url)})",
                 onkeydown=esc_js,
             )
         else:
             input_el = Input(
                 type="text", name="value", value=value,
-                hx_patch=patch_url, hx_target="closest .editable-cell", hx_swap="outerHTML",
-                hx_trigger="blur delay:200ms", cls="cell-input", autofocus=True,
+                cls="cell-input", autofocus=True,
+                onblur=f"setTimeout(()=>_celerpPatchListField(this, {_json.dumps(patch_url)}), 200)",
                 onkeydown=esc_js + enter_js,
             )
         return Div(input_el, cls="editable-cell editable-cell--editing")
@@ -4613,11 +4504,18 @@ celerpUpdateBulkAlloc();
                 return _action_error(str(e.detail))
             return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         try:
-            await api.patch_list(token, entity_id, {field: value})
+            result = await api.patch_list(token, entity_id, {field: value})
             lst = await api.get_list(token, entity_id)
         except APIError as e:
             return _action_error(str(e.detail))
-        return _doc_display_cell(entity_id, field, lst.get(field), "list")
+        cell = _doc_display_cell(entity_id, field, lst.get(field), "list")
+        return _R(
+            to_xml(cell),
+            media_type="text/html",
+            headers={"HX-Trigger": _json.dumps({
+                "celerpListVersion": {"version": result.get("version")},
+            })},
+        )
 
     @app.post("/lists/{entity_id}/lines")
     async def save_list_lines(request: Request, entity_id: str):
@@ -5677,12 +5575,12 @@ def _shipment_fields(doc: dict, entity_id: str, is_draft: bool) -> list:
         if not is_draft:
             _label = dict(options).get(current, current)
             return Span(_label or "--", cls="meta-value")
+        _url = f"/lists/{entity_id}/field/{field}"
         return Select(
             Option("--", value="", selected=(not current)),
             *[Option(label, value=val, selected=(val == current)) for val, label in options],
             name="value",
-            hx_patch=f"/lists/{entity_id}/field/{field}",
-            hx_swap="none",
+            onchange=f"_celerpPatchListField(this, {_json.dumps(_url)})",
             cls="form-select",
         )
 
@@ -5692,11 +5590,11 @@ def _shipment_fields(doc: dict, entity_id: str, is_draft: bool) -> list:
             return Span(current or "--", cls="meta-value")
         # Native searchable dropdown (same pattern as the setup currency picker);
         # `change` fires on a datalist pick and on leaving a typed value.
+        _url = f"/lists/{entity_id}/field/{field}"
         return Input(
             type="text", name="value", value=current, list="country-options",
             autocomplete="off", placeholder=t("documents.type_to_search"),
-            hx_patch=f"/lists/{entity_id}/field/{field}",
-            hx_trigger="change", hx_swap="none",
+            onchange=f"_celerpPatchListField(this, {_json.dumps(_url)})",
             cls="form-input",
         )
 
@@ -6089,8 +5987,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Select(
                     *[Option(_list_behavior(lt).label, value=lt, selected=(lt == _current_lt)) for lt in _LIST_TYPES],
                     name="value",
-                    hx_patch=f"/lists/{entity_id}/field/list_type",
-                    hx_swap="none",
+                    onchange=(
+                        f"_celerpPatchListField(this, '/lists/{entity_id}/field/list_type', "
+                        f"{_json.dumps(is_draft)})"
+                    ),
                     cls="form-select",
                 ),
                 cls="list-type-bar",
@@ -7269,9 +7169,51 @@ window._CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
 // Did this document render with any line items? Drives whether emptying the table
 // persists (deleting the last line must stick) vs. a blank never-used doc (skip).
 window._celerpHadLines = {'true' if line_items else 'false'};
-// Optimistic-concurrency token for lists (null for docs). Sent with every line save and
-// refreshed from the save response, so a tab never false-conflicts against its own last write.
-window._celerpListVersion = {_json.dumps(doc.get("version")) if is_list else 'null'};
+// Entity version used by repricing and by List line saves. Refresh it after successful
+// in-tab writes so the next guarded operation pins the state this tab just produced.
+window._celerpEntityVersion = {_json.dumps(doc.get("version"))};
+if (!window._celerpEntityVersionListener) {{
+    window._celerpEntityVersionListener = function(event) {{
+        const version = event.detail && event.detail.version;
+        if (version != null) window._celerpEntityVersion = version;
+    }};
+    document.body.addEventListener('celerpListVersion', window._celerpEntityVersionListener);
+}}
+// One ordering point for draft List mutations that advance the same projection version.
+// The server remains the concurrency authority across tabs; this queue only prevents this
+// page from racing its own line saves, header patches, and repricing requests.
+window._celerpMutationTail = window._celerpMutationTail || Promise.resolve(true);
+// Local line revisions distinguish unsaved DOM edits from a merely stale server
+// version (for example after a scan response is lost). A save only acknowledges
+// the revision it actually serialized; edits made while it is in flight stay dirty.
+window._celerpLineRevision = 0;
+window._celerpSavedLineRevision = 0;
+function _celerpLinesDirty() {{
+    return window._celerpLineRevision !== window._celerpSavedLineRevision;
+}}
+function _celerpMutate(run) {{
+    const next = window._celerpMutationTail.then(run, run);
+    window._celerpMutationTail = next.then(() => true, () => false);
+    return next;
+}}
+function _celerpPatchListField(input, url, persistFirst=false) {{
+    const value = input.value;
+    const cell = input.closest('.editable-cell');
+    const target = cell || input;
+    const swap = cell ? 'outerHTML' : 'none';
+    return _celerpMutate(async () => {{
+        // ESC may replace an inline editor before a delayed blur runs. Never save a detached control.
+        if (!input.isConnected || !target.isConnected) return false;
+        if (persistFirst) {{
+            clearTimeout(_celerpSaveTimer);
+            _celerpSaveTimer = null;
+            const ok = await _celerpPersistOnce();
+            if (!ok) return false;
+        }}
+        await htmx.ajax('PATCH', url, {{target: target, swap: swap, values: {{value: value}}}});
+        return true;
+    }}).catch(() => false);
+}}
 /* Stored-array position of the first rendered row. A list renders one bounded page
    of lines, so a save overwrites exactly the positions this page occupies and leaves
    every off-page row untouched. Docs are never paged (offset 0). */
@@ -7305,6 +7247,7 @@ function _celerpUnitFromTotal(total, qty) {{
 /* ── Price list / doc-type helpers ── */
 window._CELERP_DOC_TYPE = {repr(doc_type)};
 window._CELERP_IS_LIST = {repr("true" if is_list else "false")};
+window._CELERP_IS_DRAFT = {repr("true" if is_draft else "false")};
 /* Translated UI strings resolved in Python at render time (R2: never splice
    translated text into JS source; hand it over as one config object). */
 window._L = {_json.dumps({
@@ -7331,6 +7274,10 @@ window._L = {_json.dumps({
     "invalid_qty": t("documents.enter_a_number"),
     "dup_on_doc": t("documents.duplicate_item_on_document"),
     "reprice_failed": t("documents.reprice_failed"),
+    "reprice_partial_title": t("documents.reprice_partial_title"),
+    "reprice_partial_one": t("documents.reprice_partial_one"),
+    "reprice_partial_many": t("documents.reprice_partial_many"),
+    "reprice_missing_item_tip": t("documents.reprice_missing_item_tip"),
     "import_failed": t("documents.import_failed"),
     "allow_split_warn": t("documents.allow_split_warn"),
     "reserved_conflict_title": t("documents.reserved_conflict_title"),
@@ -7399,7 +7346,7 @@ function _celerpDocTypeParam() {{
         swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
         celerpUpdateTotals();
         _celerpHadLines = true;
-        if (version != null) _celerpListVersion = version;
+        if (version != null) _celerpEntityVersion = version;
         return true;
     }}
     async function submitList() {{
@@ -7419,7 +7366,18 @@ function _celerpDocTypeParam() {{
         if (plSelect) plSelect.disabled = true;
         scanStatus.textContent = _L.scanning;
         scanStatus.className = 'scan-bar-status';
-        try {{
+        // Draft scans rewrite line_items from the persisted projection. Freeze only
+        // the line tbody while this operation is queued/executing, so a user cannot
+        // create a newer local edit between the canonical line save and the scan.
+        // Locked audit scanning is not a draft-line mutation and stays untouched.
+        const lockDraftLines = _CELERP_IS_LIST === 'true' && _CELERP_IS_DRAFT === 'true';
+        if (lockDraftLines) {{
+            const lineBody = document.getElementById('{line_body_id}');
+            if (lineBody) lineBody.inert = true;
+            clearTimeout(_celerpSaveTimer);
+            _celerpSaveTimer = null;
+        }}
+        const performScan = async () => {{
             let data;
             try {{
                 const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey}});
@@ -7492,7 +7450,34 @@ function _celerpDocTypeParam() {{
                 await _installListBody(data.html || '', data.version);
             }} catch (err) {{ /* refresh is best-effort; codes are already acknowledged */ }}
             _clearStatusSoon();
+            return true;
+        }};
+        try {{
+            if (lockDraftLines) {{
+                const completed = await _celerpMutate(async () => {{
+                    // Queue ordering handles saves already in flight. Revision tracking
+                    // handles a pending/newer DOM edit without forcing a clean stale DOM
+                    // through /lines, which would break scan retry after a lost response.
+                    if (_celerpLinesDirty()) {{
+                        const ok = await _celerpPersistOnce();
+                        if (!ok) {{
+                            scanStatus.textContent = '';
+                            return false;
+                        }}
+                    }}
+                    return await performScan();
+                }}).catch(() => {{
+                    scanStatus.textContent = '✗ ' + _L.save_failed;
+                    scanStatus.className = 'scan-bar-status scan-bar-status--err';
+                    return false;
+                }});
+                if (!completed && scanStatus.textContent === _L.scanning) scanStatus.textContent = '';
+            }} else {{
+                await performScan();
+            }}
         }} finally {{
+            const currentBody = lockDraftLines ? document.getElementById('{line_body_id}') : null;
+            if (currentBody) currentBody.inert = false;
             scanInput.disabled = false;
             if (addBtn) addBtn.disabled = keepAddLocked;
             if (plSelect) plSelect.disabled = false;
@@ -8316,7 +8301,8 @@ function _celerpCollectLines() {{
     }}
     return lines;
 }}
-async function _celerpPersist() {{
+async function _celerpPersistOnce() {{
+    const revision = window._celerpLineRevision;
     const lines = _celerpCollectLines();
     // A null return means the collector aborted on an invalid quantity and has
     // already shown the error: send no request and report the save as failed so
@@ -8327,7 +8313,10 @@ async function _celerpPersist() {{
     // Return value: true when nothing needed saving or the save succeeded, false when a
     // save was attempted and failed, so callers that gate on a clean save (page navigation)
     // can hold position instead of discarding unsaved rows.
-    if (!lines.length && !_celerpHadLines) return true;
+    if (!lines.length && !_celerpHadLines) {{
+        window._celerpSavedLineRevision = Math.max(window._celerpSavedLineRevision, revision);
+        return true;
+    }}
     const subtotal = lines.reduce((s, l) => s + l.line_total, 0);
     const grossTax = lines.reduce((s, l) => s + l.line_total * (l.tax_rate / 100), 0);
     // Apply the header discount to the taxable base; tax scales by the same ratio (see
@@ -8346,14 +8335,17 @@ async function _celerpPersist() {{
             original_count: _CELERP_ORIGINAL_COUNT,
             subtotal, tax, total,
             discount: hd.value, discount_type: hd.type, discount_amount: hd.amount,
-            expected_version: _celerpListVersion}})
+            expected_version: _celerpEntityVersion}})
     }});
     if (resp.ok) {{
+        // A newer edit may have happened while this request was in flight. Only
+        // acknowledge the revision serialized by this request; the newer one stays dirty.
+        window._celerpSavedLineRevision = Math.max(window._celerpSavedLineRevision, revision);
         // Advance the cached version to the one this save produced, so the tab's next
-        // autosave does not false-conflict against its own write. Docs return no version.
+        // autosave/reprice pins the state it just wrote.
         try {{
             const data = await resp.json();
-            if (data && data.version != null) _celerpListVersion = data.version;
+            if (data && data.version != null) _celerpEntityVersion = data.version;
         }} catch (_e) {{}}
         // The rows just written become this page's stored window, so a follow-up save
         // in the same view replaces the new window length, not the original one.
@@ -8398,6 +8390,12 @@ async function _celerpPersist() {{
         }}
         return false;
     }}
+}}
+function _celerpPersist() {{
+    // Direct persistence callers mutate the rendered line state before saving.
+    // Incrementing here is intentionally harmless when autosave already marked it.
+    window._celerpLineRevision += 1;
+    return _celerpMutate(_celerpPersistOnce);
 }}
 /* Save the current page, then swap to another page of the same list. Paging a draft must
    never silently drop unsaved edits, so a failed save (including a stale-version conflict)
@@ -8490,22 +8488,122 @@ function _celerpShowReservedConflicts(conflicts) {{
 /* Auto-save on blur away from any row cell */
 window._celerpSaveTimer = null;
 function celerpAutoSave() {{
+    window._celerpLineRevision += 1;
     clearTimeout(_celerpSaveTimer);
-    _celerpSaveTimer = setTimeout(_celerpPersist, 400);
+    _celerpSaveTimer = setTimeout(() => {{
+        _celerpSaveTimer = null;
+        _celerpPersist();
+    }}, 400);
+}}
+function _celerpRepriceWarningKey() {{
+    return 'celerp_reprice_skipped:' + _CELERP_EID;
+}}
+function _celerpShowRepriceWarning(updated, skipped) {{
+    const dlg = document.createElement('dialog');
+    dlg.className = 'modal-dialog';
+    const body = document.createElement('div');
+    body.className = 'modal-body';
+    const title = document.createElement('h3');
+    title.className = 'section-title';
+    title.textContent = _L.reprice_partial_title;
+    const msg = document.createElement('p');
+    const tpl = skipped === 1 ? _L.reprice_partial_one : _L.reprice_partial_many;
+    msg.textContent = tpl.replace('{{updated}}', String(updated)).replace('{{skipped}}', String(skipped));
+    const actions = document.createElement('div');
+    actions.className = 'modal-dialog__actions';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'btn btn--primary';
+    close.textContent = _L.close;
+    close.onclick = function() {{ dlg.close(); }};
+    actions.appendChild(close);
+    body.append(title, msg, actions);
+    dlg.appendChild(body);
+    dlg.addEventListener('close', function() {{ dlg.remove(); }});
+    document.body.appendChild(dlg);
+    dlg.showModal();
+}}
+function _celerpApplyRepriceWarnings() {{
+    let state = null;
+    try {{
+        state = JSON.parse(sessionStorage.getItem(_celerpRepriceWarningKey()) || 'null');
+    }} catch (_e) {{
+        sessionStorage.removeItem(_celerpRepriceWarningKey());
+    }}
+    if (!state || !Array.isArray(state.item_ids) || !state.item_ids.length) return;
+    const ids = new Set(state.item_ids);
+    document.querySelectorAll('#{line_body_id} tr').forEach(function(row) {{
+        const itemId = row.querySelector('[data-name="entity_id"]')?.value || '';
+        if (itemId && ids.has(itemId)) {{
+            row.classList.add('doc-line--reprice-warning');
+            row.title = _L.reprice_missing_item_tip;
+        }}
+    }});
+    if (state.show_modal) {{
+        state.show_modal = false;
+        sessionStorage.setItem(_celerpRepriceWarningKey(), JSON.stringify(state));
+        _celerpShowRepriceWarning(Number(state.repriced || 0), Number(state.skipped_count || state.item_ids.length));
+    }}
+}}
+_celerpApplyRepriceWarnings();
+if (!window._celerpRepriceWarningAfterSwap) {{
+    window._celerpRepriceWarningAfterSwap = _celerpApplyRepriceWarnings;
+    document.body.addEventListener('htmx:afterSwap', window._celerpRepriceWarningAfterSwap);
+}}
+
+window._CELERP_AUTHORITATIVE_PRICE_LIST = {_json.dumps(_current_pl)};
+function _celerpRestorePriceList() {{
+    const select = document.getElementById('doc-price-list');
+    if (select) select.value = window._CELERP_AUTHORITATIVE_PRICE_LIST;
 }}
 async function celerpReprice(priceList) {{
-    /* Save current lines first, then reprice via API and reload */
-    await _celerpPersist();
-    const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/reprice', {{
-        method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{price_list: priceList}})
+    /* A pending blur save is redundant here; this queued transition owns the save + reprice. */
+    clearTimeout(_celerpSaveTimer);
+    _celerpSaveTimer = null;
+    return _celerpMutate(async () => {{
+        /* Save current lines first; never discard an invalid or stale page to reprice. */
+        const ok = await _celerpPersistOnce();
+        if (!ok) {{
+            _celerpRestorePriceList();
+            return false;
+        }}
+        const body = {{price_list: priceList, expected_version: _celerpEntityVersion}};
+        try {{
+            const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/reprice', {{
+                method: 'POST', headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify(body)
+            }});
+            if (resp.ok) {{
+                const data = await resp.json().catch(() => ({{}}));
+                if (data && data.version != null) _celerpEntityVersion = data.version;
+                const skipped = Array.isArray(data.skipped) ? data.skipped : [];
+                if (skipped.length) {{
+                    sessionStorage.setItem(_celerpRepriceWarningKey(), JSON.stringify({{
+                        item_ids: skipped.map(function(x) {{ return x.item_id; }}).filter(Boolean),
+                        skipped_count: skipped.length,
+                        repriced: Number(data.repriced || 0),
+                        show_modal: true
+                    }}));
+                }} else {{
+                    sessionStorage.removeItem(_celerpRepriceWarningKey());
+                }}
+                window.location.reload();
+                return true;
+            }}
+            const err = await resp.json().catch(() => ({{}}));
+            alert(err.error || _L.reprice_failed);
+            /* The line save above succeeded, so reloading cannot discard edits and
+               guarantees the selector/version reflect authoritative server state. */
+            window.location.reload();
+            return false;
+        }} catch (err) {{
+            /* The reprice outcome is ambiguous after transport loss. The lines are
+               already saved; reload to reconcile instead of guessing the price list. */
+            alert(_L.reprice_failed + ': ' + err.message);
+            window.location.reload();
+            return false;
+        }}
     }});
-    if (resp.ok) {{
-        window.location.reload();
-    }} else {{
-        const err = await resp.json().catch(() => ({{}}));
-        alert(err.error || _L.reprice_failed);
-    }}
 }}
 /* ── CSV import ── */
 async function celerpCsvImport(input, entityId) {{
