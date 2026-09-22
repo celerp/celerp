@@ -339,7 +339,7 @@ async def connector_operation(company_id: str, connector: str):
     scarce DB connection waiting behind slow remote HTTP.
     """
     key = f"connector-op:{company_id}:{connector}"
-    if engine.dialect.name != "postgresql":
+    if lifecycle_engine.dialect.name != "postgresql":
         lock = _local_locks.setdefault(key, asyncio.Lock())
         if lock.locked():
             raise ConnectorBusy(f"{connector} sync is already in progress")
@@ -351,7 +351,7 @@ async def connector_operation(company_id: str, connector: str):
             _local_locks.pop(key, None)
         return
 
-    async with engine.connect() as conn:
+    async with lifecycle_engine.connect() as conn:
         acquired = bool(await conn.scalar(
             sa.text("SELECT pg_try_advisory_lock(hashtextextended(:k, 0))"),
             {"k": key},
@@ -366,6 +366,28 @@ async def connector_operation(company_id: str, connector: str):
                 {"k": key},
             )
 ''')
+
+ownership = read("celerp/connectors/ownership.py")
+marker = '''async def get_connector_config(
+'''
+if marker not in ownership:
+    raise SystemExit("ownership: get_connector_config marker missing")
+ownership = ownership.replace(marker, '''async def mark_connector_pending(company_id: str, connector: str) -> None:
+    """Suspend autonomous work without changing the original operational cutoff."""
+    async with get_session_ctx() as session:
+        await _lock(session, connector)
+        row = await session.scalar(sa.select(ConnectorConfig).where(
+            ConnectorConfig.company_id == str(company_id),
+            ConnectorConfig.connector == connector,
+        ).limit(1))
+        if row is not None:
+            row.activated_at = None
+            await session.commit()
+
+
+async def get_connector_config(
+''', 1)
+write("celerp/connectors/ownership.py", ownership)
 
 # ConnectorConfig lifecycle timestamps.
 replace_once(
@@ -544,10 +566,14 @@ async def run_connector_activation(
             # block on this same lease, so one final order pull closes the exact
             # activation handoff gap before autonomous work can proceed.
             if SyncEntity.ORDERS in connector.supported_entities:
-                results.append(await run_sync(
+                catchup = await run_sync(
                     connector, ctx, SyncEntity.ORDERS.value,
                     direction=SyncDirection.INBOUND, _operation_locked=True,
-                ))
+                )
+                results.append(catchup)
+                if catchup.errors:
+                    from celerp.connectors.ownership import mark_connector_pending
+                    await mark_connector_pending(ctx.company_id, connector.name)
             return results
     except ConnectorBusy:
         return [SyncResult(
@@ -838,7 +864,9 @@ woo = read("celerp/connectors/woocommerce.py")
 new_methods = r'''    async def _owned_webhooks(
         self, ctx: ConnectorContext, webhook_url: str
     ) -> list[dict]:
+        from celerp.config import ensure_instance_id
         base_url, auth = _base_url(ctx), _auth(ctx)
+        name_prefix = f"Celerp {ensure_instance_id()} "
         async with RateLimitedClient() as client:
             page = 1
             out: list[dict] = []
@@ -854,7 +882,7 @@ new_methods = r'''    async def _owned_webhooks(
                 out.extend(
                     h for h in batch
                     if str(h.get("delivery_url") or "").rstrip("/") == webhook_url.rstrip("/")
-                    and str(h.get("name") or "").startswith("Celerp ")
+                    and str(h.get("name") or "").startswith(name_prefix)
                 )
                 if len(batch) < 100:
                     break
@@ -862,10 +890,13 @@ new_methods = r'''    async def _owned_webhooks(
             return out
 
     async def reconcile_webhooks(
-        self, ctx: ConnectorContext, webhook_url: str, secret: str
+        self, ctx: ConnectorContext, webhook_url: str, secret: str,
+        known_ids: list[str] | None = None,
     ) -> list[str]:
         """Converge Celerp-owned Woo hooks after retries or interrupted setup."""
+        from celerp.config import ensure_instance_id
         base_url, auth = _base_url(ctx), _auth(ctx)
+        name_prefix = f"Celerp {ensure_instance_id()} "
         existing = await self._owned_webhooks(ctx, webhook_url)
         by_topic: dict[str, list[dict]] = {}
         for hook in existing:
@@ -876,7 +907,7 @@ new_methods = r'''    async def _owned_webhooks(
             for topic in self._WEBHOOK_TOPICS:
                 matches = by_topic.pop(topic, [])
                 body = {
-                    "name": f"Celerp {topic}",
+                    "name": f"{name_prefix}{topic}",
                     "topic": topic,
                     "delivery_url": webhook_url,
                     "status": "active",
