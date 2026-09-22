@@ -1099,13 +1099,13 @@ replace_once(
 )
 replace_once(
     "ui/routes/settings_connectors.py",
-    '''        await run_connector_sync(connector, ctx, direction=direction)
+    '''            await run_connector_sync(connector, ctx, direction=direction)
 ''',
-    '''        if activation:
-            from celerp.connectors.sync_runner import run_connector_activation
-            await run_connector_activation(connector, ctx)
-        else:
-            await run_connector_sync(connector, ctx, direction=direction)
+    '''            if activation:
+                from celerp.connectors.sync_runner import run_connector_activation
+                await run_connector_activation(connector, ctx)
+            else:
+                await run_connector_sync(connector, ctx, direction=direction)
 ''',
 )
 settings_path = "ui/routes/settings_connectors.py"
