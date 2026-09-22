@@ -145,7 +145,13 @@ async def _finish(ids: list[int], *, error: str | None = None) -> None:
 
 
 async def process_outbound_queue_once(limit: int = 100) -> int:
-    """Process one snapshot of queued identities; newer rows are never deleted with it."""
+    """Process queued identities, serialized across every API worker.
+
+    The advisory transaction lock spans the fresh Celerp stock read and remote
+    WooCommerce write. A newer queue row inserted while that lock is held is not
+    deleted with the current snapshot and runs afterward, so an older HTTP write
+    cannot complete after a newer one for the same remote product.
+    """
     now = datetime.now(timezone.utc)
     async with get_session_ctx() as session:
         rows = (await session.execute(
@@ -161,46 +167,84 @@ async def process_outbound_queue_once(limit: int = 100) -> int:
             .limit(limit)
         )).scalars().all()
 
-    grouped: dict[tuple[str, str, str], list[int]] = {}
-    for row in rows:
-        grouped.setdefault(
-            (row.company_id, row.connector, row.entity_id), []
-        ).append(row.id)
-
+    identities = list(dict.fromkeys(
+        (row.company_id, row.connector, row.entity_id) for row in rows
+    ))
     processed = 0
-    for (company_id, connector_name, identity), ids in grouped.items():
+
+    for company_id, connector_name, identity in identities:
         async with get_session_ctx() as session:
+            await session.execute(
+                sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                {"k": f"outbound:{company_id}:{connector_name}:{identity}"},
+            )
+
+            # Re-read only rows visible after we acquired the cross-process lock.
+            # Rows inserted after this snapshot remain pending for the next pass.
+            locked_rows = (await session.execute(
+                sa.select(OutboundQueue)
+                .where(
+                    OutboundQueue.company_id == company_id,
+                    OutboundQueue.connector == connector_name,
+                    OutboundQueue.entity_id == identity,
+                    OutboundQueue.status == "pending",
+                    sa.or_(
+                        OutboundQueue.next_retry_at.is_(None),
+                        OutboundQueue.next_retry_at <= datetime.now(timezone.utc),
+                    ),
+                )
+                .order_by(OutboundQueue.id)
+            )).scalars().all()
+            if not locked_rows:
+                continue
+
+            ids = [row.id for row in locked_rows]
             config = await session.scalar(
                 sa.select(ConnectorConfig).where(
                     ConnectorConfig.company_id == company_id,
                     ConnectorConfig.connector == connector_name,
                 ).limit(1)
             )
-        if config is None or config.direction == SyncDirection.INBOUND.value:
-            await _finish(ids)
-            processed += len(ids)
-            continue
-
-        try:
-            from celerp.connectors.registry import get as get_connector
-            from celerp.connectors.relay_token import fetch_context
-
-            ctx = await fetch_context(company_id, connector_name)
-            if ctx is None:
-                raise RuntimeError("connector credentials are temporarily unavailable")
-            connector = get_connector(connector_name)
-            push_one = getattr(connector, "sync_inventory_identity_out", None)
-            if push_one is None:
-                await _finish(ids)
+            if config is None or config.direction == SyncDirection.INBOUND.value:
+                await session.execute(
+                    sa.delete(OutboundQueue).where(OutboundQueue.id.in_(ids))
+                )
+                await session.commit()
                 processed += len(ids)
                 continue
-            result = await push_one(ctx, identity)
-            if result.errors:
-                raise RuntimeError("; ".join(result.errors))
-            await _finish(ids)
-        except Exception as exc:
-            await _finish(ids, error=str(exc))
-        processed += len(ids)
+
+            try:
+                from celerp.connectors.registry import get as get_connector
+                from celerp.connectors.relay_token import fetch_context
+
+                ctx = await fetch_context(company_id, connector_name)
+                if ctx is None:
+                    raise RuntimeError("connector credentials are temporarily unavailable")
+                connector = get_connector(connector_name)
+                push_one = getattr(connector, "sync_inventory_identity_out", None)
+                if push_one is None:
+                    await session.execute(
+                        sa.delete(OutboundQueue).where(OutboundQueue.id.in_(ids))
+                    )
+                else:
+                    result = await push_one(ctx, identity)
+                    if result.errors:
+                        raise RuntimeError("; ".join(result.errors))
+                    await session.execute(
+                        sa.delete(OutboundQueue).where(OutboundQueue.id.in_(ids))
+                    )
+                await session.commit()
+            except Exception as exc:
+                retry_now = datetime.now(timezone.utc)
+                for row in locked_rows:
+                    row.retry_count += 1
+                    delay = min(3600, 5 * (2 ** min(row.retry_count, 9)))
+                    row.next_retry_at = retry_now + timedelta(seconds=delay)
+                    row.error_message = str(exc)[:2000]
+                    row.status = "pending"
+                await session.commit()
+
+            processed += len(ids)
     return processed
 
 
