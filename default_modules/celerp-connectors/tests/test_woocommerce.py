@@ -32,7 +32,7 @@ def ctx():
 
 @pytest.fixture
 def mock_upsert_item():
-    with patch("celerp.connectors.upsert.upsert_item", new_callable=AsyncMock, return_value="created") as m:
+    with patch("celerp_inventory.services.upsert_external_product", new_callable=AsyncMock, return_value=("created", "item:resolved")) as m:
         yield m
 
 
@@ -140,8 +140,8 @@ async def test_sync_products_imports_variations(woo, ctx, mock_upsert_item):
         )
         result = await woo.sync_products(ctx)
     assert result.created == 2   # two variations; parent not imported as a sellable item
-    idems = {call.args[1].idempotency_key for call in mock_upsert_item.call_args_list}
-    assert idems == {"woocommerce:20:201", "woocommerce:20:202"}
+    identities = {(call.kwargs["product_id"], call.kwargs["variation_id"]) for call in mock_upsert_item.call_args_list}
+    assert identities == {("20", "201"), ("20", "202")}
 
 
 @pytest.mark.asyncio
@@ -155,8 +155,7 @@ async def test_sync_products_fallback_sku(woo, ctx, mock_upsert_item):
         )
         result = await woo.sync_products(ctx)
     assert result.created == 1
-    item_arg = mock_upsert_item.call_args[0][1]
-    assert item_arg.sku == "WC-42"
+    assert mock_upsert_item.call_args.kwargs["sku"] == "WC-42"
 
 
 @pytest.mark.asyncio
@@ -263,7 +262,173 @@ async def test_sync_contacts_incremental(woo, ctx, mock_upsert_contact):
     assert "modified_after" in str(route.calls[0].request.url)
 
 
+
 # -- sync_inventory_out --
+
+@pytest.mark.asyncio
+async def test_sync_inventory_out_uses_variation_endpoint(woo, ctx):
+    item = {
+        "sku": "V-1", "quantity": 7,
+        "woocommerce_product_id": "20", "woocommerce_variation_id": "201",
+        "external_link": {"product_id": "20", "variation_id": "201", "manage_stock": True},
+    }
+    with patch("celerp.connectors.upsert.list_items_with_external_id", new_callable=AsyncMock, return_value=[item]):
+        with respx.mock:
+            route = respx.put(
+                "https://store.example.com/wp-json/wc/v3/products/20/variations/201"
+            ).mock(return_value=httpx.Response(200, json={}))
+            result = await woo.sync_inventory_out(ctx)
+    assert result.updated == 1
+    assert route.calls[0].request.content == b'{"stock_quantity":7}'
+
+
+@pytest.mark.asyncio
+async def test_sync_inventory_out_refuses_fractional_without_write(woo, ctx):
+    item = {
+        "sku": "F-1", "quantity": 1.5, "woocommerce_product_id": "10",
+        "external_link": {"product_id": "10", "manage_stock": True},
+    }
+    with patch("celerp.connectors.upsert.list_items_with_external_id", new_callable=AsyncMock, return_value=[item]):
+        with respx.mock:
+            route = respx.put("https://store.example.com/wp-json/wc/v3/products/10")
+            result = await woo.sync_inventory_out(ctx)
+    assert result.updated == 0
+    assert result.errors and "fractional stock" in result.errors[0]
+    assert len(route.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_inventory_out_refuses_parent_managed_variation(woo, ctx):
+    item = {
+        "sku": "V-1", "quantity": 3,
+        "woocommerce_product_id": "20", "woocommerce_variation_id": "201",
+        "external_link": {"product_id": "20", "variation_id": "201", "manage_stock": "parent"},
+    }
+    with patch("celerp.connectors.upsert.list_items_with_external_id", new_callable=AsyncMock, return_value=[item]):
+        result = await woo.sync_inventory_out(ctx)
+    assert result.updated == 0
+    assert result.errors and "managed by its parent" in result.errors[0]
+
 
 # -- sync_products_out --
 
+@pytest.mark.asyncio
+async def test_sync_products_out_uses_nested_variation_endpoint(woo, ctx):
+    item = {
+        "sku": "SHIRT-RED", "name": "Shirt - Red", "description": "Red shirt",
+        "sale_price": 19.99, "files": [],
+        "woocommerce_product_id": "20", "woocommerce_variation_id": "201",
+        "external_link": {"product_id": "20", "variation_id": "201", "manage_stock": True},
+    }
+    with patch("celerp.connectors.upsert.list_items_modified_since_last_sync", new_callable=AsyncMock, return_value=[item]):
+        with respx.mock:
+            route = respx.put(
+                "https://store.example.com/wp-json/wc/v3/products/20/variations/201"
+            ).mock(return_value=httpx.Response(200, json={}))
+            result = await woo.sync_products_out(ctx)
+    assert result.updated == 1
+    payload = __import__("json").loads(route.calls[0].request.content)
+    assert payload["sku"] == "SHIRT-RED"
+    assert payload["regular_price"] == "19.99"
+    assert payload["description"] == "Red shirt"
+    assert "name" not in payload
+
+
+@pytest.mark.asyncio
+async def test_sync_products_out_simple_product_includes_core_fields(woo, ctx):
+    item = {
+        "sku": "W-1", "name": "Widget", "description": "Useful",
+        "sale_price": 12.5, "files": [], "woocommerce_product_id": "10",
+        "external_link": {"product_id": "10", "manage_stock": True},
+    }
+    with patch("celerp.connectors.upsert.list_items_modified_since_last_sync", new_callable=AsyncMock, return_value=[item]):
+        with respx.mock:
+            route = respx.put(
+                "https://store.example.com/wp-json/wc/v3/products/10"
+            ).mock(return_value=httpx.Response(200, json={}))
+            result = await woo.sync_products_out(ctx)
+    assert result.updated == 1
+    payload = __import__("json").loads(route.calls[0].request.content)
+    assert payload == {
+        "sku": "W-1", "description": "Useful",
+        "regular_price": "12.5", "name": "Widget",
+    }
+
+
+
+def test_woocommerce_commercial_fingerprint_ignores_status_only_changes():
+    from celerp_docs.doc_service import _woocommerce_commercial_fingerprint
+    base = {
+        "currency": "USD", "status": "processing", "total": "12.00", "total_tax": "2.00",
+        "line_items": [{"product_id": 1, "variation_id": 0, "sku": "A", "quantity": 1, "total": "10.00", "total_tax": "2.00"}],
+        "shipping_lines": [], "fee_lines": [],
+    }
+    changed_status = {**base, "status": "completed"}
+    assert _woocommerce_commercial_fingerprint(base) == _woocommerce_commercial_fingerprint(changed_status)
+
+
+def test_woocommerce_commercial_fingerprint_detects_financial_change():
+    from celerp_docs.doc_service import _woocommerce_commercial_fingerprint
+    base = {
+        "currency": "USD", "total": "10.00", "total_tax": "0",
+        "line_items": [{"product_id": 1, "variation_id": 0, "sku": "A", "quantity": 1, "total": "10.00"}],
+        "shipping_lines": [], "fee_lines": [],
+    }
+    changed = {**base, "total": "11.00"}
+    assert _woocommerce_commercial_fingerprint(base) != _woocommerce_commercial_fingerprint(changed)
+
+
+@pytest.mark.asyncio
+async def test_register_webhooks_rolls_back_partial_creation(woo, ctx):
+    with respx.mock:
+        first = respx.post("https://store.example.com/wp-json/wc/v3/webhooks").mock(
+            side_effect=[
+                httpx.Response(201, json={"id": 11}),
+                httpx.Response(403, json={"message": "read only"}),
+            ]
+        )
+        cleanup = respx.delete(
+            "https://store.example.com/wp-json/wc/v3/webhooks/11"
+        ).mock(return_value=httpx.Response(200, json={}))
+        with pytest.raises(httpx.HTTPStatusError):
+            await woo.register_webhooks(ctx, "https://relay.test/hook", secret="s")
+    assert len(first.calls) == 2
+    assert len(cleanup.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_deregister_webhooks_tolerates_missing_hook(woo, ctx):
+    with respx.mock:
+        respx.delete("https://store.example.com/wp-json/wc/v3/webhooks/11").mock(
+            return_value=httpx.Response(404)
+        )
+        await woo.deregister_webhooks(ctx, ["11"])
+
+
+@pytest.mark.asyncio
+async def test_sync_inventory_identity_out_pushes_only_selected_product(woo, ctx):
+    items = [
+        {
+            "quantity": 2, "woocommerce_product_id": "10",
+            "external_link": {"product_id": "10", "manage_stock": True},
+        },
+        {
+            "quantity": 9, "woocommerce_product_id": "11",
+            "external_link": {"product_id": "11", "manage_stock": True},
+        },
+    ]
+    with patch(
+        "celerp.connectors.upsert.list_items_with_external_id",
+        new_callable=AsyncMock, return_value=items,
+    ):
+        with respx.mock:
+            selected = respx.put(
+                "https://store.example.com/wp-json/wc/v3/products/10"
+            ).mock(return_value=httpx.Response(200, json={}))
+            other = respx.put(
+                "https://store.example.com/wp-json/wc/v3/products/11"
+            ).mock(return_value=httpx.Response(200, json={}))
+            result = await woo.sync_inventory_identity_out(ctx, "10")
+    assert result.updated == 1
+    assert len(selected.calls) == 1
+    assert len(other.calls) == 0

@@ -120,18 +120,25 @@ async def test_scheduler_reconciles_realtime_config():
     cm.__aenter__ = AsyncMock(return_value=sess)
     cm.__aexit__ = AsyncMock(return_value=False)
 
-    run_sync_mock = AsyncMock()
+    from celerp.connectors.base import SyncEntity, SyncResult
+    run_sync_mock = AsyncMock(
+        return_value=[SyncResult(entity=SyncEntity.PRODUCTS, created=1)]
+    )
     with patch("celerp.db.get_session_ctx", return_value=cm), \
-         patch("celerp.connectors.sync_runner.run_sync", new=run_sync_mock):
+         patch("celerp.connectors.sync_runner.run_connector_sync", new=run_sync_mock):
         synced = await check_and_run_daily_syncs("co-1", token_fetcher=AsyncMock(return_value=MagicMock()))
 
     assert "shopify" in synced                # realtime connector was reconciled
     # Regression for the "outbound never dispatched" bug: a direction=both connector
     # must dispatch BOTH inbound entities AND the outbound (*_out) ones it implements.
     # (Asserting await_count >= 1 — the old check — passed even when outbound was dead.)
-    entities_run = {call.args[2] for call in run_sync_mock.await_args_list}
-    assert {"products", "orders", "contacts"} <= entities_run   # inbound
-    assert "products_out" in entities_run                        # outbound (Shopify pushes products)
+    run_sync_mock.assert_awaited_once()
+    connector, _ctx = run_sync_mock.await_args.args
+    direction = run_sync_mock.await_args.kwargs["direction"]
+    from celerp.connectors.sync_runner import sync_plan
+    entities_run = set(sync_plan(connector, direction))
+    assert {"products", "orders", "contacts"} <= entities_run
+    assert "products_out" in entities_run
 
 
 def _sched_config(**over):
@@ -161,7 +168,7 @@ async def test_scheduler_skips_recently_synced():
     cm = _sched_session(_sched_config(last_daily_sync_at=recent))
     run = AsyncMock()
     with patch("celerp.db.get_session_ctx", return_value=cm), \
-         patch("celerp.connectors.sync_runner.run_sync", new=run):
+         patch("celerp.connectors.sync_runner.run_connector_sync", new=run):
         synced = await check_and_run_daily_syncs("co", token_fetcher=AsyncMock())
     assert synced == [] and run.await_count == 0
 
@@ -264,6 +271,20 @@ def test_supported_outbound_entities_are_detected(connector, expected):
     (not `sync_inventory_out`), so it was classified as the inbound 'inventory' entity
     and never ran — this would have caught that (shopify would return {'products_out'})."""
     import celerp.connectors as registry
-    from celerp.connectors.daily_scheduler import _supported_outbound
+    from celerp.connectors.sync_runner import supported_outbound
 
-    assert set(_supported_outbound(registry.get(connector))) == expected
+    assert set(supported_outbound(registry.get(connector))) == expected
+
+
+@pytest.mark.parametrize("direction,expected_inbound,expected_outbound", [
+    ("inbound", True, False),
+    ("outbound", False, True),
+    ("both", True, True),
+])
+def test_sync_plan_honours_direction(direction, expected_inbound, expected_outbound):
+    import celerp.connectors as registry
+    from celerp.connectors.base import SyncDirection
+    from celerp.connectors.sync_runner import sync_plan
+    plan = sync_plan(registry.get("woocommerce"), SyncDirection(direction))
+    assert ("products" in plan) is expected_inbound
+    assert ("inventory_out" in plan) is expected_outbound

@@ -943,7 +943,13 @@ def setup_routes(app):
             content = _infrastructure_tab(grace_notice=grace_notice)
         elif tab in ("website", "accounting"):
             from ui.routes.settings_connectors import connectors_tab_content
-            content = await connectors_tab_content(lang, token=token, category=tab)
+            company = getattr(request.state, "auth_company", None)
+            company_id = company.get("id") if isinstance(company, dict) else None
+            if not company_id:
+                return RedirectResponse("/login", status_code=302)
+            content = await connectors_tab_content(
+                lang, token=token, category=tab, company_id=str(company_id)
+            )
         else:
             backup_data: dict | None = None
             try:

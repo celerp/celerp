@@ -399,6 +399,19 @@ a:hover { text-decoration: underline; }
 .cell--paired .paired-tertiary { color: var(--c-text-muted, #888); font-style: italic; cursor: default; user-select: none; }
 
 .cell-error { color: var(--c-red); font-size: 11px; padding: 4px 8px; }
+.cell--channels { white-space: nowrap; }
+.catalog-channels { display: inline-flex; align-items: center; gap: 4px; }
+.catalog-channel {
+  width: 20px; height: 20px; min-width: 20px; padding: 0;
+  border: 1px solid var(--c-border); border-radius: 50%;
+  background: var(--c-gray-bg); color: var(--c-slate);
+  font-size: 10px; font-weight: 700; line-height: 18px; text-align: center;
+  cursor: pointer;
+}
+.catalog-channel--on { background: var(--c-blue); border-color: var(--c-blue); color: #fff; }
+.catalog-channel--warn { background: var(--c-amber-bg); border-color: var(--c-yellow); color: var(--c-amber-dark); }
+.catalog-channel:disabled { cursor: default; opacity: 0.75; }
+.catalog-channel:not(:disabled):hover { filter: brightness(0.96); }
 .cell-derived { color: var(--c-text-muted, #888); font-style: italic; font-size: 11px; cursor: default; user-select: none; }
 .cell-price-unit { color: var(--c-text-muted, #888); font-style: italic; font-size: 11px; margin-left: 4px; }
 

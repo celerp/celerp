@@ -64,6 +64,12 @@ async def handle_webhook(
         log.error("webhook: unknown platform %s", event.platform)
         return
 
+    normalized_topic = event.topic.replace("/", ".").lower()
+    if event.platform == "woocommerce" and normalized_topic == "product.deleted":
+        await connector.handle_product_deleted(ctx, event.payload or {})
+        log.info("webhook: processed targeted WooCommerce product deletion for %s", ctx.company_id)
+        return
+
     # Run a targeted incremental sync for just this entity type.
     # Pass since=None so the sync methods use the last SyncRun timestamp.
     await run_sync(connector, ctx, entity, direction=direction)

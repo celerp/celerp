@@ -36,7 +36,7 @@ _CORE_ITEM_KEYS: frozenset[str] = frozenset({
     # identity / system
     "id", "entity_id", "company_id", "sku", "name", "barcode", "gtin", "rfid_epc",
     "category", "status",
-    "created_at", "updated_at", "location_id", "location_name", "idempotency_key",
+    "created_at", "updated_at", "location_id", "location_name", "idempotency_key", "external_links",
     # quantities / measures  (NOTE: `pieces` is intentionally NOT core — it lives under attributes)
     "quantity", "sell_by", "unit", "weight", "weight_unit", "gross_weight", "gross_weight_unit",
     "reserved_quantity", "quantity_fulfilled",

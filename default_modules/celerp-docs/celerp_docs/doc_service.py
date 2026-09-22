@@ -163,57 +163,474 @@ async def _emit_doc(session, company_id: str, data: dict, idem_key: str) -> str:
     return outcome
 
 
+def _woocommerce_commercial_fingerprint(order: dict) -> str:
+    """Stable financial identity of a Woo order, excluding lifecycle status metadata."""
+    import hashlib
+    import json
+
+    lines: dict[tuple[str, str, str], dict] = {}
+    for li in order.get("line_items", []):
+        key = (
+            str(li.get("product_id") or ""),
+            str(li.get("variation_id") or ""),
+            str(li.get("sku") or "").strip().casefold(),
+        )
+        entry = lines.setdefault(key, {"quantity": 0.0, "total": 0.0, "total_tax": 0.0})
+        entry["quantity"] += _f(li.get("quantity"), 0)
+        entry["total"] += _f(li.get("total"), 0)
+        entry["total_tax"] += _f(li.get("total_tax"), 0)
+    payload = {
+        "currency": order.get("currency"),
+        "lines": sorted(((*k, v["quantity"], v["total"], v["total_tax"]) for k, v in lines.items())),
+        "shipping": sorted(
+            (str(x.get("method_id") or ""), str(x.get("method_title") or ""),
+             _f(x.get("total"), 0), _f(x.get("total_tax"), 0))
+            for x in order.get("shipping_lines", [])
+        ),
+        "fees": sorted(
+            (str(x.get("name") or ""), _f(x.get("total"), 0), _f(x.get("total_tax"), 0))
+            for x in order.get("fee_lines", [])
+        ),
+        "total_tax": _f(order.get("total_tax"), 0),
+        "total": _f(order.get("total"), 0),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _woocommerce_order_customer(order: dict) -> dict | None:
+    customer_id = int(order.get("customer_id") or 0)
+    if customer_id <= 0:
+        return None
+    billing = order.get("billing") or {}
+    shipping = order.get("shipping") or {}
+    return {
+        "id": customer_id,
+        "first_name": billing.get("first_name"),
+        "last_name": billing.get("last_name"),
+        "email": billing.get("email"),
+        "phone": billing.get("phone"),
+        "billing": billing,
+        "shipping": shipping,
+    }
+
+
 async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
-    """
-    Create/update a doc (invoice) from a WooCommerce order dict.
-    Returns "created", "updated", or "noop".
+    """Reconcile one WooCommerce order through Celerp's canonical sales lifecycle.
 
-    Idempotency key: woocommerce:order:{id}
-
-    Mapping:
-      order.number                 -> ref_id
-      order.status (completed)     -> closed, else open
-      order.line_items[].price     -> unit_price (per-unit, post-discount)
-      order.line_items[].total     -> line_total
-      order.total                  -> total
+    Draft source data may be refreshed until issuance. Once finalized, commercial
+    fields are immutable: only supported lifecycle progress is applied, and a changed
+    source fingerprint fails visibly rather than rewriting posted accounting.
     """
+    from datetime import date as _date
+    from types import SimpleNamespace
+
+    from sqlalchemy import select, text
+
     from celerp.db import SessionLocal
+    from celerp.events.engine import connector_upsert, emit_event
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import Company
+    from celerp.models.projections import Projection
+    from celerp.services.money import to_decimal
+    from celerp.services.pick import consolidate_sales_lots
+    from celerp.services.units import is_non_stock_line
+    from celerp_inventory.projections import is_item_available
+    from celerp_inventory.services import (
+        external_link_for_state,
+        resolve_external_product,
+        set_external_link,
+    )
 
-    idem_key = f"woocommerce:order:{order['id']}"
+    from celerp_docs.routes import (
+        FulfillLinesRequest,
+        _finalize_doc_impl,
+        _fulfill_lines_impl,
+        _reserve_lines_impl,
+        _get_doc,
+        apply_doc_payment,
+    )
+
+    order_id = str(order["id"])
+    idem_key = f"woocommerce:order:{order_id}"
+    entity_id = f"doc:{idem_key}"
+    source_fingerprint = _woocommerce_commercial_fingerprint(order)
+    wc_status = str(order.get("status") or "pending").lower()
+    currency = str(order.get("currency") or "").upper() or None
+
+    # Registered customers are independent CRM records. Import them first so the
+    # document can carry a stable contact link; guest orders still keep snapshots.
+    contact_id = None
+    customer = _woocommerce_order_customer(order)
+    if customer is not None:
+        from celerp_contacts.services import upsert_contact_from_woocommerce
+        await upsert_contact_from_woocommerce(company_id, customer)
+        contact_id = f"contact:woocommerce:customer:{customer['id']}"
+
+    billing = order.get("billing") or {}
+    shipping = order.get("shipping") or {}
+    from celerp_contacts.services import _woocommerce_address_text
+    contact_name = " ".join(
+        p for p in (billing.get("first_name"), billing.get("last_name")) if p
+    ).strip() or billing.get("email") or f"WooCommerce order {order.get('number') or order_id}"
 
     async with SessionLocal() as session:
-        ref_id = str(order.get("number") or f"woocommerce-{order['id']}")
-        # Paid/outstanding must come from PAYMENT status, not fulfillment: WooCommerce
-        # "completed" means shipped, not paid. A processing-but-paid order is closed;
-        # an unpaid one is open regardless of fulfillment.
-        paid = bool(order.get("date_paid")) and not order.get("needs_payment", False)
-        status = "closed" if paid else "open"
-        currency = order.get("currency")
+        cid = __import__("uuid").UUID(str(company_id))
+        # One external order may arrive simultaneously by webhook, manual sync, and
+        # scheduled reconciliation. Serialize its full materialize/post transition.
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+            {"k": f"woocommerce-order:{cid}:{order_id}"},
+        )
 
-        line_items = []
-        for li in order.get("line_items", []):
-            qty = _f(li.get("quantity"), 1)
-            unit_price = _f(li.get("price"))
-            line_total = _line_total(li.get("total"), qty, unit_price, currency)
-            line_items.append({
-                "name": li.get("name", ""),
-                "quantity": qty,
-                "unit_price": unit_price,
-                "line_total": line_total,
-            })
-        total = _amt(order.get("total"), currency)
+        existing = await session.get(
+            Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True
+        )
+        if existing is not None and existing.entity_type != "doc":
+            raise ValueError(f"WooCommerce order identity collides with {existing.entity_type}")
 
-        data = {
-            "doc_type": "invoice",
-            "ref_id": ref_id,
-            "status": status,
-            "line_items": line_items,
-            "total": total,
-            "amount_outstanding": 0.0 if status == "closed" else total,
-            "currency": currency,
-            "woocommerce_order_id": str(order["id"]),
-        }
-        return await _emit_doc(session, company_id, data, idem_key)
+        if existing is not None and (existing.state or {}).get("finalized"):
+            if (existing.state or {}).get("woocommerce_source_fingerprint") != source_fingerprint:
+                raise ValueError(
+                    f"WooCommerce order {order.get('number') or order_id} changed after "
+                    "the Celerp invoice was issued; manual reconciliation is required"
+                )
+            if wc_status in {"cancelled", "failed", "refunded"}:
+                raise ValueError(
+                    f"WooCommerce order {order.get('number') or order_id} is {wc_status} "
+                    "after issuance; reverse/refund it through the accounting workflow"
+                )
+            if wc_status not in {"processing", "completed"}:
+                raise ValueError(
+                    f"WooCommerce order {order.get('number') or order_id} moved to "
+                    f"{wc_status!r} after issuance; manual reconciliation is required"
+                )
+            outcome = "noop"
+        else:
+            company = await session.get(Company, cid)
+            company_settings = dict(company.settings or {}) if company else {}
+            if not currency:
+                currency = str(company_settings.get("currency") or "USD").upper()
+
+            # Coalesce repeated source lines for one external product identity. Celerp
+            # intentionally forbids binding the same physical item to two invoice lines.
+            grouped: dict[tuple[str, str, str], dict] = {}
+            for li in order.get("line_items", []):
+                key = (
+                    str(li.get("product_id") or ""),
+                    str(li.get("variation_id") or ""),
+                    str(li.get("sku") or "").strip().casefold(),
+                )
+                entry = grouped.setdefault(key, {
+                    "product_id": li.get("product_id"),
+                    "variation_id": li.get("variation_id"),
+                    "sku": str(li.get("sku") or "").strip(),
+                    "name": li.get("name") or "",
+                    "quantity": 0.0,
+                    "total": 0.0,
+                })
+                entry["quantity"] += _f(li.get("quantity"), 0)
+                entry["total"] += _f(li.get("total"), 0)
+
+            all_items = (await session.execute(
+                select(Projection).where(
+                    Projection.company_id == cid,
+                    Projection.entity_type == "item",
+                )
+            )).scalars().all()
+
+            line_items: list[dict] = []
+            product_subtotal = 0.0
+            for source_line in grouped.values():
+                product_id = str(source_line.get("product_id") or "")
+                variation_id = str(source_line.get("variation_id") or "") or None
+                source_sku = str(source_line.get("sku") or "").strip()
+
+                # Woo can contain custom/free-text order lines with neither a product
+                # identity nor SKU. They are valid non-stock revenue lines. Any line
+                # that does claim product/SKU identity must resolve or fail closed.
+                if not product_id and not source_sku:
+                    qty = float(source_line["quantity"])
+                    if qty <= 0:
+                        raise ValueError(
+                            f"WooCommerce order line {source_line.get('name')!r} "
+                            f"has non-positive quantity {qty}"
+                        )
+                    line_total = _amt(source_line["total"], currency)
+                    product_subtotal += line_total
+                    line_items.append({
+                        "name": source_line.get("name") or "WooCommerce item",
+                        "quantity": qty,
+                        "unit_price": line_total / qty,
+                        "line_total": line_total,
+                    })
+                    continue
+
+                anchor = await resolve_external_product(
+                    session, cid, "woocommerce", product_id, variation_id,
+                    sku=source_sku or None,
+                )
+                if anchor is None:
+                    identity = (
+                        f"WooCommerce product {product_id}"
+                        + (f" variation {variation_id}" if variation_id else "")
+                        if product_id else f"WooCommerce SKU {source_sku!r}"
+                    )
+                    raise ValueError(
+                        f"{identity} does not resolve to a Celerp catalog product"
+                    )
+                anchor_state = dict(anchor.state or {})
+                link = external_link_for_state(anchor_state, "woocommerce")
+                if product_id and not link:
+                    await set_external_link(
+                        session, cid, anchor.entity_id, "woocommerce",
+                        {
+                            "product_id": product_id,
+                            **({"variation_id": variation_id} if variation_id else {}),
+                            "sync_enabled": True,
+                            "remote_deleted": False,
+                            "manage_stock": None,
+                        },
+                        source="connector",
+                    )
+
+                sku = str(anchor_state.get("sku") or source_sku).strip()
+                if not sku:
+                    raise ValueError(f"WooCommerce product {product_id} resolves to an item without a SKU")
+                qty = float(source_line["quantity"])
+                if qty <= 0:
+                    raise ValueError(f"WooCommerce order line {sku} has non-positive quantity {qty}")
+                line_total = _amt(source_line["total"], currency)
+                product_subtotal += line_total
+
+                if is_non_stock_line(anchor_state.get("inventory_type"), anchor_state.get("sell_by")):
+                    picked = {
+                        **anchor_state,
+                        "entity_id": anchor.entity_id,
+                        "id": anchor.entity_id,
+                    }
+                else:
+                    family: list[dict] = []
+                    norm_sku = sku.casefold()
+                    for row in all_items:
+                        st = row.state or {}
+                        if str(st.get("sku") or "").strip().casefold() != norm_sku:
+                            continue
+                        if not is_item_available(st) or float(st.get("quantity") or 0) <= 0:
+                            continue
+                        family.append({
+                            **st,
+                            "entity_id": row.entity_id,
+                            "id": row.entity_id,
+                            "created_at": row.created_at.isoformat() if row.created_at else "",
+                            "updated_at": row.updated_at.isoformat() if row.updated_at else "",
+                        })
+                    options = consolidate_sales_lots(family, company_settings) if family else []
+                    if len(options) != 1:
+                        raise ValueError(
+                            f"WooCommerce SKU {sku!r} does not resolve to one automatic "
+                            "sellable inventory choice"
+                        )
+                    picked = options[0]
+                    if float(picked.get("quantity") or 0) + 1e-9 < qty:
+                        raise ValueError(
+                            f"WooCommerce SKU {sku!r} requires {qty:g}, but only "
+                            f"{float(picked.get('quantity') or 0):g} is sellable"
+                        )
+
+                unit_price = line_total / qty
+                line_items.append({
+                    "item_id": picked.get("entity_id") or picked.get("id"),
+                    "sku": sku,
+                    "name": source_line.get("name") or anchor_state.get("name") or sku,
+                    "quantity": qty,
+                    "unit_price": unit_price,
+                    "line_total": line_total,
+                    "sell_by": picked.get("sell_by") or anchor_state.get("sell_by"),
+                })
+
+            fee_total = 0.0
+            for fee in order.get("fee_lines", []):
+                amount = _amt(fee.get("total"), currency)
+                fee_total += amount
+                line_items.append({
+                    "name": fee.get("name") or "WooCommerce fee",
+                    "quantity": 1,
+                    "unit_price": amount,
+                    "line_total": amount,
+                })
+
+            shipping_total = _amt(
+                sum(to_decimal(x.get("total") or 0) for x in order.get("shipping_lines", [])),
+                currency,
+            )
+            tax_total = _amt(order.get("total_tax"), currency)
+            subtotal = _amt(product_subtotal + fee_total, currency)
+            total = _amt(order.get("total"), currency)
+            mapped_total = _amt(
+                to_decimal(subtotal) + to_decimal(shipping_total) + to_decimal(tax_total),
+                currency,
+            )
+            if mapped_total != total:
+                raise ValueError(
+                    f"WooCommerce order {order.get('number') or order_id} total {total:g} "
+                    f"does not reconcile to mapped subtotal/tax/shipping {mapped_total:g}"
+                )
+
+            data = {
+                "doc_type": "invoice",
+                "ref_id": f"WOO-{order.get('number') or order_id}",
+                "status": "draft",
+                "line_items": line_items,
+                "subtotal": subtotal,
+                "tax": tax_total,
+                "shipping": shipping_total,
+                "discount": 0.0,
+                "total": total,
+                "amount_paid": 0.0,
+                "amount_outstanding": total,
+                "currency": currency,
+                "issue_date": str(order.get("date_created") or "")[:10] or _date.today().isoformat(),
+                "contact_id": contact_id,
+                "contact_name": contact_name,
+                "contact_email": billing.get("email"),
+                "contact_phone": billing.get("phone"),
+                "contact_billing_address": _woocommerce_address_text(billing),
+                "contact_shipping_address": _woocommerce_address_text(shipping)
+                    or _woocommerce_address_text(billing),
+                "woocommerce_order_id": order_id,
+                "woocommerce_order_number": str(order.get("number") or order_id),
+                "woocommerce_status": wc_status,
+                "woocommerce_source_fingerprint": source_fingerprint,
+                "woocommerce_transaction_id": order.get("transaction_id"),
+            }
+            outcome = await connector_upsert(
+                session, company_id=cid, entity_type="doc",
+                event_type="doc.created", idem_key=idem_key, data=data,
+            )
+            existing = await session.get(
+                Projection,
+                {"company_id": cid, "entity_id": entity_id},
+                with_for_update=True,
+                populate_existing=True,
+            )
+
+        if wc_status not in {"processing", "completed"}:
+            await session.commit()
+            return outcome
+
+        owner_id = (await session.execute(
+            select(UserCompany.user_id).where(
+                UserCompany.company_id == cid,
+                UserCompany.role == "owner",
+            ).order_by(UserCompany.id).limit(1)
+        )).scalar_one_or_none()
+        if owner_id is None:
+            raise ValueError("Company has no owner available to post the WooCommerce sale")
+        actor = SimpleNamespace(id=owner_id)
+
+        doc = await _get_doc(session, cid, entity_id, for_update=True)
+        changed = outcome != "noop"
+        if not doc.state.get("finalized"):
+            await _finalize_doc_impl(entity_id, cid, actor, session, commit=False)
+            changed = True
+            doc = await _get_doc(session, cid, entity_id, for_update=True)
+
+        stock_ids: list[str] = []
+        fulfill_ids: list[str] = []
+        for li in doc.state.get("line_items", []):
+            item_id = li.get("item_id") or li.get("entity_id")
+            if not item_id:
+                continue
+            item = await session.get(Projection, {"company_id": cid, "entity_id": item_id})
+            if item is None:
+                raise ValueError(f"Invoice line item {item_id} no longer exists")
+            st = item.state or {}
+            non_stock = is_non_stock_line(st.get("inventory_type"), st.get("sell_by"))
+            if non_stock:
+                if wc_status == "completed":
+                    fulfill_ids.append(item_id)
+                continue
+            item_status = str(st.get("status") or "")
+            owner_doc = st.get("status_doc_id")
+            if wc_status == "processing":
+                if item_status == "available":
+                    stock_ids.append(item_id)
+                elif item_status == "reserved" and owner_doc == entity_id:
+                    pass
+                elif item_status == "sold" and owner_doc == entity_id:
+                    pass
+                else:
+                    raise ValueError(
+                        f"Cannot reserve WooCommerce SKU {st.get('sku') or item_id}: "
+                        f"inventory is {item_status!r}"
+                    )
+            else:
+                if item_status in {"available", "reserved"} and (
+                    item_status == "available" or owner_doc == entity_id
+                ):
+                    fulfill_ids.append(item_id)
+                elif item_status == "sold" and owner_doc == entity_id:
+                    pass
+                else:
+                    raise ValueError(
+                        f"Cannot fulfill WooCommerce SKU {st.get('sku') or item_id}: "
+                        f"inventory is {item_status!r}"
+                    )
+
+        if wc_status == "processing" and stock_ids:
+            doc = await _get_doc(session, cid, entity_id, for_update=True)
+            await _reserve_lines_impl(
+                doc, entity_id, "reserved", stock_ids, actor, session, commit=False
+            )
+            changed = True
+        elif wc_status == "completed" and fulfill_ids:
+            await _fulfill_lines_impl(
+                entity_id, FulfillLinesRequest(line_entity_ids=fulfill_ids),
+                cid, actor, session, commit=False,
+            )
+            changed = True
+
+        doc = await _get_doc(session, cid, entity_id, for_update=True)
+        if order.get("date_paid") and float(doc.state.get("amount_outstanding") or 0) > 0:
+            payment_date = str(order.get("date_paid"))[:10]
+            await apply_doc_payment(
+                session, cid, entity_id,
+                {
+                    "amount": total if 'total' in locals() else float(doc.state.get("total") or 0),
+                    "payment_date": payment_date,
+                    "currency": doc.state.get("currency"),
+                    "method": order.get("payment_method") or "woocommerce",
+                    "reference": order.get("transaction_id") or f"woocommerce-order-{order_id}",
+                    "bank_account": "1110",
+                },
+                source="woocommerce",
+                actor_id=owner_id,
+                idempotency_key=f"{idem_key}:payment",
+                commit=False,
+            )
+            changed = True
+
+        current_status = str((doc.state or {}).get("woocommerce_status") or "")
+        if current_status != wc_status:
+            fields = {"woocommerce_status": {"old": current_status, "new": wc_status}}
+            if order.get("transaction_id") != (doc.state or {}).get("woocommerce_transaction_id"):
+                fields["woocommerce_transaction_id"] = {
+                    "old": (doc.state or {}).get("woocommerce_transaction_id"),
+                    "new": order.get("transaction_id"),
+                }
+            await emit_event(
+                session, company_id=cid, entity_id=entity_id, entity_type="doc",
+                event_type="doc.updated", data={"fields_changed": fields},
+                actor_id=owner_id, location_id=None, source="connector",
+                idempotency_key=f"{idem_key}:status:{wc_status}", metadata_={},
+            )
+            changed = True
+
+        await session.commit()
+        if outcome == "created":
+            return "created"
+        return "updated" if changed else "noop"
 
 
 async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> str:

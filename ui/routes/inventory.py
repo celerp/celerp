@@ -1008,6 +1008,14 @@ async def _inventory_content(
     units_map: dict[str, dict] = {u["name"]: u for u in units if u.get("name")}
     category_label_map: dict = category_display_names or {}
 
+    from celerp.modules.slots import get as get_slot
+    _settings = company.get("settings") or {}
+    connected_connectors = await _connected_connector_ids(str(company.get("id") or ""))
+    catalog_channels = [
+        ch for ch in get_slot("catalog_channel")
+        if _module_contribution_visible(ch, _settings, role, connected_connectors)
+    ]
+
     currency = company.get("currency")
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
 
@@ -1024,6 +1032,13 @@ async def _inventory_content(
         for f in eff_schema
     ]
     eff_schema = _apply_amount_edit_permission(eff_schema, role, company.get("settings") or {})
+    if catalog_channels and any(f.get("key") == "name" for f in eff_schema):
+        eff_schema = eff_schema + [{
+            "key": "_channels", "label": "Channels", "type": "text",
+            "editable": False, "required": False, "options": [],
+            "visible_to_roles": [], "position": 2.5, "show_in_table": True,
+            "virtual": True, "paired_with": "name", "sortable": False,
+        }]
     # Draft rows stay authorable: when the transform above locked the amount fields
     # for this role, mark each DRAFT row so the table renders those cells
     # click-to-edit anyway - the edit endpoints re-check status + permission
@@ -1078,7 +1093,8 @@ async def _inventory_content(
         _inventory_type_tabs(p),
         _valuation_bar(valuation, currency, lang, status=p.get("status", "")),
         _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p, lang=lang),
-        _bulk_toolbar(locations, p, total_items, settings=company.get("settings") or {}, role=role),
+        _bulk_toolbar(locations, p, total_items, settings=_settings, role=role,
+                      connected_connectors=connected_connectors),
         Div(
             _column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open),
             cls="column-manager-row",
@@ -1095,7 +1111,11 @@ async def _inventory_content(
             currency=currency,
             sort_target="#inventory-content",
             auto_hide_empty=False,
-            cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency),
+            cell_renderers=_inventory_cell_renderers(
+                eff_schema, unit_names, units_map, category_label_map, currency=currency,
+                catalog_channels=catalog_channels,
+                channel_query=urlencode(_base_state(p_with_cols)), settings=_settings, role=role,
+            ),
             hidden_fields=set(_PAIRED_TABLE.values()),
             column_filters=_inventory_column_filters(eff_schema, schema, locations, attribute_facets, p),
         ) if items else _inventory_empty_state(p),
@@ -1123,7 +1143,8 @@ def _duplicate_payload(source: dict, new_sku: str) -> dict:
     shared sequence (the same reset a split child gets). Core columns and any *_price
     stay top-level; everything else goes into attributes. Shared by the single-item
     and bulk duplicate paths."""
-    _SKIP = {"id", "status", "location_name", "created_at", "updated_at", "barcode"}
+    _SKIP = {"id", "status", "location_name", "created_at", "updated_at", "barcode",
+             "idempotency_key", "external_links", "_channel_state"}
     _CORE = {"sku", "name", "quantity", "category", "location_id",
              "description", "unit", "sell_by", "tax_codes"}
     payload: dict = {"sku": new_sku, "auto_barcode": True}
@@ -3212,24 +3233,64 @@ function celerpPrintLabel(entityId, templateId) {
         updated = result.get("updated", len(entity_ids))
         return _bulk_destructive_success(t("inventory.bulk_reverted_draft", n=updated))
 
-    @app.post("/api/items/bulk/shopify-sync/{action}")
-    async def bulk_item_shopify_sync(request: Request, action: str):
-        """Bulk enable/disable outbound Shopify sync on the selected items."""
+    @app.post("/api/items/{entity_id}/channel-sync/{platform}/{action}")
+    async def item_channel_sync(request: Request, entity_id: str, platform: str, action: str):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        enable = action == "enable"
+        try:
+            result = await api.set_connector_item_sync(token, platform, [entity_id], action == "enable")
+        except APIError as e:
+            return HTMLResponse(
+                to_xml(Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")),
+                headers={"HX-Retarget": "#bulk-action-result", "HX-Reswap": "outerHTML"},
+            )
+        errors = result.get("errors") or []
+        if errors:
+            return HTMLResponse(
+                to_xml(Div(P("; ".join(errors), cls="flash flash--warning"), id="bulk-action-result")),
+                headers={"HX-Retarget": "#bulk-action-result", "HX-Reswap": "outerHTML"},
+            )
+        return await _render_inventory_fragment(token, _parse_params(request), get_lang(request), _get_role(request))
+
+    @app.post("/api/items/bulk/channel-sync/{platform}/{action}")
+    async def bulk_item_channel_sync(request: Request, platform: str, action: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
         form = await request.form()
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         if not entity_ids:
             return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
         try:
-            result = await api.bulk_shopify_sync(token, entity_ids, enable)
+            result = await api.set_connector_item_sync(token, platform, entity_ids, action == "enable")
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
-        updated = result.get("updated", len(entity_ids))
-        verb = t("connectors.enable_shopify_sync") if enable else t("connectors.disable_shopify_sync")
-        return _bulk_destructive_success(t("inventory.bulk_verb_count", verb=verb, n=updated))
+        errors = result.get("errors") or []
+        if errors:
+            return Div(P("; ".join(errors), cls="flash flash--warning"), id="bulk-action-result")
+        return HTMLResponse(
+            to_xml(_bulk_destructive_success(t("inventory.bulk_verb_count", verb="Sync", n=result.get("updated", 0)))),
+            headers={"HX-Refresh": "true"},
+        )
+
+    @app.post("/api/items/bulk/shopify-sync/{action}")
+    async def bulk_item_shopify_sync(request: Request, action: str):
+        """Compatibility alias for the older Shopify-specific bulk action URL."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+        if not entity_ids:
+            return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="bulk-action-result")
+        try:
+            result = await api.set_connector_item_sync(token, "shopify", entity_ids, action == "enable")
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+        return _bulk_destructive_success(
+            t("inventory.bulk_verb_count", verb="Shopify sync", n=result.get("updated", 0))
+        )
 
     @app.post("/api/items/bulk/transfer")
     async def bulk_item_transfer(request: Request):
@@ -4660,8 +4721,44 @@ def _slot_label(slot: dict, fallback: str = "") -> str:
     return t(key) if key else slot.get("label", fallback)
 
 
+
+def _module_contribution_visible(
+    contribution: dict, settings: dict, role: str,
+    connected_connectors: set[str] | None = None,
+) -> bool:
+    """Apply company-module, permission, and optional connector gates uniformly."""
+    from celerp.modules.loader import CORE_FOLDED
+    from celerp.modules.registry import get_enabled
+    module = contribution.get("_module")
+    if module and module not in CORE_FOLDED and "enabled_modules" in settings:
+        if module not in get_enabled(settings):
+            return False
+    permission = contribution.get("permission")
+    if permission and not role_has_permission(settings, role, permission):
+        return False
+    required = contribution.get("requires_connector")
+    if required and required not in (connected_connectors or set()):
+        return False
+    return True
+
+
+async def _connected_connector_ids(company_id: str) -> set[str]:
+    """Read configured channels once per catalog render."""
+    try:
+        import sqlalchemy as sa
+        from celerp.db import get_session_ctx
+        from celerp.models.connector_config import ConnectorConfig
+        async with get_session_ctx() as session:
+            rows = await session.execute(sa.select(ConnectorConfig.connector).where(
+                ConnectorConfig.company_id == str(company_id)
+            ))
+            return {str(v) for v in rows.scalars().all()}
+    except Exception:
+        return set()
+
 def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int = 0,
-                  settings: dict | None = None, role: str = "owner") -> FT:
+                  settings: dict | None = None, role: str = "owner",
+                  connected_connectors: set[str] | None = None) -> FT:
     """Sticky toolbar: [N selected] [Clear] [Action ▾] [context-area].
 
     Single action dropdown drives everything. Context area swaps based on selection.
@@ -4672,7 +4769,11 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     loc_opts = [Option(loc.get("name", ""), value=loc.get("location_id") or loc.get("id", "")) for loc in locations]
 
     # Send-to targets from modules (e.g. Invoice, List, Consignment Out)
-    send_to_targets = get_slot("send_to_targets")
+    _settings = settings or {}
+    send_to_targets = [
+        tgt for tgt in get_slot("send_to_targets")
+        if _module_contribution_visible(tgt, _settings, role, connected_connectors)
+    ]
     send_to_opts = [
         Option(tgt.get("label", ""), value=tgt.get("doc_type", ""))
         for tgt in send_to_targets
@@ -4683,8 +4784,7 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     # action_type="htmx" (default) → HTMX POST into #bulk-action-result.
     visible_bulk_actions = [
         action for action in get_slot("bulk_action")
-        if not action.get("permission")
-        or role_has_permission(settings or {}, role, action["permission"])
+        if _module_contribution_visible(action, _settings, role, connected_connectors)
     ]
     module_action_opts = []
     for action in visible_bulk_actions:
@@ -5223,7 +5323,7 @@ def _render_virtual_total_cell(entity_id: str, field: str, unit_price: float | N
     )
 
 
-def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None, currency: str | None = None) -> dict:
+def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None, currency: str | None = None, catalog_channels: list[dict] | None = None, channel_query: str = "", settings: dict | None = None, role: str = "owner") -> dict:
     """Build cell_renderers dict for paired/triple columns.
 
     Handles:
@@ -5346,6 +5446,59 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
             _rek = set(row.get("_row_editable_keys") or ())
             return display_cell(entity_id=entity_id, field="pieces", value=row.get("pieces", ""), cell_type="number", editable=_ed or "pieces" in _rek)
         renderers["pieces"] = _pieces_renderer
+
+    if "_channels" in schema_keys and catalog_channels:
+        _channels = list(catalog_channels)
+        _settings = settings or {}
+        def _channels_renderer(entity_id: str, row: dict) -> FT:
+            state_map = row.get("_channel_state") or {}
+            buttons = []
+            for channel in _channels:
+                platform = str(channel.get("id") or "")
+                label = str(channel.get("label") or platform)
+                marker = str(channel.get("marker") or label[:1]).upper()
+                state = state_map.get(platform) or {}
+                linked = bool(state.get("linked"))
+                enabled = bool(state.get("enabled")) and not state.get("remote_deleted")
+                ambiguous = bool(state.get("ambiguous"))
+                can_write = (
+                    not ambiguous
+                    and role_has_permission(_settings, role, channel.get("write_permission") or "adjust_inventory")
+                    and (linked or bool(channel.get("can_create")))
+                )
+                cls = "catalog-channel"
+                if enabled:
+                    cls += " catalog-channel--on"
+                elif state.get("remote_deleted") or ambiguous:
+                    cls += " catalog-channel--warn"
+                else:
+                    cls += " catalog-channel--off"
+                if enabled:
+                    title, action = f"Synced with {label}. Click to stop synchronization.", "disable"
+                elif ambiguous:
+                    title, action = f"{label} link is ambiguous and cannot be changed here.", "enable"
+                elif state.get("remote_deleted"):
+                    title, action = f"The linked {label} product no longer exists.", "enable"
+                elif linked:
+                    title, action = f"Not syncing with {label}. Click to enable synchronization.", "enable"
+                elif channel.get("can_create"):
+                    title, action = f"Not linked to {label}. Click to link or publish this product.", "enable"
+                else:
+                    title, action = f"Not linked to {label}.", "enable"
+                attrs = {"type": "button", "cls": cls, "title": title, "aria_label": title}
+                if can_write:
+                    qs = f"?{channel_query}" if channel_query else ""
+                    attrs.update({
+                        "hx_post": f"/api/items/{entity_id}/channel-sync/{platform}/{action}{qs}",
+                        "hx_target": "#inventory-content", "hx_swap": "outerHTML",
+                    })
+                else:
+                    attrs["disabled"] = True
+                buttons.append(Button(marker, **attrs))
+            return Td(Div(*buttons, cls="catalog-channels"),
+                      id=f"cell-{entity_id.replace(':', '-')}-_channels",
+                      cls="cell cell--channels", data_col="_channels")
+        renderers["_channels"] = _channels_renderer
 
     # Status renderer: a doc-driven status (sold, memo_out, consigned-in stock) carries
     # the causing document on the item state; the badge reads STATUS: DOC-NUMBER with

@@ -39,6 +39,10 @@ router = APIRouter(
     tags=["connectors"],
     dependencies=[Depends(get_current_user), Depends(require_session_token)],
 )
+local_router = APIRouter(
+    prefix="/connector-items", tags=["connectors"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 # ── Request / Response schemas ────────────────────────────────────────────────
@@ -294,8 +298,84 @@ async def connector_access_token(
     return r.json()
 
 
+
+class ItemSyncRequest(BaseModel):
+    entity_ids: list[str]
+    enable: bool = True
+
+
+@local_router.post("/{connector_name}/sync")
+async def set_item_sync(
+    connector_name: str, payload: ItemSyncRequest,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    user=Depends(get_current_user), _: None = require_permission("adjust_inventory"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Enable or disable catalog product synchronization for one connected channel."""
+    if connector_name not in {"shopify", "woocommerce"}:
+        raise HTTPException(status_code=404, detail="Unsupported catalog connector")
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    import sqlalchemy as sa
+    from celerp.events.engine import emit_event
+    from celerp.models.connector_config import ConnectorConfig
+    from celerp_inventory.services import external_link_for_state, resolve_catalog_anchor_for_item, set_external_link_state
+    configured = (await session.execute(sa.select(ConnectorConfig.id).where(
+        ConnectorConfig.company_id == str(company_id),
+        ConnectorConfig.connector == connector_name,
+    ))).scalar_one_or_none()
+    if configured is None:
+        raise HTTPException(status_code=409, detail=f"{connector_name} is not connected")
+    anchors: dict[str, object] = {}
+    errors: list[str] = []
+    for entity_id in dict.fromkeys(payload.entity_ids):
+        try:
+            anchor = await resolve_catalog_anchor_for_item(session, company_id, entity_id)
+            anchors[anchor.entity_id] = anchor
+        except ValueError as exc:
+            errors.append(f"{entity_id}: {exc}")
+    updated = 0
+    if connector_name == "shopify":
+        for anchor_id, anchor in anchors.items():
+            state = anchor.state or {}
+            linked = external_link_for_state(state, "shopify")
+            if payload.enable and not linked:
+                errors.append(f"{state.get('sku') or anchor_id}: not linked to a Shopify product; import it from Shopify first")
+                continue
+            desired = bool(payload.enable)
+            if bool(anchor.is_sync_to_shopify) == desired: continue
+            await emit_event(session, company_id=company_id, entity_id=anchor_id, entity_type="item",
+                event_type="shop.sync.enabled" if desired else "shop.sync.disabled", data={},
+                actor_id=user.id, location_id=None, source="connector_ui",
+                idempotency_key=str(__import__("uuid").uuid4()), metadata_={})
+            updated += 1
+        await session.commit()
+    elif not payload.enable:
+        for anchor_id, anchor in anchors.items():
+            link = external_link_for_state(anchor.state or {}, "woocommerce")
+            if not link or link.get("sync_enabled") is False: continue
+            await set_external_link_state(session, company_id, anchor_id, "woocommerce",
+                sync_enabled=False, actor_id=user.id, source="connector_ui")
+            updated += 1
+        await session.commit()
+    else:
+        from celerp.connectors.relay_token import fetch_context
+        from celerp.connectors.woocommerce import WooCommerceConnector
+        ctx = await fetch_context(str(company_id), "woocommerce")
+        if ctx is None:
+            raise HTTPException(status_code=409, detail="WooCommerce is connected but its credentials are not currently available")
+        for anchor_id, anchor in anchors.items():
+            try:
+                await WooCommerceConnector().ensure_product_link(ctx, anchor_id, actor_id=user.id)
+                updated += 1
+            except Exception as exc:
+                errors.append(f"{(anchor.state or {}).get('sku') or anchor_id}: {exc}")
+    return {"updated": updated, "enabled": payload.enable, "errors": errors}
+
+
 # ── Module entry point ────────────────────────────────────────────────────────
 
 def setup_api_routes(app) -> None:
     """Called by the module loader to register connector routes."""
     app.include_router(router)
+    app.include_router(local_router)

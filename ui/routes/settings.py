@@ -57,6 +57,9 @@ async def _check_permission(
         if page_view:
             return None
         return RedirectResponse("/dashboard", status_code=302)
+    # Reuse this API-authenticated company identity in downstream settings
+    # handlers instead of re-fetching it or trusting locally decoded JWT claims.
+    request.state.auth_company = company
     role = api.role_from_company(company)
     settings = company.get("settings") or {}
     if not role_has_permission(settings, role, key):

@@ -37,13 +37,15 @@ def test_money_keeps_zero(raw, expected):
 # ── price 0 -> 0.0 across connectors ─────────────────────────────────────────
 
 def _captured_price(mock_upsert):
+    if mock_upsert.call_args.kwargs:
+        return mock_upsert.call_args.kwargs["sale_price"]
     return mock_upsert.call_args[0][1].sale_price
 
 
 @pytest.mark.asyncio
 async def test_woocommerce_zero_price_kept():
     ctx = ConnectorContext(company_id="co", access_token="k:s", store_handle="https://shop.test")
-    with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")) as up:
+    with respx.mock, patch("celerp_inventory.services.upsert_external_product", new=AsyncMock(return_value=("created", "item:test"))) as up:
         respx.get("https://shop.test/wp-json/wc/v3/products").mock(return_value=httpx.Response(
             200, json=[{"id": 1, "sku": "FREE", "name": "Free", "regular_price": "0"}],
             headers={"X-WP-TotalPages": "1"}))
@@ -108,7 +110,10 @@ async def test_woocommerce_paginates_without_total_pages_header():
     ctx = ConnectorContext(company_id="co", access_token="k:s", store_handle="https://shop.test")
     page1 = [{"id": i, "sku": f"S{i}", "name": "x", "regular_price": "1"} for i in range(100)]
     page2 = [{"id": 100, "sku": "S100", "name": "x", "regular_price": "1"}]
-    with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")):
+    with respx.mock, patch(
+        "celerp_inventory.services.upsert_external_product",
+        new=AsyncMock(return_value=("created", "item:test")),
+    ):
         route = respx.get("https://shop.test/wp-json/wc/v3/products").mock(side_effect=[
             httpx.Response(200, json=page1),   # full page, no header
             httpx.Response(200, json=page2),   # short page -> stop

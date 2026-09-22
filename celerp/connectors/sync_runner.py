@@ -29,6 +29,42 @@ _SYNC_METHODS = {
     "inventory_out": "sync_inventory_out",
 }
 _OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out"}
+_OUTBOUND_ENTITY_METHODS = {
+    "products_out": "sync_products_out",
+    "invoices_out": "sync_invoices_out",
+    "inventory_out": "sync_inventory_out",
+}
+
+
+def supported_outbound(connector: ConnectorBase) -> list[str]:
+    """Outbound entities implemented by this connector, in stable dispatch order."""
+    return [
+        entity for entity, method in _OUTBOUND_ENTITY_METHODS.items()
+        if getattr(type(connector), method, None) is not getattr(ConnectorBase, method, None)
+    ]
+
+
+def sync_plan(connector: ConnectorBase, direction: SyncDirection) -> list[str]:
+    """One direction-aware plan shared by connect, manual, and reconciliation paths."""
+    direction = direction if isinstance(direction, SyncDirection) else SyncDirection(direction)
+    plan: list[str] = []
+    if direction in (SyncDirection.INBOUND, SyncDirection.BOTH):
+        plan.extend(e.value for e in connector.supported_entities)
+    if direction in (SyncDirection.OUTBOUND, SyncDirection.BOTH):
+        plan.extend(supported_outbound(connector))
+    return plan
+
+
+async def run_connector_sync(
+    connector: ConnectorBase,
+    ctx: ConnectorContext,
+    direction: SyncDirection,
+) -> list[SyncResult]:
+    """Execute a connector's canonical plan through the audited per-entity runner."""
+    return [
+        await run_sync(connector, ctx, entity, direction=direction)
+        for entity in sync_plan(connector, direction)
+    ]
 
 
 async def _last_success_watermark(company_id: str, connector: str, entity: str):
@@ -78,6 +114,12 @@ async def _begin_run(company_id: str, connector: str, entity: str, direction_str
 
     try:
         async with get_session_ctx() as session:
+            # Serialize check+insert itself. Without this lock, two workers can both
+            # observe no running row and each insert one.
+            await session.execute(
+                sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                {"k": f"sync-run:{company_id}:{connector}:{entity}"},
+            )
             existing = await session.scalar(
                 sa.select(SyncRun.id)
                 .where(

@@ -130,3 +130,42 @@ def test_is_safe_authorize_url():
     assert is_safe_authorize_url("data:text/html,evil") is False              # non-web scheme
     assert is_safe_authorize_url("https://x/</script><script>evil()</script>") is False  # tag breakout
     assert is_safe_authorize_url("https://x/\x00abc") is False                # control char
+
+
+@pytest.mark.asyncio
+async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
+    from unittest.mock import patch
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig
+    from ui.routes.settings_connectors import _get_connector_config, _ensure_connector_config
+
+    company_uuid = uuid.uuid4()
+    company_id = str(company_uuid)
+    legacy_id = f"inst-{uuid.uuid4().hex[:10]}"
+    try:
+        async with get_session_ctx() as session:
+            session.add(Company(
+                id=company_uuid,
+                name="Legacy Connector Co",
+                slug=f"legacy-connector-{company_uuid.hex[:8]}",
+                settings={},
+            ))
+            await session.commit()
+        with patch("celerp.config.ensure_instance_id", return_value=legacy_id):
+            await _ensure_connector_config(legacy_id, "woocommerce", "website")
+            cfg = await _get_connector_config(company_id, "woocommerce")
+            assert cfg is not None
+            assert cfg.company_id == company_id
+            assert await _get_connector_config(company_id, "woocommerce") is not None
+    finally:
+        async with get_session_ctx() as session:
+            await session.execute(
+                sa.delete(ConnectorConfig).where(
+                    ConnectorConfig.company_id.in_([company_id, legacy_id])
+                )
+            )
+            await session.execute(sa.delete(Company).where(Company.id == company_uuid))
+            await session.commit()
