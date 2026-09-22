@@ -2133,4 +2133,261 @@ if "test_generic_sync_requires_active_owned_integration" not in contract:
 write(contract_path, contract)
 
 
+
+# ---------------------------------------------------------------------------
+# Final invariant pass: adjacent lifecycle/concurrency cases.
+# ---------------------------------------------------------------------------
+
+# Pending activation must be able to pull orders using its durable claim cutoff.
+replace_once(
+    "celerp/connectors/woocommerce.py",
+    '''        from celerp.connectors.ownership import get_active_connector_config
+        config = await get_active_connector_config(ctx.company_id, "woocommerce")
+        if config is None or config.claimed_at is None:
+            result.errors = ["WooCommerce ownership is not active for this company"]
+''',
+    '''        from celerp.connectors.ownership import get_connector_config
+        config = await get_connector_config(
+            ctx.company_id, "woocommerce", adopt_single_company=False
+        )
+        if config is None or config.claimed_at is None:
+            result.errors = ["WooCommerce ownership is not claimed by this company"]
+''',
+)
+
+# Remote hook discovery is the recovery mechanism when cached IDs/secrets were lost.
+replace_once(
+    "default_modules/celerp-connectors/celerp_connectors/routes.py",
+    '''            if connector_name == "woocommerce" and (
+                config.webhook_ids or config.webhook_secret
+            ):
+''',
+    '''            if connector_name == "woocommerce":
+''',
+)
+
+# A live installation-scoped credential may not be replaced in place. Disconnect first,
+# so old-account cleanup happens before any new external account can become authoritative.
+routes_path = "default_modules/celerp-connectors/celerp_connectors/routes.py"
+routes = read(routes_path)
+_start = routes.index('@router.post("/{connector_name}/credentials")')
+_end = routes.index('@router.delete("/{connector_name}/credentials")', _start)
+_store = r'''@router.post("/{connector_name}/credentials")
+async def store_credentials(
+    connector_name: str,
+    payload: ApiKeyCredentials,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+) -> dict:
+    """Validate, claim, then store one installation-scoped API-key connection."""
+    import httpx
+    import os
+
+    from celerp.connectors.base import ConnectorCategory
+    from celerp.connectors.operation_lock import ConnectorBusy, connector_operation
+    from celerp.connectors.ownership import (
+        ConnectorOwnershipError, claim_connector, get_connector_config,
+    )
+    from celerp.gateway.state import relay_http_url, relay_session_headers
+
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if (err := _relay_https_error()) is not None:
+        return err
+
+    store_url = (payload.store_url or "").strip().rstrip("/")
+
+    # Validation is read-only and happens before ownership is claimed. A typo must
+    # not strand a pending claim that blocks every other company on the install.
+    if connector_name == "woocommerce":
+        if not store_url:
+            return {"ok": False, "error": "store_unreachable", "detail": "Store URL is required."}
+        allow_http = (
+            store_url.startswith("http://")
+            and bool(os.environ.get("CELERP_ALLOW_HTTP_STORE"))
+        )
+        if not (store_url.startswith("https://") or allow_http):
+            return {
+                "ok": False, "error": "store_unreachable",
+                "detail": "Store URL must use https:// (API keys are sent as Basic Auth).",
+            }
+        try:
+            async with httpx.AsyncClient(timeout=8.0) as c:
+                probe = await c.get(
+                    f"{store_url}/wp-json/wc/v3/products",
+                    params={"per_page": 1},
+                    auth=(payload.consumer_key, payload.consumer_secret),
+                )
+            if probe.status_code == 401:
+                return {
+                    "ok": False, "error": "store_rejected",
+                    "detail": "store rejected the consumer key/secret (401)",
+                }
+            probe.raise_for_status()
+        except Exception as exc:
+            return {"ok": False, "error": "store_unreachable", "detail": str(exc)}
+
+    try:
+        async with connector_operation(str(company_id), connector_name):
+            existing = await get_connector_config(
+                str(company_id), connector_name, adopt_single_company=True
+            )
+            if existing is not None and existing.activated_at is not None:
+                return {
+                    "ok": False,
+                    "error": "already_connected",
+                    "detail": "Disconnect this connector before replacing its credentials.",
+                }
+            try:
+                await claim_connector(
+                    str(company_id),
+                    connector_name,
+                    sync_frequency=(
+                        "realtime"
+                        if connector.category == ConnectorCategory.WEBSITE else "manual"
+                    ),
+                )
+            except ConnectorOwnershipError as exc:
+                return {"ok": False, "error": "ownership_conflict", "detail": str(exc)}
+
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as c:
+                    r = await c.post(
+                        f"{relay_http_url()}/tokens/{connector_name}",
+                        json={
+                            "consumer_key": payload.consumer_key,
+                            "consumer_secret": payload.consumer_secret,
+                            "store_url": store_url or None,
+                        },
+                        headers=relay_session_headers(),
+                    )
+            except Exception as exc:
+                return {"ok": False, "error": "relay_error", "detail": str(exc)}
+    except ConnectorBusy as exc:
+        return {"ok": False, "error": "connector_busy", "detail": str(exc)}
+
+    if r.status_code == 402:
+        return {"ok": False, "error": "subscription_required", "detail": ""}
+    if r.status_code != 200:
+        return {
+            "ok": False, "error": "relay_error",
+            "detail": f"relay returned {r.status_code}",
+        }
+    return {"ok": True}
+
+
+'''
+routes = routes[:_start] + _store + routes[_end:]
+write(routes_path, routes)
+
+# OAuth has the same replacement boundary as API keys.
+replace_once(
+    "celerp/routers/health.py",
+    '''    api_key = _s.gateway_token
+    if not api_key:
+        return {"error": "Not connected to relay."}
+
+    from celerp.gateway.state import (
+''',
+    '''    api_key = _s.gateway_token
+    if not api_key:
+        return {"error": "Not connected to relay."}
+
+    from celerp.connectors.ownership import get_connector_config
+    existing = await get_connector_config(
+        str(company_id), platform, adopt_single_company=True
+    )
+    if existing is not None and existing.activated_at is not None:
+        return {"error": "Disconnect this connector before replacing its authorization."}
+
+    from celerp.gateway.state import (
+''',
+)
+
+# Keep the canonical lock order doc-row -> sales-allocation. Manual reserve/fulfill
+# already locks the document before entering their implementations.
+replace_once(
+    "default_modules/celerp-docs/celerp_docs/doc_service.py",
+    '''        )
+        await lock_sales_stock_allocation(session, cid)
+
+        existing = await session.get(
+''',
+    '''        )
+
+        existing = await session.get(
+''',
+)
+replace_once(
+    "default_modules/celerp-docs/celerp_docs/doc_service.py",
+    '''            await session.commit()
+            return "noop"
+
+        if existing is not None and (existing.state or {}).get("finalized"):
+''',
+    '''            await session.commit()
+            return "noop"
+
+        await lock_sales_stock_allocation(session, cid)
+
+        if existing is not None and (existing.state or {}).get("finalized"):
+''',
+)
+
+# We do not implement Woo refunds in this path. Never silently treat a partially
+# refunded completed order as unchanged just because its order total stayed stable.
+replace_once(
+    "default_modules/celerp-docs/celerp_docs/doc_service.py",
+    '''    wc_status = str(order.get("status") or "pending").lower()
+    currency = str(order.get("currency") or "").upper() or None
+
+''',
+    '''    wc_status = str(order.get("status") or "pending").lower()
+    currency = str(order.get("currency") or "").upper() or None
+    if order.get("refunds"):
+        raise ValueError(
+            f"WooCommerce order {order.get('number') or order_id} contains refunds; "
+            "manual reconciliation is required"
+        )
+
+''',
+)
+
+# A stale remote-deleted identity is intentionally reclaimable.
+replace_once(
+    "default_modules/celerp-inventory/celerp_inventory/services.py",
+    '''        if _same_external_identity(other_link, product_id, variation_id):
+            raise ValueError(
+''',
+    '''        if (
+            other_link
+            and other_link.get("remote_deleted") is not True
+            and _same_external_identity(other_link, product_id, variation_id)
+        ):
+            raise ValueError(
+''',
+)
+
+# External identity lock is taken before the target row lock; refresh the row under
+# that lock so concurrent channel updates cannot merge against a stale identity-map copy.
+replace_once(
+    "default_modules/celerp-inventory/celerp_inventory/services.py",
+    '''        entity_id = row.entity_id
+        state = dict(row.state or {})
+''',
+    '''        entity_id = row.entity_id
+        row = await session.get(
+            Projection,
+            {"company_id": cid, "entity_id": entity_id},
+            with_for_update=True,
+            populate_existing=True,
+        )
+        if row is None or row.entity_type != "item":
+            raise ValueError(f"Item {entity_id!r} disappeared during external identity resolution")
+        state = dict(row.state or {})
+''',
+)
+
 print("PR340 hardening patch applied")
