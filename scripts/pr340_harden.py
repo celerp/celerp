@@ -1827,7 +1827,8 @@ replace_once(
 ''',
     '''    session.add(ConnectorConfig(
         company_id=str(company_id), connector="woocommerce", direction="both",
-        claimed_at=now, activated_at=now,
+        claimed_at=datetime.now(timezone.utc),
+        activated_at=datetime.now(timezone.utc),
     ))
 ''',
 )
@@ -2009,58 +2010,6 @@ elif "ConnectorConfig.activated_at.is_not(None)" not in inv_ui:
     raise SystemExit("inventory UI: active connector filter missing")
 write(inv_ui_path, inv_ui)
 
-# Serialize customer-stock allocation and invalidate any inventory objects loaded
-# before the lease, so validation cannot use Woo's earlier in-session snapshot.
-write("celerp/services/inventory_allocation.py", r'''# Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BUSL-1.1
-"""Serialization for customer-stock allocation decisions."""
-from __future__ import annotations
-
-import sqlalchemy as sa
-
-
-async def lock_sales_allocation(session, company_id) -> None:
-    """Serialize reserve/fulfill availability decisions for one company."""
-    if session.bind.dialect.name == "postgresql":
-        await session.execute(
-            sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
-            {"k": f"sales-allocation:{company_id}"},
-        )
-''')
-
-doc_routes_path = "default_modules/celerp-docs/celerp_docs/routes.py"
-doc_routes = read(doc_routes_path)
-if "await lock_sales_allocation(session, row.company_id)" not in doc_routes:
-    reserve_pattern = re.compile(
-        r'(async def _reserve_lines_impl\(.*?)(    unit_map = await _get_unit_map\(session, row\.company_id\)\n)',
-        re.S,
-    )
-    doc_routes, n = reserve_pattern.subn(
-        r'\1    from celerp.services.inventory_allocation import lock_sales_allocation\n'
-        r'    await lock_sales_allocation(session, row.company_id)\n'
-        r'    session.expire_all()\n'
-        r'\2',
-        doc_routes, count=1,
-    )
-    if n != 1:
-        raise SystemExit("docs routes: reserve allocation boundary missing")
-
-if "await lock_sales_allocation(session, company_id)" not in doc_routes:
-    fulfill_pattern = re.compile(
-        r'(async def _fulfill_lines_impl\(.*?)(    _unit_map = await _get_unit_map\(session, company_id\)\n)',
-        re.S,
-    )
-    doc_routes, n = fulfill_pattern.subn(
-        r'\1    from celerp.services.inventory_allocation import lock_sales_allocation\n'
-        r'    await lock_sales_allocation(session, company_id)\n'
-        r'    session.expire_all()\n'
-        r'\2',
-        doc_routes, count=1,
-    )
-    if n != 1:
-        raise SystemExit("docs routes: fulfillment allocation boundary missing")
-write(doc_routes_path, doc_routes)
-
 # Discoverable Woo hooks are installation-specific. Legacy generic hooks are
 # cleaned only by their persisted IDs, never by a broad name match.
 woo_path = "celerp/connectors/woocommerce.py"
@@ -2113,10 +2062,11 @@ def test_catalog_controls_ignore_pending_connector_claims():
     assert "ConnectorConfig.activated_at.is_not(None)" in source
 
 
-def test_sales_allocation_refreshes_preloaded_inventory():
-    source = _text("default_modules/celerp-docs/celerp_docs/routes.py")
-    assert source.count("await lock_sales_allocation(") >= 2
-    assert source.count("session.expire_all()") >= 2
+def test_sales_allocation_uses_one_canonical_lock():
+    pick = _text("celerp/services/pick.py")
+    routes = _text("default_modules/celerp-docs/celerp_docs/routes.py")
+    assert "async def lock_sales_stock_allocation" in pick
+    assert routes.count("await lock_sales_stock_allocation(") >= 2
 
 
 def test_relay_context_requires_local_connector_owner():
@@ -2389,5 +2339,204 @@ replace_once(
         state = dict(row.state or {})
 ''',
 )
+
+
+# Preserve unknown-connector 404 before applying the active-ownership gate.
+routes_path = "default_modules/celerp-connectors/celerp_connectors/routes.py"
+routes = read(routes_path)
+_old = '''    from celerp.connectors.ownership import get_active_connector_config
+    if await get_active_connector_config(company_id, connector_name) is None:
+        raise HTTPException(
+            status_code=409, detail="Connector is not active for this company"
+        )
+
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+'''
+_new = '''    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    from celerp.connectors.ownership import get_active_connector_config
+    if await get_active_connector_config(company_id, connector_name) is None:
+        raise HTTPException(
+            status_code=409, detail="Connector is not active for this company"
+        )
+'''
+if _old not in routes:
+    raise SystemExit("connector trigger guard order not found")
+write(routes_path, routes.replace(_old, _new, 1))
+
+status_path = "tests/test_connectors_status.py"
+status = read(status_path)
+
+def _replace_async_test(source: str, name: str, replacement: str) -> str:
+    pattern = re.compile(
+        rf'@pytest\.mark\.asyncio\nasync def {re.escape(name)}\(.*?'
+        rf'(?=\n\n(?:@pytest|def |#)|\Z)',
+        re.S,
+    )
+    source, n = pattern.subn(replacement.rstrip(), source, count=1)
+    if n != 1:
+        raise SystemExit(f"could not replace {name}")
+    return source
+
+status = _replace_async_test(
+    status,
+    "test_clear_connector_config_removes_row",
+    r'''@pytest.mark.asyncio
+async def test_clear_connector_config_removes_row(_db_engine):
+    import sqlalchemy as sa
+    from celerp.db import get_session_ctx
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig
+    from ui.routes.settings_connectors import (
+        _clear_connector_config, _ensure_connector_config, _get_connector_config,
+    )
+
+    company_uuid = uuid.uuid4()
+    cid = str(company_uuid)
+    async with get_session_ctx() as session:
+        session.add(Company(
+            id=company_uuid, name="Connector Cleanup Co",
+            slug=f"connector-cleanup-{company_uuid.hex[:8]}", settings={},
+        ))
+        await session.commit()
+    try:
+        await _ensure_connector_config(cid, "woocommerce", "website")
+        assert await _get_connector_config(cid, "woocommerce") is not None
+        await _clear_connector_config(cid, "woocommerce")
+        assert await _get_connector_config(cid, "woocommerce") is None
+    finally:
+        async with get_session_ctx() as session:
+            await session.execute(
+                sa.delete(ConnectorConfig).where(ConnectorConfig.company_id == cid)
+            )
+            await session.execute(sa.delete(Company).where(Company.id == company_uuid))
+            await session.commit()
+''',
+)
+
+status = _replace_async_test(
+    status,
+    "test_get_connector_config_adopts_legacy_instance_row",
+    r'''@pytest.mark.asyncio
+async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig
+    from ui.routes.settings_connectors import _get_connector_config
+
+    company_uuid = uuid.uuid4()
+    company_id = str(company_uuid)
+    legacy_id = f"inst-{uuid.uuid4().hex[:10]}"
+    now = datetime.now(timezone.utc)
+    try:
+        async with get_session_ctx() as session:
+            session.add(Company(
+                id=company_uuid, name="Legacy Connector Co",
+                slug=f"legacy-connector-{company_uuid.hex[:8]}", settings={},
+            ))
+            session.add(ConnectorConfig(
+                company_id=legacy_id, connector="woocommerce", direction="both",
+                claimed_at=now, activated_at=now,
+            ))
+            await session.commit()
+        with patch("celerp.config.ensure_instance_id", return_value=legacy_id):
+            cfg = await _get_connector_config(company_id, "woocommerce")
+            assert cfg is not None
+            assert cfg.company_id == company_id
+    finally:
+        async with get_session_ctx() as session:
+            await session.execute(
+                sa.delete(ConnectorConfig).where(
+                    ConnectorConfig.company_id.in_([company_id, legacy_id])
+                )
+            )
+            await session.execute(sa.delete(Company).where(Company.id == company_uuid))
+            await session.commit()
+''',
+)
+
+status = _replace_async_test(
+    status,
+    "test_connector_claim_rejects_different_company_owner",
+    r'''@pytest.mark.asyncio
+async def test_connector_claim_rejects_different_company_owner(_db_engine):
+    from datetime import datetime, timezone
+
+    from celerp.db import get_session_ctx
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig
+    from ui.routes.settings_connectors import _claim_connector_for_company
+
+    a, b = uuid.uuid4(), uuid.uuid4()
+    now = datetime.now(timezone.utc)
+    async with get_session_ctx() as session:
+        session.add_all([
+            Company(id=a, name="Owner A", slug=f"owner-a-{a.hex[:8]}", settings={}),
+            Company(id=b, name="Owner B", slug=f"owner-b-{b.hex[:8]}", settings={}),
+            ConnectorConfig(
+                company_id=str(a), connector="woocommerce", direction="both",
+                claimed_at=now, activated_at=now,
+            ),
+        ])
+        await session.commit()
+
+    assert await _claim_connector_for_company(str(b), "woocommerce") is False
+    assert await _claim_connector_for_company(str(a), "woocommerce") is True
+''',
+)
+write(status_path, status)
+
+woo_test_path = "default_modules/celerp-connectors/tests/test_connectors.py"
+woo_tests = read(woo_test_path)
+pattern = re.compile(
+    r'@pytest\.mark\.asyncio\n@respx\.mock\nasync def test_woocommerce_sync_orders\(wc, wc_ctx\):.*?'
+    r'(?=\n\n@pytest|\Z)',
+    re.S,
+)
+replacement = r'''@pytest.mark.asyncio
+@respx.mock
+async def test_woocommerce_sync_orders(wc, wc_ctx):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    now = datetime.now(timezone.utc)
+    respx.get("https://mystore.example.com/wp-json/wc/v3/orders").mock(
+        return_value=httpx.Response(200, json=[
+            {
+                "id": 100,
+                "status": "processing",
+                "date_created_gmt": now.isoformat(),
+                "line_items": [],
+            },
+        ], headers={"X-WP-TotalPages": "1"})
+    )
+    ownership = AsyncMock(return_value=SimpleNamespace(
+        claimed_at=now - timedelta(minutes=1)
+    ))
+    with (
+        patch("celerp.connectors.ownership.get_connector_config", new=ownership),
+        patch(
+            "celerp.connectors.upsert.upsert_order_from_woocommerce",
+            new=AsyncMock(return_value="created"),
+        ),
+    ):
+        result = await wc.sync_orders(wc_ctx)
+    assert result.ok
+    assert result.created == 1
+'''
+woo_tests, n = pattern.subn(replacement.rstrip(), woo_tests, count=1)
+if n != 1:
+    raise SystemExit("could not update Woo order adapter test")
+write(woo_test_path, woo_tests)
 
 print("PR340 hardening patch applied")
