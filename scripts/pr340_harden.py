@@ -585,10 +585,24 @@ async def run_connector_activation(
 write("celerp/connectors/sync_runner.py", runner)
 
 # Add internal param + direct lease wrapper to run_sync.
-replace_once(
+regex_once(
     "celerp/connectors/sync_runner.py",
-    "    direction: SyncDirection | None = None,\n) -> SyncResult:\n",
-    "    direction: SyncDirection | None = None,\n    _operation_locked: bool = False,\n) -> SyncResult:\n",
+    r'''async def run_sync\(
+    connector: ConnectorBase,
+    ctx: ConnectorContext,
+    entity: str,
+    since: datetime \| None = None,
+    direction: SyncDirection \| None = None,
+(?:    _operation_locked: bool = False,
+)?\) -> SyncResult:''',
+    '''async def run_sync(
+    connector: ConnectorBase,
+    ctx: ConnectorContext,
+    entity: str,
+    since: datetime | None = None,
+    direction: SyncDirection | None = None,
+    _operation_locked: bool = False,
+) -> SyncResult:''',
 )
 needle = '''    # Direction gate
     if direction and not entity_allowed(entity, direction):
