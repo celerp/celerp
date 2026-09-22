@@ -26,6 +26,29 @@ jobs:
           test "$(git rev-parse origin/main)" = "0024c5ffa3b01a9e93514b3e99938f0dc8749ebb"
           test "$(git rev-parse origin/woocommerce-sync-integrity)" = "6356077a6174e46d17f1b29ee996192355ddca3d"
           git checkout --detach 6356077a6174e46d17f1b29ee996192355ddca3d
+
+          set +e
           git rebase 0024c5ffa3b01a9e93514b3e99938f0dc8749ebb
+          rc=$?
+          while [ "$rc" -ne 0 ]; do
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            if [ "$conflicts" != "default_modules/first_party.lock.json" ]; then
+              echo "Unexpected rebase conflicts:"
+              printf '%s\n' "$conflicts"
+              exit "$rc"
+            fi
+            git checkout --ours default_modules/first_party.lock.json
+            git add default_modules/first_party.lock.json
+            GIT_EDITOR=true git rebase --continue
+            rc=$?
+          done
+          set -e
+
+          python scripts/gen_first_party_lock.py
+          if ! git diff --quiet -- default_modules/first_party.lock.json; then
+            git add default_modules/first_party.lock.json
+            git commit -m "Refresh first-party module lock after rebase"
+          fi
+
           git rev-parse HEAD
           git push origin HEAD:refs/heads/pr340-rebased
