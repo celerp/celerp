@@ -261,8 +261,8 @@ async def test_account_only_activation_preserves_disconnect(monkeypatch):
     ):
         from celerp.services.cloud_entitlement import apply_activation_state
         assert await apply_activation_state(
-            "new-key", "instance-b", expected_verifier="proof-b",
-            keep_disconnected=True) is True
+            "new-key", "instance-b", connect_entitled=False,
+            expected_verifier="proof-b", keep_disconnected=True) is True
     assert settings.cloud_disconnected is True
     assert settings.gateway_token == ""
     shutdown.assert_awaited_once()
@@ -297,7 +297,7 @@ async def test_healthy_serving_instance_is_not_restarted(monkeypatch):
         accepted = await apply_activation_state(
             "same-key", "same-iid",
             public_url="https://same.celerp.app",
-            tier="cloud", status="active",
+            tier="cloud", status="active", connect_entitled=True,
             expected_api_key="same-key")
     assert accepted is True
     shutdown.assert_not_awaited()
