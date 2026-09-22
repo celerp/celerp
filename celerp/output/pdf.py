@@ -200,7 +200,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     co_website = doc.get("company_website", "")
     if co_website:
         co_detail_parts.append(co_website)
-    co_detail_text = "<br/>".join(co_detail_parts)
+    co_detail_text = "<br/>".join(_xml_escape(str(part)) for part in co_detail_parts)
 
     header_data = [
         [Paragraph(company_name, s["title"]), Paragraph(doc_type_label, s["title"])],

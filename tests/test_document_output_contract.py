@@ -280,8 +280,8 @@ def test_company_website_uses_canonical_output_contract():
         "doc_type": "invoice",
         "ref_id": "INV-WEB",
         "company_name": "Seller Co",
-        "company_website": "https://seller.example",
+        "company_website": "https://seller.example/?a=1&b=2",
         "line_items": [],
     }
-    assert "https://seller.example" in render_doc_print_html(doc)
-    assert "https://seller.example" in _pdf_text(generate_document_pdf(doc))
+    assert "https://seller.example/?a=1&b=2" in render_doc_print_html(doc)
+    assert "https://seller.example/?a=1&b=2" in _pdf_text(generate_document_pdf(doc))
