@@ -322,6 +322,11 @@ def _connector_event_idem(prefix: str, payload: dict) -> str:
     return f"{prefix}:{hashlib.sha1(content.encode()).hexdigest()[:16]}"
 
 
+def deleted_external_link_may_relink(link: dict | None) -> bool:
+    """Only remote deletion, never an intentional user disable, permits identity replacement."""
+    return bool(link and link.get("remote_deleted") is True)
+
+
 async def upsert_external_product(
     company_id: str,
     *,
@@ -433,7 +438,11 @@ async def upsert_external_product(
                 legacy_cleaned = True
         explicit = ((state.get("external_links") or {}).get(platform)
                     if isinstance(state.get("external_links"), dict) else None)
-        if isinstance(explicit, dict) and explicit.get("sync_enabled") is False:
+        if (
+            isinstance(explicit, dict)
+            and explicit.get("sync_enabled") is False
+            and not deleted_external_link_may_relink(explicit)
+        ):
             if legacy_cleaned:
                 await session.commit()
             return "noop", entity_id
@@ -442,7 +451,11 @@ async def upsert_external_product(
         previous_link = external_link_for_state(state, platform)
         links[platform] = {
             **incoming_link,
-            "sync_enabled": previous_link.get("sync_enabled", True),
+            "sync_enabled": (
+                True
+                if deleted_external_link_may_relink(previous_link)
+                else previous_link.get("sync_enabled", True)
+            ),
         }
         desired = {"sku": sku, "name": name, "external_links": links}
         if description is not None:

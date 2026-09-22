@@ -3,10 +3,12 @@
 
 from celerp.connectors.base import SyncDirection
 from celerp.connectors.woocommerce import (
+    _deleted_variation_requires_import,
     _direction_allows_remote_product_create,
     _link_matches_deleted_product,
     _link_needs_rediscovery,
 )
+from celerp_inventory.services import deleted_external_link_may_relink
 
 
 def test_woocommerce_remote_create_respects_global_direction():
@@ -37,3 +39,22 @@ def test_only_remote_deleted_links_are_rediscovered():
         "product_id": "20", "sync_enabled": False, "remote_deleted": False,
     })
     assert not _link_needs_rediscovery({})
+
+
+def test_remote_delete_allows_relink_but_manual_disable_does_not():
+    assert deleted_external_link_may_relink({
+        "product_id": "20", "sync_enabled": False, "remote_deleted": True,
+    })
+    assert not deleted_external_link_may_relink({
+        "product_id": "20", "sync_enabled": False, "remote_deleted": False,
+    })
+
+
+def test_deleted_variation_requires_exact_reimport():
+    assert _deleted_variation_requires_import({
+        "product_id": "20", "variation_id": "201",
+        "sync_enabled": False, "remote_deleted": True,
+    })
+    assert not _deleted_variation_requires_import({
+        "product_id": "20", "sync_enabled": False, "remote_deleted": True,
+    })
