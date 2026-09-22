@@ -9,6 +9,7 @@ import os
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -143,3 +144,13 @@ async def test_shutdown_cannot_clear_a_successor_generation():
     assert gw_state.get_session_token() == "new-session"
     assert not successor_run.cancelled()
     successor_run.cancel()
+
+
+def test_gateway_client_has_one_production_construction_site():
+    """All production construction routes through the package lifecycle owner."""
+    root = Path(__file__).resolve().parents[2] / "celerp"
+    hits = []
+    for path in root.rglob("*.py"):
+        if "GatewayClient(" in path.read_text(encoding="utf-8"):
+            hits.append(path.relative_to(root).as_posix())
+    assert hits == ["gateway/__init__.py"]
