@@ -1269,11 +1269,17 @@ write("ui/routes/settings_connectors.py", settings)
 # ---------------------------------------------------------------------------
 # Credential/OAuth/token API boundaries enforce the ownership invariant.
 # ---------------------------------------------------------------------------
-replace_once(
-    "celerp/routers/health.py",
-    "from celerp.services.auth import ROLE_LEVELS, get_current_role, get_current_user\\n",
-    "from celerp.services.auth import ROLE_LEVELS, get_current_company_id, get_current_role, get_current_user\\n",
-)
+health_src = read("celerp/routers/health.py")
+if "get_current_company_id" not in health_src:
+    health_src, n = re.subn(
+        r'(from celerp\.services\.auth import [^\\n]+\\n)',
+        r'\\1from celerp.services.auth import get_current_company_id\\n',
+        health_src,
+        count=1,
+    )
+    if n != 1:
+        raise SystemExit("health.py: auth import not found")
+    write("celerp/routers/health.py", health_src)
 replace_once(
     "celerp/routers/health.py",
     'async def connector_authorize_url(platform: str, shop: str = "") -> dict:\\n',
