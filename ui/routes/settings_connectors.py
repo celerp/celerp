@@ -44,14 +44,28 @@ async def _register_woocommerce_webhooks(
         access_token=f"{consumer_key}:{consumer_secret}",
         store_handle=store_url,
     )
-    ids = await WooCommerceConnector().register_webhooks(ctx, delivery_url, secret=secret)
-    async with get_session_ctx() as session:
-        await session.execute(
-            sa.update(ConnectorConfig)
-            .where(ConnectorConfig.company_id == company_id, ConnectorConfig.connector == "woocommerce")
-            .values(webhook_secret=secret, webhook_ids_json=json.dumps(ids))
-        )
-        await session.commit()
+    connector = WooCommerceConnector()
+    ids = await connector.register_webhooks(ctx, delivery_url, secret=secret)
+    try:
+        async with get_session_ctx() as session:
+            await session.execute(
+                sa.update(ConnectorConfig)
+                .where(
+                    ConnectorConfig.company_id == company_id,
+                    ConnectorConfig.connector == "woocommerce",
+                )
+                .values(webhook_secret=secret, webhook_ids_json=json.dumps(ids))
+            )
+            await session.commit()
+    except Exception:
+        try:
+            await connector.deregister_webhooks(ctx, ids)
+        except Exception:
+            log.warning(
+                "failed to roll back WooCommerce webhooks after local persistence failure",
+                exc_info=True,
+            )
+        raise
 
 
 def _store_url_error(store_url: str, platform: str) -> str | None:
