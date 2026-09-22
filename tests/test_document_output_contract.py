@@ -180,3 +180,15 @@ def test_explicit_blank_output_fields_override_live_fallback():
     assert out["company_name"] == ""
     assert out["contact_name"] == ""
     assert out["terms_text"] == ""
+
+
+def test_route_letterhead_fallback_does_not_overwrite_explicit_blanks():
+    """Route enrichment follows prepare_document_output's key-presence rule."""
+    from pathlib import Path
+
+    ui_source = Path("ui/routes/documents.py").read_text()
+    share_source = Path("default_modules/celerp-docs/celerp_docs/routes_share.py").read_text()
+    assert "if not doc.get(_key) and _value:" not in ui_source
+    assert "if not lst.get(_key) and _value:" not in ui_source
+    assert "if not state.get(key) and value:" not in share_source
+    assert "if not doc.get(key) and value:" not in share_source

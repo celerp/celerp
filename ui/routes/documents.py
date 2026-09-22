@@ -1881,7 +1881,7 @@ def setup_routes(app):
                 pass
         try:
             for _key, _value in (await _company_letterhead(token)).items():
-                if not lst.get(_key) and _value:
+                if _key not in lst and _value:
                     lst[_key] = _value
         except Exception:
             pass
@@ -1921,7 +1921,7 @@ def setup_routes(app):
         # Inject company fields
         try:
             for _key, _value in (await _company_letterhead(token)).items():
-                if not doc.get(_key) and _value:
+                if _key not in doc and _value:
                     doc[_key] = _value
         except Exception:
             pass
@@ -2091,7 +2091,7 @@ celerpUpdateBulkAlloc();
         # Inject company fields so "My company info" box is populated
         try:
             for _key, _value in (await _company_letterhead(token)).items():
-                if not doc.get(_key) and _value:
+                if _key not in doc and _value:
                     doc[_key] = _value
         except Exception:
             pass
@@ -4431,7 +4431,7 @@ celerpUpdateBulkAlloc();
         # Inject company fields
         try:
             for _key, _value in (await _company_letterhead(token)).items():
-                if not lst.get(_key) and _value:
+                if _key not in lst and _value:
                     lst[_key] = _value
         except Exception:
             pass
@@ -8571,6 +8571,10 @@ function _celerpApplyRepriceWarnings() {{
     }}
 }}
 _celerpApplyRepriceWarnings();
+if (!window._celerpRepriceWarningAfterSwap) {{
+    window._celerpRepriceWarningAfterSwap = _celerpApplyRepriceWarnings;
+    document.body.addEventListener('htmx:afterSwap', window._celerpRepriceWarningAfterSwap);
+}}
 
 async function celerpReprice(priceList) {{
     /* A pending blur save is redundant here; the explicit save below owns this transition. */

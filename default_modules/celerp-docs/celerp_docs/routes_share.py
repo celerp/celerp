@@ -81,7 +81,7 @@ _DOC_STR_FIELDS = frozenset({
     "customer_note", "payment_terms", "discount_type", "carrier", "tracking",
 })
 _DOC_NUM_FIELDS = frozenset({
-    "discount", "shipping", "subtotal", "tax", "total", "amount_paid", "amount_outstanding",
+    "discount", "shipping", "subtotal", "tax", "total",
 })
 _LINE_STR_FIELDS = frozenset({
     "sku", "name", "description", "unit", "sell_by", "weight_unit",
@@ -530,7 +530,7 @@ async def _letterhead(session: AsyncSession, company_id) -> dict:
     self_id = cfg.get("self_contact_id")
     if self_id:
         crow = await session.get(Projection, (company_id, self_id))
-        if crow is not None:
+        if crow is not None and crow.entity_type == "contact":
             contact_state = crow.state or {}
     prepared = prepare_document_output(
         {}, company={"name": company.name, "settings": cfg}, self_contact=contact_state,
@@ -548,7 +548,7 @@ async def _resolve_share_contact(session: AsyncSession, company_id, state: dict)
     if not cid:
         return
     crow = await session.get(Projection, (company_id, cid))
-    if crow is None:
+    if crow is None or crow.entity_type != "contact":
         return
     state.update(prepare_document_output(state, contact=crow.state or {}))
 
@@ -623,7 +623,7 @@ async def view_shared_doc(
         if not state.get("issue_date"):
             state["issue_date"] = state.get("created_at") or state.get("date")
     for key, value in (await _letterhead(session, share_row.company_id)).items():
-        if not state.get(key) and value:
+        if key not in state and value:
             state[key] = value
     await _resolve_share_contact(session, share_row.company_id, state)
     ident_mode = await _enrich_share_lines(session, share_row.company_id, state)
@@ -675,7 +675,7 @@ async def download_share_bundle(
     if row.entity_type == "list":
         doc.setdefault("doc_type", "quotation" if doc.get("list_type") in ("quote", "quotation") else "list")
     for key, value in (await _letterhead(session, share_row.company_id)).items():
-        if not doc.get(key) and value:
+        if key not in doc and value:
             doc[key] = value
     await _resolve_share_contact(session, share_row.company_id, doc)
     public_doc = _public_bundle_doc(doc)

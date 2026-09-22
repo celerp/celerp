@@ -60,3 +60,11 @@ def test_cost_reprice_permission_precedes_replay_lookup():
     assert snippet.index("if is_cost_list_name(payload.price_list):") < snippet.index(
         "find_event_by_idempotency(session, company_id, idem_key)"
     )
+
+
+def test_reprice_warning_reapplies_after_paged_htmx_swap():
+    """Skipped rows can live off the first page, so paging must reapply the
+    persisted warning state after HTMX replaces the line section."""
+    source = Path("ui/routes/documents.py").read_text()
+    assert "window._celerpRepriceWarningAfterSwap = _celerpApplyRepriceWarnings" in source
+    assert "document.body.addEventListener('htmx:afterSwap', window._celerpRepriceWarningAfterSwap)" in source

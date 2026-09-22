@@ -1081,7 +1081,7 @@ async def get_doc_pdf(
         self_id = (company_row.settings or {}).get("self_contact_id")
         if self_id:
             self_row = await session.get(Projection, (company_id, self_id))
-            if self_row is not None:
+            if self_row is not None and self_row.entity_type == "contact":
                 self_contact = self_row.state or {}
     contact: dict = {}
     if doc.get("contact_id"):
