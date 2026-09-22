@@ -2151,4 +2151,233 @@ if old not in doc:
 doc = doc.replace(old, new, 1)
 write(doc_path, doc)
 
+
+# ---------------------------------------------------------------------------
+# Final invariant appendix. Keep these at the end so earlier source rewrites
+# cannot supersede them.
+# ---------------------------------------------------------------------------
+
+# Long remote connector operations must not occupy the request DB pool.
+op_path = "celerp/connectors/operation_lock.py"
+op = read(op_path)
+op = op.replace("from celerp.db import engine", "from celerp.db import lifecycle_engine")
+op = op.replace("engine.dialect.name", "lifecycle_engine.dialect.name")
+op = op.replace("engine.connect()", "lifecycle_engine.connect()")
+if "lifecycle_engine" not in op:
+    raise SystemExit("operation_lock: lifecycle engine normalization failed")
+write(op_path, op)
+
+# Any direct relay token fetch must have a local owner. Pending ownership is
+# allowed because activation itself needs credentials before activated_at is set.
+relay_path = "celerp/connectors/relay_token.py"
+relay = read(relay_path)
+fetch_guard = '''async def fetch_context(company_id: str, connector_name: str) -> "ConnectorContext | None":
+    import httpx
+
+    from celerp.connectors.base import ConnectorContext
+'''
+fetch_guard_new = '''async def fetch_context(company_id: str, connector_name: str) -> "ConnectorContext | None":
+    import httpx
+
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.ownership import get_connector_config
+
+    if await get_connector_config(
+        company_id, connector_name, adopt_single_company=False
+    ) is None:
+        return None
+'''
+if fetch_guard in relay:
+    relay = relay.replace(fetch_guard, fetch_guard_new, 1)
+elif "adopt_single_company=False" not in relay:
+    raise SystemExit("relay_token: fetch_context ownership guard missing")
+write(relay_path, relay)
+
+# Manual connector sync is a material integration operation now that inbound
+# Woo orders post accounting and inventory side effects.
+routes_path = "default_modules/celerp-connectors/celerp_connectors/routes.py"
+routes = read(routes_path)
+old_sig = '''async def trigger_sync(
+    connector_name: str,
+    payload: SyncRequest,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    session: AsyncSession = Depends(get_session),
+) -> SyncResponse:
+'''
+new_sig = '''async def trigger_sync(
+    connector_name: str,
+    payload: SyncRequest,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> SyncResponse:
+'''
+if old_sig in routes:
+    routes = routes.replace(old_sig, new_sig, 1)
+elif 'trigger_sync(' in routes and 'require_permission("manage_integrations")' not in routes[
+    routes.index("async def trigger_sync"):routes.index("# ── Credential management", routes.index("async def trigger_sync"))
+]:
+    raise SystemExit("connectors routes: trigger_sync permission transform failed")
+
+trigger_anchor = '''    try:
+        connector = connectors.get(connector_name)
+'''
+trigger_guard = '''    from celerp.connectors.ownership import get_active_connector_config
+    if await get_active_connector_config(company_id, connector_name) is None:
+        raise HTTPException(
+            status_code=409, detail="Connector is not active for this company"
+        )
+
+    try:
+        connector = connectors.get(connector_name)
+'''
+trigger_slice = routes[routes.index("async def trigger_sync"):routes.index("# ── Credential management")]
+if "Connector is not active for this company" not in trigger_slice:
+    local = routes.index("async def trigger_sync")
+    pos = routes.index(trigger_anchor, local)
+    routes = routes[:pos] + trigger_guard + routes[pos + len(trigger_anchor):]
+write(routes_path, routes)
+
+# Pending ownership must never light up catalog controls.
+inv_ui_path = "ui/routes/inventory.py"
+inv_ui = read(inv_ui_path)
+old_connected = '''            rows = await session.execute(sa.select(ConnectorConfig.connector).where(
+                ConnectorConfig.company_id == str(company_id)
+            ))
+'''
+new_connected = '''            rows = await session.execute(sa.select(ConnectorConfig.connector).where(
+                ConnectorConfig.company_id == str(company_id),
+                ConnectorConfig.activated_at.is_not(None),
+            ))
+'''
+if old_connected in inv_ui:
+    inv_ui = inv_ui.replace(old_connected, new_connected, 1)
+elif "ConnectorConfig.activated_at.is_not(None)" not in inv_ui:
+    raise SystemExit("inventory UI: active connector filter missing")
+write(inv_ui_path, inv_ui)
+
+# Serialize customer-stock allocation and invalidate any inventory objects loaded
+# before the lease, so validation cannot use Woo's earlier in-session snapshot.
+write("celerp/services/inventory_allocation.py", r'''# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: BUSL-1.1
+"""Serialization for customer-stock allocation decisions."""
+from __future__ import annotations
+
+import sqlalchemy as sa
+
+
+async def lock_sales_allocation(session, company_id) -> None:
+    """Serialize reserve/fulfill availability decisions for one company."""
+    if session.bind.dialect.name == "postgresql":
+        await session.execute(
+            sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+            {"k": f"sales-allocation:{company_id}"},
+        )
+''')
+
+doc_routes_path = "default_modules/celerp-docs/celerp_docs/routes.py"
+doc_routes = read(doc_routes_path)
+if "await lock_sales_allocation(session, row.company_id)" not in doc_routes:
+    reserve_pattern = re.compile(
+        r'(async def _reserve_lines_impl\(.*?)(    unit_map = await _get_unit_map\(session, row\.company_id\)\n)',
+        re.S,
+    )
+    doc_routes, n = reserve_pattern.subn(
+        r'\1    from celerp.services.inventory_allocation import lock_sales_allocation\n'
+        r'    await lock_sales_allocation(session, row.company_id)\n'
+        r'    session.expire_all()\n'
+        r'\2',
+        doc_routes, count=1,
+    )
+    if n != 1:
+        raise SystemExit("docs routes: reserve allocation boundary missing")
+
+if "await lock_sales_allocation(session, company_id)" not in doc_routes:
+    fulfill_pattern = re.compile(
+        r'(async def _fulfill_lines_impl\(.*?)(    _unit_map = await _get_unit_map\(session, company_id\)\n)',
+        re.S,
+    )
+    doc_routes, n = fulfill_pattern.subn(
+        r'\1    from celerp.services.inventory_allocation import lock_sales_allocation\n'
+        r'    await lock_sales_allocation(session, company_id)\n'
+        r'    session.expire_all()\n'
+        r'\2',
+        doc_routes, count=1,
+    )
+    if n != 1:
+        raise SystemExit("docs routes: fulfillment allocation boundary missing")
+write(doc_routes_path, doc_routes)
+
+# Discoverable Woo hooks are installation-specific. Legacy generic hooks are
+# cleaned only by their persisted IDs, never by a broad name match.
+woo_path = "celerp/connectors/woocommerce.py"
+woo = read(woo_path)
+if "from celerp.config import ensure_instance_id" not in woo:
+    import_anchor = "import httpx\n"
+    if import_anchor not in woo:
+        raise SystemExit("woocommerce: import anchor missing")
+    woo = woo.replace(import_anchor, import_anchor + "from celerp.config import ensure_instance_id\n", 1)
+woo = woo.replace(
+    '"name": f"Celerp {topic}",',
+    '"name": f"Celerp {ensure_instance_id()} {topic}",',
+)
+write(woo_path, woo)
+
+# Reconciliation must retire cached pre-namespace webhook IDs before replacing
+# local state, while discovery handles crash-created namespaced hooks.
+settings_path = "ui/routes/settings_connectors.py"
+settings_src = read(settings_path)
+old_reconcile = "    ids = await connector.reconcile_webhooks(ctx, delivery_url, secret)\n"
+if old_reconcile in settings_src:
+    settings_src = settings_src.replace(
+        old_reconcile,
+        '''    config = await _get_connector_config(company_id, "woocommerce")
+    ids = await connector.reconcile_webhooks(
+        ctx, delivery_url, secret,
+        known_ids=(config.webhook_ids if config else []),
+    )
+''',
+        1,
+    )
+if "known_ids=(config.webhook_ids if config else [])" not in settings_src:
+    raise SystemExit("settings connectors: known Woo webhook IDs not passed to reconciliation")
+write(settings_path, settings_src)
+
+# Final executable regression contracts for the owning boundaries.
+contract_path = "tests/test_connector_hardening_contract.py"
+contract = read(contract_path) if (ROOT / contract_path).exists() else ""
+extra = r'''
+
+def test_generic_sync_requires_active_owned_integration():
+    source = _text("default_modules/celerp-connectors/celerp_connectors/routes.py")
+    trigger = source[source.index("async def trigger_sync"):source.index("# ── Credential management")]
+    assert 'require_permission("manage_integrations")' in trigger
+    assert "Connector is not active for this company" in trigger
+
+
+def test_catalog_controls_ignore_pending_connector_claims():
+    source = _text("ui/routes/inventory.py")
+    assert "ConnectorConfig.activated_at.is_not(None)" in source
+
+
+def test_sales_allocation_refreshes_preloaded_inventory():
+    source = _text("default_modules/celerp-docs/celerp_docs/routes.py")
+    assert source.count("await lock_sales_allocation(") >= 2
+    assert source.count("session.expire_all()") >= 2
+
+
+def test_relay_context_requires_local_connector_owner():
+    source = _text("celerp/connectors/relay_token.py")
+    assert "adopt_single_company=False" in source
+
+
+def test_woo_webhook_discovery_is_installation_namespaced():
+    source = _text("celerp/connectors/woocommerce.py")
+    assert 'Celerp {ensure_instance_id()}' in source
+'''
+if "test_generic_sync_requires_active_owned_integration" not in contract:
+    contract += extra
+write(contract_path, contract)
+
+
 print("PR340 hardening patch applied")
