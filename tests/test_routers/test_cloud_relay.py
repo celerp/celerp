@@ -179,7 +179,7 @@ async def test_cloud_status_authenticated_plain_free_runtime_retries_stale_url_c
         r = await client.get("/settings/cloud-status", headers=_h(token))
 
     assert r.status_code == 200
-    sync.assert_awaited_once_with(require_persisted_key=True)
+    sync.assert_awaited_once_with()
 
 
 
@@ -213,7 +213,8 @@ async def test_cloud_status_active_free_runtime_recovers_paid_entitlement(client
     with (
         patch("celerp.gateway.client.get_client", return_value=gw),
         patch("celerp.services.cloud_entitlement.subscription_status",
-              new=AsyncMock(return_value={"tier": "ai", "status": "trialing"})),
+              new=AsyncMock(return_value=_relay_snapshot(
+                  tier="ai", status="trialing", entitled=True))),
         patch("celerp.services.cloud_entitlement.sync_existing_entitlement",
               new=sync),
         patch("celerp.gateway.state.get_instance_id", return_value="canonical-iid"),
@@ -223,7 +224,7 @@ async def test_cloud_status_active_free_runtime_recovers_paid_entitlement(client
         r = await client.get("/settings/cloud-status", headers=_h(token))
 
     assert r.status_code == 200
-    sync.assert_awaited_once_with(require_persisted_key=True)
+    sync.assert_awaited_once_with()
     assert inner.get.await_args.kwargs["params"] == {
         "instance_id": "canonical-iid", "session_token": "paid-session"}
 
@@ -1366,6 +1367,29 @@ async def test_cloud_activate_token_500_never_falls_through_to_uuid_authority(cl
 
 
 @pytest.mark.asyncio
+async def test_cloud_activate_without_credential_or_verifier_never_uses_uuid_authority(client):
+    """Current clients never downgrade instance UUID knowledge into activation authority."""
+    token = await _register(client, "no-uuid-authority")
+    from celerp.config import settings as _s
+    _s.gateway_token = ""
+    _s.activation_verifier = ""
+
+    with (
+        patch("celerp.services.cloud_entitlement.stored_api_key",
+              new=AsyncMock(return_value="")),
+        patch("celerp.services.cloud_entitlement.persisted_api_key",
+              new=AsyncMock(return_value="")),
+        patch("httpx.AsyncClient") as mock_httpx,
+    ):
+        post = mock_httpx.return_value.__aenter__.return_value.post = AsyncMock()
+        r = await client.post("/settings/cloud-activate", headers=_h(token))
+
+    assert r.status_code == 200
+    assert "error" in r.json()
+    post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_cloud_activate_rejected_key_uses_proof_on_current_relay(client):
     token = await _register(client, "token-401-proof")
     from celerp.config import settings as _s
@@ -1376,9 +1400,6 @@ async def test_cloud_activate_rejected_key_uses_proof_on_current_relay(client):
 
     token_resp = MagicMock()
     token_resp.status_code = 401
-    methods_resp = MagicMock()
-    methods_resp.status_code = 200
-    methods_resp.json.return_value = {"secure_activation": True}
     activate_resp = MagicMock()
     activate_resp.status_code = 200
     activate_resp.json.return_value = _activation_response(
@@ -1396,7 +1417,6 @@ async def test_cloud_activate_rejected_key_uses_proof_on_current_relay(client):
     ):
         c = mock_httpx.return_value.__aenter__.return_value
         c.post = AsyncMock(side_effect=_post)
-        c.get = AsyncMock(return_value=methods_resp)
         r = await client.post("/settings/cloud-activate", headers=_h(token))
 
     assert r.status_code == 200
