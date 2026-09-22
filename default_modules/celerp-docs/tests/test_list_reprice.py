@@ -232,3 +232,34 @@ async def test_reprice_retry_replays_committed_result_without_second_write(clien
     state = (await client.get(f"/lists/{list_id}", headers=_h(token))).json()
     assert state["version"] == first.json()["version"]
     assert state["line_items"][0]["unit_price"] == 80.0
+
+
+@pytest.mark.asyncio
+async def test_reprice_rejects_non_money_list_without_mutation(client):
+    """UI hiding is not the domain guard: non-money lists reject repricing at the API."""
+    token = await _register(client)
+    h = _h(token)
+    item_id = await _item(client, token, sku="TRANSFER-1", retail=100, wholesale=80)
+    created = await client.post("/lists", headers=h, json={
+        "list_type": "transfer",
+        "currency": "USD",
+        "line_items": [{
+            "item_id": item_id,
+            "sku": "TRANSFER-1",
+            "quantity": 1,
+        }],
+    })
+    assert created.status_code == 200, created.text
+    list_id = created.json()["id"]
+    before = (await client.get(f"/lists/{list_id}", headers=h)).json()
+
+    result = await client.post(f"/lists/{list_id}/reprice", headers=h, json={
+        "price_list": "Wholesale",
+        "expected_version": before["version"],
+    })
+    assert result.status_code == 422, result.text
+
+    after = (await client.get(f"/lists/{list_id}", headers=h)).json()
+    assert after["version"] == before["version"]
+    assert after["line_items"] == before["line_items"]
+    assert after.get("price_list") == before.get("price_list")

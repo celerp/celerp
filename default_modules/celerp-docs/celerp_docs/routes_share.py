@@ -197,9 +197,18 @@ def _public_bundle_doc(doc: dict) -> dict:
         raise HTTPException(status_code=422, detail="Bundle document is malformed")
     out: dict = {}
     for key in _DOC_STR_FIELDS:
-        value = _str(doc.get(key), _MAX_NOTES if key in {"terms_text", "customer_note"} else _MAX_STR)
+        value = _str(
+            doc.get(key),
+            _MAX_NOTES if key in {"terms", "terms_text", "customer_note"} else _MAX_STR,
+        )
         if value is not None:
             out[key] = value
+    # Bundles may originate from pre-terms_text installations. Keep accepting
+    # the historical alias, but publish/import one canonical customer-facing
+    # field. An explicit canonical blank deliberately suppresses legacy text.
+    if "terms_text" not in out and "terms" in out:
+        out["terms_text"] = out["terms"]
+    out.pop("terms", None)
     for key in _DOC_NUM_FIELDS:
         if key in doc:
             out[key] = _num(doc.get(key))

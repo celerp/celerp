@@ -316,6 +316,43 @@ async def test_customer_share_excludes_internal_notes_and_preserves_public_field
     assert not received.get("notes")
 
 
+def test_legacy_bundle_terms_are_canonicalized_at_public_boundary():
+    from celerp_docs.routes_share import _MAX_NOTES, _MAX_STR, _public_bundle_doc
+
+    legacy = "L" * (_MAX_STR + 50)
+    public = _public_bundle_doc({
+        "doc_type": "invoice",
+        "terms": legacy,
+        "line_items": [],
+    })
+    assert "terms" not in public
+    assert public["terms_text"] == legacy
+    assert len(public["terms_text"]) <= _MAX_NOTES
+
+
+@pytest.mark.asyncio
+async def test_import_legacy_bundle_terms_stores_only_canonical_field(client: AsyncClient):
+    tok = await _token(client)
+    bundle = {
+        "version": 1,
+        "doc": {
+            "doc_type": "invoice",
+            "terms": "Legacy imported customer terms.",
+            "line_items": [],
+        },
+    }
+    imported = await client.post(
+        "/docs/import-bundle",
+        json=bundle,
+        headers={**_h(tok), "Content-Type": "application/json"},
+        follow_redirects=False,
+    )
+    assert imported.status_code == 302, imported.text
+    received = (await client.get(imported.headers["location"], headers=_h(tok))).json()
+    assert received["terms_text"] == "Legacy imported customer terms."
+    assert "terms" not in received
+
+
 @pytest.mark.asyncio
 async def test_bundle_download_has_cors_header(client: AsyncClient):
     tok = await _token(client)

@@ -4586,6 +4586,11 @@ async def reprice_list(
         return _replay_result(replay)
 
     row = await _get_list_for_update(session, company_id, entity_id)
+    if not is_money_list(row.state.get("list_type")):
+        raise HTTPException(
+            status_code=422,
+            detail="This list type does not support repricing",
+        )
     replay = await find_event_by_idempotency(session, company_id, idem_key)
     if replay is not None:
         return _replay_result(replay)
