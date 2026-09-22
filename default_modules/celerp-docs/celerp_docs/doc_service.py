@@ -341,6 +341,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
 
             line_items: list[dict] = []
             product_subtotal = 0.0
+            resolved_skus: set[str] = set()
             for source_line in grouped.values():
                 product_id = str(source_line.get("product_id") or "")
                 variation_id = str(source_line.get("variation_id") or "") or None
@@ -397,6 +398,13 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                 sku = str(anchor_state.get("sku") or source_sku).strip()
                 if not sku:
                     raise ValueError(f"WooCommerce product {product_id} resolves to an item without a SKU")
+                sku_key = sku.casefold()
+                if sku_key in resolved_skus:
+                    raise ValueError(
+                        f"Multiple WooCommerce product identities resolve to Celerp SKU {sku!r}; "
+                        "manual reconciliation is required"
+                    )
+                resolved_skus.add(sku_key)
                 qty = float(source_line["quantity"])
                 if qty <= 0:
                     raise ValueError(f"WooCommerce order line {sku} has non-positive quantity {qty}")

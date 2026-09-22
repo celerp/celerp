@@ -487,6 +487,21 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
         raise ValueError(f"Item {entity_id!r} not found")
     state = row.state or {}
     if _is_product_anchor_state(state):
+        sku = str(state.get("sku") or "").strip().casefold()
+        if sku:
+            rows = (await session.execute(select(Projection).where(
+                Projection.company_id == cid,
+                Projection.entity_type == "item",
+            ))).scalars().all()
+            roots = [
+                candidate for candidate in rows
+                if _is_product_anchor_state(candidate.state or {})
+                and str((candidate.state or {}).get("sku") or "").strip().casefold() == sku
+            ]
+            if len(roots) > 1:
+                raise ValueError(
+                    f"SKU {state.get('sku')!r} matches multiple catalog product anchors"
+                )
         return row
     parent_item_id = state.get("parent_item_id")
     if parent_item_id:
@@ -537,9 +552,18 @@ def build_channel_states(rows: list[Projection]) -> dict[str, dict[str, dict]]:
         if isinstance(links, dict):
             platforms.update(str(k) for k in links)
     for sku_rows in by_sku.values():
+        product_roots = [
+            row for row in sku_rows if _is_product_anchor_state(row.state or {})
+        ]
         for platform in platforms:
             linked = [r for r in sku_rows if external_link_for_state(r.state or {}, platform)]
             if not linked:
+                continue
+            if len(product_roots) > 1:
+                for row in sku_rows:
+                    result[row.entity_id][platform] = {
+                        "linked": True, "enabled": False, "ambiguous": True,
+                    }
                 continue
             roots = [r for r in linked if _is_product_anchor_state(r.state or {})]
             candidates = roots or linked
@@ -593,10 +617,13 @@ async def _items_with_external_id(company_id: str, platform: str, require_sync_f
             )
         )).scalars().all()
 
+    roots_by_sku: dict[str, int] = {}
     sellable_by_sku: dict[str, float] = {}
     for r in rows:
         st = r.state or {}
         sku_key = str(st.get("sku") or "").strip().casefold()
+        if sku_key and _is_product_anchor_state(st):
+            roots_by_sku[sku_key] = roots_by_sku.get(sku_key, 0) + 1
         if sku_key and is_item_available(st):
             sellable_by_sku[sku_key] = sellable_by_sku.get(sku_key, 0.0) + float(st.get("quantity") or 0)
 
@@ -623,6 +650,10 @@ async def _items_with_external_id(company_id: str, platform: str, require_sync_f
         st = r.state or {}
         link = external_link_for_state(st, platform)
         sku_key = str(st.get("sku") or "").strip().casefold()
+        if sku_key and roots_by_sku.get(sku_key, 0) > 1:
+            raise ValueError(
+                f"SKU {st.get('sku')!r} matches multiple catalog product anchors"
+            )
         out.append({
             "entity_id": r.entity_id,
             "sku": st.get("sku"),
