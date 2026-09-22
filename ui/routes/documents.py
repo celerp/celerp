@@ -100,10 +100,10 @@ def _relay_rejected(rs: dict) -> bool:
 
 
 async def _company_letterhead(token: str) -> dict:
-    """The company's letterhead identity (name/address/phone/tax_id/email) for documents.
+    """The company's letterhead identity (name/address/phone/tax_id/email/website) for documents.
 
     The company's identity is edited on its self-contact (the Contact Info card + address book on Finance
-    > Company Details), so name/phone/tax_id/email and the billing address are read from there - falling
+    > Company Details), so name/phone/tax_id/email/website and the billing address are read from there - falling
     back to company settings for legacy/unmigrated data."""
     company = await api.get_company(token)
     self_id = (company.get("settings") or {}).get("self_contact_id")
@@ -7369,7 +7369,7 @@ function _celerpDocTypeParam() {{
         // Draft scans rewrite line_items from the persisted projection. Freeze only
         // the line tbody while this operation is queued/executing, so a user cannot
         // create a newer local edit between the canonical line save and the scan.
-        // Finalized audit scanning is not a draft-line mutation and stays untouched.
+        // Locked audit scanning is not a draft-line mutation and stays untouched.
         const lockDraftLines = _CELERP_IS_LIST === 'true' && _CELERP_IS_DRAFT === 'true';
         if (lockDraftLines) {{
             const lineBody = document.getElementById('{line_body_id}');
