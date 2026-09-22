@@ -1405,6 +1405,271 @@ settings = settings[:start] + prefix + core + tail + settings[end:]
 write("ui/routes/settings_connectors.py", settings)
 
 # ---------------------------------------------------------------------------
+# Credential/OAuth/token API boundaries enforce the ownership invariant.
+# ---------------------------------------------------------------------------
+replace_once(
+    "celerp/routers/health.py",
+    "from celerp.services.auth import ROLE_LEVELS, get_current_role, get_current_user\\n",
+    "from celerp.services.auth import ROLE_LEVELS, get_current_company_id, get_current_role, get_current_user\\n",
+)
+replace_once(
+    "celerp/routers/health.py",
+    'async def connector_authorize_url(platform: str, shop: str = "") -> dict:\\n',
+    'async def connector_authorize_url(\\n    platform: str, shop: str = "", company_id: str = Depends(get_current_company_id)\\n) -> dict:\\n',
+)
+replace_once(
+    "celerp/routers/health.py",
+    '''    if r.status_code == 200:
+        return {"authorize_url": r.json().get("authorize_url", "")}
+''',
+    '''    if r.status_code == 200:
+        url = r.json().get("authorize_url", "")
+        if not url:
+            return {"error": "Relay returned an empty authorization URL."}
+        from celerp.connectors.base import ConnectorCategory
+        from celerp.connectors.operation_lock import ConnectorBusy, connector_operation
+        from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector
+        from celerp.connectors.registry import get as get_connector
+        try:
+            async with connector_operation(str(company_id), platform):
+                connector = get_connector(platform)
+                await claim_connector(
+                    str(company_id), platform,
+                    sync_frequency=(
+                        "realtime" if connector.category == ConnectorCategory.WEBSITE
+                        else "manual"
+                    ),
+                )
+        except (ConnectorBusy, ConnectorOwnershipError) as exc:
+            return {"error": str(exc)}
+        return {"authorize_url": url}
+''',
+)
+
+routes_path = "default_modules/celerp-connectors/celerp_connectors/routes.py"
+routes = read(routes_path)
+start = routes.index('@router.post("/{connector_name}/credentials")')
+end = routes.index('\\n\\nclass ItemSyncRequest', start)
+replacement = r'''@router.post("/{connector_name}/credentials")
+async def store_credentials(
+    connector_name: str,
+    payload: ApiKeyCredentials,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+) -> dict:
+    """Validate and store credentials only after atomically claiming the connector."""
+    import httpx
+    from celerp.connectors.base import ConnectorCategory
+    from celerp.connectors.operation_lock import ConnectorBusy, connector_operation
+    from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector
+    from celerp.gateway.state import relay_http_url, relay_session_headers
+
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if (err := _relay_https_error()) is not None:
+        return err
+
+    store_url = (payload.store_url or "").strip().rstrip("/")
+    try:
+        async with connector_operation(str(company_id), connector_name):
+            try:
+                await claim_connector(
+                    str(company_id),
+                    connector_name,
+                    sync_frequency=(
+                        "realtime"
+                        if connector.category == ConnectorCategory.WEBSITE else "manual"
+                    ),
+                )
+            except ConnectorOwnershipError as exc:
+                return {"ok": False, "error": "ownership_conflict", "detail": str(exc)}
+
+            if connector_name == "woocommerce":
+                import os
+                if not store_url:
+                    return {"ok": False, "error": "store_unreachable",
+                            "detail": "Store URL is required."}
+                allow_http = (
+                    store_url.startswith("http://")
+                    and bool(os.environ.get("CELERP_ALLOW_HTTP_STORE"))
+                )
+                if not (store_url.startswith("https://") or allow_http):
+                    return {"ok": False, "error": "store_unreachable",
+                            "detail": "Store URL must use https:// (API keys are sent as Basic Auth)."}
+                try:
+                    async with httpx.AsyncClient(timeout=8.0) as c:
+                        probe = await c.get(
+                            f"{store_url}/wp-json/wc/v3/products",
+                            params={"per_page": 1},
+                            auth=(payload.consumer_key, payload.consumer_secret),
+                        )
+                    if probe.status_code == 401:
+                        return {"ok": False, "error": "store_rejected",
+                                "detail": "store rejected the consumer key/secret (401)"}
+                    probe.raise_for_status()
+                except Exception as exc:
+                    return {"ok": False, "error": "store_unreachable", "detail": str(exc)}
+
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as c:
+                    r = await c.post(
+                        f"{relay_http_url()}/tokens/{connector_name}",
+                        json={
+                            "consumer_key": payload.consumer_key,
+                            "consumer_secret": payload.consumer_secret,
+                            "store_url": store_url or None,
+                        },
+                        headers=relay_session_headers(),
+                    )
+            except Exception as exc:
+                return {"ok": False, "error": "relay_error", "detail": str(exc)}
+    except ConnectorBusy as exc:
+        return {"ok": False, "error": "connector_busy", "detail": str(exc)}
+
+    if r.status_code == 402:
+        return {"ok": False, "error": "subscription_required", "detail": ""}
+    if r.status_code != 200:
+        return {"ok": False, "error": "relay_error",
+                "detail": f"relay returned {r.status_code}"}
+    return {"ok": True}
+
+
+@router.delete("/{connector_name}/credentials")
+async def revoke_credentials(
+    connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+) -> dict:
+    """Safely disconnect one owned connector, including Woo webhook cleanup."""
+    import httpx
+    from celerp.connectors.operation_lock import ConnectorBusy, connector_operation
+    from celerp.connectors.ownership import delete_connector_config, get_connector_config
+    from celerp.gateway.state import relay_http_url, relay_session_headers
+
+    config = await get_connector_config(
+        str(company_id), connector_name, adopt_single_company=True
+    )
+    if config is None:
+        return {"ok": False, "error": "not_owned",
+                "detail": "This connector is not owned by the current company."}
+
+    try:
+        async with connector_operation(str(company_id), connector_name):
+            if connector_name == "woocommerce" and (
+                config.webhook_ids or config.webhook_secret
+            ):
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as c:
+                        token_resp = await c.get(
+                            f"{relay_http_url()}/tokens/{connector_name}/access-token",
+                            headers=relay_session_headers(),
+                        )
+                except Exception as exc:
+                    return {"ok": False, "error": "relay_error", "detail": str(exc)}
+                if token_resp.status_code != 200:
+                    return {
+                        "ok": False,
+                        "error": "webhook_cleanup_unavailable",
+                        "detail": "WooCommerce credentials are required to clean up remote webhooks.",
+                    }
+                data = token_resp.json()
+                from celerp.connectors.base import ConnectorContext
+                from celerp.connectors.woocommerce import WooCommerceConnector
+                ctx = ConnectorContext(
+                    company_id=str(company_id),
+                    access_token=data["access_token"],
+                    store_handle=data.get("store_handle"),
+                    extra=data.get("extra"),
+                )
+                delivery_url = f"{relay_http_url().rstrip('/')}/webhooks/woocommerce/events"
+                try:
+                    await WooCommerceConnector().deregister_webhooks(
+                        ctx, config.webhook_ids, webhook_url=delivery_url
+                    )
+                except Exception as exc:
+                    return {"ok": False, "error": "webhook_cleanup_failed",
+                            "detail": str(exc)}
+
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as c:
+                    r = await c.delete(
+                        f"{relay_http_url()}/tokens/{connector_name}",
+                        headers=relay_session_headers(),
+                    )
+            except Exception as exc:
+                return {"ok": False, "error": "relay_error", "detail": str(exc)}
+            if r.status_code not in (200, 404):
+                return {"ok": False, "error": "relay_error",
+                        "detail": f"relay returned {r.status_code}"}
+
+            await delete_connector_config(str(company_id), connector_name)
+            return {"ok": True}
+    except ConnectorBusy as exc:
+        return {"ok": False, "error": "connector_busy", "detail": str(exc)}
+
+
+@router.get("/{connector_name}/access-token")
+async def connector_access_token(
+    connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+) -> dict:
+    """Return a relay token only to the ERP company that owns this connector."""
+    import httpx
+    from celerp.connectors.ownership import get_connector_config
+    from celerp.gateway.state import relay_http_url, relay_session_headers
+
+    config = await get_connector_config(
+        str(company_id), connector_name, adopt_single_company=True
+    )
+    if config is None:
+        return {"error": "not_connected",
+                "detail": f"{connector_name} is not owned by this company."}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.get(
+                f"{relay_http_url()}/tokens/{connector_name}/access-token",
+                headers=relay_session_headers(),
+            )
+    except Exception as exc:
+        return {"error": "relay_error", "detail": str(exc)}
+
+    if r.status_code == 404:
+        return {"error": "not_connected",
+                "detail": f"No {connector_name} connection found. Connect the platform first."}
+    if r.status_code == 401:
+        return {"error": "session_invalid",
+                "detail": f"{connector_name} token expired. Please reconnect."}
+    if r.status_code == 402:
+        return {"error": "subscription_required",
+                "detail": "An active subscription is required to sync connectors."}
+    if r.status_code != 200:
+        return {"error": "relay_error", "detail": f"relay returned {r.status_code}"}
+    return r.json()
+'''
+routes = routes[:start] + replacement + routes[end:]
+write(routes_path, routes)
+
+replace_once(
+    "celerp/connectors/relay_token.py",
+    '''    from celerp.connectors.base import ConnectorContext
+    from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
+
+    if not get_session_token():
+''',
+    '''    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.ownership import get_active_connector_config
+    from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
+
+    if await get_active_connector_config(company_id, connector_name) is None:
+        return None
+    if not get_session_token():
+''',
+)
+
+# ---------------------------------------------------------------------------
 # Local connector API and catalog UI require activated ownership; publishing new
 # remote products additionally requires manage_integrations.
 # ---------------------------------------------------------------------------
@@ -1492,6 +1757,21 @@ replace_once(
 )
 
 # ---------------------------------------------------------------------------
+# Detail page also uses local active ownership, not relay installation state.
+replace_once(
+    "ui/routes/settings_connectors.py",
+    '''        config = await _get_connector_config(company_id, platform)
+        runs = await _entity_runs(company_id, platform)
+''',
+    '''        config = await _get_connector_config(company_id, platform)
+        c = dict(c)
+        c["connected"] = bool(
+            c.get("connected") and config is not None and config.activated_at is not None
+        )
+        runs = await _entity_runs(company_id, platform)
+''',
+)
+
 # Startup adoption service is best-effort, not a boot dependency.
 # ---------------------------------------------------------------------------
 replace_once(
@@ -1635,5 +1915,116 @@ async def test_connector_claim_has_one_company_winner(_db_engine):
     assert sum(not isinstance(x, Exception) for x in results) == 1
     assert sum(isinstance(x, ConnectorOwnershipError) for x in results) == 1
 ''')
+
+# Existing queue fixture represents a migrated, active connector.
+replace_once(
+    "tests/test_services/test_outbound_queue.py",
+    '''    session.add(ConnectorConfig(
+        company_id=str(company_id), connector="woocommerce", direction="both"
+    ))
+''',
+    '''    session.add(ConnectorConfig(
+        company_id=str(company_id), connector="woocommerce", direction="both",
+        claimed_at=now, activated_at=now,
+    ))
+''',
+)
+
+# Remove the superseded SyncRun age lease now that connector_operation is authoritative.
+replace_once(
+    "celerp/connectors/sync_runner.py",
+    "from datetime import datetime, timedelta, timezone\\n",
+    "from datetime import datetime, timezone\\n",
+)
+regex_once(
+    "celerp/connectors/sync_runner.py",
+    r'''# Concurrency guard: a still-unfinished run older than this is treated as dead \\(the
+# process likely crashed mid-sync\\), so a new run is allowed to supersede it\\.
+_STALE_AFTER = timedelta\\(minutes=15\\)
+_BUSY = "busy"''',
+    '''# Defensive audit-row guard. The connector operation lease is the actual
+# cross-process concurrency primitive.
+_BUSY = "busy"''',
+    flags=0,
+)
+replace_once(
+    "celerp/connectors/sync_runner.py",
+    '''                    SyncRun.finished_at.is_(None),
+                    SyncRun.started_at >= started_at - _STALE_AFTER,
+''',
+    '''                    SyncRun.finished_at.is_(None),
+''',
+)
+
+# Legacy informational Woo docs are quarantined before CRM side effects.
+doc_path = "default_modules/celerp-docs/celerp_docs/doc_service.py"
+doc = read(doc_path)
+needle = '''    # Registered customers are independent CRM records. Import them first so the
+    # document can carry a stable contact link; guest orders still keep snapshots.
+'''
+guard = '''    # Quarantine pre-hardening informational Woo documents before any independent
+    # CRM side effect. The locked check below repeats this inside the main transaction.
+    cid = __import__("uuid").UUID(str(company_id))
+    async with SessionLocal() as probe:
+        legacy = await probe.get(
+            Projection, {"company_id": cid, "entity_id": entity_id}
+        )
+        if legacy is not None and not (legacy.state or {}).get(
+            "woocommerce_source_fingerprint"
+        ):
+            return "noop"
+
+'''
+if needle not in doc:
+    raise SystemExit("doc_service: legacy preflight insertion point missing")
+doc = doc.replace(needle, guard + needle, 1)
+doc = doc.replace(
+    '        cid = __import__("uuid").UUID(str(company_id))\\n'
+    '        # One external order may arrive simultaneously',
+    '        # One external order may arrive simultaneously',
+    1,
+)
+old = '''        current_status = str((doc.state or {}).get("woocommerce_status") or "")
+        if current_status != wc_status:
+            fields = {"woocommerce_status": {"old": current_status, "new": wc_status}}
+            if order.get("transaction_id") != (doc.state or {}).get("woocommerce_transaction_id"):
+                fields["woocommerce_transaction_id"] = {
+                    "old": (doc.state or {}).get("woocommerce_transaction_id"),
+                    "new": order.get("transaction_id"),
+                }
+            await emit_event(
+                session, company_id=cid, entity_id=entity_id, entity_type="doc",
+                event_type="doc.updated", data={"fields_changed": fields},
+                actor_id=owner_id, location_id=None, source="connector",
+                idempotency_key=f"{idem_key}:status:{wc_status}", metadata_={},
+            )
+            changed = True
+'''
+new = '''        current_status = str((doc.state or {}).get("woocommerce_status") or "")
+        current_tx = (doc.state or {}).get("woocommerce_transaction_id")
+        incoming_tx = order.get("transaction_id")
+        fields = {}
+        if current_status != wc_status:
+            fields["woocommerce_status"] = {"old": current_status, "new": wc_status}
+        if incoming_tx != current_tx:
+            fields["woocommerce_transaction_id"] = {
+                "old": current_tx, "new": incoming_tx,
+            }
+        if fields:
+            await emit_event(
+                session, company_id=cid, entity_id=entity_id, entity_type="doc",
+                event_type="doc.updated", data={"fields_changed": fields},
+                actor_id=owner_id, location_id=None, source="connector",
+                idempotency_key=(
+                    f"{idem_key}:status:{wc_status}:{incoming_tx or '-'}"
+                ),
+                metadata_={},
+            )
+            changed = True
+'''
+if old not in doc:
+    raise SystemExit("doc_service: status update block missing")
+doc = doc.replace(old, new, 1)
+write(doc_path, doc)
 
 print("PR340 hardening patch applied")
