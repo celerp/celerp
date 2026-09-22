@@ -514,13 +514,13 @@ async def test_run_sync_dispatches_and_gates_outbound_entity(session, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_woocommerce_processing_order_reserves_across_lots(session):
+async def test_woocommerce_processing_order_reserves_across_lots(use_test_session):
     from datetime import datetime, timezone
 
     from celerp.models.projections import Projection
 
+    session = use_test_session
     cid = await _seed_company(session, "WooLots")
-    await session.commit()
     now = datetime.now(timezone.utc)
     from celerp_inventory.services import upsert_external_product
 
