@@ -5,6 +5,7 @@ from celerp.connectors.base import SyncDirection
 from celerp.connectors.woocommerce import (
     _direction_allows_remote_product_create,
     _link_matches_deleted_product,
+    _link_needs_rediscovery,
 )
 
 
@@ -26,3 +27,13 @@ def test_deleted_parent_matches_all_variations_but_exact_variation_is_scoped():
 
     assert _link_matches_deleted_product(red, "20", "201")
     assert not _link_matches_deleted_product(blue, "20", "201")
+
+
+def test_only_remote_deleted_links_are_rediscovered():
+    assert _link_needs_rediscovery({
+        "product_id": "20", "sync_enabled": False, "remote_deleted": True,
+    })
+    assert not _link_needs_rediscovery({
+        "product_id": "20", "sync_enabled": False, "remote_deleted": False,
+    })
+    assert not _link_needs_rediscovery({})
