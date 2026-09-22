@@ -21,6 +21,24 @@ import respx
 from test_config import _reload_config, _restore_config_module  # noqa: F401
 
 
+def _activation_response(*, token: str, public_url: str | None) -> dict:
+    entitled = bool(public_url)
+    return {
+        "gateway_token": token,
+        "public_url": public_url,
+        "tos_version": "2026-01",
+        "tier": "cloud" if entitled else "free",
+        "status": "active",
+        "connect_entitled": entitled,
+        "feature_flags": {
+            "payments_enabled": False,
+            "external_db": False,
+            "external_storage": False,
+            "grace_period_ends": None,
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Instance identity - first-boot persistence (ensure_instance_id / persist_cloud_settings)
 # ---------------------------------------------------------------------------
@@ -217,11 +235,8 @@ class TestAutoActivateProbe:
         mod, _ = self._prepare(tmp_path, monkeypatch)
         iid = mod.ensure_instance_id()
         verifier = mod.ensure_activation_verifier()
-        route = respx.post("https://relay.test/auth/activate").respond(200, json={
-            "gateway_token": "gw-tok",
-            "public_url": None,
-            "tos_version": "2026-01",
-        })
+        route = respx.post("https://relay.test/auth/activate").respond(
+            200, json=_activation_response(token="gw-tok", public_url=None))
         from celerp.gateway import client as _gw
         _prev_client = _gw.get_client()
         _gw.set_client(None)
@@ -245,10 +260,9 @@ class TestAutoActivateProbe:
         mod, _ = self._prepare(tmp_path, monkeypatch)
         mod.ensure_instance_id()
         mod.ensure_activation_verifier()
-        respx.post("https://relay.test/auth/activate").respond(200, json={
-            "gateway_token": "gw-tok-free",
-            "public_url": None,
-        })
+        respx.post("https://relay.test/auth/activate").respond(
+            200, json=_activation_response(
+                token="gw-tok-free", public_url=None))
         from celerp.gateway import client as _gw
         _prev_client = _gw.get_client()
         _gw.set_client(None)
@@ -265,14 +279,13 @@ class TestAutoActivateProbe:
         mod, _ = self._prepare(tmp_path, monkeypatch)
         mod.ensure_instance_id()
         mod.ensure_activation_verifier()
-        respx.post("https://relay.test/auth/activate").respond(200, json={
-            "gateway_token": "gw-tok-paid",
-            "public_url": "https://abc.celerp.com",
-        })
+        respx.post("https://relay.test/auth/activate").respond(
+            200, json=_activation_response(
+                token="gw-tok-paid", public_url="https://abc.celerp.com"))
         from celerp.gateway import client as _gw
 
         async def _noop_run(self):
-            return None
+            await __import__("asyncio").Event().wait()
 
         monkeypatch.setattr(_gw.GatewayClient, "run", _noop_run)
         _prev_client = _gw.get_client()
@@ -285,7 +298,7 @@ class TestAutoActivateProbe:
             _gw.set_client(_prev_client)
 
     @respx.mock
-    async def test_legacy_without_verifier_uses_observational_checkin(self, tmp_path, monkeypatch):
+    async def test_without_verifier_uses_observational_checkin(self, tmp_path, monkeypatch):
         mod, _ = self._prepare(tmp_path, monkeypatch)
         legacy_iid = "00000000-0000-4000-8000-000000000001"
         mod.write_config({"cloud": {"instance_id": legacy_iid}})
@@ -299,23 +312,9 @@ class TestAutoActivateProbe:
         assert checkin.call_count == 1
         assert activate.call_count == 0
 
-    @respx.mock
-    async def test_legacy_old_relay_404_falls_back_to_one_activation(self, tmp_path, monkeypatch):
-        mod, _ = self._prepare(tmp_path, monkeypatch)
-        legacy_iid = "00000000-0000-4000-8000-000000000002"
-        mod.write_config({"cloud": {"instance_id": legacy_iid}})
-        mod.settings.gateway_instance_id = legacy_iid
-        mod.settings.activation_verifier = ""
-        checkin = respx.post("https://relay.test/auth/checkin").respond(404)
-        activate = respx.post("https://relay.test/auth/activate").respond(
-            404, json={"detail": "no sub"})
-        from celerp.main import _try_auto_activate
-        await _try_auto_activate()
-        assert checkin.call_count == 1
-        assert activate.call_count == 1
 
     @respx.mock
-    async def test_legacy_checkin_transport_ambiguity_never_activates(self, tmp_path, monkeypatch):
+    async def test_checkin_transport_ambiguity_never_activates(self, tmp_path, monkeypatch):
         mod, _ = self._prepare(tmp_path, monkeypatch)
         legacy_iid = "00000000-0000-4000-8000-000000000003"
         mod.write_config({"cloud": {"instance_id": legacy_iid}})
