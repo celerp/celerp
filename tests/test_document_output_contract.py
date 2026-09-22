@@ -183,12 +183,15 @@ def test_explicit_blank_output_fields_override_live_fallback():
 
 
 def test_route_letterhead_fallback_does_not_overwrite_explicit_blanks():
-    """Route enrichment follows prepare_document_output's key-presence rule."""
+    """Every UI output door shares one key-presence merge invariant."""
     from pathlib import Path
 
     ui_source = Path("ui/routes/documents.py").read_text()
     share_source = Path("default_modules/celerp-docs/celerp_docs/routes_share.py").read_text()
-    assert "if not doc.get(_key) and _value:" not in ui_source
-    assert "if not lst.get(_key) and _value:" not in ui_source
+    helper_start = ui_source.index("async def _merge_company_letterhead")
+    helper = ui_source[helper_start:helper_start + 900]
+    assert "if key not in state and value:" in helper
+    assert ui_source.count("await _merge_company_letterhead(token,") == 4
+    assert "for _key, _value in (await _company_letterhead(token)).items():" not in ui_source
     assert "if not state.get(key) and value:" not in share_source
     assert "if not doc.get(key) and value:" not in share_source

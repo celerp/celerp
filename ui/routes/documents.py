@@ -128,6 +128,23 @@ async def _company_letterhead(token: str) -> dict:
     }
 
 
+async def _merge_company_letterhead(token: str, state: dict) -> dict:
+    """Fill only missing seller fields from the live company identity.
+
+    Presence, not truthiness, is the invariant: an explicitly stored blank is a
+    document snapshot and must never be resurrected from today's company data.
+    Output routes are fail-soft on live identity lookup because the stored
+    document remains printable without it.
+    """
+    try:
+        for key, value in (await _company_letterhead(token)).items():
+            if key not in state and value:
+                state[key] = value
+    except Exception:
+        pass
+    return state
+
+
 def _measure_pcs_field(val, *, locked: bool, show: bool, avail=None):
     """Inline PCS input for an invoice description cell ('pcs' suffix after the number).
     Hovering the unit shows the parcel's available pieces (max)."""
@@ -1879,12 +1896,7 @@ def setup_routes(app):
                 lst = prepare_document_output(lst, contact=await api.get_contact(token, lst["contact_id"]))
             except Exception:
                 pass
-        try:
-            for _key, _value in (await _company_letterhead(token)).items():
-                if _key not in lst and _value:
-                    lst[_key] = _value
-        except Exception:
-            pass
+        lst = await _merge_company_letterhead(token, lst)
         _ident_mode = await _line_identifier_mode(token)
         await _enrich_print_lines(token, lst, _ident_mode)
         try:
@@ -1919,12 +1931,7 @@ def setup_routes(app):
             from starlette.responses import HTMLResponse as _HR
             return _HR(f"<p>Error loading document: {e.detail}</p>", status_code=e.status)
         # Inject company fields
-        try:
-            for _key, _value in (await _company_letterhead(token)).items():
-                if _key not in doc and _value:
-                    doc[_key] = _value
-        except Exception:
-            pass
+        doc = await _merge_company_letterhead(token, doc)
         # Fill any missing customer-facing fields independently from the selected contact.
         cid = doc.get("contact_id")
         if cid:
@@ -2089,12 +2096,7 @@ celerpUpdateBulkAlloc();
             doc = {}
 
         # Inject company fields so "My company info" box is populated
-        try:
-            for _key, _value in (await _company_letterhead(token)).items():
-                if _key not in doc and _value:
-                    doc[_key] = _value
-        except Exception:
-            pass
+        doc = await _merge_company_letterhead(token, doc)
 
         # Resolve contact details if contact_id set but name missing
         cid = doc.get("contact_id")
@@ -4352,12 +4354,7 @@ celerpUpdateBulkAlloc();
             lst["issue_date"] = lst.get("created_at") or lst.get("date")
 
         # Inject company fields
-        try:
-            for _key, _value in (await _company_letterhead(token)).items():
-                if _key not in lst and _value:
-                    lst[_key] = _value
-        except Exception:
-            pass
+        lst = await _merge_company_letterhead(token, lst)
 
         # Fetch price lists
         price_lists: list[dict] = []
