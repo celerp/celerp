@@ -151,6 +151,16 @@ async def _try_auto_activate() -> None:
             "Activation recovery/check-in failed (expected for self-hosted): %s", exc)
 
 
+async def _try_sync_existing_entitlement() -> None:
+    """Best-effort boot convergence for an already-persisted relay credential."""
+    try:
+        from celerp.services.cloud_entitlement import sync_existing_entitlement
+        await sync_existing_entitlement(require_persisted_key=True)
+    except Exception as exc:
+        logging.getLogger(__name__).debug(
+            "Cloud startup reconciliation failed (non-fatal): %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     (settings.data_dir / "static" / "attachments").mkdir(parents=True, exist_ok=True)
@@ -304,6 +314,10 @@ async def lifespan(_app: FastAPI):
         from celerp.gateway import ensure_running, has_active_share
         if settings.celerp_public_url or await has_active_share():
             ensure_running()
+        # Authenticated activation is the canonical durable reconciliation path.
+        # It is bounded, idempotent for established credentials, and runs in the
+        # background so tunnel startup is never delayed.
+        asyncio.create_task(_try_sync_existing_entitlement())
     else:
         # Auto-activate: probe relay for an existing subscription (silent, no-op on failure)
         asyncio.create_task(_try_auto_activate())

@@ -96,7 +96,8 @@ async def cloud_status() -> dict:
     """
     from celerp.config import settings
     from celerp.gateway.client import get_client
-    from celerp.gateway.state import get_session_token, get_subscription_state
+    from celerp.gateway.state import (
+        get_instance_id, get_subscription_state, relay_session_headers)
     from celerp.services.cloud_entitlement import subscription_status, sync_existing_entitlement
 
     gw = get_client()
@@ -116,13 +117,62 @@ async def cloud_status() -> dict:
         }
 
     authoritative = await subscription_status()
-    tier = (authoritative or {}).get("tier") or ws_tier or None
+    authoritative_tier = (authoritative or {}).get("tier")
+    tier = authoritative_tier or ws_tier or None
     sub_status = (authoritative or {}).get("status") or ws_status or None
     known = authoritative is not None
     entitled = (sub_status in ("active", "trialing") and tier not in (None, "", "free")) if known else None
 
+    runtime_iid = get_instance_id()
+    runtime_headers = relay_session_headers()
+    runtime_session_token = runtime_headers.get("X-Session-Token", "")
+    identity_mismatch = bool(
+        connected
+        and runtime_iid
+        and runtime_iid != (settings.gateway_instance_id or "")
+    )
+    paid_state_mismatch = bool(
+        entitled
+        and (
+            not settings.celerp_public_url
+            or (connected and not runtime_session_token)
+        )
+    )
+    free_state_mismatch = bool(
+        known
+        and authoritative_tier == "free"
+        and (
+            settings.celerp_public_url
+            or (connected and bool(runtime_session_token))
+        )
+    )
+    runtime_free_with_stale_url = bool(
+        connected
+        and ws_tier == "free"
+        and not runtime_session_token
+        and settings.celerp_public_url
+    )
+    tier_mismatch = bool(
+        connected
+        and known
+        and authoritative_tier
+        and ws_tier
+        and authoritative_tier != ws_tier
+    )
+
+    reconciled = False
     if entitled and not connected:
+        # Preserve the explicit recovery behavior for configured credentials.
         await sync_existing_entitlement()
+        reconciled = True
+    elif (identity_mismatch or paid_state_mismatch
+          or free_state_mismatch or runtime_free_with_stale_url
+          or tier_mismatch):
+        # Automatic repair must never persist an environment-only override.
+        await sync_existing_entitlement(require_persisted_key=True)
+        reconciled = True
+
+    if reconciled:
         gw = get_client()
         relay_status = gw.relay_status if gw else "inactive"
         connected = relay_status in ("active", "tos_required")
@@ -131,14 +181,16 @@ async def cloud_status() -> dict:
     email_quota = 0
     email_used = 0
     email_resets_on = None
-    session_token = get_session_token()
-    if connected and settings.gateway_instance_id and session_token:
+    session_headers = relay_session_headers()
+    session_token = session_headers.get("X-Session-Token", "")
+    session_iid = session_headers.get("X-Instance-ID", "")
+    if connected and session_iid and session_token:
         try:
             import httpx
             from celerp.gateway.state import relay_http_url
             async with httpx.AsyncClient(base_url=relay_http_url(), timeout=3.0) as c:
                 r = await c.get("/billing/status", params={
-                    "instance_id": settings.gateway_instance_id, "session_token": session_token})
+                    "instance_id": session_iid, "session_token": session_token})
             if r.status_code == 200:
                 live = r.json()
                 tier = live.get("tier") or tier

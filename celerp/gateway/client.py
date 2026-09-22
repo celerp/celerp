@@ -121,6 +121,13 @@ class GatewayClient:
         # In-flight proxy tasks keyed by relay request id so an http.cancel frame can
         # abort exactly the one request it names, and no other.
         self._inflight: dict[str, asyncio.Task] = {}
+        # A transport reconfiguration may be requested by an activation while the
+        # current Web Access request is itself being proxied over this socket. Drain
+        # already-started requests before reconnecting; new requests fail fast until
+        # the handoff completes so no fresh work is cancelled mid-response.
+        self._proxy_draining = False
+        self._proxy_idle = asyncio.Event()
+        self._proxy_idle.set()
         # Connection generation: bumped on every teardown so a response produced by a
         # request that outlived its socket can be recognised as stale and dropped
         # rather than sent on the freshly rebuilt connection.
@@ -178,6 +185,7 @@ class GatewayClient:
         http.cancel frame can abort exactly that task. The key is cleared when the task
         finishes (a cancel arriving after completion is then a harmless no-op)."""
         request_id = payload.get("id", "")
+        self._proxy_idle.clear()
         task = asyncio.create_task(self._handle_proxy_request(payload))
         self._bg_tasks.add(task)
         self._inflight[request_id] = task
@@ -186,8 +194,29 @@ class GatewayClient:
             self._bg_tasks.discard(t)
             if self._inflight.get(request_id) is t:
                 del self._inflight[request_id]
+            if not self._inflight:
+                self._proxy_idle.set()
 
         task.add_done_callback(_done)
+
+    def has_inflight_proxy_requests(self) -> bool:
+        return bool(self._inflight)
+
+    def begin_proxy_drain(self) -> None:
+        """Stop admitting new proxied requests while current responses finish."""
+        self._proxy_draining = True
+
+    async def wait_for_proxy_idle(self) -> None:
+        """Wait until all requests admitted before begin_proxy_drain() have replied."""
+        while self._inflight:
+            await self._proxy_idle.wait()
+
+    def end_proxy_drain(self) -> None:
+        self._proxy_draining = False
+
+    def is_draining_for_reconfigure(self) -> bool:
+        """Whether an entitlement handoff owns this generation until it drains."""
+        return self._proxy_draining
 
     # ── Public API ─────────────────────────────────────────────────────
 
@@ -198,6 +227,7 @@ class GatewayClient:
         observes the same connection it manages, drops the tunnel once no share is
         live and nothing has been served within the grace window."""
         self._running = True
+        self._proxy_draining = False
         self._stop_event.clear()
         self._reaper_stop.clear()
         reaper = asyncio.create_task(self._reaper_loop())
@@ -404,6 +434,7 @@ class GatewayClient:
                 if not task.done():
                     task.cancel()
             self._inflight.clear()
+            self._proxy_idle.set()
             log.debug(
                 "Gateway proxy activity this connection: proxied=%d cancelled=%d "
                 "timed_out=%d stale_dropped=%d",
@@ -522,7 +553,18 @@ class GatewayClient:
             set_subscription_state(tier, status)
 
         elif msg_type == "http.request":
-            self._spawn_proxy(payload)
+            if self._proxy_draining:
+                await self._send(self._ws, {
+                    "type": "http.response",
+                    "payload": {
+                        "id": payload.get("id", ""),
+                        "status": 503,
+                        "headers": [["retry-after", "1"]],
+                        "body_b64": "",
+                    },
+                })
+            else:
+                self._spawn_proxy(payload)
 
         elif msg_type == "http.cancel":
             request_id = payload.get("id", "")

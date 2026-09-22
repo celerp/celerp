@@ -170,7 +170,8 @@ async def test_cloud_status_relay_http_tier_overrides_stale_ws_tier(client, owne
     with (
         patch("celerp.config.settings.gateway_token", "tok"),
         patch("celerp.config.settings.gateway_url", "wss://relay.celerp.com/ws/connect"),
-        patch("celerp.gateway.state.get_session_token", return_value="sess-token"),
+        patch("celerp.gateway.state.relay_session_headers", return_value={
+            "X-Session-Token": "sess-token", "X-Instance-ID": "inst-abc"}),
         patch.object(gw_state, "_subscription_tier", "free"),
         patch("celerp.config.settings.gateway_instance_id", "inst-abc"),
         patch("celerp.config.settings.gateway_http_url", "https://relay.celerp.com"),
@@ -209,7 +210,8 @@ async def test_cloud_status_connected_relay_ok(client, owner_h):
     with (
         patch("celerp.config.settings.gateway_token", "tok"),
         patch("celerp.config.settings.gateway_url", "wss://relay.celerp.com/ws/connect"),
-        patch("celerp.gateway.state.get_session_token", return_value="sess-token"),
+        patch("celerp.gateway.state.relay_session_headers", return_value={
+            "X-Session-Token": "sess-token", "X-Instance-ID": "inst-abc"}),
         patch("celerp.config.settings.gateway_instance_id", "inst-abc"),
         patch("celerp.config.settings.gateway_http_url", "https://relay.celerp.com"),
         patch("httpx.AsyncClient", return_value=mock_inner_client),

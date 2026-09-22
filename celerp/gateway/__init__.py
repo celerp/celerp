@@ -46,6 +46,13 @@ def ensure_running() -> None:
         return
     existing = _client.get_client()
     if existing is not None:
+        # An entitlement activation may be draining the current Web Access
+        # generation so the response that triggered the handoff can get back to
+        # the browser. That owner will rebuild from the latest settings once idle;
+        # no other caller may supersede it early.
+        draining = getattr(existing, "is_draining_for_reconfigure", None)
+        if callable(draining) and draining():
+            return
         if existing.is_serving(settings.gateway_token):
             return
         # A client the relay rejected (or one holding a token that has since rotated

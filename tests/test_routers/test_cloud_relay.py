@@ -79,6 +79,127 @@ async def test_cloud_status_connected(client):
     assert data["relay_status"] == "active"
 
 
+
+@pytest.mark.asyncio
+async def test_cloud_status_active_identity_mismatch_uses_canonical_session_identity(
+        client):
+    """An accepted WS cannot hide stale disk identity from durable reconciliation."""
+    token = await _register(client, "status-identity")
+    gw = _mock_gw("active")
+
+    from celerp.config import settings as _s
+    _s.cloud_disconnected = False
+    _s.gateway_instance_id = "persisted-iid"
+    _s.celerp_public_url = "https://slug.celerp.com"
+
+    live = MagicMock(status_code=200)
+    live.json.return_value = {
+        "tier": "ai", "status": "trialing", "last_backup": None,
+        "email_quota": 10, "email_used": 1,
+    }
+    inner = MagicMock()
+    inner.get = AsyncMock(return_value=live)
+    http = MagicMock()
+    http.__aenter__ = AsyncMock(return_value=inner)
+    http.__aexit__ = AsyncMock(return_value=False)
+
+    sync = AsyncMock(return_value={"tier": "ai", "status": "trialing"})
+    with (
+        patch("celerp.gateway.client.get_client", return_value=gw),
+        patch("celerp.services.cloud_entitlement.subscription_status",
+              new=AsyncMock(return_value={"tier": "ai", "status": "trialing"})),
+        patch("celerp.services.cloud_entitlement.sync_existing_entitlement",
+              new=sync),
+        patch("celerp.gateway.state.get_instance_id", return_value="canonical-iid"),
+        patch("celerp.gateway.state.relay_session_headers", return_value={
+            "X-Session-Token": "session-a", "X-Instance-ID": "canonical-iid"}),
+        patch("httpx.AsyncClient", return_value=http),
+    ):
+        r = await client.get("/settings/cloud-status", headers=_h(token))
+
+    assert r.status_code == 200
+    sync.assert_awaited_once_with(require_persisted_key=True)
+    assert inner.get.await_args.kwargs["params"] == {
+        "instance_id": "canonical-iid", "session_token": "session-a"}
+
+
+@pytest.mark.asyncio
+async def test_cloud_status_authenticated_plain_free_runtime_retries_stale_url_cleanup(
+        client):
+    """A free hello_ack retries durable cleanup after a transient boot-sync failure."""
+    token = await _register(client, "status-plain-free")
+    gw = _mock_gw("active")
+
+    from celerp.config import settings as _s
+    _s.cloud_disconnected = False
+    _s.gateway_instance_id = "canonical-iid"
+    _s.celerp_public_url = "https://stale.celerp.com"
+
+    sync = AsyncMock(return_value={"tier": "free", "status": "active"})
+    with (
+        patch("celerp.gateway.client.get_client", return_value=gw),
+        patch("celerp.services.cloud_entitlement.subscription_status",
+              new=AsyncMock(return_value=None)),
+        patch("celerp.services.cloud_entitlement.sync_existing_entitlement",
+              new=sync),
+        patch("celerp.gateway.state.get_instance_id", return_value="canonical-iid"),
+        patch("celerp.gateway.state.get_subscription_state",
+              return_value=("free", "active")),
+        patch("celerp.gateway.state.relay_session_headers", return_value={
+            "X-Session-Token": "", "X-Instance-ID": "canonical-iid"}),
+    ):
+        r = await client.get("/settings/cloud-status", headers=_h(token))
+
+    assert r.status_code == 200
+    sync.assert_awaited_once_with(require_persisted_key=True)
+
+
+
+@pytest.mark.asyncio
+async def test_cloud_status_active_free_runtime_recovers_paid_entitlement(client):
+    """Paid authority plus an active free socket triggers transport convergence."""
+    token = await _register(client, "status-paid-runtime")
+    gw = _mock_gw("active")
+
+    from celerp.config import settings as _s
+    _s.cloud_disconnected = False
+    _s.gateway_instance_id = "canonical-iid"
+    _s.celerp_public_url = ""
+
+    sync = AsyncMock(return_value={"tier": "ai", "status": "trialing"})
+    headers = [
+        {"X-Session-Token": "", "X-Instance-ID": "canonical-iid"},
+        {"X-Session-Token": "paid-session", "X-Instance-ID": "canonical-iid"},
+    ]
+    live = MagicMock(status_code=200)
+    live.json.return_value = {
+        "tier": "ai", "status": "trialing",
+        "email_quota": 10, "email_used": 1,
+    }
+    inner = MagicMock()
+    inner.get = AsyncMock(return_value=live)
+    http = MagicMock()
+    http.__aenter__ = AsyncMock(return_value=inner)
+    http.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("celerp.gateway.client.get_client", return_value=gw),
+        patch("celerp.services.cloud_entitlement.subscription_status",
+              new=AsyncMock(return_value={"tier": "ai", "status": "trialing"})),
+        patch("celerp.services.cloud_entitlement.sync_existing_entitlement",
+              new=sync),
+        patch("celerp.gateway.state.get_instance_id", return_value="canonical-iid"),
+        patch("celerp.gateway.state.relay_session_headers", side_effect=headers),
+        patch("httpx.AsyncClient", return_value=http),
+    ):
+        r = await client.get("/settings/cloud-status", headers=_h(token))
+
+    assert r.status_code == 200
+    sync.assert_awaited_once_with(require_persisted_key=True)
+    assert inner.get.await_args.kwargs["params"] == {
+        "instance_id": "canonical-iid", "session_token": "paid-session"}
+
+
 # ---------------------------------------------------------------------------
 # /settings/cloud-disconnect
 # ---------------------------------------------------------------------------
