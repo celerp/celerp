@@ -33,31 +33,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Rebase exact PR head onto exact main
+      - name: Checkout exact PR head
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "Noah Severs"
           git config user.email "118095044+ngsevers@users.noreply.github.com"
-          git fetch --no-tags origin main woocommerce-sync-integrity
-          test "$(git rev-parse origin/main)" = "0024c5ffa3b01a9e93514b3e99938f0dc8749ebb"
-          test "$(git rev-parse origin/woocommerce-sync-integrity)" = "6356077a6174e46d17f1b29ee996192355ddca3d"
+          git fetch --no-tags origin woocommerce-sync-integrity
+          test "$(git rev-parse origin/woocommerce-sync-integrity)" = "206bb807d325a848cd6542d4965d0366eefcc845"
           cp scripts/pr340_harden.py /tmp/pr340_harden.py
-          git checkout --detach 6356077a6174e46d17f1b29ee996192355ddca3d
-          set +e
-          git rebase 0024c5ffa3b01a9e93514b3e99938f0dc8749ebb
-          rc=$?
-          set -e
-          while [ "$rc" -ne 0 ]; do
-            conflicts="$(git diff --name-only --diff-filter=U)"
-            test "$conflicts" = "default_modules/first_party.lock.json"
-            git checkout --ours default_modules/first_party.lock.json
-            git add default_modules/first_party.lock.json
-            set +e
-            GIT_EDITOR=true git rebase --continue
-            rc=$?
-            set -e
-          done
+          git checkout --detach 206bb807d325a848cd6542d4965d0366eefcc845
 
       - name: Apply connector hardening
         shell: bash
@@ -97,5 +82,5 @@ jobs:
           git status --short
           git add -A
           git commit -m "Harden connector ownership and synchronization boundaries"
-          git push origin HEAD:refs/heads/pr340-hardened-candidate
+          git push --force-with-lease=refs/heads/pr340-safety-candidate-v2: origin HEAD:refs/heads/pr340-safety-candidate-v2
           git rev-parse HEAD
