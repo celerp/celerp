@@ -327,6 +327,15 @@ def deleted_external_link_may_relink(link: dict | None) -> bool:
     return bool(link and link.get("remote_deleted") is True)
 
 
+def external_link_intentionally_disabled(link: dict | None) -> bool:
+    """A user-disabled live link blocks product-side inbound mutation."""
+    return bool(
+        link
+        and link.get("sync_enabled") is False
+        and link.get("remote_deleted") is not True
+    )
+
+
 def relinked_external_sync_enabled(link: dict | None) -> bool:
     """Replacing a dead remote identity preserves the user's prior sync preference."""
     if not link:
@@ -445,14 +454,10 @@ async def upsert_external_product(
                 legacy_cleaned = True
         explicit = ((state.get("external_links") or {}).get(platform)
                     if isinstance(state.get("external_links"), dict) else None)
-        if (
-            isinstance(explicit, dict)
-            and explicit.get("sync_enabled") is False
-            and not deleted_external_link_may_relink(explicit)
-        ):
+        if external_link_intentionally_disabled(explicit):
             if legacy_cleaned:
                 await session.commit()
-            return "noop", entity_id
+            return "disabled", entity_id
 
         links = dict(state.get("external_links") or {})
         previous_link = external_link_for_state(state, platform)

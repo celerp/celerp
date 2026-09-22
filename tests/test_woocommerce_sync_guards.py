@@ -10,6 +10,7 @@ from celerp.connectors.woocommerce import (
 )
 from celerp_inventory.services import (
     deleted_external_link_may_relink,
+    external_link_intentionally_disabled,
     relinked_external_sync_enabled,
 )
 
@@ -69,4 +70,16 @@ def test_relink_preserves_manual_sync_preference():
     })
     assert not relinked_external_sync_enabled({
         "product_id": "20", "sync_enabled": False, "remote_deleted": True,
+    })
+
+
+def test_manual_disable_blocks_product_inbound_but_remote_delete_does_not():
+    assert external_link_intentionally_disabled({
+        "product_id": "20", "sync_enabled": False, "remote_deleted": False,
+    })
+    assert not external_link_intentionally_disabled({
+        "product_id": "20", "sync_enabled": False, "remote_deleted": True,
+    })
+    assert not external_link_intentionally_disabled({
+        "product_id": "20", "sync_enabled": True, "remote_deleted": False,
     })

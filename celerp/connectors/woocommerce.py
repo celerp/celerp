@@ -177,7 +177,7 @@ class WooCommerceConnector(ConnectorBase):
                     link_fields={"manage_stock": manage_stock},
                 )
                 result.record(outcome)
-                return entity_id
+                return None if outcome == "disabled" else entity_id
             except Exception as exc:
                 errors.append(f"SKU {sku}: {exc}")
                 return None
