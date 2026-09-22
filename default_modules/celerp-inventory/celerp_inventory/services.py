@@ -492,6 +492,11 @@ async def upsert_external_product(
             metadata_={},
         )
         await session.commit()
+        if links[platform].get("sync_enabled") is False:
+            # Identity repair for a remotely deleted product is allowed even when the
+            # user intentionally left product sync disabled, but callers must not
+            # continue with product-side mutation such as media pulls.
+            return "disabled", entity_id
         return ("noop" if getattr(entry, "was_deduped", False) else "updated", entity_id)
 
 
