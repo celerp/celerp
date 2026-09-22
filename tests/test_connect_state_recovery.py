@@ -653,3 +653,50 @@ async def test_second_activation_reuses_existing_proxy_drain_owner(monkeypatch):
     live.begin_proxy_drain.assert_not_called()
     shutdown.assert_not_awaited()
     ensure_running.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_wins_after_activation_cas_before_runtime_revival(monkeypatch):
+    """A later explicit Disconnect wins even after activation already persisted."""
+    from celerp.config import settings
+    monkeypatch.setattr(settings, "cloud_disconnected", False)
+    monkeypatch.setattr(settings, "gateway_token", "old-key")
+    monkeypatch.setattr(settings, "celerp_public_url", "https://old.celerp.com")
+    monkeypatch.setattr(settings, "backup_enabled", False)
+
+    live = MagicMock()
+    shutdown = AsyncMock()
+
+    async def _apply_flags(_flags, *, persist=True):
+        assert persist is True
+        settings.cloud_disconnected = True
+
+    flags = {
+        "payments_enabled": False,
+        "external_db": False,
+        "external_storage": False,
+        "grace_period_ends": None,
+    }
+
+    with (
+        patch("celerp.config.record_cloud_activation", return_value=True),
+        patch("celerp.gateway.state.apply_feature_flags_async",
+              new=AsyncMock(side_effect=_apply_flags)),
+        patch("celerp.gateway.client.get_client", return_value=live),
+        patch("celerp.gateway.shutdown", new=shutdown),
+        patch("celerp.gateway.ensure_running") as ensure_running,
+        patch("celerp.services.backup_scheduler.stop") as stop,
+    ):
+        from celerp.services.cloud_entitlement import apply_activation_state
+        accepted = await apply_activation_state(
+            "new-key", "iid", public_url="https://new.celerp.com",
+            tier="cloud", status="active", connect_entitled=True,
+            feature_flags=flags, expected_api_key="old-key")
+
+    assert accepted is False
+    assert settings.cloud_disconnected is True
+    assert settings.gateway_token == "old-key"
+    assert settings.celerp_public_url == "https://old.celerp.com"
+    shutdown.assert_awaited_once()
+    ensure_running.assert_not_called()
+    stop.assert_called_once()
