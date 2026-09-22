@@ -1,4 +1,4 @@
-name: PR340 Hardening Build
+name: PR340 Integration Check
 
 on:
   push:
@@ -8,9 +8,9 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  harden:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     services:
       postgres:
         image: postgres:16-alpine
@@ -26,50 +26,1682 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
       ALLOW_INSECURE_JWT: "true"
-      CELERP_TEST_NULLPOOL: "1"
+      DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Prepare exact rebased candidate
+      - name: Rebase exact PR head onto exact main
         shell: bash
         run: |
           set -euo pipefail
-          cp scripts/pr340_harden.py /tmp/pr340_harden.py
-          git fetch --no-tags origin pr340-rebased
-          test "$(git rev-parse origin/pr340-rebased)" = "b2502b1d32297226895aad0c21fa438d346b8d7b"
-          git checkout --detach b2502b1d32297226895aad0c21fa438d346b8d7b
           git config user.name "Noah Severs"
           git config user.email "118095044+ngsevers@users.noreply.github.com"
+          git fetch --no-tags origin main woocommerce-sync-integrity
+          test "$(git rev-parse origin/main)" = "0024c5ffa3b01a9e93514b3e99938f0dc8749ebb"
+          test "$(git rev-parse origin/woocommerce-sync-integrity)" = "6356077a6174e46d17f1b29ee996192355ddca3d"
+          git checkout --detach 6356077a6174e46d17f1b29ee996192355ddca3d
+          set +e
+          git rebase 0024c5ffa3b01a9e93514b3e99938f0dc8749ebb
+          rc=$?
+          set -e
+          while [ "$rc" -ne 0 ]; do
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            test "$conflicts" = "default_modules/first_party.lock.json"
+            git checkout --ours default_modules/first_party.lock.json
+            git add default_modules/first_party.lock.json
+            set +e
+            GIT_EDITOR=true git rebase --continue
+            rc=$?
+            set -e
+          done
 
-      - name: Install dependencies
+      - name: Apply connector hardening
+        shell: bash
+        run: |
+          cat > /tmp/pr340_harden.py <<'PY'
+          from pathlib import Path
+          import re
+
+          ROOT = Path(".")
+
+          def read(path):
+              return (ROOT / path).read_text()
+
+          def write(path, text):
+              (ROOT / path).write_text(text)
+
+          def rep(path, old, new, count=1):
+              text = read(path)
+              if text.count(old) < count:
+                  raise SystemExit(f"{path}: expected replacement not found: {old[:100]!r}")
+              write(path, text.replace(old, new, count))
+
+          def between(path, start, end, new):
+              text = read(path)
+              i = text.index(start)
+              j = text.index(end, i)
+              write(path, text[:i] + new + text[j:])
+
+          # ------------------------------------------------------------------
+          # Persistent connector ownership lifecycle.
+          # ------------------------------------------------------------------
+          rep(
+              "celerp/models/connector_config.py",
+              '    last_daily_sync_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)\n',
+              '    last_daily_sync_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)\n'
+              '    claimed_at: Mapped[datetime] = mapped_column(\n'
+              '        sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()\n'
+              '    )\n'
+              '    activated_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)\n',
+          )
+
+          write("celerp/connectors/ownership.py", r'''# Copyright (c) 2026 Noah Severs
+          # SPDX-License-Identifier: BUSL-1.1
+          """Local ownership of installation-scoped connector credentials."""
+          from __future__ import annotations
+
+          import json
+          import logging
+          from dataclasses import dataclass
+          from datetime import datetime, timezone
+
+          import sqlalchemy as sa
+
+          from celerp.config import ensure_instance_id
+          from celerp.db import get_session_ctx
+          from celerp.models.company import Company
+          from celerp.models.connector_config import ConnectorConfig
+
+          log = logging.getLogger(__name__)
+
+
+          class ConnectorOwnershipError(RuntimeError):
+              pass
+
+
+          @dataclass(frozen=True)
+          class ClaimResult:
+              config_id: int
+              created: bool
+
+
+          async def _lock(session, connector: str) -> None:
+              await session.execute(
+                  sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                  {"k": f"connector-owner:{connector}"},
+              )
+
+
+          def _default_frequency(connector: str) -> str:
+              try:
+                  from celerp.connectors.registry import get
+                  category = getattr(get(connector).category, "value", str(get(connector).category))
+              except Exception:
+                  category = ""
+              return "realtime" if category == "website" else "manual"
+
+
+          def _merge_compatible(current: ConnectorConfig, legacy: ConnectorConfig) -> None:
+              if current.webhook_secret and legacy.webhook_secret and current.webhook_secret != legacy.webhook_secret:
+                  raise ConnectorOwnershipError(
+                      f"{current.connector} has conflicting legacy webhook secrets; reconnect explicitly"
+                  )
+              current.webhook_secret = current.webhook_secret or legacy.webhook_secret
+              current.webhook_ids = list(dict.fromkeys(current.webhook_ids + legacy.webhook_ids))
+              if not current.claimed_at:
+                  current.claimed_at = legacy.claimed_at
+              if current.activated_at is None:
+                  current.activated_at = legacy.activated_at
+
+
+          async def get_company_config(
+              company_id: str, connector: str, *, active_only: bool = False
+          ) -> ConnectorConfig | None:
+              async with get_session_ctx() as session:
+                  stmt = sa.select(ConnectorConfig).where(
+                      ConnectorConfig.company_id == str(company_id),
+                      ConnectorConfig.connector == connector,
+                  )
+                  if active_only:
+                      stmt = stmt.where(ConnectorConfig.activated_at.is_not(None))
+                  return await session.scalar(stmt.limit(1))
+
+
+          async def claim_connector(company_id: str, connector: str) -> ClaimResult:
+              """Atomically claim one installation/platform credential for one ERP company."""
+              company_id = str(company_id)
+              legacy_id = ensure_instance_id()
+              now = datetime.now(timezone.utc)
+              async with get_session_ctx() as session:
+                  await _lock(session, connector)
+                  rows = (await session.execute(
+                      sa.select(ConnectorConfig).where(ConnectorConfig.connector == connector)
+                  )).scalars().all()
+
+                  others = [
+                      row for row in rows
+                      if str(row.company_id) not in {company_id, legacy_id}
+                  ]
+                  if others:
+                      raise ConnectorOwnershipError(
+                          f"{connector} is already owned by another company on this installation"
+                      )
+
+                  current = next((r for r in rows if str(r.company_id) == company_id), None)
+                  legacy = next((r for r in rows if str(r.company_id) == legacy_id), None)
+
+                  if current is not None and legacy is not None and current is not legacy:
+                      _merge_compatible(current, legacy)
+                      await session.delete(legacy)
+
+                  if current is not None:
+                      if current.claimed_at is None:
+                          current.claimed_at = now
+                      await session.commit()
+                      return ClaimResult(current.id, False)
+
+                  if legacy is not None:
+                      # Explicit reassignment is a new operational cutover. Until activation
+                      # completes, autonomous sync/webhook/outbound paths ignore this config.
+                      legacy.company_id = company_id
+                      legacy.claimed_at = now
+                      legacy.activated_at = None
+                      await session.commit()
+                      await session.refresh(legacy)
+                      return ClaimResult(legacy.id, False)
+
+                  row = ConnectorConfig(
+                      company_id=company_id,
+                      connector=connector,
+                      sync_frequency=_default_frequency(connector),
+                      claimed_at=now,
+                      activated_at=None,
+                  )
+                  session.add(row)
+                  await session.commit()
+                  await session.refresh(row)
+                  return ClaimResult(row.id, True)
+
+
+          async def activate_connector(company_id: str, connector: str) -> None:
+              async with get_session_ctx() as session:
+                  await _lock(session, connector)
+                  row = await session.scalar(sa.select(ConnectorConfig).where(
+                      ConnectorConfig.company_id == str(company_id),
+                      ConnectorConfig.connector == connector,
+                  ).limit(1))
+                  if row is None:
+                      raise ConnectorOwnershipError(f"{connector} is not owned by this company")
+                  if row.activated_at is None:
+                      row.activated_at = datetime.now(timezone.utc)
+                      await session.commit()
+
+
+          async def release_pending_claim(company_id: str, connector: str) -> None:
+              async with get_session_ctx() as session:
+                  await _lock(session, connector)
+                  row = await session.scalar(sa.select(ConnectorConfig).where(
+                      ConnectorConfig.company_id == str(company_id),
+                      ConnectorConfig.connector == connector,
+                  ).limit(1))
+                  if row is not None and row.activated_at is None:
+                      await session.delete(row)
+                      await session.commit()
+
+
+          async def delete_connector_config(company_id: str, connector: str) -> None:
+              async with get_session_ctx() as session:
+                  await _lock(session, connector)
+                  await session.execute(sa.delete(ConnectorConfig).where(
+                      ConnectorConfig.company_id == str(company_id),
+                      ConnectorConfig.connector == connector,
+                  ))
+                  await session.commit()
+
+
+          async def adopt_single_company_legacy_configs() -> None:
+              """Adopt installation-scoped rows only when the database has one company."""
+              legacy_id = ensure_instance_id()
+              async with get_session_ctx() as session:
+                  companies = (await session.execute(sa.select(Company.id).limit(2))).scalars().all()
+              if len(companies) != 1:
+                  return
+              company_id = str(companies[0])
+              if company_id == legacy_id:
+                  return
+
+              async with get_session_ctx() as session:
+                  connectors = (await session.execute(
+                      sa.select(ConnectorConfig.connector)
+                      .where(ConnectorConfig.company_id == legacy_id)
+                      .distinct()
+                  )).scalars().all()
+
+              for connector in connectors:
+                  try:
+                      async with get_session_ctx() as session:
+                          await _lock(session, connector)
+                          legacy = await session.scalar(sa.select(ConnectorConfig).where(
+                              ConnectorConfig.company_id == legacy_id,
+                              ConnectorConfig.connector == connector,
+                          ).limit(1))
+                          if legacy is None:
+                              continue
+                          current = await session.scalar(sa.select(ConnectorConfig).where(
+                              ConnectorConfig.company_id == company_id,
+                              ConnectorConfig.connector == connector,
+                          ).limit(1))
+                          if current is None:
+                              legacy.company_id = company_id
+                          else:
+                              _merge_compatible(current, legacy)
+                              await session.delete(legacy)
+                          await session.commit()
+                  except ConnectorOwnershipError:
+                      log.error(
+                          "connector ownership adoption refused for %s: conflicting legacy state",
+                          connector,
+                          exc_info=True,
+                      )
+          '''.replace("          ", ""))
+
+          write("celerp/connectors/operation_lock.py", r'''# Copyright (c) 2026 Noah Severs
+          # SPDX-License-Identifier: BUSL-1.1
+          """Cross-process serialization for one company's remote connector operations."""
+          from __future__ import annotations
+
+          from contextlib import asynccontextmanager
+
+          from sqlalchemy import text
+
+          from celerp.db import lifecycle_engine
+
+
+          @asynccontextmanager
+          async def connector_operation(company_id: str, connector: str, *, wait: bool = True):
+              if lifecycle_engine.dialect.name != "postgresql":
+                  yield True
+                  return
+
+              key = f"connector-op:{company_id}:{connector}"
+              async with lifecycle_engine.connect() as conn:
+                  if wait:
+                      await conn.execute(
+                          text("SELECT pg_advisory_lock(hashtextextended(:k, 0))"), {"k": key}
+                      )
+                      acquired = True
+                  else:
+                      acquired = bool(await conn.scalar(
+                          text("SELECT pg_try_advisory_lock(hashtextextended(:k, 0))"), {"k": key}
+                      ))
+                  await conn.commit()
+                  try:
+                      yield acquired
+                  finally:
+                      if acquired:
+                          await conn.execute(
+                              text("SELECT pg_advisory_unlock(hashtextextended(:k, 0))"), {"k": key}
+                          )
+                          await conn.commit()
+          '''.replace("          ", ""))
+
+          write("celerp/services/inventory_allocation.py", r'''# Copyright (c) 2026 Noah Severs
+          # SPDX-License-Identifier: BUSL-1.1
+          """Serialization for customer-stock allocation decisions."""
+          from __future__ import annotations
+
+          from sqlalchemy import text
+
+
+          async def lock_sales_allocation(session, company_id) -> None:
+              """Serialize reserve/fulfill availability checks for one company.
+
+              Cross-lot picks can touch several same-SKU parcels. A single short
+              transaction lock avoids AB/BA lot-lock ordering and makes validation
+              plus reservation/fulfillment one atomic allocation decision.
+              """
+              await session.execute(
+                  text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                  {"k": f"sales-allocation:{company_id}"},
+              )
+          '''.replace("          ", ""))
+
+          # Migration follows the rebased branch's actual Alembic head.
+          versions = list((ROOT / "celerp/migrations/versions").glob("*.py"))
+          revs, downs = {}, set()
+          for p in versions:
+              s = p.read_text()
+              m = re.search(r'^revision\s*=\s*["\']([^"\']+)["\']', s, re.M)
+              if not m:
+                  continue
+              revs[m.group(1)] = p
+              d = re.search(r'^down_revision\s*=\s*["\']([^"\']+)["\']', s, re.M)
+              if d:
+                  downs.add(d.group(1))
+          heads = sorted(set(revs) - downs)
+          if len(heads) != 1:
+              raise SystemExit(f"expected one Alembic head, got {heads}")
+          down = heads[0]
+          mig = ROOT / "celerp/migrations/versions/c0d1e2f3a4b5_connector_ownership_lifecycle.py"
+          mig.write_text(f'''# Copyright (c) 2026 Noah Severs
+          # SPDX-License-Identifier: BUSL-1.1
+          """Add connector ownership lifecycle timestamps.
+
+          Revision ID: c0d1e2f3a4b5
+          Revises: {down}
+          Create Date: 2026-09-22
+          """
+          from __future__ import annotations
+
+          import sqlalchemy as sa
+          from alembic import op
+
+          revision = "c0d1e2f3a4b5"
+          down_revision = "{down}"
+          branch_labels = None
+          depends_on = None
+
+
+          def upgrade() -> None:
+              op.add_column(
+                  "connector_configs",
+                  sa.Column(
+                      "claimed_at", sa.DateTime(timezone=True), nullable=False,
+                      server_default=sa.func.now(),
+                  ),
+              )
+              op.add_column(
+                  "connector_configs",
+                  sa.Column("activated_at", sa.DateTime(timezone=True), nullable=True),
+              )
+              op.execute("UPDATE connector_configs SET activated_at = claimed_at WHERE activated_at IS NULL")
+
+
+          def downgrade() -> None:
+              op.drop_column("connector_configs", "activated_at")
+              op.drop_column("connector_configs", "claimed_at")
+          '''.replace("          ", ""))
+
+          # ------------------------------------------------------------------
+          # Connector runner: one operation lease; SyncRun remains audit only.
+          # ------------------------------------------------------------------
+          path = "celerp/connectors/sync_runner.py"
+          rep(path, "from datetime import datetime, timedelta, timezone", "from datetime import datetime, timezone")
+          rep(
+              path,
+              "from celerp.models.sync_run import SyncRun\n",
+              "from celerp.models.sync_run import SyncRun\nfrom celerp.connectors.operation_lock import connector_operation\n",
+          )
+          between(
+              path,
+              "async def run_connector_sync(",
+              "async def _last_success_watermark",
+              '''async def run_connector_sync(
+              connector: ConnectorBase,
+              ctx: ConnectorContext,
+              direction: SyncDirection,
+          ) -> list[SyncResult]:
+              """Execute one complete connector plan under a cross-process operation lease."""
+              async with connector_operation(ctx.company_id, connector.name):
+                  return [
+                      await run_sync(
+                          connector, ctx, entity, direction=direction, _operation_locked=True
+                      )
+                      for entity in sync_plan(connector, direction)
+                  ]
+
+
+          async def run_activation_sync(
+              connector: ConnectorBase,
+              ctx: ConnectorContext,
+          ) -> list[SyncResult]:
+              """Pull-only activation, then expose autonomous operation and close the order gap."""
+              from celerp.connectors.ownership import activate_connector, get_company_config
+
+              async with connector_operation(ctx.company_id, connector.name):
+                  config = await get_company_config(ctx.company_id, connector.name)
+                  if config is None:
+                      raise RuntimeError(f"{connector.name} is not owned by this company")
+                  results = [
+                      await run_sync(
+                          connector, ctx, entity, direction=SyncDirection.INBOUND,
+                          _operation_locked=True,
+                      )
+                      for entity in sync_plan(connector, SyncDirection.INBOUND)
+                  ]
+                  healthy = any(
+                      (not result.errors) or result.created or result.updated
+                      for result in results
+                  )
+                  if not healthy and results:
+                      return results
+
+                  # Mark active before the final order catch-up. A webhook that arrives
+                  # after this point sees an active owner and blocks on this same lease,
+                  # so it cannot disappear into the activation handoff gap.
+                  await activate_connector(ctx.company_id, connector.name)
+                  if SyncEntity.ORDERS in connector.supported_entities:
+                      results.append(await run_sync(
+                          connector, ctx, SyncEntity.ORDERS.value,
+                          direction=SyncDirection.INBOUND, _operation_locked=True,
+                      ))
+                  return results
+
+
+          async def _last_success_watermark''',
+          )
+          between(
+              path,
+              "# Concurrency guard:",
+              "async def _finish_run",
+              '''async def _begin_run(company_id: str, connector: str, entity: str, direction_str: str, started_at):
+              """Start an audited run, closing any row left unfinished by a dead process."""
+              import sqlalchemy as sa
+
+              from celerp.db import get_session_ctx
+
+              try:
+                  async with get_session_ctx() as session:
+                      await session.execute(
+                          sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                          {"k": f"sync-run:{company_id}:{connector}:{entity}"},
+                      )
+                      await session.execute(
+                          sa.update(SyncRun)
+                          .where(
+                              SyncRun.company_id == company_id,
+                              SyncRun.connector == connector,
+                              SyncRun.entity == entity,
+                              SyncRun.finished_at.is_(None),
+                          )
+                          .values(
+                              finished_at=started_at,
+                              status="failed",
+                              errors_json=json.dumps(["Interrupted before completion"]),
+                          )
+                      )
+                      run = SyncRun(
+                          company_id=company_id, connector=connector, entity=entity,
+                          direction=direction_str, started_at=started_at, finished_at=None,
+                          created_count=0, updated_count=0, skipped_count=0,
+                          errors_json=None, status="running",
+                      )
+                      session.add(run)
+                      await session.commit()
+                      await session.refresh(run)
+                      return run.id
+              except Exception as exc:
+                  log.warning("Failed to record in-progress SyncRun: %s", exc)
+                  return None
+
+
+          async def _finish_run''',
+          )
+          rep(
+              path,
+              "    direction: SyncDirection | None = None,\n) -> SyncResult:",
+              "    direction: SyncDirection | None = None,\n    _operation_locked: bool = False,\n) -> SyncResult:",
+          )
+          rep(
+              path,
+              '    # Direction gate\n',
+              '    if not _operation_locked:\n'
+              '        async with connector_operation(ctx.company_id, connector.name):\n'
+              '            return await run_sync(\n'
+              '                connector, ctx, entity, since=since, direction=direction,\n'
+              '                _operation_locked=True,\n'
+              '            )\n\n'
+              '    # Direction gate\n',
+          )
+          # Any old per-entity busy branch is obsolete under the connector operation lease.
+          text = read(path)
+          text = re.sub(
+              r'\n    if run_id == _BUSY:\n        return SyncResult\([\s\S]*?\n        \)\n',
+              "\n",
+              text,
+              count=1,
+          )
+          write(path, text)
+
+          # ------------------------------------------------------------------
+          # Queue: only Woo inventory work, active owner only, shared operation lease.
+          # ------------------------------------------------------------------
+          path = "celerp/connectors/outbound_queue.py"
+          text = read(path)
+          text = text.replace("from celerp.models.company import Company\n", "")
+          start = text.index("async def adopt_single_company_legacy_configs()")
+          end = text.index("async def enqueue_item_change", start)
+          text = text[:start] + text[end:]
+          text = text.replace(
+              "            ConnectorConfig.direction.in_([\n"
+              "                SyncDirection.OUTBOUND.value, SyncDirection.BOTH.value\n"
+              "            ]),\n",
+              "            ConnectorConfig.direction.in_([\n"
+              "                SyncDirection.OUTBOUND.value, SyncDirection.BOTH.value\n"
+              "            ]),\n"
+              "            ConnectorConfig.activated_at.is_not(None),\n",
+              1,
+          )
+          pstart = text.index("async def process_outbound_queue_once")
+          pend = text.index("async def outbound_queue_loop", pstart)
+          new_process = '''async def process_outbound_queue_once(limit: int = 100) -> int:
+              """Drain Woo inventory work without allowing stale remote writes to overtake fresh ones."""
+              from celerp.connectors.operation_lock import connector_operation
+
+              now = datetime.now(timezone.utc)
+              async with get_session_ctx() as session:
+                  rows = (await session.execute(
+                      sa.select(OutboundQueue)
+                      .where(
+                          OutboundQueue.connector == "woocommerce",
+                          OutboundQueue.entity_type == "inventory",
+                          OutboundQueue.status == "pending",
+                          sa.or_(
+                              OutboundQueue.next_retry_at.is_(None),
+                              OutboundQueue.next_retry_at <= now,
+                          ),
+                      )
+                      .order_by(OutboundQueue.id)
+                      .limit(limit)
+                  )).scalars().all()
+
+              identities = list(dict.fromkeys(
+                  (row.company_id, row.connector, row.entity_id) for row in rows
+              ))
+              processed = 0
+
+              for company_id, connector_name, identity in identities:
+                  async with connector_operation(company_id, connector_name, wait=False) as acquired:
+                      if not acquired:
+                          continue
+
+                      async with get_session_ctx() as session:
+                          locked_rows = (await session.execute(
+                              sa.select(OutboundQueue)
+                              .where(
+                                  OutboundQueue.company_id == company_id,
+                                  OutboundQueue.connector == "woocommerce",
+                                  OutboundQueue.entity_type == "inventory",
+                                  OutboundQueue.entity_id == identity,
+                                  OutboundQueue.status == "pending",
+                                  sa.or_(
+                                      OutboundQueue.next_retry_at.is_(None),
+                                      OutboundQueue.next_retry_at <= datetime.now(timezone.utc),
+                                  ),
+                              )
+                              .order_by(OutboundQueue.id)
+                          )).scalars().all()
+                          if not locked_rows:
+                              continue
+                          ids = [row.id for row in locked_rows]
+                          config = await session.scalar(
+                              sa.select(ConnectorConfig).where(
+                                  ConnectorConfig.company_id == company_id,
+                                  ConnectorConfig.connector == connector_name,
+                                  ConnectorConfig.activated_at.is_not(None),
+                              ).limit(1)
+                          )
+                          if config is None or config.direction == SyncDirection.INBOUND.value:
+                              await session.execute(sa.delete(OutboundQueue).where(OutboundQueue.id.in_(ids)))
+                              await session.commit()
+                              processed += len(ids)
+                              continue
+
+                      try:
+                          from celerp.connectors.registry import get as get_connector
+                          from celerp.connectors.relay_token import fetch_context
+
+                          ctx = await fetch_context(company_id, connector_name)
+                          if ctx is None:
+                              raise RuntimeError("connector credentials are temporarily unavailable")
+                          connector = get_connector(connector_name)
+                          result = await connector.sync_inventory_identity_out(ctx, identity)
+                          if result.errors:
+                              raise RuntimeError("; ".join(result.errors))
+                          async with get_session_ctx() as session:
+                              await session.execute(sa.delete(OutboundQueue).where(OutboundQueue.id.in_(ids)))
+                              await session.commit()
+                      except Exception as exc:
+                          retry_now = datetime.now(timezone.utc)
+                          async with get_session_ctx() as session:
+                              retry_rows = (await session.execute(
+                                  sa.select(OutboundQueue).where(OutboundQueue.id.in_(ids))
+                              )).scalars().all()
+                              for row in retry_rows:
+                                  row.retry_count += 1
+                                  delay = min(3600, 5 * (2 ** min(row.retry_count, 9)))
+                                  row.next_retry_at = retry_now + timedelta(seconds=delay)
+                                  row.error_message = str(exc)[:2000]
+                                  row.status = "pending"
+                              await session.commit()
+
+                      processed += len(ids)
+              return processed
+
+
+          '''
+          text = text[:pstart] + new_process.replace("          ", "") + text[pend:]
+          write(path, text)
+
+          # Scheduler sees only activated connector owners.
+          path = "celerp/connectors/daily_scheduler.py"
+          rep(
+              path,
+              "                ConnectorConfig.company_id == company_id,\n            )",
+              "                ConnectorConfig.company_id == company_id,\n"
+              "                ConnectorConfig.activated_at.is_not(None),\n"
+              "            )",
+          )
+          rep(
+              path,
+              "rows = await session.execute(sa.select(ConnectorConfig.company_id).distinct())",
+              "rows = await session.execute(\n"
+              "            sa.select(ConnectorConfig.company_id)\n"
+              "            .where(ConnectorConfig.activated_at.is_not(None))\n"
+              "            .distinct()\n"
+              "        )",
+          )
+
+          # ------------------------------------------------------------------
+          # API credential boundary owns claim/revoke semantics.
+          # ------------------------------------------------------------------
+          path = "default_modules/celerp-connectors/celerp_connectors/routes.py"
+          rep(
+              path,
+              "from celerp.services.auth import get_current_company_id, get_current_user",
+              "from celerp.services.auth import get_current_company_id, get_current_user, get_current_role",
+          )
+          rep(
+              path,
+              "from celerp.services.permissions import require_permission",
+              "from celerp.services.permissions import (\n"
+              "    get_current_company_settings, require_permission, role_has_permission,\n"
+              ")",
+          )
+          rep(
+              path,
+              'async def store_credentials(\n    connector_name: str,\n    payload: ApiKeyCredentials,\n    _: None = require_permission("manage_integrations"),\n) -> dict:',
+              'async def store_credentials(\n    connector_name: str,\n    payload: ApiKeyCredentials,\n'
+              '    company_id: Annotated[str, Depends(get_current_company_id)],\n'
+              '    _: None = require_permission("manage_integrations"),\n) -> dict:',
+          )
+          marker = "    try:\n        async with httpx.AsyncClient(timeout=10.0) as c:\n            r = await c.post(\n"
+          claim_code = '''    from celerp.connectors.ownership import (
+              ConnectorOwnershipError, claim_connector, release_pending_claim,
+          )
+              try:
+                  claim = await claim_connector(company_id, connector_name)
+              except ConnectorOwnershipError as exc:
+                  return {"ok": False, "error": "connector_owned_elsewhere", "detail": str(exc)}
+              claim_created = claim.created
+
+          '''
+          text = read(path)
+          idx = text.index(marker, text.index("async def store_credentials"))
+          text = text[:idx] + claim_code.replace("          ", "") + text[idx:]
+          # Release only a claim created by this failed request.
+          text = text.replace(
+              '    except Exception as exc:\n        return {"ok": False, "error": "relay_error", "detail": str(exc)}\n\n'
+              '    if r.status_code == 402:\n        return {"ok": False, "error": "subscription_required", "detail": ""}\n'
+              '    if r.status_code != 200:\n        return {"ok": False, "error": "relay_error", "detail": f"relay returned {r.status_code}"}\n'
+              '    return {"ok": True}\n',
+              '    except Exception as exc:\n'
+              '        if claim_created:\n            await release_pending_claim(company_id, connector_name)\n'
+              '        return {"ok": False, "error": "relay_error", "detail": str(exc)}\n\n'
+              '    if r.status_code == 402:\n'
+              '        if claim_created:\n            await release_pending_claim(company_id, connector_name)\n'
+              '        return {"ok": False, "error": "subscription_required", "detail": ""}\n'
+              '    if r.status_code != 200:\n'
+              '        if claim_created:\n            await release_pending_claim(company_id, connector_name)\n'
+              '        return {"ok": False, "error": "relay_error", "detail": f"relay returned {r.status_code}"}\n'
+              '    return {"ok": True}\n',
+              1,
+          )
+          write(path, text)
+
+          between(
+              path,
+              "@router.delete("/{connector_name}/credentials")",
+              "@router.get("/{connector_name}/access-token")",
+              '''@router.delete("/{connector_name}/credentials")
+          async def revoke_credentials(
+              connector_name: str,
+              company_id: Annotated[str, Depends(get_current_company_id)],
+              _: None = require_permission("manage_integrations"),
+          ) -> dict:
+              """Clean remote webhook state, revoke relay credentials, then drop local ownership."""
+              import httpx
+
+              from celerp.connectors.base import ConnectorContext
+              from celerp.connectors.operation_lock import connector_operation
+              from celerp.connectors.ownership import delete_connector_config, get_company_config
+              from celerp.gateway.state import relay_http_url, relay_session_headers
+
+              config = await get_company_config(company_id, connector_name)
+              if config is None:
+                  return {"ok": False, "error": "connector_not_owned",
+                          "detail": "This company does not own this connector."}
+
+              async with connector_operation(company_id, connector_name):
+                  async with httpx.AsyncClient(timeout=10.0) as c:
+                      if connector_name == "woocommerce":
+                          token_resp = await c.get(
+                              f"{relay_http_url()}/tokens/{connector_name}/access-token",
+                              headers=relay_session_headers(),
+                          )
+                          if token_resp.status_code != 200:
+                              return {
+                                  "ok": False, "error": "cleanup_requires_credentials",
+                                  "detail": "WooCommerce credentials are required to remove remote webhooks safely.",
+                              }
+                          token_data = token_resp.json()
+                          ctx = ConnectorContext(
+                              company_id=company_id,
+                              access_token=token_data["access_token"],
+                              store_handle=token_data.get("store_handle"),
+                          )
+                          from celerp.connectors.woocommerce import WooCommerceConnector
+                          try:
+                              await WooCommerceConnector().deregister_webhooks(
+                                  ctx,
+                                  config.webhook_ids,
+                                  webhook_url=f"{relay_http_url().rstrip('/')}/webhooks/woocommerce/events",
+                              )
+                          except Exception as exc:
+                              return {"ok": False, "error": "webhook_cleanup_failed", "detail": str(exc)}
+
+                      try:
+                          r = await c.delete(
+                              f"{relay_http_url()}/tokens/{connector_name}",
+                              headers=relay_session_headers(),
+                          )
+                      except Exception as exc:
+                          return {"ok": False, "error": "relay_error", "detail": str(exc)}
+
+                  if r.status_code not in (200, 404):
+                      return {"ok": False, "error": "relay_error", "detail": f"relay returned {r.status_code}"}
+                  await delete_connector_config(company_id, connector_name)
+                  return {"ok": True}
+
+
+          @router.get("/{connector_name}/access-token")''',
+          )
+          rep(
+              path,
+              'async def connector_access_token(\n    connector_name: str,\n    _: None = require_permission("manage_integrations"),\n) -> dict:',
+              'async def connector_access_token(\n    connector_name: str,\n'
+              '    company_id: Annotated[str, Depends(get_current_company_id)],\n'
+              '    _: None = require_permission("manage_integrations"),\n) -> dict:',
+          )
+          rep(
+              path,
+              '    import httpx\n    from celerp.gateway.state import relay_http_url, relay_session_headers\n\n    try:\n',
+              '    import httpx\n'
+              '    from celerp.gateway.state import relay_http_url, relay_session_headers\n'
+              '    from celerp.connectors.ownership import get_company_config\n\n'
+              '    if await get_company_config(company_id, connector_name) is None:\n'
+              '        return {"error": "connector_not_owned", "detail": "This company does not own this connector."}\n\n'
+              '    try:\n',
+              1,
+          )
+          rep(
+              path,
+              '    user=Depends(get_current_user), _: None = require_permission("adjust_inventory"),\n'
+              '    session: AsyncSession = Depends(get_session),\n',
+              '    user=Depends(get_current_user), _: None = require_permission("adjust_inventory"),\n'
+              '    role: str = Depends(get_current_role),\n'
+              '    settings: dict = Depends(get_current_company_settings),\n'
+              '    session: AsyncSession = Depends(get_session),\n',
+          )
+          rep(
+              path,
+              '        ConnectorConfig.connector == connector_name,\n    ))',
+              '        ConnectorConfig.connector == connector_name,\n'
+              '        ConnectorConfig.activated_at.is_not(None),\n    ))',
+          )
+          marker = "    updated = 0\n    if connector_name == "shopify":\n"
+          insert = '''    if connector_name == "woocommerce" and payload.enable:
+              needs_publish_authority = any(
+                  (not external_link_for_state(anchor.state or {}, "woocommerce"))
+                  or external_link_for_state(anchor.state or {}, "woocommerce").get("remote_deleted") is True
+                  for anchor in anchors.values()
+              )
+              if needs_publish_authority and not role_has_permission(
+                  settings, role, "manage_integrations"
+              ):
+                  raise HTTPException(
+                      status_code=403,
+                      detail="Publishing or relinking a WooCommerce product requires manage_integrations",
+                  )
+
+              updated = 0
+              if connector_name == "shopify":
+          '''
+          rep(path, marker, insert.replace("          ", ""), 1)
+
+          # ------------------------------------------------------------------
+          # OAuth claim boundary in the API process.
+          # ------------------------------------------------------------------
+          path = "celerp/routers/health.py"
+          text = read(path)
+          if "from celerp.services.auth import get_current_company_id" not in text:
+              # Keep the import local to this route module to avoid broad auth changes.
+              anchor = '@settings_router.get("/connectors/{platform}/authorize-url"'
+              i = text.index(anchor)
+              text = text[:i] + "from celerp.services.auth import get_current_company_id\n\n" + text[i:]
+          start = text.index('@settings_router.get("/connectors/{platform}/authorize-url"')
+          end = text.find("\n\n@", start + 10)
+          if end < 0:
+              raise SystemExit("health.py: could not bound authorize route")
+          new = '''@settings_router.get("/connectors/{platform}/authorize-url", dependencies=[require_permission("manage_integrations")])
+          async def connector_authorize_url(
+              platform: str,
+              shop: str = "",
+              company_id: str = Depends(get_current_company_id),
+          ) -> dict:
+              """Claim local ownership before starting installation-scoped OAuth."""
+              import httpx
+              from celerp.config import settings as _s, ensure_instance_id
+              from celerp.connectors.ownership import (
+                  ConnectorOwnershipError, claim_connector, release_pending_claim,
+              )
+
+              api_key = _s.gateway_token
+              if not api_key:
+                  return {"error": "Not connected to relay."}
+
+              try:
+                  claim = await claim_connector(company_id, platform)
+              except ConnectorOwnershipError as exc:
+                  return {"error": str(exc)}
+
+              from celerp.gateway.state import (
+                  fetch_relay_auth, relay_http_url as _rhu, with_relay_client)
+              relay_base = _rhu()
+              iid = ensure_instance_id()
+
+              async def _authorize(c):
+                  jwt, authenticated_iid = await fetch_relay_auth(c, api_key=api_key)
+                  params = {"instance_id": authenticated_iid or iid}
+                  if shop:
+                      params["shop"] = shop
+                  return await c.get(
+                      f"{relay_base}/oauth/{platform}/authorize",
+                      params=params,
+                      headers={"Authorization": f"Bearer {jwt}"},
+                  )
+
+              try:
+                  r = await with_relay_client(8.0, _authorize)
+              except httpx.ConnectError:
+                  if claim.created:
+                      await release_pending_claim(company_id, platform)
+                  return {"error": "Cannot reach relay."}
+              except httpx.TimeoutException:
+                  if claim.created:
+                      await release_pending_claim(company_id, platform)
+                  return {"error": "Relay timed out."}
+              except Exception as exc:
+                  if claim.created:
+                      await release_pending_claim(company_id, platform)
+                  return {"error": str(exc)}
+              if isinstance(r, dict):
+                  if claim.created:
+                      await release_pending_claim(company_id, platform)
+                  return r
+
+              if r.status_code == 200:
+                  return {"authorize_url": r.json().get("authorize_url", "")}
+              if claim.created:
+                  await release_pending_claim(company_id, platform)
+              try:
+                  detail = r.json().get("detail", r.text[:120])
+              except Exception:
+                  detail = r.text[:120]
+              return {"error": detail}
+          '''
+          text = text[:start] + new.replace("          ", "") + text[end:]
+          write(path, text)
+
+          # ------------------------------------------------------------------
+          # Settings UI consumes ownership; rendering never creates it.
+          # ------------------------------------------------------------------
+          path = "ui/routes/settings_connectors.py"
+          between(
+              path,
+              "async def _get_connector_config",
+              "async def _kickoff_connector_sync",
+              '''async def _get_connector_config(company_id: str, connector: str):
+              from celerp.connectors.ownership import get_company_config
+              return await get_company_config(company_id, connector)
+
+
+          async def _kickoff_connector_sync''',
+          )
+          # The replacement above duplicated the function name boundary; restore its full signature/body prefix.
+          text = read(path)
+          text = text.replace(
+              "async def _kickoff_connector_syncasync def _kickoff_connector_sync",
+              "async def _kickoff_connector_sync",
+          )
+          write(path, text)
+          # Replace kickoff with pending-aware activation.
+          text = read(path)
+          s = text.index("async def _kickoff_connector_sync")
+          e = text.index("async def _autosync_once", s)
+          new = '''async def _kickoff_connector_sync(company_id: str, platform: str, token: str) -> None:
+              """Run pull-only activation for pending ownership, otherwise the configured plan."""
+              from celerp.connectors.base import ConnectorContext, SyncDirection
+              from celerp.connectors.registry import get as get_connector
+              from celerp.connectors.sync_runner import run_activation_sync, run_connector_sync
+
+              connector = get_connector(platform)
+              token_data = await _fetch_access_token(platform, token)
+              ctx = ConnectorContext(
+                  company_id=company_id,
+                  access_token=token_data["access_token"],
+                  store_handle=token_data.get("store_handle"),
+              )
+              config = await _get_connector_config(company_id, platform)
+              if config is None:
+                  raise RuntimeError("This company does not own the connector")
+
+              async def _do_sync():
+                  try:
+                      if config.activated_at is None:
+                          await run_activation_sync(connector, ctx)
+                      else:
+                          await run_connector_sync(
+                              connector, ctx, direction=SyncDirection(config.direction)
+                          )
+                  except Exception as exc:
+                      log.warning("connector sync %s failed: %s", platform, exc)
+
+              spawn_background(_do_sync())
+
+
+          '''
+          write(path, text[:s] + new.replace("          ", "") + text[e:])
+
+          # Persist cleanup can discover this installation's remote hooks too.
+          rep(
+              path,
+              "            await connector.deregister_webhooks(ctx, ids)\n",
+              "            await connector.deregister_webhooks(ctx, ids, webhook_url=delivery_url)\n",
+          )
+
+          text = read(path)
+          # Rendering may attach relay 'connected' only to the locally owning company.
+          old = '''    # Load configs for all connected connectors
+              configs: dict[str, object] = {}
+              for c in catalog:
+                  if c.get("connected"):
+                      cfg = await _ensure_connector_config(company_id, c["id"], c.get("category", "website"))
+                      configs[c["id"]] = cfg
+
+              # Auto-sync a freshly connected store that has never synced (e.g. just returned from
+              # OAuth) so the merchant's data appears without a manual step - the activation moment.
+              # Idempotent: run_sync's in-progress row + concurrency guard prevent re-triggering on
+              # re-render, and once any run exists this branch no longer fires.
+              for c in catalog:
+                  if c.get("connected") and last_runs.get(c["id"]) is None:
+                      spawn_background(_autosync_once(company_id, c["id"], token))
+          '''.replace("          ", "")
+          new = '''    # Relay connectivity is installation-scoped. It is visible as connected
+              # to this ERP company only when this company owns the local config.
+              configs: dict[str, object] = {}
+              visible_catalog: list[dict] = []
+              for raw in catalog:
+                  c = dict(raw)
+                  cfg = await _get_connector_config(company_id, c["id"])
+                  if cfg is not None:
+                      configs[c["id"]] = cfg
+                  c["connected"] = bool(c.get("connected") and cfg is not None)
+                  visible_catalog.append(c)
+              catalog = visible_catalog
+
+              # Pending OAuth/API-key claims activate by inbound pull only. Existing
+              # active connectors that predate SyncRun still receive one safe initial pull.
+              for c in catalog:
+                  cfg = configs.get(c["id"])
+                  if c.get("connected") and cfg is not None and (
+                      cfg.activated_at is None or last_runs.get(c["id"]) is None
+                  ):
+                      spawn_background(_autosync_once(company_id, c["id"], token))
+          '''.replace("          ", "")
+          if old not in text:
+              raise SystemExit("settings_connectors.py: catalog ownership block not found")
+          text = text.replace(old, new, 1)
+          # Cards already consume catalog below.
+          write(path, text)
+
+          # Remove the UI-side preclaim; API credential storage is the authority.
+          text = read(path)
+          a = text.index("        # Relay credentials are instance/platform scoped.")
+          b = text.index("        # Validation + storage run in the API process", a)
+          text = text[:a] + text[b:]
+          text = text.replace(
+              "        # Create connector config with defaults\n"
+              "        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)\n"
+              "        c_data = next((c for c in catalog if c[\"id\"] == platform), {\"id\": platform, \"name\": platform})\n"
+              "        config = await _ensure_connector_config(company_id, platform, c_data.get(\"category\", \"website\"))\n",
+              "        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)\n"
+              "        c_data = next((c for c in catalog if c[\"id\"] == platform), {\"id\": platform, \"name\": platform})\n"
+              "        config = await _get_connector_config(company_id, platform)\n"
+              "        if config is None:\n"
+              "            return Div(Span(\"Connector ownership was not established.\", cls=\"flash flash--warning\"),\n"
+              "                       id=f\"connector-card-{platform}\", cls=\"connector-card\")\n",
+              1,
+          )
+          # API revoke now owns Woo cleanup + local config deletion atomically.
+          ds = text.index("    @app.delete(\"/settings/connectors/{platform}/disconnect\")")
+          de = text.index("    @app.post(\"/settings/connectors/{platform}/sync\")", ds)
+          disconnect = '''    @app.delete("/settings/connectors/{platform}/disconnect")
+              async def connector_disconnect(request: Request, platform: str):
+                  token = _token(request)
+                  if not token:
+                      return Span(t("error.unauthorized"), cls="flash flash--warning")
+                  if (r := await _check_permission(request, "manage_integrations")):
+                      return r
+                  if (err := _validate_platform(platform)):
+                      return err
+
+                  from ui.api_client import delete_connector_credentials
+                  from ui.config import RELAY_URL
+                  from ui.i18n import get_lang
+
+                  company_id = _request_company_id(request)
+                  lang = get_lang(request)
+                  result = await delete_connector_credentials(token, platform)
+                  if not result.get("ok"):
+                      return Div(
+                          Span(f"✗ {result.get('detail') or result.get('error') or 'Disconnect failed'}",
+                               cls="flash flash--warning"),
+                          id=f"connector-card-{platform}", cls="connector-card",
+                      )
+
+                  if request.query_params.get("redirect"):
+                      from starlette.responses import Response
+                      return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud?tab=website"})
+
+                  catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
+                  c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
+                  c_data = {**c_data, "connected": False}
+                  last_runs = await _get_last_runs(company_id)
+                  return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id, lang=lang)
+
+
+          '''
+          text = text[:ds] + disconnect.replace("          ", "") + text[de:]
+          # Direct detail URLs cannot act on installation credentials not owned locally.
+          detail_marker = "        config = await _get_connector_config(company_id, platform)\n        runs = await _entity_runs(company_id, platform)\n"
+          text = text.replace(
+              detail_marker,
+              "        config = await _get_connector_config(company_id, platform)\n"
+              "        if config is None:\n"
+              "            return RedirectResponse(\"/settings/cloud?tab=website\", status_code=302)\n"
+              "        runs = await _entity_runs(company_id, platform)\n",
+              1,
+          )
+          # Registration failure calls the canonical API revoke; do not separately erase local state.
+          text = text.replace("                await _clear_connector_config(company_id, platform)\n", "", 1)
+          write(path, text)
+
+          # ------------------------------------------------------------------
+          # Relay token use is company-owned even though relay credentials are installation scoped.
+          # ------------------------------------------------------------------
+          path = "celerp/connectors/relay_token.py"
+          text = read(path)
+          m = re.search(r'async def fetch_context\([^\n]+\)\s*->[^:]+:\n', text)
+          if not m:
+              m = re.search(r'async def fetch_context\([^\n]+\):\n', text)
+          if not m:
+              raise SystemExit("relay_token.py: fetch_context not found")
+          pos = m.end()
+          # Keep the function docstring as a docstring if present.
+          if text[pos:].startswith('    """'):
+              close = text.index('    """', pos + 7) + len('    """\n')
+              pos = close
+          guard = (
+              "    from celerp.connectors.ownership import get_company_config\n"
+              "    if await get_company_config(company_id, connector_name) is None:\n"
+              "        return None\n"
+          )
+          text = text[:pos] + guard + text[pos:]
+          write(path, text)
+
+          # ------------------------------------------------------------------
+          # Active-owner webhook routing only; corrupted multi-owner state fails closed.
+          # ------------------------------------------------------------------
+          path = "celerp/connectors/webhooks.py"
+          rep(
+              path,
+              '            ).where(ConnectorConfig.connector == "woocommerce")\n',
+              '            ).where(\n'
+              '                ConnectorConfig.connector == "woocommerce",\n'
+              '                ConnectorConfig.activated_at.is_not(None),\n'
+              '            )\n',
+          )
+          text = read(path)
+          old_loop = '''    for company_id, secret, direction in configs:
+                  if not secret or not connector.validate_webhook(raw_body, signature, secret):
+                      continue
+                  ctx = await fetch_context(company_id, "woocommerce")
+                  if ctx is None:
+                      continue
+                  try:
+                      data = json.loads(raw_body or b"{}")
+                  except (ValueError, TypeError):
+                      data = {}
+                  event = WebhookEvent(platform="woocommerce", topic=topic, payload=data)
+                  await handle_webhook(event, ctx, SyncDirection(direction or "both"))
+                  return True
+
+              return False
+          '''.replace("          ", "")
+          new_loop = '''    matches = [
+                  row for row in configs
+                  if row[1] and connector.validate_webhook(raw_body, signature, row[1])
+              ]
+              if len(matches) != 1:
+                  if len(matches) > 1:
+                      log.error("woocommerce webhook matched multiple active connector owners")
+                  return False
+              company_id, _secret, direction = matches[0]
+              ctx = await fetch_context(company_id, "woocommerce")
+              if ctx is None:
+                  return False
+              try:
+                  data = json.loads(raw_body or b"{}")
+              except (ValueError, TypeError):
+                  data = {}
+              event = WebhookEvent(platform="woocommerce", topic=topic, payload=data)
+              await handle_webhook(event, ctx, SyncDirection(direction or "both"))
+              return True
+          '''.replace("          ", "")
+          if old_loop not in text:
+              raise SystemExit("webhooks.py: Woo routing loop not found")
+          write(path, text.replace(old_loop, new_loop, 1))
+
+          path = "celerp/gateway/client.py"
+          rep(
+              path,
+              '                    sa.select(ConnectorConfig.company_id).where(\n'
+              '                        ConnectorConfig.connector == "shopify"\n'
+              '                    )\n',
+              '                    sa.select(ConnectorConfig.company_id).where(\n'
+              '                        ConnectorConfig.connector == "shopify",\n'
+              '                        ConnectorConfig.activated_at.is_not(None),\n'
+              '                    )\n',
+          )
+          text = read(path)
+          old = '''            event = WebhookEvent(platform="shopify", topic=topic, payload=data)
+                  want = _shop_key(shop)
+                  for (company_id,) in configs:
+                      ctx = await fetch_context(company_id, "shopify")
+                      if ctx is None:
+                          continue
+                      # Guard against a misrouted/stale delivery: only sync when the webhook's
+                      # shop matches this instance's connected store. (Companies on an instance
+                      # share one instance-level Shopify token, so this matches on the store,
+                      # not a specific company — per-company store routing isn't modelled.)
+                      if want and _shop_key(ctx.store_handle) != want:
+                          continue
+                      await handle_webhook(event, ctx)
+          '''.replace("          ", "")
+          new = '''            if len(configs) != 1:
+                      if len(configs) > 1:
+                          log.error("shopify webhook has multiple active connector owners")
+                      return
+                  event = WebhookEvent(platform="shopify", topic=topic, payload=data)
+                  want = _shop_key(shop)
+                  company_id = configs[0][0]
+                  ctx = await fetch_context(company_id, "shopify")
+                  if ctx is None:
+                      return
+                  if want and _shop_key(ctx.store_handle) != want:
+                      return
+                  await handle_webhook(event, ctx)
+          '''.replace("          ", "")
+          if old not in text:
+              raise SystemExit("gateway/client.py: Shopify webhook loop not found")
+          write(path, text.replace(old, new, 1))
+
+          # ------------------------------------------------------------------
+          # Woo: Celerp stays inventory authority; permanent order cutover; convergent hooks.
+          # ------------------------------------------------------------------
+          path = "celerp/connectors/woocommerce.py"
+          text = read(path)
+          text = re.sub(r'seed_quantity=\([^\n]*manage_stock[^\n]*\)', 'seed_quantity=False', text)
+          # Serialize one-off publish/link operations with every other Woo remote operation.
+          needle = "    async def ensure_product_link(self, ctx: ConnectorContext, entity_id: str, actor_id=None) -> str:\n"
+          if needle not in text:
+              raise SystemExit("woocommerce.py: ensure_product_link not found")
+          text = text.replace(
+              needle,
+              "    async def ensure_product_link(self, ctx: ConnectorContext, entity_id: str, actor_id=None) -> str:\n"
+              "        from celerp.connectors.operation_lock import connector_operation\n"
+              "        async with connector_operation(ctx.company_id, self.name):\n"
+              "            return await self._ensure_product_link_locked(ctx, entity_id, actor_id=actor_id)\n\n"
+              "    async def _ensure_product_link_locked(self, ctx: ConnectorContext, entity_id: str, actor_id=None) -> str:\n",
+              1,
+          )
+          # Permanent creation-time cutover layered with incremental modified watermark.
+          marker = "        params: dict = {}\n        if since:\n"
+          cutoff = '''        params: dict = {}
+                  from celerp.connectors.ownership import get_company_config
+                  config = await get_company_config(ctx.company_id, self.name)
+                  if config is None:
+                      result.errors = ["WooCommerce connector ownership is not configured"]
+                      return result
+                  cutoff_at = config.claimed_at
+                  if cutoff_at:
+                      params["after"] = cutoff_at.isoformat()
+                      params["dates_are_gmt"] = "true"
+                  if since:
+          '''.replace("          ", "")
+          if marker not in text[text.index("async def sync_orders"):]:
+              raise SystemExit("woocommerce.py: sync_orders params marker not found")
+          oi = text.index("async def sync_orders")
+          mi = text.index(marker, oi)
+          text = text[:mi] + cutoff + text[mi + len(marker):]
+          # Defensive local check in case the remote API ignores/changes date filtering.
+          order_loop = "        for order in orders:\n            try:\n"
+          defensive = '''        for order in orders:
+                  try:
+                      if cutoff_at:
+                          raw_created = order.get("date_created_gmt") or order.get("date_created")
+                          if not raw_created:
+                              raise ValueError("WooCommerce order is missing its creation timestamp")
+                          created_at = datetime.fromisoformat(str(raw_created).replace("Z", "+00:00"))
+                          if created_at.tzinfo is None:
+                              created_at = created_at.replace(tzinfo=timezone.utc)
+                          if created_at < cutoff_at:
+                              result.skipped += 1
+                              continue
+          '''.replace("          ", "")
+          idx = text.index(order_loop, oi)
+          text = text[:idx] + defensive + text[idx + len(order_loop):]
+
+          # Webhook registration converges by an installation-specific remote name.
+          rs = text.index("    async def register_webhooks(")
+          re_ = text.index("    async def deregister_webhooks(", rs)
+          de = text.find("\n    async def ", re_ + 10)
+          if de < 0:
+              de = len(text)
+          hooks = '''    async def register_webhooks(
+                  self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None
+              ) -> list[str]:
+                  """Converge this installation's WooCommerce webhook set."""
+                  from celerp.config import ensure_instance_id
+
+                  base_url = _base_url(ctx)
+                  auth = _auth(ctx)
+                  prefix = f"Celerp {ensure_instance_id()} "
+                  existing = await self._paginate(ctx, "/webhooks")
+                  owned_ids = [
+                      str(hook.get("id"))
+                      for hook in existing
+                      if str(hook.get("name") or "").startswith(prefix)
+                      and str(hook.get("delivery_url") or "").rstrip("/") == webhook_url.rstrip("/")
+                      and hook.get("id") not in (None, "")
+                  ]
+                  async with RateLimitedClient() as client:
+                      for webhook_id in owned_ids:
+                          cleanup = await client.delete(
+                              f"{base_url}/webhooks/{webhook_id}", auth=auth, params={"force": "true"}
+                          )
+                          if cleanup.status_code not in (200, 204, 404):
+                              raise RuntimeError(
+                                  f"WooCommerce webhook cleanup failed for {webhook_id}: HTTP {cleanup.status_code}"
+                              )
+
+                      ids: list[str] = []
+                      try:
+                          for topic in self._WEBHOOK_TOPICS:
+                              body = {
+                                  "name": f"{prefix}{topic}",
+                                  "topic": topic,
+                                  "delivery_url": webhook_url,
+                                  "status": "active",
+                              }
+                              if secret:
+                                  body["secret"] = secret
+                              resp = await client.post(f"{base_url}/webhooks", auth=auth, json=body)
+                              resp.raise_for_status()
+                              webhook_id = str(resp.json().get("id") or "")
+                              if not webhook_id:
+                                  raise RuntimeError(f"WooCommerce did not return a webhook id for {topic}")
+                              ids.append(webhook_id)
+                      except Exception:
+                          for webhook_id in reversed(ids):
+                              try:
+                                  await client.delete(
+                                      f"{base_url}/webhooks/{webhook_id}",
+                                      auth=auth, params={"force": "true"},
+                                  )
+                              except Exception:
+                                  log.warning("woocommerce webhook rollback failed id=%s", webhook_id, exc_info=True)
+                          raise
+                  return ids
+
+              async def deregister_webhooks(
+                  self, ctx: ConnectorContext, webhook_ids: list[str],
+                  webhook_url: str | None = None,
+              ) -> None:
+                  """Delete cached IDs plus any discoverable hooks owned by this installation."""
+                  from celerp.config import ensure_instance_id
+
+                  base_url = _base_url(ctx)
+                  auth = _auth(ctx)
+                  ids = {str(x) for x in webhook_ids if x}
+                  prefix = f"Celerp {ensure_instance_id()} "
+                  try:
+                      existing = await self._paginate(ctx, "/webhooks")
+                  except Exception as exc:
+                      raise RuntimeError(f"WooCommerce webhook discovery failed: {exc}") from exc
+                  for hook in existing:
+                      if not str(hook.get("name") or "").startswith(prefix):
+                          continue
+                      if webhook_url and str(hook.get("delivery_url") or "").rstrip("/") != webhook_url.rstrip("/"):
+                          continue
+                      if hook.get("id") not in (None, ""):
+                          ids.add(str(hook["id"]))
+
+                  errors: list[str] = []
+                  async with RateLimitedClient() as client:
+                      for webhook_id in sorted(ids):
+                          try:
+                              resp = await client.delete(
+                                  f"{base_url}/webhooks/{webhook_id}",
+                                  auth=auth, params={"force": "true"},
+                              )
+                              if resp.status_code not in (200, 204, 404):
+                                  errors.append(f"{webhook_id}: HTTP {resp.status_code}")
+                          except Exception as exc:
+                              errors.append(f"{webhook_id}: {exc}")
+                  if errors:
+                      raise RuntimeError("WooCommerce webhook cleanup failed: " + "; ".join(errors))
+          '''.replace("          ", "")
+          text = text[:rs] + hooks + text[de:]
+          write(path, text)
+
+          # ------------------------------------------------------------------
+          # External identity is unique and live identities cannot be silently rebound by SKU.
+          # ------------------------------------------------------------------
+          path = "default_modules/celerp-inventory/celerp_inventory/services.py"
+          rep(
+              path,
+              "    if len(candidates) == 1:\n        return candidates[0]\n",
+              "    if len(candidates) == 1:\n"
+              "        candidate = candidates[0]\n"
+              "        current = external_link_for_state(candidate.state or {}, platform)\n"
+              "        if current and not deleted_external_link_may_relink(current):\n"
+              "            raise ValueError(\n"
+              "                f\"SKU {sku!r} is already linked to a different live {platform} identity\"\n"
+              "            )\n"
+              "        return candidate\n",
+              1,
+          )
+          rep(
+              path,
+              '    lock_key = f"external-product:{cid}:{identity}"\n',
+              '    lock_key = f"external-link:{cid}:{platform}:{product_id}:{variation_id or \'\'}"\n',
+              1,
+          )
+          # Serialize all link writers on the same external identity and reject duplicate owners.
+          marker = '    cid = uuid.UUID(str(company_id))\n    row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True)\n'
+          replacement = '''    cid = uuid.UUID(str(company_id))
+              normalized = dict(link)
+              normalized["product_id"] = str(normalized["product_id"])
+              if normalized.get("variation_id") not in (None, ""):
+                  normalized["variation_id"] = str(normalized["variation_id"])
+              await session.execute(
+                  text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                  {"k": f"external-link:{cid}:{platform}:{normalized['product_id']}:{normalized.get('variation_id') or ''}"},
+              )
+              rows = (await session.execute(select(Projection).where(
+                  Projection.company_id == cid, Projection.entity_type == "item"
+              ))).scalars().all()
+              for owner in rows:
+                  if owner.entity_id == entity_id:
+                      continue
+                  existing = external_link_for_state(owner.state or {}, platform)
+                  if (
+                      existing
+                      and str(existing.get("product_id") or "") == normalized["product_id"]
+                      and str(existing.get("variation_id") or "") == str(normalized.get("variation_id") or "")
+                      and existing.get("remote_deleted") is not True
+                  ):
+                      raise ValueError(
+                          f"{platform} product identity is already linked to item {owner.entity_id}"
+                      )
+              row = await session.get(
+                  Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True
+              )
+          '''.replace("          ", "")
+          if marker not in read(path):
+              raise SystemExit("inventory services: set_external_link marker not found")
+          rep(path, marker, replacement, 1)
+          # Remove the now-duplicated normalization later in set_external_link.
+          text = read(path)
+          segment_start = text.index("async def set_external_link(")
+          segment_end = text.index("async def resolve_catalog_anchor_for_item", segment_start)
+          segment = text[segment_start:segment_end]
+          dup = '''    normalized = dict(link)
+              normalized["product_id"] = str(normalized["product_id"])
+              if normalized.get("variation_id") not in (None, ""):
+                  normalized["variation_id"] = str(normalized["variation_id"])
+          '''.replace("          ", "")
+          # Keep only the first normalization block.
+          first = segment.find(dup)
+          second = segment.find(dup, first + len(dup))
+          if second >= 0:
+              segment = segment[:second] + segment[second + len(dup):]
+              text = text[:segment_start] + segment + text[segment_end:]
+          write(path, text)
+
+          # ------------------------------------------------------------------
+          # Woo order compatibility + immutable operational snapshot.
+          # ------------------------------------------------------------------
+          path = "default_modules/celerp-docs/celerp_docs/doc_service.py"
+          rep(
+              path,
+              '    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)\n',
+              '    payload["customer_id"] = str(order.get("customer_id") or "")\n'
+              '    payload["billing"] = order.get("billing") or {}\n'
+              '    payload["shipping_address"] = order.get("shipping") or {}\n'
+              '    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)\n',
+              1,
+          )
+          # Legacy informational imports are never auto-promoted into accounting/inventory.
+          marker = '''        if existing is not None and existing.entity_type != "doc":
+                  raise ValueError(f"WooCommerce order identity collides with {existing.entity_type}")
+
+          '''
+          repl = marker + '''        if existing is not None and not (existing.state or {}).get("woocommerce_source_fingerprint"):
+                  return "noop"
+
+          '''
+          rep(path, marker, repl, 1)
+          # Distinct free-text Woo line IDs must not collapse together.
+          text = read(path)
+          old = '''                key = (
+                      str(li.get("product_id") or ""),
+                      str(li.get("variation_id") or ""),
+                      str(li.get("sku") or "").strip().casefold(),
+                  )
+          '''.replace("          ", "")
+          new = '''                product_key = str(li.get("product_id") or "")
+                  sku_key = str(li.get("sku") or "").strip().casefold()
+                  key = (
+                      product_key,
+                      str(li.get("variation_id") or ""),
+                      sku_key,
+                      str(li.get("id") or "") if not product_key and not sku_key else "",
+                  )
+          '''.replace("          ", "")
+          if old not in text:
+              raise SystemExit("doc_service.py: Woo grouping key not found")
+          text = text.replace(old, new, 1)
+          # Completed issuance may not regress silently to processing.
+          needle = '            if wc_status in {"cancelled", "failed", "refunded"}:\n'
+          insert = '''            previous_wc_status = str((existing.state or {}).get("woocommerce_status") or "").lower()
+                  if previous_wc_status == "completed" and wc_status != "completed":
+                      raise ValueError(
+                          f"WooCommerce order {order.get('number') or order_id} regressed from "
+                          f"completed to {wc_status!r}; manual reconciliation is required"
+                      )
+          '''.replace("          ", "")
+          idx = text.index(needle, text.index("async def upsert_order_from_woocommerce"))
+          text = text[:idx] + insert + text[idx:]
+          # Preserve old payment guard if PR broadened it.
+          text = text.replace(
+              'if order.get("date_paid"):',
+              'if order.get("date_paid") and not order.get("needs_payment", False):',
+              1,
+          )
+          # Reuse the document payment owner resolver rather than another owner query.
+          pattern = re.compile(
+              r'\s*owner_id = await session\.scalar\(\s*select\(UserCompany\.user_id\)[\s\S]*?\)\s*\n\s*if owner_id is None:',
+              re.M,
+          )
+          m = pattern.search(text)
+          if m:
+              replacement = (
+                  '\n            from celerp_docs.routes_payments import _company_owner_id\n'
+                  '            owner_id = await _company_owner_id(session, cid)\n'
+                  '            if owner_id is None:'
+              )
+              text = text[:m.start()] + replacement + text[m.end():]
+          write(path, text)
+
+          # Active owners only for automated document attribution.
+          path = "default_modules/celerp-docs/celerp_docs/routes_payments.py"
+          rep(
+              path,
+              '            UserCompany.company_id == company_id, UserCompany.role == "owner")',
+              '            UserCompany.company_id == company_id,\n'
+              '            UserCompany.role == "owner", UserCompany.is_active.is_(True))',
+              1,
+          )
+
+          # Canonical customer-stock allocation decision lock.
+          path = "default_modules/celerp-docs/celerp_docs/routes.py"
+          text = read(path)
+          reserve = text.index("async def _reserve_lines_impl")
+          marker = '    unit_map = await _get_unit_map(session, row.company_id)\n'
+          idx = text.index(marker, reserve)
+          text = (
+              text[:idx]
+              + '    from celerp.services.inventory_allocation import lock_sales_allocation\n'
+                '    await lock_sales_allocation(session, row.company_id)\n'
+              + text[idx:]
+          )
+          fulfill = text.index("async def _fulfill_lines_impl")
+          marker2 = '    _unit_map = await _get_unit_map(session, company_id)\n'
+          idx2 = text.index(marker2, fulfill)
+          text = (
+              text[:idx2]
+              + '    from celerp.services.inventory_allocation import lock_sales_allocation\n'
+                '    await lock_sales_allocation(session, company_id)\n'
+              + text[idx2:]
+          )
+          write(path, text)
+
+          # Startup adoption is fail-closed but never a boot killer.
+          path = "celerp/main.py"
+          old = '''    from celerp.connectors.outbound_queue import (
+                  adopt_single_company_legacy_configs,
+                  outbound_queue_loop,
+              )
+              await adopt_single_company_legacy_configs()
+              outbound_connector_task = asyncio.create_task(outbound_queue_loop())
+          '''.replace("          ", "")
+          new = '''    from celerp.connectors.ownership import adopt_single_company_legacy_configs
+              from celerp.connectors.outbound_queue import outbound_queue_loop
+              try:
+                  await adopt_single_company_legacy_configs()
+              except Exception:
+                  logging.getLogger(__name__).exception(
+                      "Legacy connector ownership adoption failed closed (non-fatal)"
+                  )
+              outbound_connector_task = asyncio.create_task(outbound_queue_loop())
+          '''.replace("          ", "")
+          if old not in read(path):
+              raise SystemExit("main.py: legacy adoption block not found")
+          rep(path, old, new, 1)
+
+          # Basic compile-time contract tests for the new owning boundaries.
+          write("tests/test_connector_hardening_contract.py", r'''from pathlib import Path
+
+
+          ROOT = Path(__file__).resolve().parents[1]
+
+
+          def _text(path: str) -> str:
+              return (ROOT / path).read_text()
+
+
+          def test_connector_config_has_claim_and_activation_lifecycle():
+              source = _text("celerp/models/connector_config.py")
+              assert "claimed_at" in source
+              assert "activated_at" in source
+
+
+          def test_woo_product_pull_does_not_seed_operational_stock():
+              source = _text("celerp/connectors/woocommerce.py")
+              assert "seed_quantity=False" in source
+              assert "params[\"after\"] = cutoff_at.isoformat()" in source
+
+
+          def test_remote_connector_work_uses_one_operation_lease():
+              runner = _text("celerp/connectors/sync_runner.py")
+              queue = _text("celerp/connectors/outbound_queue.py")
+              assert "connector_operation(ctx.company_id, connector.name)" in runner
+              assert "connector_operation(company_id, connector_name, wait=False)" in queue
+
+
+          def test_sales_reserve_and_fulfill_share_allocation_lock():
+              routes = _text("default_modules/celerp-docs/celerp_docs/routes.py")
+              assert routes.count("await lock_sales_allocation(") >= 2
+          '''.replace("          ", ""))
+
+          PY
+          python /tmp/pr340_harden.py
+          python -m compileall -q celerp default_modules/celerp-connectors default_modules/celerp-docs default_modules/celerp-inventory ui
+          python scripts/gen_first_party_lock.py
+
+      - name: Install test dependencies
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split
 
-      - name: Apply hardening
-        shell: bash
-        run: |
-          set -euo pipefail
-          heads="$(alembic heads | awk '{print $1}')"
-          test "$(printf '%s\n' "$heads" | sed '/^$/d' | wc -l)" -eq 1
-          export DOWN_REVISION="$heads"
-          python /tmp/pr340_harden.py
-          python scripts/gen_first_party_lock.py
-          git diff --check
+      - name: Focused hardening tests
+        run: >
+          pytest -q --tb=short --no-cov --timeout=30
+          tests/test_connector_hardening_contract.py
+          tests/test_services/test_sync_runner_lifecycle.py
+          tests/test_services/test_outbound_queue.py
+          tests/test_woocommerce_sync_guards.py
+          tests/test_connectors_status.py
+          default_modules/celerp-connectors/tests/test_connectors.py
+          tests/test_routers/test_doc_workflows.py
 
-      - name: Focused tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          pytest -q --no-cov --timeout=30             tests/test_connector_operation_lock.py             tests/test_connector_ownership.py             tests/test_services/test_sync_runner_lifecycle.py             tests/test_services/test_outbound_queue.py             tests/test_connectors_status.py             tests/test_woocommerce_sync_guards.py             tests/test_services/test_connector_upsert_integration.py             tests/test_fulfillment.py             default_modules/celerp-connectors/tests/test_wiring.py             default_modules/celerp-connectors/tests/test_woocommerce.py             default_modules/celerp-connectors/tests/test_connector_correctness.py
+      - name: Full non-browser suite
+        run: >
+          timeout 1200 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
+          --timeout=30
+          --ignore=tests/test_visual.py
+          --ignore=tests/test_browser
 
-      - name: Publish validated candidate
+      - name: Commit and publish candidate
         shell: bash
         run: |
           set -euo pipefail
           git status --short
           git add -A
-          git commit -m "Harden connector ownership and sync lifecycle"
-          git push origin HEAD:refs/heads/pr340-hardened
+          git commit -m "Harden connector ownership and synchronization boundaries"
+          git push origin HEAD:refs/heads/pr340-hardened-candidate
+          git rev-parse HEAD
