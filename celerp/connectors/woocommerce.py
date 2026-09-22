@@ -340,8 +340,7 @@ class WooCommerceConnector(ConnectorBase):
                 async with AsyncSessionLocal() as session:
                     await set_external_link_state(
                         session, ctx.company_id, anchor_id, "woocommerce",
-                        sync_enabled=False, remote_deleted=True, actor_id=actor_id,
-                        source="connector_ui",
+                        remote_deleted=True, actor_id=actor_id, source="connector_ui",
                     )
                     await session.commit()
                 rediscover = True
@@ -680,7 +679,7 @@ class WooCommerceConnector(ConnectorBase):
             for row in matches:
                 await set_external_link_state(
                     session, ctx.company_id, row.entity_id, "woocommerce",
-                    sync_enabled=False, remote_deleted=True, source="connector",
+                    remote_deleted=True, source="connector",
                 )
             if matches:
                 await session.commit()
