@@ -40,9 +40,9 @@ jobs:
           git config user.name "Noah Severs"
           git config user.email "118095044+ngsevers@users.noreply.github.com"
           git fetch --no-tags origin woocommerce-sync-integrity
-          test "$(git rev-parse origin/woocommerce-sync-integrity)" = "206bb807d325a848cd6542d4965d0366eefcc845"
+          test "$(git rev-parse origin/woocommerce-sync-integrity)" = "76f5ce7f732424159f125c9c989766d4a7383f78"
           cp scripts/pr340_harden.py /tmp/pr340_harden.py
-          git checkout --detach 206bb807d325a848cd6542d4965d0366eefcc845
+          git checkout --detach 76f5ce7f732424159f125c9c989766d4a7383f78
 
       - name: Apply connector hardening
         shell: bash
