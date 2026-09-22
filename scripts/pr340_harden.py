@@ -585,25 +585,22 @@ async def run_connector_activation(
 write("celerp/connectors/sync_runner.py", runner)
 
 # Add internal param + direct lease wrapper to run_sync.
-regex_once(
-    "celerp/connectors/sync_runner.py",
-    r'''async def run_sync\(
-    connector: ConnectorBase,
-    ctx: ConnectorContext,
-    entity: str,
-    since: datetime \| None = None,
-    direction: SyncDirection \| None = None,
-(?:    _operation_locked: bool = False,
-)?\) -> SyncResult:''',
-    '''async def run_sync(
-    connector: ConnectorBase,
-    ctx: ConnectorContext,
-    entity: str,
-    since: datetime | None = None,
-    direction: SyncDirection | None = None,
-    _operation_locked: bool = False,
-) -> SyncResult:''',
-)
+runner = read("celerp/connectors/sync_runner.py")
+_header_start = runner.index("async def run_sync(")
+_header_end = runner.index(") -> SyncResult:", _header_start)
+_header = runner[_header_start:_header_end]
+if "_operation_locked" not in _header:
+    _needle = "    direction: SyncDirection | None = None,\n"
+    if _needle not in _header:
+        raise SystemExit("sync_runner: run_sync direction parameter missing")
+    _header = _header.replace(
+        _needle,
+        _needle + "    _operation_locked: bool = False,\n",
+        1,
+    )
+    runner = runner[:_header_start] + _header + runner[_header_end:]
+    write("celerp/connectors/sync_runner.py", runner)
+
 needle = '''    # Direction gate
     if direction and not entity_allowed(entity, direction):
 '''
