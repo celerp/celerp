@@ -46,6 +46,33 @@ def _mock_gw(relay_status: str = "active") -> MagicMock:
     return gw
 
 
+def _relay_snapshot(*, tier="cloud", status="active", entitled=True, **extra) -> dict:
+    data = {
+        "tier": tier,
+        "status": status,
+        "connect_entitled": entitled,
+        "feature_flags": {
+            "payments_enabled": False,
+            "external_db": False,
+            "external_storage": False,
+            "grace_period_ends": None,
+        },
+    }
+    data.update(extra)
+    return data
+
+
+def _activation_response(token, public_url, **extra) -> dict:
+    data = _relay_snapshot(
+        tier="cloud" if public_url else "free",
+        entitled=bool(public_url),
+        gateway_token=token,
+        public_url=public_url,
+        **extra,
+    )
+    return data
+
+
 # ---------------------------------------------------------------------------
 # /settings/cloud-status
 # ---------------------------------------------------------------------------
@@ -107,7 +134,8 @@ async def test_cloud_status_active_identity_mismatch_uses_canonical_session_iden
     with (
         patch("celerp.gateway.client.get_client", return_value=gw),
         patch("celerp.services.cloud_entitlement.subscription_status",
-              new=AsyncMock(return_value={"tier": "ai", "status": "trialing"})),
+              new=AsyncMock(return_value=_relay_snapshot(
+                  tier="ai", status="trialing", entitled=True))),
         patch("celerp.services.cloud_entitlement.sync_existing_entitlement",
               new=sync),
         patch("celerp.gateway.state.get_instance_id", return_value="canonical-iid"),
@@ -118,7 +146,7 @@ async def test_cloud_status_active_identity_mismatch_uses_canonical_session_iden
         r = await client.get("/settings/cloud-status", headers=_h(token))
 
     assert r.status_code == 200
-    sync.assert_awaited_once_with(require_persisted_key=True)
+    sync.assert_awaited_once_with()
     assert inner.get.await_args.kwargs["params"] == {
         "instance_id": "canonical-iid", "session_token": "session-a"}
 
@@ -297,11 +325,8 @@ async def test_cloud_activate_success(client):
     _s.cloud_disconnected = False
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "gateway_token": "gw-abc123",
-        "public_url": "https://myco.celerp.app",
-        "tos_version": "2025-01",
-    }
+    mock_resp.json.return_value = _activation_response(
+        "gw-abc123", "https://myco.celerp.app", tos_version="2025-01")
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch(
@@ -352,11 +377,8 @@ async def test_cloud_activate_applies_authoritative_activation(client):
     _s.gateway_token = ""
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "gateway_token": "gw-authoritative",
-        "public_url": "https://old.celerp.app",
-        "tos_version": "2025-01",
-    }
+    mock_resp.json.return_value = _activation_response(
+        "gw-authoritative", "https://old.celerp.app", tos_version="2025-01")
     applied = AsyncMock(return_value=True)
     with (
         patch("httpx.AsyncClient") as mock_httpx,
@@ -408,16 +430,19 @@ async def test_cloud_accept_tos_restarts_client(client):
     old_gw = _mock_gw("tos_required")
     old_gw.required_tos_version = "2025-02"
     new_gw = _mock_gw("active")
+    shutdown = AsyncMock()
+    ensure_running = MagicMock()
     with (
-        patch("celerp.gateway.client.get_client", return_value=old_gw),
-        patch("celerp.gateway.client.set_client"),
-        patch("celerp.gateway.client.GatewayClient", return_value=new_gw),
+        patch("celerp.gateway.client.get_client",
+              side_effect=[old_gw, new_gw]),
+        patch("celerp.gateway.shutdown", new=shutdown),
+        patch("celerp.gateway.ensure_running", new=ensure_running),
         patch("celerp.config.persist_cloud_settings") as persist,
-        patch("asyncio.create_task"),
     ):
         r = await client.post("/settings/cloud-accept-tos", headers=_h(token))
     assert r.status_code == 200
-    old_gw.stop.assert_called_once()
+    shutdown.assert_awaited_once()
+    ensure_running.assert_called_once_with()
     persist.assert_called_once_with(tos_version="2025-02")
 
 @pytest.mark.asyncio
@@ -428,10 +453,8 @@ async def test_cloud_claim_success_activates_immediately(client):
     claim_resp.json.return_value = {"claimed": True}
     act_resp = MagicMock()
     act_resp.status_code = 200
-    act_resp.json.return_value = {
-        "gateway_token": "gw-claimed",
-        "public_url": "https://claimed.celerp.app",
-    }
+    act_resp.json.return_value = _activation_response(
+        "gw-claimed", "https://claimed.celerp.app")
     calls = []
     async def post(url, **kwargs):
         calls.append((url, kwargs))
@@ -1146,12 +1169,9 @@ async def test_cloud_activate_established_reconnect_preserves_credential(client)
     tok_resp.json.return_value = {"access_token": "same-instance-jwt"}
     act_resp = MagicMock()
     act_resp.status_code = 200
-    act_resp.json.return_value = {
-        "gateway_token": None,
-        "public_url": "https://paid.celerp.app",
-        "tos_version": "2025-01",
-        "reconnect": True,
-    }
+    act_resp.json.return_value = _activation_response(
+        None, "https://paid.celerp.app",
+        tos_version="2025-01", reconnect=True)
 
     seen = []
     async def _post(url, **kwargs):
@@ -1361,10 +1381,8 @@ async def test_cloud_activate_rejected_key_uses_proof_on_current_relay(client):
     methods_resp.json.return_value = {"secure_activation": True}
     activate_resp = MagicMock()
     activate_resp.status_code = 200
-    activate_resp.json.return_value = {
-        "gateway_token": "replacement-key",
-        "public_url": "https://paid.celerp.com",
-    }
+    activate_resp.json.return_value = _activation_response(
+        "replacement-key", "https://paid.celerp.com")
 
     posted = []
     async def _post(url, **kwargs):
