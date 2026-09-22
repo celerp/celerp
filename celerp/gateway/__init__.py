@@ -46,22 +46,11 @@ def ensure_running() -> None:
         return
     existing = _client.get_client()
     if existing is not None:
-        # An entitlement activation may be draining the current Web Access
-        # generation so the response that triggered the handoff can get back to
-        # the browser. That owner will rebuild from the latest settings once idle;
-        # no other caller may supersede it early.
-        draining = getattr(existing, "is_draining_for_reconfigure", None)
-        if callable(draining) and draining():
-            return
-        if existing.is_serving(settings.gateway_token):
-            return
-        # A client the relay rejected (or one holding a token that has since rotated
-        # out) idles in run() with a dead socket and never revives itself, so the
-        # plain "already set" no-op would strand the tunnel on the stale credential.
-        # stop() breaks that idle loop and its run task exits on the next tick; drop
-        # the reference and rebuild below.
-        existing.stop()
-        _client.set_client(None)
+        # Replacement is an async lifecycle operation owned by
+        # apply_activation_state(): it can retire, close, and await the old
+        # generation before constructing its successor. A synchronous start
+        # helper must never overlap two generations.
+        return
     import uuid
 
     instance_id = settings.gateway_instance_id or str(uuid.uuid4())
@@ -71,27 +60,53 @@ def ensure_running() -> None:
         gateway_url=settings.gateway_url,
     )
     _client.set_client(gw)
-    _run_task = asyncio.create_task(gw.run())
+    task = asyncio.create_task(gw.run())
+    _run_task = task
+
+    def _generation_done(done: asyncio.Task) -> None:
+        global _run_task
+        # Natural completion owns cleanup only while this exact generation is
+        # still current. A retired generation can never erase its successor.
+        if _client.get_client() is gw and _run_task is done:
+            _client.set_client(None)
+            _run_task = None
+            from celerp.gateway.state import set_session_token
+            set_session_token("")
+
+    task.add_done_callback(_generation_done)
     log.info("Gateway client started (instance_id=%s)", instance_id)
 
 
 async def shutdown() -> None:
-    """Close the tunnel and cancel its run task, whoever started it. Safe to call
-    when nothing is running."""
+    """Retire and close exactly the generation current at entry.
+
+    Ownership is relinquished before the first await, so a successor created
+    while the old socket is closing cannot be cancelled or cleared by stale
+    teardown.
+    """
     global _run_task
     from celerp.gateway import client as _client
+    from celerp.gateway.state import set_session_token
 
     gw = _client.get_client()
+    task = _run_task
+
+    if gw is not None:
+        gw.retire()
+    if _client.get_client() is gw:
+        _client.set_client(None)
+    if _run_task is task:
+        _run_task = None
+    set_session_token("")
+
     if gw is not None:
         await gw.close()
-    if _run_task is not None:
-        _run_task.cancel()
+    if task is not None and not task.done():
+        task.cancel()
         try:
-            await asyncio.wait_for(_run_task, timeout=5.0)
+            await asyncio.wait_for(task, timeout=5.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
-        _run_task = None
-    _client.set_client(None)
 
 
 async def has_active_share() -> bool:
