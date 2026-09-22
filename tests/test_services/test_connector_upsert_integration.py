@@ -511,3 +511,74 @@ async def test_run_sync_dispatches_and_gates_outbound_entity(session, monkeypatc
     r2 = await sync_runner.run_sync(_Stub(), ctx, "products_out", direction=SyncDirection.INBOUND)
     assert calls == ["products_out"]  # unchanged — the push did not run
     assert r2.errors and "blocked by direction" in r2.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_processing_order_reserves_across_lots(session):
+    from datetime import datetime, timezone
+
+    from celerp.models.projections import Projection
+
+    cid = await _seed_company(session, "WooLots")
+    now = datetime.now(timezone.utc)
+    root_id = "item:woo-root"
+    session.add(Projection(
+        company_id=cid, entity_id=root_id, entity_type="item", version=1,
+        created_at=now, updated_at=now,
+        state={
+            "sku": "LOT-SKU", "name": "Lot Product", "quantity": 0,
+            "status": "available", "sell_by": "piece",
+            "external_links": {
+                "woocommerce": {
+                    "product_id": "501", "sync_enabled": True,
+                    "manage_stock": True,
+                }
+            },
+        },
+    ))
+    for suffix, qty in (("a", 2), ("b", 3)):
+        session.add(Projection(
+            company_id=cid, entity_id=f"item:lot-{suffix}", entity_type="item",
+            version=1, created_at=now, updated_at=now,
+            state={
+                "sku": "LOT-SKU", "name": "Lot Product", "quantity": qty,
+                "status": "available", "sell_by": "piece", "lot": True,
+                "parent_item_id": root_id, "allow_splitting": True,
+            },
+        ))
+    await session.commit()
+
+    order = {
+        "id": 991,
+        "number": "991",
+        "status": "processing",
+        "currency": "USD",
+        "total": "40.00",
+        "total_tax": "0",
+        "line_items": [{
+            "product_id": 501,
+            "variation_id": 0,
+            "sku": "LOT-SKU",
+            "name": "Lot Product",
+            "quantity": 4,
+            "total": "40.00",
+            "total_tax": "0",
+        }],
+        "shipping_lines": [],
+        "fee_lines": [],
+    }
+
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == cid,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    reserved = [
+        row for row in rows
+        if (row.state or {}).get("status") == "reserved"
+        and (row.state or {}).get("status_doc_id") == "doc:woocommerce:order:991"
+    ]
+    assert sum(float((row.state or {}).get("quantity") or 0) for row in reserved) == 4
+    assert len(reserved) == 2
