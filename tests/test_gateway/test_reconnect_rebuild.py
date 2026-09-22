@@ -103,6 +103,30 @@ async def test_ensure_running_never_replaces_an_existing_generation(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_ensure_running_replaces_only_finished_owned_generation(monkeypatch):
+    """A share created in the task-done callback gap still gets a fresh tunnel."""
+    monkeypatch.setattr(client_mod, "GatewayClient", _FakeClient)
+    settings.gateway_token = "tok-fresh"
+    settings.gateway_instance_id = "iid-1"
+    existing = _FakeClient("tok-old", "iid-1", "wss://relay.test")
+    client_mod.set_client(existing)
+
+    async def _done():
+        return None
+
+    finished = asyncio.create_task(_done())
+    await finished
+    gateway._run_task = finished
+
+    gateway.ensure_running()
+
+    replacement = client_mod.get_client()
+    assert replacement is not existing
+    assert replacement._token == "tok-fresh"
+    assert gateway._run_task is not finished
+
+
+@pytest.mark.asyncio
 async def test_shutdown_cannot_clear_a_successor_generation():
     """A teardown that blocks in close cannot erase a successor installed meanwhile."""
     close_started = asyncio.Event()
