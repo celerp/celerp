@@ -1,6 +1,6 @@
 name: Validate PR341 hardening
 on:
-  push:
+  pull_request:
     branches: [review/recovery-pr341-20260922]
 permissions:
   contents: write
