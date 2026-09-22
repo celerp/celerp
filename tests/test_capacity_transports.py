@@ -119,6 +119,25 @@ async def test_upstream_timeout_still_maps_to_504(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_type",
+    [httpx.ConnectError, httpx.ReadError, httpx.WriteError, httpx.CloseError],
+)
+async def test_local_network_errors_map_to_503(error_type, monkeypatch):
+    """Interrupted local API connections stay inside the APIError abstraction.
+
+    A read/write/close failure is the same availability class as a failed
+    connect for callers: page views may degrade, while mutations surface a
+    retryable failure without being automatically replayed.
+    """
+    monkeypatch.setattr(api, "_client", _raising_client(error_type("network")))
+    with pytest.raises(APIError) as exc:
+        async with api._api_client("tok") as _c:
+            pass
+    assert exc.value.status == 503
+
+
+@pytest.mark.asyncio
 async def test_anon_pool_saturation_maps_to_503(monkeypatch):
     monkeypatch.setattr(api, "_anon_client", _raising_client(httpx.PoolTimeout("pool")))
     with pytest.raises(APIError) as exc:

@@ -226,7 +226,7 @@ async def _local_error_mapping():
         raise APIError(503, SATURATION_MESSAGE) from exc
     except httpx.TimeoutException as exc:
         raise APIError(504, TIMEOUT_MESSAGE) from exc
-    except httpx.ConnectError as exc:
+    except httpx.NetworkError as exc:
         raise APIError(503, _connect_message()) from exc
 
 

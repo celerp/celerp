@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import io
+from html import unescape
 
 import pypdf
 
@@ -283,5 +284,5 @@ def test_company_website_uses_canonical_output_contract():
         "company_website": "https://seller.example/?a=1&b=2",
         "line_items": [],
     }
-    assert "https://seller.example/?a=1&b=2" in render_doc_print_html(doc)
+    assert "https://seller.example/?a=1&b=2" in unescape(render_doc_print_html(doc))
     assert "https://seller.example/?a=1&b=2" in _pdf_text(generate_document_pdf(doc))
