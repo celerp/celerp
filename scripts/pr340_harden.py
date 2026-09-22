@@ -1282,8 +1282,8 @@ if "get_current_company_id" not in health_src:
     write("celerp/routers/health.py", health_src)
 replace_once(
     "celerp/routers/health.py",
-    'async def connector_authorize_url(platform: str, shop: str = "") -> dict:\\n',
-    'async def connector_authorize_url(\\n    platform: str, shop: str = "", company_id: str = Depends(get_current_company_id)\\n) -> dict:\\n',
+    'async def connector_authorize_url(platform: str, shop: str = "") -> dict:\n',
+    'async def connector_authorize_url(\n    platform: str, shop: str = "", company_id: str = Depends(get_current_company_id)\n) -> dict:\n',
 )
 replace_once(
     "celerp/routers/health.py",
