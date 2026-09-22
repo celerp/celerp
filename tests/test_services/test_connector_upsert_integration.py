@@ -18,7 +18,7 @@ import contextlib
 import uuid
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
