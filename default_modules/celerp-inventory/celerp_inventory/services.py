@@ -353,6 +353,12 @@ async def upsert_external_product(
         row = await resolve_external_product(
             session, cid, platform, product_id, variation_id, sku=sku
         )
+        legacy_row = None
+        if row is not None and not _is_product_anchor_state(row.state or {}):
+            legacy_row = row
+            row = await resolve_catalog_anchor_for_item(
+                session, cid, legacy_row.entity_id
+            )
 
         incoming_link = {
             "product_id": product_id,
@@ -390,6 +396,39 @@ async def upsert_external_product(
 
         entity_id = row.entity_id
         state = dict(row.state or {})
+
+        if legacy_row is not None and legacy_row.entity_id != entity_id:
+            legacy_state = dict(legacy_row.state or {})
+            legacy_changes: dict = {}
+            if str(legacy_state.get("idempotency_key") or "") == identity:
+                legacy_changes["idempotency_key"] = {
+                    "old": legacy_state.get("idempotency_key"), "new": None,
+                }
+            legacy_links = dict(legacy_state.get("external_links") or {})
+            if platform in legacy_links:
+                cleaned_links = dict(legacy_links)
+                cleaned_links.pop(platform, None)
+                legacy_changes["external_links"] = {
+                    "old": legacy_links, "new": cleaned_links,
+                }
+            if legacy_changes:
+                cleanup_data = {"fields_changed": legacy_changes}
+                await emit_event(
+                    session,
+                    company_id=cid,
+                    entity_id=legacy_row.entity_id,
+                    entity_type="item",
+                    event_type="item.updated",
+                    data=cleanup_data,
+                    actor_id=None,
+                    location_id=None,
+                    source="connector",
+                    idempotency_key=_connector_event_idem(
+                        f"{identity}:legacy-clean:{legacy_row.entity_id}:v{legacy_row.version}",
+                        cleanup_data,
+                    ),
+                    metadata_={},
+                )
         explicit = ((state.get("external_links") or {}).get(platform)
                     if isinstance(state.get("external_links"), dict) else None)
         if isinstance(explicit, dict) and explicit.get("sync_enabled") is False:

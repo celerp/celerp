@@ -238,6 +238,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     from celerp_inventory.projections import is_item_available
     from celerp_inventory.services import (
         external_link_for_state,
+        resolve_catalog_anchor_for_item,
         resolve_external_product,
         set_external_link,
     )
@@ -380,6 +381,9 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                     raise ValueError(
                         f"{identity} does not resolve to a Celerp catalog product"
                     )
+                anchor = await resolve_catalog_anchor_for_item(
+                    session, cid, anchor.entity_id
+                )
                 anchor_state = dict(anchor.state or {})
                 link = external_link_for_state(anchor_state, "woocommerce")
                 if product_id and not link:
