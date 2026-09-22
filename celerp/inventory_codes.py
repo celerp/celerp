@@ -26,11 +26,17 @@ MAX_RFID_EPC_LEN = 255
 GTIN_LENGTHS = frozenset({8, 12, 13, 14})
 MAX_SCAN_CODE_LEN = max(MAX_BARCODE_LEN, MAX_SKU_LEN, MAX_RFID_EPC_LEN)
 
-# Partial unique index enforcing at-most-one item per (company, barcode). Declared on
-# the Projection model so create_all builds it for the test schema, and created on
-# existing databases by the barcode-uniqueness migration. Named here so the applier
-# can tell a barcode violation apart from the (company_id, entity_id) primary-key race.
-BARCODE_UNIQUE_INDEX = "uq_projection_company_item_barcode"
+# Barcode uniqueness applies to operationally resolvable items. A historical merged
+# source deliberately retains its barcode but is excluded by the resolver, so the DB
+# backstop excludes that one status too. The legacy name is kept during upgrades so
+# bc0 can replace an already-created all-status index safely.
+LEGACY_BARCODE_UNIQUE_INDEX = "uq_projection_company_item_barcode"
+BARCODE_UNIQUE_INDEX = "uq_projection_company_resolvable_item_barcode"
+BARCODE_UNIQUE_WHERE = (
+    "entity_type = 'item' "
+    "AND NULLIF(state ->> 'barcode', '') IS NOT NULL "
+    "AND lower(COALESCE(state ->> 'status', '')) <> 'merged'"
+)
 # Partial unique index enforcing at-most-one item per (company, rfid_epc). Mirrors the
 # barcode index: declared on the Projection model for create_all and created on existing
 # databases by the EPC-uniqueness migration.
@@ -168,13 +174,13 @@ class RfidEpcConflictError(CodeConflictError):
 
 
 def is_barcode_unique_violation(exc: Exception) -> bool:
-    """True when an IntegrityError is the barcode unique-index violation (not the PK race)."""
+    """True when an IntegrityError is a barcode unique-index violation (not the PK race)."""
+    names = (BARCODE_UNIQUE_INDEX, LEGACY_BARCODE_UNIQUE_INDEX)
     orig = getattr(exc, "orig", None)
-    if getattr(orig, "constraint_name", None) == BARCODE_UNIQUE_INDEX:
+    if getattr(orig, "constraint_name", None) in names:
         return True
-    # Expression-index violations do not always populate constraint_name across drivers;
-    # the index name still appears in the server message.
-    return BARCODE_UNIQUE_INDEX in str(exc)
+    message = str(exc)
+    return any(name in message for name in names)
 
 
 def is_rfid_epc_unique_violation(exc: Exception) -> bool:

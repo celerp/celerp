@@ -297,22 +297,47 @@ def demoted_first_party(enabled: set[str]) -> list[str]:
     return out
 
 
-def resolve_module_path(name: str) -> Path | None:
-    """The first <entry>/<name> package (a dir with __init__.py) across the
-    MODULE_DIR search entries, or None if no entry holds it.
-
-    Mirrors the scan's directory walk so a module living in any configured search
-    entry - not only the first install target - is found. The delete guard needs a
-    real Path to ask is_first_party the same content question the scan asks.
-    """
-    for entry in os.environ.get("MODULE_DIR", "").split(","):
+def _module_candidates(
+    name: str, module_dir: str | Path | None = None,
+) -> list[Path]:
+    """Installed copies of *name* in MODULE_DIR order."""
+    raw = os.environ.get("MODULE_DIR", "") if module_dir is None else str(module_dir)
+    out: list[Path] = []
+    for entry in raw.split(","):
         entry = entry.strip()
         if not entry:
             continue
         candidate = Path(entry) / name
         if candidate.is_dir() and (candidate / "__init__.py").exists():
-            return candidate
-    return None
+            out.append(candidate)
+    return out
+
+
+def resolve_module_path(
+    name: str, module_dir: str | Path | None = None,
+) -> Path | None:
+    """The first installed copy of *name*, preserving administrative precedence."""
+    candidates = _module_candidates(name, module_dir)
+    return candidates[0] if candidates else None
+
+
+def resolve_runtime_module_path(
+    name: str, module_dir: str | Path | None = None,
+) -> Path | None:
+    """The copy safe to execute.
+
+    For a current first-party name, prefer any candidate whose contents match the
+    committed lock. This lets a current bundled copy self-heal a stale writable
+    shadow left by an old backup restore without deleting or rewriting that shadow.
+    Third-party names and installations with no verified copy retain normal
+    first-entry precedence.
+    """
+    candidates = _module_candidates(name, module_dir)
+    if name in first_party_names():
+        for candidate in candidates:
+            if is_first_party(candidate):
+                return candidate
+    return candidates[0] if candidates else None
 
 
 def _purge_pycache(pkg_path: Path) -> None:

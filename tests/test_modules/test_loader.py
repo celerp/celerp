@@ -1306,6 +1306,46 @@ class TestResolveModulePath:
         monkeypatch.setenv("MODULE_DIR", str(tmp_path))
         assert _fpt_loader.resolve_module_path("ghost") is None
 
+    def test_runtime_resolver_prefers_verified_first_party_over_stale_shadow(
+            self, tmp_path, monkeypatch):
+        writable = tmp_path / "writable"
+        writable.mkdir()
+        stale = _make_module(
+            writable, "celerp-labels",
+            '{"name": "celerp-labels", "version": "old"}',
+        )
+        bundled = _fpt_loader._lock_path().parent
+        current = bundled / "celerp-labels"
+        assert _fpt_loader.is_first_party(current)
+
+        module_dir = f"{writable},{bundled}"
+        monkeypatch.setenv("MODULE_DIR", module_dir)
+        assert _fpt_loader.resolve_module_path("celerp-labels") == stale
+        assert _fpt_loader.resolve_runtime_module_path("celerp-labels") == current
+
+    def test_runtime_resolver_preserves_third_party_first_match(
+            self, tmp_path, monkeypatch):
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        one = _make_module(first, "acme-mod", '{"name": "acme-mod", "version": "1"}')
+        _make_module(second, "acme-mod", '{"name": "acme-mod", "version": "2"}')
+        monkeypatch.setenv("MODULE_DIR", f"{first},{second}")
+        assert _fpt_loader.resolve_runtime_module_path("acme-mod") == one
+
+    def test_runtime_resolver_falls_back_when_no_verified_copy(
+            self, tmp_path, monkeypatch):
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        one = _make_module(first, "fp-mod", '{"name": "fp-mod", "version": "old"}')
+        _make_module(second, "fp-mod", '{"name": "fp-mod", "version": "also-old"}')
+        monkeypatch.setenv("MODULE_DIR", f"{first},{second}")
+        monkeypatch.setattr(_fpt_loader, "_first_party_lock", lambda: {"fp-mod": "deadbeef"})
+        assert _fpt_loader.resolve_runtime_module_path("fp-mod") == one
+
 
 _ASYNC_HANDLER = (
     "async def prov(session, company_id, role, q, limit):\n"

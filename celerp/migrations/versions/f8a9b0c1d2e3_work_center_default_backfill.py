@@ -20,8 +20,13 @@ reconcile-replayed in one pass. Forward-only.
 
 from __future__ import annotations
 
+import json
+import re
+
 import sqlalchemy as sa
 from alembic import op
+
+from celerp.migrations._json_compat import update_company_settings
 
 revision = "f8a9b0c1d2e3"
 down_revision = "e7c9a1b3d5f2"
@@ -33,41 +38,54 @@ _NOTICE_BODY = (
     "Your company Hours per day setting now lives on the new Default work center under "
     "Settings > Manufacturing > Work centers. Nothing changed in your To-Make estimates."
 )
+_HOURS_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
+
+
+def _legacy_hours_per_day(value) -> float:
+    """Mirror the retired SQL CASE exactly: positive decimal text, else 8.0."""
+    text = str(value) if value is not None else ""
+    if not _HOURS_RE.fullmatch(text):
+        return 8.0
+    parsed = float(text)
+    return parsed if parsed != 0 else 8.0
 
 
 def upgrade() -> None:
     conn = op.get_bind()
 
-    # One dedicated Default center per manufacturing-active company, carrying its
-    # old hours value. The nested CASE mirrors the module's `x or 8.0`: a stored
-    # 0, blank, absent, or non-numeric value maps to 8.0. The regex guard runs
-    # BEFORE the ::float cast because Postgres does not guarantee AND
-    # short-circuit, so a flat `regex AND value::float` would still cast 'abc'
-    # and abort the whole insert. settings is a JSON column, so the ? membership
-    # test needs a jsonb cast; the -> / ->> extraction works on json directly.
-    conn.execute(sa.text("""
-        INSERT INTO work_centers (id, company_id, name, hours_per_day, is_default, created_at)
-        SELECT gen_random_uuid(), c.id, 'Default',
-               CASE WHEN (c.settings->'manufacturing'->>'hours_per_day') ~ '^[0-9]+(\\.[0-9]+)?$'
-                    THEN CASE WHEN (c.settings->'manufacturing'->>'hours_per_day')::float <> 0
-                              THEN (c.settings->'manufacturing'->>'hours_per_day')::float
-                              ELSE 8.0 END
-                    ELSE 8.0 END,
-               true, NOW()
+    # Never ask PostgreSQL to interpret companies.settings here. SQL_ASCII
+    # databases can contain valid JSON with escaped Unicode that server-side
+    # JSON operators cannot safely decode. Relational EXISTS checks stay in SQL;
+    # settings membership/value handling stays in Python.
+    rows = conn.execute(sa.text("""
+        SELECT c.id, c.settings,
+               EXISTS (SELECT 1 FROM work_centers wc WHERE wc.company_id = c.id) AS has_work_center,
+               EXISTS (SELECT 1 FROM work_centers d
+                       WHERE d.company_id = c.id AND d.is_default) AS has_default
         FROM companies c
-        WHERE (c.settings::jsonb ? 'manufacturing'
-               OR EXISTS (SELECT 1 FROM work_centers wc WHERE wc.company_id = c.id))
-          AND NOT EXISTS (SELECT 1 FROM work_centers d WHERE d.company_id = c.id AND d.is_default)
-    """))
+    """)).mappings().all()
+    for row in rows:
+        settings = row["settings"]
+        if not isinstance(settings, dict):
+            settings = json.loads(settings)
+        manufacturing_active = isinstance(settings, dict) and "manufacturing" in settings
+        if row["has_default"] or not (manufacturing_active or row["has_work_center"]):
+            continue
+        manufacturing = settings.get("manufacturing") if isinstance(settings, dict) else None
+        old_hours = (
+            manufacturing.get("hours_per_day")
+            if isinstance(manufacturing, dict)
+            else None
+        )
+        conn.execute(
+            sa.text("""
+                INSERT INTO work_centers
+                    (id, company_id, name, hours_per_day, is_default, created_at)
+                VALUES (gen_random_uuid(), :cid, 'Default', :hours, true, NOW())
+            """),
+            {"cid": row["id"], "hours": _legacy_hours_per_day(old_hours)},
+        )
 
-    # One company-wide notice per company that just received a Default center
-    # (user_id NULL = company-wide). Guarded so a re-run never doubles it. The
-    # notifications table is created when the application boots, not by the
-    # migration chain, so on a database migrated before its first boot it is
-    # absent. Such a database has never run the app and therefore holds no
-    # company whose value could have moved, so there is nothing to notify. The
-    # regclass check is unqualified so it resolves against the same search path
-    # the INSERT targets (public in production), not a hardcoded schema.
     if conn.execute(sa.text("SELECT to_regclass('notifications')")).scalar() is not None:
         conn.execute(sa.text("""
             INSERT INTO notifications
@@ -81,11 +99,14 @@ def upgrade() -> None:
                               WHERE n.company_id = w.company_id AND n.title = :title)
         """), {"title": _NOTICE_TITLE, "body": _NOTICE_BODY})
 
-    # Strip the now-migrated key (jsonb #- needs the cast, then back to json).
-    conn.execute(sa.text(
-        "UPDATE companies SET settings = (settings::jsonb #- '{manufacturing,hours_per_day}')::json "
-        "WHERE settings::jsonb #> '{manufacturing,hours_per_day}' IS NOT NULL"
-    ))
+    def _strip_hours(settings: dict, _row) -> bool:
+        manufacturing = settings.get("manufacturing")
+        if not isinstance(manufacturing, dict) or "hours_per_day" not in manufacturing:
+            return False
+        manufacturing.pop("hours_per_day")
+        return True
+
+    update_company_settings(conn, _strip_hours)
 
 
 def downgrade() -> None:

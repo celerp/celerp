@@ -254,6 +254,48 @@ def fresh_db():
         admin.dispose()
 
 
+@pytest.fixture()
+def sql_ascii_fresh_db():
+    """Provision a throwaway SQL_ASCII database and yield (async_url, sync_url)."""
+    base_async = os.environ["DATABASE_URL"]
+    base_sync = base_async.replace("+asyncpg", "+psycopg2")
+    saved_env = os.environ.get("DATABASE_URL")
+    dbname = f"sqlascii_{uuid.uuid4().hex[:8]}"
+
+    admin = create_engine(base_sync, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as c:
+            try:
+                c.execute(text(
+                    f'CREATE DATABASE "{dbname}" ENCODING \'SQL_ASCII\' '
+                    f"TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C'"
+                ))
+            except Exception as exc:
+                pytest.skip(f"cannot create a SQL_ASCII database: {exc}")
+    finally:
+        admin.dispose()
+
+    try:
+        yield swap_db(base_async, dbname), swap_db(base_sync, dbname)
+    finally:
+        if saved_env is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = saved_env
+        admin = create_engine(base_sync, isolation_level="AUTOCOMMIT")
+        with admin.connect() as c:
+            c.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = :d AND pid <> pg_backend_pid() "
+                    "AND backend_type = 'client backend'"
+                ),
+                {"d": dbname},
+            )
+            c.execute(text(f'DROP DATABASE IF EXISTS "{dbname}"'))
+        admin.dispose()
+
+
 def wc_mkcompany(conn, settings: dict) -> str:
     """Insert one company with the given settings; return its id."""
     cid = str(uuid.uuid4())
