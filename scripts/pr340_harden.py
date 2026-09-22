@@ -1108,11 +1108,20 @@ replace_once(
             await run_connector_sync(connector, ctx, direction=direction)
 ''',
 )
-replace_once(
-    "ui/routes/settings_connectors.py",
-    '        await _kickoff_connector_sync(company_id, platform, token)\n',
-    '        await _kickoff_connector_sync(company_id, platform, token, activation=True)\n',
+settings_path = "ui/routes/settings_connectors.py"
+settings_src = read(settings_path)
+_auto_start = settings_src.index("async def _autosync_once")
+_auto_end = settings_src.index("\nasync def ", _auto_start + 10)
+_auto = settings_src[_auto_start:_auto_end]
+_old_call = "await _kickoff_connector_sync(company_id, platform, token)"
+if _auto.count(_old_call) != 1:
+    raise SystemExit("settings connectors: autosync kickoff call missing or ambiguous")
+_auto = _auto.replace(
+    _old_call,
+    "await _kickoff_connector_sync(company_id, platform, token, activation=True)",
+    1,
 )
+write(settings_path, settings_src[:_auto_start] + _auto + settings_src[_auto_end:])
 # Webhook setup uses reconciliation.
 replace_once(
     "ui/routes/settings_connectors.py",
