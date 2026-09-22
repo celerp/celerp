@@ -100,7 +100,8 @@ async def subscription_status() -> dict | None:
     if response is None or response.status_code != 200:
         return None
     data = response.json()
-    return data if isinstance(data, dict) else None
+    from celerp.gateway.state import entitlement_snapshot
+    return data if entitlement_snapshot(data) is not None else None
 
 
 async def apply_activation_state(
@@ -265,18 +266,17 @@ async def apply_activation_state(
         backup_scheduler.stop()
     return True
 
-async def sync_existing_entitlement(
-    *, require_persisted_key: bool = False,
-) -> dict | None:
-    """Synchronise a credential through authenticated activation.
+async def sync_existing_entitlement() -> dict | None:
+    """Synchronise a configured credential through authenticated activation.
 
-    require_persisted_key is for automatic repair: an environment-only
-    credential remains an operator override and is never persisted as a side effect.
+    A credential already present in durable config may update durable state.
+    An environment-only credential converges runtime only and is never promoted
+    into local config as a side effect.
     """
     from celerp.config import ensure_instance_id, settings
     from celerp.gateway.state import (
-        activate_payload, fetch_relay_auth, is_foreign_relay_identity,
-        relay_http_url, with_relay_client)
+        activate_payload, entitlement_snapshot, fetch_relay_auth,
+        is_foreign_relay_identity, relay_http_url, with_relay_client)
     if settings.cloud_disconnected:
         return {"disconnected": True}
 
@@ -284,9 +284,6 @@ async def sync_existing_entitlement(
     if not key:
         return None
     persisted_key = await persisted_api_key()
-    if require_persisted_key and (
-            not persisted_key or persisted_key != key):
-        return None
     local_iid = await asyncio.to_thread(ensure_instance_id)
     pending_verifier = settings.activation_verifier or ""
 
@@ -316,6 +313,11 @@ async def sync_existing_entitlement(
         return None
 
     data = response.json()
+    snapshot = entitlement_snapshot(data)
+    if snapshot is None:
+        log.warning("Relay activation returned a malformed entitlement snapshot")
+        return None
+    connect_entitled, feature_flags = snapshot
     token = data.get("gateway_token") or key
     if not token:
         return None
@@ -327,8 +329,8 @@ async def sync_existing_entitlement(
             tos_version=data.get("tos_version"),
             backup_encryption_key=data.get("backup_encryption_key"),
             tier=data.get("tier"), status=data.get("status"),
-            connect_entitled=data.get("connect_entitled"),
-            feature_flags=data.get("feature_flags"),
+            connect_entitled=connect_entitled,
+            feature_flags=feature_flags,
             persist_state=persist_state,
             expected_api_key=expected_key,
         )
