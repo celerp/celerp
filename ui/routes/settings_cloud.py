@@ -33,6 +33,18 @@ from ui.routes.settings_general import _section_breadcrumb
 _VALID_STORAGE_BACKENDS = {"local", "s3"}
 
 
+def _relay_has_paid_access(status: dict) -> bool:
+    """Interpret /cloud-status once for UI capability gating.
+
+    Authoritative entitlement wins when available. The legacy transport/token
+    fallback is retained only for status-read gaps so existing UI behavior does
+    not change; this helper is not an authorization boundary.
+    """
+    if status.get("entitlement_known"):
+        return bool(status.get("entitled"))
+    return bool(status.get("connected") or status.get("gateway_token_set"))
+
+
 def _has_team_features(state: dict) -> bool:
     """Whether Team-tier infrastructure controls should be shown.
 

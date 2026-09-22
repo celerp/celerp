@@ -469,3 +469,25 @@ async def test_relay_state_preserves_authoritative_entitled_false():
     with patch("ui.api_client.get_relay_status", new=AsyncMock(return_value=payload)):
         state = await _relay_state("token")
     assert state == ("inactive", "", "cloud", False, True, True, False)
+
+
+@pytest.mark.parametrize("status,expected", [
+    ({"entitlement_known": True, "entitled": True}, True),
+    ({"entitlement_known": True, "entitled": False,
+      "connected": True, "gateway_token_set": True}, False),
+    ({"entitlement_known": False, "connected": True}, True),
+    ({"entitlement_known": False, "gateway_token_set": True}, True),
+    ({"entitlement_known": False}, False),
+])
+def test_relay_paid_access_has_one_status_interpretation(status, expected):
+    from ui.routes.settings_cloud import _relay_has_paid_access
+    assert _relay_has_paid_access(status) is expected
+
+
+def test_paid_access_callers_reuse_shared_status_interpretation():
+    from pathlib import Path
+    payments = Path("ui/routes/settings_payments.py").read_text()
+    inventory = Path("ui/routes/settings_inventory.py").read_text()
+    for source in (payments, inventory):
+        assert "_relay_has_paid_access(" in source
+        assert 'get("entitlement_known")' not in source
