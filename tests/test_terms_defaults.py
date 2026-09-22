@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 
-from celerp.services.terms import default_terms_for, normalize_terms_templates
+from celerp.services.terms import default_terms_for, normalize_terms_templates, terms_templates
 
 
 def _h(token: str) -> dict:
@@ -103,3 +103,31 @@ def test_legacy_is_default_normalizes_without_mutating_source():
     assert "is_default" not in normalized[0]
     assert source[0]["is_default"] is True
     assert default_terms_for({"terms_conditions": source}, "invoice")["name"] == "Legacy"
+
+
+def test_explicit_empty_template_list_disables_factory_defaults():
+    assert terms_templates({"terms_conditions": []}) == []
+    assert default_terms_for({"terms_conditions": []}, "invoice") is None
+
+
+@pytest.mark.asyncio
+async def test_deleting_all_terms_templates_stays_empty_and_new_docs_get_no_terms(client):
+    token = await _register(client)
+    h = _h(token)
+
+    cleared = await client.patch(
+        "/companies/me/terms-conditions",
+        headers=h,
+        json={"templates": []},
+    )
+    assert cleared.status_code == 200, cleared.text
+
+    configured = await client.get("/companies/me/terms-conditions", headers=h)
+    assert configured.status_code == 200, configured.text
+    assert configured.json() == []
+
+    created = await client.post("/docs", headers=h, json={"doc_type": "invoice"})
+    assert created.status_code == 200, created.text
+    doc = (await client.get(f"/docs/{created.json()['id']}", headers=h)).json()
+    assert "terms_template" not in doc
+    assert "terms_text" not in doc

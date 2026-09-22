@@ -39,7 +39,7 @@ from celerp.services.permissions import (
     role_has_permission,
 )
 from celerp.tax_regimes import get_regime, TAX_REGIMES
-from celerp.services.terms import DEFAULT_TERMS_CONDITIONS, normalize_terms_templates
+from celerp.services.terms import terms_templates
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -1332,7 +1332,7 @@ async def get_terms_conditions(company_id=Depends(get_current_company_id), sessi
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     configured = company.settings.get("terms_conditions")
-    templates = normalize_terms_templates(configured or DEFAULT_TERMS_CONDITIONS)
+    templates = terms_templates(company.settings)
     if configured is not None and templates != configured:
         settings = dict(company.settings)
         settings["terms_conditions"] = templates

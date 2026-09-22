@@ -31,7 +31,8 @@ def normalize_terms_templates(templates: list[dict]) -> list[dict]:
 def terms_templates(settings: dict | None) -> list[dict]:
     """Return the effective templates without mutating company settings."""
     configured = (settings or {}).get("terms_conditions")
-    return normalize_terms_templates(configured or DEFAULT_TERMS_CONDITIONS)
+    source = DEFAULT_TERMS_CONDITIONS if configured is None else configured
+    return normalize_terms_templates(source)
 
 
 def default_terms_for(settings: dict | None, doc_type: str) -> dict | None:
