@@ -195,3 +195,17 @@ def test_route_letterhead_fallback_does_not_overwrite_explicit_blanks():
     assert "for _key, _value in (await _company_letterhead(token)).items():" not in ui_source
     assert "if not state.get(key) and value:" not in share_source
     assert "if not doc.get(key) and value:" not in share_source
+
+
+def test_document_detail_reuses_output_contact_fallback():
+    """The editable detail page must not reconstruct customer snapshots separately."""
+    from pathlib import Path
+
+    source = Path("ui/routes/documents.py").read_text()
+    start = source.index('async def doc_detail(request: Request, entity_id: str):')
+    end = source.index("# Fetch locations for receive-goods dropdown", start)
+    snippet = source[start:end]
+    assert "prepare_document_output(doc, contact=_resolved_contact)" in snippet
+    assert 'doc["contact_name"] = _resolved_contact.get("name")' not in snippet
+    assert 'doc["contact_email"] = _c.get("email")' not in snippet
+    assert 'if "contact_billing_address" not in doc and doc.get("contact_address")' in snippet

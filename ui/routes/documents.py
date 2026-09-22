@@ -2098,66 +2098,25 @@ celerpUpdateBulkAlloc();
         # Inject company fields so "My company info" box is populated
         doc = await _merge_company_letterhead(token, doc)
 
-        # Resolve contact details if contact_id set but name missing
+        # Resolve the live contact once, then use the same key-presence fallback
+        # policy as print/PDF/share. Stored document snapshots, including explicit
+        # blanks, always win; the address list is retained separately for editing.
         cid = doc.get("contact_id")
-        _resolved_contact: dict | None = None
-        if cid and not doc.get("contact_name"):
+        contact_shipping_addresses: list[dict] = []
+        if "contact_billing_address" not in doc and doc.get("contact_address"):
+            # Historical stored alias is still part of the document snapshot and
+            # therefore wins over today's live contact.
+            doc["contact_billing_address"] = doc["contact_address"]
+        if cid:
             try:
                 _resolved_contact = await api.get_contact(token, cid)
-                doc["contact_name"] = _resolved_contact.get("name") or ""
-                doc["contact_company_name"] = _resolved_contact.get("company_name") or ""
-                doc["contact_email"] = _resolved_contact.get("email") or ""
-                doc["contact_phone"] = _resolved_contact.get("phone") or ""
-                doc["contact_tax_id"] = _resolved_contact.get("tax_id") or ""
+                doc = prepare_document_output(doc, contact=_resolved_contact)
+                contact_shipping_addresses = [
+                    a for a in (_resolved_contact.get("addresses") or [])
+                    if isinstance(a, dict) and a.get("address_type") == "shipping"
+                ]
             except Exception:
                 pass
-
-        # Resolve default billing/shipping address from contact if not yet stored on doc
-        contact_shipping_addresses: list[dict] = []
-        if cid and (not doc.get("contact_billing_address") or not doc.get("contact_shipping_address")):
-            try:
-                contact = _resolved_contact or await api.get_contact(token, cid)
-                addresses = contact.get("addresses") or []
-                contact_shipping_addresses = [a for a in addresses if a.get("address_type") == "shipping"]
-                def _resolve_addr(addr_type: str) -> str:
-                    default = next((a for a in addresses if a.get("address_type") == addr_type and a.get("is_default")), None)
-                    if default:
-                        return default.get("full_address") or default.get("address") or default.get("label") or ""
-                    first = next((a for a in addresses if a.get("address_type") == addr_type), None)
-                    if first:
-                        return first.get("full_address") or first.get("address") or first.get("label") or ""
-                    return contact.get(f"{addr_type}_address") or ""
-                if not doc.get("contact_billing_address"):
-                    doc["contact_billing_address"] = doc.get("contact_address") or _resolve_addr("billing")
-                if not doc.get("contact_shipping_address"):
-                    doc["contact_shipping_address"] = _resolve_addr("shipping")
-                # Also resolve shipping attn from contact address
-                if not doc.get("shipping_attn"):
-                    default_ship = next((a for a in addresses if a.get("address_type") == "shipping" and a.get("is_default")), None)
-                    first_ship = default_ship or next((a for a in addresses if a.get("address_type") == "shipping"), None)
-                    if first_ship and first_ship.get("attn"):
-                        doc["shipping_attn"] = first_ship["attn"]
-            except Exception:
-                pass
-        elif cid:
-            # Already have addresses on doc - still fetch shipping list for dropdown
-            try:
-                contact = _resolved_contact or await api.get_contact(token, cid)
-                contact_shipping_addresses = [a for a in (contact.get("addresses") or []) if a.get("address_type") == "shipping"]
-            except Exception:
-                pass
-        # The Bill To block and the send modal prefill from the contact's email
-        # even when the doc already carries a name (docs created before email
-        # was stored on the state have the name but not the email).
-        if cid and not doc.get("contact_email"):
-            try:
-                _c = _resolved_contact or await api.get_contact(token, cid)
-                doc["contact_email"] = _c.get("email") or ""
-            except Exception:
-                pass
-        # Backward compat: migrate contact_address → contact_billing_address
-        if not doc.get("contact_billing_address") and doc.get("contact_address"):
-            doc["contact_billing_address"] = doc["contact_address"]
 
         # Fetch locations for receive-goods dropdown (PO + consignment_in) + company address picker
         locations: list[dict] = []
