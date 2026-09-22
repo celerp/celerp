@@ -158,6 +158,32 @@ class TestPgVersionPreCheck:
             path.unlink(missing_ok=True)
 
 
+class TestValidateArchivePaths:
+    def test_rejects_backslash_member_name(self, monkeypatch):
+        from celerp.services import backup_import as bi
+
+        buf = io.BytesIO(_make_archive())
+        with tarfile.open(fileobj=buf, mode="r:gz") as src:
+            members = [(m, src.extractfile(m).read() if m.isfile() else b"") for m in src.getmembers()]
+
+        out = io.BytesIO()
+        with tarfile.open(fileobj=out, mode="w:gz") as tar:
+            for member, body in members:
+                tar.addfile(member, io.BytesIO(body) if member.isfile() else None)
+            evil = tarfile.TarInfo(r"modules\celerp-inventory\stale.py")
+            payload = b"stale"
+            evil.size = len(payload)
+            tar.addfile(evil, io.BytesIO(payload))
+
+        path = _write_archive_to_tmp(out.getvalue())
+        monkeypatch.setattr(bi, "_local_pg_restore_major", lambda: None)
+        try:
+            with pytest.raises(ValueError, match="Unsafe path"):
+                bi.validate_archive(path)
+        finally:
+            path.unlink(missing_ok=True)
+
+
 class TestRunImportEnabledModules:
     """validate_archive must surface enabled_modules so the UI can preflight.
 

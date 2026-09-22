@@ -78,6 +78,7 @@ def test_ensure_cluster_boots_and_creates_app_db(config_dir):
     try:
         with engine.connect() as conn:
             assert conn.execute(text("SELECT current_database()")).scalar() == "celerp"
+            assert conn.execute(text("SHOW server_encoding")).scalar() == "UTF8"
     finally:
         engine.dispose()
 

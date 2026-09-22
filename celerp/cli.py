@@ -267,11 +267,13 @@ def _config_to_env(cfg: dict) -> dict:
     # installs into MODULE_DIR.split(",")[0]), then the read-only bundled
     # default (core) and premium (opt-in add-ons) trees. Keeping the writable
     # dir separate means a sideload never lands in default_modules/.
-    from celerp.modules.loader import writable_module_dir
+    from celerp.modules.loader import first_party_names, is_first_party, writable_module_dir
     _pkg_root = Path(__file__).parent.parent
     _mod_dirs = [_pkg_root / "default_modules", _pkg_root / "premium_modules"]
+    _writable_dir = None
     try:
-        _mod_dirs.insert(0, writable_module_dir())
+        _writable_dir = writable_module_dir()
+        _mod_dirs.insert(0, _writable_dir)
     except OSError:
         # A read-only data dir is unusual; fall back to the bundled dirs so the
         # app still starts. Imports will fail with a clear "no module directory"
@@ -282,10 +284,25 @@ def _config_to_env(cfg: dict) -> dict:
     enabled = cfg.get("modules", {}).get("enabled", [])
     env["ENABLED_MODULES"] = ",".join(enabled) if enabled else ""
     # Add each module package to PYTHONPATH so intra-module imports resolve.
+    # If an old backup left a stale writable copy of a current first-party module,
+    # let the verified bundled copy win without deleting the stale directory. The
+    # check is lazy, so normal launches with no shadow pay no digest cost.
+    _lock_names = first_party_names()
     _extra_paths = []
     for _mod_dir in _mod_dirs:
-        if _mod_dir.exists():
-            _extra_paths.extend(str(p) for p in _mod_dir.iterdir() if p.is_dir() and (p / "__init__.py").exists())
+        if not _mod_dir.exists():
+            continue
+        for _path in _mod_dir.iterdir():
+            if not _path.is_dir() or not (_path / "__init__.py").exists():
+                continue
+            if (
+                _writable_dir is not None
+                and _mod_dir == _writable_dir
+                and _path.name in _lock_names
+                and is_first_party(_pkg_root / "default_modules" / _path.name)
+            ):
+                continue
+            _extra_paths.append(str(_path))
     existing_path = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = ":".join(filter(None, [str(_pkg_root)] + _extra_paths + [existing_path]))
     return env

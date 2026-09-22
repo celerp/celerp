@@ -305,6 +305,9 @@ async function startPostgres(dbPort) {
     password: dbPassword,
     port: dbPort,
     persistent: true,  // data survives across app restarts
+    // Prevent locale-derived SQL_ASCII clusters on Linux/macOS first boot.
+    // Windows uses initialisePostgresWindows(), which already passes UTF-8.
+    initdbFlags: ["--encoding=UTF8"],
   });
 
   // Only run initdb on first boot — PG_VERSION is written by initdb and

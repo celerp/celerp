@@ -23,6 +23,7 @@ import sqlalchemy as sa
 from celerp.migrations.versions.f8a9b0c1d2e3_work_center_default_backfill import (
     _NOTICE_BODY,
     _NOTICE_TITLE,
+    _legacy_hours_per_day,
 )
 
 from .conftest import run_migration_ops, wc_add_work_center, wc_mkcompany
@@ -45,6 +46,25 @@ def _notice_count(conn, cid: str) -> int:
         {"cid": cid, "t": _NOTICE_TITLE}).scalar()
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (10, 10.0),
+        (2.5, 2.5),
+        ("7.5", 7.5),
+        (0, 8.0),
+        ("", 8.0),
+        (None, 8.0),
+        ("abc", 8.0),
+        (True, 8.0),
+        (-1, 8.0),
+        ("1e3", 8.0),
+    ],
+)
+def test_legacy_hours_mapping_matches_retired_sql(value, expected):
+    assert _legacy_hours_per_day(value) == expected
+
+
 def test_seed_notify_strip(wc_db):
     """One Default center per mfg-active company with the x-or-8.0 mapping
     (10->10, block-without-hours->8, 0->8, non-numeric->8), a non-mfg company
@@ -57,6 +77,7 @@ def test_seed_notify_strip(wc_db):
         c4 = wc_mkcompany(conn, {"manufacturing": {"hours_per_day": 0}})  # stored 0
         c5 = wc_mkcompany(conn, {"manufacturing": {"hours_per_day": "abc"}})  # non-numeric (F5)
         c6 = wc_mkcompany(conn, {})  # no mfg block, but has a work center
+        c7 = wc_mkcompany(conn, {"manufacturing": None})  # key presence still means active
         wc_add_work_center(conn, c6, "Bench")
 
     run_migration_ops(wc_db, _SCHEMA_MIGRATION)
@@ -69,6 +90,7 @@ def test_seed_notify_strip(wc_db):
         assert _default_hours(conn, c4) == 8.0  # x-or-8.0, not a plain COALESCE
         assert _default_hours(conn, c5) == 8.0  # non-numeric degrades to 8, insert not aborted
         assert _default_hours(conn, c6) == 8.0  # existing WC -> Default seeded too
+        assert _default_hours(conn, c7) == 8.0  # top-level key presence matches old ? semantics
         # c6 keeps its Bench center alongside the new Default
         total_c6 = conn.execute(sa.text("SELECT count(*) FROM work_centers WHERE company_id = :cid"),
                                 {"cid": c6}).scalar()
@@ -144,3 +166,48 @@ def test_double_application_idempotent(wc_db):
             {"cid": c1}).scalar() == 1
         assert _notice_count(conn, c1) == 1
         assert _default_hours(conn, c1) == 10.0
+
+
+def test_sql_ascii_preserves_unrelated_company_settings(sql_ascii_fresh_db):
+    """f8 reads/mutates settings in Python, preserving unrelated escaped Unicode."""
+    import json
+    from sqlalchemy import create_engine, text
+
+    _, sync_url = sql_ascii_fresh_db
+    engine = create_engine(sync_url)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE TABLE companies (id UUID PRIMARY KEY, name TEXT, settings JSON NOT NULL)"
+            ))
+            conn.execute(text("""
+                CREATE TABLE work_centers (
+                    id UUID PRIMARY KEY,
+                    company_id UUID NOT NULL REFERENCES companies(id),
+                    name TEXT NOT NULL,
+                    wip_location_id UUID,
+                    labor_rate DOUBLE PRECISION,
+                    capacity DOUBLE PRECISION,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    hours_per_day DOUBLE PRECISION,
+                    is_default BOOLEAN NOT NULL,
+                    CONSTRAINT uq_work_center_company_name UNIQUE (company_id, name)
+                )
+            """))
+            cid = wc_mkcompany(conn, {
+                "manufacturing": {"hours_per_day": "6.5", "note": "Müller"},
+                "company_note": "Crème Brûlée",
+            })
+
+        run_migration_ops(engine, _DATA_MIGRATION)
+
+        with engine.connect() as conn:
+            settings = conn.execute(
+                sa.text("SELECT settings FROM companies WHERE id = :id"), {"id": cid}
+            ).scalar_one()
+            settings = settings if isinstance(settings, dict) else json.loads(settings)
+            assert settings["company_note"] == "Crème Brûlée"
+            assert settings["manufacturing"] == {"note": "Müller"}
+            assert _default_hours(conn, cid) == 6.5
+    finally:
+        engine.dispose()

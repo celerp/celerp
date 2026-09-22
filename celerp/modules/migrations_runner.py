@@ -206,7 +206,7 @@ async def run_migration_phase(engine, enabled):
             )
             try:
                 for name in sorted(enabled):
-                    module_path = loader.resolve_module_path(name)
+                    module_path = loader.resolve_runtime_module_path(name)
                     if module_path is None:
                         continue
                     manifest = loader.read_manifest(module_path)

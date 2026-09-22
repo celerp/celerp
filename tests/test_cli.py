@@ -719,6 +719,36 @@ def test_config_to_env_prepends_writable_module_dir(valid_cfg, tmp_path, monkeyp
     assert (tmp_path / "modules").is_dir()
 
 
+def test_config_to_env_omits_stale_first_party_shadow_from_pythonpath(
+        valid_cfg, tmp_path, monkeypatch):
+    import celerp.config as config
+    from celerp.cli import _config_to_env
+    from celerp.modules import loader
+
+    monkeypatch.setattr(config.settings, "data_dir", tmp_path, raising=False)
+    writable = tmp_path / "modules"
+    writable.mkdir()
+    stale = writable / "celerp-labels"
+    stale.mkdir()
+    (stale / "__init__.py").write_text(
+        'PLUGIN_MANIFEST = {"name": "celerp-labels", "version": "old"}'
+    )
+    custom = writable / "acme-custom"
+    custom.mkdir()
+    (custom / "__init__.py").write_text(
+        'PLUGIN_MANIFEST = {"name": "acme-custom", "version": "1"}'
+    )
+
+    env = _config_to_env(valid_cfg)
+    paths = env["PYTHONPATH"].split(os.pathsep)
+    bundled = loader._lock_path().parent / "celerp-labels"
+
+    assert str(stale) not in paths
+    assert str(bundled) in paths
+    assert str(custom) in paths
+    assert stale.exists()  # self-heal is resolution-only; no user files are deleted
+
+
 def test_config_to_env_reports_headless_launch_channel(valid_cfg, monkeypatch):
     """A headless service install (init --no-start, then a process manager runs
     start) must report its launch channel on activation the same way the desktop

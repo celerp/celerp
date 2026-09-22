@@ -61,3 +61,62 @@ async def test_extract_files_restores_module_code(tmp_path, monkeypatch):
 
     restored = tmp_path / "modules" / "mymod" / "__init__.py"
     assert restored.read_bytes() == b"PLUGIN = 1"
+
+
+@pytest.mark.asyncio
+async def test_extract_files_never_overwrites_current_first_party_modules(tmp_path, monkeypatch):
+    from celerp.config import settings
+    from celerp.services import backup_import as bi
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+
+    current = tmp_path / "modules" / "celerp-inventory" / "sentinel.py"
+    current.parent.mkdir(parents=True)
+    current.write_bytes(b"CURRENT")
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, body in (
+            ("database.dump", b"PGDMP"),
+            ("modules/celerp-inventory/sentinel.py", b"STALE"),
+            ("modules//celerp-inventory/double.py", b"STALE"),
+            ("modules/./celerp-inventory/dot.py", b"STALE"),
+            ("modules/acme-custom/__init__.py", b"CUSTOM"),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    archive = tmp_path / "backup.celerp-backup"
+    archive.write_bytes(buf.getvalue())
+
+    await bi._extract_files(archive)
+
+    assert current.read_bytes() == b"CURRENT"
+    assert not (tmp_path / "modules" / "celerp-inventory" / "double.py").exists()
+    assert not (tmp_path / "modules" / "celerp-inventory" / "dot.py").exists()
+    assert (tmp_path / "modules" / "acme-custom" / "__init__.py").read_bytes() == b"CUSTOM"
+
+
+def test_protected_module_dir_uses_filesystem_identity(tmp_path):
+    from celerp.services.backup_import import _is_protected_module_dir
+
+    root = tmp_path / "modules"
+    protected = root / "celerp-inventory"
+    protected.mkdir(parents=True)
+    names = frozenset({"celerp-inventory"})
+
+    assert _is_protected_module_dir(root, "celerp-inventory", names)
+
+    alias = root / "inventory-alias"
+    alias.symlink_to(protected, target_is_directory=True)
+    assert _is_protected_module_dir(root, "inventory-alias", names)
+
+    distinct = root / "CELERP-INVENTORY"
+    try:
+        distinct.mkdir()
+    except FileExistsError:
+        # Case-insensitive filesystems alias this spelling to the protected dir.
+        assert _is_protected_module_dir(root, "CELERP-INVENTORY", names)
+    else:
+        # Case-sensitive filesystems treat it as a distinct custom module name.
+        assert not _is_protected_module_dir(root, "CELERP-INVENTORY", names)
