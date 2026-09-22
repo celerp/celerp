@@ -1,0 +1,20 @@
+name: Recovery export
+on:
+  push:
+    branches: [review/recovery-pr341-20260922]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Bundle repository
+        run: git bundle create repo.bundle HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repo-bundle
+          path: repo.bundle
+          retention-days: 1
