@@ -46,11 +46,20 @@ def ensure_running() -> None:
         return
     existing = _client.get_client()
     if existing is not None:
-        # Replacement is an async lifecycle operation owned by
-        # apply_activation_state(): it can retire, close, and await the old
-        # generation before constructing its successor. A synchronous start
-        # helper must never overlap two generations.
-        return
+        task = _run_task
+        if task is None or not task.done():
+            # Replacement of a live generation is async lifecycle work owned by
+            # apply_activation_state(). Never overlap two live generations.
+            return
+        # Natural completion may have happened one event-loop turn before its
+        # done callback runs. Detach only that already-finished owned generation
+        # so a newly-created share cannot be stranded by the tiny callback gap.
+        if _client.get_client() is existing:
+            _client.set_client(None)
+        if _run_task is task:
+            _run_task = None
+        from celerp.gateway.state import set_session_token
+        set_session_token("")
     import uuid
 
     instance_id = settings.gateway_instance_id or str(uuid.uuid4())
