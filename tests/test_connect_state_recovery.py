@@ -9,6 +9,22 @@ import pytest
 from test_config import _reload_config, _restore_config_module  # noqa: F401
 
 
+def _relay_state(*, tier="cloud", status="active", entitled=True, **extra):
+    data = {
+        "tier": tier,
+        "status": status,
+        "connect_entitled": entitled,
+        "feature_flags": {
+            "payments_enabled": False,
+            "external_db": False,
+            "external_storage": False,
+            "grace_period_ends": None,
+        },
+    }
+    data.update(extra)
+    return data
+
+
 def test_foreign_credential_cannot_override_pending_local_proof(tmp_path, monkeypatch):
     mod, _ = _reload_config(tmp_path, monkeypatch)
     mod.write_config({"cloud": {
@@ -65,8 +81,7 @@ async def test_exact_stale_token_recovery_prefers_local_verifier(monkeypatch):
     monkeypatch.setattr(settings, "cloud_disconnected", False)
     monkeypatch.setattr(settings, "activation_verifier", "proof-b")
     response = MagicMock(status_code=200)
-    response.json.return_value = {
-        "gateway_token": "new-key-b", "tier": "cloud", "status": "active"}
+    response.json.return_value = _relay_state(gateway_token="new-key-b")
     seen = []
     class Client:
         async def post(self, url, **kwargs):
@@ -125,7 +140,7 @@ async def test_foreign_identity_converges_only_after_successful_activation(monke
     monkeypatch.setattr(settings, "cloud_disconnected", False)
     monkeypatch.setattr(settings, "activation_verifier", "")
     response = MagicMock(status_code=200)
-    response.json.return_value = {"tier": "cloud", "status": "active"}
+    response.json.return_value = _relay_state()
     client = MagicMock(post=AsyncMock(return_value=response))
     async def run(_timeout, operation):
         return await operation(client)
@@ -290,33 +305,14 @@ async def test_healthy_serving_instance_is_not_restarted(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_persisted_only_sync_ignores_environment_override(monkeypatch):
-    """Automatic repair never turns an env-only credential into durable identity."""
-    from celerp.config import settings
-    monkeypatch.setattr(settings, "cloud_disconnected", False)
-    monkeypatch.setattr(settings, "activation_verifier", "")
-    auth = AsyncMock(return_value=("jwt-a", "instance-a"))
-    with (
-        patch("celerp.services.cloud_entitlement.stored_api_key",
-              new=AsyncMock(return_value="env-key-a")),
-        patch("celerp.services.cloud_entitlement.persisted_api_key",
-              new=AsyncMock(return_value="disk-key-b")),
-        patch("celerp.gateway.state.fetch_relay_auth", new=auth),
-    ):
-        from celerp.services.cloud_entitlement import sync_existing_entitlement
-        assert await sync_existing_entitlement(require_persisted_key=True) is None
-    auth.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_boot_sync_uses_only_persisted_credentials():
+async def test_boot_sync_uses_configured_credential_without_persistence_policy():
     sync = AsyncMock()
     with patch(
         "celerp.services.cloud_entitlement.sync_existing_entitlement", new=sync
     ):
         from celerp.main import _try_sync_existing_entitlement
         await _try_sync_existing_entitlement()
-    sync.assert_awaited_once_with(require_persisted_key=True)
+    sync.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
@@ -365,7 +361,7 @@ async def test_persisted_sync_converges_free_identity_and_clears_stale_paid_url(
         patch("celerp.services.backup_scheduler.stop"),
     ):
         from celerp.services.cloud_entitlement import sync_existing_entitlement
-        data = await sync_existing_entitlement(require_persisted_key=True)
+        data = await sync_existing_entitlement()
 
     assert data is not None and data["tier"] == "free"
     cloud = mod.read_config()["cloud"]
