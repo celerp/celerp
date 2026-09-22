@@ -8,6 +8,8 @@ is absent from both the status surface and tab bar.
 """
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 pytestmark = pytest.mark.browser
@@ -64,3 +66,51 @@ def test_web_access_combined_sections(page, ui_server, monkeypatch):
     page.wait_for_selector("input#db_host", timeout=8000)
     assert page.locator("input#db_host").count() == 1
     assert page.locator(".flash.flash--warning").count() >= 1
+
+
+@pytest.mark.parametrize(
+    ("state", "expect_link", "expect_plans", "expect_partner_tab"),
+    [
+        (("inactive", "", "", True, True, False, None), True, True, True),
+        (("inactive", "", "", False, False, False, None), True, True, False),
+        (("inactive", "", "", False, True, False, None), True, True, False),
+        (("error", "", "", False, True, False, None), True, True, False),
+        (("inactive", "", "cloud", False, True, True, True), False, False, False),
+        (("inactive", "", "cloud", False, True, True, False), True, True, False),
+    ],
+)
+def test_web_access_unusable_states_always_offer_subscription_recovery(
+    page, ui_server, monkeypatch, state, expect_link, expect_plans, expect_partner_tab
+):
+    """No non-serving owner state may strand the user without an explicit recovery action."""
+    import ui.api_client as api
+    import ui.routes.settings_cloud as sc
+    import celerp.gateway.state as gw_state
+
+    async def _fake_relay_state(token):
+        return state
+
+    async def _empty_commercial_state(request):
+        return {}
+
+    monkeypatch.setattr(sc, "_relay_state", _fake_relay_state)
+    monkeypatch.setattr(sc, "_commercial_state", _empty_commercial_state)
+    monkeypatch.setattr(api, "get_backup_status", AsyncMock(return_value={}))
+    monkeypatch.setattr(gw_state, "get_local_infra_state", lambda: {})
+    monkeypatch.setattr(gw_state, "get_commercial_mode", lambda: "celerp_direct")
+
+    page.goto(f"{ui_server}/settings/cloud", wait_until="domcontentloaded")
+    page.wait_for_selector("#cloud-connect-btn", timeout=8000)
+
+    assert page.locator("#cloud-connect-btn").count() == 1
+    assert page.locator(_CARD).count() == 0
+
+    link_recovery = page.locator(
+        '[hx-post="/settings/cloud-send-otp"], '
+        '[hx-get^="/account/panel?intent=claim"]'
+    )
+    assert (link_recovery.count() > 0) is expect_link
+    assert (page.locator(".cloud-plans").count() > 0) is expect_plans
+    assert (
+        page.locator('a[href="/settings/cloud?tab=partner"]').count() > 0
+    ) is expect_partner_tab

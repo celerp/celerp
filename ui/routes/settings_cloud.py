@@ -925,7 +925,12 @@ def setup_routes(app):
         # never shares the normal subscription/Connect surface after connection.
         from celerp.gateway.state import get_commercial_mode
         commercial_mode = get_commercial_mode()
-        can_claim = is_owner_admin and commercial_mode != "partner_managed"
+        can_claim = (
+            is_owner_admin
+            and commercial_mode != "partner_managed"
+            and disconnected
+            and token_bound
+        )
         catalog: dict = {}
         if commercial_mode == "celerp_direct":
             try:
@@ -983,12 +988,10 @@ def setup_routes(app):
             backup_card = _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)
             if backup_card is not None:
                 parts.append(backup_card)
-            # A connected free-tier account keeps its free tabs but still sees
-            # the paid-plan advertisement the not-connected page carries - the
-            # plans are exactly what the free tier is missing. An unknown tier
-            # (status round trip failed/pending) degrades to showing the ad,
-            # never to silently hiding it - only a confirmed paid tier suppresses it.
-            if tier not in PAID_TIERS:
+            # Only an authoritatively entitled paid account suppresses the plan
+            # offers. Free, lapsed, and unknown accounts keep a visible purchase/
+            # renewal path even when their last-known tier name is paid.
+            if entitled is not True:
                 from celerp.config import ensure_instance_id
                 parts.append(_plans_ad(
                     ensure_instance_id(), lang=lang, catalog=catalog))

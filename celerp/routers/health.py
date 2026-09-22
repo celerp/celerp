@@ -510,11 +510,15 @@ async def _post_partner_claim(path: str, body: dict) -> tuple[dict | None, dict 
     import httpx
     from celerp.gateway.state import (
         fetch_relay_bearer, relay_http_url, with_relay_client)
+    from celerp.services.cloud_entitlement import stored_api_key
 
+    api_key = await stored_api_key()
+    if not api_key:
+        return None, {"error": "This installation has no cloud identity, so a partner claim cannot be used."}
     relay_base = relay_http_url()
 
     async def _claim(c):
-        jwt = await fetch_relay_bearer(c)
+        jwt = await fetch_relay_bearer(c, api_key=api_key)
         return await c.post(
             f"{relay_base}{path}", json=body,
             headers={"Authorization": f"Bearer {jwt}"})
@@ -540,13 +544,9 @@ async def partner_claim_resolve(payload: dict, role: str = Depends(get_current_r
     nothing: a resolve leaves the install celerp_direct."""
     if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["admin"]:
         raise HTTPException(status_code=403, detail="Only an owner or admin can review a partner claim.")
-    from celerp.config import settings
-
     token, err = _validate_claim_token(payload.get("claim_token"))
     if err:
         return err
-    if not settings.gateway_token:
-        return {"error": "This installation has no cloud identity, so a partner claim cannot be verified."}
     data, err = await _post_partner_claim("/partners/claims/resolve", {"token": token})
     if err:
         return err
@@ -564,13 +564,9 @@ async def partner_claim_accept(payload: dict, role: str = Depends(get_current_ro
     not-available message, never a fabricated success. Never touches gateway_token."""
     if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["admin"]:
         raise HTTPException(status_code=403, detail="Only an owner or admin can accept a partner claim.")
-    from celerp.config import settings
-
     token, err = _validate_claim_token(payload.get("claim_token"))
     if err:
         return err
-    if not settings.gateway_token:
-        return {"error": "This installation has no cloud identity, so a partner claim cannot be accepted."}
     data, err = await _post_partner_claim("/partners/claims/accept", {"token": token})
     if err:
         return err

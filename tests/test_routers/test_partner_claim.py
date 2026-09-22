@@ -302,12 +302,12 @@ async def test_partner_claim_resolve_rejects_oversized_token(client):
     "/settings/partner-claim/accept",
 ])
 async def test_partner_claim_requires_cloud_identity(client, path):
-    """With no gateway_token, both routes return a neutral error and make zero
-    relay calls (no instance credential to exchange for a bearer)."""
+    """Without a live or preserved credential, both routes fail before relay I/O."""
     post_mock = AsyncMock()
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", ""),
+        patch("celerp.services.cloud_entitlement.stored_api_key", new=AsyncMock(return_value="")),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = post_mock
         r = await client.post(
@@ -315,6 +315,33 @@ async def test_partner_claim_requires_cloud_identity(client, path):
     assert r.status_code == 200
     assert "error" in r.json()
     assert post_mock.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_partner_claim_uses_preserved_identity_while_disconnected(client):
+    """Existing-install partner claiming works with the credential preserved on disk."""
+    post_mock = _relay_post_mock(_relay_resp(200, _RESOLVE_OK))
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        patch("celerp.config.settings.gateway_token", ""),
+        patch(
+            "celerp.services.cloud_entitlement.stored_api_key",
+            new=AsyncMock(return_value="preserved-api-key"),
+        ),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = post_mock
+        r = await client.post(
+            "/settings/partner-claim/resolve",
+            headers=await _role_headers(client, "owner"),
+            json={"claim_token": "tok-preserved"},
+        )
+
+    assert r.status_code == 200
+    assert r.json()["partner_id"] == "prt_123"
+    exchange_args, claim_args = post_mock.await_args_list
+    assert exchange_args.args[0].endswith("/auth/token")
+    assert exchange_args.kwargs["json"] == {"api_key": "preserved-api-key"}
+    assert claim_args.args[0].endswith("/partners/claims/resolve")
 
 
 # -- bearer exchange failure -------------------------------------------------
