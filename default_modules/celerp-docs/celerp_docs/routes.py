@@ -1045,7 +1045,7 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
 @router.get("/{entity_id}", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    doc = row.state | {"id": row.entity_id}
+    doc = row.state | {"id": row.entity_id, "version": row.version}
     if doc.get("doc_type") == "memo":
         try:
             labels = await _derive_shipped_labels(session, company_id, entity_id, doc.get("line_items") or [])
@@ -1101,7 +1101,7 @@ async def get_doc_pdf(
             if li.get("barcode") or not eid:
                 continue
             irow = await session.get(Projection, (company_id, eid))
-            if irow is not None:
+            if irow is not None and irow.entity_type == "item":
                 identifier_backfill(li, irow.state or {})
 
     # Footer import link only while the share link is live, so saved PDFs
@@ -4533,84 +4533,79 @@ async def patch_list(
     return {"event_id": entry.id, "version": entry.id}
 
 
-class ListRepriceBody(BaseModel):
+class RepriceBody(BaseModel):
     price_list: str
     expected_version: int
 
 
-@lists_router.post("/{entity_id}/reprice")
-async def reprice_list(
-    entity_id: str,
-    payload: ListRepriceBody,
-    company_id: str = Depends(get_current_company_id),
-    _: None = require_permission("edit_documents"),
-    role: str = Depends(get_current_role),
-    settings: dict = Depends(get_current_company_settings),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Atomically reprice every catalog-backed line on a draft List."""
-    if is_cost_list_name(payload.price_list):
+def _assert_reprice_access(settings: dict, role: str, price_list: str) -> None:
+    """Authorization shared by every whole-entity repricing door."""
+    if is_cost_list_name(price_list):
         assert_role_permission(settings, role, "view_inventory_costs")
-    canonical_request = json.dumps(
-        [entity_id, payload.expected_version, payload.price_list],
+
+
+def _reprice_idempotency_key(kind: str, entity_id: str, payload: RepriceBody) -> str:
+    canonical = json.dumps(
+        [kind, entity_id, payload.expected_version, payload.price_list],
         separators=(",", ":"),
         ensure_ascii=False,
     )
-    idem_key = f"list:reprice:{hashlib.sha256(canonical_request.encode()).hexdigest()}"
+    return f"{kind}:reprice:{hashlib.sha256(canonical.encode()).hexdigest()}"
 
-    def _replay_result(replay) -> dict:
-        meta = replay.metadata_ or {}
-        if (
-            replay.event_type != "list.updated"
-            or replay.entity_id != entity_id
-            or meta.get("operation") != "reprice"
-            or meta.get("expected_version") != payload.expected_version
-            or meta.get("price_list") != payload.price_list
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail="Idempotency key was already used for another operation",
-            )
-        return {
-            "ok": True,
-            "event_id": replay.id,
-            "version": replay.id,
-            "repriced": int(meta.get("repriced") or 0),
-            "skipped": list(meta.get("skipped") or []),
-            "price_list": payload.price_list,
-        }
 
-    replay = await find_event_by_idempotency(session, company_id, idem_key)
-    if replay is not None:
-        return _replay_result(replay)
-
-    row = await _get_list_for_update(session, company_id, entity_id)
-    if not is_money_list(row.state.get("list_type")):
-        raise HTTPException(
-            status_code=422,
-            detail="This list type does not support repricing",
-        )
-    replay = await find_event_by_idempotency(session, company_id, idem_key)
-    if replay is not None:
-        return _replay_result(replay)
-    if row.state.get("status") != "draft":
-        raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
-    if row.version != payload.expected_version:
+def _reprice_replay_result(
+    replay, *, entity_id: str, event_type: str, payload: RepriceBody,
+) -> dict:
+    meta = replay.metadata_ or {}
+    if (
+        replay.event_type != event_type
+        or replay.entity_id != entity_id
+        or meta.get("operation") != "reprice"
+        or meta.get("expected_version") != payload.expected_version
+        or meta.get("price_list") != payload.price_list
+    ):
         raise HTTPException(
             status_code=409,
-            detail="This list was changed by someone else; reload to get the latest before repricing",
+            detail="Idempotency key was already used for another operation",
         )
+    return {
+        "ok": True,
+        "event_id": replay.id,
+        "version": replay.id,
+        "repriced": int(meta.get("repriced") or 0),
+        "skipped": list(meta.get("skipped") or []),
+        "price_list": payload.price_list,
+    }
 
+
+async def _reprice_catalog_lines(
+    session: AsyncSession,
+    company_id,
+    stored_lines: list,
+    price_list: str,
+    *,
+    currency: str | None,
+) -> tuple[list, int, list[dict], str]:
+    """Canonical whole-entity catalog repricing.
+
+    Identity is exact item_id/entity_id only: SKU is display data and may identify
+    many physical lots. Free-text lines are untouched. Missing linked items keep
+    their stored snapshot and are reported to the caller. Price-list validation,
+    flattening, derived-price resolution, rate rounding, and line-total math live
+    here so Docs and Lists cannot drift into separate pricing implementations.
+    """
     price_config = await get_price_config(session, company_id)
     price_lists, _base_name, company_currency = price_config
-    currency = row.state.get("currency") or company_currency
     configured_names = {str(pl.get("name") or "") for pl in price_lists}
-    if payload.price_list not in configured_names:
-        raise HTTPException(status_code=422, detail=f"Unknown price list: {payload.price_list}")
-    stored_lines = list(row.state.get("line_items") or [])
-    item_ids = {line_item_id(line) for line in stored_lines if isinstance(line, dict)}
-    item_ids.discard(None)
+    if price_list not in configured_names:
+        raise HTTPException(status_code=422, detail=f"Unknown price list: {price_list}")
+
+    effective_currency = currency or company_currency
+    item_ids = {
+        line_item_id(line)
+        for line in stored_lines
+        if isinstance(line, dict) and line_item_id(line)
+    }
     items: dict[str, Projection] = {}
     if item_ids:
         item_rows = (
@@ -4628,38 +4623,259 @@ async def reprice_list(
 
     repriced = 0
     skipped: list[dict] = []
-    updated_lines: list[dict] = []
+    updated_lines: list = []
     for stored_line in stored_lines:
+        if not isinstance(stored_line, dict):
+            updated_lines.append(stored_line)
+            continue
         line = dict(stored_line)
         item_id = line_item_id(line)
         if item_id is None:
-            # Free-text/manual line: it has no catalog identity, so repricing
-            # intentionally leaves it untouched and does not warn.
             updated_lines.append(line)
             continue
         item = items.get(item_id)
         if item is None:
-            # The item may have been hard-deleted or an import undone after this
-            # line was created. Preserve the document snapshot; never substitute
-            # another same-SKU item.
             skipped.append({"item_id": item_id, "reason": "item_not_found"})
             updated_lines.append(line)
             continue
+
         flat = flatten_item(item.state or {}, item.entity_id, price_config=price_config)
-        new_rate = round_rate(resolve_price(flat, payload.price_list), currency)
+        new_rate = round_rate(resolve_price(flat, price_list), effective_currency)
         line["unit_price"] = float(new_rate)
         quantity = to_decimal(line.get("quantity", 0) or 0)
         discount_pct = to_decimal(line.get("discount_pct", 0) or 0)
         amount = quantity * new_rate
         if discount_pct:
             amount *= to_decimal(1) - discount_pct / 100
-        line["line_total"] = to_stored_float(round_money(amount, currency))
+        line["line_total"] = to_stored_float(round_money(amount, effective_currency))
         repriced += 1
         updated_lines.append(line)
 
+    return updated_lines, repriced, skipped, effective_currency
+
+
+def _recompute_tax_applications(raw, base, currency: str):
+    """Recompute stored tax definitions against a new base, never stale amounts."""
+    if not isinstance(raw, list) or not raw:
+        return [], to_decimal(0)
+    definitions: list[TaxApplication] = []
+    try:
+        for value in raw:
+            if not isinstance(value, dict):
+                raise ValueError("tax entry is not an object")
+            definitions.append(TaxApplication.model_validate({**value, "amount": 0.0}))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Stored tax data is invalid; correct it before repricing",
+        ) from exc
+    resolved = compute_tax_amounts(definitions, to_stored_float(round_money(base, currency)), currency)
+    return [item.model_dump() for item in resolved], sum(
+        (to_decimal(item.amount) for item in resolved), to_decimal(0))
+
+
+def _reprice_doc_money(state: dict, updated_lines: list[dict], currency: str) -> dict:
+    """Document-only totals derived from the repriced lines.
+
+    List totals remain projection-owned. Documents do not have that reducer, so
+    this wrapper recomputes their monetary snapshot once on the server instead of
+    trusting the browser's independent arithmetic.
+    """
+    def _line_amount(line: dict):
+        value = line.get("line_total")
+        if value not in (None, ""):
+            return to_decimal(value or 0)
+        return (
+            to_decimal(line.get("quantity", 0) or 0)
+            * to_decimal(line.get("unit_price", 0) or 0)
+        )
+
+    subtotal = round_money(
+        sum((_line_amount(line) for line in updated_lines if isinstance(line, dict)), to_decimal(0)),
+        currency,
+    )
+    discount = max(to_decimal(0), to_decimal(state.get("discount", 0) or 0))
+    if state.get("discount_type") == "percentage":
+        discount_amount = subtotal * discount / 100
+    else:
+        discount_amount = discount
+    discount_amount = round_money(min(max(discount_amount, to_decimal(0)), subtotal), currency)
+    taxable = subtotal - discount_amount
+    ratio = taxable / subtotal if subtotal > 0 else to_decimal(1)
+
+    line_tax_total = to_decimal(0)
+    has_line_tax = False
+    for line in updated_lines:
+        if not isinstance(line, dict):
+            continue
+        base = _line_amount(line) * ratio
+        raw_taxes = line.get("taxes")
+        if isinstance(raw_taxes, list) and raw_taxes:
+            resolved, amount = _recompute_tax_applications(raw_taxes, base, currency)
+            line["taxes"] = resolved
+            line_tax_total += amount
+            has_line_tax = True
+            continue
+        rate = to_decimal(line.get("tax_rate", 0) or 0)
+        if rate:
+            line_tax_total += round_money(base * rate / 100, currency)
+            has_line_tax = True
+
+    result: dict = {
+        "subtotal": to_stored_float(subtotal),
+        "discount_amount": to_stored_float(discount_amount),
+    }
+    raw_doc_taxes = state.get("doc_taxes")
+    if isinstance(raw_doc_taxes, list) and raw_doc_taxes:
+        resolved_doc_taxes, doc_tax_total = _recompute_tax_applications(
+            raw_doc_taxes, taxable, currency)
+        result["doc_taxes"] = resolved_doc_taxes
+        tax_total = line_tax_total + doc_tax_total
+    elif has_line_tax:
+        tax_total = line_tax_total
+    elif to_decimal(state.get("tax_rate", 0) or 0):
+        tax_total = round_money(
+            taxable * to_decimal(state.get("tax_rate", 0) or 0) / 100,
+            currency,
+        )
+    else:
+        # Legacy documents may carry only an absolute tax amount and no rate
+        # definition from which to recompute it. Preserve that explicit snapshot.
+        tax_total = round_money(state.get("tax", 0) or 0, currency)
+
+    tax_total = round_money(tax_total, currency)
+    shipping = round_money(state.get("shipping", 0) or 0, currency)
+    result["tax"] = to_stored_float(tax_total)
+    result["total"] = to_stored_float(round_money(taxable + tax_total + shipping, currency))
+    return result
+
+
+@router.post("/{entity_id}/reprice")
+async def reprice_doc(
+    entity_id: str,
+    payload: RepriceBody,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Atomically reprice every catalog-backed line on a draft document."""
+    _assert_reprice_access(settings, role, payload.price_list)
+    idem_key = _reprice_idempotency_key("doc", entity_id, payload)
+    replay = await find_event_by_idempotency(session, company_id, idem_key)
+    if replay is not None:
+        return _reprice_replay_result(
+            replay, entity_id=entity_id, event_type="doc.updated", payload=payload)
+
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    replay = await find_event_by_idempotency(session, company_id, idem_key)
+    if replay is not None:
+        return _reprice_replay_result(
+            replay, entity_id=entity_id, event_type="doc.updated", payload=payload)
+    if row.state.get("status") != "draft":
+        raise HTTPException(status_code=409, detail="Cannot reprice a non-draft document")
+    if row.version != payload.expected_version:
+        raise HTTPException(
+            status_code=409,
+            detail="This document was changed by someone else; reload to get the latest before repricing",
+        )
+
+    updated_lines, repriced, skipped, currency = await _reprice_catalog_lines(
+        session, company_id, list(row.state.get("line_items") or []),
+        payload.price_list, currency=row.state.get("currency"),
+    )
+    new_values = {
+        "price_list": payload.price_list,
+        "line_items": updated_lines,
+        **_reprice_doc_money(row.state, updated_lines, currency),
+    }
+    fields_changed = {
+        field: {"old": row.state.get(field), "new": value}
+        for field, value in new_values.items()
+        if row.state.get(field) != value
+    }
+    if not fields_changed:
+        return {
+            "ok": True, "event_id": None, "version": row.version,
+            "repriced": repriced, "skipped": skipped, "price_list": payload.price_list,
+        }
+
+    entry = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.updated",
+        data={"fields_changed": fields_changed},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=idem_key,
+        metadata_={
+            "operation": "reprice",
+            "expected_version": payload.expected_version,
+            "price_list": payload.price_list,
+            "repriced": repriced,
+            "skipped": skipped,
+        },
+    )
+    await session.commit()
+    return {
+        "ok": True,
+        "event_id": entry.id,
+        "version": entry.id,
+        "repriced": repriced,
+        "skipped": skipped,
+        "price_list": payload.price_list,
+    }
+
+
+@lists_router.post("/{entity_id}/reprice")
+async def reprice_list(
+    entity_id: str,
+    payload: RepriceBody,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Atomically reprice every catalog-backed line on a draft List."""
+    _assert_reprice_access(settings, role, payload.price_list)
+    idem_key = _reprice_idempotency_key("list", entity_id, payload)
+    replay = await find_event_by_idempotency(session, company_id, idem_key)
+    if replay is not None:
+        return _reprice_replay_result(
+            replay, entity_id=entity_id, event_type="list.updated", payload=payload)
+
+    row = await _get_list_for_update(session, company_id, entity_id)
+    if not is_money_list(row.state.get("list_type")):
+        raise HTTPException(
+            status_code=422,
+            detail="This list type does not support repricing",
+        )
+    replay = await find_event_by_idempotency(session, company_id, idem_key)
+    if replay is not None:
+        return _reprice_replay_result(
+            replay, entity_id=entity_id, event_type="list.updated", payload=payload)
+    if row.state.get("status") != "draft":
+        raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
+    if row.version != payload.expected_version:
+        raise HTTPException(
+            status_code=409,
+            detail="This list was changed by someone else; reload to get the latest before repricing",
+        )
+
+    updated_lines, repriced, skipped, _currency = await _reprice_catalog_lines(
+        session, company_id, list(row.state.get("line_items") or []),
+        payload.price_list, currency=row.state.get("currency"),
+    )
     fields_changed = {
         "price_list": {"old": row.state.get("price_list"), "new": payload.price_list},
-        "line_items": {"old": stored_lines, "new": updated_lines},
+        "line_items": {"old": row.state.get("line_items") or [], "new": updated_lines},
     }
     entry = await _emit_list(
         session, company_id, entity_id, "list.updated",

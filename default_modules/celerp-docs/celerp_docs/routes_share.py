@@ -583,7 +583,7 @@ async def _enrich_share_lines(session: AsyncSession, company_id, state: dict) ->
         if not eid:
             continue
         irow = await session.get(Projection, (company_id, eid))
-        if irow is None:
+        if irow is None or irow.entity_type != "item":
             continue
         if ident_mode != "sku":
             identifier_backfill(li, irow.state or {})

@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""Whole-List repricing preserves identity, concurrency, and document snapshots."""
+"""Whole-entity repricing preserves identity, concurrency, and stored snapshots."""
 from __future__ import annotations
 
 import uuid
@@ -37,6 +37,19 @@ async def _item(client, token: str, *, sku: str, retail: float, wholesale: float
     r = await client.post("/items", headers=_h(token), json=body)
     assert r.status_code == 200, r.text
     return r.json()["id"]
+
+
+async def _draft_invoice(client, token: str, lines: list[dict]) -> tuple[str, int]:
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "invoice",
+        "price_list": "Retail",
+        "currency": "USD",
+        "line_items": lines,
+    })
+    assert r.status_code == 200, r.text
+    entity_id = r.json()["id"]
+    state = (await client.get(f"/docs/{entity_id}", headers=_h(token))).json()
+    return entity_id, state["version"]
 
 
 async def _quotation(client, token: str, lines: list[dict]) -> tuple[str, int]:
@@ -263,3 +276,95 @@ async def test_reprice_rejects_non_money_list_without_mutation(client):
     assert after["version"] == before["version"]
     assert after["line_items"] == before["line_items"]
     assert after.get("price_list") == before.get("price_list")
+
+
+@pytest.mark.asyncio
+async def test_doc_reprice_uses_exact_identity_and_same_missing_item_contract(client):
+    token = await _register(client)
+    h = _h(token)
+    missing_id = await _item(client, token, sku="DOC-REUSED", retail=125, wholesale=95)
+    live_id = await _item(client, token, sku="DOC-LIVE", retail=60, wholesale=45)
+    doc_id, version = await _draft_invoice(client, token, [
+        {
+            "item_id": missing_id, "sku": "DOC-REUSED", "description": "Deleted original",
+            "quantity": 2, "unit_price": 125, "line_total": 250,
+        },
+        {
+            "item_id": live_id, "sku": "DOC-LIVE", "description": "Still live",
+            "quantity": 1, "unit_price": 60, "line_total": 60,
+        },
+        {
+            # Deliberately shares the deleted item's SKU but has no item identity.
+            "sku": "DOC-REUSED", "description": "Manual service",
+            "quantity": 1, "unit_price": 33, "line_total": 33,
+        },
+    ])
+    deleted = await client.post("/items/bulk/delete", headers=h, json={"entity_ids": [missing_id]})
+    assert deleted.status_code == 200, deleted.text
+    replacement_id = await _item(client, token, sku="DOC-REUSED", retail=999, wholesale=888)
+    assert replacement_id != missing_id
+
+    result = await client.post(f"/docs/{doc_id}/reprice", headers=h, json={
+        "price_list": "Wholesale", "expected_version": version,
+    })
+    assert result.status_code == 200, result.text
+    assert result.json()["repriced"] == 1
+    assert result.json()["skipped"] == [{"item_id": missing_id, "reason": "item_not_found"}]
+
+    state = (await client.get(f"/docs/{doc_id}", headers=h)).json()
+    missing, live, manual = state["line_items"]
+    assert missing["item_id"] == missing_id
+    assert missing["unit_price"] == 125
+    assert missing["line_total"] == 250
+    assert live["unit_price"] == 45.0
+    assert live["line_total"] == 45.0
+    assert manual["unit_price"] == 33
+    assert state["price_list"] == "Wholesale"
+    assert state["subtotal"] == pytest.approx(328.0)
+    assert state["total"] == pytest.approx(328.0)
+    assert state["amount_outstanding"] == pytest.approx(328.0)
+
+
+@pytest.mark.asyncio
+async def test_doc_reprice_rejects_stale_version_without_mutation(client):
+    token = await _register(client)
+    h = _h(token)
+    item_id = await _item(client, token, sku="DOC-STALE", retail=100, wholesale=80)
+    doc_id, stale_version = await _draft_invoice(client, token, [{
+        "item_id": item_id, "sku": "DOC-STALE",
+        "quantity": 1, "unit_price": 100, "line_total": 100,
+    }])
+
+    bump = await client.patch(f"/docs/{doc_id}", headers=h, json={
+        "fields_changed": {"reference": {"new": "other edit"}},
+    })
+    assert bump.status_code == 200, bump.text
+
+    result = await client.post(f"/docs/{doc_id}/reprice", headers=h, json={
+        "price_list": "Wholesale", "expected_version": stale_version,
+    })
+    assert result.status_code == 409, result.text
+    state = (await client.get(f"/docs/{doc_id}", headers=h)).json()
+    assert state["price_list"] == "Retail"
+    assert state["line_items"][0]["unit_price"] == 100
+
+
+@pytest.mark.asyncio
+async def test_doc_reprice_retry_replays_without_second_write(client):
+    token = await _register(client)
+    item_id = await _item(client, token, sku="DOC-RETRY", retail=100, wholesale=80)
+    doc_id, version = await _draft_invoice(client, token, [{
+        "item_id": item_id, "sku": "DOC-RETRY",
+        "quantity": 1, "unit_price": 100, "line_total": 100,
+    }])
+    payload = {"price_list": "Wholesale", "expected_version": version}
+
+    first = await client.post(f"/docs/{doc_id}/reprice", headers=_h(token), json=payload)
+    assert first.status_code == 200, first.text
+    replay = await client.post(f"/docs/{doc_id}/reprice", headers=_h(token), json=payload)
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == first.json()
+
+    state = (await client.get(f"/docs/{doc_id}", headers=_h(token))).json()
+    assert state["version"] == first.json()["version"]
+    assert state["line_items"][0]["unit_price"] == 80.0

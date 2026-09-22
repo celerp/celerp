@@ -2077,12 +2077,22 @@ async def patch_list(token: str, entity_id: str, data: dict, expected_version: i
         return _raise(await c.patch(f"/lists/{entity_id}", json=body)).json()
 
 
-async def reprice_list(token: str, entity_id: str, price_list: str, expected_version: int) -> dict:
+async def _reprice_entity(
+    token: str, resource: str, entity_id: str, price_list: str, expected_version: int,
+) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(
-            f"/lists/{entity_id}/reprice",
+            f"/{resource}/{entity_id}/reprice",
             json={"price_list": price_list, "expected_version": expected_version},
         )).json()
+
+
+async def reprice_doc(token: str, entity_id: str, price_list: str, expected_version: int) -> dict:
+    return await _reprice_entity(token, "docs", entity_id, price_list, expected_version)
+
+
+async def reprice_list(token: str, entity_id: str, price_list: str, expected_version: int) -> dict:
+    return await _reprice_entity(token, "lists", entity_id, price_list, expected_version)
 
 
 async def get_list_page(token: str, entity_id: str, offset: int = 0, limit: int = 100) -> dict:

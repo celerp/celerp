@@ -2690,41 +2690,22 @@ celerpUpdateBulkAlloc();
                         patch["commission_contact_name"] = name
                 except APIError:
                     pass
+            # Price-list changes are one domain operation: remove the header field
+            # from the ordinary patch and let the backend repricer update header + lines
+            # atomically. This also covers contact-driven/default price-list changes.
+            new_pl = patch.pop("price_list", None)
+            patch_result: dict = {"event_id": None}
             # ref_id edits go through /renumber (works on finalized docs; patch_doc rejects them)
             if field == "ref_id":
                 await api.renumber_doc(token, entity_id, value)
-            else:
-                await api.patch_doc(token, entity_id, patch)
-            # Reprice line items when price_list changed
-            new_pl = patch.get("price_list")
+            elif patch:
+                patch_result = await api.patch_doc(token, entity_id, patch)
             if new_pl:
-                try:
-                    doc_pre = await api.get_doc(token, entity_id)
-                    lines = doc_pre.get("line_items") or []
-                    if lines:
-                        updated = []
-                        repriced = 0
-                        for line in lines:
-                            sku = (line.get("sku") or "").strip()
-                            eid = (line.get("item_id") or line.get("entity_id") or "").strip()
-                            if sku or eid:
-                                try:
-                                    item = await api.get_item(token, eid) if eid else None
-                                    if item is None and sku:
-                                        resp = await api.list_items(token, {"sku": sku, "limit": 1})
-                                        items = resp.get("items", []) if isinstance(resp, dict) else resp
-                                        item = items[0] if items else None
-                                    if item is not None:
-                                        new_price = resolve_price(item, new_pl)
-                                        line = {**line, "unit_price": new_price, "price_list": new_pl}
-                                        repriced += 1
-                                except Exception:
-                                    pass
-                            updated.append(line)
-                        if repriced:
-                            await api.patch_doc(token, entity_id, {"line_items": updated})
-                except Exception:
-                    pass  # reprice failure is non-fatal
+                current = await api.get_doc(token, entity_id)
+                expected_version = patch_result.get("event_id") or current.get("version")
+                if expected_version is None:
+                    raise APIError(409, "Reload the document before repricing")
+                await api.reprice_doc(token, entity_id, new_pl, int(expected_version))
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return _action_error(str(e.detail))
@@ -3028,7 +3009,7 @@ celerpUpdateBulkAlloc();
             patch_data["discount_type"] = body.get("discount_type") or "flat"
             patch_data["discount_amount"] = float(body.get("discount_amount") or 0)
         try:
-            await api.patch_doc(token, entity_id, patch_data)
+            result = await api.patch_doc(token, entity_id, patch_data)
         except APIError as e:
             payload = {"error": str(e.detail)}
             # Foreign-reserved rejection: pass the structured conflict list through
@@ -3036,78 +3017,10 @@ celerpUpdateBulkAlloc();
             if isinstance(e.data, dict) and e.data.get("conflicts"):
                 payload["reserved_conflicts"] = e.data["conflicts"]
             return JSONResponse(payload, status_code=400)
-        return JSONResponse({"ok": True})
+        return JSONResponse({"ok": True, "version": result.get("event_id")})
 
-    # T2b: Reprice line items from a given price list
-    @app.post("/docs/{entity_id}/reprice")
-    async def reprice_doc_lines(request: Request, entity_id: str):
-        """Re-resolve unit_price for all line items that came from inventory.
-
-        Body: {"price_list": "Retail"}
-
-        Only lines with a `sku` field (i.e. sourced from inventory) are repriced.
-        Lines without a sku (manually entered) are left unchanged.
-        """
-        from starlette.responses import JSONResponse
-        token = _token(request)
-        if not token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        try:
-            body = await request.json()
-        except Exception:
-            return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-        price_list = (body.get("price_list") or "").strip()
-        if not price_list:
-            return JSONResponse({"error": "price_list is required"}, status_code=400)
-        try:
-            doc = await api.get_doc(token, entity_id)
-        except APIError as e:
-            return JSONResponse({"error": str(e.detail)}, status_code=400)
-        existing_lines: list[dict] = doc.get("line_items") or []
-        if not existing_lines:
-            return JSONResponse({"ok": True, "repriced": 0})
-        repriced = 0
-        updated_lines = []
-        for line in existing_lines:
-            sku = (line.get("sku") or "").strip()
-            eid = (line.get("item_id") or line.get("entity_id") or "").strip()
-            if sku or eid:
-                try:
-                    item = await api.get_item(token, eid) if eid else None
-                    if item is None and sku:
-                        resp = await api.list_items(token, {"sku": sku, "limit": 1})
-                        items = resp.get("items", []) if isinstance(resp, dict) else resp
-                        item = items[0] if items else None
-                    if item is not None:
-                        new_price = resolve_price(item, price_list)
-                        line = {**line, "unit_price": new_price, "price_list": price_list}
-                        repriced += 1
-                except APIError:
-                    pass  # leave line unchanged on lookup failure
-            updated_lines.append(line)
-        # Recalculate totals
-        subtotal = sum(
-            float(l.get("unit_price", 0)) * float(l.get("quantity", 0))
-            for l in updated_lines
-        )
-        tax_rate = float(doc.get("tax_rate", 0) or 0)
-        tax = round(subtotal * tax_rate / 100, 2)
-        total = round(subtotal + tax, 2)
-        try:
-            await api.patch_doc(token, entity_id, {
-                "line_items": updated_lines,
-                "price_list": price_list,
-                "subtotal": round(subtotal, 2),
-                "tax": tax,
-                "total": total,
-            })
-        except APIError as e:
-            return JSONResponse({"error": str(e.detail)}, status_code=400)
-        return JSONResponse({"ok": True, "repriced": repriced, "price_list": price_list})
-
-    @app.post("/lists/{entity_id}/reprice")
-    async def reprice_list_lines(request: Request, entity_id: str):
-        """Thin UI proxy for the version-guarded whole-List reprice operation."""
+    async def _proxy_reprice(request: Request, entity_id: str, reprice_fn):
+        """Transport-only Web UI adapter; all repricing semantics live in celerp-docs."""
         from starlette.responses import JSONResponse
         token = _token(request)
         if not token:
@@ -3117,14 +3030,24 @@ celerpUpdateBulkAlloc();
             price_list = str(body.get("price_list") or "").strip()
             expected_version = int(body["expected_version"])
         except (KeyError, TypeError, ValueError):
-            return JSONResponse({"error": "price_list and expected_version are required"}, status_code=400)
+            return JSONResponse(
+                {"error": "price_list and expected_version are required"}, status_code=400)
         if not price_list:
-            return JSONResponse({"error": "price_list and expected_version are required"}, status_code=400)
+            return JSONResponse(
+                {"error": "price_list and expected_version are required"}, status_code=400)
         try:
-            result = await api.reprice_list(token, entity_id, price_list, expected_version)
+            result = await reprice_fn(token, entity_id, price_list, expected_version)
         except APIError as e:
             return JSONResponse({"error": str(e.detail)}, status_code=e.status or 400)
         return JSONResponse(result)
+
+    @app.post("/docs/{entity_id}/reprice")
+    async def reprice_doc_lines(request: Request, entity_id: str):
+        return await _proxy_reprice(request, entity_id, api.reprice_doc)
+
+    @app.post("/lists/{entity_id}/reprice")
+    async def reprice_list_lines(request: Request, entity_id: str):
+        return await _proxy_reprice(request, entity_id, api.reprice_list)
 
     # T3: Document actions (finalize, void, send, mark_sent, unmark_sent)
     @app.post("/docs/{entity_id}/action/{action}")
@@ -7275,15 +7198,15 @@ window._CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
 // Did this document render with any line items? Drives whether emptying the table
 // persists (deleting the last line must stick) vs. a blank never-used doc (skip).
 window._celerpHadLines = {'true' if line_items else 'false'};
-// Optimistic-concurrency token for lists (null for docs). Sent with every line save and
-// refreshed from the save response, so a tab never false-conflicts against its own last write.
-window._celerpListVersion = {_json.dumps(doc.get("version")) if is_list else 'null'};
-if (!window._celerpListVersionListener) {{
-    window._celerpListVersionListener = function(event) {{
+// Optimistic-concurrency token shared by Docs and Lists. Sent with line saves/repricing
+// and refreshed from successful writes so neither surface can overwrite a stale snapshot.
+window._celerpEntityVersion = {_json.dumps(doc.get("version"))};
+if (!window._celerpEntityVersionListener) {{
+    window._celerpEntityVersionListener = function(event) {{
         const version = event.detail && event.detail.version;
-        if (version != null) window._celerpListVersion = version;
+        if (version != null) window._celerpEntityVersion = version;
     }};
-    document.body.addEventListener('celerpListVersion', window._celerpListVersionListener);
+    document.body.addEventListener('celerpListVersion', window._celerpEntityVersionListener);
 }}
 /* Stored-array position of the first rendered row. A list renders one bounded page
    of lines, so a save overwrites exactly the positions this page occupies and leaves
@@ -7416,7 +7339,7 @@ function _celerpDocTypeParam() {{
         swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
         celerpUpdateTotals();
         _celerpHadLines = true;
-        if (version != null) _celerpListVersion = version;
+        if (version != null) _celerpEntityVersion = version;
         return true;
     }}
     async function submitList() {{
@@ -8363,14 +8286,14 @@ async function _celerpPersistOnce() {{
             original_count: _CELERP_ORIGINAL_COUNT,
             subtotal, tax, total,
             discount: hd.value, discount_type: hd.type, discount_amount: hd.amount,
-            expected_version: _celerpListVersion}})
+            expected_version: _celerpEntityVersion}})
     }});
     if (resp.ok) {{
         // Advance the cached version to the one this save produced, so the tab's next
-        // autosave does not false-conflict against its own write. Docs return no version.
+        // autosave/reprice pins the state it just wrote.
         try {{
             const data = await resp.json();
-            if (data && data.version != null) _celerpListVersion = data.version;
+            if (data && data.version != null) _celerpEntityVersion = data.version;
         }} catch (_e) {{}}
         // The rows just written become this page's stored window, so a follow-up save
         // in the same view replaces the new window length, not the original one.
@@ -8548,7 +8471,6 @@ function _celerpShowRepriceWarning(updated, skipped) {{
     dlg.showModal();
 }}
 function _celerpApplyRepriceWarnings() {{
-    if (_CELERP_BASE !== '/lists/') return;
     let state = null;
     try {{
         state = JSON.parse(sessionStorage.getItem(_celerpRepriceWarningKey()) || 'null');
@@ -8583,26 +8505,24 @@ async function celerpReprice(priceList) {{
     /* Save current lines first; never discard an invalid or stale page to reprice. */
     const ok = await _celerpPersist();
     if (!ok) return;
-    const body = {{price_list: priceList}};
-    if (_CELERP_BASE === '/lists/') body.expected_version = _celerpListVersion;
+    const body = {{price_list: priceList, expected_version: _celerpEntityVersion}};
     const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/reprice', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify(body)
     }});
     if (resp.ok) {{
-        if (_CELERP_BASE === '/lists/') {{
-            const data = await resp.json().catch(() => ({{}}));
-            const skipped = Array.isArray(data.skipped) ? data.skipped : [];
-            if (skipped.length) {{
-                sessionStorage.setItem(_celerpRepriceWarningKey(), JSON.stringify({{
-                    item_ids: skipped.map(function(x) {{ return x.item_id; }}).filter(Boolean),
-                    skipped_count: skipped.length,
-                    repriced: Number(data.repriced || 0),
-                    show_modal: true
-                }}));
-            }} else {{
-                sessionStorage.removeItem(_celerpRepriceWarningKey());
-            }}
+        const data = await resp.json().catch(() => ({{}}));
+        if (data && data.version != null) _celerpEntityVersion = data.version;
+        const skipped = Array.isArray(data.skipped) ? data.skipped : [];
+        if (skipped.length) {{
+            sessionStorage.setItem(_celerpRepriceWarningKey(), JSON.stringify({{
+                item_ids: skipped.map(function(x) {{ return x.item_id; }}).filter(Boolean),
+                skipped_count: skipped.length,
+                repriced: Number(data.repriced || 0),
+                show_modal: true
+            }}));
+        }} else {{
+            sessionStorage.removeItem(_celerpRepriceWarningKey());
         }}
         window.location.reload();
     }} else {{

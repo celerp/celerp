@@ -6,14 +6,14 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def test_reprice_is_gated_on_successful_save_and_pins_list_version():
+def test_reprice_is_gated_on_successful_save_and_pins_entity_version():
     source = Path("ui/routes/documents.py").read_text()
     start = source.index("async function celerpReprice")
     snippet = source[start:start + 2200]
     assert "clearTimeout(_celerpSaveTimer);" in snippet
     assert "const ok = await _celerpPersist();" in snippet
     assert "if (!ok) return;" in snippet
-    assert "body.expected_version = _celerpListVersion" in snippet
+    assert "expected_version: _celerpEntityVersion" in snippet
 
 
 def test_partial_reprice_feedback_is_ephemeral_and_row_only():
@@ -48,6 +48,7 @@ def test_list_writes_share_one_version_and_serialized_save_path():
     assert '"HX-Trigger": _json.dumps({' in source
     assert '"celerpListVersion": {"version": result.get("version")}' in source
     assert "document.body.addEventListener('celerpListVersion'" in source
+    assert "window._celerpEntityVersion" in source
     assert "async function _celerpPersistOnce()" in source
     assert "window._celerpPersistTail" in source
     assert "window._celerpPersistTail.then(" in source
@@ -55,11 +56,33 @@ def test_list_writes_share_one_version_and_serialized_save_path():
 
 def test_cost_reprice_permission_precedes_replay_lookup():
     source = Path("default_modules/celerp-docs/celerp_docs/routes.py").read_text()
-    start = source.index("async def reprice_list")
-    snippet = source[start:start + 2200]
-    assert snippet.index("if is_cost_list_name(payload.price_list):") < snippet.index(
-        "find_event_by_idempotency(session, company_id, idem_key)"
-    )
+    for name in ("reprice_doc", "reprice_list"):
+        start = source.index(f"async def {name}")
+        snippet = source[start:start + 1800]
+        assert snippet.index("_assert_reprice_access(") < snippet.index(
+            "find_event_by_idempotency(session, company_id, idem_key)"
+        )
+
+
+def test_repricing_business_logic_exists_only_in_backend_primitive():
+    ui_source = Path("ui/routes/documents.py").read_text()
+    backend = Path("default_modules/celerp-docs/celerp_docs/routes.py").read_text()
+
+    doc_proxy = ui_source[ui_source.index("async def reprice_doc_lines"):
+                          ui_source.index("# T3: Document actions")]
+    assert "api.reprice_doc" in doc_proxy
+    assert "resolve_price(" not in doc_proxy
+    assert "api.get_item(" not in doc_proxy
+    assert "api.list_items(" not in doc_proxy
+
+    field_start = ui_source.index("# Price-list changes are one domain operation")
+    field_snippet = ui_source[field_start:field_start + 1800]
+    assert "api.reprice_doc" in field_snippet
+    assert "resolve_price(" not in field_snippet
+    assert "api.get_item(" not in field_snippet
+    assert "api.list_items(" not in field_snippet
+
+    assert backend.count("await _reprice_catalog_lines(") == 2
 
 
 def test_reprice_warning_reapplies_after_paged_htmx_swap():
