@@ -1,4 +1,4 @@
-name: PR340 Integration Check
+name: PR340 Hardening Build
 
 on:
   push:
@@ -8,41 +8,68 @@ permissions:
   contents: write
 
 jobs:
-  rebase:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+      ALLOW_INSECURE_JWT: "true"
+      CELERP_TEST_NULLPOOL: "1"
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Rebase PR 340 onto current main
+      - name: Prepare exact rebased candidate
         shell: bash
         run: |
           set -euo pipefail
+          cp scripts/pr340_harden.py /tmp/pr340_harden.py
+          git fetch --no-tags origin pr340-rebased
+          test "$(git rev-parse origin/pr340-rebased)" = "b2502b1d32297226895aad0c21fa438d346b8d7b"
+          git checkout --detach b2502b1d32297226895aad0c21fa438d346b8d7b
           git config user.name "Noah Severs"
           git config user.email "118095044+ngsevers@users.noreply.github.com"
-          git fetch --no-tags origin main woocommerce-sync-integrity
-          test "$(git rev-parse origin/main)" = "0024c5ffa3b01a9e93514b3e99938f0dc8749ebb"
-          test "$(git rev-parse origin/woocommerce-sync-integrity)" = "6356077a6174e46d17f1b29ee996192355ddca3d"
-          git checkout --detach 6356077a6174e46d17f1b29ee996192355ddca3d
 
-          set +e
-          git rebase 0024c5ffa3b01a9e93514b3e99938f0dc8749ebb
-          rc=$?
-          while [ "$rc" -ne 0 ]; do
-            conflicts="$(git diff --name-only --diff-filter=U)"
-            if [ "$conflicts" != "default_modules/first_party.lock.json" ]; then
-              echo "Unexpected rebase conflicts:"
-              printf '%s\n' "$conflicts"
-              exit "$rc"
-            fi
-            git checkout --ours default_modules/first_party.lock.json
-            git add default_modules/first_party.lock.json
-            GIT_EDITOR=true git rebase --continue
-            rc=$?
-          done
-          set -e
+      - name: Install dependencies
+        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split
 
-          git rev-parse HEAD
-          git push origin HEAD:refs/heads/pr340-rebased
+      - name: Apply hardening
+        shell: bash
+        run: |
+          set -euo pipefail
+          heads="$(alembic heads | awk '{print $1}')"
+          test "$(printf '%s\n' "$heads" | sed '/^$/d' | wc -l)" -eq 1
+          export DOWN_REVISION="$heads"
+          python /tmp/pr340_harden.py
+          python scripts/gen_first_party_lock.py
+          git diff --check
+
+      - name: Focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          pytest -q --no-cov --timeout=30             tests/test_connector_operation_lock.py             tests/test_connector_ownership.py             tests/test_services/test_sync_runner_lifecycle.py             tests/test_services/test_outbound_queue.py             tests/test_connectors_status.py             tests/test_woocommerce_sync_guards.py             tests/test_services/test_connector_upsert_integration.py             tests/test_fulfillment.py             default_modules/celerp-connectors/tests/test_wiring.py             default_modules/celerp-connectors/tests/test_woocommerce.py             default_modules/celerp-connectors/tests/test_connector_correctness.py
+
+      - name: Publish validated candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git status --short
+          git add -A
+          git commit -m "Harden connector ownership and sync lifecycle"
+          git push origin HEAD:refs/heads/pr340-hardened
