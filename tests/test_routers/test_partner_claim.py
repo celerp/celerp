@@ -574,12 +574,12 @@ async def test_partner_claim_hidden_on_partner_managed():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("relay_status,tier,public_url,token_bound", [
-    ("inactive", "free", None, True),
+@pytest.mark.parametrize("relay_status,tier,public_url,entitled", [
+    ("inactive", "free", None, False),
     ("active", "cloud", "https://direct.celerp.com", True),
 ])
 async def test_partner_claim_hidden_once_direct_install_is_connected(
-    relay_status, tier, public_url, token_bound,
+    relay_status, tier, public_url, entitled,
 ):
     """Connected direct customers never see partner adoption, including free tier;
     a stale ?tab=partner URL safely falls back to the normal connected status view."""
@@ -597,7 +597,7 @@ async def test_partner_claim_hidden_once_direct_install_is_connected(
     }
     with (
         patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=(
-            relay_status, public_url, tier, False, True, token_bound,
+            relay_status, public_url, tier, False, True, True, entitled,
         ))),
         patch("ui.routes.settings_cloud._commercial_state", new=AsyncMock(return_value={})),
         patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
@@ -667,7 +667,7 @@ async def test_unconnected_direct_owner_admin_always_has_subscription_recovery(
 
     with (
         patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=(
-            relay_status, "", "", disconnected, token_bound, entitlement_known,
+            relay_status, "", "", disconnected, token_bound, entitlement_known, None,
         ))),
         patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
         patch("ui.routes.settings_cloud._get_role", return_value=role),
@@ -720,6 +720,7 @@ async def test_terminal_gateway_error_always_has_recovery(
     with (
         patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=(
             "error", "", tier, False, True, entitlement_known,
+            True if entitlement_known else None,
         ))),
         patch("ui.routes.settings_cloud._commercial_state", new=AsyncMock(return_value={})),
         patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
@@ -766,7 +767,7 @@ async def test_inactive_known_paid_account_has_reconnect_not_partner_claim(role)
     }
     with (
         patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=(
-            "inactive", "", "cloud", False, True, True,
+            "inactive", "", "cloud", False, True, True, True,
         ))),
         patch("ui.routes.settings_cloud._commercial_state", new=AsyncMock(return_value={})),
         patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
@@ -791,3 +792,114 @@ async def test_inactive_known_paid_account_has_reconnect_not_partner_claim(role)
     assert 'hx-post="/settings/cloud-disconnect"' in r.text
     assert 'id="partner-claim-card"' not in r.text
     assert 'href="/settings/cloud?tab=partner"' not in r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "admin"])
+@pytest.mark.parametrize("relay_status", ["inactive", "active", "error"])
+async def test_lapsed_paid_account_always_has_subscription_recovery_without_partner_claim(
+    role, relay_status,
+):
+    """A valid credential with a lapsed paid entitlement remains an account state,
+    but it must expose subscription recovery and never reopen partner adoption."""
+    from httpx import ASGITransport, AsyncClient
+    from ui.app import app as ui_app
+    from test_helpers import make_test_token
+
+    neutral_infra = {
+        "in_grace": False,
+        "has_external_url": False,
+        "external_db_entitled": False,
+        "storage_in_grace": False,
+        "has_external_storage": False,
+        "external_storage_entitled": False,
+    }
+    with (
+        patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=(
+            relay_status, "", "cloud", False, True, True, False,
+        ))),
+        patch("ui.routes.settings_cloud._commercial_state", new=AsyncMock(return_value={})),
+        patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
+        patch("ui.routes.settings_cloud._get_role", return_value=role),
+        patch("ui.api_client.get_billing_catalog", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_backup_status", new=AsyncMock(return_value={
+            "db": {}, "next_db_utc": None, "public_url": "",
+        })),
+        patch("celerp.gateway.state.get_commercial_mode", return_value="celerp_direct"),
+        patch("celerp.gateway.state.get_local_infra_state", return_value=neutral_infra),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui",
+            follow_redirects=False,
+        ) as c:
+            r = await c.get(
+                "/settings/cloud",
+                cookies={"celerp_token": make_test_token(role=role)},
+            )
+
+    assert r.status_code == 200
+    assert "Link subscription" in r.text
+    assert 'id="partner-claim-card"' not in r.text
+    assert 'href="/settings/cloud?tab=partner"' not in r.text
+    if relay_status in ("inactive", "error"):
+        assert 'id="cloud-connect-btn"' in r.text
+    if relay_status == "inactive":
+        assert "Initializing connection" not in r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "admin"])
+@pytest.mark.parametrize("case,state", [
+    ("disconnected", ("inactive", "", "cloud", True, True, True, True)),
+    ("inactive_token_entitlement_unknown", ("inactive", "", "", False, True, False, None)),
+    ("error_token_entitlement_unknown", ("error", "", "", False, True, False, None)),
+    ("inactive_known_paid", ("inactive", "", "cloud", False, True, True, True)),
+])
+async def test_web_access_route_never_strands_unusable_direct_account(
+    role, case, state,
+):
+    """Full-route invariant: every unusable direct Web Access state exposes
+    Connect and/or subscription recovery. This guards composition as well as
+    the relay-tab component so state cannot be dropped between layers."""
+    from httpx import ASGITransport, AsyncClient
+    from ui.app import app as ui_app
+    from test_helpers import make_test_token
+
+    neutral_infra = {
+        "in_grace": False,
+        "has_external_url": False,
+        "external_db_entitled": False,
+        "storage_in_grace": False,
+        "has_external_storage": False,
+        "external_storage_entitled": False,
+    }
+    with (
+        patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=state)),
+        patch("ui.routes.settings_cloud._commercial_state", new=AsyncMock(return_value={})),
+        patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
+        patch("ui.routes.settings_cloud._get_role", return_value=role),
+        patch("ui.api_client.get_billing_catalog", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_backup_status", new=AsyncMock(return_value={
+            "db": {}, "next_db_utc": None, "public_url": "",
+        })),
+        patch("celerp.gateway.state.get_commercial_mode", return_value="celerp_direct"),
+        patch("celerp.gateway.state.get_local_infra_state", return_value=neutral_infra),
+        patch("celerp.config.ensure_instance_id", return_value="instance-route-recovery-test"),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui",
+            follow_redirects=False,
+        ) as c:
+            r = await c.get(
+                "/settings/cloud",
+                cookies={"celerp_token": make_test_token(role=role)},
+            )
+
+    assert r.status_code == 200, case
+    has_connect = 'id="cloud-connect-btn"' in r.text
+    has_link_subscription = "Link subscription" in r.text
+    assert has_connect or has_link_subscription, case
+
+    # Partner adoption may be reachable through its separate tab while genuinely
+    # unconnected, but it must never replace or co-render inside recovery.
+    assert 'id="partner-claim-card"' not in r.text, case

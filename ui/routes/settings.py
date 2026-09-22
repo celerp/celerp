@@ -3789,13 +3789,16 @@ PAID_TIERS = frozenset({"cloud", "ai", "team"})
 def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None,
                       tier: str | None = None, token_bound: bool = False,
                       entitlement_known: bool = False,
+                      entitled: bool | None = None,
                       disconnected: bool = False) -> FT:
     """Celerp Connect settings tab.
 
     relay_status: caller-supplied (cross-process split); falls back to local get_client().
     public_url: caller-supplied; falls back to local config.
     tier: caller-supplied billing tier ("free", "cloud", "ai", "team").
-    entitlement_known: whether the relay authoritatively supplied that tier.
+    entitlement_known: whether the relay authoritatively supplied account state.
+    entitled: authoritative paid-entitlement result when known; False covers
+    lapsed paid accounts as well as Free.
     Unknown entitlement is never presented as Free.
     token_bound: a gateway credential exists in memory or preserved on disk.
     On an inactive transport it counts as account-bound only together with an
@@ -3882,7 +3885,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
         recovery: list = []
         if relay_status == "error":
             recovery.append(_reconnect_controls())
-            if not entitlement_known:
+            if not entitlement_known or entitled is False:
                 recovery.append(_link_subscription_button(style="margin-top:8px;"))
             if token_bound:
                 recovery.append(disconnect_button)
@@ -3904,7 +3907,8 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
         # A Free account intentionally has no persistent Web Access tunnel.
         status_hint = (
             t("settings.initializing_connection")
-            if relay_status == "inactive" and tier in PAID_TIERS else "")
+            if (relay_status == "inactive" and entitlement_known
+                and tier != "free" and entitled is not False) else "")
         status_label = (
             t("account.plan_free")
             if relay_status == "inactive" and entitlement_known and tier == "free"
@@ -3946,7 +3950,10 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
             Table(*rows, cls="detail-table"),
             free_tier_note,
             _reconnect_controls()
-            if relay_status == "inactive" and entitlement_known and tier in PAID_TIERS
+            if relay_status == "inactive" and entitlement_known and tier != "free"
+            else "",
+            _link_subscription_button(style="margin-top:8px;")
+            if entitlement_known and entitled is False and tier != "free"
             else "",
             disconnect_button,
             id="cloud-relay-tab",

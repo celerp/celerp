@@ -752,8 +752,8 @@ def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -
     )
 
 
-async def _relay_state(token) -> tuple[str, str, str, bool, bool, bool]:
-    """Fetch transport state plus whether entitlement was authoritatively known."""
+async def _relay_state(token) -> tuple[str, str, str, bool, bool, bool, bool | None]:
+    """Fetch transport state plus authoritative entitlement state when known."""
     from celerp.gateway.client import get_client as _local_get_client
     import ui.api_client as _api
     from ui.api_client import APIError as _APIError
@@ -763,6 +763,7 @@ async def _relay_state(token) -> tuple[str, str, str, bool, bool, bool]:
     disconnected = False
     token_bound = False
     entitlement_known = False
+    entitled: bool | None = None
     try:
         rs = await _api.get_relay_status(token)
         relay_status = rs.get("relay_status", "inactive")
@@ -771,12 +772,14 @@ async def _relay_state(token) -> tuple[str, str, str, bool, bool, bool]:
         disconnected = bool(rs.get("cloud_disconnected"))
         token_bound = bool(rs.get("gateway_token_set"))
         entitlement_known = bool(rs.get("entitlement_known"))
+        if entitlement_known and rs.get("entitled") is not None:
+            entitled = bool(rs.get("entitled"))
     except (_APIError, Exception):
         lc = _local_get_client()
         relay_status = lc.relay_status if lc else "inactive"
     return (
         relay_status, public_url, tier, disconnected,
-        token_bound, entitlement_known,
+        token_bound, entitlement_known, entitled,
     )
 
 
@@ -892,11 +895,11 @@ def setup_routes(app):
             return Response(status_code=401)
         if await _check_permission(request, "manage_integrations"):
             return Div(id="cloud-relay-tab")
-        relay_status, public_url, tier, disconnected, token_bound, known = await _relay_state(token)
+        relay_status, public_url, tier, disconnected, token_bound, known, entitled = await _relay_state(token)
         return _cloud_relay_tab(
             relay_status=relay_status, public_url=public_url,
             tier=tier, token_bound=token_bound, entitlement_known=known,
-            disconnected=disconnected)
+            entitled=entitled, disconnected=disconnected)
 
     @app.get("/settings/cloud")
     async def settings_cloud_page(request: Request):
@@ -909,7 +912,7 @@ def setup_routes(app):
         import ui.api_client as _api
         lang = get_lang(request)
         is_owner_admin = _get_role(request) in ("owner", "admin")
-        relay_status, public_url, tier, disconnected, token_bound, entitlement_known = await _relay_state(token)
+        relay_status, public_url, tier, disconnected, token_bound, entitlement_known, entitled = await _relay_state(token)
         # Credential presence alone is not proof that the relay accepted it.
         # Non-inactive transport states keep their dedicated status/recovery
         # surface; an inactive stored credential counts as account-bound only
@@ -976,7 +979,7 @@ def setup_routes(app):
             parts.append(_cloud_relay_tab(
                 relay_status=relay_status, public_url=public_url, tier=tier,
                 token_bound=token_bound, entitlement_known=entitlement_known,
-                disconnected=disconnected))
+                entitled=entitled, disconnected=disconnected))
             backup_card = _backup_summary_card(gw_ok=gw_ok and bool(public_url), backup_data=backup_data)
             if backup_card is not None:
                 parts.append(backup_card)
