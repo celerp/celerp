@@ -82,6 +82,25 @@ async def test_hello_ack_emits_active_sentinel(client, capsys):
 # ── hello_ack ─────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
+async def test_retired_generation_ignores_late_inbound_state(client):
+    """A detached generation cannot overwrite a successor's global session state."""
+    client.retire()
+    gw_state.set_session_token("successor-session")
+
+    await client._dispatch({
+        "type": "hello_ack",
+        "payload": {
+            "instance_id": "stale-instance",
+            "session_token": "stale-session",
+            "tier": "cloud",
+            "status": "active",
+        },
+    })
+
+    assert gw_state.get_session_token() == "successor-session"
+
+
+@pytest.mark.asyncio
 async def test_hello_ack_writes_session_token(client):
     """hello_ack with session_token -> written to state."""
     await client._dispatch({
