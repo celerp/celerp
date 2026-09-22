@@ -327,6 +327,13 @@ def deleted_external_link_may_relink(link: dict | None) -> bool:
     return bool(link and link.get("remote_deleted") is True)
 
 
+def relinked_external_sync_enabled(link: dict | None) -> bool:
+    """Replacing a dead remote identity preserves the user's prior sync preference."""
+    if not link:
+        return True
+    return bool(link.get("sync_enabled", True))
+
+
 async def upsert_external_product(
     company_id: str,
     *,
@@ -451,11 +458,7 @@ async def upsert_external_product(
         previous_link = external_link_for_state(state, platform)
         links[platform] = {
             **incoming_link,
-            "sync_enabled": (
-                True
-                if deleted_external_link_may_relink(previous_link)
-                else previous_link.get("sync_enabled", True)
-            ),
+            "sync_enabled": relinked_external_sync_enabled(previous_link),
         }
         desired = {"sku": sku, "name": name, "external_links": links}
         if description is not None:
