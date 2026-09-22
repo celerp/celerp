@@ -354,6 +354,7 @@ async def upsert_external_product(
             session, cid, platform, product_id, variation_id, sku=sku
         )
         legacy_row = None
+        legacy_cleaned = False
         if row is not None and not _is_product_anchor_state(row.state or {}):
             legacy_row = row
             row = await resolve_catalog_anchor_for_item(
@@ -429,9 +430,12 @@ async def upsert_external_product(
                     ),
                     metadata_={},
                 )
+                legacy_cleaned = True
         explicit = ((state.get("external_links") or {}).get(platform)
                     if isinstance(state.get("external_links"), dict) else None)
         if isinstance(explicit, dict) and explicit.get("sync_enabled") is False:
+            if legacy_cleaned:
+                await session.commit()
             return "noop", entity_id
 
         links = dict(state.get("external_links") or {})
@@ -452,6 +456,8 @@ async def upsert_external_product(
             for key, value in desired.items() if state.get(key) != value
         }
         if not fields_changed:
+            if legacy_cleaned:
+                await session.commit()
             return "noop", entity_id
 
         event_data = {"fields_changed": fields_changed}
