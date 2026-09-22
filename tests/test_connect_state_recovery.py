@@ -145,6 +145,7 @@ async def test_foreign_identity_converges_only_after_successful_activation(monke
         assert await sync_existing_entitlement() is not None
     assert apply_state.await_args.args[:2] == ("key-a", "instance-a")
     assert apply_state.await_args.kwargs["expected_api_key"] == "key-a"
+    assert apply_state.await_args.kwargs["persist_state"] is True
 
 
 @pytest.mark.asyncio
@@ -198,6 +199,7 @@ async def test_environment_key_ignores_stale_persisted_key_for_cas(monkeypatch):
         from celerp.services.cloud_entitlement import sync_existing_entitlement
         await sync_existing_entitlement()
     assert apply_state.await_args.kwargs["expected_api_key"] is None
+    assert apply_state.await_args.kwargs["persist_state"] is False
 
 
 @pytest.mark.asyncio
@@ -337,6 +339,13 @@ async def test_persisted_sync_converges_free_identity_and_clears_stale_paid_url(
         "public_url": None,
         "tier": "free",
         "status": "active",
+        "connect_entitled": False,
+        "feature_flags": {
+            "payments_enabled": False,
+            "external_db": False,
+            "external_storage": False,
+            "grace_period_ends": None,
+        },
     }
 
     class Client:
@@ -375,6 +384,7 @@ async def test_activation_restarts_active_free_runtime_when_account_becomes_paid
     monkeypatch.setattr(settings, "backup_enabled", False)
     live = MagicMock(relay_status="active")
     live.is_serving.return_value = True
+    live.is_draining_for_reconfigure.return_value = False
     live.has_inflight_proxy_requests.return_value = False
     replacement = MagicMock(relay_status="active")
     shutdown = AsyncMock()
@@ -394,7 +404,8 @@ async def test_activation_restarts_active_free_runtime_when_account_becomes_paid
         from celerp.services.cloud_entitlement import apply_activation_state
         assert await apply_activation_state(
             "key", "iid", public_url="https://paid.celerp.com",
-            tier="cloud", status="active", expected_api_key="key")
+            tier="cloud", status="active", connect_entitled=True,
+            expected_api_key="key")
 
     shutdown.assert_awaited_once()
     ensure_running.assert_called_once()
@@ -407,6 +418,7 @@ async def test_activation_restarts_active_paid_runtime_when_account_becomes_free
     monkeypatch.setattr(settings, "backup_enabled", False)
     live = MagicMock(relay_status="active")
     live.is_serving.return_value = True
+    live.is_draining_for_reconfigure.return_value = False
     live.has_inflight_proxy_requests.return_value = False
     replacement = MagicMock(relay_status="active")
     shutdown = AsyncMock()
@@ -427,31 +439,35 @@ async def test_activation_restarts_active_paid_runtime_when_account_becomes_free
         from celerp.services.cloud_entitlement import apply_activation_state
         assert await apply_activation_state(
             "key", "iid", public_url=None,
-            tier="free", status="active", expected_api_key="key")
+            tier="free", status="active", connect_entitled=False,
+            expected_api_key="key")
 
     shutdown.assert_awaited_once()
     ensure_running.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_activation_restarts_active_paid_runtime_when_tier_changes(monkeypatch):
-    """Paid-to-paid convergence refreshes handshake-derived feature flags."""
+async def test_paid_to_paid_snapshot_updates_without_transport_restart(monkeypatch):
+    """Tier/feature changes do not reconnect when paid transport remains paid."""
     from celerp.config import settings
     monkeypatch.setattr(settings, "backup_enabled", False)
     live = MagicMock(relay_status="active")
     live.is_serving.return_value = True
-    live.has_inflight_proxy_requests.return_value = False
-    replacement = MagicMock(relay_status="active")
     shutdown = AsyncMock()
+    apply_flags = AsyncMock()
+    flags = {
+        "payments_enabled": True,
+        "external_db": False,
+        "external_storage": False,
+        "grace_period_ends": None,
+    }
 
     with (
         patch("celerp.config.record_cloud_activation", return_value=True),
-        patch("celerp.gateway.state.get_subscription_state",
-              return_value=("cloud", "active")),
         patch("celerp.gateway.state.relay_session_headers", return_value={
             "X-Session-Token": "paid-session", "X-Instance-ID": "iid"}),
-        patch("celerp.gateway.client.get_client",
-              side_effect=[live, replacement]),
+        patch("celerp.gateway.state.apply_feature_flags_async", new=apply_flags),
+        patch("celerp.gateway.client.get_client", return_value=live),
         patch("celerp.gateway.shutdown", new=shutdown),
         patch("celerp.gateway.ensure_running") as ensure_running,
         patch("celerp.services.backup_scheduler.stop"),
@@ -459,9 +475,11 @@ async def test_activation_restarts_active_paid_runtime_when_tier_changes(monkeyp
         from celerp.services.cloud_entitlement import apply_activation_state
         assert await apply_activation_state(
             "key", "iid", public_url="https://paid.celerp.com",
-            tier="ai", status="active", expected_api_key="key")
+            tier="ai", status="active", connect_entitled=True,
+            feature_flags=flags, expected_api_key="key")
 
-    shutdown.assert_awaited_once()
+    apply_flags.assert_awaited_once_with(flags, persist=True)
+    shutdown.assert_not_awaited()
     ensure_running.assert_called_once()
 
 
@@ -473,6 +491,7 @@ async def test_activation_defers_restart_until_current_proxy_response_finishes(m
 
     live = MagicMock(relay_status="active")
     live.is_serving.return_value = True
+    live.is_draining_for_reconfigure.return_value = False
     live.has_inflight_proxy_requests.return_value = True
     live.begin_proxy_drain = MagicMock()
     release = asyncio.Event()
@@ -498,7 +517,8 @@ async def test_activation_defers_restart_until_current_proxy_response_finishes(m
         from celerp.services.cloud_entitlement import apply_activation_state
         assert await apply_activation_state(
             "key", "iid", public_url="https://paid.celerp.com",
-            tier="cloud", status="active", expected_api_key="key")
+            tier="cloud", status="active", connect_entitled=True,
+            expected_api_key="key")
 
         live.begin_proxy_drain.assert_called_once()
         shutdown.assert_not_awaited()
@@ -531,3 +551,105 @@ def test_ensure_running_does_not_supersede_response_safe_drain(monkeypatch):
 
     constructor.assert_not_called()
     live.stop.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_environment_only_activation_never_persists_local_config(monkeypatch):
+    """Runtime convergence from an env-only credential performs no durable write."""
+    from celerp.config import settings
+    monkeypatch.setattr(settings, "cloud_disconnected", False)
+    monkeypatch.setattr(settings, "backup_enabled", False)
+    record = MagicMock()
+    flags = {
+        "payments_enabled": False,
+        "external_db": False,
+        "external_storage": False,
+        "grace_period_ends": None,
+    }
+    with (
+        patch("celerp.config.record_cloud_activation", new=record),
+        patch("celerp.gateway.client.get_client", return_value=None),
+        patch("celerp.gateway.has_active_share", new=AsyncMock(return_value=False)),
+        patch("celerp.gateway.ensure_running") as ensure_running,
+        patch("celerp.gateway.state.apply_feature_flags_async", new=AsyncMock()) as apply_flags,
+        patch("celerp.services.backup_scheduler.stop"),
+    ):
+        from celerp.services.cloud_entitlement import apply_activation_state
+        assert await apply_activation_state(
+            "env-key", "iid", public_url=None,
+            tier="free", status="active", connect_entitled=False,
+            feature_flags=flags, persist_state=False)
+
+    record.assert_not_called()
+    apply_flags.assert_awaited_once_with(flags, persist=False)
+    ensure_running.assert_not_called()
+    assert settings.gateway_token == "env-key"
+    assert settings.cloud_disconnected is False
+
+
+@pytest.mark.asyncio
+async def test_paid_to_free_without_share_applies_snapshot_then_stays_down(monkeypatch):
+    from celerp.config import settings
+    monkeypatch.setattr(settings, "backup_enabled", False)
+    live = MagicMock(relay_status="active")
+    live.is_serving.return_value = True
+    live.is_draining_for_reconfigure.return_value = False
+    live.has_inflight_proxy_requests.return_value = False
+    shutdown = AsyncMock()
+    flags = {
+        "payments_enabled": True,
+        "external_db": False,
+        "external_storage": False,
+        "grace_period_ends": None,
+    }
+
+    with (
+        patch("celerp.config.record_cloud_activation", return_value=True),
+        patch("celerp.gateway.state.relay_session_headers", return_value={
+            "X-Session-Token": "paid-session", "X-Instance-ID": "iid"}),
+        patch("celerp.gateway.state.apply_feature_flags_async", new=AsyncMock()) as apply_flags,
+        patch("celerp.gateway.has_active_share", new=AsyncMock(return_value=False)),
+        patch("celerp.gateway.client.get_client", return_value=live),
+        patch("celerp.gateway.shutdown", new=shutdown),
+        patch("celerp.gateway.ensure_running") as ensure_running,
+        patch("celerp.services.backup_scheduler.stop"),
+    ):
+        from celerp.services.cloud_entitlement import apply_activation_state
+        assert await apply_activation_state(
+            "key", "iid", public_url=None,
+            tier="free", status="active", connect_entitled=False,
+            feature_flags=flags, expected_api_key="key")
+
+    apply_flags.assert_awaited_once_with(flags, persist=True)
+    shutdown.assert_awaited_once()
+    ensure_running.assert_not_called()
+    assert settings.celerp_public_url == ""
+
+
+@pytest.mark.asyncio
+async def test_second_activation_reuses_existing_proxy_drain_owner(monkeypatch):
+    from celerp.config import settings
+    monkeypatch.setattr(settings, "backup_enabled", False)
+    live = MagicMock(relay_status="active")
+    live.is_serving.return_value = True
+    live.is_draining_for_reconfigure.return_value = True
+    shutdown = AsyncMock()
+
+    with (
+        patch("celerp.config.record_cloud_activation", return_value=True),
+        patch("celerp.gateway.state.relay_session_headers", return_value={
+            "X-Session-Token": "", "X-Instance-ID": "iid"}),
+        patch("celerp.gateway.client.get_client", return_value=live),
+        patch("celerp.gateway.shutdown", new=shutdown),
+        patch("celerp.gateway.ensure_running") as ensure_running,
+        patch("celerp.services.backup_scheduler.stop"),
+    ):
+        from celerp.services.cloud_entitlement import apply_activation_state
+        assert await apply_activation_state(
+            "key", "iid", public_url="https://paid.celerp.com",
+            tier="cloud", status="active", connect_entitled=True,
+            expected_api_key="key")
+
+    live.begin_proxy_drain.assert_not_called()
+    shutdown.assert_not_awaited()
+    ensure_running.assert_not_called()
