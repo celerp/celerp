@@ -391,31 +391,22 @@ def test_commercial_context_persist_preserves_0600(gateway_client, tmp_path, mon
     assert persisted["external_db_url"] == "postgresql://x"
 
 
-def test_feature_flags_persist_survives_midwrite_failure(gateway_client, tmp_path, monkeypatch):
-    """A failure mid-write must leave the prior config intact and valid JSON.
+@pytest.mark.asyncio
+async def test_feature_flags_use_shared_config_store(monkeypatch):
+    """Feature snapshots reuse the canonical atomic config writer."""
+    flags = {
+        "payments_enabled": False,
+        "external_db": True,
+        "external_storage": True,
+        "grace_period_ends": None,
+    }
+    persist = MagicMock(return_value=True)
+    monkeypatch.setattr("celerp.config_store.merge_packaged_config", persist)
 
-    The prior file (with its secrets) must survive an interrupted write rather
-    than being truncated to an empty or corrupt state.
-    """
-    import asyncio
+    await gw_state.apply_feature_flags_async(flags)
 
-    monkeypatch.setenv("CELERP_DATA_DIR", str(tmp_path))
-    config_path = tmp_path / "celerp-config.json"
-    prior = {"external_db_url": "postgresql://x", "feature_flags": {"external_db": False}}
-    config_path.write_text(json.dumps(prior))
-
-    import celerp.gateway.client as gw_client
-
-    def _boom(*a, **k):
-        raise RuntimeError("disk full")
-
-    monkeypatch.setattr(gw_client.json, "dump", _boom)
-    # Persist must swallow the write error (best-effort) and never raise.
-    asyncio.run(gateway_client._persist_feature_flags({"external_db": True}))
-
-    # The prior config is untouched and still parseable.
-    reread = json.loads(config_path.read_text())
-    assert reread == prior
+    persist.assert_called_once_with({"feature_flags": flags})
+    assert gw_state.get_feature_flags() == flags
 
 
 def test_commercial_context_persist_coerces_non_dict_config(gateway_client, tmp_path, monkeypatch):
