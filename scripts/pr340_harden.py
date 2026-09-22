@@ -757,12 +757,10 @@ write("celerp/connectors/woocommerce.py", woo)
 # ---------------------------------------------------------------------------
 # Catalog external identity can never silently jump between live remote products.
 # ---------------------------------------------------------------------------
-replace_once(
+regex_once(
     "default_modules/celerp-inventory/celerp_inventory/services.py",
-    '''    if len(candidates) == 1:
-        return candidates[0]
-''',
-    '''    if len(candidates) == 1:
+    r'''(async def resolve_external_product\(.*?\n)(    if len\(candidates\) == 1:\n        return candidates\[0\]\n)''',
+    r'''\1    if len(candidates) == 1:
         candidate = candidates[0]
         existing_link = external_link_for_state(candidate.state or {}, platform)
         if (
