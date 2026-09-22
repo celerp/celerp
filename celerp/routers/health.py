@@ -544,6 +544,9 @@ async def partner_claim_resolve(payload: dict, role: str = Depends(get_current_r
     nothing: a resolve leaves the install celerp_direct."""
     if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["admin"]:
         raise HTTPException(status_code=403, detail="Only an owner or admin can review a partner claim.")
+    from celerp.config import settings
+    if not settings.cloud_disconnected:
+        return {"error": "Partner claiming is only available while Web Access is disconnected."}
     token, err = _validate_claim_token(payload.get("claim_token"))
     if err:
         return err
@@ -564,6 +567,9 @@ async def partner_claim_accept(payload: dict, role: str = Depends(get_current_ro
     not-available message, never a fabricated success. Never touches gateway_token."""
     if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["admin"]:
         raise HTTPException(status_code=403, detail="Only an owner or admin can accept a partner claim.")
+    from celerp.config import settings
+    if not settings.cloud_disconnected:
+        return {"error": "Partner claiming is only available while Web Access is disconnected."}
     token, err = _validate_claim_token(payload.get("claim_token"))
     if err:
         return err

@@ -95,9 +95,12 @@ def _relay_post_mock(*results):
 
 
 def _patch_identity():
-    """Patch the pieces that let the routes reach the relay with a real identity:
-    a present gateway_token (so the no-identity guard passes)."""
-    return patch("celerp.config.settings.gateway_token", "api-key-abc")
+    """Patch an explicitly disconnected existing install with a live test key."""
+    return patch.multiple(
+        "celerp.config.settings",
+        gateway_token="api-key-abc",
+        cloud_disconnected=True,
+    )
 
 
 # -- authorization -----------------------------------------------------------
@@ -116,6 +119,31 @@ async def test_partner_claim_requires_owner_admin(client, role, path):
         r = await client.post(path, headers=await _role_headers(client, role), json={"claim_token": "tok-abc"})
     assert r.status_code == 403
     assert mock_httpx.return_value.__aenter__.return_value.post.await_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", [
+    "/settings/partner-claim/resolve",
+    "/settings/partner-claim/accept",
+])
+async def test_partner_claim_stale_form_cannot_run_after_reconnect(client, path):
+    """A form opened while disconnected cannot bind after another tab reconnects."""
+    post_mock = AsyncMock()
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        patch("celerp.config.settings.cloud_disconnected", False),
+        patch("celerp.config.settings.gateway_token", "api-key-abc"),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = post_mock
+        r = await client.post(
+            path,
+            headers=await _role_headers(client, "owner"),
+            json={"claim_token": "tok-stale-tab"},
+        )
+
+    assert r.status_code == 200
+    assert "disconnected" in r.json()["error"].lower()
+    assert post_mock.await_count == 0
 
 
 # -- resolve: contract identity ----------------------------------------------
@@ -307,6 +335,7 @@ async def test_partner_claim_requires_cloud_identity(client, path):
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", ""),
+        patch("celerp.config.settings.cloud_disconnected", True),
         patch("celerp.services.cloud_entitlement.stored_api_key", new=AsyncMock(return_value="")),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = post_mock
@@ -324,6 +353,7 @@ async def test_partner_claim_uses_preserved_identity_while_disconnected(client):
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", ""),
+        patch("celerp.config.settings.cloud_disconnected", True),
         patch(
             "celerp.services.cloud_entitlement.stored_api_key",
             new=AsyncMock(return_value="preserved-api-key"),
@@ -378,6 +408,7 @@ async def test_partner_claim_accept_returns_partner_id(client):
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", "api-key-abc"),
+        patch("celerp.config.settings.cloud_disconnected", True),
     ):
         before = _s.gateway_token
         mock_httpx.return_value.__aenter__.return_value.post = post_mock
@@ -405,6 +436,7 @@ async def test_partner_claim_accept_reused_token_not_acceptable(client):
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", "api-key-abc"),
+        patch("celerp.config.settings.cloud_disconnected", True),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
             _relay_resp(409, {"detail": "claim not acceptable"}))
@@ -428,6 +460,7 @@ async def test_partner_claim_accept_degrades_when_relay_unreachable(client):
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", "api-key-abc"),
+        patch("celerp.config.settings.cloud_disconnected", True),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
             side_effect=httpx.ConnectError("no route"))
@@ -462,6 +495,7 @@ async def test_partner_claim_accept_converges_without_live_ws(client, _reset_ctx
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", "api-key-abc"),
+        patch("celerp.config.settings.cloud_disconnected", True),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
             _relay_resp(200, _accept_with_ctx(version=2)))
@@ -487,6 +521,7 @@ async def test_partner_claim_accept_ws_first_then_http_converges(client, _reset_
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", "api-key-abc"),
+        patch("celerp.config.settings.cloud_disconnected", True),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
             _relay_resp(200, _accept_with_ctx(version=2)))
@@ -514,6 +549,7 @@ async def test_partner_claim_accept_malformed_ctx_never_overwrites(client, _rese
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", "api-key-abc"),
+        patch("celerp.config.settings.cloud_disconnected", True),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
             _relay_resp(200, malformed))
@@ -719,7 +755,9 @@ async def test_unconnected_direct_owner_admin_always_has_subscription_recovery(
     # Partner claiming never displaces or co-renders inside the normal recovery
     # surface. Eligible owner/admin users reach it only through its own tab.
     assert 'id="partner-claim-card"' not in r.text
-    assert 'href="/settings/cloud?tab=partner"' in r.text
+    assert (
+        'href="/settings/cloud?tab=partner"' in r.text
+    ) is (disconnected and token_bound)
 
 
 @pytest.mark.asyncio
