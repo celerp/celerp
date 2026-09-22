@@ -27,6 +27,15 @@ def _spawn_runtime_transition(coro) -> None:
     task.add_done_callback(_runtime_transition_tasks.discard)
 
 
+async def shutdown_runtime_transitions() -> None:
+    """Cancel deferred handoffs before application gateway teardown."""
+    tasks = list(_runtime_transition_tasks)
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def stored_api_key() -> str:
     """Current API key, falling back to the preserved on-disk credential."""
     from celerp.config import read_config, settings
@@ -99,7 +108,10 @@ async def apply_activation_state(
     tos_version: str | None = None,
     backup_encryption_key: str | None = None,
     tier: str | None = None, status: str | None = None,
+    connect_entitled: bool | None = None,
+    feature_flags: dict | None = None,
     authoritative_public_url: bool = True,
+    persist_state: bool = True,
     expected_api_key: str | None = None,
     expected_verifier: str | None = None,
     keep_disconnected: bool = False,
@@ -108,32 +120,32 @@ async def apply_activation_state(
     from celerp.config import record_cloud_activation, settings
     from celerp.gateway import client as gateway_client
     from celerp.gateway import shutdown as shutdown_gateway
-    from celerp.gateway.state import get_subscription_state, relay_session_headers
+    from celerp.gateway.state import (
+        apply_feature_flags_async, relay_session_headers)
     from celerp.services import backup_scheduler
 
     effective_public_url = (
         public_url if authoritative_public_url else
         (settings.celerp_public_url or None))
     effective_backup_key = backup_encryption_key or settings.backup_encryption_key
-    if not effective_backup_key and effective_public_url:
+    if persist_state and not effective_backup_key and effective_public_url:
         import base64, secrets
         effective_backup_key = base64.b64encode(
             secrets.token_bytes(32)).decode()
 
-    # Capture the pre-activation runtime before set_subscription_state below
-    # overwrites it. An active socket may still represent the previous entitlement.
-    runtime_tier, _runtime_status = get_subscription_state()
-
-    accepted = await asyncio.to_thread(
-        record_cloud_activation, token, iid,
-        public_url=effective_public_url,
-        tos_version=tos_version,
-        backup_encryption_key=effective_backup_key,
-        expected_api_key=expected_api_key,
-        expected_verifier=expected_verifier,
-        keep_disconnected=keep_disconnected,
-    )
-    if not accepted:
+    if persist_state:
+        accepted = await asyncio.to_thread(
+            record_cloud_activation, token, iid,
+            public_url=effective_public_url,
+            tos_version=tos_version,
+            backup_encryption_key=effective_backup_key,
+            expected_api_key=expected_api_key,
+            expected_verifier=expected_verifier,
+            keep_disconnected=keep_disconnected,
+        )
+        if not accepted:
+            return False
+    elif settings.cloud_disconnected:
         return False
 
     settings.gateway_instance_id = iid
@@ -142,6 +154,8 @@ async def apply_activation_state(
     if tier:
         from celerp.gateway.state import set_subscription_state
         set_subscription_state(tier, status or "")
+    if isinstance(feature_flags, dict):
+        await apply_feature_flags_async(feature_flags, persist=persist_state)
 
     if keep_disconnected:
         settings.gateway_token = ""
@@ -152,12 +166,20 @@ async def apply_activation_state(
         backup_scheduler.stop()
         return True
 
+    if not persist_state and settings.cloud_disconnected:
+        return False
+
     settings.gateway_token = token
     settings.celerp_public_url = effective_public_url or ""
-    settings.cloud_disconnected = False
+    if persist_state:
+        settings.cloud_disconnected = False
 
     from celerp.gateway import ensure_running, has_active_share
-    should_serve = bool(settings.celerp_public_url)
+    should_serve = (
+        connect_entitled
+        if isinstance(connect_entitled, bool)
+        else bool(settings.celerp_public_url)
+    )
     if not should_serve:
         should_serve = await has_active_share()
 
@@ -167,14 +189,12 @@ async def apply_activation_state(
             and existing.relay_status == "active"):
         runtime_paid = bool(
             relay_session_headers().get("X-Session-Token", ""))
-        # /auth/activate returns public_url only when the relay considers this
-        # instance Connect-entitled, so this mirrors the server's transport verdict
-        # including its bounded past_due grace.
-        authoritative_paid = bool(effective_public_url)
-        tier_mismatch = bool(
-            tier and runtime_tier and tier != runtime_tier)
-        transport_mismatch = (
-            runtime_paid != authoritative_paid or tier_mismatch)
+        authoritative_paid = (
+            connect_entitled
+            if isinstance(connect_entitled, bool)
+            else bool(effective_public_url)
+        )
+        transport_mismatch = runtime_paid != authoritative_paid
 
     restart_required = bool(
         existing is not None
@@ -186,7 +206,9 @@ async def apply_activation_state(
     )
     deferred_restart = False
     if restart_required:
-        if existing is not None and existing.has_inflight_proxy_requests():
+        if existing is not None and existing.is_draining_for_reconfigure():
+            deferred_restart = True
+        elif existing is not None and existing.has_inflight_proxy_requests():
             # This activation can be executing inside the Web Access request that
             # must carry its own success response. Drain that generation first,
             # then rebuild from the latest persisted settings.
@@ -199,7 +221,15 @@ async def apply_activation_state(
                         return
                     latest_should_serve = bool(settings.celerp_public_url)
                     if not latest_should_serve:
-                        latest_should_serve = await has_active_share()
+                        try:
+                            latest_should_serve = await has_active_share()
+                        except Exception:
+                            latest_should_serve = should_serve
+                            log.warning(
+                                "Could not refresh relay serving requirement during handoff; "
+                                "using the pre-drain decision",
+                                exc_info=True,
+                            )
                     await shutdown_gateway()
                     if latest_should_serve:
                         ensure_running()
@@ -289,13 +319,17 @@ async def sync_existing_entitlement(
     token = data.get("gateway_token") or key
     if not token:
         return None
-    expected_key = key if persisted_key and persisted_key == key else None
+    persist_state = bool(persisted_key and persisted_key == key)
+    expected_key = key if persist_state else None
     try:
         accepted = await apply_activation_state(
             token, target_iid, public_url=data.get("public_url"),
             tos_version=data.get("tos_version"),
             backup_encryption_key=data.get("backup_encryption_key"),
             tier=data.get("tier"), status=data.get("status"),
+            connect_entitled=data.get("connect_entitled"),
+            feature_flags=data.get("feature_flags"),
+            persist_state=persist_state,
             expected_api_key=expected_key,
         )
     except Exception as exc:
@@ -305,4 +339,3 @@ async def sync_existing_entitlement(
         )
         return None
     return data if accepted and isinstance(data, dict) else None
-
