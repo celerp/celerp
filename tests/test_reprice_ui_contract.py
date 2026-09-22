@@ -91,3 +91,11 @@ def test_reprice_warning_reapplies_after_paged_htmx_swap():
     source = Path("ui/routes/documents.py").read_text()
     assert "window._celerpRepriceWarningAfterSwap = _celerpApplyRepriceWarnings" in source
     assert "document.body.addEventListener('htmx:afterSwap', window._celerpRepriceWarningAfterSwap)" in source
+
+
+def test_doc_reprice_reuses_canonical_price_override_permission_gate():
+    source = Path("default_modules/celerp-docs/celerp_docs/routes.py").read_text()
+    start = source.index("async def reprice_doc(")
+    end = source.index("@lists_router.post", start)
+    snippet = source[start:end]
+    assert "await _assert_doc_price_permission(" in snippet

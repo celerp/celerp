@@ -4782,9 +4782,17 @@ async def reprice_doc(
             detail="This document was changed by someone else; reload to get the latest before repricing",
         )
 
+    stored_lines = list(row.state.get("line_items") or [])
     updated_lines, repriced, skipped, currency = await _reprice_catalog_lines(
-        session, company_id, list(row.state.get("line_items") or []),
+        session, company_id, stored_lines,
         payload.price_list, currency=row.state.get("currency"),
+    )
+    # Preserve the canonical document price-override authorization that the old
+    # patch-based repricer inherited indirectly. Repricing is not a bypass around
+    # set_sales_doc_prices; no-op prices remain allowed exactly as patch_doc allows.
+    await _assert_doc_price_permission(
+        session, company_id, settings, role, updated_lines,
+        {i: line for i, line in enumerate(stored_lines)},
     )
     new_values = {
         "price_list": payload.price_list,
