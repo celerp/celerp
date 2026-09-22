@@ -382,6 +382,7 @@ async def test_activation_restarts_active_free_runtime_when_account_becomes_paid
         monkeypatch):
     from celerp.config import settings
     monkeypatch.setattr(settings, "backup_enabled", False)
+    monkeypatch.setattr(settings, "celerp_public_url", "https://paid.celerp.com")
     live = MagicMock(relay_status="active")
     live.is_serving.return_value = True
     live.is_draining_for_reconfigure.return_value = False
@@ -559,6 +560,9 @@ async def test_environment_only_activation_never_persists_local_config(monkeypat
     from celerp.config import settings
     monkeypatch.setattr(settings, "cloud_disconnected", False)
     monkeypatch.setattr(settings, "backup_enabled", False)
+    monkeypatch.setattr(settings, "gateway_token", "")
+    monkeypatch.setattr(settings, "gateway_instance_id", "")
+    monkeypatch.setattr(settings, "celerp_public_url", "")
     record = MagicMock()
     flags = {
         "payments_enabled": False,
