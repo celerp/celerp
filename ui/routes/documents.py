@@ -2103,10 +2103,6 @@ celerpUpdateBulkAlloc();
         # blanks, always win; the address list is retained separately for editing.
         cid = doc.get("contact_id")
         contact_shipping_addresses: list[dict] = []
-        if "contact_billing_address" not in doc and doc.get("contact_address"):
-            # Historical stored alias is still part of the document snapshot and
-            # therefore wins over today's live contact.
-            doc["contact_billing_address"] = doc["contact_address"]
         if cid:
             try:
                 _resolved_contact = await api.get_contact(token, cid)
@@ -4448,15 +4444,15 @@ celerpUpdateBulkAlloc();
             input_el = Select(
                 *[Option(_list_behavior(lt).label, value=lt, selected=(lt == value)) for lt in _LIST_TYPES],
                 name="value",
-                hx_patch=patch_url, hx_target="closest .editable-cell", hx_swap="outerHTML", hx_trigger="change",
                 cls="cell-input cell-input--select", autofocus=True,
+                onchange=f"_celerpPatchListField(this, {_json.dumps(patch_url)}, {_json.dumps(lst.get('status') == 'draft')})",
                 onkeydown=esc_js,
             )
         elif field in _LIST_DATE_FIELDS or field in ("issue_date",):
             input_el = Input(
                 type="date", name="value", value=value[:10] if value else "",
-                hx_patch=patch_url, hx_target="closest .editable-cell", hx_swap="outerHTML",
-                hx_trigger="blur delay:200ms", cls="cell-input", autofocus=True,
+                cls="cell-input", autofocus=True,
+                onblur=f"setTimeout(()=>_celerpPatchListField(this, {_json.dumps(patch_url)}), 200)",
                 onkeydown=esc_js + enter_js,
             )
         elif field == "status":
@@ -4466,15 +4462,15 @@ celerpUpdateBulkAlloc();
             input_el = Select(
                 *[Option(s.replace("_", " ").title(), value=s, selected=(s == value)) for s in _list_statuses],
                 name="value",
-                hx_patch=patch_url, hx_target="closest .editable-cell", hx_swap="outerHTML",
-                hx_trigger="change", cls="cell-input cell-input--select", autofocus=True,
+                cls="cell-input cell-input--select", autofocus=True,
+                onchange=f"_celerpPatchListField(this, {_json.dumps(patch_url)})",
                 onkeydown=esc_js,
             )
         else:
             input_el = Input(
                 type="text", name="value", value=value,
-                hx_patch=patch_url, hx_target="closest .editable-cell", hx_swap="outerHTML",
-                hx_trigger="blur delay:200ms", cls="cell-input", autofocus=True,
+                cls="cell-input", autofocus=True,
+                onblur=f"setTimeout(()=>_celerpPatchListField(this, {_json.dumps(patch_url)}), 200)",
                 onkeydown=esc_js + enter_js,
             )
         return Div(input_el, cls="editable-cell editable-cell--editing")
@@ -5579,12 +5575,12 @@ def _shipment_fields(doc: dict, entity_id: str, is_draft: bool) -> list:
         if not is_draft:
             _label = dict(options).get(current, current)
             return Span(_label or "--", cls="meta-value")
+        _url = f"/lists/{entity_id}/field/{field}"
         return Select(
             Option("--", value="", selected=(not current)),
             *[Option(label, value=val, selected=(val == current)) for val, label in options],
             name="value",
-            hx_patch=f"/lists/{entity_id}/field/{field}",
-            hx_swap="none",
+            onchange=f"_celerpPatchListField(this, {_json.dumps(_url)})",
             cls="form-select",
         )
 
@@ -5594,11 +5590,11 @@ def _shipment_fields(doc: dict, entity_id: str, is_draft: bool) -> list:
             return Span(current or "--", cls="meta-value")
         # Native searchable dropdown (same pattern as the setup currency picker);
         # `change` fires on a datalist pick and on leaving a typed value.
+        _url = f"/lists/{entity_id}/field/{field}"
         return Input(
             type="text", name="value", value=current, list="country-options",
             autocomplete="off", placeholder=t("documents.type_to_search"),
-            hx_patch=f"/lists/{entity_id}/field/{field}",
-            hx_trigger="change", hx_swap="none",
+            onchange=f"_celerpPatchListField(this, {_json.dumps(_url)})",
             cls="form-input",
         )
 
@@ -5991,8 +5987,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Select(
                     *[Option(_list_behavior(lt).label, value=lt, selected=(lt == _current_lt)) for lt in _LIST_TYPES],
                     name="value",
-                    hx_patch=f"/lists/{entity_id}/field/list_type",
-                    hx_swap="none",
+                    onchange=(
+                        f"_celerpPatchListField(this, '/lists/{entity_id}/field/list_type', "
+                        f"{_json.dumps(is_draft)})"
+                    ),
                     cls="form-select",
                 ),
                 cls="list-type-bar",
@@ -7181,6 +7179,33 @@ if (!window._celerpEntityVersionListener) {{
     }};
     document.body.addEventListener('celerpListVersion', window._celerpEntityVersionListener);
 }}
+// One ordering point for draft List mutations that advance the same projection version.
+// The server remains the concurrency authority across tabs; this queue only prevents this
+// page from racing its own line saves, header patches, and repricing requests.
+window._celerpMutationTail = window._celerpMutationTail || Promise.resolve(true);
+function _celerpMutate(run) {{
+    const next = window._celerpMutationTail.then(run, run);
+    window._celerpMutationTail = next.then(() => true, () => false);
+    return next;
+}}
+function _celerpPatchListField(input, url, persistFirst=false) {{
+    const value = input.value;
+    const cell = input.closest('.editable-cell');
+    const target = cell || input;
+    const swap = cell ? 'outerHTML' : 'none';
+    return _celerpMutate(async () => {{
+        // ESC may replace an inline editor before a delayed blur runs. Never save a detached control.
+        if (!input.isConnected || !target.isConnected) return false;
+        if (persistFirst) {{
+            clearTimeout(_celerpSaveTimer);
+            _celerpSaveTimer = null;
+            const ok = await _celerpPersistOnce();
+            if (!ok) return false;
+        }}
+        await htmx.ajax('PATCH', url, {{target: target, swap: swap, values: {{value: value}}}});
+        return true;
+    }}).catch(() => false);
+}}
 /* Stored-array position of the first rendered row. A list renders one bounded page
    of lines, so a save overwrites exactly the positions this page occupies and leaves
    every off-page row untouched. Docs are never paged (offset 0). */
@@ -8312,14 +8337,8 @@ async function _celerpPersistOnce() {{
         return false;
     }}
 }}
-window._celerpPersistTail = window._celerpPersistTail || Promise.resolve(true);
 function _celerpPersist() {{
-    const run = window._celerpPersistTail.then(
-        () => _celerpPersistOnce(),
-        () => _celerpPersistOnce()
-    );
-    window._celerpPersistTail = run.then(() => true, () => false);
-    return run;
+    return _celerpMutate(_celerpPersistOnce);
 }}
 /* Save the current page, then swap to another page of the same list. Paging a draft must
    never silently drop unsaved edits, so a failed save (including a stale-version conflict)
@@ -8477,49 +8496,53 @@ function _celerpRestorePriceList() {{
     if (select) select.value = window._CELERP_AUTHORITATIVE_PRICE_LIST;
 }}
 async function celerpReprice(priceList) {{
-    /* A pending blur save is redundant here; the explicit save below owns this transition. */
+    /* A pending blur save is redundant here; this queued transition owns the save + reprice. */
     clearTimeout(_celerpSaveTimer);
     _celerpSaveTimer = null;
-    /* Save current lines first; never discard an invalid or stale page to reprice. */
-    const ok = await _celerpPersist();
-    if (!ok) {{
-        _celerpRestorePriceList();
-        return;
-    }}
-    const body = {{price_list: priceList, expected_version: _celerpEntityVersion}};
-    try {{
-        const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/reprice', {{
-            method: 'POST', headers: {{'Content-Type': 'application/json'}},
-            body: JSON.stringify(body)
-        }});
-        if (resp.ok) {{
-            const data = await resp.json().catch(() => ({{}}));
-            if (data && data.version != null) _celerpEntityVersion = data.version;
-            const skipped = Array.isArray(data.skipped) ? data.skipped : [];
-            if (skipped.length) {{
-                sessionStorage.setItem(_celerpRepriceWarningKey(), JSON.stringify({{
-                    item_ids: skipped.map(function(x) {{ return x.item_id; }}).filter(Boolean),
-                    skipped_count: skipped.length,
-                    repriced: Number(data.repriced || 0),
-                    show_modal: true
-                }}));
-            }} else {{
-                sessionStorage.removeItem(_celerpRepriceWarningKey());
-            }}
-            window.location.reload();
-            return;
+    return _celerpMutate(async () => {{
+        /* Save current lines first; never discard an invalid or stale page to reprice. */
+        const ok = await _celerpPersistOnce();
+        if (!ok) {{
+            _celerpRestorePriceList();
+            return false;
         }}
-        const err = await resp.json().catch(() => ({{}}));
-        alert(err.error || _L.reprice_failed);
-        /* The line save above succeeded, so reloading cannot discard edits and
-           guarantees the selector/version reflect authoritative server state. */
-        window.location.reload();
-    }} catch (err) {{
-        /* The reprice outcome is ambiguous after transport loss. The lines are
-           already saved; reload to reconcile instead of guessing the price list. */
-        alert(_L.reprice_failed + ': ' + err.message);
-        window.location.reload();
-    }}
+        const body = {{price_list: priceList, expected_version: _celerpEntityVersion}};
+        try {{
+            const resp = await fetch(_CELERP_BASE + _CELERP_EID + '/reprice', {{
+                method: 'POST', headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify(body)
+            }});
+            if (resp.ok) {{
+                const data = await resp.json().catch(() => ({{}}));
+                if (data && data.version != null) _celerpEntityVersion = data.version;
+                const skipped = Array.isArray(data.skipped) ? data.skipped : [];
+                if (skipped.length) {{
+                    sessionStorage.setItem(_celerpRepriceWarningKey(), JSON.stringify({{
+                        item_ids: skipped.map(function(x) {{ return x.item_id; }}).filter(Boolean),
+                        skipped_count: skipped.length,
+                        repriced: Number(data.repriced || 0),
+                        show_modal: true
+                    }}));
+                }} else {{
+                    sessionStorage.removeItem(_celerpRepriceWarningKey());
+                }}
+                window.location.reload();
+                return true;
+            }}
+            const err = await resp.json().catch(() => ({{}}));
+            alert(err.error || _L.reprice_failed);
+            /* The line save above succeeded, so reloading cannot discard edits and
+               guarantees the selector/version reflect authoritative server state. */
+            window.location.reload();
+            return false;
+        }} catch (err) {{
+            /* The reprice outcome is ambiguous after transport loss. The lines are
+               already saved; reload to reconcile instead of guessing the price list. */
+            alert(_L.reprice_failed + ': ' + err.message);
+            window.location.reload();
+            return false;
+        }}
+    }});
 }}
 /* ── CSV import ── */
 async function celerpCsvImport(input, entityId) {{

@@ -208,4 +208,53 @@ def test_document_detail_reuses_output_contact_fallback():
     assert "prepare_document_output(doc, contact=_resolved_contact)" in snippet
     assert 'doc["contact_name"] = _resolved_contact.get("name")' not in snippet
     assert 'doc["contact_email"] = _c.get("email")' not in snippet
-    assert 'if "contact_billing_address" not in doc and doc.get("contact_address")' in snippet
+    assert 'if "contact_billing_address" not in doc' not in snippet
+
+    subscription_source = Path("ui/routes/subscriptions.py").read_text()
+    assert "_merge_company_letterhead(token, doc)" in subscription_source
+    assert "prepare_document_output(doc, contact=await api.get_contact(token, cid))" in subscription_source
+    assert 'if not doc.get("company_name")' not in subscription_source
+
+def test_legacy_billing_alias_respects_canonical_key_presence():
+    absent = prepare_document_output({"contact_address": "Legacy billing"})
+    assert absent["contact_billing_address"] == "Legacy billing"
+
+    blank = prepare_document_output({
+        "contact_billing_address": "",
+        "contact_address": "Legacy billing that must stay suppressed",
+    })
+    assert blank["contact_billing_address"] == ""
+
+
+def test_renderers_do_not_resurrect_explicit_blank_identity_fields():
+    doc = {
+        "doc_type": "invoice",
+        "ref_id": "INV-BLANK",
+        "company_name": "",
+        "company_address": "",
+        "company_phone": "",
+        "company_tax_id": "",
+        "company_email": "",
+        "contact_name": "",
+        "contact_id": "contact:must-not-render",
+        "contact_billing_address": "",
+        "contact_address": "Legacy billing that must not render",
+        "line_items": [],
+    }
+    company = {
+        "name": "Live Seller That Must Not Render",
+        "address": "Live Address That Must Not Render",
+        "phone": "+66 999",
+        "tax_id": "LIVE-TAX",
+        "email": "live@example.test",
+    }
+
+    pdf_text = _pdf_text(generate_document_pdf(doc, company=company))
+    html = render_doc_print_html(doc)
+    for forbidden in (
+        "Live Seller That Must Not Render", "Live Address That Must Not Render",
+        "+66 999", "LIVE-TAX", "live@example.test",
+        "contact:must-not-render", "Legacy billing that must not render",
+    ):
+        assert forbidden not in pdf_text
+        assert forbidden not in html

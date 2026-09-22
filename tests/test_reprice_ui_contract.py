@@ -11,7 +11,8 @@ def test_reprice_is_gated_on_successful_save_and_pins_entity_version():
     start = source.index("async function celerpReprice")
     snippet = source[start:start + 2200]
     assert "clearTimeout(_celerpSaveTimer);" in snippet
-    assert "const ok = await _celerpPersist();" in snippet
+    assert "return _celerpMutate(async () =>" in snippet
+    assert "const ok = await _celerpPersistOnce();" in snippet
     assert "if (!ok) {" in snippet
     assert "_celerpRestorePriceList();" in snippet
     assert "expected_version: _celerpEntityVersion" in snippet
@@ -44,15 +45,18 @@ def test_company_help_reuses_existing_info_tip_only_when_requested():
     assert company.count('class="info-tip"') == 1
 
 
-def test_list_writes_share_one_version_and_serialized_save_path():
+def test_list_writes_share_one_version_and_mutation_coordinator():
     source = Path("ui/routes/documents.py").read_text()
     assert '"HX-Trigger": _json.dumps({' in source
     assert '"celerpListVersion": {"version": result.get("version")}' in source
     assert "document.body.addEventListener('celerpListVersion'" in source
     assert "window._celerpEntityVersion" in source
-    assert "async function _celerpPersistOnce()" in source
-    assert "window._celerpPersistTail" in source
-    assert "window._celerpPersistTail.then(" in source
+    assert "window._celerpMutationTail" in source
+    assert "function _celerpMutate(run)" in source
+    assert "function _celerpPatchListField(" in source
+    assert "return _celerpMutate(_celerpPersistOnce);" in source
+    assert "return _celerpMutate(async () =>" in source
+    assert 'hx_patch=f"/lists/{entity_id}/field/' not in source
 
 
 def test_cost_reprice_permission_precedes_replay_lookup():

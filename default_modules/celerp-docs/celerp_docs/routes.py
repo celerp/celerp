@@ -4817,12 +4817,6 @@ async def reprice_doc(
         for field, value in new_values.items()
         if row.state.get(field) != value
     }
-    if not fields_changed:
-        return {
-            "ok": True, "event_id": None, "version": row.version,
-            "repriced": repriced, "skipped": skipped, "price_list": payload.price_list,
-        }
-
     entry = await emit_event(
         session,
         company_id=company_id,

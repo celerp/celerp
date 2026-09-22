@@ -51,6 +51,11 @@ def prepare_document_output(
     if "terms_text" not in out and out.get("terms"):
         out["terms_text"] = out["terms"]
 
+    # Historical contact_address is a stored customer-facing snapshot too. Canonicalize
+    # it by key presence so an explicit contact_billing_address="" remains an override.
+    if "contact_billing_address" not in out and "contact_address" in out:
+        out["contact_billing_address"] = out["contact_address"]
+
     self_billing = _primary_address(self_contact, "billing")
     seller = {
         "company_name": (

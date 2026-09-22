@@ -154,7 +154,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     pass it only while the document's share link is live so saved PDFs never
     carry a URL that 404s. Returns raw PDF bytes.
     """
-    doc = prepare_document_output(doc)
+    doc = prepare_document_output(doc, company=company)
     buf = io.BytesIO()
     page_w, page_h = A4
     margin = 18 * mm
@@ -175,7 +175,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     raw_doc_type = doc.get("doc_type") or "document"
 
     # --- Header: company name + doc type/ref ---
-    company_name = doc.get("company_name") or (company or {}).get("name", "") or "Your Company"
+    company_name = doc.get("company_name", "Your Company")
     doc_type_label = _DOC_TYPE_LABELS.get(raw_doc_type, raw_doc_type.replace("_", " ").title())
     doc_ref = doc.get("ref_id") or doc.get("doc_number") or doc.get("ref") or doc.get("entity_id", "")
     reference = str(doc.get("reference") or "")
@@ -184,18 +184,17 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
         doc_ref_text += f"<br/><font size='8'>Reference: {_xml_escape(reference)}</font>"
 
     # Build company detail lines (address, tax ID, phone, email)
-    _co = company or {}
     co_detail_parts: list[str] = []
-    co_address = doc.get("company_address") or _co.get("address", "")
+    co_address = doc.get("company_address", "")
     if co_address:
         co_detail_parts.append(str(co_address))
-    co_tax_id = doc.get("company_tax_id") or _co.get("tax_id", "")
+    co_tax_id = doc.get("company_tax_id", "")
     if co_tax_id:
         co_detail_parts.append(f"Tax ID: {co_tax_id}")
-    co_phone = doc.get("company_phone") or _co.get("phone", "")
+    co_phone = doc.get("company_phone", "")
     if co_phone:
         co_detail_parts.append(f"Tel: {co_phone}")
-    co_email = doc.get("company_email") or _co.get("email", "")
+    co_email = doc.get("company_email", "")
     if co_email:
         co_detail_parts.append(co_email)
     co_detail_text = "<br/>".join(co_detail_parts)
@@ -218,7 +217,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     contact_label = _CONTACT_LABELS.get(raw_doc_type, "Bill To")
     contact_company = doc.get("contact_company_name") or ""
     contact_name = doc.get("contact_name") or ""
-    contact = contact_company or contact_name or doc.get("contact_id") or "-"
+    contact = contact_company or (contact_name if "contact_name" in doc else doc.get("contact_id")) or "-"
     issue_date = _fmt_date(doc.get("issue_date") or doc.get("created_at"))
     is_quotation = raw_doc_type == "quotation" or doc.get("list_type") in ("quote", "quotation")
     due_label = "Valid Until" if is_quotation else "Due Date"
@@ -245,7 +244,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     story.append(meta_table)
 
     # --- Customer details (billing/shipping address, phone, email, tax ID) ---
-    billing_addr = doc.get("contact_billing_address") or doc.get("contact_address") or ""
+    billing_addr = doc.get("contact_billing_address", "")
     shipping_addr = doc.get("contact_shipping_address") or ""
     contact_phone = doc.get("contact_phone") or ""
     contact_email = doc.get("contact_email") or ""

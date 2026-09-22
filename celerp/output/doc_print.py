@@ -262,9 +262,9 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
     company_email = doc.get("company_email") or ""
     company_phone = doc.get("company_phone") or ""
 
-    contact_name = doc.get("contact_name") or doc.get("customer_name") or ""
+    contact_name = doc.get("contact_name", doc.get("customer_name") or "")
     contact_company = doc.get("contact_company_name") or ""
-    contact_address = doc.get("contact_billing_address") or doc.get("contact_address") or ""
+    contact_address = doc.get("contact_billing_address", "")
     contact_tax_id = doc.get("contact_tax_id") or ""
     contact_email = doc.get("contact_email") or ""
     ship_to_address = doc.get("contact_shipping_address") or ""

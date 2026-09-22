@@ -368,3 +368,43 @@ async def test_doc_reprice_retry_replays_without_second_write(client):
     state = (await client.get(f"/docs/{doc_id}", headers=_h(token))).json()
     assert state["version"] == first.json()["version"]
     assert state["line_items"][0]["unit_price"] == 80.0
+
+@pytest.mark.asyncio
+async def test_doc_noop_reprice_retry_replays_after_catalog_price_changes(client):
+    token = await _register(client)
+    h = _h(token)
+    item_id = await _item(client, token, sku="DOC-NOOP-RETRY", retail=100, wholesale=80)
+    doc_id, version = await _draft_invoice(client, token, [{
+        "item_id": item_id, "sku": "DOC-NOOP-RETRY",
+        "quantity": 1, "unit_price": 100, "line_total": 100,
+    }])
+
+    # Normalize away from and back to Retail so the next Retail request is a true no-op.
+    first = await client.post(f"/docs/{doc_id}/reprice", headers=h, json={
+        "price_list": "Wholesale", "expected_version": version,
+    })
+    assert first.status_code == 200, first.text
+    retail = await client.post(f"/docs/{doc_id}/reprice", headers=h, json={
+        "price_list": "Retail", "expected_version": first.json()["version"],
+    })
+    assert retail.status_code == 200, retail.text
+    before_noop = (await client.get(f"/docs/{doc_id}", headers=h)).json()
+    payload = {"price_list": "Retail", "expected_version": before_noop["version"]}
+
+    noop = await client.post(f"/docs/{doc_id}/reprice", headers=h, json=payload)
+    assert noop.status_code == 200, noop.text
+    assert noop.json()["event_id"] is not None
+    assert noop.json()["version"] != before_noop["version"]
+
+    changed = await client.patch(f"/items/{item_id}", headers=h, json={
+        "fields_changed": {"retail_price": {"old": 100, "new": 125}},
+    })
+    assert changed.status_code == 200, changed.text
+
+    replay = await client.post(f"/docs/{doc_id}/reprice", headers=h, json=payload)
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == noop.json()
+
+    state = (await client.get(f"/docs/{doc_id}", headers=h)).json()
+    assert state["version"] == noop.json()["version"]
+    assert state["line_items"][0]["unit_price"] == 100.0
