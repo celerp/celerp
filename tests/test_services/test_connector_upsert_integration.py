@@ -520,6 +520,7 @@ async def test_woocommerce_processing_order_reserves_across_lots(session):
     from celerp.models.projections import Projection
 
     cid = await _seed_company(session, "WooLots")
+    await session.commit()
     now = datetime.now(timezone.utc)
     from celerp_inventory.services import upsert_external_product
 
