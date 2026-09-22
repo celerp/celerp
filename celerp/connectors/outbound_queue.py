@@ -41,8 +41,9 @@ def _identity(link: dict) -> str:
 
 
 async def adopt_single_company_legacy_configs() -> None:
-    """Self-heal old installation-scoped connector rows when ownership is unambiguous."""
+    """Self-heal legacy instance-scoped configs through the canonical owner primitive."""
     from celerp.config import ensure_instance_id
+    from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector_ownership
 
     legacy_id = ensure_instance_id()
     async with get_session_ctx() as session:
@@ -50,26 +51,15 @@ async def adopt_single_company_legacy_configs() -> None:
         if len(companies) != 1:
             return
         company_id = str(companies[0])
-        if company_id == legacy_id:
-            return
-        legacy_rows = (await session.execute(
-            sa.select(ConnectorConfig).where(ConnectorConfig.company_id == legacy_id)
+        legacy_connectors = (await session.execute(
+            sa.select(ConnectorConfig.connector).where(ConnectorConfig.company_id == legacy_id)
         )).scalars().all()
-        changed = False
-        for legacy in legacy_rows:
-            current = await session.scalar(
-                sa.select(ConnectorConfig).where(
-                    ConnectorConfig.company_id == company_id,
-                    ConnectorConfig.connector == legacy.connector,
-                ).limit(1)
-            )
-            if current is None:
-                legacy.company_id = company_id
-            else:
-                await session.delete(legacy)
-            changed = True
-        if changed:
-            await session.commit()
+        for connector in legacy_connectors:
+            try:
+                await claim_connector_ownership(session, company_id, connector, create=False)
+            except ConnectorOwnershipError as exc:
+                log.error("connector legacy adoption blocked for %s: %s", connector, exc)
+        await session.commit()
 
 
 async def enqueue_item_change(session, entry) -> None:
@@ -112,6 +102,7 @@ async def enqueue_item_change(session, entry) -> None:
             link
             and link.get("sync_enabled") is not False
             and link.get("remote_deleted") is not True
+            and link.get("inventory_sync_paused") is not True
         ):
             key = _identity(link)
             if key:

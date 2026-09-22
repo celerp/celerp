@@ -24,7 +24,17 @@ async def fetch_context(company_id: str, connector_name: str) -> "ConnectorConte
     import httpx
 
     from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.ownership import connector_owned_by_company
+    from celerp.db import get_session_ctx
     from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
+
+    async with get_session_ctx() as session:
+        if not await connector_owned_by_company(session, company_id, connector_name):
+            log.warning(
+                "refusing relay credential for %s: company %s is not its owner",
+                connector_name, company_id,
+            )
+            return None
 
     if not get_session_token():
         return None  # no cloud session → no relay token available

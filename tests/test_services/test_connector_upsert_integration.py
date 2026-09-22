@@ -581,3 +581,111 @@ async def test_woocommerce_processing_order_reserves_across_lots(use_test_sessio
     ]
     assert sum(float((row.state or {}).get("quantity") or 0) for row in reserved) == 4
     assert len(reserved) == 2
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_same_sku_cannot_steal_live_external_identity(use_test_session):
+    cid = await _seed_company(use_test_session, "WooIdentity")
+    from celerp_inventory.services import upsert_external_product
+    await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="701", variation_id=None,
+        sku="IDENTITY-SKU", name="Identity Product", link_fields={"manage_stock": True},
+    )
+    with pytest.raises(ValueError, match="already linked to a different"):
+        await upsert_external_product(
+            str(cid), platform="woocommerce", product_id="702", variation_id=None,
+            sku="IDENTITY-SKU", name="Other Remote Product", link_fields={"manage_stock": True},
+        )
+
+
+@pytest.mark.asyncio
+async def test_historical_barcoded_parcel_is_not_a_catalog_anchor(use_test_session):
+    from datetime import datetime, timezone
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import resolve_catalog_anchor_for_item, upsert_external_product
+    session = use_test_session
+    cid = await _seed_company(session, "WooAnchor")
+    _, root_id = await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="711", variation_id=None,
+        sku="ANCHOR-SKU", name="Anchor Product", link_fields={"manage_stock": True},
+    )
+    now = datetime.now(timezone.utc)
+    parcel_id = "item:historical-receipt"
+    session.add(Projection(
+        company_id=cid, entity_id=parcel_id, entity_type="item", version=1,
+        created_at=now, updated_at=now,
+        state={"sku": "ANCHOR-SKU", "name": "Received Parcel", "quantity": 1,
+               "status": "available", "sell_by": "piece", "barcode": "900001"},
+    ))
+    await session.commit()
+    anchor = await resolve_catalog_anchor_for_item(session, cid, parcel_id)
+    assert anchor.entity_id == root_id
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_on_hold_reserves_then_failed_releases_stock(use_test_session):
+    from datetime import datetime, timezone
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import upsert_external_product
+    session = use_test_session
+    cid = await _seed_company(session, "WooHold")
+    _, root_id = await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="721", variation_id=None,
+        sku="HOLD-SKU", name="Hold Product", link_fields={"manage_stock": True},
+    )
+    now = datetime.now(timezone.utc)
+    session.add(Projection(
+        company_id=cid, entity_id="item:hold-lot", entity_type="item", version=1,
+        created_at=now, updated_at=now,
+        state={"sku": "HOLD-SKU", "name": "Hold Product", "quantity": 2,
+               "status": "available", "sell_by": "piece", "lot": True,
+               "parent_item_id": root_id, "allow_splitting": True},
+    ))
+    await session.commit()
+    order = {
+        "id": 722, "number": "722", "status": "on-hold", "currency": "USD",
+        "total": "10.00", "total_tax": "0",
+        "line_items": [{"product_id": 721, "variation_id": 0, "sku": "HOLD-SKU",
+                        "name": "Hold Product", "quantity": 1, "total": "10.00",
+                        "total_tax": "0"}],
+        "shipping_lines": [], "fee_lines": [],
+    }
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    doc = await _state(session, cid, "woocommerce:order:722")
+    assert doc.get("finalized") is not True
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_type == "item"
+    ))).scalars().all()
+    assert sum(float((r.state or {}).get("quantity") or 0) for r in rows
+               if (r.state or {}).get("status") == "reserved") == 1
+
+    assert await u.upsert_order_from_woocommerce(str(cid), {**order, "status": "failed"}) == "updated"
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_type == "item"
+    ))).scalars().all()
+    assert not [r for r in rows if (r.state or {}).get("status") == "reserved"]
+    assert sum(float((r.state or {}).get("quantity") or 0) for r in rows
+               if (r.state or {}).get("status") == "available"
+               and (r.state or {}).get("sku") == "HOLD-SKU") == 2
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_unmanaged_product_order_does_not_invent_stock(use_test_session):
+    cid = await _seed_company(use_test_session, "WooUnmanaged")
+    from celerp_inventory.services import upsert_external_product
+    await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="731", variation_id=None,
+        sku="UNMANAGED-SKU", name="Unmanaged Product", link_fields={"manage_stock": False},
+    )
+    order = {
+        "id": 732, "number": "732", "status": "processing", "currency": "USD",
+        "total": "15.00", "total_tax": "0",
+        "line_items": [{"product_id": 731, "variation_id": 0, "sku": "UNMANAGED-SKU",
+                        "name": "Unmanaged Product", "quantity": 1, "total": "15.00",
+                        "total_tax": "0"}],
+        "shipping_lines": [], "fee_lines": [],
+    }
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    doc = await _state(use_test_session, cid, "woocommerce:order:732")
+    assert doc["finalized"] is True
+    assert doc["line_items"][0].get("item_id") is None

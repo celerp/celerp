@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -38,6 +38,25 @@ def _creds(store_url: str | None = STORE) -> ApiKeyCredentials:
     return ApiKeyCredentials(consumer_key="ck_x", consumer_secret="cs_y", store_url=store_url)
 
 
+def _session():
+    session = AsyncMock()
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    return session
+
+
+@pytest.fixture(autouse=True)
+def _owned_connector_boundary():
+    with patch(
+        "celerp.connectors.ownership.claim_connector_ownership",
+        new=AsyncMock(return_value=object()),
+    ), patch(
+        "celerp.connectors.ownership.connector_owned_by_company",
+        new=AsyncMock(return_value=True),
+    ):
+        yield
+
+
 # ── store_credentials ────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -48,7 +67,7 @@ async def test_store_probes_then_stores_on_relay():
             return_value=httpx.Response(200, json=[]))
         relay = respx.post(f"{RELAY}/tokens/woocommerce").mock(
             return_value=httpx.Response(200, json={"stored": True}))
-        result = await store_credentials("woocommerce", _creds(), None)
+        result = await store_credentials("woocommerce", _creds(), "company-test", None, _session())
 
     assert result == {"ok": True}
     assert probe.called
@@ -63,7 +82,7 @@ async def test_store_relay_402_maps_to_subscription_required():
     with url_p, hdr_p, respx.mock:
         respx.get(f"{STORE}/wp-json/wc/v3/products").mock(return_value=httpx.Response(200, json=[]))
         respx.post(f"{RELAY}/tokens/woocommerce").mock(return_value=httpx.Response(402))
-        result = await store_credentials("woocommerce", _creds(), None)
+        result = await store_credentials("woocommerce", _creds(), "company-test", None, _session())
     assert result["ok"] is False
     assert result["error"] == "subscription_required"
 
@@ -74,7 +93,7 @@ async def test_store_relay_failure_maps_to_relay_error():
     with url_p, hdr_p, respx.mock:
         respx.get(f"{STORE}/wp-json/wc/v3/products").mock(return_value=httpx.Response(200, json=[]))
         respx.post(f"{RELAY}/tokens/woocommerce").mock(return_value=httpx.Response(401))
-        result = await store_credentials("woocommerce", _creds(), None)
+        result = await store_credentials("woocommerce", _creds(), "company-test", None, _session())
     assert result["ok"] is False
     assert result["error"] == "relay_error"
 
@@ -85,7 +104,7 @@ async def test_store_bad_key_rejected_before_relay():
     with url_p, hdr_p, respx.mock:
         respx.get(f"{STORE}/wp-json/wc/v3/products").mock(return_value=httpx.Response(401))
         relay = respx.post(f"{RELAY}/tokens/woocommerce")
-        result = await store_credentials("woocommerce", _creds(), None)
+        result = await store_credentials("woocommerce", _creds(), "company-test", None, _session())
     assert result["error"] == "store_rejected"
     assert not relay.called
 
@@ -95,7 +114,7 @@ async def test_store_requires_https_store_url(monkeypatch):
     monkeypatch.delenv("CELERP_ALLOW_HTTP_STORE", raising=False)
     url_p, hdr_p = _relay_state()
     with url_p, hdr_p:
-        result = await store_credentials("woocommerce", _creds("http://store.test"), None)
+        result = await store_credentials("woocommerce", _creds("http://store.test"), "company-test", None, _session())
     assert result["error"] == "store_unreachable"
     assert "https" in result["detail"]
 
@@ -104,7 +123,7 @@ async def test_store_requires_https_store_url(monkeypatch):
 async def test_store_requires_store_url():
     url_p, hdr_p = _relay_state()
     with url_p, hdr_p:
-        result = await store_credentials("woocommerce", _creds(None), None)
+        result = await store_credentials("woocommerce", _creds(None), "company-test", None, _session())
     assert result["error"] == "store_unreachable"
 
 
@@ -112,14 +131,14 @@ async def test_store_requires_store_url():
 async def test_store_refuses_http_relay(monkeypatch):
     monkeypatch.delenv("CELERP_ALLOW_HTTP_RELAY", raising=False)
     with patch("celerp.gateway.state.relay_http_url", return_value="http://relay.test"):
-        result = await store_credentials("woocommerce", _creds(), None)
+        result = await store_credentials("woocommerce", _creds(), "company-test", None, _session())
     assert result["error"] == "relay_not_https"
 
 
 @pytest.mark.asyncio
 async def test_store_unknown_connector_404():
     with pytest.raises(HTTPException) as exc:
-        await store_credentials("nope", _creds(), None)
+        await store_credentials("nope", _creds(), "company-test", None, _session())
     assert exc.value.status_code == 404
 
 
@@ -131,7 +150,7 @@ async def test_revoke_status_mapping(status, ok):
     url_p, hdr_p = _relay_state()
     with url_p, hdr_p, respx.mock:
         respx.delete(f"{RELAY}/tokens/woocommerce").mock(return_value=httpx.Response(status))
-        result = await revoke_credentials("woocommerce", None)
+        result = await revoke_credentials("woocommerce", "company-test", None, _session())
     assert result.get("ok", False) is ok
 
 
@@ -143,7 +162,7 @@ async def test_access_token_passthrough():
     with url_p, hdr_p, respx.mock:
         respx.get(f"{RELAY}/tokens/woocommerce/access-token").mock(
             return_value=httpx.Response(200, json={"access_token": "ck:cs", "store_handle": STORE}))
-        result = await connector_access_token("woocommerce", None)
+        result = await connector_access_token("woocommerce", "company-test", None, _session())
     assert result["access_token"] == "ck:cs"
     assert result["store_handle"] == STORE
 
@@ -159,5 +178,5 @@ async def test_access_token_error_codes(status, code):
     url_p, hdr_p = _relay_state()
     with url_p, hdr_p, respx.mock:
         respx.get(f"{RELAY}/tokens/woocommerce/access-token").mock(return_value=httpx.Response(status))
-        result = await connector_access_token("woocommerce", None)
+        result = await connector_access_token("woocommerce", "company-test", None, _session())
     assert result["error"] == code

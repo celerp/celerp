@@ -53,7 +53,7 @@ _CORE_ITEM_KEYS: frozenset[str] = frozenset({
     "short_description", "description", "notes", "hs_code", "batch_no",
     # relationships / lifecycle markers
     "parent_id", "parent_sku", "children", "child_skus", "merged_into", "split_from",
-    "transformed_from", "transformed_into", "fulfilled_for_docs",
+    "transformed_from", "transformed_into", "fulfilled_for_docs", "catalog_item_id",
     "status_doc_id", "status_doc_number",
     # manufactured-lot identity: a produced lot links to its product and its run, and flags itself
     "parent_item_id", "manufacturing_order_id", "lot",

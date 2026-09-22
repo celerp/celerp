@@ -256,12 +256,13 @@ def _request_company_id(request: Request) -> str:
 
 
 async def _get_connector_config(company_id: str, connector: str):
-    """Return company-scoped config, adopting a legacy row only when ownership is unambiguous."""
+    """Return company-owned state, adopting a lone legacy row safely."""
+    import sqlalchemy as sa
     from celerp.config import ensure_instance_id
+    from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector_ownership
     from celerp.db import get_session_ctx
     from celerp.models.company import Company
     from celerp.models.connector_config import ConnectorConfig
-    import sqlalchemy as sa
 
     async with get_session_ctx() as session:
         row = await session.scalar(
@@ -274,100 +275,21 @@ async def _get_connector_config(company_id: str, connector: str):
             return row
 
         legacy_id = ensure_instance_id()
-        if legacy_id == str(company_id):
-            return None
-
         companies = (await session.execute(sa.select(Company.id).limit(2))).scalars().all()
-        if len(companies) != 1 or str(companies[0]) != str(company_id):
-            return None
-
-        legacy = await session.scalar(
-            sa.select(ConnectorConfig).where(
-                ConnectorConfig.company_id == legacy_id,
-                ConnectorConfig.connector == connector,
-            ).limit(1)
-        )
-        if legacy is None:
-            return None
-        legacy.company_id = str(company_id)
-        await session.commit()
-        await session.refresh(legacy)
-        return legacy
-
-
-async def _claim_connector_for_company(company_id: str, connector: str) -> bool:
-    """Claim the instance-scoped connector for one ERP company.
-
-    Relay credentials are unique per installation/platform, so two companies must
-    never silently overwrite each other's credentials. A lone legacy installation-
-    scoped config is safe to adopt on an explicit connect action because that action
-    identifies the intended owner.
-    """
-    import sqlalchemy as sa
-
-    from celerp.config import ensure_instance_id
-    from celerp.db import get_session_ctx
-    from celerp.models.connector_config import ConnectorConfig
-
-    legacy_id = ensure_instance_id()
-    async with get_session_ctx() as session:
-        rows = (await session.execute(
-            sa.select(ConnectorConfig).where(
-                ConnectorConfig.connector == connector
-            )
-        )).scalars().all()
-
-        other_companies = {
-            str(row.company_id)
-            for row in rows
-            if str(row.company_id) not in {str(company_id), legacy_id}
-        }
-        if other_companies:
-            return False
-
-        current = next(
-            (row for row in rows if str(row.company_id) == str(company_id)), None
-        )
-        legacy = next(
-            (row for row in rows if str(row.company_id) == legacy_id), None
-        )
-        if legacy is not None and current is None:
-            legacy.company_id = str(company_id)
-            await session.commit()
-        elif legacy is not None and current is not None:
-            # Both rows can exist only across the old/new scoping boundary. Preserve
-            # every known webhook id so a later disconnect can clean up all hooks.
-            merged_ids = list(dict.fromkeys(current.webhook_ids + legacy.webhook_ids))
-            current.webhook_ids_json = json.dumps(merged_ids)
-            await session.delete(legacy)
-            await session.commit()
-        return True
-
-
-async def _ensure_connector_config(company_id: str, connector: str, category: str):
-    """Get or create ConnectorConfig with sensible defaults."""
-    from celerp.db import get_session_ctx
-    from celerp.models.connector_config import ConnectorConfig
-    import sqlalchemy as sa
-
-    config = await _get_connector_config(company_id, connector)
-    if config:
-        return config
-
-    default_freq = _DEFAULT_FREQUENCY.get(category, SyncFrequency.MANUAL).value
-    config = ConnectorConfig(
-        company_id=company_id,
-        connector=connector,
-        sync_frequency=default_freq,
-    )
-    try:
-        async with get_session_ctx() as session:
-            session.add(config)
-            await session.commit()
-            await session.refresh(config)
-    except Exception:
-        config = await _get_connector_config(company_id, connector)
-    return config
+        if (
+            legacy_id != str(company_id)
+            and len(companies) == 1
+            and str(companies[0]) == str(company_id)
+        ):
+            try:
+                row = await claim_connector_ownership(
+                    session, company_id, connector, create=False
+                )
+                await session.commit()
+                return row
+            except ConnectorOwnershipError:
+                await session.rollback()
+        return None
 
 
 async def _clear_connector_config(company_id: str, connector: str) -> None:
@@ -389,6 +311,24 @@ async def _clear_connector_config(company_id: str, connector: str) -> None:
             await session.commit()
     except Exception:
         log.warning("failed to clear ConnectorConfig (%s)", connector, exc_info=True)
+
+
+async def _clear_connector_webhook_state(company_id: str, connector: str) -> None:
+    """Persist successful remote webhook cleanup before credential revocation."""
+    import sqlalchemy as sa
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+
+    async with get_session_ctx() as session:
+        await session.execute(
+            sa.update(ConnectorConfig)
+            .where(
+                ConnectorConfig.company_id == company_id,
+                ConnectorConfig.connector == connector,
+            )
+            .values(webhook_ids_json=None, webhook_secret=None)
+        )
+        await session.commit()
 
 
 async def _kickoff_connector_sync(company_id: str, platform: str, token: str) -> None:
@@ -829,7 +769,12 @@ async def connectors_tab_content(lang: str, token: str, category: str, company_i
     configs: dict[str, object] = {}
     for c in catalog:
         if c.get("connected"):
-            cfg = await _ensure_connector_config(company_id, c["id"], c.get("category", "website"))
+            cfg = await _get_connector_config(company_id, c["id"])
+            if cfg is None:
+                # Relay connected state is installation-wide. It is not authority
+                # to claim this company merely because the settings page was viewed.
+                c["connected"] = False
+                continue
             configs[c["id"]] = cfg
 
     # Auto-sync a freshly connected store that has never synced (e.g. just returned from
@@ -1015,6 +960,15 @@ def setup_routes(app):
             except Exception as exc:
                 cleanup_warning = str(exc)
                 log.warning("WooCommerce webhook cleanup failed during disconnect", exc_info=True)
+                return Div(
+                    Span(
+                        f"Webhook cleanup failed; nothing was disconnected. Retry after fixing the WooCommerce connection: {cleanup_warning}",
+                        cls="flash flash--warning",
+                    ),
+                    id=f"connector-card-{platform}",
+                    cls="connector-card",
+                )
+            await _clear_connector_webhook_state(company_id, platform)
 
         # Revoke on the relay via the API process proxy (which holds the relay session).
         from ui.api_client import delete_connector_credentials
@@ -1177,25 +1131,6 @@ def setup_routes(app):
                 id=f"connector-card-{platform}", cls="connector-card",
             )
 
-        # Relay credentials are instance/platform scoped. Claim this connector for
-        # exactly one ERP company before writing credentials so another company
-        # cannot silently replace a live store connection.
-        if not await _claim_connector_for_company(company_id, platform):
-            return Div(
-                Span(
-                    t(
-                        "connectors.connect_check_failed", lang,
-                        detail=(
-                            "This connector is already connected to another company "
-                            "on this installation. Disconnect it there before connecting here."
-                        ),
-                    ),
-                    cls="flash flash--warning",
-                ),
-                id=f"connector-card-{platform}",
-                cls="connector-card",
-            )
-
         # Validation + storage run in the API process, which holds the live relay
         # session (the UI process has none). The proxy probes the store first, so a
         # bad key/secret/URL fails here with a clear message instead of silently
@@ -1230,7 +1165,16 @@ def setup_routes(app):
         # Create connector config with defaults
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
-        config = await _ensure_connector_config(company_id, platform, c_data.get("category", "website"))
+        config = await _get_connector_config(company_id, platform)
+        if config is None:
+            return Div(
+                Span(
+                    t("connectors.connect_failed", lang),
+                    cls="flash flash--warning",
+                ),
+                id=f"connector-card-{platform}",
+                cls="connector-card",
+            )
 
         # A WooCommerce connection is not healthy until all required webhooks
         # can be created. Roll back both local config and relay credentials on failure.

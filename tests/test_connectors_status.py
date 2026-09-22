@@ -187,3 +187,47 @@ async def test_connector_claim_rejects_different_company_owner(_db_engine):
 
     assert await _claim_connector_for_company("company-b", "woocommerce") is False
     assert await _claim_connector_for_company("company-a", "woocommerce") is True
+
+
+@pytest.mark.asyncio
+async def test_connector_ownership_merges_legacy_operational_state(_db_engine):
+    import json
+    from unittest.mock import patch
+    import sqlalchemy as sa
+
+    from celerp.connectors.ownership import claim_connector_ownership
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+
+    company_id = f"co-{uuid.uuid4().hex[:10]}"
+    legacy_id = f"inst-{uuid.uuid4().hex[:10]}"
+    async with get_session_ctx() as session:
+        session.add_all([
+            ConnectorConfig(
+                company_id=company_id, connector="woocommerce",
+                webhook_ids_json=json.dumps(["11"]), webhook_secret=None,
+                direction="inbound",
+            ),
+            ConnectorConfig(
+                company_id=legacy_id, connector="woocommerce",
+                webhook_ids_json=json.dumps(["12"]), webhook_secret="legacy-secret",
+                direction="both",
+            ),
+        ])
+        await session.commit()
+
+    with patch("celerp.connectors.ownership.ensure_instance_id", return_value=legacy_id):
+        async with get_session_ctx() as session:
+            row = await claim_connector_ownership(session, company_id, "woocommerce")
+            await session.commit()
+            assert row is not None
+
+    async with get_session_ctx() as session:
+        rows = (await session.execute(sa.select(ConnectorConfig).where(
+            ConnectorConfig.connector == "woocommerce",
+            ConnectorConfig.company_id.in_([company_id, legacy_id]),
+        ))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].company_id == company_id
+        assert set(rows[0].webhook_ids) == {"11", "12"}
+        assert rows[0].webhook_secret == "legacy-secret"

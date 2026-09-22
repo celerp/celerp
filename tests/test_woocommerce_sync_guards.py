@@ -12,6 +12,7 @@ from celerp_inventory.services import (
     deleted_external_link_may_relink,
     external_link_intentionally_disabled,
     relinked_external_sync_enabled,
+    external_identity_key,
 )
 
 
@@ -83,3 +84,12 @@ def test_manual_disable_blocks_product_inbound_but_remote_delete_does_not():
     assert not external_link_intentionally_disabled({
         "product_id": "20", "sync_enabled": True, "remote_deleted": False,
     })
+
+
+def test_platform_identity_uses_the_platform_specific_variant_key():
+    assert external_identity_key(
+        "shopify", {"product_id": "20", "variant_id": "201"}
+    ) == ("20", "201")
+    assert external_identity_key(
+        "woocommerce", {"product_id": "20", "variation_id": "201"}
+    ) == ("20", "201")

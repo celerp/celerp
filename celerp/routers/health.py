@@ -15,7 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import __version__
 from celerp.db import get_session
-from celerp.services.auth import ROLE_LEVELS, get_current_role, get_current_user
+from celerp.services.auth import (
+    ROLE_LEVELS,
+    get_current_company_id,
+    get_current_role,
+    get_current_user,
+)
 from celerp.services.permissions import require_permission
 from celerp.services.system_health import get_system_health
 
@@ -1165,7 +1170,12 @@ async def connectors_catalog_api() -> dict:
 
 
 @settings_router.get("/connectors/{platform}/authorize-url", dependencies=[require_permission("manage_integrations")])
-async def connector_authorize_url(platform: str, shop: str = "") -> dict:
+async def connector_authorize_url(
+    platform: str,
+    shop: str = "",
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     """Get OAuth authorize URL for a connector platform via API process (holds gateway token)."""
     import httpx
     from celerp.config import settings as _s, ensure_instance_id
@@ -1173,6 +1183,14 @@ async def connector_authorize_url(platform: str, shop: str = "") -> dict:
     api_key = _s.gateway_token
     if not api_key:
         return {"error": "Not connected to relay."}
+
+    from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector_ownership
+    try:
+        await claim_connector_ownership(session, company_id, platform)
+        await session.commit()
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     from celerp.gateway.state import (
         fetch_relay_auth, relay_http_url as _rhu, with_relay_client)

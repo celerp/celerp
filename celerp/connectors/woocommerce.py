@@ -161,7 +161,8 @@ class WooCommerceConnector(ConnectorBase):
             return result
 
         async def _import_one(*, sku, name, description, price, product_id,
-                              variation_id=None, manage_stock=None, stock_quantity=None):
+                              variation_id=None, manage_stock=None, stock_quantity=None,
+                              virtual=False):
             try:
                 outcome, entity_id = await upsert_external_product(
                     ctx.company_id,
@@ -175,6 +176,8 @@ class WooCommerceConnector(ConnectorBase):
                     quantity=float(stock_quantity) if stock_quantity is not None else None,
                     seed_quantity=(manage_stock is True),
                     link_fields={"manage_stock": manage_stock},
+                    inventory_type="service" if virtual else None,
+                    sell_by="service" if virtual else None,
                 )
                 result.record(outcome)
                 return None if outcome == "disabled" else entity_id
@@ -211,6 +214,7 @@ class WooCommerceConnector(ConnectorBase):
                         variation_id=vid,
                         manage_stock=var.get("manage_stock"),
                         stock_quantity=var.get("stock_quantity"),
+                        virtual=bool(var.get("virtual", product.get("virtual", False))),
                     )
                     if entity_id:
                         var_img = var.get("image")
@@ -233,6 +237,7 @@ class WooCommerceConnector(ConnectorBase):
                 sku=sku, name=name, description=description, price=sell_price,
                 product_id=pid, manage_stock=product.get("manage_stock"),
                 stock_quantity=product.get("stock_quantity"),
+                virtual=bool(product.get("virtual", False)),
             )
             if entity_id:
                 try:
@@ -387,13 +392,17 @@ class WooCommerceConnector(ConnectorBase):
         if remote.get("type") == "variable":
             raise ValueError("A variable parent cannot be linked as a sellable catalog item; import an exact variation instead")
         new_link = {"product_id": str(remote["id"]), "sync_enabled": True,
-                    "remote_deleted": False, "manage_stock": remote.get("manage_stock")}
+                    "remote_deleted": False, "manage_stock": remote.get("manage_stock"),
+                    "inventory_sync_paused": False}
         async with AsyncSessionLocal() as session:
             if link and not rediscover:
                 await set_external_link_state(
                     session, ctx.company_id, anchor_id, "woocommerce",
                     sync_enabled=True, remote_deleted=False,
-                    link_updates={"manage_stock": remote.get("manage_stock")},
+                    link_updates={
+                        "manage_stock": remote.get("manage_stock"),
+                        "inventory_sync_paused": False,
+                    },
                     actor_id=actor_id, source="connector_ui",
                 )
             else:

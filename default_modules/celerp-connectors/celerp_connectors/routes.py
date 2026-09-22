@@ -164,7 +164,9 @@ def _relay_https_error() -> dict | None:
 async def store_credentials(
     connector_name: str,
     payload: ApiKeyCredentials,
+    company_id: Annotated[str, Depends(get_current_company_id)],
     _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Validate API-key credentials against the store, then store them on the relay.
 
@@ -214,6 +216,13 @@ async def store_credentials(
         except Exception as exc:
             return {"ok": False, "error": "store_unreachable", "detail": str(exc)}
 
+    from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector_ownership
+    try:
+        await claim_connector_ownership(session, company_id, connector_name)
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
             r = await c.post(
@@ -226,26 +235,36 @@ async def store_credentials(
                 headers=relay_session_headers(),
             )
     except Exception as exc:
+        await session.rollback()
         return {"ok": False, "error": "relay_error", "detail": str(exc)}
 
     if r.status_code == 402:
+        await session.rollback()
         return {"ok": False, "error": "subscription_required", "detail": ""}
     if r.status_code != 200:
+        await session.rollback()
         return {"ok": False, "error": "relay_error", "detail": f"relay returned {r.status_code}"}
+    await session.commit()
     return {"ok": True}
 
 
 @router.delete("/{connector_name}/credentials")
 async def revoke_credentials(
     connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
     _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Revoke stored connector credentials on the relay (disconnect).
 
     A 404 from the relay means nothing was stored - already disconnected, so ok.
     """
     import httpx
+    from celerp.connectors.ownership import connector_owned_by_company
     from celerp.gateway.state import relay_http_url, relay_session_headers
+
+    if not await connector_owned_by_company(session, company_id, connector_name):
+        raise HTTPException(status_code=409, detail="Connector is not owned by the current company")
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
@@ -264,7 +283,9 @@ async def revoke_credentials(
 @router.get("/{connector_name}/access-token")
 async def connector_access_token(
     connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
     _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Return a short-lived decrypted access token from the relay.
 
@@ -273,7 +294,11 @@ async def connector_access_token(
     session_invalid, subscription_required, relay_error.
     """
     import httpx
+    from celerp.connectors.ownership import connector_owned_by_company
     from celerp.gateway.state import relay_http_url, relay_session_headers
+
+    if not await connector_owned_by_company(session, company_id, connector_name):
+        return {"error": "not_connected", "detail": "Connector is not owned by the current company."}
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:

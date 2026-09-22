@@ -3074,10 +3074,13 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
 
             # Template: prefer existing item by item_id, fall back to SKU match.
             template_state: dict = {}
+            catalog_item_id: str | None = None
             if it.item_id:
                 tmpl_row = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
                 if tmpl_row:
                     template_state = tmpl_row.state
+                    if tmpl_row.entity_type == "item":
+                        catalog_item_id = tmpl_row.entity_id
             if not template_state:
                 template_state = next(
                     (r.state for r in all_item_rows
@@ -3107,6 +3110,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 "allow_splitting", "pick_method", "gtin",
             )
             item_data: dict = {k: sku_ref[k] for k in _INHERIT if k in sku_ref and sku_ref[k] is not None}
+            if catalog_item_id:
+                item_data["catalog_item_id"] = catalog_item_id
             # Copy dynamic category-specific attributes (measurements, shape/cut, etc.)
             if sku_ref.get("attributes"):
                 item_data["attributes"] = dict(sku_ref["attributes"])

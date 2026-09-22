@@ -241,6 +241,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         resolve_catalog_anchor_for_item,
         resolve_external_product,
         set_external_link,
+        set_external_link_state,
     )
 
     from celerp_docs.routes import (
@@ -296,12 +297,9 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                     f"WooCommerce order {order.get('number') or order_id} changed after "
                     "the Celerp invoice was issued; manual reconciliation is required"
                 )
-            if wc_status in {"cancelled", "failed", "refunded"}:
-                raise ValueError(
-                    f"WooCommerce order {order.get('number') or order_id} is {wc_status} "
-                    "after issuance; reverse/refund it through the accounting workflow"
-                )
-            if wc_status not in {"processing", "completed"}:
+            if wc_status not in {
+                "on-hold", "processing", "completed", "cancelled", "failed", "refunded"
+            }:
                 raise ValueError(
                     f"WooCommerce order {order.get('number') or order_id} moved to "
                     f"{wc_status!r} after issuance; manual reconciliation is required"
@@ -443,6 +441,16 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                             "created_at": row.created_at.isoformat() if row.created_at else "",
                             "updated_at": row.updated_at.isoformat() if row.updated_at else "",
                         })
+                    if not family and link.get("manage_stock") in (False, "parent"):
+                        line_items.append({
+                            "sku": sku,
+                            "name": line_name,
+                            "quantity": qty,
+                            "unit_price": unit_price,
+                            "line_total": line_total,
+                            "sell_by": anchor_state.get("sell_by"),
+                        })
+                        continue
                     options = consolidate_sales_lots(family, company_settings) if family else []
                     if len(options) != 1:
                         raise ValueError(
@@ -562,7 +570,9 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                 populate_existing=True,
             )
 
-        if wc_status not in {"processing", "completed"}:
+        if wc_status not in {
+            "on-hold", "processing", "completed", "cancelled", "failed", "refunded"
+        }:
             await session.commit()
             return outcome
 
@@ -578,7 +588,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
 
         doc = await _get_doc(session, cid, entity_id, for_update=True)
         changed = outcome != "noop"
-        if not doc.state.get("finalized"):
+        if wc_status in {"processing", "completed"} and not doc.state.get("finalized"):
             await _finalize_doc_impl(entity_id, cid, actor, session, commit=False)
             changed = True
             doc = await _get_doc(session, cid, entity_id, for_update=True)
@@ -600,7 +610,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                 continue
             item_status = str(st.get("status") or "")
             owner_doc = st.get("status_doc_id")
-            if wc_status == "processing":
+            if wc_status in {"on-hold", "processing"}:
                 if item_status == "available":
                     stock_ids.append(item_id)
                 elif item_status == "reserved" and owner_doc == entity_id:
@@ -612,7 +622,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                         f"Cannot reserve WooCommerce SKU {st.get('sku') or item_id}: "
                         f"inventory is {item_status!r}"
                     )
-            else:
+            elif wc_status == "completed":
                 if item_status in {"available", "reserved"} and (
                     item_status == "available" or owner_doc == entity_id
                 ):
@@ -625,7 +635,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                         f"inventory is {item_status!r}"
                     )
 
-        if wc_status == "processing" and stock_ids:
+        if wc_status in {"on-hold", "processing"} and stock_ids:
             doc = await _get_doc(session, cid, entity_id, for_update=True)
             await _reserve_lines_impl(
                 doc, entity_id, "reserved", stock_ids, actor, session, commit=False
@@ -638,8 +648,77 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             )
             changed = True
 
+        if wc_status in {"cancelled", "failed", "refunded"}:
+            doc = await _get_doc(session, cid, entity_id, for_update=True)
+            reserved_ids: list[str] = []
+            sold_items: list[Projection] = []
+            for li in doc.state.get("line_items", []):
+                item_id = li.get("item_id") or li.get("entity_id")
+                if not item_id:
+                    continue
+                item = await session.get(Projection, {"company_id": cid, "entity_id": item_id})
+                if item is None:
+                    continue
+                st = item.state or {}
+                if st.get("status") == "reserved" and st.get("status_doc_id") == entity_id:
+                    reserved_ids.append(item_id)
+                elif st.get("status") == "sold" and st.get("status_doc_id") == entity_id:
+                    sold_items.append(item)
+            if reserved_ids:
+                await _reserve_lines_impl(
+                    doc, entity_id, "available", reserved_ids, actor, session, commit=False
+                )
+                changed = True
+            for sold in sold_items:
+                try:
+                    anchor = await resolve_catalog_anchor_for_item(session, cid, sold.entity_id)
+                    if external_link_for_state(anchor.state or {}, "woocommerce"):
+                        await set_external_link_state(
+                            session, cid, anchor.entity_id, "woocommerce",
+                            link_updates={"inventory_sync_paused": True},
+                            source="connector",
+                        )
+                except ValueError:
+                    pass
+            doc = await _get_doc(session, cid, entity_id, for_update=True)
+            fields = {}
+            current_status = str((doc.state or {}).get("woocommerce_status") or "")
+            if current_status != wc_status:
+                fields["woocommerce_status"] = {"old": current_status, "new": wc_status}
+            needs_manual = bool(
+                doc.state.get("finalized")
+                or sold_items
+                or float(doc.state.get("amount_paid") or 0) > 0
+            )
+            reason = (
+                f"WooCommerce order {order.get('number') or order_id} is {wc_status}; "
+                "manual financial/fulfillment reconciliation is required"
+                if needs_manual else None
+            )
+            if (doc.state or {}).get("woocommerce_reconciliation_required") != reason:
+                fields["woocommerce_reconciliation_required"] = {
+                    "old": (doc.state or {}).get("woocommerce_reconciliation_required"),
+                    "new": reason,
+                }
+            if fields:
+                await emit_event(
+                    session, company_id=cid, entity_id=entity_id, entity_type="doc",
+                    event_type="doc.updated", data={"fields_changed": fields},
+                    actor_id=owner_id, location_id=None, source="connector",
+                    idempotency_key=f"{idem_key}:reversal:{wc_status}", metadata_={},
+                )
+                changed = True
+            await session.commit()
+            if needs_manual:
+                raise ValueError(reason)
+            return "updated" if changed else outcome
+
         doc = await _get_doc(session, cid, entity_id, for_update=True)
-        if order.get("date_paid") and float(doc.state.get("amount_outstanding") or 0) > 0:
+        if (
+            wc_status in {"processing", "completed"}
+            and order.get("date_paid")
+            and float(doc.state.get("amount_outstanding") or 0) > 0
+        ):
             payment_date = str(order.get("date_paid"))[:10]
             await apply_doc_payment(
                 session, cid, entity_id,

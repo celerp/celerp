@@ -232,13 +232,27 @@ def _external_ids(platform: str, state: dict) -> dict:
 
 
 def _is_product_anchor_state(state: dict) -> bool:
-    """True for a catalog/product row rather than a derived physical lot."""
-    return not any((
+    """True only when state can safely own one catalog/product identity."""
+    if str(state.get("status") or "").lower() == "merged":
+        return False
+    if any((
+        state.get("catalog_item_id"),
         state.get("lot"),
         state.get("parent_item_id"),
         state.get("split_from"),
         state.get("transformed_from"),
-    )) and str(state.get("status") or "").lower() != "merged"
+    )):
+        return False
+    links = state.get("external_links") or {}
+    if isinstance(links, dict) and any(
+        isinstance(link, dict) and link.get("product_id") not in (None, "")
+        for link in links.values()
+    ):
+        return True
+    idem = str(state.get("idempotency_key") or "")
+    if idem.startswith(("shopify:", "woocommerce:")):
+        return True
+    return not bool(state.get("barcode") or state.get("rfid_epc"))
 
 
 def _same_external_identity(link: dict, product_id: str, variation_id: str | None) -> bool:
@@ -311,7 +325,17 @@ async def resolve_external_product(
         and str((r.state or {}).get("sku") or "").strip().casefold() == norm_sku
     ]
     if len(candidates) == 1:
-        return candidates[0]
+        candidate = candidates[0]
+        existing_link = external_link_for_state(candidate.state or {}, platform)
+        if (
+            existing_link
+            and not _same_external_identity(existing_link, str(product_id), variation_id)
+            and not deleted_external_link_may_relink(existing_link)
+        ):
+            raise ValueError(
+                f"SKU {sku!r} is already linked to a different {platform} product"
+            )
+        return candidate
     if len(candidates) > 1:
         raise ValueError(f"SKU {sku!r} matches multiple catalog products")
     return None
@@ -356,6 +380,8 @@ async def upsert_external_product(
     quantity: float | None = None,
     seed_quantity: bool = False,
     link_fields: dict | None = None,
+    inventory_type: str | None = None,
+    sell_by: str | None = None,
 ) -> tuple[str, str]:
     """Create or link one external product without making the connector an inventory engine."""
     from celerp.db import SessionLocal as AsyncSessionLocal
@@ -364,7 +390,8 @@ async def upsert_external_product(
     product_id = str(product_id)
     variation_id = str(variation_id) if variation_id not in (None, "") else None
     identity = f"{platform}:{product_id}" + (f":{variation_id}" if variation_id else "")
-    lock_key = f"external-product:{cid}:{identity}"
+    sku_lock = str(sku or "").strip().casefold()
+    lock_key = f"external-product:{cid}:{platform}:{sku_lock or identity}"
 
     async with AsyncSessionLocal() as session:
         await session.execute(
@@ -381,6 +408,13 @@ async def upsert_external_product(
             row = await resolve_catalog_anchor_for_item(
                 session, cid, legacy_row.entity_id
             )
+        if row is not None:
+            row = await session.get(
+                Projection,
+                {"company_id": cid, "entity_id": row.entity_id},
+                with_for_update=True,
+                populate_existing=True,
+            )
 
         incoming_link = {
             "product_id": product_id,
@@ -396,10 +430,12 @@ async def upsert_external_product(
             data: dict = {
                 "sku": sku,
                 "name": name,
-                "sell_by": "piece",
+                "sell_by": sell_by or "piece",
                 "external_links": {platform: incoming_link},
                 "idempotency_key": identity,
             }
+            if inventory_type is not None:
+                data["inventory_type"] = inventory_type
             if description is not None:
                 data["description"] = description
             if sale_price is not None:
@@ -462,10 +498,15 @@ async def upsert_external_product(
         links = dict(state.get("external_links") or {})
         previous_link = external_link_for_state(state, platform)
         links[platform] = {
+            **previous_link,
             **incoming_link,
             "sync_enabled": relinked_external_sync_enabled(previous_link),
         }
         desired = {"sku": sku, "name": name, "external_links": links}
+        if inventory_type is not None:
+            desired["inventory_type"] = inventory_type
+        if sell_by is not None:
+            desired["sell_by"] = sell_by
         if description is not None:
             desired["description"] = description
         if sale_price is not None:
@@ -557,6 +598,14 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
     if row is None or row.entity_type != "item":
         raise ValueError(f"Item {entity_id!r} not found")
     state = row.state or {}
+    catalog_item_id = state.get("catalog_item_id")
+    if catalog_item_id:
+        parent = await session.get(
+            Projection, {"company_id": cid, "entity_id": str(catalog_item_id)}
+        )
+        if parent is None or parent.entity_type != "item" or not _is_product_anchor_state(parent.state or {}):
+            raise ValueError(f"Item {entity_id!r} references an invalid catalog product anchor")
+        return parent
     if _is_product_anchor_state(state):
         sku = str(state.get("sku") or "").strip().casefold()
         if sku:
@@ -638,9 +687,10 @@ def build_channel_states(rows: list[Projection]) -> dict[str, dict[str, dict]]:
                 continue
             roots = [r for r in linked if _is_product_anchor_state(r.state or {})]
             candidates = roots or linked
-            identities = {(str(external_link_for_state(r.state or {}, platform).get("product_id") or ""),
-                           str(external_link_for_state(r.state or {}, platform).get("variation_id") or ""))
-                          for r in candidates}
+            identities = {
+                external_identity_key(platform, external_link_for_state(r.state or {}, platform))
+                for r in candidates
+            }
             if len(identities) != 1:
                 for row in sku_rows:
                     result[row.entity_id][platform] = {"linked": True, "enabled": False, "ambiguous": True}
@@ -659,6 +709,14 @@ def build_channel_states(rows: list[Projection]) -> dict[str, dict[str, dict]]:
                 result[row.entity_id][platform] = dict(state)
     return result
 
+def external_identity_key(platform: str, link: dict) -> tuple[str, str | None]:
+    """Canonical external product identity for one platform."""
+    product_id = str(link.get("product_id") or "")
+    variant_key = "variant_id" if platform == "shopify" else "variation_id"
+    variant = link.get(variant_key)
+    return product_id, (str(variant) if variant not in (None, "") else None)
+
+
 def _choose_outbound_anchor(candidates: list[Projection], platform: str) -> Projection:
     if len(candidates) == 1:
         return candidates[0]
@@ -674,7 +732,13 @@ def _choose_outbound_anchor(candidates: list[Projection], platform: str) -> Proj
     raise ValueError(f"Multiple item rows claim the same {platform} product identity")
 
 
-async def _items_with_external_id(company_id: str, platform: str, require_sync_flag: bool = False) -> list[dict]:
+async def _items_with_external_id(
+    company_id: str,
+    platform: str,
+    require_sync_flag: bool = False,
+    *,
+    inventory_only: bool = False,
+) -> list[dict]:
     """Return one outbound row per linked external product identity."""
     from celerp.db import SessionLocal as AsyncSessionLocal
     from celerp_inventory.projections import is_item_available
@@ -704,15 +768,14 @@ async def _items_with_external_id(company_id: str, platform: str, require_sync_f
         link = external_link_for_state(st, platform)
         if not link or link.get("product_id") in (None, "") or link.get("remote_deleted") is True:
             continue
+        if inventory_only and link.get("inventory_sync_paused") is True:
+            continue
         if platform == "shopify":
             if require_sync_flag and r.is_sync_to_shopify is not True:
                 continue
         elif link.get("sync_enabled") is False:
             continue
-        key = (
-            str(link["product_id"]),
-            str(link["variation_id"]) if link.get("variation_id") not in (None, "") else None,
-        )
+        key = external_identity_key(platform, link)
         grouped.setdefault(key, []).append(r)
 
     out: list[dict] = []
@@ -744,7 +807,8 @@ async def _items_with_external_id(company_id: str, platform: str, require_sync_f
 async def list_items_with_external_id(company_id: str, platform: str) -> list[dict]:
     """Items currently enabled for outbound synchronization with platform."""
     return await _items_with_external_id(
-        company_id, platform, require_sync_flag=(platform == "shopify")
+        company_id, platform, require_sync_flag=(platform == "shopify"),
+        inventory_only=True,
     )
 
 
