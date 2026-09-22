@@ -3094,6 +3094,7 @@
   "documents.line_label_not_shipped": "ยังไม่จัดส่ง",
   "documents.th_shipped": "การจัดส่ง",
   "btn.decline": "ปฏิเสธ",
+  "settings_cloud.partner_tab": "พันธมิตรผู้ติดตั้ง",
   "settings_cloud.partner_claim_title": "การอ้างสิทธิ์ของพาร์ทเนอร์",
   "settings_cloud.partner_claim_desc": "หากพาร์ทเนอร์ให้รหัสอ้างสิทธิ์แก่คุณเพื่อจัดการการติดตั้งนี้ ให้วางรหัสที่นี่เพื่อตรวจสอบว่าพวกเขาเป็นใครก่อนที่คุณจะยอมรับ",
   "settings_cloud.partner_claim_label": "รหัสอ้างสิทธิ์",

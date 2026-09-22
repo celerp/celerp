@@ -3094,6 +3094,7 @@
   "documents.line_label_not_shipped": "未出荷",
   "documents.th_shipped": "出荷状況",
   "btn.decline": "辞退",
+  "settings_cloud.partner_tab": "導入パートナー",
   "settings_cloud.partner_claim_title": "パートナー申請",
   "settings_cloud.partner_claim_desc": "パートナーからこのインストールを管理するための申請コードを受け取った場合は、ここに貼り付けて、承認する前に相手を確認してください。",
   "settings_cloud.partner_claim_label": "申請コード",

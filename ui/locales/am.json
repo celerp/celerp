@@ -3094,6 +3094,7 @@
   "documents.line_label_not_shipped": "አልተላከም",
   "documents.th_shipped": "ተልኳል",
   "btn.decline": "አትቀበል",
+  "settings_cloud.partner_tab": "የአተገባበር አጋር",
   "settings_cloud.partner_claim_title": "የአጋር ጥያቄ",
   "settings_cloud.partner_claim_desc": "አንድ አጋር ይህን ጭነት ለማስተዳደር የጥያቄ ኮድ ከሰጠዎት፣ ከመቀበልዎ በፊት ማንነታቸውን ለመገምገም እዚህ ይለጥፉት።",
   "settings_cloud.partner_claim_label": "የጥያቄ ኮድ",

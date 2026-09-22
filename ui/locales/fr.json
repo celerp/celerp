@@ -3094,6 +3094,7 @@
   "documents.line_label_not_shipped": "Non expédié",
   "documents.th_shipped": "Expédition",
   "btn.decline": "Refuser",
+  "settings_cloud.partner_tab": "Partenaire d'implémentation",
   "settings_cloud.partner_claim_title": "Revendication de partenaire",
   "settings_cloud.partner_claim_desc": "Si un partenaire vous a donné un code de revendication pour gérer cette installation, collez-le ici afin de vérifier son identité avant d'accepter.",
   "settings_cloud.partner_claim_label": "Code de revendication",

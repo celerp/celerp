@@ -3094,6 +3094,7 @@
   "documents.line_label_not_shipped": "Não enviado",
   "documents.th_shipped": "Envio",
   "btn.decline": "Recusar",
+  "settings_cloud.partner_tab": "Parceiro de implementação",
   "settings_cloud.partner_claim_title": "Reivindicação de parceiro",
   "settings_cloud.partner_claim_desc": "Se um parceiro lhe deu um código de reivindicação para gerir esta instalação, cole-o aqui para verificar quem é antes de aceitar.",
   "settings_cloud.partner_claim_label": "Código de reivindicação",

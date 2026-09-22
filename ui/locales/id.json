@@ -3094,6 +3094,7 @@
   "documents.line_label_not_shipped": "Belum dikirim",
   "documents.th_shipped": "Pengiriman",
   "btn.decline": "Tolak",
+  "settings_cloud.partner_tab": "Mitra implementasi",
   "settings_cloud.partner_claim_title": "Klaim mitra",
   "settings_cloud.partner_claim_desc": "Jika mitra memberi Anda kode klaim untuk mengelola pemasangan ini, tempelkan di sini untuk meninjau siapa mereka sebelum Anda menerima.",
   "settings_cloud.partner_claim_label": "Kode klaim",

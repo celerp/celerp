@@ -3094,6 +3094,7 @@
   "documents.line_label_not_shipped": "Nicht versandt",
   "documents.th_shipped": "Versand",
   "btn.decline": "Ablehnen",
+  "settings_cloud.partner_tab": "Implementierungspartner",
   "settings_cloud.partner_claim_title": "Partneranspruch",
   "settings_cloud.partner_claim_desc": "Wenn ein Partner Ihnen einen Anspruchscode zur Verwaltung dieser Installation gegeben hat, fügen Sie ihn hier ein, um vor dem Annehmen zu prüfen, wer er ist.",
   "settings_cloud.partner_claim_label": "Anspruchscode",

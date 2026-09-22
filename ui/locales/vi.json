@@ -3094,6 +3094,7 @@
   "documents.line_label_not_shipped": "Chưa gửi",
   "documents.th_shipped": "Vận chuyển",
   "btn.decline": "Từ chối",
+  "settings_cloud.partner_tab": "Đối tác triển khai",
   "settings_cloud.partner_claim_title": "Yêu cầu của đối tác",
   "settings_cloud.partner_claim_desc": "Nếu một đối tác đã cung cấp cho bạn mã yêu cầu để quản lý bản cài đặt này, hãy dán mã vào đây để xem họ là ai trước khi bạn chấp nhận.",
   "settings_cloud.partner_claim_label": "Mã yêu cầu",

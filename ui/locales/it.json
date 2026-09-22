@@ -3094,6 +3094,7 @@
   "documents.line_label_not_shipped": "Non spedito",
   "documents.th_shipped": "Spedizione",
   "btn.decline": "Rifiuta",
+  "settings_cloud.partner_tab": "Partner di implementazione",
   "settings_cloud.partner_claim_title": "Rivendicazione del partner",
   "settings_cloud.partner_claim_desc": "Se un partner ti ha fornito un codice di rivendicazione per gestire questa installazione, incollalo qui per verificare chi è prima di accettare.",
   "settings_cloud.partner_claim_label": "Codice di rivendicazione",

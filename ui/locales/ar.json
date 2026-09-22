@@ -3094,6 +3094,7 @@
   "documents.line_label_not_shipped": "لم يُشحن",
   "documents.th_shipped": "الشحن",
   "btn.decline": "رفض",
+  "settings_cloud.partner_tab": "شريك التنفيذ",
   "settings_cloud.partner_claim_title": "مطالبة الشريك",
   "settings_cloud.partner_claim_desc": "إذا أعطاك شريك رمز مطالبة لإدارة هذا التثبيت، فالصقه هنا لمراجعة هويته قبل القبول.",
   "settings_cloud.partner_claim_label": "رمز المطالبة",

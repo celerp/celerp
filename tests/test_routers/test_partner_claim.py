@@ -603,7 +603,9 @@ async def test_partner_claim_hidden_once_direct_install_is_connected(
         patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
         patch("ui.routes.settings_cloud._get_role", return_value="owner"),
         patch("ui.api_client.get_billing_catalog", new=AsyncMock(return_value={})),
-        patch("ui.api_client.get_backup_status", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_backup_status", new=AsyncMock(return_value={
+            "db": {}, "next_db_utc": None, "public_url": public_url or "",
+        })),
         patch("celerp.gateway.state.get_commercial_mode", return_value="celerp_direct"),
         patch("celerp.gateway.state.get_local_infra_state", return_value=neutral_infra),
     ):
