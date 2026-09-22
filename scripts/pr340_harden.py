@@ -1271,14 +1271,14 @@ write("ui/routes/settings_connectors.py", settings)
 # ---------------------------------------------------------------------------
 health_src = read("celerp/routers/health.py")
 if "get_current_company_id" not in health_src:
-    health_src, n = re.subn(
-        r'(from celerp\.services\.auth import [^\\n]+\\n)',
-        r'\\1from celerp.services.auth import get_current_company_id\\n',
-        health_src,
-        count=1,
+    _future = "from __future__ import annotations\n"
+    if _future not in health_src:
+        raise SystemExit("health.py: future-import anchor not found")
+    health_src = health_src.replace(
+        _future,
+        _future + "\nfrom celerp.services.auth import get_current_company_id\n",
+        1,
     )
-    if n != 1:
-        raise SystemExit("health.py: auth import not found")
     write("celerp/routers/health.py", health_src)
 replace_once(
     "celerp/routers/health.py",
