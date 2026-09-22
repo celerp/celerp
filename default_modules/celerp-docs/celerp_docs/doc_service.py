@@ -233,7 +233,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     from celerp.models.company import Company
     from celerp.models.projections import Projection
     from celerp.services.money import to_decimal
-    from celerp.services.pick import consolidate_sales_lots
+    from celerp.services.pick import consolidate_sales_lots, plan_lot_draws, resolve_pick_method
     from celerp.services.units import is_non_stock_line
     from celerp_inventory.projections import is_item_available
     from celerp_inventory.services import (
@@ -403,12 +403,18 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                 line_total = _amt(source_line["total"], currency)
                 product_subtotal += line_total
 
+                unit_price = line_total / qty
+                line_name = source_line.get("name") or anchor_state.get("name") or sku
                 if is_non_stock_line(anchor_state.get("inventory_type"), anchor_state.get("sell_by")):
-                    picked = {
-                        **anchor_state,
-                        "entity_id": anchor.entity_id,
-                        "id": anchor.entity_id,
-                    }
+                    line_items.append({
+                        "item_id": anchor.entity_id,
+                        "sku": sku,
+                        "name": line_name,
+                        "quantity": qty,
+                        "unit_price": unit_price,
+                        "line_total": line_total,
+                        "sell_by": anchor_state.get("sell_by"),
+                    })
                 else:
                     family: list[dict] = []
                     norm_sku = sku.casefold()
@@ -431,23 +437,52 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                             f"WooCommerce SKU {sku!r} does not resolve to one automatic "
                             "sellable inventory choice"
                         )
-                    picked = options[0]
-                    if float(picked.get("quantity") or 0) + 1e-9 < qty:
+                    representative_id = options[0].get("entity_id") or options[0].get("id")
+                    primary = next(
+                        (item for item in family
+                         if (item.get("entity_id") or item.get("id")) == representative_id),
+                        None,
+                    )
+                    if primary is None:
+                        raise ValueError(f"WooCommerce SKU {sku!r} has no sellable inventory")
+                    method = resolve_pick_method(primary, company_settings)
+                    draws, short_qty = plan_lot_draws(
+                        primary,
+                        qty,
+                        [
+                            item for item in family
+                            if (item.get("entity_id") or item.get("id")) != representative_id
+                        ],
+                        method,
+                    )
+                    if short_qty > 1e-9:
+                        available_qty = qty - short_qty
                         raise ValueError(
                             f"WooCommerce SKU {sku!r} requires {qty:g}, but only "
-                            f"{float(picked.get('quantity') or 0):g} is sellable"
+                            f"{available_qty:g} is sellable"
                         )
 
-                unit_price = line_total / qty
-                line_items.append({
-                    "item_id": picked.get("entity_id") or picked.get("id"),
-                    "sku": sku,
-                    "name": source_line.get("name") or anchor_state.get("name") or sku,
-                    "quantity": qty,
-                    "unit_price": unit_price,
-                    "line_total": line_total,
-                    "sell_by": picked.get("sell_by") or anchor_state.get("sell_by"),
-                })
+                    remaining_total = line_total
+                    for index, (lot, take_qty, _is_full) in enumerate(draws):
+                        is_last = index == len(draws) - 1
+                        draw_total = (
+                            remaining_total
+                            if is_last
+                            else _amt(unit_price * float(take_qty), currency)
+                        )
+                        remaining_total = _amt(
+                            to_decimal(remaining_total) - to_decimal(draw_total),
+                            currency,
+                        )
+                        line_items.append({
+                            "item_id": lot.get("entity_id") or lot.get("id"),
+                            "sku": sku,
+                            "name": line_name,
+                            "quantity": float(take_qty),
+                            "unit_price": unit_price,
+                            "line_total": draw_total,
+                            "sell_by": lot.get("sell_by") or anchor_state.get("sell_by"),
+                        })
 
             fee_total = 0.0
             for fee in order.get("fee_lines", []):
