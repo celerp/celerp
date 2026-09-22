@@ -274,6 +274,20 @@ async def lifespan(_app: FastAPI):
             "may show their status without a document link until a later boot"
         )
 
+    # One-time repair: legacy fulfillment COGS JEs created before their
+    # effective date was persisted. Strictly fail-closed and marker-gated.
+    try:
+        from celerp.db import LifecycleSessionLocal as _CogsDateSession
+        from celerp.services.fulfillment_je_date_backfill import run_fulfillment_je_date_backfill
+        async with _CogsDateSession() as _cogs_date_sess:
+            await run_fulfillment_je_date_backfill(_cogs_date_sess)
+            await _cogs_date_sess.commit()
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Fulfillment JE date backfill failed (non-fatal); affected historical "
+            "entries keep their missing date until a later boot retries"
+        )
+
     # One-time backfill: post the missing COGS JE for invoices finalized before
     # COGS moved into the finalize JE and never fulfilled since. Marker-gated
     # (runs once; retries stragglers while any doc is locked or errored);

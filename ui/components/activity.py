@@ -211,6 +211,7 @@ _SYSTEM_EVENT_TYPES = frozenset({
     "acc.journal_entry.created",
     "acc.journal_entry.posted",
     "acc.journal_entry.voided",
+    "sys.journal_entry.date_repaired",
 })
 
 # metadata_.reason values that mark an event as a mechanical side-effect of a

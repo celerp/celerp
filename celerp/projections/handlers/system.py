@@ -10,7 +10,10 @@ def apply_system_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
 
     # System events are primarily for audit; projections are optional.
-    if event_type == "sys.company.created":
+    if event_type == "sys.journal_entry.date_repaired":
+        if not current.get("ts"):
+            current["ts"] = data["ts"]
+    elif event_type == "sys.company.created":
         current.update({"entity_type": "company", **data})
     elif event_type == "sys.user.created":
         current.update({"entity_type": "user", **data, "is_active": True})
