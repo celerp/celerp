@@ -272,6 +272,10 @@ class TestSecondBootGuards:
             "pgInstance.initialise() must be inside an if (!fs.existsSync(...)) guard"
         )
 
+    def test_non_windows_initdb_forces_utf8(self):
+        """The embedded-postgres first-boot path must never inherit SQL_ASCII."""
+        assert 'initdbFlags: ["--encoding=UTF8"]' in self._src
+
     def test_seed_default_modules_idempotent_within_version(self):
         """On a second boot of the same app version, seedDefaultModules must not
         re-copy already-installed modules - it is version-gated, so it's a no-op."""

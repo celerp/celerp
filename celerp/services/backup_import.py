@@ -13,7 +13,7 @@ import logging
 import re
 import tarfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 log = logging.getLogger(__name__)
 
@@ -157,9 +157,11 @@ def validate_archive(path: Path) -> ImportMeta:
         if "meta.json" not in names:
             raise ValueError("Archive missing meta.json")
 
-        # Security: check for path traversal
+        # Security: check for path traversal and platform-ambiguous separators.
+        # Celerp-generated tar names are POSIX paths; a backslash can become a
+        # separator on Windows and must never acquire different extraction meaning.
         for name in names:
-            if name.startswith("/") or ".." in name:
+            if name.startswith("/") or "\\" in name or ".." in name:
                 raise ValueError(f"Unsafe path in archive: {name}")
 
         meta_file = tar.extractfile("meta.json")
@@ -324,10 +326,39 @@ async def _reconcile_schema() -> str | None:
         )
 
 
+def _is_protected_module_dir(
+    module_root: Path,
+    name: str,
+    protected_names: frozenset[str],
+) -> bool:
+    """Whether *name* identifies a current first-party directory on this filesystem."""
+    if name in protected_names:
+        return True
+
+    candidate = module_root / name
+    if not candidate.exists():
+        return False
+
+    for protected_name in protected_names:
+        protected = module_root / protected_name
+        if not protected.exists():
+            continue
+        try:
+            if candidate.samefile(protected):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 async def _extract_files(path: Path) -> None:
     """Extract attachments/, ai_uploads/, and custom modules/ into data_dir."""
     from celerp.config import settings
+    from celerp.modules.loader import first_party_names
+
     _ALLOWED_PREFIXES = ("attachments/", "ai_uploads/", "modules/")
+    protected_modules = first_party_names()
+    module_root = settings.data_dir / "modules"
     with tarfile.open(str(path), "r:gz") as tar:
         for member in tar.getmembers():
             if member.name in ("database.dump", "meta.json"):
@@ -335,6 +366,16 @@ async def _extract_files(path: Path) -> None:
             if member.name.startswith("/") or ".." in member.name:
                 continue
             if not any(member.name.startswith(p) for p in _ALLOWED_PREFIXES):
+                continue
+            parts = PurePosixPath(member.name).parts
+            if (
+                len(parts) >= 2
+                and parts[0] == "modules"
+                and _is_protected_module_dir(module_root, parts[1], protected_modules)
+            ):
+                # PurePosixPath canonicalizes repeated separators and "." segments.
+                # Non-exact spellings are protected only when this filesystem
+                # resolves them to the same current first-party directory.
                 continue
             if member.isfile():
                 dest = (

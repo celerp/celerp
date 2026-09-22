@@ -39,6 +39,7 @@ from ui.routes.settings import (
     _load_cat_schema_sorted,
 )
 from ui.routes.settings_general import _section_breadcrumb
+from ui.routes.settings_cloud import _relay_has_paid_access
 
 
 def _tag_label(tag: str) -> str:
@@ -566,11 +567,7 @@ def setup_routes(app):
         # paid tier (a free instance can be connected via a share). A status-read
         # failure skips the nudge and never blocks the save that already happened.
         try:
-            status = await api.get_relay_status(token)
-            if status.get("entitlement_known"):
-                paid = bool(status.get("entitled"))
-            else:
-                paid = bool(status.get("gateway_token_set") or status.get("connected"))
+            paid = _relay_has_paid_access(await api.get_relay_status(token))
         except APIError:
             paid = True
         dest = "/settings/inventory?tab=reorder&saved=1"

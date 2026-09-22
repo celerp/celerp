@@ -18,6 +18,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
+from celerp.output.document_context import prepare_document_output
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import breadcrumbs, display_enum, pagination, search_bar, status_cards
@@ -318,7 +319,7 @@ def setup_routes(app) -> None:
 
     @app.get("/subscriptions/{entity_id}")
     async def subscription_detail(request: Request, entity_id: str):
-        from ui.routes.documents import _doc_detail
+        from ui.routes.documents import _doc_detail, _merge_company_letterhead
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -331,27 +332,12 @@ def setup_routes(app) -> None:
         doc_type = doc.get("doc_type", "subscription_invoice")
         direction = "sales" if doc_type == "subscription_invoice" else "purchasing"
 
-        if not doc.get("company_name"):
-            try:
-                company = await api.get_company(token)
-                doc = {**doc,
-                       "company_name": company.get("name") or "",
-                       "company_address": company.get("address") or "",
-                       "company_phone": company.get("phone") or "",
-                       "company_tax_id": company.get("tax_id") or "",
-                       "company_email": company.get("email") or ""}
-            except Exception:
-                pass
+        doc = await _merge_company_letterhead(token, doc)
 
         cid = doc.get("contact_id")
-        if cid and not doc.get("contact_name"):
+        if cid:
             try:
-                contact = await api.get_contact(token, cid)
-                doc["contact_name"] = contact.get("name") or ""
-                doc["contact_company_name"] = contact.get("company_name") or ""
-                doc["contact_email"] = contact.get("email") or ""
-                doc["contact_phone"] = contact.get("phone") or ""
-                doc["contact_tax_id"] = contact.get("tax_id") or ""
+                doc = prepare_document_output(doc, contact=await api.get_contact(token, cid))
             except Exception:
                 pass
 

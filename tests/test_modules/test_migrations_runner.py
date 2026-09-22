@@ -273,6 +273,31 @@ async def test_third_party_migration_failure_records_load_error_and_rolls_back_w
         eng.dispose()
 
 
+async def test_migration_phase_uses_verified_first_party_behind_stale_shadow(
+        _db_engine, tmp_path, monkeypatch):
+    first = tmp_path / "writable"
+    second = tmp_path / "bundled"
+    first.mkdir()
+    second.mkdir()
+    name = f"acme-{uuid.uuid4().hex[:8]}"
+    stale = _make_module(first, name, {"m_001.py": _MIG_BOOM})
+    current = _make_module(second, name, {"m_001.py": _MIG_001_GUARDED})
+    monkeypatch.setenv("MODULE_DIR", f"{first},{second}")
+
+    lock_file = tmp_path / "fp-runtime.lock.json"
+    lock_file.write_text(json.dumps({name: loader.module_content_digest(current)}))
+    monkeypatch.setattr(loader, "_lock_path", lambda: lock_file)
+    loader._first_party_lock.cache_clear()
+    try:
+        assert not loader.is_first_party(stale)
+        assert loader.is_first_party(current)
+        surviving, errors = await run_migration_phase(_db_engine, {name})
+        assert name in surviving
+        assert errors == {}
+    finally:
+        loader._first_party_lock.cache_clear()
+
+
 async def test_first_party_migration_failure_raises(_db_engine, tmp_path, monkeypatch):
     base = tmp_path / "modules"
     pkg = _make_module(base, f"acme-{uuid.uuid4().hex[:8]}", {"m_001.py": _MIG_BOOM})

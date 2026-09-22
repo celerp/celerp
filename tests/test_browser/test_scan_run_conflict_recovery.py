@@ -47,7 +47,7 @@ def test_scan_run_conflict_refreshes_list_without_auto_resubmit(page, ui_server,
     # The version the client tracks before anything commits - it must still read this after the
     # first scan's response is dropped (the client never learned the batch landed), then advance
     # to the server's version only when the conflict refresh installs the committed rows.
-    stale_version = page.evaluate("() => _celerpListVersion")
+    stale_version = page.evaluate("() => _celerpEntityVersion")
 
     # Pin the client's run-key generator so the run that commits sku_a and the run that replays
     # it later reuse the EXACT same key - the deterministic way to reproduce "the earlier
@@ -84,7 +84,7 @@ def test_scan_run_conflict_refreshes_list_without_auto_resubmit(page, ui_server,
         timeout=8000,
     )
     assert page.locator(f'#line-body [data-name="sku"][value="{sku_a}"]').count() == 0
-    assert page.evaluate("() => _celerpListVersion") == stale_version
+    assert page.evaluate("() => _celerpEntityVersion") == stale_version
 
     server_version = api.get(f"/lists/{list_id}").json()["version"]
     assert server_version != stale_version, "the first scan must have committed on the server"
@@ -107,10 +107,10 @@ def test_scan_run_conflict_refreshes_list_without_auto_resubmit(page, ui_server,
     # row (the actually-committed batch) is now present exactly once, the version matches the
     # server, and sku_b - the batch the conflicting run never committed - never appears.
     page.wait_for_function(
-        "(v) => _celerpListVersion === v",
+        "(v) => _celerpEntityVersion === v",
         arg=server_version, timeout=8000,
     )
-    assert page.evaluate("() => _celerpListVersion") != stale_version
+    assert page.evaluate("() => _celerpEntityVersion") != stale_version
     assert page.locator(f'#line-body [data-name="sku"][value="{sku_a}"]').count() == 1
     assert page.locator(f'#line-body [data-name="sku"][value="{sku_b}"]').count() == 0
 

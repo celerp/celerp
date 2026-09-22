@@ -43,10 +43,9 @@ registry in celerp.services.permissions later changes.
 
 from __future__ import annotations
 
-import json
-
-import sqlalchemy as sa
 from alembic import op
+
+from celerp.migrations._json_compat import update_company_settings
 
 revision = "b3c4d5e6f7a8"
 down_revision = "f8a9b0c1d2e3"
@@ -120,45 +119,37 @@ def _collapse(granted_roles: list[str]) -> str | None:
 
 def upgrade() -> None:
     conn = op.get_bind()
-    # Only companies that still carry the retired key; this is also the
-    # idempotency guard, so a replay after the key is stripped touches nothing.
-    rows = conn.execute(sa.text(
-        "SELECT id, settings FROM companies WHERE settings::jsonb ? 'role_permissions'"
-    )).fetchall()
 
-    for cid, settings in rows:
-        data = settings if isinstance(settings, dict) else json.loads(settings)
+    def _mutate(data: dict, _row) -> bool:
+        if "role_permissions" not in data:
+            return False
         role_perms = data.get("role_permissions")
         grants = dict(data.get("role_grants") or {})
         if isinstance(role_perms, dict):
             for key, stored_role in role_perms.items():
                 meta = _CATALOGUE.get(key)
                 if meta is None:
-                    continue  # unknown key: never resolved to an override
+                    continue
                 floor_role, grantable = meta
                 if not grantable:
-                    continue  # fixed permission: overrides were never honored
+                    continue
                 if stored_role not in _ROLE_LEVELS:
-                    continue  # stale role: resolved to the default, no delta
+                    continue
                 grants[key] = _expand(stored_role, floor_role)
         if grants:
             data["role_grants"] = grants
         data.pop("role_permissions", None)
-        conn.execute(
-            sa.text("UPDATE companies SET settings = CAST(:s AS json) WHERE id = :id"),
-            {"s": json.dumps(data), "id": str(cid)},
-        )
+        return True
+
+    update_company_settings(conn, _mutate)
 
 
 def downgrade() -> None:
     conn = op.get_bind()
-    # Only companies that carry the new key; this is also the idempotency guard.
-    rows = conn.execute(sa.text(
-        "SELECT id, settings FROM companies WHERE settings::jsonb ? 'role_grants'"
-    )).fetchall()
 
-    for cid, settings in rows:
-        data = settings if isinstance(settings, dict) else json.loads(settings)
+    def _mutate(data: dict, _row) -> bool:
+        if "role_grants" not in data:
+            return False
         grants = data.get("role_grants")
         role_perms = dict(data.get("role_permissions") or {})
         if isinstance(grants, dict):
@@ -169,7 +160,6 @@ def downgrade() -> None:
         if role_perms:
             data["role_permissions"] = role_perms
         data.pop("role_grants", None)
-        conn.execute(
-            sa.text("UPDATE companies SET settings = CAST(:s AS json) WHERE id = :id"),
-            {"s": json.dumps(data), "id": str(cid)},
-        )
+        return True
+
+    update_company_settings(conn, _mutate)

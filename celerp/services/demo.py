@@ -15,6 +15,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event
+from celerp.services.terms import DEFAULT_TERMS_CONDITIONS as _DEFAULT_TERMS_CONDITIONS
 
 
 _DEMO_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")  # sentinel, not a real user
@@ -1578,14 +1579,6 @@ _VERTICAL_PAYMENT_TERMS: dict[str, list[dict]] = {
         {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
     ],
 }
-
-# --- Default T&C templates ---
-_DEFAULT_TERMS_CONDITIONS: list[dict] = [
-    {"name": "Standard Sales Terms", "text": "Goods remain property of the seller until paid in full.", "doc_types": ["invoice", "receipt", "credit_note"], "default_for": ["invoice", "receipt", "credit_note"]},
-    {"name": "Standard Consignment Out Terms", "text": "Consigned goods remain property of the consignor until sold or returned.", "doc_types": ["memo"], "default_for": ["memo"]},
-    {"name": "Standard Purchase Terms", "text": "Goods must conform to agreed specifications.", "doc_types": ["purchase_order", "bill"], "default_for": ["purchase_order", "bill"]},
-    {"name": "Standard Consignment In Terms", "text": "Consigned goods remain property of the consignor. Unsold goods may be returned per agreed schedule.", "doc_types": ["consignment_in"], "default_for": ["consignment_in"]},
-]
 
 # Industry-specific T&C templates (verticals without a specific entry use defaults)
 _VERTICAL_TERMS_CONDITIONS: dict[str, list[dict]] = {

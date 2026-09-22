@@ -3,10 +3,10 @@
 """Regression: repricing a memo must reprice each line against the exact inventory
 lot it was added from, not the first item found by a SKU lookup.
 
-Bug: both reprice paths (the price_list field-edit and the /reprice endpoint) looked
-up the current price by `list_items(token, {"sku": sku, "limit": 1})` and used
-`items[0]`, ignoring the `item_id` already stored on the line. When two lots share
-a SKU with different prices, reprice can silently swap in a sibling lot's price.
+Historical bug: the two UI entry points independently looked up the current price by
+`list_items(token, {"sku": sku, "limit": 1})` and used `items[0]`, ignoring the
+`item_id` already stored on the line. Both entry points now delegate to the same
+backend repricing primitive, which resolves only the line's exact item identity.
 """
 from __future__ import annotations
 
@@ -89,8 +89,11 @@ def test_reprice_endpoint_uses_lines_own_lot(ui_server, duplicate_sku_memo):
     api, doc_id, item_b_id = duplicate_sku_memo
     token = api.headers["Authorization"].removeprefix("Bearer ")
 
+    version = _line_items(api, doc_id)["version"]
     with httpx.Client(base_url=ui_server, cookies={"celerp_token": token}, timeout=10) as ui:
-        r = ui.post(f"/docs/{doc_id}/reprice", json={"price_list": "Wholesale"})
+        r = ui.post(f"/docs/{doc_id}/reprice", json={
+            "price_list": "Wholesale", "expected_version": version,
+        })
         assert r.status_code == 200, r.text
 
     doc = _line_items(api, doc_id)

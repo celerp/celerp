@@ -722,6 +722,7 @@ a:hover { text-decoration: underline; }
    widths restore exactly. */
 .data-table.doc-lines { table-layout: fixed; width: 100%; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-lines tbody tr.doc-line--reprice-warning { outline: 2px solid var(--c-amber); outline-offset: -2px; }
 /* Tight cell padding so the full-width inputs nearly fill each cell (dense, spreadsheet-like)
    rather than sitting inside the base table's 10px gutters. Per-column overrides still apply. */
 .doc-lines th, .doc-lines td { padding-left: 4px; padding-right: 4px; }

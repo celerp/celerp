@@ -21,7 +21,9 @@ from ui.components.shell import base_shell, page_header, page_title, flash
 from ui.components.table import add_new_option, bank_account_options
 from ui.i18n import t
 from ui.routes.settings import _check_permission, _token
-from ui.routes.settings_cloud import _cloud_tabs, _commercial_state, _has_team_features
+from ui.routes.settings_cloud import (
+    _cloud_tabs, _commercial_state, _has_team_features, _relay_has_paid_access,
+)
 
 
 def _pitch() -> FT:
@@ -96,11 +98,7 @@ def _page(relay_ok: bool, enabled: bool, deposit_account: str,
 async def _load(token: str) -> tuple[bool, bool, str, list[dict]]:
     relay_ok = False
     try:
-        relay = await api.get_relay_status(token)
-        if relay.get("entitlement_known"):
-            relay_ok = bool(relay.get("entitled"))
-        else:
-            relay_ok = bool(relay.get("connected") or relay.get("gateway_token_set"))
+        relay_ok = _relay_has_paid_access(await api.get_relay_status(token))
     except APIError:
         pass
     status = await api.get_payments_status(token)

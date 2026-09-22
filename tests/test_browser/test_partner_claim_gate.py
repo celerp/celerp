@@ -41,14 +41,53 @@ def _set_cookie(browser_context, token: str) -> None:
 _CARD = "#partner-claim-card"
 
 
-def test_partner_claim_card_visible_to_owner(page, ui_server, seeded_user, browser_context):
-    """The seeded user is the company owner: the partner-claim card renders on
-    /settings/cloud with a claim-token input."""
+def test_partner_claim_card_visible_to_owner(
+    page, ui_server, seeded_user, browser_context, monkeypatch
+):
+    """A disconnected existing install gets a separate Implementation partner tab."""
+    import ui.routes.settings_cloud as sc
+    import celerp.gateway.state as gw_state
+
+    async def _disconnected_existing_identity(token):
+        return ("inactive", "", "", True, True, False, None)
+
+    monkeypatch.setattr(sc, "_relay_state", _disconnected_existing_identity)
+    monkeypatch.setattr(gw_state, "get_commercial_mode", lambda: "celerp_direct")
     _set_cookie(browser_context, seeded_user["access_token"])
     try:
         page.goto(f"{ui_server}/settings/cloud", wait_until="domcontentloaded")
+        page.wait_for_selector('a[href="/settings/cloud?tab=partner"]', timeout=8000)
+        assert page.locator(_CARD).count() == 0
+        assert page.locator('a[href="/settings/cloud?tab=partner"]').inner_text() == "Implementation partner"
+
+        page.goto(f"{ui_server}/settings/cloud?tab=partner", wait_until="domcontentloaded")
         page.wait_for_selector(_CARD, timeout=8000)
         assert page.locator(f'{_CARD} input[name="claim_token"]').count() == 1
+        assert page.locator(f"{_CARD} h3").inner_text() == "Partner claim"
+        assert page.locator(".cloud-plans").count() == 0
+        assert page.locator("#cloud-relay-tab").count() == 0
+    finally:
+        _set_cookie(browser_context, seeded_user["access_token"])
+
+
+def test_partner_claim_tab_hidden_without_existing_cloud_identity(
+    page, ui_server, seeded_user, browser_context, monkeypatch
+):
+    """A fresh/tokenless install shows subscription recovery, not an unusable partner tab."""
+    import ui.routes.settings_cloud as sc
+    import celerp.gateway.state as gw_state
+
+    async def _tokenless_state(token):
+        return ("inactive", "", "", False, False, False, None)
+
+    monkeypatch.setattr(sc, "_relay_state", _tokenless_state)
+    monkeypatch.setattr(gw_state, "get_commercial_mode", lambda: "celerp_direct")
+    _set_cookie(browser_context, seeded_user["access_token"])
+    try:
+        page.goto(f"{ui_server}/settings/cloud", wait_until="domcontentloaded")
+        page.wait_for_selector("#cloud-connect-btn", timeout=8000)
+        assert page.locator('a[href="/settings/cloud?tab=partner"]').count() == 0
+        assert page.locator(_CARD).count() == 0
     finally:
         _set_cookie(browser_context, seeded_user["access_token"])
 
@@ -75,6 +114,7 @@ def test_partner_claim_card_hidden_from_non_owner_admin(
         # Give the page a moment to render, then assert the card is absent.
         page.wait_for_timeout(500)
         assert page.locator(_CARD).count() == 0
+        assert page.locator('a[href="/settings/cloud?tab=partner"]').count() == 0
 
         # The API refuses the endpoints independently of the UI render gate.
         for path in ("/settings/partner-claim/resolve", "/settings/partner-claim/accept"):

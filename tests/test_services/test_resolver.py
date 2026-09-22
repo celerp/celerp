@@ -88,14 +88,8 @@ async def _deactivate(session, cid, eid, into):
     )
 
 
-async def _allow_legacy_duplicate_barcodes(session):
-    """Reproduce a database whose barcode uniqueness was not index-enforced when a merged source
-    and a live lot came to share a barcode. The current schema's partial unique index (built by
-    create_all for the test DB, and covering every status including `merged`) forbids seeding that
-    pair directly, so it is dropped for the duration of this test's rolled-back transaction. This is
-    the exact legacy/import shape the resolver fix guards against - unreachable on a current database
-    through create or merge, both of which mint or refuse a barcode. Dropped first so the whole
-    table-level lock is taken once, up front, not mid-seed."""
+async def _allow_corrupt_duplicate_barcodes(session):
+    """Drop the DB backstop only for tests that deliberately require two live duplicates."""
     await session.execute(text(f"DROP INDEX IF EXISTS {BARCODE_UNIQUE_INDEX}"))
 
 
@@ -105,11 +99,10 @@ async def test_resolve_barcode_excludes_merged_source(session):
     not make a live item's barcode look duplicated. The pair is unreachable through the create/merge
     paths (barcode uniqueness; a merge mints a fresh barcode), so it is seeded by direct event
     injection - the legacy/import shape the fix targets."""
-    await _allow_legacy_duplicate_barcodes(session)
     cid = await _seed(session, "MergeExclCo")
-    await _emit(session, cid, "item:live", {"sku": "LIVE", "name": "Live", "quantity": 5, "barcode": "700001"})
     await _emit(session, cid, "item:src", {"sku": "SRC", "name": "Src", "quantity": 0, "barcode": "700001"})
     await _deactivate(session, cid, "item:src", "item:live")
+    await _emit(session, cid, "item:live", {"sku": "LIVE", "name": "Live", "quantity": 5, "barcode": "700001"})
     await ProjectionEngine.rebuild(session)
 
     res = await resolve_item_by_code(session, cid, "700001")
@@ -124,11 +117,10 @@ async def test_resolve_batch_barcode_excludes_merged_source(session):
     criterion 5): live+merged sharing a barcode resolves to the live lot, not a duplicate."""
     from celerp_inventory.routes import resolve_items_by_codes
 
-    await _allow_legacy_duplicate_barcodes(session)
     cid = await _seed(session, "MergeExclBatchCo")
-    await _emit(session, cid, "item:live", {"sku": "LIVE", "name": "Live", "quantity": 5, "barcode": "700002"})
     await _emit(session, cid, "item:src", {"sku": "SRC", "name": "Src", "quantity": 0, "barcode": "700002"})
     await _deactivate(session, cid, "item:src", "item:live")
+    await _emit(session, cid, "item:live", {"sku": "LIVE", "name": "Live", "quantity": 5, "barcode": "700002"})
     await ProjectionEngine.rebuild(session)
 
     out = await resolve_items_by_codes(session, cid, ["700002"])
@@ -157,7 +149,7 @@ async def test_resolve_two_live_barcodes_still_duplicate(session):
     """Genuine ambiguity between two LIVE lots sharing a barcode still errors (acceptance criteria
     3/6). This path is unchanged by the merged-only exclusion (both rows survive it), so it guards
     against over-filtering; it is green both before and after the fix."""
-    await _allow_legacy_duplicate_barcodes(session)
+    await _allow_corrupt_duplicate_barcodes(session)
     cid = await _seed(session, "TwoLiveCo")
     await _emit(session, cid, "item:a", {"sku": "A", "name": "A", "quantity": 1, "barcode": "700004"})
     await _emit(session, cid, "item:b", {"sku": "B", "name": "B", "quantity": 1, "barcode": "700004"})

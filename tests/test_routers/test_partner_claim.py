@@ -95,9 +95,12 @@ def _relay_post_mock(*results):
 
 
 def _patch_identity():
-    """Patch the pieces that let the routes reach the relay with a real identity:
-    a present gateway_token (so the no-identity guard passes)."""
-    return patch("celerp.config.settings.gateway_token", "api-key-abc")
+    """Patch an explicitly disconnected existing install with a live test key."""
+    return patch.multiple(
+        "celerp.config.settings",
+        gateway_token="api-key-abc",
+        cloud_disconnected=True,
+    )
 
 
 # -- authorization -----------------------------------------------------------
@@ -116,6 +119,31 @@ async def test_partner_claim_requires_owner_admin(client, role, path):
         r = await client.post(path, headers=await _role_headers(client, role), json={"claim_token": "tok-abc"})
     assert r.status_code == 403
     assert mock_httpx.return_value.__aenter__.return_value.post.await_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", [
+    "/settings/partner-claim/resolve",
+    "/settings/partner-claim/accept",
+])
+async def test_partner_claim_stale_form_cannot_run_after_reconnect(client, path):
+    """A form opened while disconnected cannot bind after another tab reconnects."""
+    post_mock = AsyncMock()
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        patch("celerp.config.settings.cloud_disconnected", False),
+        patch("celerp.config.settings.gateway_token", "api-key-abc"),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = post_mock
+        r = await client.post(
+            path,
+            headers=await _role_headers(client, "owner"),
+            json={"claim_token": "tok-stale-tab"},
+        )
+
+    assert r.status_code == 200
+    assert "disconnected" in r.json()["error"].lower()
+    assert post_mock.await_count == 0
 
 
 # -- resolve: contract identity ----------------------------------------------
@@ -302,12 +330,13 @@ async def test_partner_claim_resolve_rejects_oversized_token(client):
     "/settings/partner-claim/accept",
 ])
 async def test_partner_claim_requires_cloud_identity(client, path):
-    """With no gateway_token, both routes return a neutral error and make zero
-    relay calls (no instance credential to exchange for a bearer)."""
+    """Without a live or preserved credential, both routes fail before relay I/O."""
     post_mock = AsyncMock()
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", ""),
+        patch("celerp.config.settings.cloud_disconnected", True),
+        patch("celerp.services.cloud_entitlement.stored_api_key", new=AsyncMock(return_value="")),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = post_mock
         r = await client.post(
@@ -315,6 +344,34 @@ async def test_partner_claim_requires_cloud_identity(client, path):
     assert r.status_code == 200
     assert "error" in r.json()
     assert post_mock.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_partner_claim_uses_preserved_identity_while_disconnected(client):
+    """Existing-install partner claiming works with the credential preserved on disk."""
+    post_mock = _relay_post_mock(_relay_resp(200, _RESOLVE_OK))
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        patch("celerp.config.settings.gateway_token", ""),
+        patch("celerp.config.settings.cloud_disconnected", True),
+        patch(
+            "celerp.services.cloud_entitlement.stored_api_key",
+            new=AsyncMock(return_value="preserved-api-key"),
+        ),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = post_mock
+        r = await client.post(
+            "/settings/partner-claim/resolve",
+            headers=await _role_headers(client, "owner"),
+            json={"claim_token": "tok-preserved"},
+        )
+
+    assert r.status_code == 200
+    assert r.json()["partner_id"] == "prt_123"
+    exchange_args, claim_args = post_mock.await_args_list
+    assert exchange_args.args[0].endswith("/auth/token")
+    assert exchange_args.kwargs["json"] == {"api_key": "preserved-api-key"}
+    assert claim_args.args[0].endswith("/partners/claims/resolve")
 
 
 # -- bearer exchange failure -------------------------------------------------
@@ -351,6 +408,7 @@ async def test_partner_claim_accept_returns_partner_id(client):
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", "api-key-abc"),
+        patch("celerp.config.settings.cloud_disconnected", True),
     ):
         before = _s.gateway_token
         mock_httpx.return_value.__aenter__.return_value.post = post_mock
@@ -378,6 +436,7 @@ async def test_partner_claim_accept_reused_token_not_acceptable(client):
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", "api-key-abc"),
+        patch("celerp.config.settings.cloud_disconnected", True),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
             _relay_resp(409, {"detail": "claim not acceptable"}))
@@ -401,6 +460,7 @@ async def test_partner_claim_accept_degrades_when_relay_unreachable(client):
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", "api-key-abc"),
+        patch("celerp.config.settings.cloud_disconnected", True),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
             side_effect=httpx.ConnectError("no route"))
@@ -435,6 +495,7 @@ async def test_partner_claim_accept_converges_without_live_ws(client, _reset_ctx
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", "api-key-abc"),
+        patch("celerp.config.settings.cloud_disconnected", True),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
             _relay_resp(200, _accept_with_ctx(version=2)))
@@ -460,6 +521,7 @@ async def test_partner_claim_accept_ws_first_then_http_converges(client, _reset_
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", "api-key-abc"),
+        patch("celerp.config.settings.cloud_disconnected", True),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
             _relay_resp(200, _accept_with_ctx(version=2)))
@@ -487,6 +549,7 @@ async def test_partner_claim_accept_malformed_ctx_never_overwrites(client, _rese
     with (
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.config.settings.gateway_token", "api-key-abc"),
+        patch("celerp.config.settings.cloud_disconnected", True),
     ):
         mock_httpx.return_value.__aenter__.return_value.post = _relay_post_mock(
             _relay_resp(200, malformed))
@@ -560,7 +623,7 @@ async def test_partner_claim_hidden_on_partner_managed():
                 follow_redirects=False,
             ) as c:
                 r = await c.get(
-                    "/settings/cloud",
+                    "/settings/cloud?tab=partner",
                     cookies={"celerp_token": make_test_token(role="owner")})
         assert r.status_code == 200
         # The claim-entry control is withheld: no claim-token input renders.
@@ -571,3 +634,337 @@ async def test_partner_claim_hidden_on_partner_managed():
         assert 'id="partner-managed-note"' in r.text
     finally:
         gw_state._commercial_context = {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("relay_status,tier,public_url,entitled", [
+    ("inactive", "free", None, False),
+    ("active", "cloud", "https://direct.celerp.com", True),
+])
+async def test_partner_claim_hidden_once_direct_install_is_connected(
+    relay_status, tier, public_url, entitled,
+):
+    """Connected direct customers never see partner adoption, including free tier;
+    a stale ?tab=partner URL safely falls back to the normal connected status view."""
+    from httpx import ASGITransport, AsyncClient
+    from ui.app import app as ui_app
+    from test_helpers import make_test_token
+
+    neutral_infra = {
+        "in_grace": False,
+        "has_external_url": False,
+        "external_db_entitled": False,
+        "storage_in_grace": False,
+        "has_external_storage": False,
+        "external_storage_entitled": False,
+    }
+    with (
+        patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=(
+            relay_status, public_url, tier, False, True, True, entitled,
+        ))),
+        patch("ui.routes.settings_cloud._commercial_state", new=AsyncMock(return_value={})),
+        patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
+        patch("ui.routes.settings_cloud._get_role", return_value="owner"),
+        patch("ui.api_client.get_billing_catalog", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_backup_status", new=AsyncMock(return_value={
+            "db": {}, "next_db_utc": None, "public_url": public_url or "",
+        })),
+        patch("celerp.gateway.state.get_commercial_mode", return_value="celerp_direct"),
+        patch("celerp.gateway.state.get_local_infra_state", return_value=neutral_infra),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui",
+            follow_redirects=False,
+        ) as c:
+            r = await c.get(
+                "/settings/cloud?tab=partner",
+                cookies={"celerp_token": make_test_token(role="owner")},
+            )
+    assert r.status_code == 200
+    assert 'id="partner-claim-card"' not in r.text
+    assert 'href="/settings/cloud?tab=partner"' not in r.text
+
+
+# -- unconnected Web Access recovery invariant -------------------------------
+
+_UNCONNECTED_WEB_ACCESS_STATES = [
+    (relay_status, disconnected, token_bound, entitlement_known)
+    for relay_status in ("inactive", "active", "tos_required", "connecting", "error")
+    for disconnected in (False, True)
+    for token_bound in (False, True)
+    # Unknown entitlement is the conservative state that exercises every
+    # unconnected path, including a stale preserved credential.
+    for entitlement_known in (False,)
+    if not (
+        not disconnected
+        and (
+            relay_status in ("active", "tos_required", "connecting", "error")
+            or (token_bound and entitlement_known)
+        )
+    )
+]
+
+
+def test_unconnected_recovery_matrix_includes_stale_preserved_credential():
+    """Keep the exact stale-token state in the route invariant permanently."""
+    assert len(_UNCONNECTED_WEB_ACCESS_STATES) == 12
+    assert ("inactive", False, True, False) in _UNCONNECTED_WEB_ACCESS_STATES
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "admin"])
+@pytest.mark.parametrize(
+    "relay_status,disconnected,token_bound,entitlement_known",
+    _UNCONNECTED_WEB_ACCESS_STATES,
+)
+async def test_unconnected_direct_owner_admin_always_has_subscription_recovery(
+    role, relay_status, disconnected, token_bound, entitlement_known,
+):
+    """Every normal unconnected direct-customer Web Access view retains an
+    explicit subscription recovery action, regardless of how it became
+    unconnected. Partner adoption is available only as a separate tab and never
+    replaces the normal Connect/Link-subscription surface."""
+    from httpx import ASGITransport, AsyncClient
+    from ui.app import app as ui_app
+    from test_helpers import make_test_token
+
+    with (
+        patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=(
+            relay_status, "", "", disconnected, token_bound, entitlement_known, None,
+        ))),
+        patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
+        patch("ui.routes.settings_cloud._get_role", return_value=role),
+        patch("ui.api_client.get_billing_catalog", new=AsyncMock(return_value={})),
+        patch("celerp.gateway.state.get_commercial_mode", return_value="celerp_direct"),
+        patch("celerp.config.ensure_instance_id", return_value="instance-recovery-test"),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui",
+            follow_redirects=False,
+        ) as c:
+            r = await c.get(
+                "/settings/cloud",
+                cookies={"celerp_token": make_test_token(role=role)},
+            )
+
+    assert r.status_code == 200
+    has_auto_connect = 'id="cloud-connect-btn"' in r.text
+    has_link_subscription = 'hx-post="/settings/cloud-send-otp"' in r.text
+    assert has_auto_connect or has_link_subscription
+
+    # Partner claiming never displaces or co-renders inside the normal recovery
+    # surface. Eligible owner/admin users reach it only through its own tab.
+    assert 'id="partner-claim-card"' not in r.text
+    assert (
+        'href="/settings/cloud?tab=partner"' in r.text
+    ) is (disconnected and token_bound)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "admin"])
+@pytest.mark.parametrize("entitlement_known", [False, True])
+async def test_terminal_gateway_error_always_has_recovery(
+    role, entitlement_known,
+):
+    """The full Web Access route propagates entitlement state into a terminal
+    gateway error: retry is always present, Link Subscription is added only
+    when account authority is unknown, and partner adoption stays isolated."""
+    from httpx import ASGITransport, AsyncClient
+    from ui.app import app as ui_app
+    from test_helpers import make_test_token
+
+    tier = "cloud" if entitlement_known else ""
+    neutral_infra = {
+        "in_grace": False,
+        "has_external_url": False,
+        "external_db_entitled": False,
+        "storage_in_grace": False,
+        "has_external_storage": False,
+        "external_storage_entitled": False,
+    }
+    with (
+        patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=(
+            "error", "", tier, False, True, entitlement_known,
+            True if entitlement_known else None,
+        ))),
+        patch("ui.routes.settings_cloud._commercial_state", new=AsyncMock(return_value={})),
+        patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
+        patch("ui.routes.settings_cloud._get_role", return_value=role),
+        patch("ui.api_client.get_billing_catalog", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_backup_status", new=AsyncMock(return_value={})),
+        patch("celerp.gateway.state.get_commercial_mode", return_value="celerp_direct"),
+        patch("celerp.gateway.state.get_local_infra_state", return_value=neutral_infra),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui",
+            follow_redirects=False,
+        ) as c:
+            r = await c.get(
+                "/settings/cloud",
+                cookies={"celerp_token": make_test_token(role=role)},
+            )
+
+    assert r.status_code == 200
+    assert "Connection failed" in r.text
+    assert 'id="cloud-connect-btn"' in r.text
+    assert 'hx-post="/settings/cloud-disconnect"' in r.text
+    assert ("Link subscription" in r.text) is (not entitlement_known)
+    assert 'id="partner-claim-card"' not in r.text
+    assert 'href="/settings/cloud?tab=partner"' not in r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "admin"])
+async def test_inactive_known_paid_account_has_reconnect_not_partner_claim(role):
+    """A paid account that remains inactive after status self-heal has retry
+    rather than a Disconnect-only dead end, without reopening partner adoption."""
+    from httpx import ASGITransport, AsyncClient
+    from ui.app import app as ui_app
+    from test_helpers import make_test_token
+
+    neutral_infra = {
+        "in_grace": False,
+        "has_external_url": False,
+        "external_db_entitled": False,
+        "storage_in_grace": False,
+        "has_external_storage": False,
+        "external_storage_entitled": False,
+    }
+    with (
+        patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=(
+            "inactive", "", "cloud", False, True, True, True,
+        ))),
+        patch("ui.routes.settings_cloud._commercial_state", new=AsyncMock(return_value={})),
+        patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
+        patch("ui.routes.settings_cloud._get_role", return_value=role),
+        patch("ui.api_client.get_billing_catalog", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_backup_status", new=AsyncMock(return_value={})),
+        patch("celerp.gateway.state.get_commercial_mode", return_value="celerp_direct"),
+        patch("celerp.gateway.state.get_local_infra_state", return_value=neutral_infra),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui",
+            follow_redirects=False,
+        ) as c:
+            r = await c.get(
+                "/settings/cloud",
+                cookies={"celerp_token": make_test_token(role=role)},
+            )
+
+    assert r.status_code == 200
+    assert "Initializing connection" in r.text
+    assert 'id="cloud-connect-btn"' in r.text
+    assert 'hx-post="/settings/cloud-disconnect"' in r.text
+    assert 'id="partner-claim-card"' not in r.text
+    assert 'href="/settings/cloud?tab=partner"' not in r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "admin"])
+@pytest.mark.parametrize("relay_status", ["inactive", "active", "error"])
+async def test_lapsed_paid_account_always_has_subscription_recovery_without_partner_claim(
+    role, relay_status,
+):
+    """A valid credential with a lapsed paid entitlement remains an account state,
+    but it must expose subscription recovery and never reopen partner adoption."""
+    from httpx import ASGITransport, AsyncClient
+    from ui.app import app as ui_app
+    from test_helpers import make_test_token
+
+    neutral_infra = {
+        "in_grace": False,
+        "has_external_url": False,
+        "external_db_entitled": False,
+        "storage_in_grace": False,
+        "has_external_storage": False,
+        "external_storage_entitled": False,
+    }
+    with (
+        patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=(
+            relay_status, "", "cloud", False, True, True, False,
+        ))),
+        patch("ui.routes.settings_cloud._commercial_state", new=AsyncMock(return_value={})),
+        patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
+        patch("ui.routes.settings_cloud._get_role", return_value=role),
+        patch("ui.api_client.get_billing_catalog", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_backup_status", new=AsyncMock(return_value={
+            "db": {}, "next_db_utc": None, "public_url": "",
+        })),
+        patch("celerp.gateway.state.get_commercial_mode", return_value="celerp_direct"),
+        patch("celerp.gateway.state.get_local_infra_state", return_value=neutral_infra),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui",
+            follow_redirects=False,
+        ) as c:
+            r = await c.get(
+                "/settings/cloud",
+                cookies={"celerp_token": make_test_token(role=role)},
+            )
+
+    assert r.status_code == 200
+    assert "Link subscription" in r.text
+    assert 'id="partner-claim-card"' not in r.text
+    assert 'href="/settings/cloud?tab=partner"' not in r.text
+    if relay_status in ("inactive", "error"):
+        assert 'id="cloud-connect-btn"' in r.text
+    if relay_status == "inactive":
+        assert "Initializing connection" not in r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["owner", "admin"])
+@pytest.mark.parametrize("case,state", [
+    ("disconnected", ("inactive", "", "cloud", True, True, True, True)),
+    ("inactive_token_entitlement_unknown", ("inactive", "", "", False, True, False, None)),
+    ("error_token_entitlement_unknown", ("error", "", "", False, True, False, None)),
+    ("inactive_known_paid", ("inactive", "", "cloud", False, True, True, True)),
+])
+async def test_web_access_route_never_strands_unusable_direct_account(
+    role, case, state,
+):
+    """Full-route invariant: every unusable direct Web Access state exposes
+    Connect and/or subscription recovery. This guards composition as well as
+    the relay-tab component so state cannot be dropped between layers."""
+    from httpx import ASGITransport, AsyncClient
+    from ui.app import app as ui_app
+    from test_helpers import make_test_token
+
+    neutral_infra = {
+        "in_grace": False,
+        "has_external_url": False,
+        "external_db_entitled": False,
+        "storage_in_grace": False,
+        "has_external_storage": False,
+        "external_storage_entitled": False,
+    }
+    with (
+        patch("ui.routes.settings_cloud._relay_state", new=AsyncMock(return_value=state)),
+        patch("ui.routes.settings_cloud._commercial_state", new=AsyncMock(return_value={})),
+        patch("ui.routes.settings_cloud._check_permission", new=AsyncMock(return_value=None)),
+        patch("ui.routes.settings_cloud._get_role", return_value=role),
+        patch("ui.api_client.get_billing_catalog", new=AsyncMock(return_value={})),
+        patch("ui.api_client.get_backup_status", new=AsyncMock(return_value={
+            "db": {}, "next_db_utc": None, "public_url": "",
+        })),
+        patch("celerp.gateway.state.get_commercial_mode", return_value="celerp_direct"),
+        patch("celerp.gateway.state.get_local_infra_state", return_value=neutral_infra),
+        patch("celerp.config.ensure_instance_id", return_value="instance-route-recovery-test"),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui",
+            follow_redirects=False,
+        ) as c:
+            r = await c.get(
+                "/settings/cloud",
+                cookies={"celerp_token": make_test_token(role=role)},
+            )
+
+    assert r.status_code == 200, case
+    has_connect = 'id="cloud-connect-btn"' in r.text
+    has_link_subscription = "Link subscription" in r.text
+    assert has_connect or has_link_subscription, case
+
+    # Partner adoption may be reachable through its separate tab while genuinely
+    # unconnected, but it must never replace or co-render inside recovery.
+    assert 'id="partner-claim-card"' not in r.text, case

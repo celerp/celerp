@@ -4381,12 +4381,10 @@ class TestSprint4DocActions:
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.lower()
         assert b"<dialog" not in content
-        # Exactly one showModal call is legal on a draft: the reserved-conflict
-        # resolution dialog in the autosave error path. It is owner-directed
-        # error resolution (the save was rejected because a line is reserved
-        # elsewhere), not routine data entry, and it only opens on that API
-        # rejection. Anything beyond that one call is a popup regression.
-        assert content.count(b"showmodal") == 1
+        # Two exceptional dialogs are legal on a draft: reserved-conflict
+        # resolution and the partial-reprice warning for deleted inventory.
+        # Neither opens during routine data entry.
+        assert content.count(b"showmodal") == 2
 
 
 class TestSprint4Payment:
@@ -10744,8 +10742,12 @@ class TestWebAccessPlansAd:
         stack = ExitStack()
         stack.enter_context(patch(
             "ui.api_client.get_relay_status",
-            new=AsyncMock(return_value={"connected": True, "relay_status": relay_status,
-                                        "public_url": public_url, "tier": tier})))
+            new=AsyncMock(return_value={
+                "connected": True, "relay_status": relay_status,
+                "public_url": public_url, "tier": tier,
+                "entitlement_known": tier is not None,
+                "entitled": (tier != "free") if tier is not None else None,
+            })))
         stack.enter_context(patch(
             "ui.api_client.get_backup_status",
             new=AsyncMock(return_value={"db": {}, "next_db_utc": None, "public_url": public_url})))
@@ -10834,7 +10836,8 @@ class TestWebAccessPlansAd:
                 "ui.api_client.get_relay_status",
                 new=AsyncMock(return_value={
                     "connected": False, "relay_status": "inactive", "public_url": "",
-                    "tier": "free", "gateway_token_set": True})))
+                    "tier": "free", "gateway_token_set": True,
+                    "entitlement_known": True, "entitled": False})))
             stack.enter_context(patch(
                 "ui.api_client.get_backup_status",
                 new=AsyncMock(return_value={"db": {}, "next_db_utc": None, "public_url": ""})))
@@ -10944,10 +10947,10 @@ class TestCompanyLetterhead:
         from ui.routes.documents import _company_letterhead
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Workspace", "settings": {"self_contact_id": "contact:self"}})),
-            patch("ui.api_client.get_contact", new=AsyncMock(return_value={"name": "Real Co Ltd", "phone": "555", "tax_id": "TAX9", "email": "x@co.test", "addresses": [{"address_type": "billing", "line1": "1 Main St", "city": "Town"}]})),
+            patch("ui.api_client.get_contact", new=AsyncMock(return_value={"name": "Owner Person", "company_name": "Real Co Ltd", "phone": "555", "tax_id": "TAX9", "email": "x@co.test", "addresses": [{"address_type": "billing", "line1": "1 Main St", "city": "Town"}]})),
         ):
             lh = await _company_letterhead("tok")
-        assert lh["company_name"] == "Real Co Ltd"          # from the self-contact, not the workspace name
+        assert lh["company_name"] == "Real Co Ltd"          # business name, not person/workspace name
         assert lh["company_address"] == "1 Main St, Town"   # composed from the self-contact billing addr
         assert lh["company_tax_id"] == "TAX9"
         assert lh["company_phone"] == "555"
@@ -11043,13 +11046,16 @@ class TestDocPaymentTermsAutoPopulate:
     async def test_contact_with_payment_terms_auto_populates(self, ui_client):
         """Selecting a contact with payment_terms patches doc with terms + computed due_date."""
         contact = {"entity_id": "ct:1", "name": "Alice", "payment_terms": "Net 30", "email": "alice@test.example", "phone": "555-1234"}
-        doc_pre = {**_DOC_DETAIL, "status": "draft", "issue_date": "2026-01-01", "payment_terms": None, "due_date": None}
-        doc_post = {**doc_pre, "payment_terms": "Net 30", "due_date": "2026-01-31", "contact_id": "ct:1", "price_list": "Retail"}
+        doc_pre = {**_DOC_DETAIL, "status": "draft", "version": 10, "issue_date": "2026-01-01", "payment_terms": None, "due_date": None}
+        doc_post = {**doc_pre, "version": 11, "payment_terms": "Net 30", "due_date": "2026-01-31", "contact_id": "ct:1", "price_list": "Retail"}
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
-            patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc_pre, doc_pre, doc_post, doc_post])),
+            patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc_pre, doc_post, doc_post])),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
             patch("ui.api_client.patch_doc", new=AsyncMock()) as mock_patch,
+            patch("ui.api_client.reprice_doc", new=AsyncMock(return_value={
+                "ok": True, "version": 12, "repriced": 0, "skipped": [], "price_list": "Retail",
+            })) as mock_reprice,
             patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
         ):
             r = await ui_client.patch(
@@ -11063,6 +11069,7 @@ class TestDocPaymentTermsAutoPopulate:
         assert called_patch.get("due_date") == "2026-01-31"
         assert called_patch.get("contact_name") == "Alice"
         assert called_patch.get("contact_email") == "alice@test.example"
+        assert mock_reprice.await_args.args[1:] == ("d:1", "Retail", 11)
 
     @pytest.mark.asyncio
     async def test_contact_without_payment_terms_no_auto_populate(self, ui_client):
@@ -14308,46 +14315,41 @@ class TestPriceLists:
 
     @pytest.mark.asyncio
     async def test_reprice_endpoint(self, ui_client):
-        """POST /docs/{id}/reprice updates line item prices from inventory."""
-        doc = {**_BLANK_DOC, "price_list": "Retail", "line_items": [
-            {"sku": "TEST-1", "description": "Widget", "quantity": 2, "unit_price": 100, "unit": "piece", "tax_rate": 0},
-        ]}
-        item = {"entity_id": "item:1", "sku": "TEST-1", "name": "Widget",
-                "retail_price": 100, "wholesale_price": 65, "cost_price": 40}
-        patched_doc = {**doc, "price_list": "Wholesale", "line_items": [
-            {"sku": "TEST-1", "description": "Widget", "quantity": 2, "unit_price": 65, "unit": "piece", "tax_rate": 0, "price_list": "Wholesale"},
-        ]}
-        with (
-            patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})),
-            patch("ui.api_client.patch_doc", new=AsyncMock(return_value=patched_doc)),
-        ):
-            r = await ui_client.post("/docs/doc:1/reprice",
-                                     content='{"price_list": "Wholesale"}',
-                                     headers={"Content-Type": "application/json"},
-                                     cookies=_authed())
+        """The UI reprice route is a transport-only adapter to the backend operation."""
+        result = {
+            "ok": True, "version": 42, "repriced": 1, "skipped": [],
+            "price_list": "Wholesale",
+        }
+        with patch(
+            "ui.api_client.reprice_doc", new=AsyncMock(return_value=result)
+        ) as mock_reprice:
+            r = await ui_client.post(
+                "/docs/doc:1/reprice",
+                json={"price_list": "Wholesale", "expected_version": 41},
+                cookies=_authed(),
+            )
         assert r.status_code == 200
-        data = r.json()
-        assert data["ok"] is True
-        assert data["repriced"] == 1
-        assert data["price_list"] == "Wholesale"
+        assert r.json() == result
+        args = mock_reprice.await_args.args
+        assert args[1:] == ("doc:1", "Wholesale", 41)
 
     @pytest.mark.asyncio
-    async def test_reprice_skips_manual_lines(self, ui_client):
-        """Reprice leaves lines without a SKU unchanged."""
-        doc = {**_BLANK_DOC, "price_list": "Retail", "line_items": [
-            {"description": "Shipping", "quantity": 1, "unit_price": 25, "unit": "piece", "tax_rate": 0},
-        ]}
-        with (
-            patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
-            patch("ui.api_client.patch_doc", new=AsyncMock(return_value=doc)),
+    async def test_reprice_manual_line_result_is_passed_through(self, ui_client):
+        """Manual-line behavior belongs to the backend; the UI preserves its result."""
+        result = {
+            "ok": True, "version": 42, "repriced": 0, "skipped": [],
+            "price_list": "Wholesale",
+        }
+        with patch(
+            "ui.api_client.reprice_doc", new=AsyncMock(return_value=result)
         ):
-            r = await ui_client.post("/docs/doc:1/reprice",
-                                     content='{"price_list": "Wholesale"}',
-                                     headers={"Content-Type": "application/json"},
-                                     cookies=_authed())
+            r = await ui_client.post(
+                "/docs/doc:1/reprice",
+                json={"price_list": "Wholesale", "expected_version": 41},
+                cookies=_authed(),
+            )
         assert r.status_code == 200
-        assert r.json()["repriced"] == 0
+        assert r.json() == result
 
     @pytest.mark.asyncio
     async def test_catalog_lookup_passes_price_list(self, ui_client):

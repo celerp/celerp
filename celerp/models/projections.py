@@ -9,7 +9,11 @@ import sqlalchemy as sa
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, PrimaryKeyConstraint, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from celerp.inventory_codes import BARCODE_UNIQUE_INDEX, RFID_EPC_UNIQUE_INDEX
+from celerp.inventory_codes import (
+    BARCODE_UNIQUE_INDEX,
+    BARCODE_UNIQUE_WHERE,
+    RFID_EPC_UNIQUE_INDEX,
+)
 from celerp.models.base import Base
 
 
@@ -17,17 +21,15 @@ class Projection(Base):
     __tablename__ = "projections"
     __table_args__ = (
         PrimaryKeyConstraint("company_id", "entity_id"),
-        # At most one item per (company, non-empty barcode). The final defense behind
-        # the application allocation lock: imports, connectors, or a future writer that
-        # bypasses the lock still cannot create a duplicate barcode. Declared here so
-        # create_all builds it for the test schema; created on existing databases by the
-        # barcode-uniqueness migration.
+        # At most one operationally resolvable item per (company, non-empty barcode).
+        # A merged historical source retains its code but is excluded by the resolver.
+        # Normal writers still reserve historical codes in the application layer.
         sa.Index(
             BARCODE_UNIQUE_INDEX,
             "company_id",
             sa.text("(state ->> 'barcode')"),
             unique=True,
-            postgresql_where=sa.text("entity_type = 'item' AND NULLIF(state ->> 'barcode', '') IS NOT NULL"),
+            postgresql_where=sa.text(BARCODE_UNIQUE_WHERE),
         ),
         # At most one item per (company, non-empty rfid_epc). Mirrors the barcode index:
         # an RFID / EPC identifies one physical tag, so it is company-unique. The final

@@ -39,8 +39,10 @@ from celerp.services.permissions import assert_role_permission, get_current_comp
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
-from celerp.services.money import checked_exchange_rate, round_money, to_decimal, to_stored_float
-from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, resolve_price
+from celerp.services.money import checked_exchange_rate, round_money, round_rate, to_decimal, to_stored_float
+from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, resolve_price
+from celerp.services.terms import resolve_document_terms
+from celerp.output.document_context import prepare_document_output
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
@@ -144,6 +146,10 @@ class DocCreatePayload(BaseModel):
     # way in. Foreign-currency documents require one before they can finalize.
     conversion_rate: float | None = None
     notes: str | None = None
+    reference: str | None = None
+    terms_template: str | None = None
+    terms_text: str | None = None
+    customer_note: str | None = None
     expected_delivery: str | None = None
     valid_until: str | None = None
     carrier: str | None = None
@@ -587,7 +593,7 @@ async def _catalog_unit_price(session: AsyncSession, company_id, line: dict, pri
     return resolve_price(flatten_item(proj.state, proj.entity_id, price_config=price_config), base_name)
 
 
-async def _assert_doc_price_permission(
+async def _assert_sales_line_price_permission(
     session: AsyncSession,
     company_id,
     settings: dict,
@@ -595,7 +601,7 @@ async def _assert_doc_price_permission(
     incoming_lines: list[dict],
     stored_by_idx: dict[int, dict] | None,
 ) -> None:
-    """Reject a sales-document price override when the caller lacks set_sales_doc_prices.
+    """Reject a sales-document or quotation price change without set_sales_doc_prices.
 
     A line's unit_price is an override when it differs from its reference price: the
     stored line at the same index when editing an existing document, otherwise the
@@ -1039,7 +1045,7 @@ async def _derive_shipped_labels(session: AsyncSession, company_id, entity_id: s
 @router.get("/{entity_id}", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    doc = row.state | {"id": row.entity_id}
+    doc = row.state | {"id": row.entity_id, "version": row.version}
     if doc.get("doc_type") == "memo":
         try:
             labels = await _derive_shipped_labels(session, company_id, entity_id, doc.get("line_items") or [])
@@ -1070,6 +1076,21 @@ async def get_doc_pdf(
 
     company_row = await session.get(Company, company_id)
     company = ({"name": company_row.name} | (company_row.settings or {}) if company_row else {}) | {"id": company_id}
+    self_contact: dict = {}
+    if company_row:
+        self_id = (company_row.settings or {}).get("self_contact_id")
+        if self_id:
+            self_row = await session.get(Projection, (company_id, self_id))
+            if self_row is not None and self_row.entity_type == "contact":
+                self_contact = self_row.state or {}
+    contact: dict = {}
+    if doc.get("contact_id"):
+        contact_row = await session.get(Projection, (company_id, doc["contact_id"]))
+        if contact_row is not None and contact_row.entity_type == "contact":
+            contact = contact_row.state or {}
+    doc = prepare_document_output(
+        doc, company=company, self_contact=self_contact, contact=contact,
+    )
 
     # When the company shows barcodes on lines, backfill lines saved before
     # barcode stamping from their catalog items (mirror of the share view).
@@ -1080,7 +1101,7 @@ async def get_doc_pdf(
             if li.get("barcode") or not eid:
                 continue
             irow = await session.get(Projection, (company_id, eid))
-            if irow is not None:
+            if irow is not None and irow.entity_type == "item":
                 identifier_backfill(li, irow.state or {})
 
     # Footer import link only while the share link is live, so saved PDFs
@@ -1236,7 +1257,7 @@ async def create_doc(
         # catalog price is a price override, rejected when the caller lacks
         # set_sales_doc_prices. This closes the create path so the gate cannot be
         # bypassed by making a new draft with overridden prices.
-        await _assert_doc_price_permission(
+        await _assert_sales_line_price_permission(
             session, company_id, settings, role,
             [li.model_dump() for li in payload.line_items], None,
         )
@@ -1269,8 +1290,16 @@ async def create_doc(
         raise HTTPException(status_code=409, detail=f"Document number '{ref_id}' already exists")
 
     data = payload.model_dump(exclude_none=True)
+    # Canonicalize the historical `terms` alias at the API boundary so every
+    # newly-created document stores one customer-facing terms field.
+    data.pop("terms", None)
     data["ref_id"] = ref_id
     data.setdefault("currency", company.settings.get("currency", "USD"))
+    data.update(resolve_document_terms(
+        payload.model_dump(), company.settings or {}, payload.doc_type,
+        explicit_fields=payload.model_fields_set,
+    ))
+
     # Default issue_date to today so date filters and sorting work correctly on new docs
     data.setdefault("issue_date", _date.today().isoformat())
 
@@ -1401,7 +1430,7 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     _incoming_lines = (payload.fields_changed.get("line_items") or {}).get("new")
     if isinstance(_incoming_lines, list):
         _stored_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
-        await _assert_doc_price_permission(session, company_id, settings, role, _incoming_lines, _stored_by_idx)
+        await _assert_sales_line_price_permission(session, company_id, settings, role, _incoming_lines, _stored_by_idx)
     is_draft = row.state.get("status") == "draft"
     if not is_draft:
         locked_fields = set(payload.fields_changed) - _FINALIZED_EDITABLE_FIELDS
@@ -1664,8 +1693,9 @@ async def _finalize_doc_impl(
 ) -> dict:
     """Finalize with caller-owned transaction support for domain integrations."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
-    # Terminal document states keep their established rejection semantics. Only an
-    # otherwise-finalizable document that was already issued is an idempotent no-op.
+    # A closed memo is terminal, settled paperwork; finalize maps closed->final in the
+    # reducer, silently stripping the terminal status and its close metadata. Refuse under
+    # the row lock, same as the other post-close mutations; the user reopens first.
     _reject_if_closed(row.state, "finalize it")
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Cannot finalize void document")
@@ -1805,9 +1835,7 @@ async def finalize_doc(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    return await _finalize_doc_impl(
-        entity_id, company_id, user, session, commit=True
-    )
+    return await _finalize_doc_impl(entity_id, company_id, user, session, commit=True)
 
 
 @router.post("/{entity_id}/void")
@@ -4450,6 +4478,8 @@ async def create_list(
     payload: ListCreatePayload,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4473,6 +4503,10 @@ async def create_list(
         data.get("line_items") or [], session, company_id,
         require_positive=(payload.list_type != "audit"),
     )
+    if is_money_list(payload.list_type):
+        await _assert_sales_line_price_permission(
+            session, company_id, settings, role, data.get("line_items") or [], None,
+        )
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
     await session.commit()
     return {"event_id": entry.id, "id": entity_id}
@@ -4484,6 +4518,8 @@ async def patch_list(
     payload: ListPatch,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4518,6 +4554,11 @@ async def patch_list(
             _new_lines, session, company_id,
             require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
         )
+        if is_money_list(row.state.get("list_type")):
+            await _assert_sales_line_price_permission(
+                session, company_id, settings, role, _new_lines,
+                {i: line for i, line in enumerate(row.state.get("line_items") or [])},
+            )
     # expected_version is a concurrency guard, not list data - it never enters the event payload.
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
                              payload.model_dump(exclude_none=True, exclude={"expected_version"}),
@@ -4526,6 +4567,379 @@ async def patch_list(
     # entry.id is the list's new version (the projection version tracks the latest entry id), so the
     # client refreshes its cached version from here and its next save pins the value it just wrote.
     return {"event_id": entry.id, "version": entry.id}
+
+
+class RepriceBody(BaseModel):
+    price_list: str
+    expected_version: int
+
+
+def _assert_reprice_access(settings: dict, role: str, price_list: str) -> None:
+    """Authorization shared by every whole-entity repricing door."""
+    if is_cost_list_name(price_list):
+        assert_role_permission(settings, role, "view_inventory_costs")
+
+
+def _reprice_idempotency_key(kind: str, entity_id: str, payload: RepriceBody) -> str:
+    canonical = json.dumps(
+        [kind, entity_id, payload.expected_version, payload.price_list],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return f"{kind}:reprice:{hashlib.sha256(canonical.encode()).hexdigest()}"
+
+
+def _reprice_replay_result(
+    replay, *, entity_id: str, event_type: str, payload: RepriceBody,
+) -> dict:
+    meta = replay.metadata_ or {}
+    if (
+        replay.event_type != event_type
+        or replay.entity_id != entity_id
+        or meta.get("operation") != "reprice"
+        or meta.get("expected_version") != payload.expected_version
+        or meta.get("price_list") != payload.price_list
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Idempotency key was already used for another operation",
+        )
+    return {
+        "ok": True,
+        "event_id": replay.id,
+        "version": replay.id,
+        "repriced": int(meta.get("repriced") or 0),
+        "skipped": list(meta.get("skipped") or []),
+        "price_list": payload.price_list,
+    }
+
+
+async def _reprice_catalog_lines(
+    session: AsyncSession,
+    company_id,
+    stored_lines: list,
+    price_list: str,
+    *,
+    currency: str | None,
+) -> tuple[list, int, list[dict], str]:
+    """Canonical whole-entity catalog repricing.
+
+    Identity is exact item_id/entity_id only: SKU is display data and may identify
+    many physical lots. Free-text lines are untouched. Missing linked items keep
+    their stored snapshot and are reported to the caller. Price-list validation,
+    flattening, derived-price resolution, rate rounding, and line-total math live
+    here so Docs and Lists cannot drift into separate pricing implementations.
+    """
+    price_config = await get_price_config(session, company_id)
+    price_lists, _base_name, company_currency = price_config
+    configured_names = {str(pl.get("name") or "") for pl in price_lists}
+    if price_list not in configured_names:
+        raise HTTPException(status_code=422, detail=f"Unknown price list: {price_list}")
+
+    effective_currency = currency or company_currency
+    item_ids = {
+        line_item_id(line)
+        for line in stored_lines
+        if isinstance(line, dict) and line_item_id(line)
+    }
+    items: dict[str, Projection] = {}
+    if item_ids:
+        item_rows = (
+            await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_type == "item",
+                    Projection.entity_id.in_(item_ids),
+                )
+            )
+        ).scalars().all()
+        items = {item.entity_id: item for item in item_rows}
+
+    from celerp_inventory.routes import flatten_item
+
+    repriced = 0
+    skipped: list[dict] = []
+    updated_lines: list = []
+    for stored_line in stored_lines:
+        if not isinstance(stored_line, dict):
+            updated_lines.append(stored_line)
+            continue
+        line = dict(stored_line)
+        item_id = line_item_id(line)
+        if item_id is None:
+            updated_lines.append(line)
+            continue
+        item = items.get(item_id)
+        if item is None:
+            skipped.append({"item_id": item_id, "reason": "item_not_found"})
+            updated_lines.append(line)
+            continue
+
+        flat = flatten_item(item.state or {}, item.entity_id, price_config=price_config)
+        new_rate = round_rate(resolve_price(flat, price_list), effective_currency)
+        line["unit_price"] = float(new_rate)
+        quantity = to_decimal(line.get("quantity", 0) or 0)
+        discount_pct = to_decimal(line.get("discount_pct", 0) or 0)
+        amount = quantity * new_rate
+        if discount_pct:
+            amount *= to_decimal(1) - discount_pct / 100
+        line["line_total"] = to_stored_float(round_money(amount, effective_currency))
+        repriced += 1
+        updated_lines.append(line)
+
+    return updated_lines, repriced, skipped, effective_currency
+
+
+def _recompute_tax_applications(raw, base, currency: str):
+    """Recompute stored tax definitions against a new base, never stale amounts."""
+    if not isinstance(raw, list) or not raw:
+        return [], to_decimal(0)
+    definitions: list[TaxApplication] = []
+    try:
+        for value in raw:
+            if not isinstance(value, dict):
+                raise ValueError("tax entry is not an object")
+            definitions.append(TaxApplication.model_validate({**value, "amount": 0.0}))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Stored tax data is invalid; correct it before repricing",
+        ) from exc
+    resolved = compute_tax_amounts(definitions, to_stored_float(round_money(base, currency)), currency)
+    return [item.model_dump() for item in resolved], sum(
+        (to_decimal(item.amount) for item in resolved), to_decimal(0))
+
+
+def _reprice_doc_money(state: dict, updated_lines: list[dict], currency: str) -> dict:
+    """Document-only totals derived from the repriced lines.
+
+    List totals remain projection-owned. Documents do not have that reducer, so
+    this wrapper recomputes their monetary snapshot once on the server instead of
+    trusting the browser's independent arithmetic.
+    """
+    def _line_amount(line: dict):
+        value = line.get("line_total")
+        if value not in (None, ""):
+            return to_decimal(value or 0)
+        return (
+            to_decimal(line.get("quantity", 0) or 0)
+            * to_decimal(line.get("unit_price", 0) or 0)
+        )
+
+    subtotal = round_money(
+        sum((_line_amount(line) for line in updated_lines if isinstance(line, dict)), to_decimal(0)),
+        currency,
+    )
+    discount = max(to_decimal(0), to_decimal(state.get("discount", 0) or 0))
+    if state.get("discount_type") == "percentage":
+        discount_amount = subtotal * discount / 100
+    else:
+        discount_amount = discount
+    discount_amount = round_money(min(max(discount_amount, to_decimal(0)), subtotal), currency)
+    taxable = subtotal - discount_amount
+    ratio = taxable / subtotal if subtotal > 0 else to_decimal(1)
+
+    line_tax_total = to_decimal(0)
+    has_line_tax = False
+    for line in updated_lines:
+        if not isinstance(line, dict):
+            continue
+        base = _line_amount(line) * ratio
+        raw_taxes = line.get("taxes")
+        if isinstance(raw_taxes, list) and raw_taxes:
+            resolved, amount = _recompute_tax_applications(raw_taxes, base, currency)
+            line["taxes"] = resolved
+            line_tax_total += amount
+            has_line_tax = True
+            continue
+        rate = to_decimal(line.get("tax_rate", 0) or 0)
+        if rate:
+            line_tax_total += round_money(base * rate / 100, currency)
+            has_line_tax = True
+
+    result: dict = {
+        "subtotal": to_stored_float(subtotal),
+        "discount_amount": to_stored_float(discount_amount),
+    }
+    raw_doc_taxes = state.get("doc_taxes")
+    if isinstance(raw_doc_taxes, list) and raw_doc_taxes:
+        resolved_doc_taxes, doc_tax_total = _recompute_tax_applications(
+            raw_doc_taxes, taxable, currency)
+        result["doc_taxes"] = resolved_doc_taxes
+        tax_total = line_tax_total + doc_tax_total
+    elif has_line_tax:
+        tax_total = line_tax_total
+    elif to_decimal(state.get("tax_rate", 0) or 0):
+        tax_total = round_money(
+            taxable * to_decimal(state.get("tax_rate", 0) or 0) / 100,
+            currency,
+        )
+    else:
+        # Legacy documents may carry only an absolute tax amount and no rate
+        # definition from which to recompute it. Preserve that explicit snapshot.
+        tax_total = round_money(state.get("tax", 0) or 0, currency)
+
+    tax_total = round_money(tax_total, currency)
+    shipping = round_money(state.get("shipping", 0) or 0, currency)
+    result["tax"] = to_stored_float(tax_total)
+    result["total"] = to_stored_float(round_money(taxable + tax_total + shipping, currency))
+    return result
+
+
+@router.post("/{entity_id}/reprice")
+async def reprice_doc(
+    entity_id: str,
+    payload: RepriceBody,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Atomically reprice every catalog-backed line on a draft document."""
+    _assert_reprice_access(settings, role, payload.price_list)
+    idem_key = _reprice_idempotency_key("doc", entity_id, payload)
+    replay = await find_event_by_idempotency(session, company_id, idem_key)
+    if replay is not None:
+        return _reprice_replay_result(
+            replay, entity_id=entity_id, event_type="doc.updated", payload=payload)
+
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    replay = await find_event_by_idempotency(session, company_id, idem_key)
+    if replay is not None:
+        return _reprice_replay_result(
+            replay, entity_id=entity_id, event_type="doc.updated", payload=payload)
+    if row.state.get("status") != "draft":
+        raise HTTPException(status_code=409, detail="Cannot reprice a non-draft document")
+    if row.version != payload.expected_version:
+        raise HTTPException(
+            status_code=409,
+            detail="This document was changed by someone else; reload to get the latest before repricing",
+        )
+
+    stored_lines = list(row.state.get("line_items") or [])
+    updated_lines, repriced, skipped, currency = await _reprice_catalog_lines(
+        session, company_id, stored_lines,
+        payload.price_list, currency=row.state.get("currency"),
+    )
+    # Preserve the canonical document price-override authorization that the old
+    # patch-based repricer inherited indirectly. Repricing is not a bypass around
+    # set_sales_doc_prices; no-op prices remain allowed exactly as patch_doc allows.
+    await _assert_sales_line_price_permission(
+        session, company_id, settings, role, updated_lines,
+        {i: line for i, line in enumerate(stored_lines)},
+    )
+    new_values = {
+        "price_list": payload.price_list,
+        "line_items": updated_lines,
+        **_reprice_doc_money(row.state, updated_lines, currency),
+    }
+    fields_changed = {
+        field: {"old": row.state.get(field), "new": value}
+        for field, value in new_values.items()
+        if row.state.get(field) != value
+    }
+    entry = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.updated",
+        data={"fields_changed": fields_changed},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=idem_key,
+        metadata_={
+            "operation": "reprice",
+            "expected_version": payload.expected_version,
+            "price_list": payload.price_list,
+            "repriced": repriced,
+            "skipped": skipped,
+        },
+    )
+    await session.commit()
+    return {
+        "ok": True,
+        "event_id": entry.id,
+        "version": entry.id,
+        "repriced": repriced,
+        "skipped": skipped,
+        "price_list": payload.price_list,
+    }
+
+
+@lists_router.post("/{entity_id}/reprice")
+async def reprice_list(
+    entity_id: str,
+    payload: RepriceBody,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Atomically reprice every catalog-backed line on a draft List."""
+    _assert_reprice_access(settings, role, payload.price_list)
+    idem_key = _reprice_idempotency_key("list", entity_id, payload)
+    replay = await find_event_by_idempotency(session, company_id, idem_key)
+    if replay is not None:
+        return _reprice_replay_result(
+            replay, entity_id=entity_id, event_type="list.updated", payload=payload)
+
+    row = await _get_list_for_update(session, company_id, entity_id)
+    if not is_money_list(row.state.get("list_type")):
+        raise HTTPException(
+            status_code=422,
+            detail="This list type does not support repricing",
+        )
+    replay = await find_event_by_idempotency(session, company_id, idem_key)
+    if replay is not None:
+        return _reprice_replay_result(
+            replay, entity_id=entity_id, event_type="list.updated", payload=payload)
+    if row.state.get("status") != "draft":
+        raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
+    if row.version != payload.expected_version:
+        raise HTTPException(
+            status_code=409,
+            detail="This list was changed by someone else; reload to get the latest before repricing",
+        )
+
+    stored_lines = list(row.state.get("line_items") or [])
+    updated_lines, repriced, skipped, _currency = await _reprice_catalog_lines(
+        session, company_id, stored_lines,
+        payload.price_list, currency=row.state.get("currency"),
+    )
+    await _assert_sales_line_price_permission(
+        session, company_id, settings, role, updated_lines,
+        {i: line for i, line in enumerate(stored_lines)},
+    )
+    fields_changed = {
+        "price_list": {"old": row.state.get("price_list"), "new": payload.price_list},
+        "line_items": {"old": row.state.get("line_items") or [], "new": updated_lines},
+    }
+    entry = await _emit_list(
+        session, company_id, entity_id, "list.updated",
+        {"fields_changed": fields_changed}, user, idem_key,
+        meta={
+            "operation": "reprice",
+            "expected_version": payload.expected_version,
+            "price_list": payload.price_list,
+            "repriced": repriced,
+            "skipped": skipped,
+        },
+    )
+    await session.commit()
+    return {
+        "ok": True,
+        "event_id": entry.id,
+        "version": entry.id,
+        "repriced": repriced,
+        "skipped": skipped,
+        "price_list": payload.price_list,
+    }
 
 
 class ListLinePagePatch(BaseModel):
@@ -4546,6 +4960,8 @@ async def patch_list_line_page(
     payload: ListLinePagePatch,
     company_id: str = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -4617,6 +5033,12 @@ async def patch_list_line_page(
         page, session, company_id,
         require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
     )
+    if is_money_list(row.state.get("list_type")):
+        stored_window = stored[offset:offset + original_count]
+        await _assert_sales_line_price_permission(
+            session, company_id, settings, role, page,
+            {i: line for i, line in enumerate(stored_window)},
+        )
 
     # Slice-splice: replace exactly the originally-loaded window. A shorter page truncates, a longer
     # one inserts; positional overwrite/append could never delete a tail row.
@@ -5572,9 +5994,7 @@ async def fulfill_lines(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    return await _fulfill_lines_impl(
-        entity_id, body, company_id, user, session, commit=True
-    )
+    return await _fulfill_lines_impl(entity_id, body, company_id, user, session, commit=True)
 
 
 async def _reverse_whole_lines(

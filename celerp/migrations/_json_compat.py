@@ -15,7 +15,8 @@ from typing import Callable
 import sqlalchemy as sa
 
 
-def _as_dict(value):
+def decode_json_value(value):
+    """Decode a JSON column value returned either parsed or as raw text."""
     # psycopg2 returns json pre-parsed; asyncpg returns raw text. Handle both.
     if value is None:
         return None
@@ -37,13 +38,31 @@ def _update_json_column(conn, table, col, mutate, where, params, extra_cols) -> 
     )
     n = 0
     for row in rows:
-        data = _as_dict(row[col])
+        data = decode_json_value(row[col])
         if data is None:
             continue
         if mutate(data, row):
             conn.execute(upd, {"__v": json.dumps(data), "__ctid": str(row["ctid"])})
             n += 1
     return n
+
+
+def is_sql_ascii(conn) -> bool:
+    """Whether the connected PostgreSQL database uses the legacy SQL_ASCII encoding."""
+    value = conn.execute(sa.text("SHOW server_encoding")).scalar()
+    return str(value or "").upper() == "SQL_ASCII"
+
+
+def update_company_settings(
+    conn,
+    mutate: Callable[[dict, "sa.engine.RowMapping"], bool],
+    *,
+    where: str = "",
+    params: dict | None = None,
+    extra_cols: tuple[str, ...] = (),
+) -> int:
+    """Like update_projection_state(), for companies.settings."""
+    return _update_json_column(conn, "companies", "settings", mutate, where, params, extra_cols)
 
 
 def update_projection_state(
