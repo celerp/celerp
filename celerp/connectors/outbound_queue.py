@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 
 import sqlalchemy as sa
@@ -13,6 +14,9 @@ from celerp.db import get_session_ctx
 from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig, OutboundQueue
 from celerp.models.projections import Projection
+
+
+log = logging.getLogger(__name__)
 
 
 def _woo_link(state: dict) -> dict:
@@ -122,26 +126,6 @@ async def enqueue_item_change(session, entry) -> None:
             status="pending",
             retry_count=0,
         ))
-
-
-async def _finish(ids: list[int], *, error: str | None = None) -> None:
-    async with get_session_ctx() as session:
-        if error is None:
-            await session.execute(
-                sa.delete(OutboundQueue).where(OutboundQueue.id.in_(ids))
-            )
-        else:
-            rows = (await session.execute(
-                sa.select(OutboundQueue).where(OutboundQueue.id.in_(ids))
-            )).scalars().all()
-            now = datetime.now(timezone.utc)
-            for row in rows:
-                row.retry_count += 1
-                delay = min(3600, 5 * (2 ** min(row.retry_count, 9)))
-                row.next_retry_at = now + timedelta(seconds=delay)
-                row.error_message = error[:2000]
-                row.status = "pending"
-        await session.commit()
 
 
 async def process_outbound_queue_once(limit: int = 100) -> int:
@@ -256,5 +240,6 @@ async def outbound_queue_loop() -> None:
             await asyncio.sleep(1 if processed else 5)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            log.warning("outbound queue iteration failed: %s", exc)
             await asyncio.sleep(5)
