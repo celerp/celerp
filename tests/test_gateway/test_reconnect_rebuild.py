@@ -8,6 +8,7 @@ import os
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
+import ast
 import asyncio
 from pathlib import Path
 
@@ -151,6 +152,16 @@ def test_gateway_client_has_one_production_construction_site():
     root = Path(__file__).resolve().parents[2] / "celerp"
     hits = []
     for path in root.rglob("*.py"):
-        if "GatewayClient(" in path.read_text(encoding="utf-8"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if any(
+            isinstance(node, ast.Call)
+            and (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "GatewayClient"
+                or isinstance(node.func, ast.Attribute)
+                and node.func.attr == "GatewayClient"
+            )
+            for node in ast.walk(tree)
+        ):
             hits.append(path.relative_to(root).as_posix())
     assert hits == ["gateway/__init__.py"]
