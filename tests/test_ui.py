@@ -10746,6 +10746,7 @@ class TestWebAccessPlansAd:
                 "connected": True, "relay_status": relay_status,
                 "public_url": public_url, "tier": tier,
                 "entitlement_known": tier is not None,
+                "entitled": (tier != "free") if tier is not None else None,
             })))
         stack.enter_context(patch(
             "ui.api_client.get_backup_status",
@@ -10836,7 +10837,7 @@ class TestWebAccessPlansAd:
                 new=AsyncMock(return_value={
                     "connected": False, "relay_status": "inactive", "public_url": "",
                     "tier": "free", "gateway_token_set": True,
-                    "entitlement_known": True})))
+                    "entitlement_known": True, "entitled": False})))
             stack.enter_context(patch(
                 "ui.api_client.get_backup_status",
                 new=AsyncMock(return_value={"db": {}, "next_db_utc": None, "public_url": ""})))

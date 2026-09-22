@@ -8471,10 +8471,10 @@ if (!window._celerpRepriceWarningAfterSwap) {{
     document.body.addEventListener('htmx:afterSwap', window._celerpRepriceWarningAfterSwap);
 }}
 
-const _CELERP_AUTHORITATIVE_PRICE_LIST = {_json.dumps(_current_pl)};
+window._CELERP_AUTHORITATIVE_PRICE_LIST = {_json.dumps(_current_pl)};
 function _celerpRestorePriceList() {{
     const select = document.getElementById('doc-price-list');
-    if (select) select.value = _CELERP_AUTHORITATIVE_PRICE_LIST;
+    if (select) select.value = window._CELERP_AUTHORITATIVE_PRICE_LIST;
 }}
 async function celerpReprice(priceList) {{
     /* A pending blur save is redundant here; the explicit save below owns this transition. */

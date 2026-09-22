@@ -12,7 +12,8 @@ def test_reprice_is_gated_on_successful_save_and_pins_entity_version():
     snippet = source[start:start + 2200]
     assert "clearTimeout(_celerpSaveTimer);" in snippet
     assert "const ok = await _celerpPersist();" in snippet
-    assert "if (!ok) return;" in snippet
+    assert "if (!ok) {" in snippet
+    assert "_celerpRestorePriceList();" in snippet
     assert "expected_version: _celerpEntityVersion" in snippet
 
 
@@ -106,7 +107,7 @@ def test_sales_price_permission_is_shared_by_doc_and_quotation_write_boundaries(
     assert source.count("await _assert_sales_line_price_permission(") >= 7
     for name in ("create_list", "patch_list", "reprice_list", "patch_list_line_page"):
         start = source.index(f"async def {name}(")
-        snippet = source[start:start + 5200]
+        snippet = source[start:start + 9000]
         assert "_assert_sales_line_price_permission(" in snippet
 
 
@@ -128,7 +129,7 @@ def test_inline_doc_writes_advance_cached_reprice_version():
 
 def test_reprice_failure_never_leaves_selector_in_uncommitted_state():
     source = Path("ui/routes/documents.py").read_text()
-    start = source.index("const _CELERP_AUTHORITATIVE_PRICE_LIST")
+    start = source.index("window._CELERP_AUTHORITATIVE_PRICE_LIST")
     end = source.index("/* ── CSV import ── */", start)
     snippet = source[start:end]
     assert "function _celerpRestorePriceList()" in snippet
