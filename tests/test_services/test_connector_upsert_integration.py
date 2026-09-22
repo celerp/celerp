@@ -521,21 +521,19 @@ async def test_woocommerce_processing_order_reserves_across_lots(session):
 
     cid = await _seed_company(session, "WooLots")
     now = datetime.now(timezone.utc)
-    root_id = "item:woo-root"
-    session.add(Projection(
-        company_id=cid, entity_id=root_id, entity_type="item", version=1,
-        created_at=now, updated_at=now,
-        state={
-            "sku": "LOT-SKU", "name": "Lot Product", "quantity": 0,
-            "status": "available", "sell_by": "piece",
-            "external_links": {
-                "woocommerce": {
-                    "product_id": "501", "sync_enabled": True,
-                    "manage_stock": True,
-                }
-            },
-        },
-    ))
+    from celerp_inventory.services import upsert_external_product
+
+    outcome, root_id = await upsert_external_product(
+        str(cid),
+        platform="woocommerce",
+        product_id="501",
+        variation_id=None,
+        sku="LOT-SKU",
+        name="Lot Product",
+        seed_quantity=False,
+        link_fields={"manage_stock": True},
+    )
+    assert outcome == "created"
     for suffix, qty in (("a", 2), ("b", 3)):
         session.add(Projection(
             company_id=cid, entity_id=f"item:lot-{suffix}", entity_type="item",
