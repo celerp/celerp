@@ -2655,15 +2655,17 @@ celerpUpdateBulkAlloc();
             # from the ordinary patch and let the backend repricer update header + lines
             # atomically. This also covers contact-driven/default price-list changes.
             new_pl = patch.pop("price_list", None)
-            patch_result: dict = {"event_id": None}
             # ref_id edits go through /renumber (works on finalized docs; patch_doc rejects them)
             if field == "ref_id":
                 await api.renumber_doc(token, entity_id, value)
             elif patch:
-                patch_result = await api.patch_doc(token, entity_id, patch)
+                await api.patch_doc(token, entity_id, patch)
             if new_pl:
+                # Read the projection after any companion patch and pin repricing to
+                # that authoritative version. Do not infer projection state from a
+                # transport return value.
                 current = await api.get_doc(token, entity_id)
-                expected_version = patch_result.get("event_id") or current.get("version")
+                expected_version = current.get("version")
                 if expected_version is None:
                     raise APIError(409, "Reload the document before repricing")
                 await api.reprice_doc(token, entity_id, new_pl, int(expected_version))
