@@ -22,6 +22,11 @@ _BULK_MAX_CONNECTIONS = 2
 # indefinite stall.
 _POOL_ACQUIRE_TIMEOUT = 2.0
 
+# Uvicorn's local API keep-alive window is 5 seconds. Drop idle client sockets
+# comfortably before that boundary so a request after an idle gap never races a
+# server-side close and reuses a stale connection.
+_LOCAL_KEEPALIVE_EXPIRY = 3.0
+
 # One source of truth for the temporary-failure copy every local client surfaces,
 # so the interactive, anonymous, AI, and bulk context managers cannot drift apart.
 SATURATION_MESSAGE = (
@@ -97,7 +102,9 @@ def _get_transport() -> _SharedTransport:
     if _shared_transport is None:
         _shared_transport = _SharedTransport(
             limits=httpx.Limits(
-                max_connections=REQUEST_DB_POOL_SIZE, max_keepalive_connections=8
+                max_connections=REQUEST_DB_POOL_SIZE,
+                max_keepalive_connections=8,
+                keepalive_expiry=_LOCAL_KEEPALIVE_EXPIRY,
             ),
         )
     return _shared_transport
@@ -113,7 +120,9 @@ def _get_bulk_transport() -> _SharedTransport:
     if _bulk_transport is None:
         _bulk_transport = _SharedTransport(
             limits=httpx.Limits(
-                max_connections=_BULK_MAX_CONNECTIONS, max_keepalive_connections=1
+                max_connections=_BULK_MAX_CONNECTIONS,
+                max_keepalive_connections=1,
+                keepalive_expiry=_LOCAL_KEEPALIVE_EXPIRY,
             ),
         )
     return _bulk_transport

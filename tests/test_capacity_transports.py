@@ -237,6 +237,14 @@ def test_bulk_and_interactive_transports_are_distinct():
     assert api._get_transport() is not api._get_bulk_transport()
 
 
+def test_local_transports_expire_keepalive_before_server_boundary():
+    # The local Uvicorn API closes idle HTTP/1.1 connections after 5 seconds.
+    # Client pools must retire them first so an idle-gap request never races a
+    # server-side close and surfaces ReadError/RemoteProtocolError.
+    assert api._get_transport()._pool._keepalive_expiry == 3.0
+    assert api._get_bulk_transport()._pool._keepalive_expiry == 3.0
+
+
 # --- Section 10: every local file-body transfer selects the bulk transport ---
 
 # Every wrapper that moves a finite file body (upload or download) over the local
