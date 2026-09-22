@@ -91,6 +91,7 @@ async def test_lifespan_starts_gateway_for_paid_instance():
 
     async def fake_run(self):
         fake_run_called.append(True)
+        await asyncio.Event().wait()
 
     with _mock_db(), patch.object(gw_module.GatewayClient, "run", fake_run):
         settings.gateway_token = "test-gw-token"
@@ -126,7 +127,7 @@ async def test_startup_connects_free_only_with_active_share():
     original_public = settings.celerp_public_url
 
     async def fake_run(self):
-        pass
+        await asyncio.Event().wait()
 
     async def _no_share() -> bool:
         return False
