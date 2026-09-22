@@ -72,6 +72,7 @@ def prepare_document_output(
         "company_phone": self_contact.get("phone") or _company_value(company, "phone") or "",
         "company_tax_id": self_contact.get("tax_id") or _company_value(company, "tax_id") or "",
         "company_email": self_contact.get("email") or _company_value(company, "email") or "",
+        "company_website": self_contact.get("website") or _company_value(company, "website") or "",
     }
     for key, value in seller.items():
         if key not in out and value:

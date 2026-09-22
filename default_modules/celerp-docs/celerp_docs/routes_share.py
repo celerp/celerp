@@ -75,7 +75,7 @@ _IMPORTABLE_DOC_TYPES = frozenset({
 _DOC_STR_FIELDS = frozenset({
     "doc_type", "list_type", "ref_id", "doc_number", "reference", "issue_date", "due_date", "valid_until",
     "expected_delivery", "currency", "company_name", "company_address", "company_phone",
-    "company_tax_id", "company_email", "contact_name", "contact_company_name",
+    "company_tax_id", "company_email", "company_website", "contact_name", "contact_company_name",
     "contact_email", "contact_phone", "contact_billing_address", "contact_shipping_address",
     "contact_tax_id", "contact_billing_attn", "shipping_attn", "terms", "terms_template", "terms_text",
     "customer_note", "payment_terms", "discount_type", "carrier", "tracking",
@@ -537,7 +537,7 @@ async def _letterhead(session: AsyncSession, company_id) -> dict:
     )
     return {
         key: prepared.get(key) or ""
-        for key in ("company_name", "company_address", "company_phone", "company_tax_id", "company_email")
+        for key in ("company_name", "company_address", "company_phone", "company_tax_id", "company_email", "company_website")
     }
 
 

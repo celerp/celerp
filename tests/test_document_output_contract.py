@@ -258,3 +258,30 @@ def test_renderers_do_not_resurrect_explicit_blank_identity_fields():
     ):
         assert forbidden not in pdf_text
         assert forbidden not in html
+
+
+def test_company_website_uses_canonical_output_contract():
+    live = prepare_document_output({}, self_contact={"website": "https://live.example"})
+    assert live["company_website"] == "https://live.example"
+
+    stored = prepare_document_output(
+        {"company_website": "https://historic.example"},
+        self_contact={"website": "https://live.example"},
+    )
+    assert stored["company_website"] == "https://historic.example"
+
+    blank = prepare_document_output(
+        {"company_website": ""},
+        self_contact={"website": "https://must-not-return.example"},
+    )
+    assert blank["company_website"] == ""
+
+    doc = {
+        "doc_type": "invoice",
+        "ref_id": "INV-WEB",
+        "company_name": "Seller Co",
+        "company_website": "https://seller.example",
+        "line_items": [],
+    }
+    assert "https://seller.example" in render_doc_print_html(doc)
+    assert "https://seller.example" in _pdf_text(generate_document_pdf(doc))

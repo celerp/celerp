@@ -183,7 +183,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     if reference:
         doc_ref_text += f"<br/><font size='8'>Reference: {_xml_escape(reference)}</font>"
 
-    # Build company detail lines (address, tax ID, phone, email)
+    # Build company detail lines (address, tax ID, phone, email, website)
     co_detail_parts: list[str] = []
     co_address = doc.get("company_address", "")
     if co_address:
@@ -197,6 +197,9 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
     co_email = doc.get("company_email", "")
     if co_email:
         co_detail_parts.append(co_email)
+    co_website = doc.get("company_website", "")
+    if co_website:
+        co_detail_parts.append(co_website)
     co_detail_text = "<br/>".join(co_detail_parts)
 
     header_data = [

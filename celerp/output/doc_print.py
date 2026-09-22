@@ -261,6 +261,7 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
     company_tax_id = doc.get("company_tax_id") or ""
     company_email = doc.get("company_email") or ""
     company_phone = doc.get("company_phone") or ""
+    company_website = doc.get("company_website") or ""
 
     contact_name = doc.get("contact_name", doc.get("customer_name") or "")
     contact_company = doc.get("contact_company_name") or ""
@@ -596,6 +597,7 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
                         P(f"Tax ID: {company_tax_id}") if company_tax_id else None,
                         P(company_email) if company_email else None,
                         P(company_phone) if company_phone else None,
+                        P(company_website) if company_website else None,
                         cls="dp-company-sub",
                     ),
                 ),

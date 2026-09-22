@@ -124,7 +124,7 @@ async def _company_letterhead(token: str) -> dict:
     prepared = prepare_document_output({}, company=company, self_contact=contact)
     return {
         key: prepared.get(key) or ""
-        for key in ("company_name", "company_address", "company_phone", "company_tax_id", "company_email")
+        for key in ("company_name", "company_address", "company_phone", "company_tax_id", "company_email", "company_website")
     }
 
 
@@ -7183,6 +7183,14 @@ if (!window._celerpEntityVersionListener) {{
 // The server remains the concurrency authority across tabs; this queue only prevents this
 // page from racing its own line saves, header patches, and repricing requests.
 window._celerpMutationTail = window._celerpMutationTail || Promise.resolve(true);
+// Local line revisions distinguish unsaved DOM edits from a merely stale server
+// version (for example after a scan response is lost). A save only acknowledges
+// the revision it actually serialized; edits made while it is in flight stay dirty.
+window._celerpLineRevision = 0;
+window._celerpSavedLineRevision = 0;
+function _celerpLinesDirty() {{
+    return window._celerpLineRevision !== window._celerpSavedLineRevision;
+}}
 function _celerpMutate(run) {{
     const next = window._celerpMutationTail.then(run, run);
     window._celerpMutationTail = next.then(() => true, () => false);
@@ -7239,6 +7247,7 @@ function _celerpUnitFromTotal(total, qty) {{
 /* ── Price list / doc-type helpers ── */
 window._CELERP_DOC_TYPE = {repr(doc_type)};
 window._CELERP_IS_LIST = {repr("true" if is_list else "false")};
+window._CELERP_IS_DRAFT = {repr("true" if is_draft else "false")};
 /* Translated UI strings resolved in Python at render time (R2: never splice
    translated text into JS source; hand it over as one config object). */
 window._L = {_json.dumps({
@@ -7357,7 +7366,18 @@ function _celerpDocTypeParam() {{
         if (plSelect) plSelect.disabled = true;
         scanStatus.textContent = _L.scanning;
         scanStatus.className = 'scan-bar-status';
-        try {{
+        // Draft scans rewrite line_items from the persisted projection. Freeze only
+        // the line tbody while this operation is queued/executing, so a user cannot
+        // create a newer local edit between the canonical line save and the scan.
+        // Finalized audit scanning is not a draft-line mutation and stays untouched.
+        const lockDraftLines = _CELERP_IS_LIST === 'true' && _CELERP_IS_DRAFT === 'true';
+        if (lockDraftLines) {{
+            const lineBody = document.getElementById('{line_body_id}');
+            if (lineBody) lineBody.inert = true;
+            clearTimeout(_celerpSaveTimer);
+            _celerpSaveTimer = null;
+        }}
+        const performScan = async () => {{
             let data;
             try {{
                 const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey}});
@@ -7430,7 +7450,34 @@ function _celerpDocTypeParam() {{
                 await _installListBody(data.html || '', data.version);
             }} catch (err) {{ /* refresh is best-effort; codes are already acknowledged */ }}
             _clearStatusSoon();
+            return true;
+        }};
+        try {{
+            if (lockDraftLines) {{
+                const completed = await _celerpMutate(async () => {{
+                    // Queue ordering handles saves already in flight. Revision tracking
+                    // handles a pending/newer DOM edit without forcing a clean stale DOM
+                    // through /lines, which would break scan retry after a lost response.
+                    if (_celerpLinesDirty()) {{
+                        const ok = await _celerpPersistOnce();
+                        if (!ok) {{
+                            scanStatus.textContent = '';
+                            return false;
+                        }}
+                    }}
+                    return await performScan();
+                }}).catch(() => {{
+                    scanStatus.textContent = '✗ ' + _L.save_failed;
+                    scanStatus.className = 'scan-bar-status scan-bar-status--err';
+                    return false;
+                }});
+                if (!completed && scanStatus.textContent === _L.scanning) scanStatus.textContent = '';
+            }} else {{
+                await performScan();
+            }}
         }} finally {{
+            const currentBody = lockDraftLines ? document.getElementById('{line_body_id}') : null;
+            if (currentBody) currentBody.inert = false;
             scanInput.disabled = false;
             if (addBtn) addBtn.disabled = keepAddLocked;
             if (plSelect) plSelect.disabled = false;
@@ -8255,6 +8302,7 @@ function _celerpCollectLines() {{
     return lines;
 }}
 async function _celerpPersistOnce() {{
+    const revision = window._celerpLineRevision;
     const lines = _celerpCollectLines();
     // A null return means the collector aborted on an invalid quantity and has
     // already shown the error: send no request and report the save as failed so
@@ -8265,7 +8313,10 @@ async function _celerpPersistOnce() {{
     // Return value: true when nothing needed saving or the save succeeded, false when a
     // save was attempted and failed, so callers that gate on a clean save (page navigation)
     // can hold position instead of discarding unsaved rows.
-    if (!lines.length && !_celerpHadLines) return true;
+    if (!lines.length && !_celerpHadLines) {{
+        window._celerpSavedLineRevision = Math.max(window._celerpSavedLineRevision, revision);
+        return true;
+    }}
     const subtotal = lines.reduce((s, l) => s + l.line_total, 0);
     const grossTax = lines.reduce((s, l) => s + l.line_total * (l.tax_rate / 100), 0);
     // Apply the header discount to the taxable base; tax scales by the same ratio (see
@@ -8287,6 +8338,9 @@ async function _celerpPersistOnce() {{
             expected_version: _celerpEntityVersion}})
     }});
     if (resp.ok) {{
+        // A newer edit may have happened while this request was in flight. Only
+        // acknowledge the revision serialized by this request; the newer one stays dirty.
+        window._celerpSavedLineRevision = Math.max(window._celerpSavedLineRevision, revision);
         // Advance the cached version to the one this save produced, so the tab's next
         // autosave/reprice pins the state it just wrote.
         try {{
@@ -8338,6 +8392,9 @@ async function _celerpPersistOnce() {{
     }}
 }}
 function _celerpPersist() {{
+    // Direct persistence callers mutate the rendered line state before saving.
+    // Incrementing here is intentionally harmless when autosave already marked it.
+    window._celerpLineRevision += 1;
     return _celerpMutate(_celerpPersistOnce);
 }}
 /* Save the current page, then swap to another page of the same list. Paging a draft must
@@ -8431,8 +8488,12 @@ function _celerpShowReservedConflicts(conflicts) {{
 /* Auto-save on blur away from any row cell */
 window._celerpSaveTimer = null;
 function celerpAutoSave() {{
+    window._celerpLineRevision += 1;
     clearTimeout(_celerpSaveTimer);
-    _celerpSaveTimer = setTimeout(_celerpPersist, 400);
+    _celerpSaveTimer = setTimeout(() => {{
+        _celerpSaveTimer = null;
+        _celerpPersist();
+    }}, 400);
 }}
 function _celerpRepriceWarningKey() {{
     return 'celerp_reprice_skipped:' + _CELERP_EID;

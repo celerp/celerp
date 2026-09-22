@@ -1252,3 +1252,23 @@ async def test_gateway_connects_on_share_create(client: AsyncClient, monkeypatch
     r = await client.post(f"/docs/{entity_id}/share", headers=_h(tok))
     assert r.status_code == 200
     assert spy.called
+
+
+@pytest.mark.asyncio
+async def test_share_preserves_company_website(client: AsyncClient):
+    tok = await _token(client)
+    created = await client.post("/docs", json={
+        **_doc_payload(),
+        "company_website": "https://seller.example",
+    }, headers=_h(tok))
+    assert created.status_code == 200, created.text
+    entity_id = created.json()["id"]
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+
+    view = await client.get(f"/share/{token}")
+    assert view.status_code == 200
+    assert "https://seller.example" in view.text
+
+    downloaded = await client.get(f"/share/{token}/bundle")
+    assert downloaded.status_code == 200
+    assert downloaded.json()["doc"]["company_website"] == "https://seller.example"
