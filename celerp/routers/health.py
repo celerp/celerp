@@ -121,7 +121,16 @@ async def cloud_status() -> dict:
     tier = authoritative_tier or ws_tier or None
     sub_status = (authoritative or {}).get("status") or ws_status or None
     known = authoritative is not None
-    entitled = (sub_status in ("active", "trialing") and tier not in (None, "", "free")) if known else None
+    raw_entitled = (authoritative or {}).get("connect_entitled")
+    if isinstance(raw_entitled, bool):
+        entitled = raw_entitled
+    elif known:
+        entitled = (
+            sub_status in ("active", "trialing")
+            and tier not in (None, "", "free")
+        )
+    else:
+        entitled = None
 
     runtime_iid = get_instance_id()
     runtime_headers = relay_session_headers()
@@ -138,9 +147,9 @@ async def cloud_status() -> dict:
             or (connected and not runtime_session_token)
         )
     )
-    free_state_mismatch = bool(
+    unentitled_state_mismatch = bool(
         known
-        and authoritative_tier == "free"
+        and entitled is False
         and (
             settings.celerp_public_url
             or (connected and bool(runtime_session_token))
@@ -166,7 +175,7 @@ async def cloud_status() -> dict:
         await sync_existing_entitlement()
         reconciled = True
     elif (identity_mismatch or paid_state_mismatch
-          or free_state_mismatch or runtime_free_with_stale_url
+          or unentitled_state_mismatch or runtime_free_with_stale_url
           or tier_mismatch):
         # Automatic repair must never persist an environment-only override.
         await sync_existing_entitlement(require_persisted_key=True)
@@ -272,8 +281,7 @@ async def backup_status() -> dict:
 async def cloud_disconnect() -> dict:
     """Persist sticky disconnect first, then stop all live cloud activity."""
     from celerp.config import settings as _s, set_cloud_disconnected
-    from celerp.gateway import client as _gw
-    from celerp.gateway.state import set_session_token as _set_session_token
+    from celerp.gateway import shutdown as _gateway_shutdown
     from celerp.services import backup_scheduler
 
     try:
@@ -285,17 +293,12 @@ async def cloud_disconnect() -> dict:
         }
 
     backup_scheduler.stop()
-    gw = _gw.get_client()
-    if gw is not None:
-        try:
-            await gw.close()
-        except Exception:
-            logger.warning("Relay client close failed after durable disconnect",
-                           exc_info=True)
-        finally:
-            _gw.set_client(None)
+    try:
+        await _gateway_shutdown()
+    except Exception:
+        logger.warning("Relay shutdown failed after durable disconnect",
+                       exc_info=True)
 
-    _set_session_token("")
     _s.gateway_token = ""
     _s.celerp_public_url = ""
     return {"disconnected": True}
@@ -305,6 +308,8 @@ async def _apply_gateway_token_api(
     tos_version: str | None = None, *, authoritative_public_url: bool = True,
     backup_encryption_key: str | None = None,
     tier: str | None = None, status: str | None = None,
+    connect_entitled: bool | None = None,
+    feature_flags: dict | None = None,
     expected_api_key: str | None = None,
     expected_verifier: str | None = None,
     keep_disconnected: bool = False,
@@ -315,6 +320,8 @@ async def _apply_gateway_token_api(
         authoritative_public_url=authoritative_public_url,
         backup_encryption_key=backup_encryption_key,
         tier=tier, status=status,
+        connect_entitled=connect_entitled,
+        feature_flags=feature_flags,
         expected_api_key=expected_api_key,
         expected_verifier=expected_verifier,
         keep_disconnected=keep_disconnected,
@@ -475,6 +482,8 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
         tos_version=data.get("tos_version"),
         backup_encryption_key=data.get("backup_encryption_key"),
         tier=data.get("tier"), status=data.get("status"),
+        connect_entitled=data.get("connect_entitled"),
+        feature_flags=data.get("feature_flags"),
         expected_api_key=expected_key,
         expected_verifier=verifier if authority["kind"] == "verifier" else None,
         keep_disconnected=keep_disconnected,
@@ -693,9 +702,10 @@ async def cloud_accept_tos_api() -> dict:
     """Persist TOS acceptance, restart gateway client with new tos_version."""
     import asyncio
     from celerp.config import settings as _s, persist_cloud_settings
-    from celerp.gateway import client as _gw
+    from celerp.gateway import ensure_running, shutdown
+    from celerp.gateway.client import get_client
 
-    gw = _gw.get_client()
+    gw = get_client()
     tos_version = gw.required_tos_version if gw is not None else ""
 
     try:
@@ -703,23 +713,18 @@ async def cloud_accept_tos_api() -> dict:
     except Exception:
         pass
 
-    if gw is not None:
-        gw.stop()
-        _gw.set_client(None)
-
-    new_gw = _gw.GatewayClient(
-        gateway_token=_s.gateway_token,
-        instance_id=_s.gateway_instance_id,
-        gateway_url=_s.gateway_url,
-    )
-    _gw.set_client(new_gw)
-    asyncio.create_task(new_gw.run())
+    await shutdown()
+    ensure_running()
+    new_gw = get_client()
     for _ in range(15):
-        if new_gw.relay_status == "active":
+        if new_gw and new_gw.relay_status == "active":
             break
         await asyncio.sleep(0.2)
 
-    return {"relay_status": new_gw.relay_status, "public_url": _s.celerp_public_url}
+    return {
+        "relay_status": new_gw.relay_status if new_gw else "inactive",
+        "public_url": _s.celerp_public_url,
+    }
 
 
 @settings_router.get("/cloud-instance-id")
@@ -966,6 +971,8 @@ async def _activate_after_claim(
         tos_version=data.get("tos_version"),
         backup_encryption_key=data.get("backup_encryption_key"),
         tier=data.get("tier"), status=data.get("status"),
+        connect_entitled=data.get("connect_entitled"),
+        feature_flags=data.get("feature_flags"),
         expected_verifier=verifier,
         keep_disconnected=keep_disconnected,
     )
