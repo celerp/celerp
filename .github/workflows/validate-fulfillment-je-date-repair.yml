@@ -1,0 +1,121 @@
+name: Validate fulfillment JE date repair
+
+on:
+  push:
+    branches: [fix/fulfillment-je-date-repair]
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      EXPECTED_BASE: 833ac18fecdf7e1b0958d0855ab50f073a7ec295
+      TARGET_REF: refs/heads/fix/fulfillment-je-date-repair
+      ALLOW_INSECURE_JWT: "true"
+      DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .review/fulfillment-je-date-repair.patch.xz.b64 | xz -d > /tmp/change.patch
+          echo "3f1df52b8652a13db1fa3842ccb373a4c5f8bd25c698e86f4dd684811fa8eaa8  /tmp/change.patch" | sha256sum -c -
+
+      - name: Apply to exact base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach "$EXPECTED_BASE"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_BASE"
+          git apply --check /tmp/change.patch
+          git apply /tmp/change.patch
+          git diff --check
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install dependencies
+        run: pip install uv && uv pip install --system -e ".[dev]"
+
+      - name: Regenerate first-party trust lock
+        run: python scripts/gen_first_party_lock.py
+
+      - name: Validate source and focused behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q celerp default_modules/celerp-accounting/celerp_accounting \
+            tests/test_projections/test_fulfillment_je_date_backfill.py \
+            tests/test_events/test_other_events.py
+          pytest \
+            tests/test_projections/test_fulfillment_je_date_backfill.py \
+            tests/test_projections/test_cogs_backfill.py \
+            tests/test_events/test_other_events.py \
+            default_modules/celerp-accounting/tests/test_accounting_gaps.py \
+            -q --tb=short --no-cov --timeout=30
+
+      - name: Verify exact final diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add \
+            celerp/events/schemas.py \
+            celerp/main.py \
+            celerp/services/cogs_backfill.py \
+            default_modules/celerp-accounting/celerp_accounting/projections.py \
+            default_modules/first_party.lock.json \
+            tests/test_events/test_other_events.py \
+            tests/test_projections/test_fulfillment_je_date_backfill.py \
+            ui/components/activity.py
+          git diff --cached --check
+          git diff --cached --name-only | LC_ALL=C sort > /tmp/actual-files
+          cat > /tmp/expected-files <<'EOF'
+          celerp/events/schemas.py
+          celerp/main.py
+          celerp/services/cogs_backfill.py
+          default_modules/celerp-accounting/celerp_accounting/projections.py
+          default_modules/first_party.lock.json
+          tests/test_events/test_other_events.py
+          tests/test_projections/test_fulfillment_je_date_backfill.py
+          ui/components/activity.py
+          EOF
+          sed -i 's/^          //' /tmp/expected-files
+          LC_ALL=C sort -o /tmp/expected-files /tmp/expected-files
+          diff -u /tmp/expected-files /tmp/actual-files
+
+      - name: Commit and guarded publish
+        shell: bash
+        env:
+          GIT_AUTHOR_NAME: Noah Severs
+          GIT_AUTHOR_EMAIL: 118095044+ngsevers@users.noreply.github.com
+          GIT_COMMITTER_NAME: Noah Severs
+          GIT_COMMITTER_EMAIL: 118095044+ngsevers@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          git commit -m "fix(accounting): repair legacy fulfillment JE dates"
+          git push origin HEAD:"$TARGET_REF" \
+            --force-with-lease="$TARGET_REF:${GITHUB_SHA}"
