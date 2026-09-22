@@ -41,7 +41,7 @@ from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import checked_exchange_rate, round_money, round_rate, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, resolve_price
-from celerp.services.terms import default_terms_for
+from celerp.services.terms import resolve_document_terms
 from celerp.output.document_context import prepare_document_output
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES
 from celerp.services.list_behavior import (
@@ -1290,15 +1290,15 @@ async def create_doc(
         raise HTTPException(status_code=409, detail=f"Document number '{ref_id}' already exists")
 
     data = payload.model_dump(exclude_none=True)
+    # Canonicalize the historical `terms` alias at the API boundary so every
+    # newly-created document stores one customer-facing terms field.
+    data.pop("terms", None)
     data["ref_id"] = ref_id
     data.setdefault("currency", company.settings.get("currency", "USD"))
-    # Defaults are creation policy, not a best-effort UI follow-up. An explicitly
-    # supplied blank is intentional and therefore suppresses the configured default.
-    if not ({"terms_template", "terms_text", "terms"} & payload.model_fields_set):
-        default_terms = default_terms_for(company.settings or {}, payload.doc_type)
-        if default_terms:
-            data["terms_template"] = default_terms.get("name") or ""
-            data["terms_text"] = default_terms.get("text") or ""
+    data.update(resolve_document_terms(
+        payload.model_dump(), company.settings or {}, payload.doc_type,
+        explicit_fields=payload.model_fields_set,
+    ))
 
     # Default issue_date to today so date filters and sorting work correctly on new docs
     data.setdefault("issue_date", _date.today().isoformat())

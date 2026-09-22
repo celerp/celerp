@@ -20,7 +20,7 @@ from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.terms import default_terms_for
+from celerp.services.terms import resolve_document_terms
 from celerp_docs.sequences import next_doc_ref
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 
@@ -166,20 +166,11 @@ def _build_router() -> APIRouter:
         if due_date:
             doc_data["due_date"] = due_date
 
-        # Template terms win when explicitly present. Otherwise generated
-        # documents use the same company default as an ordinary document create.
-        if "terms_template" in state or "terms_text" in state or "terms" in state:
-            if "terms_template" in state:
-                doc_data["terms_template"] = state.get("terms_template") or ""
-            if "terms_text" in state:
-                doc_data["terms_text"] = state.get("terms_text") or ""
-            elif "terms" in state:
-                doc_data["terms"] = state.get("terms") or ""
-        else:
-            default_terms = default_terms_for(company.settings or {}, target_doc_type)
-            if default_terms:
-                doc_data["terms_template"] = default_terms.get("name") or ""
-                doc_data["terms_text"] = default_terms.get("text") or ""
+        # Use the same canonical creation policy as ordinary documents. Legacy
+        # subscription templates may still carry `terms`, but generated docs do not.
+        doc_data.update(resolve_document_terms(
+            state, company.settings or {}, target_doc_type,
+        ))
         if "customer_note" in state:
             doc_data["customer_note"] = state.get("customer_note") or ""
 

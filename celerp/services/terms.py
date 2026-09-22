@@ -44,3 +44,38 @@ def default_terms_for(settings: dict | None, doc_type: str) -> dict | None:
         ),
         None,
     )
+
+
+def resolve_document_terms(
+    source: dict,
+    settings: dict | None,
+    doc_type: str,
+    *,
+    explicit_fields: set[str] | None = None,
+) -> dict:
+    """Return canonical stored terms fields for a document creation path.
+
+    The historical `terms` alias remains accepted, but new document state only
+    stores `terms_text`. Explicit terms, including blanks/None, suppress company
+    defaults; when both aliases are supplied, the canonical field wins.
+    """
+    fields = set(source) if explicit_fields is None else set(explicit_fields)
+    term_fields = {"terms_template", "terms_text", "terms"}
+    if fields & term_fields:
+        out: dict = {}
+        if "terms_template" in fields and source.get("terms_template") is not None:
+            out["terms_template"] = source.get("terms_template")
+        if "terms_text" in fields:
+            if source.get("terms_text") is not None:
+                out["terms_text"] = source.get("terms_text")
+        elif "terms" in fields and source.get("terms") is not None:
+            out["terms_text"] = source.get("terms")
+        return out
+
+    default = default_terms_for(settings, doc_type)
+    if not default:
+        return {}
+    return {
+        "terms_template": default.get("name") or "",
+        "terms_text": default.get("text") or "",
+    }

@@ -202,6 +202,7 @@ async def test_generate_now_preserves_legacy_customer_terms(client):
     assert r.status_code == 200, r.text
     doc = (await client.get(f"/docs/{r.json()['doc_id']}", headers=h)).json()
     assert doc.get("terms_text") == "Legacy subscription customer terms."
+    assert "terms" not in doc
     assert not doc.get("terms_template")
 
 

@@ -57,6 +57,22 @@ async def test_legacy_terms_field_is_explicit_and_suppresses_default(client):
     assert r.status_code == 200, r.text
     doc = (await client.get(f"/docs/{r.json()['id']}", headers=_h(token))).json()
     assert doc["terms_text"] == "Legacy customer terms."
+    assert "terms" not in doc
+    assert not doc.get("terms_template")
+
+
+@pytest.mark.asyncio
+async def test_canonical_terms_text_wins_over_legacy_alias(client):
+    token = await _register(client)
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "invoice",
+        "terms": "Legacy customer terms.",
+        "terms_text": "Canonical customer terms.",
+    })
+    assert r.status_code == 200, r.text
+    doc = (await client.get(f"/docs/{r.json()['id']}", headers=_h(token))).json()
+    assert doc["terms_text"] == "Canonical customer terms."
+    assert "terms" not in doc
     assert not doc.get("terms_template")
 
 
