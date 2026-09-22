@@ -1,0 +1,31 @@
+name: PR340 Integration Check
+
+on:
+  push:
+    branches: [pr340-integration-check]
+
+permissions:
+  contents: write
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Rebase PR 340 onto current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Noah Severs"
+          git config user.email "118095044+ngsevers@users.noreply.github.com"
+          git fetch --no-tags origin main woocommerce-sync-integrity
+          test "$(git rev-parse origin/main)" = "0024c5ffa3b01a9e93514b3e99938f0dc8749ebb"
+          test "$(git rev-parse origin/woocommerce-sync-integrity)" = "6356077a6174e46d17f1b29ee996192355ddca3d"
+          git checkout --detach 6356077a6174e46d17f1b29ee996192355ddca3d
+          git rebase 0024c5ffa3b01a9e93514b3e99938f0dc8749ebb
+          git rev-parse HEAD
+          git push origin HEAD:refs/heads/pr340-rebased
