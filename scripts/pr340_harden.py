@@ -2048,6 +2048,15 @@ write(settings_path, settings_src)
 # Final executable regression contracts for the owning boundaries.
 contract_path = "tests/test_connector_hardening_contract.py"
 contract = read(contract_path) if (ROOT / contract_path).exists() else ""
+if not contract.strip():
+    contract = '''from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _text(path: str) -> str:
+    return (ROOT / path).read_text()
+'''
 extra = r'''
 
 def test_generic_sync_requires_active_owned_integration():
@@ -2399,6 +2408,7 @@ async def test_clear_connector_config_removes_row(_db_engine):
 
     company_uuid = uuid.uuid4()
     cid = str(company_uuid)
+    connector = f"cleanup-{uuid.uuid4().hex[:10]}"
     async with get_session_ctx() as session:
         session.add(Company(
             id=company_uuid, name="Connector Cleanup Co",
@@ -2406,14 +2416,14 @@ async def test_clear_connector_config_removes_row(_db_engine):
         ))
         await session.commit()
     try:
-        await _ensure_connector_config(cid, "woocommerce", "website")
-        assert await _get_connector_config(cid, "woocommerce") is not None
-        await _clear_connector_config(cid, "woocommerce")
-        assert await _get_connector_config(cid, "woocommerce") is None
+        await _ensure_connector_config(cid, connector, "website")
+        assert await _get_connector_config(cid, connector) is not None
+        await _clear_connector_config(cid, connector)
+        assert await _get_connector_config(cid, connector) is None
     finally:
         async with get_session_ctx() as session:
             await session.execute(
-                sa.delete(ConnectorConfig).where(ConnectorConfig.company_id == cid)
+                sa.delete(ConnectorConfig).where(ConnectorConfig.connector == connector)
             )
             await session.execute(sa.delete(Company).where(Company.id == company_uuid))
             await session.commit()
@@ -2426,7 +2436,7 @@ status = _replace_async_test(
     r'''@pytest.mark.asyncio
 async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
     from datetime import datetime, timezone
-    from unittest.mock import patch
+    from unittest.mock import AsyncMock, patch
     import sqlalchemy as sa
 
     from celerp.db import get_session_ctx
@@ -2437,6 +2447,7 @@ async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
     company_uuid = uuid.uuid4()
     company_id = str(company_uuid)
     legacy_id = f"inst-{uuid.uuid4().hex[:10]}"
+    connector = f"legacy-{uuid.uuid4().hex[:10]}"
     now = datetime.now(timezone.utc)
     try:
         async with get_session_ctx() as session:
@@ -2445,20 +2456,24 @@ async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
                 slug=f"legacy-connector-{company_uuid.hex[:8]}", settings={},
             ))
             session.add(ConnectorConfig(
-                company_id=legacy_id, connector="woocommerce", direction="both",
+                company_id=legacy_id, connector=connector, direction="both",
                 claimed_at=now, activated_at=now,
             ))
             await session.commit()
-        with patch("celerp.config.ensure_instance_id", return_value=legacy_id):
-            cfg = await _get_connector_config(company_id, "woocommerce")
+        with (
+            patch("celerp.config.ensure_instance_id", return_value=legacy_id),
+            patch(
+                "celerp.connectors.ownership._real_company_ids",
+                new=AsyncMock(return_value={company_id}),
+            ),
+        ):
+            cfg = await _get_connector_config(company_id, connector)
             assert cfg is not None
             assert cfg.company_id == company_id
     finally:
         async with get_session_ctx() as session:
             await session.execute(
-                sa.delete(ConnectorConfig).where(
-                    ConnectorConfig.company_id.in_([company_id, legacy_id])
-                )
+                sa.delete(ConnectorConfig).where(ConnectorConfig.connector == connector)
             )
             await session.execute(sa.delete(Company).where(Company.id == company_uuid))
             await session.commit()
@@ -2470,28 +2485,24 @@ status = _replace_async_test(
     "test_connector_claim_rejects_different_company_owner",
     r'''@pytest.mark.asyncio
 async def test_connector_claim_rejects_different_company_owner(_db_engine):
-    from datetime import datetime, timezone
-
+    import pytest
+    from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector
     from celerp.db import get_session_ctx
     from celerp.models.company import Company
-    from celerp.models.connector_config import ConnectorConfig
-    from ui.routes.settings_connectors import _claim_connector_for_company
 
     a, b = uuid.uuid4(), uuid.uuid4()
-    now = datetime.now(timezone.utc)
+    connector = f"claim-{uuid.uuid4().hex[:10]}"
     async with get_session_ctx() as session:
         session.add_all([
             Company(id=a, name="Owner A", slug=f"owner-a-{a.hex[:8]}", settings={}),
             Company(id=b, name="Owner B", slug=f"owner-b-{b.hex[:8]}", settings={}),
-            ConnectorConfig(
-                company_id=str(a), connector="woocommerce", direction="both",
-                claimed_at=now, activated_at=now,
-            ),
         ])
         await session.commit()
 
-    assert await _claim_connector_for_company(str(b), "woocommerce") is False
-    assert await _claim_connector_for_company(str(a), "woocommerce") is True
+    await claim_connector(str(a), connector)
+    with pytest.raises(ConnectorOwnershipError):
+        await claim_connector(str(b), connector)
+    assert (await claim_connector(str(a), connector)).company_id == str(a)
 ''',
 )
 write(status_path, status)
