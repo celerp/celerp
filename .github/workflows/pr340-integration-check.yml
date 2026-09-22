@@ -46,16 +46,16 @@ jobs:
 
       - name: Apply connector hardening
         shell: bash
-        env:
-          DOWN_REVISION: z9a0b1c2d3e4
         run: |
           set -euo pipefail
           python /tmp/pr340_harden.py
           python -m compileall -q celerp default_modules/celerp-connectors default_modules/celerp-docs default_modules/celerp-inventory ui
-          python scripts/gen_first_party_lock.py
 
-      - name: Install test dependencies
-        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split
+      - name: Install deps and refresh module lock
+        run: |
+          pip install uv
+          uv pip install --system -e ".[dev]" pytest-xdist pytest-split
+          python scripts/gen_first_party_lock.py
 
       - name: Focused hardening tests
         run: >
