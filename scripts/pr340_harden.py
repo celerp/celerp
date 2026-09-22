@@ -399,9 +399,43 @@ replace_once(
 )
 
 # Migration from the actual candidate's single Alembic head.
-down = os.environ.get("DOWN_REVISION", "").strip()
-if not re.fullmatch(r"[0-9a-z]+", down):
-    raise SystemExit(f"Invalid/missing DOWN_REVISION: {down!r}")
+# Derive it from the checked-out tree so absorbing main cannot create a second branch.
+import ast
+
+_revisions: set[str] = set()
+_referenced: set[str] = set()
+for _path in (ROOT / "celerp/migrations/versions").glob("*.py"):
+    try:
+        _tree = ast.parse(_path.read_text())
+    except SyntaxError:
+        continue
+    _revision = None
+    _down = None
+    for _node in _tree.body:
+        if not isinstance(_node, ast.Assign):
+            continue
+        for _target in _node.targets:
+            if not isinstance(_target, ast.Name):
+                continue
+            try:
+                _value = ast.literal_eval(_node.value)
+            except Exception:
+                _value = None
+            if _target.id == "revision":
+                _revision = _value
+            elif _target.id == "down_revision":
+                _down = _value
+    if isinstance(_revision, str):
+        _revisions.add(_revision)
+    if isinstance(_down, str):
+        _referenced.add(_down)
+    elif isinstance(_down, (tuple, list)):
+        _referenced.update(v for v in _down if isinstance(v, str))
+
+_heads = sorted(_revisions - _referenced)
+if len(_heads) != 1:
+    raise SystemExit(f"Expected exactly one Alembic head before connector migration, got {_heads}")
+down = _heads[0]
 write("celerp/migrations/versions/c3d4e5f6a7b8_connector_ownership_lifecycle.py", f'''# Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 """Add connector ownership lifecycle timestamps.
