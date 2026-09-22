@@ -489,6 +489,75 @@ regex_once(
         )]
 ''',
 )
+# Activation is one atomic connector operation: pull everything inbound while
+# pending, then mark active and close the order handoff gap before releasing the lease.
+insert_after = '''    except ConnectorBusy:
+        first = sync_plan(connector, direction)
+        entity = first[0] if first else SyncEntity.PRODUCTS
+        return [SyncResult(
+            entity=entity,
+            direction=direction,
+            errors=[f"{connector.name} sync already in progress"],
+        )]
+'''
+runner = read("celerp/connectors/sync_runner.py")
+pos = runner.index(insert_after) + len(insert_after)
+runner = runner[:pos] + r'''
+
+
+async def run_connector_activation(
+    connector: ConnectorBase,
+    ctx: ConnectorContext,
+) -> list[SyncResult]:
+    """Finish a pending connector activation without exposing a handoff race."""
+    from celerp.connectors.operation_lock import ConnectorBusy, connector_operation
+    from celerp.connectors.ownership import activate_connector, get_connector_config
+
+    config = await get_connector_config(
+        ctx.company_id, connector.name, adopt_single_company=False
+    )
+    if config is None:
+        return [SyncResult(
+            entity=SyncEntity.PRODUCTS,
+            direction=SyncDirection.INBOUND,
+            errors=[f"{connector.name} is not claimed by this company"],
+        )]
+    if config.activated_at is not None:
+        return await run_connector_sync(connector, ctx, SyncDirection.INBOUND)
+
+    try:
+        async with connector_operation(ctx.company_id, connector.name):
+            await _interrupt_abandoned_runs(ctx.company_id, connector.name)
+            results = [
+                await run_sync(
+                    connector, ctx, entity,
+                    direction=SyncDirection.INBOUND, _operation_locked=True,
+                )
+                for entity in sync_plan(connector, SyncDirection.INBOUND)
+            ]
+            if any(result.errors for result in results):
+                return results
+
+            await activate_connector(ctx.company_id, connector.name)
+
+            # While pending, webhooks/schedulers were ignored. Once active they
+            # block on this same lease, so one final order pull closes the exact
+            # activation handoff gap before autonomous work can proceed.
+            if SyncEntity.ORDERS in connector.supported_entities:
+                results.append(await run_sync(
+                    connector, ctx, SyncEntity.ORDERS.value,
+                    direction=SyncDirection.INBOUND, _operation_locked=True,
+                ))
+            return results
+    except ConnectorBusy:
+        return [SyncResult(
+            entity=SyncEntity.PRODUCTS,
+            direction=SyncDirection.INBOUND,
+            errors=[f"{connector.name} activation already in progress"],
+        )]
+'''
+write("celerp/connectors/sync_runner.py", runner)
+
 # Add internal param + direct lease wrapper to run_sync.
 replace_once(
     "celerp/connectors/sync_runner.py",
@@ -1244,16 +1313,25 @@ replace_once(
 
     async def _do_sync():
 ''',
-    '''    from celerp.connectors.ownership import get_active_connector_config
-    config = await get_active_connector_config(company_id, platform)
+    '''    config = await _get_connector_config(company_id, platform)
     if config is None:
-        raise RuntimeError("Connector is not active for this company")
-    direction = (
-        SyncDirection.INBOUND
-        if activation else SyncDirection(config.direction)
-    )
+        raise RuntimeError("Connector is not owned by this company")
+    if not activation and config.activated_at is None:
+        raise RuntimeError("Connector activation is still pending")
+    direction = SyncDirection(config.direction)
 
     async def _do_sync():
+''',
+)
+replace_once(
+    "ui/routes/settings_connectors.py",
+    '''        await run_connector_sync(connector, ctx, direction=direction)
+''',
+    '''        if activation:
+            from celerp.connectors.sync_runner import run_connector_activation
+            await run_connector_activation(connector, ctx)
+        else:
+            await run_connector_sync(connector, ctx, direction=direction)
 ''',
 )
 replace_once(
@@ -1299,32 +1377,33 @@ old = '''    # Load configs for all connected connectors
         if c.get("connected") and last_runs.get(c["id"]) is None:
             spawn_background(_autosync_once(company_id, c["id"], token))
 '''
-new = '''    # Relay connected is installation-scoped. Local ownership is authoritative for
-    # whether this ERP company may operate the connector.
-    from celerp.connectors.ownership import activate_connector
+new = '''    # Relay connected is installation-scoped. A pending local owner may finish
+    # activation, but it is not exposed to autonomous work until that pull succeeds.
     configs: dict[str, object] = {}
     owned_catalog: list[dict] = []
+    pending_activation: list[str] = []
     for raw in catalog:
         c = dict(raw)
         cfg = await _get_connector_config(company_id, c["id"])
+        relay_connected = bool(raw.get("connected"))
         if (
             cfg is not None
             and cfg.activated_at is None
-            and raw.get("connected")
+            and relay_connected
             and c.get("auth_type") == "oauth"
         ):
-            # The explicit pre-OAuth claim identifies the company; relay connected
-            # now proves authorization completed.
-            cfg = await activate_connector(company_id, c["id"])
+            pending_activation.append(c["id"])
         local_connected = bool(
-            raw.get("connected") and cfg is not None and cfg.activated_at is not None
+            relay_connected and cfg is not None and cfg.activated_at is not None
         )
         c["connected"] = local_connected
-        if local_connected:
+        if cfg is not None:
             configs[c["id"]] = cfg
         owned_catalog.append(c)
     catalog = owned_catalog
 
+    for platform in pending_activation:
+        spawn_background(_autosync_once(company_id, platform, token))
     for c in catalog:
         if c.get("connected") and last_runs.get(c["id"]) is None:
             spawn_background(_autosync_once(company_id, c["id"], token))
