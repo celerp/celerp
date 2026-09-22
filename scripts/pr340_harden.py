@@ -1317,7 +1317,7 @@ replace_once(
 routes_path = "default_modules/celerp-connectors/celerp_connectors/routes.py"
 routes = read(routes_path)
 start = routes.index('@router.post("/{connector_name}/credentials")')
-end = routes.index('\\n\\nclass ItemSyncRequest', start)
+end = routes.index('\n\nclass ItemSyncRequest', start)
 replacement = r'''@router.post("/{connector_name}/credentials")
 async def store_credentials(
     connector_name: str,
