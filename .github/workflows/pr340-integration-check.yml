@@ -60,8 +60,8 @@ jobs:
       - name: Focused hardening tests
         run: >
           pytest -q --tb=short --no-cov --timeout=30
-          tests/test_connector_hardening_contract.py
-          tests/test_services/test_sync_runner_lifecycle.py
+          tests/test_connector_operation_lock.py
+          tests/test_connector_ownership.py
           tests/test_services/test_outbound_queue.py
           tests/test_woocommerce_sync_guards.py
           tests/test_connectors_status.py
