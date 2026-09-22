@@ -170,13 +170,17 @@ async def apply_activation_state(
         backup_scheduler.stop()
         return True
 
-    if not persist_state and settings.cloud_disconnected:
+    # Disconnect is the durable ownership intent. It may race after the
+    # activation CAS while feature-state persistence is still in flight; never
+    # revive runtime after that later explicit decision.
+    if settings.cloud_disconnected:
+        if gateway_client.get_client() is not None:
+            await shutdown_gateway()
+        backup_scheduler.stop()
         return False
 
     settings.gateway_token = token
     settings.celerp_public_url = effective_public_url or ""
-    if persist_state:
-        settings.cloud_disconnected = False
 
     from celerp.gateway import ensure_running, has_active_share
     should_serve = connect_entitled
