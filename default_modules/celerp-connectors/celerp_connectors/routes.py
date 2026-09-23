@@ -252,6 +252,7 @@ async def store_credentials(
         ConnectorOwnershipError,
         claim_connector_ownership,
         lock_connector_operation,
+        release_connector_ownership,
     )
     category = getattr(connector.category, "value", connector.category)
     default_frequency = (
@@ -294,6 +295,13 @@ async def store_credentials(
 
     if r.status_code == 402:
         await session.rollback()
+        try:
+            await release_connector_ownership(
+                session, company_id, connector_name
+            )
+            await session.commit()
+        except Exception:
+            await session.rollback()
         return {"ok": False, "error": "subscription_required", "detail": ""}
     if r.status_code != 200:
         await session.rollback()
@@ -328,7 +336,19 @@ async def store_credentials(
             except Exception:
                 rollback = None
             await session.rollback()
-            if rollback is not None and rollback.status_code not in (200, 404):
+            if rollback is not None and rollback.status_code in (200, 404):
+                try:
+                    await release_connector_ownership(
+                        session, company_id, connector_name
+                    )
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                    log.warning(
+                        "connector ownership cleanup failed after credential rollback",
+                        exc_info=True,
+                    )
+            elif rollback is not None:
                 log.warning(
                     "connector credential rollback returned %d",
                     rollback.status_code,
@@ -367,7 +387,19 @@ async def store_credentials(
                         f"{relay_http_url()}/tokens/{connector_name}",
                         headers=relay_session_headers(),
                     )
-                if revoked.status_code not in (200, 404):
+                if revoked.status_code in (200, 404):
+                    try:
+                        await release_connector_ownership(
+                            session, company_id, connector_name
+                        )
+                        await session.commit()
+                    except Exception:
+                        await session.rollback()
+                        log.warning(
+                            "connector ownership cleanup failed after credential rollback",
+                            exc_info=True,
+                        )
+                else:
                     log.warning(
                         "connector credential rollback returned %d",
                         revoked.status_code,

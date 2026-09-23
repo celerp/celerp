@@ -92,12 +92,16 @@ async def test_store_probes_then_stores_on_relay():
 @pytest.mark.asyncio
 async def test_store_relay_402_maps_to_subscription_required():
     url_p, hdr_p = _relay_state()
-    with url_p, hdr_p, respx.mock:
+    release = AsyncMock()
+    with patch(
+        "celerp.connectors.ownership.release_connector_ownership", release
+    ), url_p, hdr_p, respx.mock:
         respx.get(f"{STORE}/wp-json/wc/v3/products").mock(return_value=httpx.Response(200, json=[]))
         respx.post(f"{RELAY}/tokens/woocommerce").mock(return_value=httpx.Response(402))
         result = await store_credentials("woocommerce", _creds(), "company-test", None, _session())
     assert result["ok"] is False
     assert result["error"] == "subscription_required"
+    release.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -158,9 +162,12 @@ async def test_store_unknown_connector_404():
 @pytest.mark.asyncio
 async def test_store_webhook_failure_rolls_back_relay_credential():
     url_p, hdr_p = _relay_state()
+    release = AsyncMock()
     with patch(
         "celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks",
         new=AsyncMock(side_effect=RuntimeError("webhook failed")),
+    ), patch(
+        "celerp.connectors.ownership.release_connector_ownership", release
     ), url_p, hdr_p, respx.mock:
         respx.get(f"{STORE}/wp-json/wc/v3/products").mock(
             return_value=httpx.Response(200, json=[]))
@@ -174,6 +181,31 @@ async def test_store_webhook_failure_rolls_back_relay_credential():
 
     assert result["ok"] is False
     assert delete.called
+    release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_store_webhook_failure_keeps_owner_when_revoke_is_ambiguous():
+    url_p, hdr_p = _relay_state()
+    release = AsyncMock()
+    with patch(
+        "celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks",
+        new=AsyncMock(side_effect=RuntimeError("webhook failed")),
+    ), patch(
+        "celerp.connectors.ownership.release_connector_ownership", release
+    ), url_p, hdr_p, respx.mock:
+        respx.get(f"{STORE}/wp-json/wc/v3/products").mock(
+            return_value=httpx.Response(200, json=[]))
+        respx.post(f"{RELAY}/tokens/woocommerce").mock(
+            return_value=httpx.Response(200, json={"stored": True}))
+        respx.delete(f"{RELAY}/tokens/woocommerce").mock(
+            return_value=httpx.Response(500))
+        result = await store_credentials(
+            "woocommerce", _creds(), "company-test", None, _session()
+        )
+
+    assert result["ok"] is False
+    release.assert_not_awaited()
 
 
 # ── revoke_credentials ───────────────────────────────────────────────────────
