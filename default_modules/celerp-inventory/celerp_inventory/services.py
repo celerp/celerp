@@ -681,6 +681,7 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
     if row is None or row.entity_type != "item":
         raise ValueError(f"Item {entity_id!r} not found")
     state = row.state or {}
+
     catalog_item_id = state.get("catalog_item_id")
     if catalog_item_id:
         parent = await session.get(
@@ -693,58 +694,79 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
         ):
             raise ValueError(f"Item {entity_id!r} references an invalid catalog product anchor")
         return parent
-    if _is_product_anchor_state(state):
-        sku = str(state.get("sku") or "").strip().casefold()
-        if sku:
-            rows = (await session.execute(select(Projection).where(
-                Projection.company_id == cid,
-                Projection.entity_type == "item",
-            ))).scalars().all()
-            roots = [
-                candidate for candidate in rows
-                if _is_product_anchor_state(candidate.state or {})
-                and str((candidate.state or {}).get("sku") or "").strip().casefold() == sku
-            ]
-            if len(roots) > 1:
-                raise ValueError(
-                    f"SKU {state.get('sku')!r} matches multiple catalog product anchors"
-                )
-        return row
+
     parent_item_id = state.get("parent_item_id")
     if parent_item_id:
-        parent = await session.get(Projection, {"company_id": cid, "entity_id": str(parent_item_id)})
-        if parent is not None and parent.entity_type == "item" and _is_product_anchor_state(parent.state or {}):
+        parent = await session.get(
+            Projection, {"company_id": cid, "entity_id": str(parent_item_id)}
+        )
+        if (
+            parent is not None
+            and parent.entity_type == "item"
+            and _is_structural_product_anchor_state(parent.state or {})
+        ):
             return parent
-    sku = str(state.get("sku") or "").strip().casefold()
+
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == cid,
+        Projection.entity_type == "item",
+    ))).scalars().all()
+    key = _family_keys(rows).get(row.entity_id)
+    if key and key[0] == "anchor":
+        anchor = next(
+            (candidate for candidate in rows if candidate.entity_id == key[1]),
+            None,
+        )
+        if (
+            anchor is not None
+            and _is_structural_product_anchor_state(anchor.state or {})
+        ):
+            return anchor
+
+    sku = normalize_sku(state.get("sku"))
     if not sku:
         raise ValueError(f"Item {entity_id!r} has no catalog SKU to resolve")
-    rows = (await session.execute(select(Projection).where(
-        Projection.company_id == cid, Projection.entity_type == "item"
-    ))).scalars().all()
-    roots = [r for r in rows if _is_product_anchor_state(r.state or {})
-             and str((r.state or {}).get("sku") or "").strip().casefold() == sku]
-    if len(roots) == 1:
-        return roots[0]
-    if not roots:
-        raise ValueError(f"SKU {state.get('sku')!r} has no catalog product anchor")
-    raise ValueError(f"SKU {state.get('sku')!r} matches multiple catalog product anchors")
+    raise ValueError(f"SKU {state.get('sku')!r} does not resolve to one catalog product anchor")
+
+
+def _is_explicit_catalog_anchor_state(state: dict) -> bool:
+    """True for a structural root carrying durable catalog identity/history."""
+    if not _is_structural_product_anchor_state(state):
+        return False
+    links = state.get("external_links") or {}
+    if isinstance(links, dict) and any(
+        isinstance(link, dict)
+        and link.get("detached") is not True
+        and link.get("product_id") not in (None, "")
+        for link in links.values()
+    ):
+        return True
+    idem = str(state.get("idempotency_key") or "")
+    return bool(state.get("_catalog_sku_aliases")) or idem.startswith(
+        ("shopify:", "woocommerce:")
+    )
 
 
 def _family_keys(rows: list[Projection]) -> dict[str, tuple[str, str]]:
-    """Resolve structural catalog families first, with SKU history as legacy fallback."""
+    """Resolve structural catalog families, using SKU only for legacy inference."""
     roots_by_sku: dict[str, list[Projection]] = {}
+    explicit_by_sku: dict[str, list[Projection]] = {}
+
     for row in rows:
         state = row.state or {}
-        if not _is_product_anchor_state(state):
+        sku = normalize_sku(state.get("sku"))
+        if _is_product_anchor_state(state) and sku:
+            roots_by_sku.setdefault(sku, []).append(row)
+        if not _is_explicit_catalog_anchor_state(state):
             continue
-        sku_keys = {normalize_sku(state.get("sku"))}
+        sku_keys = {sku}
         sku_keys.update(
             normalize_sku(value)
             for value in (state.get("_catalog_sku_aliases") or [])
         )
-        for sku in sku_keys:
-            if sku:
-                roots_by_sku.setdefault(sku, []).append(row)
+        for key in sku_keys:
+            if key:
+                explicit_by_sku.setdefault(key, []).append(row)
 
     keys: dict[str, tuple[str, str]] = {}
     for row in rows:
@@ -753,15 +775,30 @@ def _family_keys(rows: list[Projection]) -> dict[str, tuple[str, str]]:
         if catalog_item_id:
             keys[row.entity_id] = ("anchor", str(catalog_item_id))
             continue
+
         sku = normalize_sku(state.get("sku"))
+        explicit = {
+            candidate.entity_id: candidate
+            for candidate in (explicit_by_sku.get(sku, []) if sku else [])
+        }
+        if len(explicit) == 1:
+            keys[row.entity_id] = ("anchor", next(iter(explicit)))
+            continue
+        if len(explicit) > 1:
+            keys[row.entity_id] = ("sku", sku)
+            continue
+
         if _is_product_anchor_state(state):
             keys[row.entity_id] = ("anchor", row.entity_id)
             continue
-        roots = roots_by_sku.get(sku, []) if sku else []
-        unique_roots = {candidate.entity_id: candidate for candidate in roots}
+
+        roots = {
+            candidate.entity_id: candidate
+            for candidate in (roots_by_sku.get(sku, []) if sku else [])
+        }
         keys[row.entity_id] = (
-            ("anchor", next(iter(unique_roots)))
-            if len(unique_roots) == 1
+            ("anchor", next(iter(roots)))
+            if len(roots) == 1
             else ("sku", sku)
         )
     return keys

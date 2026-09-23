@@ -146,3 +146,35 @@ def test_structural_catalog_family_survives_anchor_sku_change():
     state = build_channel_states(rows)
     assert state["item:explicit"]["woocommerce"]["anchor_id"] == "item:anchor"
     assert state["item:legacy"]["woocommerce"]["anchor_id"] == "item:anchor"
+
+
+def test_legacy_sku_history_stays_unassigned_when_two_explicit_anchors_claim_it():
+    from types import SimpleNamespace
+
+    def anchor(entity_id: str, sku: str, product_id: str):
+        return SimpleNamespace(
+            entity_id=entity_id,
+            is_sync_to_shopify=False,
+            state={
+                "sku": sku,
+                "_catalog_sku_aliases": ["OLD-SKU"],
+                "external_links": {
+                    "woocommerce": {
+                        "product_id": product_id,
+                        "sync_enabled": True,
+                    }
+                },
+            },
+        )
+
+    left = anchor("item:left", "LEFT", "41")
+    right = anchor("item:right", "RIGHT", "42")
+    legacy = SimpleNamespace(
+        entity_id="item:legacy",
+        is_sync_to_shopify=False,
+        state={"sku": "OLD-SKU", "quantity": 1, "status": "available"},
+    )
+    rows = [left, right, legacy]
+
+    assert legacy not in catalog_family_rows(rows, left)
+    assert legacy not in catalog_family_rows(rows, right)

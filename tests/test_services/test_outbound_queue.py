@@ -129,6 +129,12 @@ async def test_legacy_connector_adoption_uses_explicit_owner_in_multi_company_db
 @pytest.mark.asyncio
 async def test_connector_ui_enable_enqueues_current_woocommerce_identity(session):
     company_id = uuid.uuid4()
+    session.add(Company(
+        id=company_id,
+        name="Queue UI Test",
+        slug=f"queue-ui-{company_id.hex[:8]}",
+        settings={},
+    ))
     session.add(ConnectorConfig(
         company_id=str(company_id), connector="woocommerce", direction="both"
     ))
@@ -189,6 +195,12 @@ async def test_connector_ui_enable_enqueues_current_woocommerce_identity(session
 @pytest.mark.asyncio
 async def test_sku_change_invalidates_old_and_new_woocommerce_families(session):
     company_id = uuid.uuid4()
+    session.add(Company(
+        id=company_id,
+        name="Queue SKU Test",
+        slug=f"queue-sku-{company_id.hex[:8]}",
+        settings={},
+    ))
     session.add(ConnectorConfig(
         company_id=str(company_id), connector="woocommerce", direction="both"
     ))
