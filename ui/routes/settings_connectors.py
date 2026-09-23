@@ -19,6 +19,7 @@ from ui.routes.settings import _check_permission, _token
 from ui.security import is_safe_authorize_url
 
 from celerp.connectors.base import ConnectorCategory, SyncFrequency
+from celerp.services.background import spawn_background
 
 log = logging.getLogger(__name__)
 
