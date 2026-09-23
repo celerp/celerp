@@ -164,6 +164,7 @@ class WooCommerceConnector(ConnectorBase):
                               variation_id=None, manage_stock=None, stock_quantity=None,
                               virtual=False):
             try:
+                non_stock_virtual = bool(virtual) and manage_stock is False
                 outcome, entity_id = await upsert_external_product(
                     ctx.company_id,
                     platform="woocommerce",
@@ -176,8 +177,8 @@ class WooCommerceConnector(ConnectorBase):
                     quantity=float(stock_quantity) if stock_quantity is not None else None,
                     seed_quantity=(manage_stock is True),
                     link_fields={"manage_stock": manage_stock},
-                    inventory_type="service" if virtual else None,
-                    sell_by="service" if virtual else None,
+                    inventory_type="service" if non_stock_virtual else None,
+                    sell_by="service" if non_stock_virtual else None,
                 )
                 result.record(outcome)
                 return None if outcome == "disabled" else entity_id

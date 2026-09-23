@@ -131,10 +131,13 @@ async def scheduler_loop(company_id: str, token_fetcher: TokenFetcher | None = N
 
 
 async def _distinct_company_ids() -> list[str]:
+    from celerp.config import ensure_instance_id
     from celerp.db import get_session_ctx
+
+    legacy_id = ensure_instance_id()
     async with get_session_ctx() as session:
         rows = await session.execute(sa.select(ConnectorConfig.company_id).distinct())
-        return [r[0] for r in rows]
+        return [str(r[0]) for r in rows if str(r[0]) != legacy_id]
 
 
 async def scheduler_loop_all(token_fetcher: TokenFetcher | None = None) -> None:

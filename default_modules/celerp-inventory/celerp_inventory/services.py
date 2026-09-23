@@ -208,6 +208,8 @@ def external_link_for_state(state: dict, platform: str) -> dict:
     """Return one normalized external product link without mutating item state."""
     links = state.get("external_links") or {}
     raw = links.get(platform) if isinstance(links, dict) else None
+    if isinstance(raw, dict) and raw.get("detached") is True:
+        return {}
     if isinstance(raw, dict) and raw.get("product_id") not in (None, ""):
         return dict(raw)
     return _legacy_external_link(platform, str(state.get("idempotency_key") or ""))
@@ -231,17 +233,23 @@ def _external_ids(platform: str, state: dict) -> dict:
     return {}
 
 
+def _is_structural_product_anchor_state(state: dict) -> bool:
+    """True when a row is structurally a product root, independent of physical codes."""
+    return (
+        str(state.get("status") or "").lower() != "merged"
+        and not any((
+            state.get("catalog_item_id"),
+            state.get("lot"),
+            state.get("parent_item_id"),
+            state.get("split_from"),
+            state.get("transformed_from"),
+        ))
+    )
+
+
 def _is_product_anchor_state(state: dict) -> bool:
-    """True only when state can safely own one catalog/product identity."""
-    if str(state.get("status") or "").lower() == "merged":
-        return False
-    if any((
-        state.get("catalog_item_id"),
-        state.get("lot"),
-        state.get("parent_item_id"),
-        state.get("split_from"),
-        state.get("transformed_from"),
-    )):
+    """Infer a product root only when historical state is unambiguous."""
+    if not _is_structural_product_anchor_state(state):
         return False
     links = state.get("external_links") or {}
     if isinstance(links, dict) and any(
@@ -255,10 +263,16 @@ def _is_product_anchor_state(state: dict) -> bool:
     return not bool(state.get("barcode") or state.get("rfid_epc"))
 
 
-def _same_external_identity(link: dict, product_id: str, variation_id: str | None) -> bool:
+def _external_variant_key(platform: str) -> str:
+    return "variant_id" if platform == "shopify" else "variation_id"
+
+
+def _same_external_identity(
+    platform: str, link: dict, product_id: str, variation_id: str | None
+) -> bool:
     if str(link.get("product_id") or "") != str(product_id):
         return False
-    actual = link.get("variation_id")
+    actual = link.get(_external_variant_key(platform))
     return (str(actual) if actual not in (None, "") else None) == (
         str(variation_id) if variation_id not in (None, "") else None
     )
@@ -268,8 +282,10 @@ def _select_external_anchor(rows: list[Projection], platform: str, product_id: s
                             variation_id: str | None) -> Projection | None:
     matches = [
         r for r in rows
-        if _same_external_identity(external_link_for_state(r.state or {}, platform),
-                                   product_id, variation_id)
+        if _same_external_identity(
+            platform, external_link_for_state(r.state or {}, platform),
+            product_id, variation_id,
+        )
     ]
     if not matches:
         return None
@@ -329,7 +345,9 @@ async def resolve_external_product(
         existing_link = external_link_for_state(candidate.state or {}, platform)
         if (
             existing_link
-            and not _same_external_identity(existing_link, str(product_id), variation_id)
+            and not _same_external_identity(
+                platform, existing_link, str(product_id), variation_id
+            )
             and not deleted_external_link_may_relink(existing_link)
         ):
             raise ValueError(
@@ -423,7 +441,7 @@ async def upsert_external_product(
             **(link_fields or {}),
         }
         if variation_id:
-            incoming_link["variation_id"] = variation_id
+            incoming_link[_external_variant_key(platform)] = variation_id
 
         if row is None:
             entity_id = f"item:{identity}"
@@ -575,8 +593,9 @@ async def set_external_link(
     links = dict(state.get("external_links") or {})
     normalized = dict(link)
     normalized["product_id"] = str(normalized["product_id"])
-    if normalized.get("variation_id") not in (None, ""):
-        normalized["variation_id"] = str(normalized["variation_id"])
+    variant_key = _external_variant_key(platform)
+    if normalized.get(variant_key) not in (None, ""):
+        normalized[variant_key] = str(normalized[variant_key])
     links[platform] = normalized
     if links == (state.get("external_links") or {}):
         return normalized
@@ -591,6 +610,65 @@ async def set_external_link(
     return normalized
 
 
+async def detach_external_link(
+    session: AsyncSession, company_id, entity_id: str, platform: str, *,
+    actor_id=None, source: str = "connector_ui",
+) -> bool:
+    """Detach one platform identity while preserving local item and other channels."""
+    cid = uuid.UUID(str(company_id))
+    row = await session.get(
+        Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True
+    )
+    if row is None or row.entity_type != "item":
+        return False
+    state = dict(row.state or {})
+    links = dict(state.get("external_links") or {})
+    raw = links.get(platform) if isinstance(links, dict) else None
+    if isinstance(raw, dict) and raw.get("detached") is True:
+        return False
+    if not external_link_for_state(state, platform):
+        return False
+    links[platform] = {"detached": True}
+    data = {
+        "fields_changed": {
+            "external_links": {
+                "old": state.get("external_links") or {},
+                "new": links,
+            }
+        }
+    }
+    await emit_event(
+        session, company_id=cid, entity_id=entity_id, entity_type="item",
+        event_type="item.updated", data=data, actor_id=actor_id, location_id=None,
+        source=source,
+        idempotency_key=_connector_event_idem(
+            f"external-detach:{platform}:{entity_id}:v{row.version}", data
+        ),
+        metadata_={},
+    )
+    return True
+
+
+async def detach_external_links_for_platform(
+    session: AsyncSession, company_id, platform: str, *, actor_id=None
+) -> int:
+    """Detach every item identity for one platform in the caller's transaction."""
+    cid = uuid.UUID(str(company_id))
+    entity_ids = (await session.execute(
+        select(Projection.entity_id).where(
+            Projection.company_id == cid,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    detached = 0
+    for entity_id in entity_ids:
+        if await detach_external_link(
+            session, cid, entity_id, platform, actor_id=actor_id
+        ):
+            detached += 1
+    return detached
+
+
 async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, entity_id: str) -> Projection:
     """Resolve a selected catalog or lot row to one unambiguous product anchor."""
     cid = uuid.UUID(str(company_id))
@@ -603,7 +681,11 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
         parent = await session.get(
             Projection, {"company_id": cid, "entity_id": str(catalog_item_id)}
         )
-        if parent is None or parent.entity_type != "item" or not _is_product_anchor_state(parent.state or {}):
+        if (
+            parent is None
+            or parent.entity_type != "item"
+            or not _is_structural_product_anchor_state(parent.state or {})
+        ):
             raise ValueError(f"Item {entity_id!r} references an invalid catalog product anchor")
         return parent
     if _is_product_anchor_state(state):
@@ -712,7 +794,7 @@ def build_channel_states(rows: list[Projection]) -> dict[str, dict[str, dict]]:
 def external_identity_key(platform: str, link: dict) -> tuple[str, str | None]:
     """Canonical external product identity for one platform."""
     product_id = str(link.get("product_id") or "")
-    variant_key = "variant_id" if platform == "shopify" else "variation_id"
+    variant_key = _external_variant_key(platform)
     variant = link.get(variant_key)
     return product_id, (str(variant) if variant not in (None, "") else None)
 

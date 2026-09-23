@@ -40,25 +40,58 @@ def _identity(link: dict) -> str:
     return product_id + (f":{variation_id}" if variation_id not in (None, "") else "")
 
 
-async def adopt_single_company_legacy_configs() -> None:
-    """Self-heal legacy instance-scoped configs through the canonical owner primitive."""
+async def adopt_legacy_connector_configs() -> None:
+    """Adopt installation-scoped legacy rows only when ownership is unambiguous."""
     from celerp.config import ensure_instance_id
     from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector_ownership
 
     legacy_id = ensure_instance_id()
     async with get_session_ctx() as session:
-        companies = (await session.execute(sa.select(Company.id).limit(2))).scalars().all()
-        if len(companies) != 1:
-            return
-        company_id = str(companies[0])
-        legacy_connectors = (await session.execute(
-            sa.select(ConnectorConfig.connector).where(ConnectorConfig.company_id == legacy_id)
-        )).scalars().all()
+        company_ids = {
+            str(value)
+            for value in (await session.execute(sa.select(Company.id))).scalars().all()
+        }
+        legacy_connectors = set((await session.execute(
+            sa.select(ConnectorConfig.connector).where(
+                ConnectorConfig.company_id == legacy_id
+            )
+        )).scalars().all())
+
         for connector in legacy_connectors:
+            owner_ids = {
+                str(value)
+                for value in (await session.execute(
+                    sa.select(ConnectorConfig.company_id).where(
+                        ConnectorConfig.connector == connector,
+                        ConnectorConfig.company_id != legacy_id,
+                    )
+                )).scalars().all()
+            }
+            invalid_owners = owner_ids - company_ids
+            if invalid_owners:
+                log.error(
+                    "connector legacy adoption blocked for %s: invalid owner rows %s",
+                    connector, sorted(invalid_owners),
+                )
+                continue
+            if len(owner_ids) == 1:
+                company_id = next(iter(owner_ids))
+            elif not owner_ids and len(company_ids) == 1:
+                company_id = next(iter(company_ids))
+            else:
+                log.warning(
+                    "connector legacy adoption deferred for %s: ownership is ambiguous",
+                    connector,
+                )
+                continue
             try:
-                await claim_connector_ownership(session, company_id, connector, create=False)
+                await claim_connector_ownership(
+                    session, company_id, connector, create=False
+                )
             except ConnectorOwnershipError as exc:
-                log.error("connector legacy adoption blocked for %s: %s", connector, exc)
+                log.error(
+                    "connector legacy adoption blocked for %s: %s", connector, exc
+                )
         await session.commit()
 
 
@@ -149,6 +182,25 @@ async def process_outbound_queue_once(limit: int = 100) -> int:
 
     for company_id, connector_name, identity in identities:
         async with get_session_ctx() as session:
+            from celerp.connectors.ownership import (
+                ConnectorOwnershipError,
+                lock_connector_operation,
+            )
+            try:
+                await lock_connector_operation(
+                    session, company_id, connector_name, require_owner=True
+                )
+            except ConnectorOwnershipError:
+                await session.execute(
+                    sa.delete(OutboundQueue).where(
+                        OutboundQueue.company_id == company_id,
+                        OutboundQueue.connector == connector_name,
+                        OutboundQueue.entity_id == identity,
+                    )
+                )
+                await session.commit()
+                continue
+
             await session.execute(
                 sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
                 {"k": f"outbound:{company_id}:{connector_name}:{identity}"},

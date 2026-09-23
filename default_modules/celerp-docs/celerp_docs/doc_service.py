@@ -259,6 +259,14 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     source_fingerprint = _woocommerce_commercial_fingerprint(order)
     wc_status = str(order.get("status") or "pending").lower()
     currency = str(order.get("currency") or "").upper() or None
+    stock_reduced_statuses = frozenset({"on-hold", "processing", "completed"})
+    stock_release_statuses = frozenset({"pending", "cancelled", "failed"})
+    manual_reconciliation_statuses = frozenset({"refunded"})
+    handled_statuses = (
+        stock_reduced_statuses
+        | stock_release_statuses
+        | manual_reconciliation_statuses
+    )
 
     # Registered customers are independent CRM records. Import them first so the
     # document can carry a stable contact link; guest orders still keep snapshots.
@@ -291,19 +299,61 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         if existing is not None and existing.entity_type != "doc":
             raise ValueError(f"WooCommerce order identity collides with {existing.entity_type}")
 
-        if existing is not None and (existing.state or {}).get("finalized"):
+        existing_state = dict(existing.state or {}) if existing is not None else {}
+        same_commercial_source = (
+            existing is not None
+            and existing_state.get("woocommerce_source_fingerprint") == source_fingerprint
+        )
+        owns_reserved_stock = False
+        if existing is not None and not existing_state.get("finalized"):
+            for li in existing_state.get("line_items", []):
+                item_id = li.get("item_id") or li.get("entity_id")
+                if not item_id:
+                    continue
+                item = await session.get(
+                    Projection, {"company_id": cid, "entity_id": item_id}
+                )
+                if (
+                    item is not None
+                    and (item.state or {}).get("status") == "reserved"
+                    and (item.state or {}).get("status_doc_id") == entity_id
+                ):
+                    owns_reserved_stock = True
+                    break
+
+        if (
+            existing is not None
+            and not existing_state.get("finalized")
+            and not same_commercial_source
+            and owns_reserved_stock
+            and wc_status not in stock_release_statuses
+            and wc_status not in manual_reconciliation_statuses
+        ):
+            raise ValueError(
+                f"WooCommerce order {order.get('number') or order_id} changed after "
+                "stock was reserved; manual reconciliation is required"
+            )
+
+        if existing is not None and existing_state.get("finalized"):
             if (existing.state or {}).get("woocommerce_source_fingerprint") != source_fingerprint:
                 raise ValueError(
                     f"WooCommerce order {order.get('number') or order_id} changed after "
                     "the Celerp invoice was issued; manual reconciliation is required"
                 )
-            if wc_status not in {
-                "on-hold", "processing", "completed", "cancelled", "failed", "refunded"
-            }:
+            if wc_status not in handled_statuses:
                 raise ValueError(
                     f"WooCommerce order {order.get('number') or order_id} moved to "
                     f"{wc_status!r} after issuance; manual reconciliation is required"
                 )
+            outcome = "noop"
+        elif existing is not None and (
+            wc_status in stock_release_statuses
+            or wc_status in manual_reconciliation_statuses
+            or (same_commercial_source and owns_reserved_stock)
+        ):
+            # Preserve the exact physical line bindings already chosen for this draft.
+            # Rebuilding them from current availability can orphan this order's
+            # reserved split child during a status-only transition.
             outcome = "noop"
         else:
             company = await session.get(Company, cid)
@@ -426,6 +476,19 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                         "sell_by": anchor_state.get("sell_by"),
                     })
                 else:
+                    if wc_status not in stock_reduced_statuses:
+                        # Woo has not reduced stock for this status. Keep the
+                        # commercial line unbound; a later stock-reduced status
+                        # rebuilds the draft against then-current sellable stock.
+                        line_items.append({
+                            "sku": sku,
+                            "name": line_name,
+                            "quantity": qty,
+                            "unit_price": unit_price,
+                            "line_total": line_total,
+                            "sell_by": anchor_state.get("sell_by"),
+                        })
+                        continue
                     family: list[dict] = []
                     norm_sku = sku.casefold()
                     for row in all_items:
@@ -570,9 +633,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                 populate_existing=True,
             )
 
-        if wc_status not in {
-            "on-hold", "processing", "completed", "cancelled", "failed", "refunded"
-        }:
+        if wc_status not in handled_statuses:
             await session.commit()
             return outcome
 
@@ -648,7 +709,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             )
             changed = True
 
-        if wc_status in {"cancelled", "failed", "refunded"}:
+        if wc_status in stock_release_statuses:
             doc = await _get_doc(session, cid, entity_id, for_update=True)
             reserved_ids: list[str] = []
             sold_items: list[Projection] = []
@@ -711,7 +772,58 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             await session.commit()
             if needs_manual:
                 raise ValueError(reason)
+            if outcome == "created":
+                return "created"
             return "updated" if changed else outcome
+
+        if wc_status in manual_reconciliation_statuses:
+            # WooCommerce does not automatically restore stock merely because an
+            # order is refunded. Whether the merchant restocked the refund is an
+            # explicit refund choice, so keep Celerp inventory unchanged and stop
+            # outbound stock from overwriting that remote decision.
+            doc = await _get_doc(session, cid, entity_id, for_update=True)
+            paused_anchors: set[str] = set()
+            for li in doc.state.get("line_items", []):
+                item_id = li.get("item_id") or li.get("entity_id")
+                if not item_id:
+                    continue
+                try:
+                    anchor = await resolve_catalog_anchor_for_item(session, cid, item_id)
+                except ValueError:
+                    continue
+                if anchor.entity_id in paused_anchors:
+                    continue
+                if external_link_for_state(anchor.state or {}, "woocommerce"):
+                    await set_external_link_state(
+                        session, cid, anchor.entity_id, "woocommerce",
+                        link_updates={"inventory_sync_paused": True},
+                        source="connector",
+                    )
+                    paused_anchors.add(anchor.entity_id)
+
+            doc = await _get_doc(session, cid, entity_id, for_update=True)
+            reason = (
+                f"WooCommerce order {order.get('number') or order_id} is refunded; "
+                "manual financial/inventory reconciliation is required"
+            )
+            fields = {}
+            current_status = str((doc.state or {}).get("woocommerce_status") or "")
+            if current_status != wc_status:
+                fields["woocommerce_status"] = {"old": current_status, "new": wc_status}
+            if (doc.state or {}).get("woocommerce_reconciliation_required") != reason:
+                fields["woocommerce_reconciliation_required"] = {
+                    "old": (doc.state or {}).get("woocommerce_reconciliation_required"),
+                    "new": reason,
+                }
+            if fields:
+                await emit_event(
+                    session, company_id=cid, entity_id=entity_id, entity_type="doc",
+                    event_type="doc.updated", data={"fields_changed": fields},
+                    actor_id=owner_id, location_id=None, source="connector",
+                    idempotency_key=f"{idem_key}:reversal:{wc_status}", metadata_={},
+                )
+            await session.commit()
+            raise ValueError(reason)
 
         doc = await _get_doc(session, cid, entity_id, for_update=True)
         if (

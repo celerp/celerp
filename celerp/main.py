@@ -338,13 +338,13 @@ async def lifespan(_app: FastAPI):
     from celerp.services.session_tracker import run_jti_cleanup_loop
     jti_cleanup_task = asyncio.create_task(run_jti_cleanup_loop())
 
-    # Self-heal the old installation-scoped connector key when this database has
-    # exactly one company, then start near-real-time outbound stock delivery.
+    # Self-heal installation-scoped legacy connector rows only when ownership is
+    # unambiguous, then start near-real-time outbound stock delivery.
     from celerp.connectors.outbound_queue import (
-        adopt_single_company_legacy_configs,
+        adopt_legacy_connector_configs,
         outbound_queue_loop,
     )
-    await adopt_single_company_legacy_configs()
+    await adopt_legacy_connector_configs()
     outbound_connector_task = asyncio.create_task(outbound_queue_loop())
 
     # Connector reconciliation scheduler: a daily incremental sync per connector,

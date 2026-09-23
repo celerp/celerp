@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -51,8 +52,17 @@ def _owned_connector_boundary():
         "celerp.connectors.ownership.claim_connector_ownership",
         new=AsyncMock(return_value=object()),
     ), patch(
+        "celerp.connectors.ownership.lock_connector_operation",
+        new=AsyncMock(return_value=SimpleNamespace(webhook_ids=[])),
+    ), patch(
+        "celerp.connectors.ownership.release_connector_ownership",
+        new=AsyncMock(),
+    ), patch(
         "celerp.connectors.ownership.connector_owned_by_company",
         new=AsyncMock(return_value=True),
+    ), patch(
+        "celerp_inventory.services.detach_external_links_for_platform",
+        new=AsyncMock(),
     ):
         yield
 
@@ -180,3 +190,104 @@ async def test_access_token_error_codes(status, code):
         respx.get(f"{RELAY}/tokens/woocommerce/access-token").mock(return_value=httpx.Response(status))
         result = await connector_access_token("woocommerce", "company-test", None, _session())
     assert result["error"] == code
+
+
+@pytest.mark.asyncio
+async def test_revoke_woocommerce_persists_webhook_cleanup_before_credentials():
+    url_p, hdr_p = _relay_state()
+    config = SimpleNamespace(
+        webhook_ids=["11"], webhook_secret="secret"
+    )
+    cleanup = AsyncMock()
+
+    session = _session()
+    lock = AsyncMock(return_value=config)
+    with patch(
+        "celerp.connectors.ownership.lock_connector_operation", lock,
+    ), patch(
+        "celerp.connectors.woocommerce.WooCommerceConnector.deregister_webhooks",
+        cleanup,
+    ), url_p, hdr_p, respx.mock:
+        token = respx.get(f"{RELAY}/tokens/woocommerce/access-token").mock(
+            return_value=httpx.Response(
+                200, json={"access_token": "ck_x:cs_y", "store_handle": STORE}
+            )
+        )
+        delete = respx.delete(f"{RELAY}/tokens/woocommerce").mock(
+            return_value=httpx.Response(200)
+        )
+        result = await revoke_credentials(
+            "woocommerce", "company-test", None, session
+        )
+
+    assert result == {"ok": True}
+    cleanup.assert_awaited_once()
+    assert len(token.calls) == 2
+    assert delete.called
+    assert config.webhook_ids == []
+    assert config.webhook_secret is None
+    assert session.commit.await_count >= 2
+    assert lock.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_revoke_webhook_cleanup_failure_keeps_credentials():
+    url_p, hdr_p = _relay_state()
+    config = SimpleNamespace(
+        webhook_ids=["11"], webhook_secret="secret"
+    )
+    with patch(
+        "celerp.connectors.ownership.lock_connector_operation",
+        new=AsyncMock(return_value=config),
+    ), patch(
+        "celerp.connectors.woocommerce.WooCommerceConnector.deregister_webhooks",
+        new=AsyncMock(side_effect=RuntimeError("cleanup failed")),
+    ), url_p, hdr_p, respx.mock:
+        respx.get(f"{RELAY}/tokens/woocommerce/access-token").mock(
+            return_value=httpx.Response(
+                200, json={"access_token": "ck_x:cs_y", "store_handle": STORE}
+            )
+        )
+        delete = respx.delete(f"{RELAY}/tokens/woocommerce")
+        result = await revoke_credentials(
+            "woocommerce", "company-test", None, _session()
+        )
+
+    assert result["ok"] is False
+    assert not delete.called
+    assert config.webhook_ids == ["11"]
+    assert config.webhook_secret == "secret"
+
+
+@pytest.mark.asyncio
+async def test_revoke_refuses_new_credential_after_webhook_cleanup():
+    url_p, hdr_p = _relay_state()
+    config = SimpleNamespace(
+        webhook_ids=["11"], webhook_secret="secret"
+    )
+    lock = AsyncMock(return_value=config)
+    with patch(
+        "celerp.connectors.ownership.lock_connector_operation", lock,
+    ), patch(
+        "celerp.connectors.woocommerce.WooCommerceConnector.deregister_webhooks",
+        new=AsyncMock(),
+    ), url_p, hdr_p, respx.mock:
+        token = respx.get(f"{RELAY}/tokens/woocommerce/access-token").mock(
+            side_effect=[
+                httpx.Response(
+                    200, json={"access_token": "old:key", "store_handle": STORE}
+                ),
+                httpx.Response(
+                    200, json={"access_token": "new:key", "store_handle": STORE}
+                ),
+            ]
+        )
+        delete = respx.delete(f"{RELAY}/tokens/woocommerce")
+        result = await revoke_credentials(
+            "woocommerce", "company-test", None, _session()
+        )
+
+    assert len(token.calls) == 2
+    assert result["ok"] is False
+    assert result["error"] == "connection_changed"
+    assert not delete.called

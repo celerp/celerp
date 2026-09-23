@@ -81,20 +81,45 @@ async def test_entity_runs_returns_latest_per_entity(_db_engine):
 
 
 @pytest.mark.asyncio
-async def test_clear_connector_config_removes_row(_db_engine):
-    """Disconnect's cleanup deletes the ConnectorConfig (stored secret/webhook-ids +
-    direction/frequency) so a later reconnect starts clean."""
-    from ui.routes.settings_connectors import (
-        _clear_connector_config,
-        _ensure_connector_config,
-        _get_connector_config,
+async def test_release_connector_ownership_clears_work_and_resets_cursor(_db_engine):
+    import sqlalchemy as sa
+    from celerp.connectors.ownership import (
+        ConnectorOwnershipError,
+        claim_connector_ownership,
+        lock_connector_operation,
+        release_connector_ownership,
     )
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import OutboundQueue
+    from celerp.models.sync_run import SyncRun
 
     cid = f"co-{uuid.uuid4().hex[:10]}"
-    await _ensure_connector_config(cid, "woocommerce", "website")
-    assert await _get_connector_config(cid, "woocommerce") is not None
-    await _clear_connector_config(cid, "woocommerce")
-    assert await _get_connector_config(cid, "woocommerce") is None
+    async with get_session_ctx() as session:
+        await claim_connector_ownership(
+            session, cid, "woocommerce", default_sync_frequency="realtime"
+        )
+        session.add(OutboundQueue(
+            company_id=cid, connector="woocommerce", entity_type="inventory",
+            entity_id="10", status="pending", retry_count=0,
+        ))
+        await session.commit()
+
+    async with get_session_ctx() as session:
+        await release_connector_ownership(session, cid, "woocommerce")
+        await session.commit()
+
+    async with get_session_ctx() as session:
+        assert await session.scalar(sa.select(sa.func.count()).select_from(OutboundQueue).where(
+            OutboundQueue.company_id == cid,
+            OutboundQueue.connector == "woocommerce",
+        )) == 0
+        assert await session.scalar(sa.select(sa.func.count()).select_from(SyncRun).where(
+            SyncRun.company_id == cid,
+            SyncRun.connector == "woocommerce",
+            SyncRun.entity == "__connector_reset__",
+        )) == 1
+        with pytest.raises(ConnectorOwnershipError):
+            await lock_connector_operation(session, cid, "woocommerce")
 
 
 def test_entitlement_cta_renders_trial_link():
@@ -140,7 +165,7 @@ async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
     from celerp.db import get_session_ctx
     from celerp.models.company import Company
     from celerp.models.connector_config import ConnectorConfig
-    from ui.routes.settings_connectors import _get_connector_config, _ensure_connector_config
+    from ui.routes.settings_connectors import _get_connector_config
 
     company_uuid = uuid.uuid4()
     company_id = str(company_uuid)
@@ -153,9 +178,14 @@ async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
                 slug=f"legacy-connector-{company_uuid.hex[:8]}",
                 settings={},
             ))
+            session.add(ConnectorConfig(
+                company_id=legacy_id,
+                connector="woocommerce",
+                sync_frequency="realtime",
+            ))
             await session.commit()
-        with patch("celerp.config.ensure_instance_id", return_value=legacy_id):
-            await _ensure_connector_config(legacy_id, "woocommerce", "website")
+        with patch("celerp.config.ensure_instance_id", return_value=legacy_id), \
+             patch("celerp.connectors.ownership.ensure_instance_id", return_value=legacy_id):
             cfg = await _get_connector_config(company_id, "woocommerce")
             assert cfg is not None
             assert cfg.company_id == company_id
@@ -173,9 +203,9 @@ async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
 
 @pytest.mark.asyncio
 async def test_connector_claim_rejects_different_company_owner(_db_engine):
+    from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector_ownership
     from celerp.db import get_session_ctx
     from celerp.models.connector_config import ConnectorConfig
-    from ui.routes.settings_connectors import _claim_connector_for_company
 
     async with get_session_ctx() as session:
         session.add(ConnectorConfig(
@@ -185,8 +215,14 @@ async def test_connector_claim_rejects_different_company_owner(_db_engine):
         ))
         await session.commit()
 
-    assert await _claim_connector_for_company("company-b", "woocommerce") is False
-    assert await _claim_connector_for_company("company-a", "woocommerce") is True
+    async with get_session_ctx() as session:
+        with pytest.raises(ConnectorOwnershipError):
+            await claim_connector_ownership(session, "company-b", "woocommerce")
+
+    async with get_session_ctx() as session:
+        assert await claim_connector_ownership(
+            session, "company-a", "woocommerce"
+        ) is not None
 
 
 @pytest.mark.asyncio
@@ -201,15 +237,16 @@ async def test_connector_ownership_merges_legacy_operational_state(_db_engine):
 
     company_id = f"co-{uuid.uuid4().hex[:10]}"
     legacy_id = f"inst-{uuid.uuid4().hex[:10]}"
+    connector = f"ownership-merge-{uuid.uuid4().hex[:10]}"
     async with get_session_ctx() as session:
         session.add_all([
             ConnectorConfig(
-                company_id=company_id, connector="woocommerce",
+                company_id=company_id, connector=connector,
                 webhook_ids_json=json.dumps(["11"]), webhook_secret=None,
                 direction="inbound",
             ),
             ConnectorConfig(
-                company_id=legacy_id, connector="woocommerce",
+                company_id=legacy_id, connector=connector,
                 webhook_ids_json=json.dumps(["12"]), webhook_secret="legacy-secret",
                 direction="both",
             ),
@@ -218,13 +255,13 @@ async def test_connector_ownership_merges_legacy_operational_state(_db_engine):
 
     with patch("celerp.connectors.ownership.ensure_instance_id", return_value=legacy_id):
         async with get_session_ctx() as session:
-            row = await claim_connector_ownership(session, company_id, "woocommerce")
+            row = await claim_connector_ownership(session, company_id, connector)
             await session.commit()
             assert row is not None
 
     async with get_session_ctx() as session:
         rows = (await session.execute(sa.select(ConnectorConfig).where(
-            ConnectorConfig.connector == "woocommerce",
+            ConnectorConfig.connector == connector,
             ConnectorConfig.company_id.in_([company_id, legacy_id]),
         ))).scalars().all()
         assert len(rows) == 1

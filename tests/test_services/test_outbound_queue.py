@@ -86,3 +86,41 @@ async def test_connector_origin_item_change_does_not_requeue(session):
         sa.select(OutboundQueue).where(OutboundQueue.company_id == str(company_id))
     )).scalars().all()
     assert queued == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_connector_adoption_uses_explicit_owner_in_multi_company_db(monkeypatch):
+    from celerp.connectors.outbound_queue import adopt_legacy_connector_configs
+    from celerp.db import get_session_ctx
+
+    owner_id = uuid.uuid4()
+    other_id = uuid.uuid4()
+    legacy_id = f"inst-{uuid.uuid4().hex[:10]}"
+    connector = f"legacy-owner-{uuid.uuid4().hex[:10]}"
+    async with get_session_ctx() as seed:
+        seed.add_all([
+            Company(id=owner_id, name="Owner", slug=f"owner-{owner_id.hex[:8]}", settings={}),
+            Company(id=other_id, name="Other", slug=f"other-{other_id.hex[:8]}", settings={}),
+            ConnectorConfig(
+                company_id=str(owner_id), connector=connector,
+                webhook_ids_json='["1"]', webhook_secret=None,
+            ),
+            ConnectorConfig(
+                company_id=legacy_id, connector=connector,
+                webhook_ids_json='["2"]', webhook_secret="legacy-secret",
+            ),
+        ])
+        await seed.commit()
+
+    monkeypatch.setattr("celerp.config.ensure_instance_id", lambda: legacy_id)
+    monkeypatch.setattr("celerp.connectors.ownership.ensure_instance_id", lambda: legacy_id)
+    await adopt_legacy_connector_configs()
+
+    async with get_session_ctx() as check:
+        rows = (await check.execute(sa.select(ConnectorConfig).where(
+            ConnectorConfig.connector == connector
+        ))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].company_id == str(owner_id)
+        assert set(rows[0].webhook_ids) == {"1", "2"}
+        assert rows[0].webhook_secret == "legacy-secret"

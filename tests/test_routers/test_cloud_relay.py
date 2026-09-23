@@ -780,6 +780,8 @@ async def test_connectors_catalog_success(client):
 
     with patch("celerp.config.settings") as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid-abc"), \
+         patch("celerp.connectors.ownership.connector_owned_by_company",
+               new=AsyncMock(return_value=True)), \
          patch("httpx.AsyncClient") as mock_httpx:
         mock_settings.gateway_token = "my-api-key"
         mock_settings.celerp_relay_url = "https://relay.celerp.com"
@@ -801,6 +803,44 @@ async def test_connectors_catalog_success(client):
     assert "error" not in data
     assert len(data["connectors"]) == 2
     assert data["connectors"][0]["id"] == "shopify"
+
+
+@pytest.mark.asyncio
+async def test_connectors_catalog_masks_instance_connection_for_non_owner(client):
+    token = await _register(client, "conn-non-owner")
+
+    tok_resp = MagicMock()
+    tok_resp.status_code = 200
+    tok_resp.json.return_value = {"access_token": "relay-jwt-non-owner"}
+
+    cat_resp = MagicMock()
+    cat_resp.status_code = 200
+    cat_resp.json.return_value = {
+        "connectors": [
+            {"id": "woocommerce", "name": "WooCommerce", "connected": True}
+        ]
+    }
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid-abc"), \
+         patch("celerp.connectors.ownership.connector_owned_by_company",
+               new=AsyncMock(return_value=False)), \
+         patch("httpx.AsyncClient") as mock_httpx:
+        mock_settings.gateway_token = "api-key"
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
+            return_value=tok_resp
+        )
+        mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(
+            return_value=cat_resp
+        )
+
+        response = await client.get(
+            "/settings/connectors-catalog", headers=_h(token)
+        )
+
+    assert response.status_code == 200
+    assert response.json()["connectors"][0]["connected"] is False
 
 
 @pytest.mark.asyncio
@@ -860,7 +900,7 @@ async def test_connectors_catalog_relay_unreachable(client):
 
 @pytest.mark.asyncio
 async def test_connector_authorize_url_success(client):
-    """Returns authorize_url for a valid platform when connected."""
+    """Accounting OAuth claims ownership with the accounting sync default."""
     token = await _register(client, "auth-url-ok")
 
     tok_resp = MagicMock()
@@ -869,24 +909,40 @@ async def test_connector_authorize_url_success(client):
 
     url_resp = MagicMock()
     url_resp.status_code = 200
-    url_resp.json.return_value = {"authorize_url": "https://accounts.intuit.com/oauth2/v1/authorize?state=xyz"}
+    url_resp.json.return_value = {
+        "authorize_url":
+            "https://accounts.intuit.com/oauth2/v1/authorize?state=xyz"
+    }
 
+    claim = AsyncMock(return_value=object())
+    lock = AsyncMock(return_value=object())
     with patch("celerp.config.settings") as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
+         patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
+         patch("celerp.connectors.ownership.lock_connector_operation", lock), \
          patch("httpx.AsyncClient") as mock_httpx:
         mock_settings.gateway_token = "my-api-key"
         mock_settings.celerp_relay_url = "https://relay.celerp.com"
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
+            return_value=tok_resp
+        )
+        mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(
+            return_value=url_resp
+        )
 
-        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=tok_resp)
-        mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(return_value=url_resp)
+        response = await client.get(
+            "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
+        )
 
-        r = await client.get("/settings/connectors/quickbooks/authorize-url", headers=_h(token))
-
-    assert r.status_code == 200
-    data = r.json()
+    assert response.status_code == 200
+    data = response.json()
     assert "error" not in data
-    assert "authorize_url" in data
     assert "intuit.com" in data["authorize_url"]
+    assert claim.await_count == 1
+    assert claim.await_args.args[2] == "quickbooks"
+    assert claim.await_args.kwargs["default_sync_frequency"] == "manual"
+    assert lock.await_count == 1
+    assert lock.await_args.kwargs["require_owner"] is True
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ from celerp_inventory.services import (
     external_link_intentionally_disabled,
     relinked_external_sync_enabled,
     external_identity_key,
+    _same_external_identity,
 )
 
 
@@ -87,9 +88,19 @@ def test_manual_disable_blocks_product_inbound_but_remote_delete_does_not():
 
 
 def test_platform_identity_uses_the_platform_specific_variant_key():
-    assert external_identity_key(
-        "shopify", {"product_id": "20", "variant_id": "201"}
-    ) == ("20", "201")
-    assert external_identity_key(
-        "woocommerce", {"product_id": "20", "variation_id": "201"}
-    ) == ("20", "201")
+    shopify = {"product_id": "20", "variant_id": "201"}
+    woo = {"product_id": "20", "variation_id": "201"}
+    assert external_identity_key("shopify", shopify) == ("20", "201")
+    assert external_identity_key("woocommerce", woo) == ("20", "201")
+    assert _same_external_identity("shopify", shopify, "20", "201") is True
+    assert _same_external_identity("woocommerce", woo, "20", "201") is True
+
+
+def test_detached_external_link_suppresses_legacy_identity_fallback():
+    from celerp_inventory.services import external_link_for_state
+
+    state = {
+        "idempotency_key": "woocommerce:55",
+        "external_links": {"woocommerce": {"detached": True}},
+    }
+    assert external_link_for_state(state, "woocommerce") == {}

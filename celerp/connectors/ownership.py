@@ -16,6 +16,52 @@ class ConnectorOwnershipError(RuntimeError):
     """The installation-scoped platform credential already belongs elsewhere."""
 
 
+async def _lock_connector_key(session: AsyncSession, connector: str) -> None:
+    await session.execute(
+        sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": f"connector-owner:{connector}"},
+    )
+
+
+async def lock_connector_operation(
+    session: AsyncSession,
+    company_id,
+    connector: str,
+    *,
+    require_owner: bool = False,
+) -> ConnectorConfig | None:
+    """Serialize a connector operation with ownership changes."""
+    from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
+    from celerp.models.sync_run import SyncRun
+
+    company_id = str(company_id)
+    await _lock_connector_key(session, connector)
+    rows = (await session.execute(
+        sa.select(ConnectorConfig)
+        .where(ConnectorConfig.connector == connector)
+        .with_for_update()
+    )).scalars().all()
+    current = next((r for r in rows if str(r.company_id) == company_id), None)
+    if current is not None:
+        return current
+    if require_owner or rows:
+        raise ConnectorOwnershipError(
+            f"{connector} is not connected to the current company"
+        )
+    reset_at = await session.scalar(
+        sa.select(sa.func.max(SyncRun.started_at)).where(
+            SyncRun.company_id == company_id,
+            SyncRun.connector == connector,
+            SyncRun.entity == CONNECTOR_RESET_ENTITY,
+        )
+    )
+    if reset_at is not None:
+        raise ConnectorOwnershipError(
+            f"{connector} is not connected to the current company"
+        )
+    return None
+
+
 async def claim_connector_ownership(
     session: AsyncSession,
     company_id,
@@ -27,10 +73,7 @@ async def claim_connector_ownership(
     """Atomically claim one installation/platform credential for one ERP company."""
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
-    await session.execute(
-        sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
-        {"k": f"connector-owner:{connector}"},
-    )
+    await _lock_connector_key(session, connector)
     rows = (await session.execute(
         sa.select(ConnectorConfig)
         .where(ConnectorConfig.connector == connector)
@@ -103,3 +146,53 @@ async def connector_owned_by_company(
     )).scalars().all()
     owners = {str(value) for value in company_ids if str(value) != legacy_id}
     return owners == {company_id}
+
+
+async def release_connector_ownership(
+    session: AsyncSession, company_id, connector: str
+) -> None:
+    """Release one company's connector state after remote revocation is confirmed."""
+    from datetime import datetime, timezone
+
+    from celerp.models.connector_config import OutboundQueue
+    from celerp.models.sync_run import SyncRun
+    from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
+
+    company_id = str(company_id)
+    await _lock_connector_key(session, connector)
+    current = await session.scalar(
+        sa.select(ConnectorConfig)
+        .where(
+            ConnectorConfig.company_id == company_id,
+            ConnectorConfig.connector == connector,
+        )
+        .with_for_update()
+        .limit(1)
+    )
+    if current is None:
+        raise ConnectorOwnershipError(
+            f"{connector} is not connected to the current company"
+        )
+
+    await session.execute(
+        sa.delete(OutboundQueue).where(
+            OutboundQueue.company_id == company_id,
+            OutboundQueue.connector == connector,
+        )
+    )
+    now = datetime.now(timezone.utc)
+    session.add(SyncRun(
+        company_id=company_id,
+        connector=connector,
+        entity=CONNECTOR_RESET_ENTITY,
+        direction="inbound",
+        started_at=now,
+        finished_at=now,
+        created_count=0,
+        updated_count=0,
+        skipped_count=0,
+        errors_json=None,
+        status="reset",
+    ))
+    await session.delete(current)
+    await session.flush()

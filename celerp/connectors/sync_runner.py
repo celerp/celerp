@@ -29,6 +29,7 @@ _SYNC_METHODS = {
     "inventory_out": "sync_inventory_out",
 }
 _OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out"}
+CONNECTOR_RESET_ENTITY = "__connector_reset__"
 _OUTBOUND_ENTITY_METHODS = {
     "products_out": "sync_products_out",
     "invoices_out": "sync_invoices_out",
@@ -81,13 +82,23 @@ async def _last_success_watermark(company_id: str, connector: str, entity: str):
 
     try:
         async with get_session_ctx() as session:
-            return await session.scalar(
+            reset_at = await session.scalar(
                 sa.select(sa.func.max(SyncRun.started_at)).where(
                     SyncRun.company_id == company_id,
                     SyncRun.connector == connector,
-                    SyncRun.entity == entity,
-                    SyncRun.status == "success",
+                    SyncRun.entity == CONNECTOR_RESET_ENTITY,
                 )
+            )
+            conditions = [
+                SyncRun.company_id == company_id,
+                SyncRun.connector == connector,
+                SyncRun.entity == entity,
+                SyncRun.status == "success",
+            ]
+            if reset_at is not None:
+                conditions.append(SyncRun.started_at > reset_at)
+            return await session.scalar(
+                sa.select(sa.func.max(SyncRun.started_at)).where(*conditions)
             )
     except Exception as exc:
         # A read failure degrades to a full re-pull (safe, dup-safe via idempotency
@@ -232,10 +243,18 @@ async def run_sync(
         since = await _last_success_watermark(ctx.company_id, connector.name, entity)
 
     try:
-        if entity in _OUTBOUND_ENTITIES:
-            result = await sync_method(ctx)
-        else:
-            result = await sync_method(ctx, since=since)
+        from celerp.connectors.ownership import lock_connector_operation
+        from celerp.db import get_session_ctx
+
+        async with get_session_ctx() as guard_session:
+            await lock_connector_operation(
+                guard_session, ctx.company_id, connector.name
+            )
+            if entity in _OUTBOUND_ENTITIES:
+                result = await sync_method(ctx)
+            else:
+                result = await sync_method(ctx, since=since)
+            await guard_session.commit()
     except NotImplementedError:
         result = SyncResult(
             entity=entity,

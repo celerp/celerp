@@ -233,7 +233,10 @@ async def _get_last_runs(company_id: str) -> dict[str, object]:
         async with get_session_ctx() as session:
             rows = await session.execute(
                 sa.select(SyncRun)
-                .where(SyncRun.company_id == company_id)
+                .where(
+                    SyncRun.company_id == company_id,
+                    SyncRun.entity != "__connector_reset__",
+                )
                 .order_by(SyncRun.started_at.desc())
             )
             seen: set[str] = set()
@@ -290,45 +293,6 @@ async def _get_connector_config(company_id: str, connector: str):
             except ConnectorOwnershipError:
                 await session.rollback()
         return None
-
-
-async def _clear_connector_config(company_id: str, connector: str) -> None:
-    """Delete a connector's ConnectorConfig (clears the stored webhook secret/ids and
-    direction/frequency) so a later reconnect starts clean. Best-effort."""
-    import sqlalchemy as sa
-
-    from celerp.db import get_session_ctx
-    from celerp.models.connector_config import ConnectorConfig
-
-    try:
-        async with get_session_ctx() as session:
-            await session.execute(
-                sa.delete(ConnectorConfig).where(
-                    ConnectorConfig.company_id == company_id,
-                    ConnectorConfig.connector == connector,
-                )
-            )
-            await session.commit()
-    except Exception:
-        log.warning("failed to clear ConnectorConfig (%s)", connector, exc_info=True)
-
-
-async def _clear_connector_webhook_state(company_id: str, connector: str) -> None:
-    """Persist successful remote webhook cleanup before credential revocation."""
-    import sqlalchemy as sa
-    from celerp.db import get_session_ctx
-    from celerp.models.connector_config import ConnectorConfig
-
-    async with get_session_ctx() as session:
-        await session.execute(
-            sa.update(ConnectorConfig)
-            .where(
-                ConnectorConfig.company_id == company_id,
-                ConnectorConfig.connector == connector,
-            )
-            .values(webhook_ids_json=None, webhook_secret=None)
-        )
-        await session.commit()
 
 
 async def _kickoff_connector_sync(company_id: str, platform: str, token: str) -> None:
@@ -428,7 +392,11 @@ async def _entity_runs(company_id: str, connector: str) -> dict:
         async with get_session_ctx() as session:
             rows = await session.execute(
                 sa.select(SyncRun)
-                .where(SyncRun.company_id == company_id, SyncRun.connector == connector)
+                .where(
+                    SyncRun.company_id == company_id,
+                    SyncRun.connector == connector,
+                    SyncRun.entity != "__connector_reset__",
+                )
                 .order_by(SyncRun.started_at.desc())
             )
             for (run,) in rows:
@@ -944,45 +912,26 @@ def setup_routes(app):
         company_id = _request_company_id(request)
         lang = get_lang(request)
 
-        cleanup_warning = ""
-        config = await _get_connector_config(company_id, platform)
-        if platform == "woocommerce" and config and config.webhook_ids:
-            try:
-                token_data = await _fetch_access_token(platform, token)
-                from celerp.connectors.base import ConnectorContext
-                from celerp.connectors.woocommerce import WooCommerceConnector
-                ctx = ConnectorContext(
-                    company_id=company_id,
-                    access_token=token_data["access_token"],
-                    store_handle=token_data.get("store_handle"),
-                )
-                await WooCommerceConnector().deregister_webhooks(ctx, config.webhook_ids)
-            except Exception as exc:
-                cleanup_warning = str(exc)
-                log.warning("WooCommerce webhook cleanup failed during disconnect", exc_info=True)
-                return Div(
-                    Span(
-                        f"Webhook cleanup failed; nothing was disconnected. Retry after fixing the WooCommerce connection: {cleanup_warning}",
-                        cls="flash flash--warning",
-                    ),
-                    id=f"connector-card-{platform}",
-                    cls="connector-card",
-                )
-            await _clear_connector_webhook_state(company_id, platform)
-
-        # Revoke on the relay via the API process proxy (which holds the relay session).
         from ui.api_client import delete_connector_credentials
         try:
-            await delete_connector_credentials(token, platform)
+            revoke_result = await delete_connector_credentials(token, platform)
         except Exception as exc:
+            revoke_result = {"ok": False, "detail": str(exc)}
+        if not revoke_result.get("ok"):
+            detail = revoke_result.get("detail") or revoke_result.get("error") or "disconnect_failed"
             return Div(
-                Span(f"✗ {exc}", cls="flash flash--warning"),
+                Span(
+                    t(
+                        "connectors.disconnect_failed",
+                        lang,
+                        detail=detail,
+                        default="Disconnect failed; nothing was changed: {detail}",
+                    ),
+                    cls="flash flash--warning",
+                ),
                 id=f"connector-card-{platform}",
                 cls="connector-card",
             )
-
-        # Clear local connector state so a later reconnect starts clean.
-        await _clear_connector_config(company_id, platform)
 
         if request.query_params.get("redirect"):
             # Disconnected from the full-page detail view -> return to the overview tab.
@@ -1186,10 +1135,14 @@ def setup_routes(app):
             except Exception as exc:
                 log.warning("woocommerce webhook registration failed", exc_info=True)
                 try:
-                    await delete_connector_credentials(token, platform)
+                    rollback_result = await delete_connector_credentials(token, platform)
+                    if not rollback_result.get("ok"):
+                        log.warning(
+                            "failed to roll back WooCommerce credentials: %s",
+                            rollback_result.get("error") or rollback_result.get("detail"),
+                        )
                 except Exception:
-                    log.warning("failed to roll back WooCommerce relay credentials", exc_info=True)
-                await _clear_connector_config(company_id, platform)
+                    log.warning("failed to roll back WooCommerce credentials", exc_info=True)
                 return Div(
                     Span(
                         t(

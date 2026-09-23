@@ -30,6 +30,8 @@ async def test_fetch_context_builds_ctx_from_relay():
     with patch("celerp.gateway.state.get_session_token", return_value="tok"), \
          patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"), \
          patch("celerp.gateway.state.relay_session_headers", return_value={}), \
+         patch("celerp.connectors.ownership.connector_owned_by_company",
+               new=AsyncMock(return_value=True)), \
          respx.mock:
         respx.get("https://relay.test/tokens/shopify/access-token").mock(
             return_value=httpx.Response(200, json={"access_token": "shpat_x", "store_handle": "s.myshopify.com"}))
@@ -46,6 +48,8 @@ async def test_fetch_context_none_on_relay_error():
     with patch("celerp.gateway.state.get_session_token", return_value="tok"), \
          patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"), \
          patch("celerp.gateway.state.relay_session_headers", return_value={}), \
+         patch("celerp.connectors.ownership.connector_owned_by_company",
+               new=AsyncMock(return_value=True)), \
          respx.mock:
         respx.get("https://relay.test/tokens/shopify/access-token").mock(return_value=httpx.Response(404))
         assert await fetch_context("co-1", "shopify") is None
@@ -219,11 +223,12 @@ async def test_scheduler_skips_on_token_fetch_error():
 async def test_distinct_company_ids():
     from celerp.connectors.daily_scheduler import _distinct_company_ids
     sess = MagicMock()
-    sess.execute = AsyncMock(return_value=[("co-1",), ("co-2",)])
+    sess.execute = AsyncMock(return_value=[("co-1",), ("legacy-iid",), ("co-2",)])
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=sess)
     cm.__aexit__ = AsyncMock(return_value=False)
-    with patch("celerp.db.get_session_ctx", return_value=cm):
+    with patch("celerp.db.get_session_ctx", return_value=cm), \
+         patch("celerp.config.ensure_instance_id", return_value="legacy-iid"):
         assert await _distinct_company_ids() == ["co-1", "co-2"]
 
 

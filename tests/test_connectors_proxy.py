@@ -162,3 +162,34 @@ async def test_connector_backlinks_target_cloud_tab():
 
     src = (UI_DIR / "routes" / "settings_connectors.py").read_text(encoding="utf-8")
     assert "/settings?tab=connectors" not in src
+
+
+@pytest.mark.asyncio
+async def test_disconnect_keeps_local_owner_when_relay_revoke_fails():
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+    from ui.app import app as ui_app
+
+    token = make_test_token(role="owner")
+    with patch(
+        "ui.api_client.get_company",
+        AsyncMock(return_value={
+            "id": "00000000-0000-0000-0000-000000000002",
+            "settings": {},
+            "current_role": "owner",
+        }),
+    ), patch(
+        "ui.routes.settings_connectors._get_connector_config",
+        AsyncMock(return_value=None),
+    ), patch(
+        "ui.api_client.delete_connector_credentials",
+        AsyncMock(return_value={"ok": False, "error": "relay_error"}),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui"
+        ) as client:
+            response = await client.delete(
+                "/settings/connectors/woocommerce/disconnect",
+                cookies={"celerp_token": token},
+            )
+    assert response.status_code == 200

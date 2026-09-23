@@ -277,6 +277,25 @@ async def test_watermark_only_advances_on_full_success(session, monkeypatch):
     assert await sync_runner._last_success_watermark(co, "shopify", "orders") == t_ok
 
 
+    t_reset = datetime(2026, 6, 3, tzinfo=timezone.utc)
+    session.add(SyncRun(
+        company_id=co, connector="shopify",
+        entity=sync_runner.CONNECTOR_RESET_ENTITY,
+        direction="inbound", started_at=t_reset, finished_at=t_reset,
+        status="reset",
+    ))
+    await session.flush()
+    assert await sync_runner._last_success_watermark(co, "shopify", "orders") is None
+
+    t_new = datetime(2026, 6, 4, tzinfo=timezone.utc)
+    session.add(SyncRun(
+        company_id=co, connector="shopify", entity="orders", direction="inbound",
+        started_at=t_new, finished_at=t_new, status="success",
+    ))
+    await session.flush()
+    assert await sync_runner._last_success_watermark(co, "shopify", "orders") == t_new
+
+
 @pytest.mark.asyncio
 async def test_woocommerce_pull_product_files(use_test_session, monkeypatch):
     """_pull_product_files resolves the item by SKU and emits each image + cert."""
@@ -622,51 +641,157 @@ async def test_historical_barcoded_parcel_is_not_a_catalog_anchor(use_test_sessi
     assert anchor.entity_id == root_id
 
 
+@pytest.mark.parametrize("release_status", ["pending", "cancelled", "failed"])
 @pytest.mark.asyncio
-async def test_woocommerce_on_hold_reserves_then_failed_releases_stock(use_test_session):
+async def test_woocommerce_on_hold_reservation_releases_on_woo_restore_status(
+    use_test_session, release_status
+):
     from datetime import datetime, timezone
     from celerp.models.projections import Projection
     from celerp_inventory.services import upsert_external_product
     session = use_test_session
-    cid = await _seed_company(session, "WooHold")
+    cid = await _seed_company(session, f"WooHold-{release_status}")
     _, root_id = await upsert_external_product(
         str(cid), platform="woocommerce", product_id="721", variation_id=None,
-        sku="HOLD-SKU", name="Hold Product", link_fields={"manage_stock": True},
+        sku=f"HOLD-{release_status}", name="Hold Product",
+        link_fields={"manage_stock": True},
     )
     now = datetime.now(timezone.utc)
     session.add(Projection(
-        company_id=cid, entity_id="item:hold-lot", entity_type="item", version=1,
-        created_at=now, updated_at=now,
-        state={"sku": "HOLD-SKU", "name": "Hold Product", "quantity": 2,
+        company_id=cid, entity_id=f"item:hold-lot-{release_status}", entity_type="item",
+        version=1, created_at=now, updated_at=now,
+        state={"sku": f"HOLD-{release_status}", "name": "Hold Product", "quantity": 2,
                "status": "available", "sell_by": "piece", "lot": True,
                "parent_item_id": root_id, "allow_splitting": True},
     ))
     await session.commit()
     order = {
-        "id": 722, "number": "722", "status": "on-hold", "currency": "USD",
+        "id": {"pending": 722, "cancelled": 723, "failed": 724}[release_status],
+        "number": release_status,
+        "status": "on-hold", "currency": "USD",
         "total": "10.00", "total_tax": "0",
-        "line_items": [{"product_id": 721, "variation_id": 0, "sku": "HOLD-SKU",
-                        "name": "Hold Product", "quantity": 1, "total": "10.00",
-                        "total_tax": "0"}],
+        "line_items": [{
+            "product_id": 721, "variation_id": 0, "sku": f"HOLD-{release_status}",
+            "name": "Hold Product", "quantity": 1, "total": "10.00", "total_tax": "0",
+        }],
         "shipping_lines": [], "fee_lines": [],
     }
     assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
-    doc = await _state(session, cid, "woocommerce:order:722")
+    doc_id = f"woocommerce:order:{order['id']}"
+    doc = await _state(session, cid, doc_id)
     assert doc.get("finalized") is not True
-    rows = (await session.execute(select(Projection).where(
-        Projection.company_id == cid, Projection.entity_type == "item"
-    ))).scalars().all()
-    assert sum(float((r.state or {}).get("quantity") or 0) for r in rows
-               if (r.state or {}).get("status") == "reserved") == 1
 
-    assert await u.upsert_order_from_woocommerce(str(cid), {**order, "status": "failed"}) == "updated"
+    assert await u.upsert_order_from_woocommerce(
+        str(cid), {**order, "status": release_status}
+    ) == "updated"
+    session.expire_all()
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == cid, Projection.entity_type == "item"
     ))).scalars().all()
     assert not [r for r in rows if (r.state or {}).get("status") == "reserved"]
     assert sum(float((r.state or {}).get("quantity") or 0) for r in rows
                if (r.state or {}).get("status") == "available"
-               and (r.state or {}).get("sku") == "HOLD-SKU") == 2
+               and (r.state or {}).get("sku") == f"HOLD-{release_status}") == 2
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_pending_defers_stock_binding_until_processing(use_test_session):
+    from datetime import datetime, timezone
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import upsert_external_product
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooPending")
+    _, root_id = await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="751", variation_id=None,
+        sku="PENDING-SKU", name="Pending Product", link_fields={"manage_stock": True},
+    )
+    now = datetime.now(timezone.utc)
+    session.add(Projection(
+        company_id=cid, entity_id="item:pending-lot", entity_type="item",
+        version=1, created_at=now, updated_at=now,
+        state={"sku": "PENDING-SKU", "name": "Pending Product", "quantity": 1,
+               "status": "available", "sell_by": "piece", "lot": True,
+               "parent_item_id": root_id, "allow_splitting": True},
+    ))
+    await session.commit()
+    order = {
+        "id": 752, "number": "752", "status": "pending", "currency": "USD",
+        "total": "10.00", "total_tax": "0",
+        "line_items": [{
+            "product_id": 751, "variation_id": 0, "sku": "PENDING-SKU",
+            "name": "Pending Product", "quantity": 1, "total": "10.00", "total_tax": "0",
+        }],
+        "shipping_lines": [], "fee_lines": [],
+    }
+
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    pending = await _state(session, cid, "woocommerce:order:752")
+    assert pending["line_items"][0].get("item_id") is None
+
+    assert await u.upsert_order_from_woocommerce(
+        str(cid), {**order, "status": "processing"}
+    ) == "updated"
+    session.expire_all()
+    processing = await _state(session, cid, "woocommerce:order:752")
+    assert processing["finalized"] is True
+    assert processing["line_items"][0].get("item_id")
+    bound = await session.get(
+        Projection,
+        {"company_id": cid, "entity_id": processing["line_items"][0]["item_id"]},
+        populate_existing=True,
+    )
+    assert (bound.state or {}).get("status") == "reserved"
+    assert (bound.state or {}).get("status_doc_id") == "doc:woocommerce:order:752"
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_refund_does_not_guess_restock_and_pauses_outbound_stock(use_test_session):
+    from datetime import datetime, timezone
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import external_link_for_state, upsert_external_product
+    session = use_test_session
+    cid = await _seed_company(session, "WooRefund")
+    _, root_id = await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="741", variation_id=None,
+        sku="REFUND-SKU", name="Refund Product", link_fields={"manage_stock": True},
+    )
+    now = datetime.now(timezone.utc)
+    session.add(Projection(
+        company_id=cid, entity_id="item:refund-lot", entity_type="item",
+        version=1, created_at=now, updated_at=now,
+        state={"sku": "REFUND-SKU", "name": "Refund Product", "quantity": 2,
+               "status": "available", "sell_by": "piece", "lot": True,
+               "parent_item_id": root_id, "allow_splitting": True},
+    ))
+    await session.commit()
+    order = {
+        "id": 742, "number": "742", "status": "on-hold", "currency": "USD",
+        "total": "10.00", "total_tax": "0",
+        "line_items": [{
+            "product_id": 741, "variation_id": 0, "sku": "REFUND-SKU",
+            "name": "Refund Product", "quantity": 1, "total": "10.00", "total_tax": "0",
+        }],
+        "shipping_lines": [], "fee_lines": [],
+    }
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+
+    with pytest.raises(ValueError, match="manual financial/inventory reconciliation"):
+        await u.upsert_order_from_woocommerce(str(cid), {**order, "status": "refunded"})
+
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_type == "item"
+    ))).scalars().all()
+    assert sum(float((r.state or {}).get("quantity") or 0) for r in rows
+               if (r.state or {}).get("status") == "reserved") == 1
+    root = await session.get(
+        Projection, {"company_id": cid, "entity_id": root_id},
+        populate_existing=True,
+    )
+    assert external_link_for_state(root.state or {}, "woocommerce").get(
+        "inventory_sync_paused"
+    ) is True
 
 
 @pytest.mark.asyncio
@@ -689,3 +814,39 @@ async def test_woocommerce_unmanaged_product_order_does_not_invent_stock(use_tes
     doc = await _state(use_test_session, cid, "woocommerce:order:732")
     assert doc["finalized"] is True
     assert doc["line_items"][0].get("item_id") is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_catalog_relation_accepts_barcoded_catalog_template(use_test_session):
+    from datetime import datetime, timezone
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import resolve_catalog_anchor_for_item
+
+    session = use_test_session
+    cid = await _seed_company(session, "ExplicitCatalog")
+    now = datetime.now(timezone.utc)
+    root_id = "item:barcoded-catalog-root"
+    child_id = "item:barcoded-catalog-child"
+    session.add_all([
+        Projection(
+            company_id=cid, entity_id=root_id, entity_type="item",
+            version=1, created_at=now, updated_at=now,
+            state={
+                "sku": "BARCODED-CATALOG", "name": "Catalog Product",
+                "quantity": 0, "status": "available", "sell_by": "piece",
+                "barcode": "CATALOG-REFERENCE-CODE",
+            },
+        ),
+        Projection(
+            company_id=cid, entity_id=child_id, entity_type="item",
+            version=1, created_at=now, updated_at=now,
+            state={
+                "sku": "BARCODED-CATALOG", "name": "Physical Parcel",
+                "quantity": 1, "status": "available", "sell_by": "piece",
+                "barcode": "PHYSICAL-PARCEL-CODE", "catalog_item_id": root_id,
+            },
+        ),
+    ])
+    await session.commit()
+    anchor = await resolve_catalog_anchor_for_item(session, cid, child_id)
+    assert anchor.entity_id == root_id

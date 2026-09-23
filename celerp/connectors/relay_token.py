@@ -28,6 +28,9 @@ async def fetch_context(company_id: str, connector_name: str) -> "ConnectorConte
     from celerp.db import get_session_ctx
     from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
 
+    if not get_session_token():
+        return None  # no cloud session → no relay token available
+
     async with get_session_ctx() as session:
         if not await connector_owned_by_company(session, company_id, connector_name):
             log.warning(
@@ -35,9 +38,6 @@ async def fetch_context(company_id: str, connector_name: str) -> "ConnectorConte
                 connector_name, company_id,
             )
             return None
-
-    if not get_session_token():
-        return None  # no cloud session → no relay token available
     try:
         async with httpx.AsyncClient(timeout=15.0) as c:
             r = await c.get(

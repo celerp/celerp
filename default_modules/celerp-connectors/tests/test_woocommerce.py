@@ -145,6 +145,41 @@ async def test_sync_products_imports_variations(woo, ctx, mock_upsert_item):
 
 
 @pytest.mark.asyncio
+async def test_virtual_product_is_service_only_when_woo_does_not_manage_stock(
+    woo, ctx, mock_upsert_item
+):
+    products = [
+        {
+            "id": 50, "name": "Download", "sku": "VIRTUAL-NOSTOCK",
+            "regular_price": "5.00", "virtual": True, "manage_stock": False,
+        },
+        {
+            "id": 51, "name": "Virtual Stocked", "sku": "VIRTUAL-STOCK",
+            "regular_price": "7.00", "virtual": True, "manage_stock": True,
+            "stock_quantity": 3,
+        },
+    ]
+    with patch.object(woo, "_pull_product_files", new=AsyncMock()), respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
+            return_value=httpx.Response(200, json=products)
+        )
+        result = await woo.sync_products(ctx)
+
+    assert result.created == 2
+    calls = {
+        call.kwargs["product_id"]: call.kwargs
+        for call in mock_upsert_item.call_args_list
+    }
+    assert calls["50"]["inventory_type"] == "service"
+    assert calls["50"]["sell_by"] == "service"
+    assert calls["50"]["seed_quantity"] is False
+    assert calls["51"]["inventory_type"] is None
+    assert calls["51"]["sell_by"] is None
+    assert calls["51"]["seed_quantity"] is True
+    assert calls["51"]["quantity"] == 3.0
+
+
+@pytest.mark.asyncio
 async def test_sync_products_fallback_sku(woo, ctx, mock_upsert_item):
     """When sku is blank, fall back to WC-{id}."""
     with respx.mock:

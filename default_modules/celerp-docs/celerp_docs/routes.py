@@ -3038,7 +3038,10 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     # actually holds. Allocate the whole batch in one locked call AFTER validation so
     # concurrent receipts mint distinct barcodes; the lock is held until this request
     # commits. The DB unique index is the backstop, not the normal mechanism.
-    from celerp_inventory.services import allocate_internal_codes
+    from celerp_inventory.services import (
+        allocate_internal_codes,
+        resolve_catalog_anchor_for_item,
+    )
 
     def _creates_parcel(it) -> bool:
         return not (it.item_id and not is_inbound) and it.receive_as == "stock"
@@ -3080,7 +3083,17 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 if tmpl_row:
                     template_state = tmpl_row.state
                     if tmpl_row.entity_type == "item":
-                        catalog_item_id = tmpl_row.entity_id
+                        try:
+                            catalog_item_id = (
+                                await resolve_catalog_anchor_for_item(
+                                    session, company_id, tmpl_row.entity_id
+                                )
+                            ).entity_id
+                        except ValueError:
+                            # A historical physical row may not have a resolvable
+                            # catalog family. Keep receiving safe without asserting
+                            # a false product relation.
+                            catalog_item_id = None
             if not template_state:
                 template_state = next(
                     (r.state for r in all_item_rows

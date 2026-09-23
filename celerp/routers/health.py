@@ -1122,7 +1122,10 @@ async def cloud_claim_api(payload: dict) -> dict:
     return {"linked": True, "instance_id": iid}
 
 @settings_router.get("/connectors-catalog", dependencies=[require_permission("manage_integrations")])
-async def connectors_catalog_api() -> dict:
+async def connectors_catalog_api(
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     """Proxy relay /api/connectors using a fresh relay JWT (API process only)."""
     import httpx
     from celerp.config import settings as _s, ensure_instance_id
@@ -1156,7 +1159,15 @@ async def connectors_catalog_api() -> dict:
         return r
 
     if r.status_code == 200:
-        return {"connectors": r.json().get("connectors", [])}
+        from celerp.connectors.ownership import connector_owned_by_company
+
+        connectors = r.json().get("connectors", [])
+        for connector in connectors:
+            if connector.get("connected") and not await connector_owned_by_company(
+                session, company_id, str(connector.get("id") or "")
+            ):
+                connector["connected"] = False
+        return {"connectors": connectors}
     if r.status_code == 402:
         # Free accounts reach this page but connectors need a paid plan - show
         # the relay's plain upgrade message, not a bare status code.
@@ -1184,10 +1195,39 @@ async def connector_authorize_url(
     if not api_key:
         return {"error": "Not connected to relay."}
 
-    from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector_ownership
+    from celerp.connectors.base import ConnectorCategory, SyncFrequency
+    from celerp.connectors.ownership import (
+        ConnectorOwnershipError,
+        claim_connector_ownership,
+        lock_connector_operation,
+    )
+    from celerp.connectors.registry import get as get_connector
     try:
-        await claim_connector_ownership(session, company_id, platform)
+        connector = get_connector(platform)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    category = getattr(connector.category, "value", connector.category)
+    default_frequency = (
+        SyncFrequency.REALTIME.value
+        if category == ConnectorCategory.WEBSITE.value
+        else SyncFrequency.MANUAL.value
+    )
+    try:
+        await claim_connector_ownership(
+            session,
+            company_id,
+            platform,
+            default_sync_frequency=default_frequency,
+        )
         await session.commit()
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    try:
+        await lock_connector_operation(
+            session, company_id, platform, require_owner=True
+        )
     except ConnectorOwnershipError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1211,16 +1251,21 @@ async def connector_authorize_url(
     try:
         r = await with_relay_client(8.0, _authorize)
     except httpx.ConnectError:
-        return {"error": f"Cannot reach relay."}
+        await session.rollback()
+        return {"error": "Cannot reach relay."}
     except httpx.TimeoutException:
+        await session.rollback()
         return {"error": "Relay timed out."}
     except Exception as exc:
+        await session.rollback()
         return {"error": str(exc)}
     if isinstance(r, dict):
         return r
 
     if r.status_code == 200:
+        await session.commit()
         return {"authorize_url": r.json().get("authorize_url", "")}
+    await session.rollback()
     try:
         detail = r.json().get("detail", r.text[:120])
     except Exception:
