@@ -168,7 +168,6 @@ async def cloud_status() -> dict:
 
     reconciled = False
     if entitled and not connected:
-        # Preserve the explicit recovery behavior for configured credentials.
         await sync_existing_entitlement()
         reconciled = True
     elif (identity_mismatch or paid_state_mismatch
@@ -528,16 +527,7 @@ RELAY_CONTROL_TIMEOUT = 10.0
 
 
 async def _post_partner_claim(path: str, body: dict) -> tuple[dict | None, dict | None]:
-    """POST to a relay claim endpoint with the instance bearer, degrading honestly.
-
-    Exchanges the instance credential for a short-lived relay bearer on the same
-    client before the claim POST, so a connect/timeout during either leg degrades
-    through one set of transport branches. Returns (json, None) on a 200 response,
-    else (None, {"error": ...}) for a connect/timeout error, a failed exchange or
-    any other exception, a 409 (the token is no longer acceptable), or any other
-    non-200 status (the parked or unreachable relay INERT case). Callers pass the
-    full /partners/... path so the endpoint string lives at the call site.
-    """
+    """Send a partner claim request."""
     import httpx
     from celerp.gateway.state import (
         fetch_relay_bearer, relay_http_url, with_relay_client)
@@ -669,11 +659,7 @@ async def account_methods_api(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Return optional sign-in methods for this local instance.
-
-    An incumbent credential proves only the instance it authenticates; it never
-    replaces the durable local destination of an explicit account action.
-    """
+    """Return available account-link methods."""
     from celerp.config import (
         activation_challenge, ensure_activation_verifier, ensure_instance_id)
     from celerp.gateway.state import (
@@ -811,11 +797,7 @@ async def account_status_api(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Proxy status for the durable local instance.
-
-    A stored credential may unmask this destination only when it proves the same
-    instance (or a legacy relay omits identity); foreign proof never retargets it.
-    """
+    """Return the current linked-account status."""
     import httpx
     from celerp.config import settings as _s, ensure_instance_id
     from celerp.gateway.state import (

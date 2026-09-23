@@ -1,13 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Tests for the /settings/account-status proxy's relay authentication.
-
-Once an instance holds a gateway token, the status proxy exchanges it for a
-bearer JWT (the connectors-catalog idiom) so the relay can return the full
-account record to the instance that owns it. Without a token, or when the
-exchange fails, the proxy falls back to the unauthenticated GET.
-"""
+"""Connect account route regression tests."""
 
 from __future__ import annotations
 
@@ -48,9 +42,7 @@ def _mock_httpx(account_payload=None, auth_status=200):
 
 
 @pytest.mark.asyncio
-async def test_account_status_proxy_sends_bearer_when_activated():
-    """With a gateway token, the proxy exchanges it and sends the JWT on the
-    account GET, so the relay can serve the unmasked record."""
+async def test_account_status_returns_full_record_when_connected():
     factory, client = _mock_httpx({"email": "o@shop.example", "email_verified": True})
     with (
         patch("celerp.config.settings.gateway_token", "api-key-123"),
@@ -70,9 +62,7 @@ async def test_account_status_proxy_sends_bearer_when_activated():
 
 
 @pytest.mark.asyncio
-async def test_account_status_proxy_falls_back_when_exchange_fails():
-    """A failed token exchange degrades to the unauthenticated GET - polling
-    keeps working on the masked record instead of erroring."""
+async def test_account_status_preserves_masked_record_on_auth_failure():
     factory, client = _mock_httpx({"email": "o***@shop.example"}, auth_status=401)
     with (
         patch("celerp.config.settings.gateway_token", "api-key-123"),
@@ -89,8 +79,7 @@ async def test_account_status_proxy_falls_back_when_exchange_fails():
 
 
 @pytest.mark.asyncio
-async def test_account_status_proxy_skips_exchange_without_token():
-    """No gateway token (not yet activated): one bare GET, no exchange."""
+async def test_account_status_works_before_connection():
     factory, client = _mock_httpx({"claim_offer": True})
     with (
         patch("celerp.config.settings.gateway_token", ""),
@@ -105,8 +94,7 @@ async def test_account_status_proxy_skips_exchange_without_token():
 
 
 @pytest.mark.asyncio
-async def test_cloud_claim_proves_incumbent_when_gateway_token_present():
-    """The incumbent API key supplies bearer proof for an ownership-changing claim."""
+async def test_cloud_claim_uses_existing_connection():
     claim_resp = MagicMock()
     claim_resp.status_code = 200
     claim_resp.json.return_value = {"claimed": True}
@@ -160,8 +148,6 @@ async def test_cloud_claim_proves_incumbent_when_gateway_token_present():
 
 @pytest.mark.asyncio
 async def test_cloud_claim_skips_bearer_without_gateway_token():
-    """With no gateway_token configured, the claim proxy sends X-Instance-ID
-    and the email/OTP payload only, with no /auth/token exchange."""
     claim_resp = MagicMock()
     claim_resp.status_code = 200
     claim_resp.json = MagicMock(return_value={"tier": "cloud", "status": "active"})
@@ -189,10 +175,6 @@ async def test_cloud_claim_skips_bearer_without_gateway_token():
 
 @pytest.mark.asyncio
 async def test_activate_404_message_points_to_link_subscription_field():
-    """A 404 from relay /auth/activate means no subscription is bound to this
-    instance yet. The message must not repeat itself or tell the user to
-    call an API endpoint directly (/billing/claim) - it should point at the
-    on-page Link Subscription field instead."""
     resp = MagicMock()
     resp.status_code = 404
     resp.json = MagicMock(return_value={"detail": "No subscription found for this instance_id."})
@@ -226,8 +208,6 @@ async def test_activate_404_message_points_to_link_subscription_field():
 
 @pytest.mark.asyncio
 async def test_account_methods_proxy_reports_free_email_quota():
-    """The methods proxy passes through the relay's advertised free email
-    quota, defaulting to 0 when absent or unreachable."""
     factory, _ = _mock_httpx()
     methods_resp = MagicMock()
     methods_resp.status_code = 200
@@ -254,10 +234,7 @@ async def test_account_methods_proxy_reports_free_email_quota():
 
 
 @pytest.mark.asyncio
-async def test_account_methods_owner_initiated_start_url_when_credentialed():
-    """An activated install proves its credential and gets the relay's
-    owner-initiated Google start URL, which lets the sign-in change this
-    computer's account link instead of being refused."""
+async def test_account_methods_returns_account_switch_url_when_connected():
     def _get_router(url, **kw):
         resp = MagicMock()
         resp.status_code = 200
@@ -285,10 +262,7 @@ async def test_account_methods_owner_initiated_start_url_when_credentialed():
 
 
 @pytest.mark.asyncio
-async def test_account_methods_open_door_url_without_credential():
-    """A fresh install (no gateway_token, nothing linked on the relay) keeps
-    the open-door start URL: its /auth/activate probe 404s, it has no existing
-    link to change, and the relay would 403 the owner route anyway."""
+async def test_account_methods_returns_signup_url_on_fresh_install():
     factory, client = _mock_httpx()
     methods_resp = MagicMock()
     methods_resp.status_code = 200
@@ -312,14 +286,11 @@ async def test_account_methods_open_door_url_without_credential():
         "&activation_challenge=" + "a" * 64
     )
     assert "local-secret-verifier" not in data["google_start_url"]
-    # The only POST is the activate probe - no credential means no JWT exchange.
     assert not any(c[0][0].endswith("/auth/token") for c in client.post.call_args_list)
 
 
 @pytest.mark.asyncio
-async def test_account_methods_falls_back_when_start_url_fetch_fails():
-    """A relay that doesn't serve /auth/google/start-url (or a failed token
-    exchange) degrades to the open-door URL, never to a broken button."""
+async def test_account_methods_has_usable_fallback_url():
     def _get_router(url, **kw):
         resp = MagicMock()
         if url.endswith("/auth/methods"):
@@ -345,11 +316,7 @@ async def test_account_methods_falls_back_when_start_url_fetch_fails():
 
 
 @pytest.mark.asyncio
-async def test_account_methods_uses_stored_token_without_rotating():
-    """A disconnected install whose instance is still linked reads its PRESERVED
-    on-disk token to prove possession for the owner-initiated switch. It must not
-    call /auth/activate: that rotates the relay key on every call and would orphan
-    the stored credential the next reconnect relies on."""
+async def test_account_methods_uses_persisted_connection_state():
     activate_calls = []
 
     def _get_router(url, **kw):
@@ -393,9 +360,7 @@ async def test_account_methods_uses_stored_token_without_rotating():
 
 
 @pytest.mark.asyncio
-async def test_account_methods_fresh_install_stays_on_challenge_bound_open_door():
-    """A fresh install has no credential to exchange, so Google uses the open
-    door bound to the locally retained activation verifier's challenge."""
+async def test_account_methods_fresh_install_uses_local_setup_state():
     posts = []
 
     def _get_router(url, **kw):
@@ -436,9 +401,7 @@ async def test_account_methods_fresh_install_stays_on_challenge_bound_open_door(
 
 
 @pytest.mark.asyncio
-async def test_account_methods_stale_stored_token_uses_challenge_bound_google_recovery():
-    """A definitive stale credential is recoverable, but only through the
-    current relay's activation challenge, never the unauthenticated UUID door."""
+async def test_account_methods_stale_state_uses_recovery_flow():
     def _get_router(url, **kw):
         resp = MagicMock()
         resp.status_code = 200
@@ -478,9 +441,7 @@ async def test_account_methods_stale_stored_token_uses_challenge_bound_google_re
 
 
 @pytest.mark.asyncio
-async def test_account_methods_token_500_never_downgrades_to_open_google_door():
-    """Transient relay failure preserves authority: no weaker browser flow is
-    exposed until the existing credential can be classified definitively."""
+async def test_account_methods_auth_failure_does_not_weaken_flow():
     methods = MagicMock()
     methods.status_code = 200
     methods.json = MagicMock(return_value={
@@ -507,8 +468,7 @@ async def test_account_methods_token_500_never_downgrades_to_open_google_door():
 
 
 @pytest.mark.asyncio
-async def test_account_methods_relay_timeout_is_total_across_sequence():
-    """The 6s relay budget is one wall-clock deadline, not 6s per request."""
+async def test_account_methods_uses_single_timeout_budget():
     methods = MagicMock()
     methods.status_code = 200
     methods.json = MagicMock(return_value={
@@ -559,8 +519,7 @@ def test_magic_link_timeout_hierarchy_is_outer_to_inner():
 
 
 @pytest.mark.asyncio
-async def test_account_status_foreign_credential_cannot_retarget_local_destination():
-    """A stored key for another instance never changes which account is polled."""
+async def test_account_status_identity_mismatch_keeps_local_destination():
     factory, client = _mock_httpx({"email": "l***@shop.example"})
     with (
         patch("celerp.config.settings.gateway_token", "foreign-key"),
@@ -582,8 +541,7 @@ async def test_account_status_foreign_credential_cannot_retarget_local_destinati
 
 
 @pytest.mark.asyncio
-async def test_account_methods_foreign_credential_uses_local_challenge_recovery():
-    """Foreign proof cannot choose the destination of an explicit local bind."""
+async def test_account_methods_identity_mismatch_uses_local_recovery():
     def _get_router(url, **_kw):
         resp = MagicMock()
         resp.status_code = 200
@@ -623,8 +581,7 @@ async def test_account_methods_foreign_credential_uses_local_challenge_recovery(
 
 
 @pytest.mark.asyncio
-async def test_account_methods_matching_credential_keeps_owner_authenticated_google():
-    """Proof for the local destination still uses the owner-authenticated route."""
+async def test_account_methods_matching_identity_uses_account_switch_flow():
     def _get_router(url, **kw):
         resp = MagicMock()
         resp.status_code = 200
@@ -664,7 +621,6 @@ async def test_account_methods_matching_credential_keeps_owner_authenticated_goo
 
 @pytest.mark.asyncio
 async def test_authenticated_request_suppresses_foreign_key_while_local_verifier_pending():
-    """Pending local proof wins over an incumbent key for another instance."""
     from celerp.config import settings
     from celerp.services.cloud_entitlement import authenticated_request
 
@@ -693,7 +649,6 @@ async def test_authenticated_request_suppresses_foreign_key_while_local_verifier
 
 @pytest.mark.asyncio
 async def test_authenticated_request_allows_incumbent_recovery_without_pending_verifier():
-    """Without a pending proof, the durable incumbent remains valid authority."""
     from celerp.config import settings
     from celerp.services.cloud_entitlement import authenticated_request
 
@@ -729,7 +684,6 @@ async def test_authenticated_request_allows_incumbent_recovery_without_pending_v
 
 @pytest.mark.asyncio
 async def test_authenticated_request_accepts_local_key_while_local_verifier_pending():
-    """A pending verifier suppresses only foreign authority, never matching proof."""
     from celerp.config import settings
     from celerp.services.cloud_entitlement import authenticated_request
 

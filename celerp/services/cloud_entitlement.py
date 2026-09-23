@@ -1,11 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Authoritative Celerp Connect entitlement and credential synchronization.
-
-Connection state and entitlement state are deliberately separate here. Durable
-instance credentials authenticate relay REST reads even when no WebSocket
-session exists; only explicit reconnect/sync starts a tunnel.
-"""
+"""Synchronize Celerp Connect entitlement and local state."""
 from __future__ import annotations
 
 import asyncio
@@ -28,7 +23,7 @@ def _spawn_runtime_transition(coro) -> None:
 
 
 async def stored_api_key() -> str:
-    """Current API key, falling back to the preserved on-disk credential."""
+    """Return the configured Connect credential, if any."""
     from celerp.config import read_config, settings
     if settings.gateway_token:
         return settings.gateway_token
@@ -40,7 +35,7 @@ async def stored_api_key() -> str:
 
 
 async def persisted_api_key() -> str:
-    """Return only the credential persisted in [cloud].token."""
+    """Return the persisted Connect credential, if any."""
     from celerp.config import read_config
     try:
         cfg = await asyncio.to_thread(read_config)
@@ -52,12 +47,7 @@ async def persisted_api_key() -> str:
 async def authenticated_request(method: str, path: str, *, total_s: float = RELAY_ENTITLEMENT_TIMEOUT,
                                 json: dict | None = None, params: dict | None = None,
                                 api_key: str | None = None):
-    """One bounded relay REST request authenticated by the durable instance key.
-
-    A pending local verifier owns destination authority. An incumbent key may
-    still authenticate ordinary reads, but while that verifier exists a key for
-    another instance cannot answer on behalf of the local identity being bound.
-    """
+    """Make one bounded authenticated Connect request."""
     from celerp.config import ensure_instance_id, settings
     from celerp.gateway.state import (
         fetch_relay_auth, is_foreign_relay_identity,
@@ -82,7 +72,7 @@ async def authenticated_request(method: str, path: str, *, total_s: float = RELA
 
 
 async def subscription_status() -> dict | None:
-    """Authoritative subscription state independent of the live WS session."""
+    """Return the current Connect subscription state, if available."""
     try:
         response = await authenticated_request("GET", "/billing/subscription")
     except Exception as exc:
@@ -238,11 +228,7 @@ async def apply_activation_state(
 async def sync_existing_entitlement(
     *, require_persisted_key: bool = False,
 ) -> dict | None:
-    """Synchronise a credential through authenticated activation.
-
-    require_persisted_key is for automatic repair: an environment-only
-    credential remains an operator override and is never persisted as a side effect.
-    """
+    """Synchronize an existing Connect installation."""
     from celerp.config import ensure_instance_id, settings
     from celerp.gateway.state import (
         activate_payload, fetch_relay_auth, is_foreign_relay_identity,
