@@ -1739,12 +1739,27 @@ def setup_routes(app):
         iid = ensure_instance_id()
 
         try:
-            data = await _api.activate_relay(ui_token, explicit=True)
+            form = await request.form()
+            intent = str(form.get("intent") or "connect")
+            data = await _api.activate_relay(ui_token, intent=intent)
         except Exception as exc:
             return _cloud_relay_unconnected(iid, error=t("settings.could_not_reach_api", exc=exc))
 
         # Use instance_id from API response if present (canonical process)
         iid = data.get("instance_id") or iid
+
+        if data.get("verification_required"):
+            from ui.routes.account import account_panel
+            google, quota = False, 0
+            try:
+                methods = await _api.account_methods(ui_token)
+                google = bool(methods.get("google"))
+                quota = int(methods.get("free_email_quota") or 0)
+            except Exception:
+                pass
+            return account_panel(
+                get_lang(request), intent="signup", panel_id="cloud-relay-tab",
+                google=google, free_quota=quota)
 
         if err := data.get("error"):
             return _cloud_relay_unconnected(iid, error=err)
@@ -3871,6 +3886,26 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
         # stored bytes as a connected account.
         return _cloud_relay_unconnected(
             ensure_instance_id(), error=t("account.activate_failed"))
+
+    if relay_status == "active_elsewhere":
+        return Div(
+            H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
+            P(t("account.linked_elsewhere"), cls="settings-hint"),
+            Button(
+                t("btn.link_subscription"),
+                cls="btn btn--sm btn--primary",
+                id="cloud-connect-btn",
+                hx_post="/settings/cloud-activate",
+                hx_vals=hx_vals({"intent": "takeover"}),
+                hx_target="#cloud-relay-tab",
+                hx_swap="outerHTML",
+                hx_disabled_elt="this",
+                hx_sync="#cloud-relay-tab:drop",
+            ),
+            disconnect_button if token_bound else "",
+            id="cloud-relay-tab",
+            cls="settings-card",
+        )
 
     if relay_status in ("connecting", "error"):
         # Connecting is transient and keeps polling. Error is terminal: preserve

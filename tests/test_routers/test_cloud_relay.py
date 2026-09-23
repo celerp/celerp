@@ -210,30 +210,51 @@ async def test_cloud_status_active_free_runtime_recovers_paid_entitlement(client
 
 @pytest.mark.asyncio
 async def test_cloud_disconnect_stops_client_and_clears_live_token(client):
-    """Disconnect stops the live client while preserving the stored association."""
+    """Disconnect persists first and delegates transport teardown."""
     token = await _register(client, "disc")
-    gw = _mock_gw("active")
 
     from celerp.config import settings as _s
     _s.gateway_token = "old-token"
     _s.celerp_public_url = "https://test.celerp.app"
 
     with (
-        patch("celerp.gateway.client.get_client", return_value=gw),
-        patch("celerp.gateway.client.set_client") as mock_set,
         patch("celerp.config.set_cloud_disconnected") as persist,
+        patch(
+            "celerp.services.cloud_entitlement.reconfigure_gateway_runtime",
+            new=AsyncMock(return_value=False),
+        ) as reconfigure,
     ):
         r = await client.post("/settings/cloud-disconnect", headers=_h(token))
 
     assert r.status_code == 200
     assert r.json()["disconnected"] is True
-    # close() (not stop()) must be awaited so the live WS is actually torn down —
-    # otherwise the relay keeps routing and the public URL stays online.
-    gw.close.assert_awaited_once()
-    mock_set.assert_called_once_with(None)
     assert _s.gateway_token == ""
     assert _s.celerp_public_url == ""
     persist.assert_called_once_with(True)
+    reconfigure.assert_awaited_once_with(restart=False)
+
+
+@pytest.mark.asyncio
+async def test_cloud_disconnect_persist_failure_leaves_runtime_untouched(client):
+    token = await _register(client, "disc-persist-fail")
+    from celerp.config import settings as _s
+    _s.gateway_token = "old-token"
+    _s.celerp_public_url = "https://test.celerp.app"
+
+    with (
+        patch("celerp.config.set_cloud_disconnected", side_effect=OSError("disk")),
+        patch(
+            "celerp.services.cloud_entitlement.reconfigure_gateway_runtime",
+            new=AsyncMock(),
+        ) as reconfigure,
+    ):
+        r = await client.post("/settings/cloud-disconnect", headers=_h(token))
+
+    assert r.status_code == 200
+    assert r.json()["disconnected"] is False
+    assert _s.gateway_token == "old-token"
+    assert _s.celerp_public_url == "https://test.celerp.app"
+    reconfigure.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -248,16 +269,16 @@ async def test_cloud_disconnect_clears_session_token(client, session):
     import uuid as _uuid
 
     token = await _register(client, "disc-session")
-    gw = _mock_gw("active")
-
     from celerp.config import settings as _s
     _s.gateway_token = "old-token"
     gw_state.set_session_token("live-session-token")
 
     with (
-        patch("celerp.gateway.client.get_client", return_value=gw),
-        patch("celerp.gateway.client.set_client"),
         patch("celerp.config.set_cloud_disconnected"),
+        patch(
+            "celerp.services.cloud_entitlement.reconfigure_gateway_runtime",
+            new=AsyncMock(return_value=False),
+        ),
     ):
         r = await client.post("/settings/cloud-disconnect", headers=_h(token))
 
@@ -282,8 +303,11 @@ async def test_cloud_disconnect_no_op_when_already_disconnected(client):
     """Disconnect with no active client returns success without error."""
     token = await _register(client, "disc-noop")
     with (
-        patch("celerp.gateway.client.get_client", return_value=None),
         patch("celerp.config.set_cloud_disconnected"),
+        patch(
+            "celerp.services.cloud_entitlement.reconfigure_gateway_runtime",
+            new=AsyncMock(return_value=False),
+        ),
     ):
         r = await client.post("/settings/cloud-disconnect", headers=_h(token))
     assert r.status_code == 200
@@ -415,18 +439,37 @@ async def test_cloud_accept_tos_restarts_client(client):
     token = await _register(client, "tos-ok")
     old_gw = _mock_gw("tos_required")
     old_gw.required_tos_version = "2025-02"
-    new_gw = _mock_gw("active")
     with (
         patch("celerp.gateway.client.get_client", return_value=old_gw),
-        patch("celerp.gateway.client.set_client"),
-        patch("celerp.gateway.client.GatewayClient", return_value=new_gw),
         patch("celerp.config.persist_cloud_settings") as persist,
-        patch("asyncio.create_task"),
+        patch(
+            "celerp.services.cloud_entitlement.reconfigure_gateway_runtime",
+            new=AsyncMock(return_value=True),
+        ) as reconfigure,
     ):
         r = await client.post("/settings/cloud-accept-tos", headers=_h(token))
     assert r.status_code == 200
-    old_gw.stop.assert_called_once()
     persist.assert_called_once_with(tos_version="2025-02")
+    reconfigure.assert_awaited_once_with(restart=True)
+
+@pytest.mark.asyncio
+async def test_cloud_accept_tos_persist_failure_leaves_runtime_untouched(client):
+    token = await _register(client, "tos-persist-fail")
+    old_gw = _mock_gw("tos_required")
+    old_gw.required_tos_version = "2025-02"
+    with (
+        patch("celerp.gateway.client.get_client", return_value=old_gw),
+        patch("celerp.config.persist_cloud_settings", side_effect=OSError("disk")),
+        patch(
+            "celerp.services.cloud_entitlement.reconfigure_gateway_runtime",
+            new=AsyncMock(),
+        ) as reconfigure,
+    ):
+        r = await client.post("/settings/cloud-accept-tos", headers=_h(token))
+    assert r.status_code == 200
+    assert "error" in r.json()
+    reconfigure.assert_not_awaited()
+
 
 @pytest.mark.asyncio
 async def test_cloud_claim_success_activates_immediately(client):

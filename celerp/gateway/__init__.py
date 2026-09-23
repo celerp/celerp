@@ -44,24 +44,8 @@ def ensure_running() -> None:
         # the single construction site too. Reconnect clears the flag before it reaches
         # here, so a deliberate reconnect is unaffected.
         return
-    existing = _client.get_client()
-    if existing is not None:
-        # An entitlement activation may be draining the current Web Access
-        # generation so the response that triggered the handoff can get back to
-        # the browser. That owner will rebuild from the latest settings once idle;
-        # no other caller may supersede it early.
-        draining = getattr(existing, "is_draining_for_reconfigure", None)
-        if callable(draining) and draining():
-            return
-        if existing.is_serving(settings.gateway_token):
-            return
-        # A client the relay rejected (or one holding a token that has since rotated
-        # out) idles in run() with a dead socket and never revives itself, so the
-        # plain "already set" no-op would strand the tunnel on the stale credential.
-        # stop() breaks that idle loop and its run task exits on the next tick; drop
-        # the reference and rebuild below.
-        existing.stop()
-        _client.set_client(None)
+    if _client.get_client() is not None:
+        return
     import uuid
 
     instance_id = settings.gateway_instance_id or str(uuid.uuid4())
@@ -76,22 +60,24 @@ def ensure_running() -> None:
 
 
 async def shutdown() -> None:
-    """Close the tunnel and cancel its run task, whoever started it. Safe to call
-    when nothing is running."""
+    """Close the gateway generation that exists when shutdown begins."""
     global _run_task
     from celerp.gateway import client as _client
 
     gw = _client.get_client()
+    run_task = _run_task
     if gw is not None:
         await gw.close()
-    if _run_task is not None:
-        _run_task.cancel()
+    if run_task is not None:
+        run_task.cancel()
         try:
-            await asyncio.wait_for(_run_task, timeout=5.0)
+            await asyncio.wait_for(run_task, timeout=5.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
+    if _run_task is run_task:
         _run_task = None
-    _client.set_client(None)
+    if _client.get_client() is gw:
+        _client.set_client(None)
 
 
 async def has_active_share() -> bool:

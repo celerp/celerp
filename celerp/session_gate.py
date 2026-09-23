@@ -38,7 +38,7 @@ async def require_session_token(request: Request) -> None:
     from celerp.config import settings
     if not settings.cloud_disconnected:
         from celerp.services.cloud_entitlement import sync_existing_entitlement
-        await sync_existing_entitlement()
+        await sync_existing_entitlement(require_persisted_key=True)
         if get_session_token():
             return
 

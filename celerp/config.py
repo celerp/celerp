@@ -193,6 +193,20 @@ def ensure_activation_verifier() -> str:
     return verifier
 
 
+def refresh_activation_verifier() -> str:
+    """Replace the pending activation verifier with a fresh durable value."""
+    import secrets as _secrets
+
+    verifier = _secrets.token_urlsafe(32)
+
+    def _refresh(cloud: dict) -> None:
+        cloud["activation_verifier"] = verifier
+
+    _update_cloud_config(_refresh)
+    settings.activation_verifier = verifier
+    return verifier
+
+
 def ensure_connect_identity() -> tuple[str, str]:
     """Return the durable instance id + activation verifier in one locked RMW.
 

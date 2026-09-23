@@ -104,7 +104,11 @@ async def cloud_status() -> dict:
     from celerp.services.cloud_entitlement import subscription_status, sync_existing_entitlement
 
     gw = get_client()
-    relay_status = gw.relay_status if gw else "inactive"
+    relay_status = (
+        "active_elsewhere"
+        if gw is not None and getattr(gw, "ownership_conflict", False)
+        else (gw.relay_status if gw else "inactive")
+    )
     connected = relay_status in ("active", "tos_required")
     ws_tier, ws_status = get_subscription_state()
 
@@ -167,8 +171,8 @@ async def cloud_status() -> dict:
     )
 
     reconciled = False
-    if entitled and not connected:
-        await sync_existing_entitlement()
+    if entitled and not connected and gw is None:
+        await sync_existing_entitlement(require_persisted_key=True)
         reconciled = True
     elif (identity_mismatch or paid_state_mismatch
           or free_state_mismatch or runtime_free_with_stale_url
@@ -179,7 +183,11 @@ async def cloud_status() -> dict:
 
     if reconciled:
         gw = get_client()
-        relay_status = gw.relay_status if gw else "inactive"
+        relay_status = (
+            "active_elsewhere"
+            if gw is not None and getattr(gw, "ownership_conflict", False)
+            else (gw.relay_status if gw else "inactive")
+        )
         connected = relay_status in ("active", "tos_required")
 
     last_backup = None
@@ -269,7 +277,6 @@ async def backup_status() -> dict:
 async def cloud_disconnect() -> dict:
     """Persist sticky disconnect first, then stop all live cloud activity."""
     from celerp.config import settings as _s, set_cloud_disconnected
-    from celerp.gateway import client as _gw
     from celerp.gateway.state import set_session_token as _set_session_token
     from celerp.services import backup_scheduler
 
@@ -282,19 +289,11 @@ async def cloud_disconnect() -> dict:
         }
 
     backup_scheduler.stop()
-    gw = _gw.get_client()
-    if gw is not None:
-        try:
-            await gw.close()
-        except Exception:
-            logger.warning("Relay client close failed after durable disconnect",
-                           exc_info=True)
-        finally:
-            _gw.set_client(None)
-
     _set_session_token("")
     _s.gateway_token = ""
     _s.celerp_public_url = ""
+    from celerp.services.cloud_entitlement import reconfigure_gateway_runtime
+    await reconfigure_gateway_runtime(restart=False)
     return {"disconnected": True}
 
 async def _apply_gateway_token_api(
@@ -305,6 +304,7 @@ async def _apply_gateway_token_api(
     expected_api_key: str | None = None,
     expected_verifier: str | None = None,
     keep_disconnected: bool = False,
+    restart_transport: bool = False,
 ) -> bool:
     from celerp.services.cloud_entitlement import apply_activation_state
     return await apply_activation_state(
@@ -315,6 +315,7 @@ async def _apply_gateway_token_api(
         expected_api_key=expected_api_key,
         expected_verifier=expected_verifier,
         keep_disconnected=keep_disconnected,
+        restart_transport=restart_transport,
     )
 
 @settings_router.post("/cloud-activate", dependencies=[Depends(require_install_owner)])
@@ -332,10 +333,20 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
     request = payload or {}
     intent = str(request.get("intent") or (
         "connect" if request.get("explicit") else "background"))
-    if intent not in {"background", "connect", "account"}:
+    if intent not in {"background", "connect", "account", "takeover"}:
         intent = "background"
 
     was_disconnected = bool(_s.cloud_disconnected)
+    if intent == "takeover":
+        from celerp.config import refresh_activation_verifier
+        try:
+            await asyncio.to_thread(refresh_activation_verifier)
+        except Exception as exc:
+            return {"error": f"Could not prepare account verification: {type(exc).__name__}"}
+        return {
+            "verification_required": True,
+            "instance_id": await asyncio.to_thread(ensure_instance_id),
+        }
     if intent == "connect":
         try:
             await asyncio.to_thread(set_cloud_disconnected, False)
@@ -353,6 +364,13 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
     api_key = await stored_api_key()
     persisted_key = await persisted_api_key()
     verifier = _s.activation_verifier or ""
+    live_gateway = __import__("celerp.gateway.client", fromlist=["get_client"]).get_client()
+    prefer_verifier = bool(
+        intent == "connect"
+        and verifier
+        and live_gateway is not None
+        and getattr(live_gateway, "ownership_conflict", False)
+    )
     authority = {"kind": "none"}
     target = {"iid": local_iid}
 
@@ -367,6 +385,8 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
         )
 
     async def _activate(c):
+        if prefer_verifier:
+            return await _verifier_activate(c)
         if api_key:
             try:
                 jwt, authenticated_iid = await fetch_relay_auth(
@@ -430,6 +450,11 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
     if r.status_code == 402:
         return {"error": r.json().get("detail", "Subscription not active.")}
     if r.status_code in (401, 403):
+        if prefer_verifier and authority["kind"] == "verifier":
+            return {
+                "verification_pending": True,
+                "instance_id": local_iid,
+            }
         return {
             "error": "This computer needs a fresh account verification before it can reconnect. "
                      "Use the Link Subscription field below.",
@@ -456,6 +481,7 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
         expected_api_key=expected_key,
         expected_verifier=verifier if authority["kind"] == "verifier" else None,
         keep_disconnected=keep_disconnected,
+        restart_transport=(intent == "connect"),
     )
     if not accepted:
         return {
@@ -619,36 +645,35 @@ async def partner_claim_accept(payload: dict) -> dict:
 
 @settings_router.post("/cloud-accept-tos", dependencies=[Depends(require_install_owner)])
 async def cloud_accept_tos_api() -> dict:
-    """Persist TOS acceptance, restart gateway client with new tos_version."""
-    import asyncio
+    """Persist TOS acceptance, then restart through the gateway lifecycle."""
     from celerp.config import settings as _s, persist_cloud_settings
     from celerp.gateway import client as _gw
+    from celerp.services.cloud_entitlement import reconfigure_gateway_runtime
 
     gw = _gw.get_client()
     tos_version = gw.required_tos_version if gw is not None else ""
-
     try:
         await asyncio.to_thread(persist_cloud_settings, tos_version=tos_version)
-    except Exception:
-        pass
+    except Exception as exc:
+        return {
+            "error": f"Could not save Terms acceptance: {type(exc).__name__}",
+            "relay_status": gw.relay_status if gw is not None else "tos_required",
+            "public_url": _s.celerp_public_url,
+        }
 
-    if gw is not None:
-        gw.stop()
-        _gw.set_client(None)
+    deferred = await reconfigure_gateway_runtime(restart=True)
+    if deferred:
+        return {"relay_status": "connecting", "public_url": _s.celerp_public_url}
 
-    new_gw = _gw.GatewayClient(
-        gateway_token=_s.gateway_token,
-        instance_id=_s.gateway_instance_id,
-        gateway_url=_s.gateway_url,
-    )
-    _gw.set_client(new_gw)
-    asyncio.create_task(new_gw.run())
+    new_gw = _gw.get_client()
     for _ in range(15):
-        if new_gw.relay_status == "active":
+        if new_gw is None or new_gw.relay_status in ("active", "tos_required"):
             break
         await asyncio.sleep(0.2)
-
-    return {"relay_status": new_gw.relay_status, "public_url": _s.celerp_public_url}
+    return {
+        "relay_status": new_gw.relay_status if new_gw is not None else "inactive",
+        "public_url": _s.celerp_public_url,
+    }
 
 
 RELAY_ACCOUNT_METHODS_TIMEOUT = 6.0
@@ -661,7 +686,8 @@ async def account_methods_api(
 ) -> dict:
     """Return available account-link methods."""
     from celerp.config import (
-        activation_challenge, ensure_activation_verifier, ensure_instance_id)
+        activation_challenge, ensure_activation_verifier, ensure_instance_id,
+        settings as _settings)
     from celerp.gateway.state import (
         RelayCredentialError, fetch_relay_auth, is_foreign_relay_identity,
         relay_http_url as _rhu)
@@ -708,9 +734,13 @@ async def account_methods_api(
                 if is_foreign_relay_identity(authenticated_iid, iid):
                     needs_activation_challenge = True
                     return
+                params = {"instance_id": iid}
+                if _settings.activation_verifier:
+                    params["activation_challenge"] = activation_challenge(
+                        _settings.activation_verifier)
                 su = await c.get(
                     f"{relay_base}/auth/google/start-url",
-                    params={"instance_id": iid},
+                    params=params,
                     headers={"Authorization": f"Bearer {jwt}"})
                 if su.status_code == 200:
                     su_data = su.json()

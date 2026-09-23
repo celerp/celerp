@@ -9,6 +9,7 @@ import logging
 log = logging.getLogger(__name__)
 
 RELAY_ENTITLEMENT_TIMEOUT = 6.0
+RUNTIME_DRAIN_TIMEOUT = 8.0
 
 # Rare, short-lived handoffs scheduled when activation occurs inside a proxied
 # Web Access request. Strong refs prevent a pending post-response restart from
@@ -20,6 +21,50 @@ def _spawn_runtime_transition(coro) -> None:
     task = asyncio.create_task(coro)
     _runtime_transition_tasks.add(task)
     task.add_done_callback(_runtime_transition_tasks.discard)
+
+
+async def reconfigure_gateway_runtime(*, restart: bool) -> bool:
+    """Converge the current gateway generation without cutting off its response."""
+    from celerp.config import settings
+    from celerp.gateway import client as gateway_client
+    from celerp.gateway import ensure_running, shutdown as shutdown_gateway
+
+    expected = gateway_client.get_client()
+    if expected is None:
+        if restart and not settings.cloud_disconnected:
+            ensure_running()
+        return False
+
+    if not expected.has_inflight_proxy_requests():
+        await shutdown_gateway()
+        if restart and not settings.cloud_disconnected:
+            ensure_running()
+        return False
+
+    drain_generation = expected.begin_proxy_drain()
+
+    async def _after_response() -> None:
+        try:
+            try:
+                await asyncio.wait_for(
+                    expected.wait_for_proxy_idle(),
+                    timeout=RUNTIME_DRAIN_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                pass
+            if not expected.owns_proxy_drain(drain_generation):
+                return
+            if gateway_client.get_client() is expected:
+                await shutdown_gateway()
+            if restart and not settings.cloud_disconnected:
+                ensure_running()
+        except Exception:
+            log.warning("Deferred gateway reconfiguration failed", exc_info=True)
+        finally:
+            expected.end_proxy_drain(drain_generation)
+
+    _spawn_runtime_transition(_after_response())
+    return True
 
 
 async def stored_api_key() -> str:
@@ -93,11 +138,11 @@ async def apply_activation_state(
     expected_api_key: str | None = None,
     expected_verifier: str | None = None,
     keep_disconnected: bool = False,
+    restart_transport: bool = False,
 ) -> bool:
     """Persist authoritative activation first, then converge local runtime."""
     from celerp.config import record_cloud_activation, settings
     from celerp.gateway import client as gateway_client
-    from celerp.gateway import shutdown as shutdown_gateway
     from celerp.gateway.state import get_subscription_state, relay_session_headers
     from celerp.services import backup_scheduler
 
@@ -138,7 +183,7 @@ async def apply_activation_state(
         settings.celerp_public_url = ""
         settings.cloud_disconnected = True
         if gateway_client.get_client() is not None:
-            await shutdown_gateway()
+            await reconfigure_gateway_runtime(restart=False)
         backup_scheduler.stop()
         return True
 
@@ -149,7 +194,11 @@ async def apply_activation_state(
     from celerp.gateway import ensure_running, has_active_share
     should_serve = bool(settings.celerp_public_url)
     if not should_serve:
-        should_serve = await has_active_share()
+        try:
+            should_serve = await has_active_share()
+        except Exception:
+            log.debug("Active-share lookup failed during entitlement convergence", exc_info=True)
+            should_serve = False
 
     existing = gateway_client.get_client()
     transport_mismatch = False
@@ -169,50 +218,19 @@ async def apply_activation_state(
     restart_required = bool(
         existing is not None
         and (
-            not existing.is_serving(token)
+            restart_transport
+            or not existing.uses_token(token)
             or transport_mismatch
             or (authoritative_public_url and not should_serve)
         )
     )
     deferred_restart = False
     if restart_required:
-        if existing is not None and existing.has_inflight_proxy_requests():
-            # This activation can be executing inside the Web Access request that
-            # must carry its own success response. Drain that generation first,
-            # then rebuild from the latest persisted settings.
-            existing.begin_proxy_drain()
-
-            async def _restart_after_proxy_drain(expected_client) -> None:
-                try:
-                    await expected_client.wait_for_proxy_idle()
-                    if gateway_client.get_client() is not expected_client:
-                        return
-                    latest_should_serve = bool(settings.celerp_public_url)
-                    if not latest_should_serve:
-                        latest_should_serve = await has_active_share()
-                    await shutdown_gateway()
-                    if latest_should_serve:
-                        ensure_running()
-                except Exception:
-                    log.warning(
-                        "Deferred gateway entitlement reconfiguration failed",
-                        exc_info=True,
-                    )
-                finally:
-                    if gateway_client.get_client() is expected_client:
-                        expected_client.end_proxy_drain()
-
-            _spawn_runtime_transition(
-                _restart_after_proxy_drain(existing))
-            deferred_restart = True
-        else:
-            # Own teardown through the canonical gateway lifecycle. Closing a
-            # client directly and immediately replacing it can let the old run
-            # task's finalizer clear the new generation's in-process session token.
-            await shutdown_gateway()
+        deferred_restart = await reconfigure_gateway_runtime(restart=should_serve)
+    elif should_serve:
+        ensure_running()
 
     if should_serve and not deferred_restart:
-        ensure_running()
         gw = gateway_client.get_client()
         for _ in range(15):
             if gw and gw.relay_status in ("active", "tos_required"):

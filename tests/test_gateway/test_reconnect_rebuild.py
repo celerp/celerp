@@ -1,12 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""ensure_running rebuilds a dead tunnel instead of stranding it.
+"""Gateway construction stays single-owner.
 
-A client the relay rejected idles in run() with a dead socket and never revives
-itself. The plain "already set" no-op left it in place, so a reconnect that
-persisted a fresh token never reached the relay and the settings page kept reading
-the stale error. ensure_running now tears a non-serving client down and constructs
-a new one on the current token.
+Transport replacement is performed by the async reconfiguration lifecycle.
+ensure_running() only fills an empty slot so a concurrent caller cannot supersede
+or clear a generation that another transition still owns.
 """
 
 from __future__ import annotations
@@ -103,20 +101,17 @@ async def test_ensure_running_stays_down_while_cloud_disconnected(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ensure_running_rebuilds_when_existing_client_not_serving(monkeypatch):
-    """A non-serving client (rejected credential, or a token that rotated out) is
-    torn down and replaced with a fresh client on the current token."""
+async def test_ensure_running_never_supersedes_existing_generation(monkeypatch):
+    """Replacement belongs to the async reconfiguration owner, not this helper."""
     monkeypatch.setattr(client_mod, "GatewayClient", _FakeClient)
     settings.gateway_token = "tok-fresh"
     settings.gateway_instance_id = "iid-1"
-    dead = _FakeClient("tok-stale", "iid-1", "wss://relay.test")
-    client_mod.set_client(dead)
+    existing = _FakeClient("tok-stale", "iid-1", "wss://relay.test")
+    client_mod.set_client(existing)
 
     gateway.ensure_running()
-    await asyncio.sleep(0)  # let the rebuilt client's run task start
+    await asyncio.sleep(0)
 
-    rebuilt = client_mod.get_client()
-    assert dead.stopped is True
-    assert rebuilt is not dead
-    assert rebuilt._token == "tok-fresh"
-    assert rebuilt.ran is True
+    assert client_mod.get_client() is existing
+    assert existing.stopped is False
+    assert existing.ran is False

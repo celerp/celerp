@@ -51,7 +51,7 @@ async def get_quota_status() -> dict | None:
     tier = str(data.get("tier") or "free")
     if tier in ("cloud", "ai", "team") and not get_session_token():
         try:
-            await sync_existing_entitlement()
+            await sync_existing_entitlement(require_persisted_key=True)
         except Exception as exc:
             # Quota is the authoritative entitlement read for /ai. Local runtime
             # convergence is best-effort here and must not erase a paid result.
