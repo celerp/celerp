@@ -766,6 +766,39 @@ async def patch_user(
             security_change = True
         link.role = payload.role
     if payload.is_active is not None:
+        if payload.is_active is False and link.is_active:
+            if normalize_role(link.role) == "owner":
+                owner_count = (
+                    await session.execute(
+                        select(_func.count()).where(
+                            UserCompany.company_id == company_id,
+                            UserCompany.role == "owner",
+                            UserCompany.is_active.is_(True),
+                        )
+                    )
+                ).scalar()
+                if owner_count <= 1:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot deactivate the last owner. Assign another owner first.",
+                    )
+
+            from celerp.services.auth import installation_root_user_id
+            if await installation_root_user_id(session) == user_id:
+                active_memberships = (
+                    await session.execute(
+                        select(_func.count()).where(
+                            UserCompany.user_id == user_id,
+                            UserCompany.is_active.is_(True),
+                        )
+                    )
+                ).scalar()
+                if active_memberships <= 1:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot deactivate the installation owner's last active membership.",
+                    )
+
         if payload.is_active != link.is_active:
             security_change = True
         link.is_active = payload.is_active
