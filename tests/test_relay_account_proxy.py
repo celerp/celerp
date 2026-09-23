@@ -599,16 +599,22 @@ async def test_account_methods_matching_identity_uses_account_switch_flow():
 
     factory, client = _mock_httpx()
     client.get = AsyncMock(side_effect=_get_router)
+    live = MagicMock()
+    live.ownership_conflict = False
     with (
         patch(
             "celerp.services.cloud_entitlement.stored_api_key",
             new=AsyncMock(return_value="local-key"),
         ),
+        patch("celerp.config.settings.activation_verifier", "stale-verifier"),
         patch("celerp.config.ensure_instance_id", return_value="local-iid"),
         patch(
             "celerp.gateway.state.fetch_relay_auth",
             new=AsyncMock(return_value=("local-jwt", "local-iid")),
         ),
+        patch("celerp.gateway.client.get_client", return_value=live),
+        patch("celerp.config.activation_challenge",
+              side_effect=AssertionError("ordinary account switch must not rotate credentials")),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
         patch("httpx.AsyncClient", factory),
     ):
@@ -616,6 +622,54 @@ async def test_account_methods_matching_identity_uses_account_switch_flow():
         data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
 
     assert data["google_start_url"] == "https://accounts.google.test/start"
+
+
+@pytest.mark.asyncio
+async def test_account_methods_takeover_carries_fresh_activation_challenge():
+    def _get_router(url, **kw):
+        resp = MagicMock()
+        resp.status_code = 200
+        if url.endswith("/auth/methods"):
+            resp.json = MagicMock(return_value={
+                "google": True, "free_email_quota": 0, "secure_activation": True,
+            })
+        else:
+            assert url.endswith("/auth/google/start-url")
+            assert kw["params"] == {
+                "instance_id": "local-iid",
+                "activation_challenge": "fresh-challenge",
+            }
+            assert kw["headers"]["Authorization"] == "Bearer local-jwt"
+            resp.json = MagicMock(return_value={
+                "url": "https://accounts.google.test/takeover"
+            })
+        return resp
+
+    factory, client = _mock_httpx()
+    client.get = AsyncMock(side_effect=_get_router)
+    live = MagicMock()
+    live.ownership_conflict = True
+    with (
+        patch(
+            "celerp.services.cloud_entitlement.stored_api_key",
+            new=AsyncMock(return_value="local-key"),
+        ),
+        patch("celerp.config.settings.activation_verifier", "fresh-verifier"),
+        patch("celerp.config.ensure_instance_id", return_value="local-iid"),
+        patch("celerp.config.activation_challenge",
+              return_value="fresh-challenge"),
+        patch(
+            "celerp.gateway.state.fetch_relay_auth",
+            new=AsyncMock(return_value=("local-jwt", "local-iid")),
+        ),
+        patch("celerp.gateway.client.get_client", return_value=live),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.routers.health import account_methods_api
+        data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
+
+    assert data["google_start_url"] == "https://accounts.google.test/takeover"
 
 
 @pytest.mark.asyncio

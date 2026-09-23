@@ -106,7 +106,7 @@ async def cloud_status() -> dict:
     gw = get_client()
     relay_status = (
         "active_elsewhere"
-        if gw is not None and getattr(gw, "ownership_conflict", False)
+        if gw is not None and getattr(gw, "ownership_conflict", False) is True
         else (gw.relay_status if gw else "inactive")
     )
     connected = relay_status in ("active", "tos_required")
@@ -185,7 +185,7 @@ async def cloud_status() -> dict:
         gw = get_client()
         relay_status = (
             "active_elsewhere"
-            if gw is not None and getattr(gw, "ownership_conflict", False)
+            if gw is not None and getattr(gw, "ownership_conflict", False) is True
             else (gw.relay_status if gw else "inactive")
         )
         connected = relay_status in ("active", "tos_required")
@@ -735,7 +735,15 @@ async def account_methods_api(
                     needs_activation_challenge = True
                     return
                 params = {"instance_id": iid}
-                if _settings.activation_verifier:
+                from celerp.gateway import client as gateway_client
+                live_gateway = gateway_client.get_client()
+                if (
+                    _settings.activation_verifier
+                    and live_gateway is not None
+                    and getattr(
+                        live_gateway, "ownership_conflict", False
+                    ) is True
+                ):
                     params["activation_challenge"] = activation_challenge(
                         _settings.activation_verifier)
                 su = await c.get(

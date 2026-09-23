@@ -106,7 +106,7 @@ async def test_paid_quota_survives_optional_sync_failure_without_websocket(monke
     assert quota_route.call_count == 1
     assert quota_route.calls[0].request.headers["Authorization"] == (
         "Bearer short-lived-jwt")
-    sync.assert_awaited_once_with()
+    sync.assert_awaited_once_with(require_persisted_key=True)
 
 
 @pytest.mark.asyncio
