@@ -237,6 +237,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     from celerp.services.units import is_non_stock_line
     from celerp_inventory.projections import is_item_available
     from celerp_inventory.services import (
+        catalog_family_rows,
         external_link_for_state,
         resolve_catalog_anchor_for_item,
         resolve_external_product,
@@ -490,11 +491,8 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                         })
                         continue
                     family: list[dict] = []
-                    norm_sku = sku.casefold()
-                    for row in all_items:
+                    for row in catalog_family_rows(all_items, anchor):
                         st = row.state or {}
-                        if str(st.get("sku") or "").strip().casefold() != norm_sku:
-                            continue
                         if not is_item_available(st) or float(st.get("quantity") or 0) <= 0:
                             continue
                         family.append({

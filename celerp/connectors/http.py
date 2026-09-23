@@ -25,7 +25,9 @@ class RateLimitedClient:
         backoff_base: float = _DEFAULT_BACKOFF_BASE,
         before_request: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
-        self._client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
+        self._client = httpx.AsyncClient(
+            timeout=timeout, follow_redirects=False, trust_env=False
+        )
         self._max_retries = max_retries
         self._backoff_base = backoff_base
         self._before_request = before_request
@@ -56,9 +58,9 @@ class RateLimitedClient:
     )
 
     async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
-        if self._before_request is not None:
-            await self._before_request(url)
         for attempt in range(self._max_retries + 1):
+            if self._before_request is not None:
+                await self._before_request(url)
             try:
                 resp = await self._client.request(method, url, **kwargs)
             except self._RETRY_EXC as exc:

@@ -95,9 +95,9 @@ async def adopt_legacy_connector_configs() -> None:
         await session.commit()
 
 
-async def enqueue_item_change(session, entry) -> None:
-    """Queue affected enabled Woo product identities in the caller's transaction."""
-    if entry.entity_type != "item" or entry.source in {"connector", "connector_ui"}:
+async def enqueue_item_change(session, entry, *, previous_state: dict | None = None) -> None:
+    """Queue every affected enabled Woo identity in the caller's transaction."""
+    if entry.entity_type != "item" or entry.source == "connector":
         return
     company_id = str(entry.company_id)
     config = await session.scalar(
@@ -117,20 +117,52 @@ async def enqueue_item_change(session, entry) -> None:
     )
     if row is None or row.entity_type != "item":
         return
-    sku = str((row.state or {}).get("sku") or "").strip()
-    if not sku:
-        return
 
-    family = (await session.execute(
+    current_state = dict(row.state or {})
+    states = [state for state in (previous_state, current_state) if state]
+    sku_keys = {
+        str(state.get("sku") or "").strip().casefold()
+        for state in states
+        if str(state.get("sku") or "").strip()
+    }
+    anchor_ids = {
+        str(state.get("catalog_item_id"))
+        for state in states
+        if state.get("catalog_item_id")
+    }
+    if any(_woo_link(state) for state in states):
+        anchor_ids.add(str(entry.entity_id))
+
+    identities: set[str] = set()
+    for state in states:
+        link = _woo_link(state)
+        if (
+            link
+            and link.get("sync_enabled") is not False
+            and link.get("remote_deleted") is not True
+            and link.get("inventory_sync_paused") is not True
+        ):
+            key = _identity(link)
+            if key:
+                identities.add(key)
+
+    rows = (await session.execute(
         sa.select(Projection).where(
             Projection.company_id == entry.company_id,
             Projection.entity_type == "item",
-            sa.func.lower(Projection.state["sku"].as_string()) == sku.casefold(),
         )
     )).scalars().all()
-    identities: set[str] = set()
-    for candidate in family:
-        link = _woo_link(candidate.state or {})
+    for candidate in rows:
+        state = candidate.state or {}
+        candidate_sku = str(state.get("sku") or "").strip().casefold()
+        candidate_anchor = str(state.get("catalog_item_id") or "")
+        if not (
+            (candidate_sku and candidate_sku in sku_keys)
+            or candidate.entity_id in anchor_ids
+            or (candidate_anchor and candidate_anchor in anchor_ids)
+        ):
+            continue
+        link = _woo_link(state)
         if (
             link
             and link.get("sync_enabled") is not False
@@ -183,6 +215,7 @@ async def process_outbound_queue_once(limit: int = 100) -> int:
     for company_id, connector_name, identity in identities:
         async with get_session_ctx() as session:
             from celerp.connectors.ownership import (
+                ConnectorOwnershipAmbiguousError,
                 ConnectorOwnershipError,
                 lock_connector_operation,
             )
@@ -190,6 +223,21 @@ async def process_outbound_queue_once(limit: int = 100) -> int:
                 await lock_connector_operation(
                     session, company_id, connector_name, require_owner=True
                 )
+            except ConnectorOwnershipAmbiguousError as exc:
+                retry_at = datetime.now(timezone.utc) + timedelta(minutes=1)
+                pending = (await session.execute(
+                    sa.select(OutboundQueue).where(
+                        OutboundQueue.company_id == company_id,
+                        OutboundQueue.connector == connector_name,
+                        OutboundQueue.entity_id == identity,
+                        OutboundQueue.status == "pending",
+                    )
+                )).scalars().all()
+                for row in pending:
+                    row.next_retry_at = retry_at
+                    row.error_message = str(exc)[:2000]
+                await session.commit()
+                continue
             except ConnectorOwnershipError:
                 await session.execute(
                     sa.delete(OutboundQueue).where(
@@ -206,8 +254,8 @@ async def process_outbound_queue_once(limit: int = 100) -> int:
                 {"k": f"outbound:{company_id}:{connector_name}:{identity}"},
             )
 
-            # Re-read only rows visible after we acquired the cross-process lock.
-            # Rows inserted after this snapshot remain pending for the next pass.
+            # Re-read every pending row visible after acquiring the cross-process
+            # identity lock. A future retry on any generation defers newer rows too.
             locked_rows = (await session.execute(
                 sa.select(OutboundQueue)
                 .where(
@@ -215,14 +263,26 @@ async def process_outbound_queue_once(limit: int = 100) -> int:
                     OutboundQueue.connector == connector_name,
                     OutboundQueue.entity_id == identity,
                     OutboundQueue.status == "pending",
-                    sa.or_(
-                        OutboundQueue.next_retry_at.is_(None),
-                        OutboundQueue.next_retry_at <= datetime.now(timezone.utc),
-                    ),
                 )
                 .order_by(OutboundQueue.id)
             )).scalars().all()
             if not locked_rows:
+                continue
+
+            retry_now = datetime.now(timezone.utc)
+            blocked_until = max(
+                (
+                    row.next_retry_at
+                    for row in locked_rows
+                    if row.next_retry_at is not None and row.next_retry_at > retry_now
+                ),
+                default=None,
+            )
+            if blocked_until is not None:
+                for row in locked_rows:
+                    if row.next_retry_at is None or row.next_retry_at < blocked_until:
+                        row.next_retry_at = blocked_until
+                await session.commit()
                 continue
 
             ids = [row.id for row in locked_rows]
@@ -263,10 +323,12 @@ async def process_outbound_queue_once(limit: int = 100) -> int:
                 await session.commit()
             except Exception as exc:
                 retry_now = datetime.now(timezone.utc)
+                retry_count = max((row.retry_count for row in locked_rows), default=0) + 1
+                delay = min(3600, 5 * (2 ** min(retry_count, 9)))
+                retry_at = retry_now + timedelta(seconds=delay)
                 for row in locked_rows:
-                    row.retry_count += 1
-                    delay = min(3600, 5 * (2 ** min(row.retry_count, 9)))
-                    row.next_retry_at = retry_now + timedelta(seconds=delay)
+                    row.retry_count = retry_count
+                    row.next_retry_at = retry_at
                     row.error_message = str(exc)[:2000]
                     row.status = "pending"
                 await session.commit()

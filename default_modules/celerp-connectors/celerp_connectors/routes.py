@@ -81,6 +81,7 @@ async def trigger_sync(
     connector_name: str,
     payload: SyncRequest,
     company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
     session: AsyncSession = Depends(get_session),
 ) -> SyncResponse:
     try:
@@ -94,6 +95,18 @@ async def trigger_sync(
             detail=f"{connector.display_name} does not support entity '{payload.entity}'",
         )
 
+    from celerp.models.connector_config import ConnectorConfig
+    from sqlalchemy import select
+    config = await session.scalar(
+        select(ConnectorConfig).where(
+            ConnectorConfig.company_id == str(company_id),
+            ConnectorConfig.connector == connector_name,
+        )
+    )
+    if config is None:
+        raise HTTPException(status_code=409, detail="Connector is not connected")
+    direction = SyncDirection(config.direction)
+
     from celerp.connectors.relay_token import fetch_context
     ctx = await fetch_context(str(company_id), connector_name)
     if ctx is None:
@@ -103,7 +116,9 @@ async def trigger_sync(
     # guard, and incremental watermark as the scheduled/webhook paths.
     from celerp.connectors.sync_runner import run_sync
     try:
-        result = await run_sync(connector, ctx, payload.entity.value)
+        result = await run_sync(
+            connector, ctx, payload.entity.value, direction=direction
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -126,17 +141,13 @@ async def trigger_sync(
 async def trigger_sync_plan(
     connector_name: str,
     company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     try:
         connector = connectors.get(connector_name)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    from celerp.connectors.relay_token import fetch_context
-    ctx = await fetch_context(str(company_id), connector_name)
-    if ctx is None:
-        raise HTTPException(status_code=409, detail="Connector is not connected")
 
     from celerp.models.connector_config import ConnectorConfig
     from sqlalchemy import select
@@ -146,9 +157,14 @@ async def trigger_sync_plan(
             ConnectorConfig.connector == connector_name,
         )
     )
-    direction = SyncDirection(
-        config.direction if config is not None else connector.direction.value
-    )
+    if config is None:
+        raise HTTPException(status_code=409, detail="Connector is not connected")
+    direction = SyncDirection(config.direction)
+
+    from celerp.connectors.relay_token import fetch_context
+    ctx = await fetch_context(str(company_id), connector_name)
+    if ctx is None:
+        raise HTTPException(status_code=409, detail="Connector is not connected")
 
     from celerp.connectors.sync_runner import run_connector_sync
     from celerp.services.background import spawn_background
@@ -234,16 +250,24 @@ async def store_credentials(
         except ValueError as exc:
             return {"ok": False, "error": "store_unreachable", "detail": str(exc)}
         try:
-            async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as c:
-                probe = await c.get(
-                    f"{store_url}/wp-json/wc/v3/products",
-                    params={"per_page": 1},
-                    auth=(payload.consumer_key, payload.consumer_secret),
-                )
+            from celerp.services.outbound_url import fetch_public_bytes
+            probe = await fetch_public_bytes(
+                f"{store_url}/wp-json/wc/v3/products",
+                max_bytes=64 * 1024,
+                timeout=8.0,
+                allow_http=allow_http,
+                auth=(payload.consumer_key, payload.consumer_secret),
+                params={"per_page": 1},
+            )
             if probe.status_code == 401:
                 return {"ok": False, "error": "store_rejected",
                         "detail": "store rejected the consumer key/secret (401)"}
-            probe.raise_for_status()
+            if probe.status_code >= 400:
+                return {
+                    "ok": False,
+                    "error": "store_unreachable",
+                    "detail": f"store returned {probe.status_code}",
+                }
         except Exception as exc:
             return {"ok": False, "error": "store_unreachable", "detail": str(exc)}
 

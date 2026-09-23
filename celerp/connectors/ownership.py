@@ -13,7 +13,41 @@ from celerp.models.connector_config import ConnectorConfig
 
 
 class ConnectorOwnershipError(RuntimeError):
-    """The installation-scoped platform credential already belongs elsewhere."""
+    """The installation-scoped platform credential is not owned by this company."""
+
+
+class ConnectorOwnershipAmbiguousError(ConnectorOwnershipError):
+    """Connector ownership is inconsistent and must be reconciled before use."""
+
+
+def _resolve_connector_owner(
+    rows: list[ConnectorConfig], company_id
+) -> ConnectorConfig | None:
+    """Resolve one installation-scoped owner, failing closed on legacy/corrupt ambiguity."""
+    company_id = str(company_id)
+    legacy_id = ensure_instance_id()
+    legacy = [row for row in rows if str(row.company_id) == legacy_id]
+    owners = {
+        str(row.company_id)
+        for row in rows
+        if str(row.company_id) != legacy_id
+    }
+    if len(owners) > 1 or (legacy and owners):
+        raise ConnectorOwnershipAmbiguousError(
+            "Connector ownership is ambiguous; reconcile the installation before retrying"
+        )
+    if owners:
+        owner_id = next(iter(owners))
+        if owner_id != company_id:
+            raise ConnectorOwnershipError(
+                "Connector is not connected to the current company"
+            )
+        return next(row for row in rows if str(row.company_id) == company_id)
+    if legacy:
+        raise ConnectorOwnershipAmbiguousError(
+            "Connector ownership is ambiguous; reconcile the installation before retrying"
+        )
+    return None
 
 
 async def _lock_connector_key(session: AsyncSession, connector: str) -> None:
@@ -41,10 +75,10 @@ async def lock_connector_operation(
         .where(ConnectorConfig.connector == connector)
         .with_for_update()
     )).scalars().all()
-    current = next((r for r in rows if str(r.company_id) == company_id), None)
+    current = _resolve_connector_owner(rows, company_id)
     if current is not None:
         return current
-    if require_owner or rows:
+    if require_owner:
         raise ConnectorOwnershipError(
             f"{connector} is not connected to the current company"
         )
@@ -139,15 +173,13 @@ async def connector_owned_by_company(
     session: AsyncSession, company_id, connector: str
 ) -> bool:
     """Fail-closed ownership check for relay credential reads/revocation."""
-    company_id = str(company_id)
-    legacy_id = ensure_instance_id()
-    company_ids = (await session.execute(
-        sa.select(ConnectorConfig.company_id).where(
-            ConnectorConfig.connector == connector
-        )
+    rows = (await session.execute(
+        sa.select(ConnectorConfig).where(ConnectorConfig.connector == connector)
     )).scalars().all()
-    owners = {str(value) for value in company_ids if str(value) != legacy_id}
-    return owners == {company_id}
+    try:
+        return _resolve_connector_owner(rows, company_id) is not None
+    except ConnectorOwnershipError:
+        return False
 
 
 async def release_connector_ownership(
@@ -162,15 +194,12 @@ async def release_connector_ownership(
 
     company_id = str(company_id)
     await _lock_connector_key(session, connector)
-    current = await session.scalar(
+    rows = (await session.execute(
         sa.select(ConnectorConfig)
-        .where(
-            ConnectorConfig.company_id == company_id,
-            ConnectorConfig.connector == connector,
-        )
+        .where(ConnectorConfig.connector == connector)
         .with_for_update()
-        .limit(1)
-    )
+    )).scalars().all()
+    current = _resolve_connector_owner(rows, company_id)
     if current is None:
         raise ConnectorOwnershipError(
             f"{connector} is not connected to the current company"

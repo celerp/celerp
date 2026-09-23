@@ -233,6 +233,11 @@ def _external_ids(platform: str, state: dict) -> dict:
     return {}
 
 
+def normalize_sku(value) -> str:
+    """Canonical SKU comparison key."""
+    return str(value or "").strip().casefold()
+
+
 def _is_structural_product_anchor_state(state: dict) -> bool:
     """True when a row is structurally a product root, independent of physical codes."""
     return (
@@ -725,69 +730,165 @@ async def resolve_catalog_anchor_for_item(session: AsyncSession, company_id, ent
     raise ValueError(f"SKU {state.get('sku')!r} matches multiple catalog product anchors")
 
 
-async def aggregate_sellable_quantity_for_sku(session: AsyncSession, company_id, sku: str) -> float:
-    """Aggregate currently sellable same-SKU stock across lots and locations."""
+def _family_keys(rows: list[Projection]) -> dict[str, tuple[str, str]]:
+    """Resolve structural catalog families first, with SKU history as legacy fallback."""
+    roots_by_sku: dict[str, list[Projection]] = {}
+    for row in rows:
+        state = row.state or {}
+        if not _is_product_anchor_state(state):
+            continue
+        sku_keys = {normalize_sku(state.get("sku"))}
+        sku_keys.update(
+            normalize_sku(value)
+            for value in (state.get("_catalog_sku_aliases") or [])
+        )
+        for sku in sku_keys:
+            if sku:
+                roots_by_sku.setdefault(sku, []).append(row)
+
+    keys: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        state = row.state or {}
+        catalog_item_id = state.get("catalog_item_id")
+        if catalog_item_id:
+            keys[row.entity_id] = ("anchor", str(catalog_item_id))
+            continue
+        sku = normalize_sku(state.get("sku"))
+        if _is_product_anchor_state(state):
+            keys[row.entity_id] = ("anchor", row.entity_id)
+            continue
+        roots = roots_by_sku.get(sku, []) if sku else []
+        unique_roots = {candidate.entity_id: candidate for candidate in roots}
+        keys[row.entity_id] = (
+            ("anchor", next(iter(unique_roots)))
+            if len(unique_roots) == 1
+            else ("sku", sku)
+        )
+    return keys
+
+
+def catalog_family_rows(
+    rows: list[Projection], anchor: Projection
+) -> list[Projection]:
+    """Return rows belonging to an anchor's canonical product family."""
+    keys = _family_keys(rows)
+    key = keys.get(anchor.entity_id)
+    if key is None:
+        return []
+    return [row for row in rows if keys.get(row.entity_id) == key]
+
+
+async def aggregate_sellable_quantity_for_anchor(
+    session: AsyncSession, company_id, anchor: Projection
+) -> float:
+    """Aggregate currently sellable stock for one catalog product family."""
     from celerp_inventory.projections import is_item_available
+
     cid = uuid.UUID(str(company_id))
-    norm = str(sku or "").strip().casefold()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == cid,
+        Projection.entity_type == "item",
+    ))).scalars().all()
+    return sum(
+        float((row.state or {}).get("quantity") or 0)
+        for row in catalog_family_rows(rows, anchor)
+        if is_item_available(row.state or {})
+    )
+
+
+async def aggregate_sellable_quantity_for_sku(
+    session: AsyncSession, company_id, sku: str
+) -> float:
+    """Legacy SKU-family aggregate retained for callers without an anchor."""
+    from celerp_inventory.projections import is_item_available
+
+    cid = uuid.UUID(str(company_id))
+    norm = normalize_sku(sku)
     if not norm:
         return 0.0
     rows = (await session.execute(select(Projection).where(
-        Projection.company_id == cid, Projection.entity_type == "item"
+        Projection.company_id == cid,
+        Projection.entity_type == "item",
     ))).scalars().all()
-    return sum(float((r.state or {}).get("quantity") or 0) for r in rows
-               if str((r.state or {}).get("sku") or "").strip().casefold() == norm
-               and is_item_available(r.state or {}))
+    return sum(
+        float((row.state or {}).get("quantity") or 0)
+        for row in rows
+        if normalize_sku((row.state or {}).get("sku")) == norm
+        and is_item_available(row.state or {})
+    )
 
 
 def build_channel_states(rows: list[Projection]) -> dict[str, dict[str, dict]]:
-    """Derive product-family channel state without copying persisted identity."""
-    by_sku: dict[str, list[Projection]] = {}
+    """Derive product-family channel state from canonical family identity."""
+    keys = _family_keys(rows)
+    by_family: dict[tuple[str, str], list[Projection]] = {}
     for row in rows:
-        sku = str((row.state or {}).get("sku") or "").strip().casefold()
-        if sku:
-            by_sku.setdefault(sku, []).append(row)
-    result: dict[str, dict[str, dict]] = {r.entity_id: {} for r in rows}
+        key = keys.get(row.entity_id)
+        if key and key[1]:
+            by_family.setdefault(key, []).append(row)
+
+    result: dict[str, dict[str, dict]] = {row.entity_id: {} for row in rows}
     platforms: set[str] = {"shopify", "woocommerce"}
     for row in rows:
         links = (row.state or {}).get("external_links") or {}
         if isinstance(links, dict):
-            platforms.update(str(k) for k in links)
-    for sku_rows in by_sku.values():
+            platforms.update(str(key) for key in links)
+
+    for family_rows in by_family.values():
         product_roots = [
-            row for row in sku_rows if _is_product_anchor_state(row.state or {})
+            row for row in family_rows if _is_product_anchor_state(row.state or {})
         ]
         for platform in platforms:
-            linked = [r for r in sku_rows if external_link_for_state(r.state or {}, platform)]
+            linked = [
+                row for row in family_rows
+                if external_link_for_state(row.state or {}, platform)
+            ]
             if not linked:
                 continue
             if len(product_roots) > 1:
-                for row in sku_rows:
+                for row in family_rows:
                     result[row.entity_id][platform] = {
                         "linked": True, "enabled": False, "ambiguous": True,
                     }
                 continue
-            roots = [r for r in linked if _is_product_anchor_state(r.state or {})]
+            roots = [
+                row for row in linked if _is_product_anchor_state(row.state or {})
+            ]
             candidates = roots or linked
             identities = {
-                external_identity_key(platform, external_link_for_state(r.state or {}, platform))
-                for r in candidates
+                external_identity_key(
+                    platform,
+                    external_link_for_state(row.state or {}, platform),
+                )
+                for row in candidates
             }
             if len(identities) != 1:
-                for row in sku_rows:
-                    result[row.entity_id][platform] = {"linked": True, "enabled": False, "ambiguous": True}
+                for row in family_rows:
+                    result[row.entity_id][platform] = {
+                        "linked": True, "enabled": False, "ambiguous": True,
+                    }
                 continue
             try:
                 anchor = _choose_outbound_anchor(candidates, platform)
             except ValueError:
-                for row in sku_rows:
-                    result[row.entity_id][platform] = {"linked": True, "enabled": False, "ambiguous": True}
+                for row in family_rows:
+                    result[row.entity_id][platform] = {
+                        "linked": True, "enabled": False, "ambiguous": True,
+                    }
                 continue
             link = external_link_for_state(anchor.state or {}, platform)
-            enabled = anchor.is_sync_to_shopify is True if platform == "shopify" else link.get("sync_enabled") is not False
-            state = {"linked": True, "enabled": bool(enabled), "anchor_id": anchor.entity_id,
-                     "remote_deleted": bool(link.get("remote_deleted"))}
-            for row in sku_rows:
+            enabled = (
+                anchor.is_sync_to_shopify is True
+                if platform == "shopify"
+                else link.get("sync_enabled") is not False
+            )
+            state = {
+                "linked": True,
+                "enabled": bool(enabled),
+                "anchor_id": anchor.entity_id,
+                "remote_deleted": bool(link.get("remote_deleted")),
+            }
+            for row in family_rows:
                 result[row.entity_id][platform] = dict(state)
     return result
 
@@ -835,14 +936,19 @@ async def _items_with_external_id(
         )).scalars().all()
 
     roots_by_sku: dict[str, int] = {}
-    sellable_by_sku: dict[str, float] = {}
+    family_keys = _family_keys(rows)
+    sellable_by_family: dict[tuple[str, str], float] = {}
     for r in rows:
         st = r.state or {}
-        sku_key = str(st.get("sku") or "").strip().casefold()
+        sku_key = normalize_sku(st.get("sku"))
         if sku_key and _is_product_anchor_state(st):
             roots_by_sku[sku_key] = roots_by_sku.get(sku_key, 0) + 1
-        if sku_key and is_item_available(st):
-            sellable_by_sku[sku_key] = sellable_by_sku.get(sku_key, 0.0) + float(st.get("quantity") or 0)
+        family_key = family_keys.get(r.entity_id)
+        if family_key and is_item_available(st):
+            sellable_by_family[family_key] = (
+                sellable_by_family.get(family_key, 0.0)
+                + float(st.get("quantity") or 0)
+            )
 
     grouped: dict[tuple[str, str | None], list[Projection]] = {}
     for r in rows:
@@ -865,7 +971,7 @@ async def _items_with_external_id(
         r = _choose_outbound_anchor(candidates, platform)
         st = r.state or {}
         link = external_link_for_state(st, platform)
-        sku_key = str(st.get("sku") or "").strip().casefold()
+        sku_key = normalize_sku(st.get("sku"))
         if sku_key and roots_by_sku.get(sku_key, 0) > 1:
             raise ValueError(
                 f"SKU {st.get('sku')!r} matches multiple catalog product anchors"
@@ -876,7 +982,9 @@ async def _items_with_external_id(
             "name": st.get("name"),
             "description": st.get("description"),
             "sale_price": st.get("sale_price", st.get("retail_price")),
-            "quantity": sellable_by_sku.get(sku_key, 0.0),
+            "quantity": sellable_by_family.get(
+                family_keys.get(r.entity_id), 0.0
+            ),
             "files": st.get("files") or [],
             "inventory_type": st.get("inventory_type", "stocked"),
             "sell_by": st.get("sell_by"),

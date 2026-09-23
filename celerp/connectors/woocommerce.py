@@ -54,8 +54,10 @@ async def _validate_request_url(url: str) -> None:
     )
 
 
-def _http_client() -> RateLimitedClient:
-    return RateLimitedClient(before_request=_validate_request_url)
+def _http_client(*, max_retries: int = 3) -> RateLimitedClient:
+    return RateLimitedClient(
+        max_retries=max_retries, before_request=_validate_request_url
+    )
 
 
 def _auth(ctx: ConnectorContext) -> tuple[str, str]:
@@ -328,7 +330,7 @@ class WooCommerceConnector(ConnectorBase):
         from celerp.models.connector_config import ConnectorConfig
         from sqlalchemy import select
         from celerp_inventory.services import (
-            aggregate_sellable_quantity_for_sku, external_link_for_state,
+            aggregate_sellable_quantity_for_anchor, external_link_for_state,
             resolve_catalog_anchor_for_item, set_external_link, set_external_link_state,
         )
         async with AsyncSessionLocal() as session:
@@ -339,7 +341,9 @@ class WooCommerceConnector(ConnectorBase):
             if not sku:
                 raise ValueError("A SKU is required before this item can sync with WooCommerce")
             link = external_link_for_state(state, "woocommerce")
-            qty = await aggregate_sellable_quantity_for_sku(session, ctx.company_id, sku)
+            qty = await aggregate_sellable_quantity_for_anchor(
+                session, ctx.company_id, anchor
+            )
             config = await session.scalar(
                 select(ConnectorConfig).where(
                     ConnectorConfig.company_id == str(ctx.company_id),
@@ -557,7 +561,7 @@ class WooCommerceConnector(ConnectorBase):
         return result
 
     async def _sync_inventory_items_out(
-        self, ctx: ConnectorContext, items: list[dict]
+        self, ctx: ConnectorContext, items: list[dict], *, max_retries: int = 3
     ) -> SyncResult:
         """Push the supplied already-resolved Woo inventory rows."""
         from decimal import Decimal, InvalidOperation
@@ -565,7 +569,7 @@ class WooCommerceConnector(ConnectorBase):
         result = SyncResult(entity=SyncEntity.INVENTORY, direction=SyncDirection.OUTBOUND)
         errors: list[str] = []
         base_url, auth = _base_url(ctx), _auth(ctx)
-        async with _http_client() as client:
+        async with _http_client(max_retries=max_retries) as client:
             for item in items:
                 product_id = item.get("woocommerce_product_id")
                 if not product_id:
@@ -656,7 +660,9 @@ class WooCommerceConnector(ConnectorBase):
                 direction=SyncDirection.OUTBOUND,
                 skipped=1,
             )
-        return await self._sync_inventory_items_out(ctx, selected)
+        return await self._sync_inventory_items_out(
+            ctx, selected, max_retries=0
+        )
 
     # -- Webhook lifecycle -----------------------------------------------------
 

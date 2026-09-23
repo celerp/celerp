@@ -14,6 +14,8 @@ from celerp_inventory.services import (
     relinked_external_sync_enabled,
     external_identity_key,
     _same_external_identity,
+    build_channel_states,
+    catalog_family_rows,
 )
 
 
@@ -104,3 +106,43 @@ def test_detached_external_link_suppresses_legacy_identity_fallback():
         "external_links": {"woocommerce": {"detached": True}},
     }
     assert external_link_for_state(state, "woocommerce") == {}
+
+
+def test_structural_catalog_family_survives_anchor_sku_change():
+    from types import SimpleNamespace
+
+    anchor = SimpleNamespace(
+        entity_id="item:anchor",
+        is_sync_to_shopify=False,
+        state={
+            "sku": "NEW-SKU",
+            "_catalog_sku_aliases": ["OLD-SKU"],
+            "external_links": {
+                "woocommerce": {"product_id": "42", "sync_enabled": True}
+            },
+        },
+    )
+    explicit_lot = SimpleNamespace(
+        entity_id="item:explicit",
+        is_sync_to_shopify=False,
+        state={
+            "sku": "OLDER-SKU",
+            "catalog_item_id": "item:anchor",
+            "quantity": 2,
+            "status": "available",
+        },
+    )
+    legacy_lot = SimpleNamespace(
+        entity_id="item:legacy",
+        is_sync_to_shopify=False,
+        state={
+            "sku": "OLD-SKU",
+            "quantity": 3,
+            "status": "available",
+        },
+    )
+    rows = [anchor, explicit_lot, legacy_lot]
+    assert catalog_family_rows(rows, anchor) == rows
+    state = build_channel_states(rows)
+    assert state["item:explicit"]["woocommerce"]["anchor_id"] == "item:anchor"
+    assert state["item:legacy"]["woocommerce"]["anchor_id"] == "item:anchor"

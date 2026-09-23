@@ -150,6 +150,7 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
     "rfid_epc",     # physical RFID/EPC tag: bound to one physical unit, never inherited by a new one
     "idempotency_key", # connector identity belongs to the catalog/product anchor
     "external_links",  # external channel identity must never be cloned onto a physical child
+    "_catalog_sku_aliases",  # internal catalog-anchor SKU history never belongs on a lot
     # Quantity / cost — set by split math or pricing events
     "quantity",
     "weight",
@@ -201,6 +202,7 @@ def flatten_item(state: dict, entity_id: str, location_id: str | None = None, lo
     the cost roll-up, so a Cost base prices from the same unit cost every other consumer sees.
     """
     flat = dict(state)
+    flat.pop("_catalog_sku_aliases", None)
     flat["id"] = entity_id
     attrs = flat.pop("attributes", None) or {}
     for k, v in attrs.items():
@@ -2754,6 +2756,14 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     # share the parent's SKU and each other's — no uniqueness or parent-difference guard.
     parent_sku = parent.state.get("sku")
     child_skus = [c.sku or parent_sku for c in children]
+    from celerp_inventory.services import normalize_sku, resolve_catalog_anchor_for_item
+    catalog_anchor_id: str | None = None
+    try:
+        catalog_anchor_id = (
+            await resolve_catalog_anchor_for_item(session, company_id, entity_id)
+        ).entity_id
+    except ValueError:
+        pass
 
     # Create child items
     child_eids: list[str] = []
@@ -2822,6 +2832,13 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             "attributes": _child_attrs,
             "barcode": child.barcode if child.barcode is not None else next(_minted_barcodes),
         })
+        if (
+            catalog_anchor_id
+            and normalize_sku(child_skus[i]) == normalize_sku(parent_sku)
+        ):
+            child_data["catalog_item_id"] = catalog_anchor_id
+        else:
+            child_data.pop("catalog_item_id", None)
         if child.weight is not None:
             child_data["weight"] = child.weight
         await emit_event(
@@ -3321,9 +3338,9 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         "attributes": {**parent_attrs},
         "barcode": child_barcode,
     })
-    # A transform yields a DIFFERENT product, so the parent's product GTIN must not carry
-    # over (rfid_epc is already dropped via _CHILD_RESET_FIELDS, as it is a physical tag).
+    # A transform yields a DIFFERENT product, so no product-family identity carries.
     child_data.pop("gtin", None)
+    child_data.pop("catalog_item_id", None)
     if payload.child_weight is not None:
         child_data["weight"] = payload.child_weight
     if payload.child_weight_unit:
@@ -3465,6 +3482,12 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     if len(payload.source_entity_ids) < 2:
         raise HTTPException(status_code=422, detail="At least 2 source_entity_ids are required to merge.")
 
+    if payload.target_sku_from not in payload.source_entity_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="target_sku_from must identify one of the merge sources.",
+        )
+
     # Fetch projections for all source items.
     source_projections: list[Projection] = []
     for sid in payload.source_entity_ids:
@@ -3474,6 +3497,64 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         if str((proj.state or {}).get("status") or "").lower() == "draft":
             raise HTTPException(status_code=422, detail=f"Cannot merge a draft item ({sid}); make it available first.")
         source_projections.append(proj)
+
+    from celerp_inventory.services import external_link_for_state, normalize_sku
+
+    def _linked_platforms(proj: Projection) -> set[str]:
+        links = (proj.state or {}).get("external_links") or {}
+        return (
+            set(str(platform) for platform in links)
+            if isinstance(links, dict)
+            else set()
+        ) | {"shopify", "woocommerce"}
+
+    if any(
+        external_link_for_state(proj.state or {}, platform)
+        for proj in source_projections
+        for platform in _linked_platforms(proj)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="A channel-linked catalog product cannot be merged; merge its physical lots instead.",
+        )
+
+    explicit_catalog_ids = {
+        str((proj.state or {}).get("catalog_item_id"))
+        for proj in source_projections
+        if (proj.state or {}).get("catalog_item_id")
+    }
+    if len(explicit_catalog_ids) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Items from different catalog products cannot be merged.",
+        )
+    merged_catalog_id = next(iter(explicit_catalog_ids), None)
+    catalog_anchor = (
+        await session.get(
+            Projection,
+            {"company_id": company_id, "entity_id": merged_catalog_id},
+        )
+        if merged_catalog_id else None
+    )
+    if merged_catalog_id and (
+        catalog_anchor is None or catalog_anchor.entity_type != "item"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Catalog product link is invalid.",
+        )
+    if catalog_anchor is not None:
+        anchor_sku = normalize_sku((catalog_anchor.state or {}).get("sku"))
+        for proj in source_projections:
+            source_catalog_id = (proj.state or {}).get("catalog_item_id")
+            if (
+                not source_catalog_id
+                and normalize_sku((proj.state or {}).get("sku")) != anchor_sku
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Items from different catalog products cannot be merged.",
+                )
 
     # Validate: all items must share the same category.
     categories = {str(p.state.get("category") or "").strip() for p in source_projections}
@@ -3652,6 +3733,13 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     # repeat across lots (per-lot identity is the barcode + entity_id), so no
     # uniqueness check is applied - consistent with create/rename.
     merged_sku = (payload.resulting_sku or "").strip() or str(target_state.get("sku") or "")
+    if catalog_anchor is not None and normalize_sku(merged_sku) != normalize_sku(
+        (catalog_anchor.state or {}).get("sku")
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="A merged catalog-family lot must keep its catalog product SKU.",
+        )
     # The merged item is a new physical lot, so it mints a FRESH barcode rather than
     # inheriting the target's: the source items are deactivated (status="merged") but
     # keep their barcodes, so copying the target's here would collide with the still
@@ -3669,6 +3757,9 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         "attributes": resolved_attrs,
         "barcode": merged_barcode,
     }
+    if merged_catalog_id:
+        create_data["catalog_item_id"] = merged_catalog_id
+
     # The merged item is the same product as the target, so carry the target's product
     # GTIN. The physical RFID/EPC tag is NOT carried: the merged item is a new physical
     # unit (a fresh barcode is minted above), so it starts with no physical tag.

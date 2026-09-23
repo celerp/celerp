@@ -5,9 +5,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
+import respx
 
-from celerp.services.outbound_url import validate_public_base_url
+from celerp.services.outbound_url import (
+    PublicFetchTooLarge,
+    fetch_public_bytes,
+    validate_public_base_url,
+)
 
 
 def _loop(*addresses: str):
@@ -56,4 +62,64 @@ async def test_public_base_url_rejects_credential_or_base_url_suffixes(url):
         with pytest.raises(ValueError):
             await validate_public_base_url(
                 url, reject_query=True, reject_fragment=True
+            )
+
+
+@pytest.mark.asyncio
+async def test_public_fetch_enforces_streaming_body_cap():
+    with patch(
+        "celerp.services.outbound_url.validate_public_base_url",
+        new=AsyncMock(side_effect=lambda url, **_: url),
+    ), respx.mock:
+        respx.get("https://example.com/file").mock(
+            return_value=httpx.Response(200, content=b"12345")
+        )
+        with pytest.raises(PublicFetchTooLarge):
+            await fetch_public_bytes(
+                "https://example.com/file",
+                max_bytes=4,
+            )
+
+
+@pytest.mark.asyncio
+async def test_public_fetch_ignores_environment_network_override(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+    with patch(
+        "celerp.services.outbound_url.validate_public_base_url",
+        new=AsyncMock(side_effect=lambda url, **_: url),
+    ), respx.mock:
+        route = respx.get("https://example.com/file").mock(
+            return_value=httpx.Response(200, content=b"ok")
+        )
+        response = await fetch_public_bytes(
+            "https://example.com/file",
+            max_bytes=10,
+        )
+    assert route.called
+    assert response.content == b"ok"
+
+
+@pytest.mark.asyncio
+async def test_public_fetch_rejects_invalid_redirect_destination():
+    validate = AsyncMock(
+        side_effect=[
+            "https://example.com/start",
+            ValueError("URL host is not a public address"),
+        ]
+    )
+    with patch(
+        "celerp.services.outbound_url.validate_public_base_url",
+        new=validate,
+    ), respx.mock:
+        respx.get("https://example.com/start").mock(
+            return_value=httpx.Response(
+                302,
+                headers={"location": "https://redirect.example/final"},
+            )
+        )
+        with pytest.raises(ValueError, match="public"):
+            await fetch_public_bytes(
+                "https://example.com/start",
+                max_bytes=10,
+                max_redirects=1,
             )

@@ -25,7 +25,6 @@ import uuid as _uuid
 from datetime import date as _date, datetime, time as _time, timedelta, timezone
 from urllib.parse import urlencode
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
@@ -679,6 +678,7 @@ async def import_shared_doc(
     src: str = Query(..., description="Sender's Celerp public URL"),
     token: str = Query(..., description="Share token from sender"),
     company_id: _uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -691,18 +691,31 @@ async def import_shared_doc(
     fetch_url = f"{src_clean}/share/{token}/bundle"
 
     try:
-        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, follow_redirects=False) as client:
-            r = await client.get(fetch_url)
-            r.raise_for_status()
-            if len(r.content) > _MAX_BUNDLE_BYTES:
-                raise HTTPException(status_code=413, detail="Bundle too large")
-            bundle = json.loads(r.content)
+        from celerp.services.outbound_url import (
+            PublicFetchTooLarge,
+            fetch_public_bytes,
+        )
+
+        r = await fetch_public_bytes(
+            fetch_url,
+            max_bytes=_MAX_BUNDLE_BYTES,
+            timeout=_FETCH_TIMEOUT,
+        )
+        if r.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail="Share link not found on sender's instance",
+            )
+        if r.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Sender's instance returned {r.status_code}",
+            )
+        bundle = json.loads(r.content)
+    except PublicFetchTooLarge as exc:
+        raise HTTPException(status_code=413, detail="Bundle too large") from exc
     except HTTPException:
         raise
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            raise HTTPException(status_code=404, detail="Share link not found on sender's instance")
-        raise HTTPException(status_code=502, detail=f"Sender's instance returned {exc.response.status_code}")
     except Exception:
         raise HTTPException(status_code=502, detail="Could not reach sender's Celerp instance")
 
@@ -713,6 +726,7 @@ async def import_shared_doc(
 async def import_bundle_upload(
     request: Request,
     company_id: _uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -777,7 +791,7 @@ async def _import_bundle(
     entity_id = f"doc:rcv:{_uuid.uuid4().hex[:12]}"
     idem_key = f"share:{token}:{company_id}" if token else f"bundle:{_uuid.uuid4().hex}"
 
-    await emit_event(
+    entry = await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
@@ -794,5 +808,5 @@ async def _import_bundle(
 
     return Response(
         status_code=302,
-        headers={"Location": f"/docs/{entity_id}"},
+        headers={"Location": f"/docs/{entry.entity_id}"},
     )

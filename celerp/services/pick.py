@@ -96,7 +96,7 @@ def consolidate_sales_lots(items: list[dict], company_settings: dict) -> list[di
     by_sku: dict[str, list[dict]] = {}
     order: list[str] = []
     for item in items:
-        sku = str(item.get("sku") or "")
+        sku = str(item.get("sku") or "").strip().casefold()
         if sku not in by_sku:
             by_sku[sku] = []
             order.append(sku)

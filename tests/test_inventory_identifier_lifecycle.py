@@ -502,3 +502,30 @@ async def test_numeric_sku_create_without_collision_still_copies_to_barcode(clie
     created = await _item(client, h, r.json()["id"])
     assert created.get("barcode") == "778899", \
         f"a free numeric SKU must still copy to barcode, got {created.get('barcode')!r}"
+
+
+@pytest.mark.asyncio
+async def test_split_catalog_anchor_stamps_same_product_child_family(client):
+    h = _h(await _token(client))
+    created = await client.post(
+        "/items",
+        json={
+            "status": "available",
+            "sku": "FAMILY-SPLIT",
+            "name": "Family",
+            "quantity": 5.0,
+            "sell_by": "piece",
+        },
+        headers=h,
+    )
+    assert created.status_code == 200, created.text
+    anchor_id = created.json()["id"]
+
+    split = await client.post(
+        f"/items/{anchor_id}/split",
+        json={"children": [{"quantity": 2.0}]},
+        headers=h,
+    )
+    assert split.status_code == 200, split.text
+    child = await _item(client, h, split.json()["children"][0]["id"])
+    assert child.get("catalog_item_id") == anchor_id
