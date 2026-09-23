@@ -18,7 +18,6 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
@@ -122,14 +121,11 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
     if state.get("doc_type") not in _PAYABLE_TYPES or _outstanding(state) <= 0:
         raise HTTPException(status_code=409, detail="This document is not payable")
 
-    base = (settings.celerp_public_url or "").rstrip("/")
     currency = state.get("currency", "USD")
     ref = state.get("ref_id") or state.get("doc_number") or entity_id.split(":")[-1][:8]
     result = await pay.create_checkout(
         amount_minor=to_minor_units(_outstanding(state), currency), currency=currency,
         description=f"Invoice {ref}",
-        success_url=f"{base}/pay/{token}/return?session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{base}/share/{token}",
         company_id=str(company_id), entity_id=entity_id, share_token=token,
     )
     if not result or not result.get("url"):
