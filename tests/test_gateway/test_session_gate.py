@@ -74,8 +74,8 @@ def test_header_present_but_instance_not_connected():
     resp = _client.get("/gated", headers={"X-Session-Token": "some-token"})
     assert resp.status_code == 401
     detail = resp.json()["detail"]
-    assert "not connected" in detail
-    assert "GATEWAY_TOKEN" in detail
+    assert "not connected" in detail.lower()
+    assert "settings > web access" in detail.lower()
 
 
 def test_header_mismatch_returns_expired_error():
@@ -84,8 +84,8 @@ def test_header_mismatch_returns_expired_error():
     resp = _client.get("/gated", headers={"X-Session-Token": "wrong-token-xyz"})
     assert resp.status_code == 401
     detail = resp.json()["detail"]
-    assert "expired" in detail.lower() or "invalid" in detail.lower()
-    assert "Reconnect" in detail
+    assert "no longer valid" in detail.lower()
+    assert "settings > web access" in detail.lower()
 
 
 def test_valid_header_passes():
