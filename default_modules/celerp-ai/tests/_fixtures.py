@@ -13,7 +13,7 @@ _SYNTHETIC_RESPONSES = {
     "text_completion": {
         "message": {
             "role": "assistant",
-            "content": "You currently have 42 test items in stock.",
+            "content": "You currently have 42 items in the test catalog.",
         },
         "model_used": "test-model",
         "usage": {"total_tokens": 187},
