@@ -296,9 +296,23 @@ _FAKE_SESSION_TOKEN = "test-session-token-abc123"
 
 @pytest.fixture(autouse=False)
 def patch_session_token():
+    from unittest.mock import AsyncMock, patch
+    from celerp.connectors.base import ConnectorContext
     import celerp.gateway.state as gw_state
+
+    async def _context(company_id, connector_name):
+        return ConnectorContext(
+            company_id=str(company_id),
+            access_token="tok",
+            store_handle="test.myshopify.com",
+        )
+
     gw_state.set_session_token(_FAKE_SESSION_TOKEN)
-    yield
+    with patch(
+        "celerp.connectors.relay_token.fetch_context",
+        new=AsyncMock(side_effect=_context),
+    ):
+        yield
     gw_state.set_session_token("")
 
 
@@ -323,7 +337,7 @@ async def test_connector_sync_success(client, patch_session_token):
         r = await client.post(
             "/connectors/shopify/sync",
             headers=headers,
-            json={"entity": "products", "access_token": "tok", "store_handle": "test.myshopify.com"},
+            json={"entity": "products"},
         )
 
     assert r.status_code == 200

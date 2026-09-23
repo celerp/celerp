@@ -726,9 +726,23 @@ _CONNECTOR_SESSION_TOKEN = "test-session-token-abc123"
 
 @pytest.fixture(autouse=False)
 def patch_connector_session_token():
+    from unittest.mock import AsyncMock, patch
+    from celerp.connectors.base import ConnectorContext
     import celerp.gateway.state as gw_state
+
+    async def _context(company_id, connector_name):
+        return ConnectorContext(
+            company_id=str(company_id),
+            access_token="tok",
+            store_handle="test.myshopify.com",
+        )
+
     gw_state.set_session_token(_CONNECTOR_SESSION_TOKEN)
-    yield
+    with patch(
+        "celerp.connectors.relay_token.fetch_context",
+        new=AsyncMock(side_effect=_context),
+    ):
+        yield
     gw_state.set_session_token("")
 
 
@@ -753,7 +767,7 @@ async def test_connector_sync_not_implemented(client, patch_connector_session_to
         new=AsyncMock(side_effect=NotImplementedError("not supported")),
     ):
         resp = await client.post("/connectors/shopify/sync", headers=headers, json={
-            "entity": "orders", "access_token": "tok",
+            "entity": "orders",
         })
     # run_sync captures NotImplementedError into a failed result, not an HTTP error.
     assert resp.status_code == 200
@@ -778,7 +792,7 @@ async def test_connector_sync_generic_exception(client, patch_connector_session_
     connector = conn_module.get("shopify")
     with patch.object(connector, "sync_products", new=AsyncMock(side_effect=RuntimeError("network error"))):
         resp = await client.post("/connectors/shopify/sync", headers=headers, json={
-            "entity": "products", "access_token": "tok",
+            "entity": "products",
         })
     # run_sync captures the exception into a failed result, not an HTTP 502.
     assert resp.status_code == 200
@@ -807,7 +821,7 @@ async def test_connector_sync_contacts(client, patch_connector_session_token):
     connector = conn_module.get("shopify")
     with patch.object(connector, "sync_contacts", new=AsyncMock(return_value=mock_result)):
         resp = await client.post("/connectors/shopify/sync", headers=headers, json={
-            "entity": "contacts", "access_token": "tok",
+            "entity": "contacts",
         })
 
 
