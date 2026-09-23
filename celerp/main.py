@@ -100,28 +100,18 @@ async def _try_auto_activate() -> None:
         verifier = _s.activation_verifier or ""
 
         if not verifier:
-            # Legacy installations may predate challenge-bound activation. New
-            # relays expose an observation-only check-in, so UUID knowledge never
-            # becomes credential authority there. If and only if that endpoint is
-            # absent (404), make one compatibility activation call for an old
-            # relay. Never retry this mutating legacy operation after ambiguity.
-            async def _legacy_activate():
+            async def _checkin():
                 async with httpx.AsyncClient(timeout=6.0) as c:
-                    checkin = await c.post(
-                        f"{relay_base}/auth/checkin",
-                        json=activate_payload(iid, first_boot=first_boot))
-                    if checkin.status_code != 404:
-                        return None
                     return await c.post(
-                        f"{relay_base}/auth/activate",
-                        json=activate_payload(iid, first_boot=first_boot))
+                        f"{relay_base}/auth/checkin",
+                        json=activate_payload(iid, first_boot=first_boot),
+                    )
 
             try:
-                r = await asyncio.wait_for(_legacy_activate(), timeout=6.0)
+                await asyncio.wait_for(_checkin(), timeout=6.0)
             except (httpx.HTTPError, asyncio.TimeoutError):
-                return
-            if r is None:
-                return
+                pass
+            return
         else:
             # Challenge redemption is idempotent for this verifier, so transient
             # transport retries are safe here.
