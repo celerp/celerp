@@ -3252,21 +3252,12 @@ async def accept_partner_claim(token: str, claim_token: str) -> dict:
         token, "/settings/partner-claim/accept", {"claim_token": claim_token})
 
 
-async def apply_relay_token(token: str, payload: dict) -> dict:
-    """Compatibility wrapper for trusted local callers; not used by browser UI."""
-    return await _control_post(token, "/settings/cloud-apply-token", payload)
-
 
 async def accept_relay_tos(token: str) -> dict:
     """POST /settings/cloud-accept-tos - persist TOS, restart gateway client."""
     async with _api_client(token) as c:
         return _raise(await c.post("/settings/cloud-accept-tos")).json()
 
-
-async def get_instance_id(token: str) -> str:
-    """GET /settings/cloud-instance-id - return canonical instance_id from API process."""
-    async with _api_client(token) as c:
-        return _raise(await c.get("/settings/cloud-instance-id")).json()["instance_id"]
 
 
 ACCOUNT_METHODS_TIMEOUT = 15.0
