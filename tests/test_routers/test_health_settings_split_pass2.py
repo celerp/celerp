@@ -92,10 +92,10 @@ async def test_backup_status_requires_installation_root(client):
         headers=owner_h,
     )
     assert r_new.status_code == 200, r_new.text
-    r_login = await client.post("/auth/login", json={"email": "viewer-backup@example.com", "password": "pw123val"})
+    r_login = await client.post("/auth/login", json={"email": "delegated-owner-backup@example.com", "password": "pw123val"})
     delegated_h = {"Authorization": f"Bearer {r_login.json()['access_token']}"}
 
-    r = await client.get("/settings/backup-status", headers=viewer_h)
+    r = await client.get("/settings/backup-status", headers=delegated_h)
     assert r.status_code == 403, r.text
 
     # The installation root can read status, but raw encryption-key bytes never leave.
