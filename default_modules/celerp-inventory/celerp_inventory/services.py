@@ -872,7 +872,12 @@ def build_channel_states(rows: list[Projection]) -> dict[str, dict[str, dict]]:
             platforms.update(str(key) for key in links)
 
     for family_rows in by_family.values():
-        product_roots = [
+        explicit_roots = [
+            row
+            for row in family_rows
+            if _is_explicit_catalog_anchor_state(row.state or {})
+        ]
+        product_roots = explicit_roots or [
             row for row in family_rows if _is_product_anchor_state(row.state or {})
         ]
         for platform in platforms:
