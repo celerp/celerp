@@ -1,14 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Loaders for the recorded relay wire fixtures.
+"""Loaders for static relay-envelope fixtures used by fake-model tests."""
 
-Every fake-model test builds its scripted responses from the JSON captured in
-fixtures/relay/*.json so the loop is exercised against the exact envelope the
-relay sends, including tool-call arguments arriving as a JSON string. Recording
-is done once by a person (scripts/record_relay_fixtures.py); tests never call
-the relay.
-"""
 
 from __future__ import annotations
 
