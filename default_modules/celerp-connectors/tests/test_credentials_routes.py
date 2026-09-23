@@ -1,8 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Tests for the connector credential endpoints: store (probe + relay), revoke,
-and the access-token proxy. These run in the API process on behalf of the UI,
-so every relay outcome must map to a stable error code the UI can translate."""
+"""Tests for API-owned connector credential setup and teardown."""
 from __future__ import annotations
 
 import os
@@ -18,7 +16,6 @@ from fastapi import HTTPException
 
 from celerp_connectors.routes import (
     ApiKeyCredentials,
-    connector_access_token,
     revoke_credentials,
     store_credentials,
 )
@@ -53,7 +50,7 @@ def _owned_connector_boundary():
         new=AsyncMock(return_value=object()),
     ), patch(
         "celerp.connectors.ownership.lock_connector_operation",
-        new=AsyncMock(return_value=SimpleNamespace(webhook_ids=[])),
+        new=AsyncMock(return_value=SimpleNamespace(webhook_ids=[], webhook_secret=None)),
     ), patch(
         "celerp.connectors.ownership.release_connector_ownership",
         new=AsyncMock(),
@@ -63,6 +60,12 @@ def _owned_connector_boundary():
     ), patch(
         "celerp_inventory.services.detach_external_links_for_platform",
         new=AsyncMock(),
+    ), patch(
+        "celerp.services.outbound_url.validate_public_base_url",
+        new=AsyncMock(side_effect=lambda value, **_kwargs: value.rstrip("/")),
+    ), patch(
+        "celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks",
+        new=AsyncMock(return_value=["11"]),
     ):
         yield
 
@@ -152,6 +155,32 @@ async def test_store_unknown_connector_404():
     assert exc.value.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_store_webhook_failure_rolls_back_relay_credential():
+    url_p, hdr_p = _relay_state()
+    release = AsyncMock()
+    with patch(
+        "celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks",
+        new=AsyncMock(side_effect=RuntimeError("webhook failed")),
+    ), patch(
+        "celerp.connectors.ownership.release_connector_ownership",
+        release,
+    ), url_p, hdr_p, respx.mock:
+        respx.get(f"{STORE}/wp-json/wc/v3/products").mock(
+            return_value=httpx.Response(200, json=[]))
+        respx.post(f"{RELAY}/tokens/woocommerce").mock(
+            return_value=httpx.Response(200, json={"stored": True}))
+        delete = respx.delete(f"{RELAY}/tokens/woocommerce").mock(
+            return_value=httpx.Response(200))
+        result = await store_credentials(
+            "woocommerce", _creds(), "company-test", None, _session()
+        )
+
+    assert result["ok"] is False
+    assert delete.called
+    release.assert_awaited_once()
+
+
 # ── revoke_credentials ───────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -162,34 +191,6 @@ async def test_revoke_status_mapping(status, ok):
         respx.delete(f"{RELAY}/tokens/woocommerce").mock(return_value=httpx.Response(status))
         result = await revoke_credentials("woocommerce", "company-test", None, _session())
     assert result.get("ok", False) is ok
-
-
-# ── connector_access_token ───────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_access_token_passthrough():
-    url_p, hdr_p = _relay_state()
-    with url_p, hdr_p, respx.mock:
-        respx.get(f"{RELAY}/tokens/woocommerce/access-token").mock(
-            return_value=httpx.Response(200, json={"access_token": "ck:cs", "store_handle": STORE}))
-        result = await connector_access_token("woocommerce", "company-test", None, _session())
-    assert result["access_token"] == "ck:cs"
-    assert result["store_handle"] == STORE
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status,code", [
-    (404, "not_connected"),
-    (401, "session_invalid"),
-    (402, "subscription_required"),
-    (500, "relay_error"),
-])
-async def test_access_token_error_codes(status, code):
-    url_p, hdr_p = _relay_state()
-    with url_p, hdr_p, respx.mock:
-        respx.get(f"{RELAY}/tokens/woocommerce/access-token").mock(return_value=httpx.Response(status))
-        result = await connector_access_token("woocommerce", "company-test", None, _session())
-    assert result["error"] == code
 
 
 @pytest.mark.asyncio

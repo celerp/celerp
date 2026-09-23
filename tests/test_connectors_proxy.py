@@ -26,20 +26,12 @@ def test_ui_never_uses_relay_session_headers():
 
 
 @pytest.mark.asyncio
-async def test_fetch_access_token_returns_relay_payload():
-    from ui.routes.settings_connectors import _fetch_access_token
-    payload = {"access_token": "tok", "store_handle": "s"}
-    with patch("ui.api_client.get_connector_access_token", new=AsyncMock(return_value=payload)):
-        assert await _fetch_access_token("woocommerce", "jwt") == payload
-
-
-@pytest.mark.asyncio
-async def test_fetch_access_token_raises_on_error_code():
-    from ui.routes.settings_connectors import _fetch_access_token
-    err = {"error": "not_connected", "detail": "No woocommerce connection found."}
-    with patch("ui.api_client.get_connector_access_token", new=AsyncMock(return_value=err)):
-        with pytest.raises(RuntimeError, match="No woocommerce connection found"):
-            await _fetch_access_token("woocommerce", "jwt")
+async def test_connector_sync_kickoff_uses_api_process():
+    from ui.routes.settings_connectors import _kickoff_connector_sync
+    start = AsyncMock(return_value={"ok": True})
+    with patch("ui.api_client.start_connector_sync", start):
+        await _kickoff_connector_sync("company-1", "woocommerce", "jwt")
+    start.assert_awaited_once_with("jwt", "woocommerce")
 
 
 @pytest.mark.asyncio
