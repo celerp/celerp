@@ -288,6 +288,30 @@ async def test_conflicted_connect_waits_for_fresh_proof(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_runtime_reconfigure_stale_generation_cannot_close_replacement():
+    from celerp.services import cloud_entitlement
+
+    current = MagicMock()
+    current.has_inflight_proxy_requests.return_value = False
+    replacement = MagicMock()
+    shutdown = AsyncMock()
+    ensure = MagicMock()
+
+    with (
+        patch("celerp.gateway.client.get_client",
+              side_effect=[current, replacement]),
+        patch("celerp.gateway.shutdown", new=shutdown),
+        patch("celerp.gateway.ensure_running", new=ensure),
+        patch.object(settings, "cloud_disconnected", False),
+    ):
+        assert await cloud_entitlement.reconfigure_gateway_runtime(
+            restart=True) is False
+
+    shutdown.assert_not_awaited()
+    ensure.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_runtime_reconfigure_waits_for_inflight_response():
     from celerp.services import cloud_entitlement
 

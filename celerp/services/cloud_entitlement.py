@@ -36,6 +36,8 @@ async def reconfigure_gateway_runtime(*, restart: bool) -> bool:
         return False
 
     if not expected.has_inflight_proxy_requests():
+        if gateway_client.get_client() is not expected:
+            return False
         await shutdown_gateway()
         if restart and not settings.cloud_disconnected:
             ensure_running()
