@@ -261,11 +261,12 @@ async def store_credentials(
         else SyncFrequency.MANUAL.value
     )
     try:
-        await claim_connector_ownership(
+        config, ownership_created = await claim_connector_ownership(
             session,
             company_id,
             connector_name,
             default_sync_frequency=default_frequency,
+            report_created=True,
         )
         # This ownership row is the authorization boundary for an installation-wide
         # relay credential. Persist it before the remote write so a crash cannot
@@ -295,13 +296,14 @@ async def store_credentials(
 
     if r.status_code == 402:
         await session.rollback()
-        try:
-            await release_connector_ownership(
-                session, company_id, connector_name
-            )
-            await session.commit()
-        except Exception:
-            await session.rollback()
+        if ownership_created:
+            try:
+                await release_connector_ownership(
+                    session, company_id, connector_name
+                )
+                await session.commit()
+            except Exception:
+                await session.rollback()
         return {"ok": False, "error": "subscription_required", "detail": ""}
     if r.status_code != 200:
         await session.rollback()
@@ -336,7 +338,11 @@ async def store_credentials(
             except Exception:
                 rollback = None
             await session.rollback()
-            if rollback is not None and rollback.status_code in (200, 404):
+            if (
+                ownership_created
+                and rollback is not None
+                and rollback.status_code in (200, 404)
+            ):
                 try:
                     await release_connector_ownership(
                         session, company_id, connector_name
@@ -387,7 +393,7 @@ async def store_credentials(
                         f"{relay_http_url()}/tokens/{connector_name}",
                         headers=relay_session_headers(),
                     )
-                if revoked.status_code in (200, 404):
+                if ownership_created and revoked.status_code in (200, 404):
                     try:
                         await release_connector_ownership(
                             session, company_id, connector_name

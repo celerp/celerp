@@ -69,7 +69,8 @@ async def claim_connector_ownership(
     *,
     create: bool = True,
     default_sync_frequency: str | None = None,
-) -> ConnectorConfig | None:
+    report_created: bool = False,
+):
     """Atomically claim one installation/platform credential for one ERP company."""
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
@@ -117,6 +118,7 @@ async def claim_connector_ownership(
         legacy.company_id = company_id
         current = legacy
 
+    created = current is None and legacy is None and create
     if current is None and create:
         current = ConnectorConfig(
             company_id=company_id,
@@ -130,7 +132,7 @@ async def claim_connector_ownership(
 
     if current is not None:
         await session.flush()
-    return current
+    return (current, created) if report_created else current
 
 
 async def connector_owned_by_company(

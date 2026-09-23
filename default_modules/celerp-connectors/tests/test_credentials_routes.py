@@ -47,7 +47,7 @@ def _session():
 def _owned_connector_boundary():
     with patch(
         "celerp.connectors.ownership.claim_connector_ownership",
-        new=AsyncMock(return_value=object()),
+        new=AsyncMock(return_value=(object(), True)),
     ), patch(
         "celerp.connectors.ownership.lock_connector_operation",
         new=AsyncMock(return_value=SimpleNamespace(webhook_ids=[], webhook_secret=None)),
@@ -102,6 +102,28 @@ async def test_store_relay_402_maps_to_subscription_required():
     assert result["ok"] is False
     assert result["error"] == "subscription_required"
     release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_update_keeps_preexisting_ownership():
+    url_p, hdr_p = _relay_state()
+    release = AsyncMock()
+    with patch(
+        "celerp.connectors.ownership.claim_connector_ownership",
+        new=AsyncMock(return_value=(object(), False)),
+    ), patch(
+        "celerp.connectors.ownership.release_connector_ownership", release
+    ), url_p, hdr_p, respx.mock:
+        respx.get(f"{STORE}/wp-json/wc/v3/products").mock(
+            return_value=httpx.Response(200, json=[]))
+        respx.post(f"{RELAY}/tokens/woocommerce").mock(
+            return_value=httpx.Response(402))
+        result = await store_credentials(
+            "woocommerce", _creds(), "company-test", None, _session()
+        )
+
+    assert result["error"] == "subscription_required"
+    release.assert_not_awaited()
 
 
 @pytest.mark.asyncio
