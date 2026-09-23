@@ -252,7 +252,6 @@ async def store_credentials(
         ConnectorOwnershipError,
         claim_connector_ownership,
         lock_connector_operation,
-        release_connector_ownership,
     )
     category = getattr(connector.category, "value", connector.category)
     default_frequency = (
@@ -328,16 +327,12 @@ async def store_credentials(
                     )
             except Exception:
                 rollback = None
-            if rollback is not None and rollback.status_code in (200, 404):
-                try:
-                    await release_connector_ownership(
-                        session, company_id, connector_name
-                    )
-                    await session.commit()
-                except Exception:
-                    await session.rollback()
-            else:
-                await session.rollback()
+            await session.rollback()
+            if rollback is not None and rollback.status_code not in (200, 404):
+                log.warning(
+                    "connector credential rollback returned %d",
+                    rollback.status_code,
+                )
             return {
                 "ok": False,
                 "error": "store_unreachable",
