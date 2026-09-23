@@ -274,7 +274,7 @@ def test_value_prop_messaging():
 
     # Key messaging: data stays on your machine
     assert "your data stays there" in html.lower() or "data stays" in html.lower()
-    assert "relay the connection" in html.lower()
+    assert "relays traffic" in html.lower()
     assert "yourname.celerp.com" in html
 
     # Email claim form is always visible (not gated behind a failed activate)
