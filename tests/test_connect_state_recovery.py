@@ -235,7 +235,8 @@ async def test_account_only_activation_preserves_disconnect(monkeypatch):
     monkeypatch.setattr(settings, "cloud_disconnected", True)
     monkeypatch.setattr(settings, "backup_enabled", False)
     live = MagicMock()
-    shutdown = AsyncMock()
+    live.has_inflight_proxy_requests.return_value = False
+    shutdown = AsyncMock(return_value=True)
     with (
         patch("celerp.config.record_cloud_activation", return_value=True) as record,
         patch("celerp.gateway.client.get_client", return_value=live),
@@ -248,7 +249,7 @@ async def test_account_only_activation_preserves_disconnect(monkeypatch):
             keep_disconnected=True) is True
     assert settings.cloud_disconnected is True
     assert settings.gateway_token == ""
-    shutdown.assert_awaited_once()
+    shutdown.assert_awaited_once_with(expected_client=live)
     stop.assert_called_once()
     assert record.call_args.kwargs["keep_disconnected"] is True
 
@@ -263,7 +264,7 @@ async def test_healthy_serving_instance_is_not_restarted(monkeypatch):
     live = MagicMock()
     live.is_serving.return_value = True
     live.relay_status = "active"
-    shutdown = AsyncMock()
+    shutdown = AsyncMock(return_value=True)
     with (
         patch("celerp.config.record_cloud_activation", return_value=True),
         patch("celerp.gateway.has_active_share", new=AsyncMock(return_value=False)),
@@ -376,8 +377,7 @@ async def test_activation_restarts_active_free_runtime_when_account_becomes_paid
     live = MagicMock(relay_status="active")
     live.is_serving.return_value = True
     live.has_inflight_proxy_requests.return_value = False
-    replacement = MagicMock(relay_status="active")
-    shutdown = AsyncMock()
+    shutdown = AsyncMock(return_value=True)
 
     with (
         patch("celerp.config.record_cloud_activation", return_value=True),
@@ -385,8 +385,7 @@ async def test_activation_restarts_active_free_runtime_when_account_becomes_paid
               return_value=("free", "active")),
         patch("celerp.gateway.state.relay_session_headers", return_value={
             "X-Session-Token": "", "X-Instance-ID": "iid"}),
-        patch("celerp.gateway.client.get_client",
-              side_effect=[live, replacement]),
+        patch("celerp.gateway.client.get_client", return_value=live),
         patch("celerp.gateway.shutdown", new=shutdown),
         patch("celerp.gateway.ensure_running") as ensure_running,
         patch("celerp.services.backup_scheduler.stop"),
@@ -396,7 +395,7 @@ async def test_activation_restarts_active_free_runtime_when_account_becomes_paid
             "key", "iid", public_url="https://paid.celerp.com",
             tier="cloud", status="active", expected_api_key="key")
 
-    shutdown.assert_awaited_once()
+    shutdown.assert_awaited_once_with(expected_client=live)
     ensure_running.assert_called_once()
 
 
@@ -408,8 +407,7 @@ async def test_activation_restarts_active_paid_runtime_when_account_becomes_free
     live = MagicMock(relay_status="active")
     live.is_serving.return_value = True
     live.has_inflight_proxy_requests.return_value = False
-    replacement = MagicMock(relay_status="active")
-    shutdown = AsyncMock()
+    shutdown = AsyncMock(return_value=True)
 
     with (
         patch("celerp.config.record_cloud_activation", return_value=True),
@@ -418,8 +416,7 @@ async def test_activation_restarts_active_paid_runtime_when_account_becomes_free
         patch("celerp.gateway.state.relay_session_headers", return_value={
             "X-Session-Token": "paid-session", "X-Instance-ID": "iid"}),
         patch("celerp.gateway.has_active_share", new=AsyncMock(return_value=True)),
-        patch("celerp.gateway.client.get_client",
-              side_effect=[live, replacement]),
+        patch("celerp.gateway.client.get_client", return_value=live),
         patch("celerp.gateway.shutdown", new=shutdown),
         patch("celerp.gateway.ensure_running") as ensure_running,
         patch("celerp.services.backup_scheduler.stop"),
@@ -429,7 +426,7 @@ async def test_activation_restarts_active_paid_runtime_when_account_becomes_free
             "key", "iid", public_url=None,
             tier="free", status="active", expected_api_key="key")
 
-    shutdown.assert_awaited_once()
+    shutdown.assert_awaited_once_with(expected_client=live)
     ensure_running.assert_called_once()
 
 
@@ -441,8 +438,7 @@ async def test_activation_restarts_active_paid_runtime_when_tier_changes(monkeyp
     live = MagicMock(relay_status="active")
     live.is_serving.return_value = True
     live.has_inflight_proxy_requests.return_value = False
-    replacement = MagicMock(relay_status="active")
-    shutdown = AsyncMock()
+    shutdown = AsyncMock(return_value=True)
 
     with (
         patch("celerp.config.record_cloud_activation", return_value=True),
@@ -450,8 +446,7 @@ async def test_activation_restarts_active_paid_runtime_when_tier_changes(monkeyp
               return_value=("cloud", "active")),
         patch("celerp.gateway.state.relay_session_headers", return_value={
             "X-Session-Token": "paid-session", "X-Instance-ID": "iid"}),
-        patch("celerp.gateway.client.get_client",
-              side_effect=[live, replacement]),
+        patch("celerp.gateway.client.get_client", return_value=live),
         patch("celerp.gateway.shutdown", new=shutdown),
         patch("celerp.gateway.ensure_running") as ensure_running,
         patch("celerp.services.backup_scheduler.stop"),
@@ -461,7 +456,7 @@ async def test_activation_restarts_active_paid_runtime_when_tier_changes(monkeyp
             "key", "iid", public_url="https://paid.celerp.com",
             tier="ai", status="active", expected_api_key="key")
 
-    shutdown.assert_awaited_once()
+    shutdown.assert_awaited_once_with(expected_client=live)
     ensure_running.assert_called_once()
 
 
@@ -474,7 +469,8 @@ async def test_activation_defers_restart_until_current_proxy_response_finishes(m
     live = MagicMock(relay_status="active")
     live.is_serving.return_value = True
     live.has_inflight_proxy_requests.return_value = True
-    live.begin_proxy_drain = MagicMock()
+    live.begin_proxy_drain = MagicMock(return_value=7)
+    live.owns_proxy_drain.return_value = True
     release = asyncio.Event()
 
     async def _wait_for_idle():
@@ -510,7 +506,7 @@ async def test_activation_defers_restart_until_current_proxy_response_finishes(m
             if shutdown.await_count:
                 break
 
-    shutdown.assert_awaited_once()
+    shutdown.assert_awaited_once_with(expected_client=live)
     ensure_running.assert_called_once()
 
 
