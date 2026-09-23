@@ -154,70 +154,82 @@ async def test_cloud_status_uses_ws_pushed_tier_when_relay_unreachable(client, o
     assert data["tier"] == "free"
 
 
+
 @pytest.mark.asyncio
 async def test_cloud_status_relay_http_tier_overrides_stale_ws_tier(client, owner_h):
-    """The relay's live /billing/status answer (e.g. after an upgrade) still wins
-    over a WS-pushed tier that may be stale until the next subscription_updated push."""
+    """The durable relay answer wins over stale runtime subscription state."""
     mock_response = MagicMock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"tier": "team", "email_quota": 1000, "email_used": 42}
-
-    mock_inner_client = AsyncMock()
-    mock_inner_client.get = AsyncMock(return_value=mock_response)
-    mock_inner_client.__aenter__ = AsyncMock(return_value=mock_inner_client)
-    mock_inner_client.__aexit__ = AsyncMock(return_value=False)
+    mock_response.json.return_value = {
+        "tier": "team", "status": "active",
+        "email_quota": 1000, "email_used": 42,
+    }
+    billing = AsyncMock(return_value=mock_response)
+    sync = AsyncMock(return_value={
+        "tier": "team", "status": "active", "connect_entitled": True,
+    })
 
     with (
         patch("celerp.config.settings.gateway_token", "tok"),
         patch("celerp.config.settings.gateway_url", "wss://relay.celerp.com/ws/connect"),
-        patch("celerp.gateway.state.relay_session_headers", return_value={
-            "X-Session-Token": "sess-token", "X-Instance-ID": "inst-abc"}),
         patch.object(gw_state, "_subscription_tier", "free"),
-        patch("celerp.config.settings.gateway_instance_id", "inst-abc"),
-        patch("celerp.config.settings.gateway_http_url", "https://relay.celerp.com"),
-        patch("httpx.AsyncClient", return_value=mock_inner_client),
+        patch.object(gw_state, "_subscription_status", "active"),
+        patch(
+            "celerp.services.cloud_entitlement.subscription_status",
+            new=AsyncMock(return_value={
+                "tier": "team", "status": "active", "connect_entitled": True,
+            }),
+        ),
+        patch(
+            "celerp.services.cloud_entitlement.sync_existing_entitlement",
+            new=sync,
+        ),
+        patch(
+            "celerp.services.cloud_entitlement.authenticated_request",
+            new=billing,
+        ),
         patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
     ):
         r = await client.get("/settings/cloud-status", headers=owner_h)
+
     assert r.status_code == 200
     assert r.json()["tier"] == "team"
+    sync.assert_awaited_once_with(require_persisted_key=True)
+    billing.assert_awaited_once_with("GET", "/billing/status", total_s=3.0)
 
 
 @pytest.mark.asyncio
 async def test_cloud_status_connected_relay_ok(client, owner_h):
-    """Returns relay data when relay API responds successfully."""
+    """Returns durable relay data when the authenticated billing read succeeds."""
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
         "tier": "team",
+        "status": "active",
         "last_backup": "2026-03-15T06:00:00Z",
         "email_quota": 1000,
         "email_used": 42,
         "email_resets_on": "2026-08-01",
     }
-
-    captured_params = {}
-
-    async def _mock_get(path, **kwargs):
-        captured_params.update(kwargs.get("params", {}))
-        return mock_response
-
-    mock_inner_client = AsyncMock()
-    mock_inner_client.get = _mock_get
-    mock_inner_client.__aenter__ = AsyncMock(return_value=mock_inner_client)
-    mock_inner_client.__aexit__ = AsyncMock(return_value=False)
+    billing = AsyncMock(return_value=mock_response)
 
     with (
         patch("celerp.config.settings.gateway_token", "tok"),
         patch("celerp.config.settings.gateway_url", "wss://relay.celerp.com/ws/connect"),
-        patch("celerp.gateway.state.relay_session_headers", return_value={
-            "X-Session-Token": "sess-token", "X-Instance-ID": "inst-abc"}),
-        patch("celerp.config.settings.gateway_instance_id", "inst-abc"),
-        patch("celerp.config.settings.gateway_http_url", "https://relay.celerp.com"),
-        patch("httpx.AsyncClient", return_value=mock_inner_client),
+        patch(
+            "celerp.services.cloud_entitlement.subscription_status",
+            new=AsyncMock(return_value={
+                "tier": "team", "status": "active", "connect_entitled": True,
+            }),
+        ),
+        patch(
+            "celerp.services.cloud_entitlement.authenticated_request",
+            new=billing,
+        ),
         patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
     ):
         r = await client.get("/settings/cloud-status", headers=owner_h)
+
     assert r.status_code == 200
     data = r.json()
     assert data["connected"] is True
@@ -226,14 +238,7 @@ async def test_cloud_status_connected_relay_ok(client, owner_h):
     assert data["email_used"] == 42
     assert data["email_resets_on"] == "2026-08-01"
     assert data["last_backup"] == "2026-03-15T06:00:00Z"
-    # Verify correct auth params are sent
-    assert captured_params.get("instance_id") == "inst-abc"
-    assert captured_params.get("session_token") == "sess-token"
-
-
-# ---------------------------------------------------------------------------
-# /settings/cloud/billing-portal
-# ---------------------------------------------------------------------------
+    billing.assert_awaited_once_with("GET", "/billing/status", total_s=3.0)
 
 @pytest.mark.asyncio
 async def test_billing_portal_returns_relay_url(client, owner_h):

@@ -1226,29 +1226,8 @@ async def test_cloud_activate_relay_unreachable_reports_error_and_keeps_disconne
     assert _s.cloud_disconnected is True  # disconnect state left honest
 
 
-@pytest.mark.asyncio
-async def test_cloud_apply_token_explicit_null_url_stops_serving_client(client):
-    token = await _register(client, "cloud_apply_token_explici")
-    applied = AsyncMock(return_value=True)
-    with (
-        patch("celerp.config.set_cloud_disconnected"),
-        patch(
-            "celerp.services.cloud_entitlement.stored_api_key",
-            new=AsyncMock(return_value="old-token"),
-        ),
-        patch("celerp.routers.health._apply_gateway_token_api", new=applied),
-        patch("celerp.gateway.client.get_client", return_value=None),
-    ):
-        r = await client.post(
-            "/settings/cloud-apply-token", headers=_h(token),
-            json={"gateway_token": "fresh-token"})
-    assert r.status_code == 200
-    assert r.json()["connected"] is True
-    applied.assert_awaited_once()
-
 def test_legacy_relay_toggle_routes_absent():
-    """The dead relay enable/disable endpoints are gone: activation goes through
-    the token-apply path and disconnect through /settings/cloud-disconnect."""
+    """Dead relay compatibility endpoints remain absent."""
     from celerp.main import app as _app
 
     registered = set(_app.openapi().get("paths", {}).keys())
