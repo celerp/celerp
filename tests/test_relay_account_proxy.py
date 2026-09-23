@@ -21,7 +21,6 @@ def _installation_owner_context():
 
 
 def _mock_httpx(account_payload=None, auth_status=200):
-    """AsyncClient factory mock: /auth/token exchange plus GET /auth/account."""
     get_resp = MagicMock()
     get_resp.status_code = 200
     get_resp.json = MagicMock(return_value=account_payload or {"email": "o@shop.example"})
