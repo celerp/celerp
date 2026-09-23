@@ -228,14 +228,35 @@ def setup_routes(app):
         setup_code = str(form.get("setup_code", "")).strip()
         if not file or not hasattr(file, "read"):
             return auth_shell(_setup_import_form(error=t("auth.select_backup_file")), title=page_title("page.restore_from_backup"))
-        raw = await file.read()
-        if not raw:
-            return auth_shell(_setup_import_form(error=t("auth.file_empty")), title=page_title("page.restore_from_backup"))
+        code_required = await api.setup_code_required()
+        if code_required and not setup_code:
+            return auth_shell(
+                _setup_import_form(
+                    error=t("auth.setup_code_required"),
+                    setup_code_required=True,
+                ),
+                title=page_title("page.restore_from_backup"),
+            )
+        if getattr(file, "size", None) == 0:
+            return auth_shell(
+                _setup_import_form(
+                    error=t("auth.file_empty"),
+                    setup_code_required=code_required,
+                ),
+                title=page_title("page.restore_from_backup"),
+            )
         try:
+            await file.seek(0)
             async with api._local_client(timeout=120.0, follow_redirects=False, bulk=True) as c:
                 r = await c.post(
                     "/backup/import-bootstrap",
-                    files={"file": (file.filename, raw, "application/octet-stream")},
+                    files={
+                        "file": (
+                            file.filename,
+                            file.file,
+                            file.content_type or "application/octet-stream",
+                        )
+                    },
                     data={"setup_code": setup_code},
                 )
             if r.status_code != 200:
@@ -247,7 +268,12 @@ def setup_routes(app):
                         detail = t("auth.import_failed_unreadable")
                 else:
                     detail = r.text[:300] or t("auth.import_failed")
-                return auth_shell(_setup_import_form(error=detail), title=page_title("page.restore_from_backup"))
+                return auth_shell(
+                    _setup_import_form(
+                        error=detail, setup_code_required=code_required
+                    ),
+                    title=page_title("page.restore_from_backup"),
+                )
             # Success - surface missing-module / schema warnings (if any) on the form
             warnings: list[str] = []
             schema_warning: str | None = None
@@ -278,9 +304,21 @@ def setup_routes(app):
                     title=page_title("page.restore_from_backup"),
                 )
         except httpx.TimeoutException:
-            return auth_shell(_setup_import_form(error=t("auth.import_timed_out")), title=page_title("page.restore_from_backup"))
+            return auth_shell(
+                _setup_import_form(
+                    error=t("auth.import_timed_out"),
+                    setup_code_required=code_required,
+                ),
+                title=page_title("page.restore_from_backup"),
+            )
         except Exception as exc:
-            return auth_shell(_setup_import_form(error=t("auth.connection_error", exc=repr(exc))), title=page_title("page.restore_from_backup"))
+            return auth_shell(
+                _setup_import_form(
+                    error=t("auth.connection_error", exc=repr(exc)),
+                    setup_code_required=code_required,
+                ),
+                title=page_title("page.restore_from_backup"),
+            )
         return RedirectResponse("/login?imported=1", status_code=302)
 
     @app.post("/setup")

@@ -124,7 +124,10 @@ async def cloud_status() -> dict:
     tier = authoritative_tier or ws_tier or None
     sub_status = (authoritative or {}).get("status") or ws_status or None
     known = authoritative is not None
-    entitled = (sub_status in ("active", "trialing") and tier not in (None, "", "free")) if known else None
+    entitled = (
+        bool(authoritative.get("connect_entitled"))
+        if authoritative is not None else None
+    )
 
     runtime_iid = get_instance_id()
     runtime_headers = relay_session_headers()
@@ -184,26 +187,19 @@ async def cloud_status() -> dict:
     email_quota = 0
     email_used = 0
     email_resets_on = None
-    session_headers = relay_session_headers()
-    session_token = session_headers.get("X-Session-Token", "")
-    session_iid = session_headers.get("X-Instance-ID", "")
-    if connected and session_iid and session_token:
-        try:
-            import httpx
-            from celerp.gateway.state import relay_http_url
-            async with httpx.AsyncClient(base_url=relay_http_url(), timeout=3.0) as c:
-                r = await c.get("/billing/status", params={
-                    "instance_id": session_iid, "session_token": session_token})
-            if r.status_code == 200:
-                live = r.json()
-                tier = live.get("tier") or tier
-                sub_status = live.get("status") or sub_status
-                last_backup = live.get("last_backup")
-                email_quota = int(live.get("email_quota", 0))
-                email_used = int(live.get("email_used", 0))
-                email_resets_on = live.get("email_resets_on")
-        except Exception:
-            pass
+    try:
+        from celerp.services.cloud_entitlement import authenticated_request
+        r = await authenticated_request("GET", "/billing/status", total_s=3.0)
+        if r is not None and r.status_code == 200:
+            live = r.json()
+            tier = live.get("tier") or tier
+            sub_status = live.get("status") or sub_status
+            last_backup = live.get("last_backup")
+            email_quota = int(live.get("email_quota", 0))
+            email_used = int(live.get("email_used", 0))
+            email_resets_on = live.get("email_resets_on")
+    except Exception:
+        pass
 
     return {
         "connected": connected, "relay_status": relay_status,
@@ -358,7 +354,7 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
     api_key = await stored_api_key()
     persisted_key = await persisted_api_key()
     verifier = _s.activation_verifier or ""
-    authority = {"kind": "legacy"}
+    authority = {"kind": "none"}
     target = {"iid": local_iid}
 
     async def _verifier_activate(c):
@@ -691,12 +687,11 @@ async def account_methods_api(
     install_owner = await is_install_owner(session, user.id)
     google = False
     free_email_quota = 0
-    secure_activation = False
     needs_activation_challenge = False
     start_url = f"{relay_base}/auth/google/start?instance_id={iid}"
 
     async def _relay_phase():
-        nonlocal google, free_email_quota, secure_activation
+        nonlocal google, free_email_quota
         nonlocal needs_activation_challenge, start_url
         async with httpx.AsyncClient(timeout=RELAY_ACCOUNT_METHODS_TIMEOUT) as c:
             r = await c.get(f"{relay_base}/auth/methods")
@@ -705,7 +700,6 @@ async def account_methods_api(
                 if isinstance(data, dict):
                     google = bool(data.get("google"))
                     free_email_quota = int(data.get("free_email_quota") or 0)
-                    secure_activation = bool(data.get("secure_activation", False))
 
             if not install_owner:
                 return
@@ -719,15 +713,14 @@ async def account_methods_api(
                 try:
                     jwt, authenticated_iid = await fetch_relay_auth(c, api_key=api_key)
                 except RelayCredentialError as exc:
-                    if exc.status_code in (401, 403) and secure_activation:
+                    if exc.status_code in (401, 403):
                         needs_activation_challenge = True
-                    elif exc.status_code not in (401, 403):
+                    else:
                         google = False
                         start_url = ""
                     return
                 if is_foreign_relay_identity(authenticated_iid, iid):
-                    if secure_activation:
-                        needs_activation_challenge = True
+                    needs_activation_challenge = True
                     return
                 su = await c.get(
                     f"{relay_base}/auth/google/start-url",
