@@ -159,7 +159,7 @@ async def test_store_requires_https_store_url(monkeypatch):
     with url_p, hdr_p:
         result = await store_credentials("woocommerce", _creds("http://store.test"), "company-test", None, _session())
     assert result["error"] == "store_unreachable"
-    assert "https" in result["detail"]
+    assert "supported scheme" in result["detail"]
 
 
 @pytest.mark.asyncio
