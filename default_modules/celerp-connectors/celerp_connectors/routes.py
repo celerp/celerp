@@ -300,11 +300,13 @@ async def store_credentials(
         await session.rollback()
         return {"ok": False, "error": "relay_error", "detail": f"relay returned {r.status_code}"}
 
+    webhook_ctx = None
+    webhook_ids: list[str] = []
     if connector_name == "woocommerce":
         import secrets
         from celerp.connectors.base import ConnectorContext
 
-        ctx = ConnectorContext(
+        webhook_ctx = ConnectorContext(
             company_id=str(company_id),
             access_token=f"{payload.consumer_key}:{payload.consumer_secret}",
             store_handle=store_url,
@@ -313,7 +315,7 @@ async def store_credentials(
         delivery_url = f"{relay_http_url().rstrip('/')}/webhooks/woocommerce/events"
         try:
             webhook_ids = await connector.register_webhooks(
-                ctx, delivery_url, secret=secret
+                webhook_ctx, delivery_url, secret=secret
             )
         except Exception as exc:
             try:
@@ -349,6 +351,37 @@ async def store_credentials(
         await session.commit()
     except Exception as exc:
         await session.rollback()
+        if webhook_ctx is not None and webhook_ids:
+            try:
+                await connector.deregister_webhooks(webhook_ctx, webhook_ids)
+            except Exception:
+                log.warning(
+                    "WooCommerce webhook cleanup failed after local commit failure",
+                    exc_info=True,
+                )
+                return {
+                    "ok": False,
+                    "error": "local_cleanup_failed",
+                    "detail": str(exc),
+                }
+            try:
+                async with httpx.AsyncClient(
+                    timeout=10.0, follow_redirects=False
+                ) as client:
+                    revoked = await client.delete(
+                        f"{relay_http_url()}/tokens/{connector_name}",
+                        headers=relay_session_headers(),
+                    )
+                if revoked.status_code not in (200, 404):
+                    log.warning(
+                        "connector credential rollback returned %d",
+                        revoked.status_code,
+                    )
+            except Exception:
+                log.warning(
+                    "connector credential rollback failed after local commit failure",
+                    exc_info=True,
+                )
         return {"ok": False, "error": "local_cleanup_failed", "detail": str(exc)}
     return {"ok": True}
 
