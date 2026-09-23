@@ -369,3 +369,132 @@ async def test_runtime_reconfigure_timeout_cannot_hold_transition(monkeypatch):
 
     shutdown.assert_awaited_once()
     current.end_proxy_drain.assert_called_once_with(11)
+
+
+@pytest.mark.asyncio
+async def test_automatic_sync_refuses_runtime_only_credential():
+    from celerp.services import cloud_entitlement
+
+    with (
+        patch.object(
+            cloud_entitlement, "stored_api_key",
+            new=AsyncMock(return_value="runtime-only"),
+        ),
+        patch.object(
+            cloud_entitlement, "persisted_api_key",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "celerp.gateway.state.with_relay_client",
+            new=AsyncMock(),
+        ) as relay_call,
+        patch("celerp.config.record_cloud_activation") as persist,
+    ):
+        result = await cloud_entitlement.sync_existing_entitlement(
+            require_persisted_key=True)
+
+    assert result is None
+    relay_call.assert_not_awaited()
+    persist.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_session_gate_automatic_repair_requires_persisted_credential(
+        monkeypatch):
+    from fastapi import HTTPException
+    import celerp.session_gate as session_gate
+
+    monkeypatch.setattr(settings, "cloud_disconnected", False)
+    request = MagicMock()
+    request.headers = {}
+    sync = AsyncMock(return_value=None)
+    with (
+        patch("celerp.session_gate.get_session_token", return_value=""),
+        patch(
+            "celerp.services.cloud_entitlement.sync_existing_entitlement",
+            new=sync,
+        ),
+    ):
+        with pytest.raises(HTTPException):
+            await session_gate.require_session_token(request)
+
+    sync.assert_awaited_once_with(require_persisted_key=True)
+
+
+@pytest.mark.asyncio
+async def test_quota_automatic_repair_requires_persisted_credential(monkeypatch):
+    from celerp.ai import quota
+
+    monkeypatch.setattr(settings, "cloud_disconnected", False)
+    monkeypatch.setattr(settings, "gateway_instance_id", "iid-a")
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"tier": "cloud", "remaining": 1}
+    sync = AsyncMock(return_value=None)
+    with (
+        patch(
+            "celerp.services.cloud_entitlement.stored_api_key",
+            new=AsyncMock(return_value="stored-key"),
+        ),
+        patch(
+            "celerp.services.cloud_entitlement.authenticated_request",
+            new=AsyncMock(return_value=response),
+        ),
+        patch(
+            "celerp.services.cloud_entitlement.sync_existing_entitlement",
+            new=sync,
+        ),
+        patch("celerp.ai.quota.get_session_token", return_value=""),
+    ):
+        result = await quota.get_quota_status()
+
+    assert result == {"tier": "cloud", "remaining": 1}
+    sync.assert_awaited_once_with(require_persisted_key=True)
+
+
+@pytest.mark.asyncio
+async def test_repeated_pre_activation_failures_surface_error(monkeypatch, gw):
+    attempts = 0
+
+    async def fail_before_activation():
+        nonlocal attempts
+        attempts += 1
+        if attempts >= 4:
+            gw.stop()
+        raise ConnectionError("closed before activation")
+
+    monkeypatch.setattr(gw, "_connect_and_serve", fail_before_activation)
+    monkeypatch.setattr(
+        gateway_client, "_CONNECT_FAILURES_ERROR", 3, raising=False)
+    monkeypatch.setattr(
+        gateway_client, "_BACKOFF_MAX", 0, raising=False)
+
+    await gw.run()
+
+    assert attempts == 4
+    assert gw.relay_status == "error"
+
+
+@pytest.mark.asyncio
+async def test_proxy_drain_suppresses_reconnect(monkeypatch, gw):
+    calls = 0
+
+    async def connect_once():
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise AssertionError("draining client reconnected")
+        gw.begin_proxy_drain()
+
+    real_wait_for = asyncio.wait_for
+
+    async def stop_on_drain(awaitable, *, timeout):
+        if timeout == 1 and gw.is_draining_for_reconfigure():
+            gw.stop()
+        return await real_wait_for(awaitable, timeout=timeout)
+
+    monkeypatch.setattr(gw, "_connect_and_serve", connect_once)
+    monkeypatch.setattr(gateway_client.asyncio, "wait_for", stop_on_drain)
+
+    await gw.run()
+
+    assert calls == 1

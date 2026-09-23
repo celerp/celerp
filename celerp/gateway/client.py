@@ -246,6 +246,12 @@ class GatewayClient:
         try:
             backoff = 1
             while self._running:
+                if self._proxy_draining is not None:
+                    try:
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=1)
+                        break
+                    except asyncio.TimeoutError:
+                        continue
                 if self._retryable_error:
                     try:
                         await asyncio.wait_for(
