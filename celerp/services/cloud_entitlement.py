@@ -36,9 +36,9 @@ async def reconfigure_gateway_runtime(*, restart: bool) -> bool:
         return False
 
     if not expected.has_inflight_proxy_requests():
-        if gateway_client.get_client() is not expected:
+        closed = await shutdown_gateway(expected_client=expected)
+        if not closed:
             return False
-        await shutdown_gateway()
         if restart and not settings.cloud_disconnected:
             ensure_running()
         return False
@@ -56,8 +56,9 @@ async def reconfigure_gateway_runtime(*, restart: bool) -> bool:
                 pass
             if not expected.owns_proxy_drain(drain_generation):
                 return
-            if gateway_client.get_client() is expected:
-                await shutdown_gateway()
+            closed = await shutdown_gateway(expected_client=expected)
+            if not closed:
+                return
             if restart and not settings.cloud_disconnected:
                 ensure_running()
         except Exception:

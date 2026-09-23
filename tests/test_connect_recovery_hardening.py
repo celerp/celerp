@@ -106,6 +106,26 @@ async def test_shutdown_cannot_clear_newer_generation():
         gateway._run_task = None
 
 
+@pytest.mark.asyncio
+async def test_shutdown_refuses_stale_expected_generation():
+    current = MagicMock()
+    stale = MagicMock()
+    run_task = asyncio.create_task(asyncio.sleep(60))
+    gateway_client.set_client(current)
+    gateway._run_task = run_task
+    try:
+        assert await gateway.shutdown(expected_client=stale) is False
+        assert gateway_client.get_client() is current
+        assert gateway._run_task is run_task
+        current.close.assert_not_called()
+        assert run_task.cancelled() is False
+    finally:
+        run_task.cancel()
+        await asyncio.gather(run_task, return_exceptions=True)
+        gateway_client.set_client(None)
+        gateway._run_task = None
+
+
 def test_ensure_running_never_replaces_existing_client(monkeypatch):
     existing = MagicMock()
     gateway_client.set_client(existing)
@@ -293,13 +313,11 @@ async def test_runtime_reconfigure_stale_generation_cannot_close_replacement():
 
     current = MagicMock()
     current.has_inflight_proxy_requests.return_value = False
-    replacement = MagicMock()
-    shutdown = AsyncMock()
+    shutdown = AsyncMock(return_value=False)
     ensure = MagicMock()
 
     with (
-        patch("celerp.gateway.client.get_client",
-              side_effect=[current, replacement]),
+        patch("celerp.gateway.client.get_client", return_value=current),
         patch("celerp.gateway.shutdown", new=shutdown),
         patch("celerp.gateway.ensure_running", new=ensure),
         patch.object(settings, "cloud_disconnected", False),
@@ -307,7 +325,7 @@ async def test_runtime_reconfigure_stale_generation_cannot_close_replacement():
         assert await cloud_entitlement.reconfigure_gateway_runtime(
             restart=True) is False
 
-    shutdown.assert_not_awaited()
+    shutdown.assert_awaited_once_with(expected_client=current)
     ensure.assert_not_called()
 
 
@@ -323,7 +341,7 @@ async def test_runtime_reconfigure_waits_for_inflight_response():
     current.wait_for_proxy_idle = AsyncMock(side_effect=idle.wait)
     current.end_proxy_drain = MagicMock()
 
-    shutdown = AsyncMock()
+    shutdown = AsyncMock(return_value=True)
     ensure = MagicMock()
     with (
         patch("celerp.gateway.client.get_client", return_value=current),
@@ -338,7 +356,7 @@ async def test_runtime_reconfigure_waits_for_inflight_response():
         await asyncio.gather(
             *list(cloud_entitlement._runtime_transition_tasks))
 
-    shutdown.assert_awaited_once()
+    shutdown.assert_awaited_once_with(expected_client=current)
     ensure.assert_called_once()
     current.end_proxy_drain.assert_called_once_with(7)
 
@@ -354,7 +372,7 @@ async def test_runtime_reconfigure_timeout_cannot_hold_transition(monkeypatch):
     current.owns_proxy_drain.return_value = True
     current.wait_for_proxy_idle = AsyncMock(side_effect=never.wait)
 
-    shutdown = AsyncMock()
+    shutdown = AsyncMock(return_value=True)
     monkeypatch.setattr(cloud_entitlement, "RUNTIME_DRAIN_TIMEOUT", 0)
     with (
         patch("celerp.gateway.client.get_client", return_value=current),
@@ -367,7 +385,7 @@ async def test_runtime_reconfigure_timeout_cannot_hold_transition(monkeypatch):
         await asyncio.gather(
             *list(cloud_entitlement._runtime_transition_tasks))
 
-    shutdown.assert_awaited_once()
+    shutdown.assert_awaited_once_with(expected_client=current)
     current.end_proxy_drain.assert_called_once_with(11)
 
 

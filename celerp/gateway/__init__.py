@@ -59,12 +59,14 @@ def ensure_running() -> None:
     log.info("Gateway client started (instance_id=%s)", instance_id)
 
 
-async def shutdown() -> None:
-    """Close the gateway generation that exists when shutdown begins."""
+async def shutdown(*, expected_client=None) -> bool:
+    """Close exactly the current gateway generation, or refuse a stale request."""
     global _run_task
     from celerp.gateway import client as _client
 
     gw = _client.get_client()
+    if expected_client is not None and gw is not expected_client:
+        return False
     run_task = _run_task
     if gw is not None:
         await gw.close()
@@ -78,6 +80,7 @@ async def shutdown() -> None:
         _run_task = None
     if _client.get_client() is gw:
         _client.set_client(None)
+    return True
 
 
 async def has_active_share() -> bool:
