@@ -17,6 +17,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _installation_owner_context():
+    with patch(
+        "celerp.routers.health.is_install_owner",
+        new=AsyncMock(return_value=True),
+    ):
+        yield
+
+
 def _mock_httpx(account_payload=None, auth_status=200):
     """AsyncClient factory mock: /auth/token exchange plus GET /auth/account."""
     get_resp = MagicMock()
@@ -49,7 +58,7 @@ async def test_account_status_proxy_sends_bearer_when_activated():
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_status_api
-        data = await account_status_api()
+        data = await account_status_api(user=MagicMock(id="root"), session=MagicMock())
 
     assert data["email"] == "o@shop.example"
     auth_call = client.post.call_args_list[0]
@@ -71,7 +80,7 @@ async def test_account_status_proxy_falls_back_when_exchange_fails():
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_status_api
-        data = await account_status_api()
+        data = await account_status_api(user=MagicMock(id="root"), session=MagicMock())
 
     assert "error" not in data
     assert data["email"] == "o***@shop.example"
@@ -89,7 +98,7 @@ async def test_account_status_proxy_skips_exchange_without_token():
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_status_api
-        data = await account_status_api()
+        data = await account_status_api(user=MagicMock(id="root"), session=MagicMock())
 
     assert data == {"claim_offer": True}
     assert client.post.await_count == 0
@@ -197,6 +206,7 @@ async def test_activate_404_message_points_to_link_subscription_field():
     factory = MagicMock(return_value=ctx)
 
     with (
+        patch("celerp.config.settings.activation_verifier", "test-verifier"),
         patch("celerp.config.settings.gateway_instance_id", "bc25a5d4-9b2e-465c-be50-3e491914795e"),
         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
         patch("httpx.AsyncClient", factory),
@@ -230,7 +240,7 @@ async def test_account_methods_proxy_reports_free_email_quota():
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
-        data = await account_methods_api()
+        data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
     assert data["free_email_quota"] == 10
 
     client.get = AsyncMock(side_effect=ConnectionError("down"))
@@ -239,7 +249,7 @@ async def test_account_methods_proxy_reports_free_email_quota():
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
-        data = await account_methods_api()
+        data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
     assert data["free_email_quota"] == 0
 
 
@@ -267,7 +277,7 @@ async def test_account_methods_owner_initiated_start_url_when_credentialed():
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
-        data = await account_methods_api()
+        data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
     assert data["google"] is True
     assert data["google_start_url"] == (
         "https://accounts.google.com/o/oauth2/v2/auth?state=signed")
@@ -296,7 +306,7 @@ async def test_account_methods_open_door_url_without_credential():
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
-        data = await account_methods_api()
+        data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
     assert data["google_start_url"] == (
         "https://relay.test/auth/google/start?instance_id=i-77"
         "&activation_challenge=" + "a" * 64
@@ -329,7 +339,7 @@ async def test_account_methods_falls_back_when_start_url_fetch_fails():
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
-        data = await account_methods_api()
+        data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
     assert data["google"] is True
     assert data["google_start_url"] == "https://relay.test/auth/google/start?instance_id=i-77"
 
@@ -376,7 +386,7 @@ async def test_account_methods_uses_stored_token_without_rotating():
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
-        data = await account_methods_api()
+        data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
     assert activate_calls == []  # no rotation, so the stored credential is not orphaned
     assert data["google_start_url"] == (
         "https://accounts.google.com/o/oauth2/v2/auth?state=signed")
@@ -416,7 +426,7 @@ async def test_account_methods_fresh_install_stays_on_challenge_bound_open_door(
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
-        data = await account_methods_api()
+        data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
     assert posts == []  # no /auth/activate, no /auth/token
     assert data["google_start_url"] == (
         "https://relay.test/auth/google/start?instance_id=i-77"
@@ -457,7 +467,7 @@ async def test_account_methods_stale_stored_token_uses_challenge_bound_google_re
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
-        data = await account_methods_api()
+        data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
 
     assert data["google"] is True
     assert data["google_start_url"] == (
@@ -488,7 +498,7 @@ async def test_account_methods_token_500_never_downgrades_to_open_google_door():
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
-        data = await account_methods_api()
+        data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
 
     assert data["google"] is False
     assert data["google_start_url"] == ""
@@ -529,7 +539,7 @@ async def test_account_methods_relay_timeout_is_total_across_sequence():
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
-        data = await account_methods_api()
+        data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
 
     assert data["google"] is False
     assert data["google_start_url"] == ""
@@ -563,7 +573,7 @@ async def test_account_status_foreign_credential_cannot_retarget_local_destinati
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_status_api
-        data = await account_status_api()
+        data = await account_status_api(user=MagicMock(id="root"), session=MagicMock())
 
     assert data["email"] == "l***@shop.example"
     get_call = client.get.call_args_list[0]
@@ -600,7 +610,7 @@ async def test_account_methods_foreign_credential_uses_local_challenge_recovery(
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
-        data = await account_methods_api()
+        data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
 
     assert data["google"] is True
     assert data["google_start_url"] == (
@@ -647,7 +657,7 @@ async def test_account_methods_matching_credential_keeps_owner_authenticated_goo
         patch("httpx.AsyncClient", factory),
     ):
         from celerp.routers.health import account_methods_api
-        data = await account_methods_api()
+        data = await account_methods_api(user=MagicMock(id="root"), session=MagicMock())
 
     assert data["google_start_url"] == "https://accounts.google.test/start"
 

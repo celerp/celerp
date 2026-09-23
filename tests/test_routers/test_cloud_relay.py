@@ -80,10 +80,10 @@ async def test_cloud_status_connected(client):
 
 
 
+
 @pytest.mark.asyncio
 async def test_cloud_status_active_identity_mismatch_uses_canonical_session_identity(
         client):
-    """An accepted WS cannot hide stale disk identity from durable reconciliation."""
     token = await _register(client, "status-identity")
     gw = _mock_gw("active")
 
@@ -97,31 +97,36 @@ async def test_cloud_status_active_identity_mismatch_uses_canonical_session_iden
         "tier": "ai", "status": "trialing", "last_backup": None,
         "email_quota": 10, "email_used": 1,
     }
-    inner = MagicMock()
-    inner.get = AsyncMock(return_value=live)
-    http = MagicMock()
-    http.__aenter__ = AsyncMock(return_value=inner)
-    http.__aexit__ = AsyncMock(return_value=False)
-
-    sync = AsyncMock(return_value={"tier": "ai", "status": "trialing"})
+    billing = AsyncMock(return_value=live)
+    sync = AsyncMock(return_value={
+        "tier": "ai", "status": "trialing", "connect_entitled": True
+    })
     with (
         patch("celerp.gateway.client.get_client", return_value=gw),
-        patch("celerp.services.cloud_entitlement.subscription_status",
-              new=AsyncMock(return_value={"tier": "ai", "status": "trialing"})),
-        patch("celerp.services.cloud_entitlement.sync_existing_entitlement",
-              new=sync),
+        patch(
+            "celerp.services.cloud_entitlement.subscription_status",
+            new=AsyncMock(return_value={
+                "tier": "ai", "status": "trialing", "connect_entitled": True
+            }),
+        ),
+        patch(
+            "celerp.services.cloud_entitlement.sync_existing_entitlement",
+            new=sync,
+        ),
+        patch(
+            "celerp.services.cloud_entitlement.authenticated_request",
+            new=billing,
+        ),
         patch("celerp.gateway.state.get_instance_id", return_value="canonical-iid"),
         patch("celerp.gateway.state.relay_session_headers", return_value={
-            "X-Session-Token": "session-a", "X-Instance-ID": "canonical-iid"}),
-        patch("httpx.AsyncClient", return_value=http),
+            "X-Session-Token": "session-a", "X-Instance-ID": "canonical-iid"
+        }),
     ):
         r = await client.get("/settings/cloud-status", headers=_h(token))
 
     assert r.status_code == 200
     sync.assert_awaited_once_with(require_persisted_key=True)
-    assert inner.get.await_args.kwargs["params"] == {
-        "instance_id": "canonical-iid", "session_token": "session-a"}
-
+    billing.assert_awaited_once_with("GET", "/billing/status", total_s=3.0)
 
 @pytest.mark.asyncio
 async def test_cloud_status_authenticated_plain_free_runtime_retries_stale_url_cleanup(
@@ -155,9 +160,9 @@ async def test_cloud_status_authenticated_plain_free_runtime_retries_stale_url_c
 
 
 
+
 @pytest.mark.asyncio
 async def test_cloud_status_active_free_runtime_recovers_paid_entitlement(client):
-    """Paid authority plus an active free socket triggers transport convergence."""
     token = await _register(client, "status-paid-runtime")
     gw = _mock_gw("active")
 
@@ -166,43 +171,42 @@ async def test_cloud_status_active_free_runtime_recovers_paid_entitlement(client
     _s.gateway_instance_id = "canonical-iid"
     _s.celerp_public_url = ""
 
-    sync = AsyncMock(return_value={"tier": "ai", "status": "trialing"})
-    headers = [
-        {"X-Session-Token": "", "X-Instance-ID": "canonical-iid"},
-        {"X-Session-Token": "paid-session", "X-Instance-ID": "canonical-iid"},
-    ]
+    sync = AsyncMock(return_value={
+        "tier": "ai", "status": "trialing", "connect_entitled": True
+    })
     live = MagicMock(status_code=200)
     live.json.return_value = {
         "tier": "ai", "status": "trialing",
         "email_quota": 10, "email_used": 1,
     }
-    inner = MagicMock()
-    inner.get = AsyncMock(return_value=live)
-    http = MagicMock()
-    http.__aenter__ = AsyncMock(return_value=inner)
-    http.__aexit__ = AsyncMock(return_value=False)
+    billing = AsyncMock(return_value=live)
 
     with (
         patch("celerp.gateway.client.get_client", return_value=gw),
-        patch("celerp.services.cloud_entitlement.subscription_status",
-              new=AsyncMock(return_value={"tier": "ai", "status": "trialing"})),
-        patch("celerp.services.cloud_entitlement.sync_existing_entitlement",
-              new=sync),
+        patch(
+            "celerp.services.cloud_entitlement.subscription_status",
+            new=AsyncMock(return_value={
+                "tier": "ai", "status": "trialing", "connect_entitled": True
+            }),
+        ),
+        patch(
+            "celerp.services.cloud_entitlement.sync_existing_entitlement",
+            new=sync,
+        ),
+        patch(
+            "celerp.services.cloud_entitlement.authenticated_request",
+            new=billing,
+        ),
         patch("celerp.gateway.state.get_instance_id", return_value="canonical-iid"),
-        patch("celerp.gateway.state.relay_session_headers", side_effect=headers),
-        patch("httpx.AsyncClient", return_value=http),
+        patch("celerp.gateway.state.relay_session_headers", return_value={
+            "X-Session-Token": "", "X-Instance-ID": "canonical-iid"
+        }),
     ):
         r = await client.get("/settings/cloud-status", headers=_h(token))
 
     assert r.status_code == 200
     sync.assert_awaited_once_with(require_persisted_key=True)
-    assert inner.get.await_args.kwargs["params"] == {
-        "instance_id": "canonical-iid", "session_token": "paid-session"}
-
-
-# ---------------------------------------------------------------------------
-# /settings/cloud-disconnect
-# ---------------------------------------------------------------------------
+    billing.assert_awaited_once_with("GET", "/billing/status", total_s=3.0)
 
 @pytest.mark.asyncio
 async def test_cloud_disconnect_stops_client_and_clears_live_token(client):
@@ -303,6 +307,7 @@ async def test_cloud_activate_success(client):
         "tos_version": "2025-01",
     }
     with (
+        patch("celerp.config.settings.activation_verifier", "test-verifier"),
         patch("httpx.AsyncClient") as mock_httpx,
         patch(
             "celerp.services.cloud_entitlement.stored_api_key",
@@ -331,6 +336,7 @@ async def test_cloud_activate_404_returns_error_with_instance_id(client):
     mock_resp.json.return_value = {"detail": "Instance not registered."}
 
     with (
+        patch("celerp.config.settings.activation_verifier", "test-verifier"),
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.gateway.client.get_client", return_value=None),
     ):
@@ -359,6 +365,7 @@ async def test_cloud_activate_applies_authoritative_activation(client):
     }
     applied = AsyncMock(return_value=True)
     with (
+        patch("celerp.config.settings.activation_verifier", "test-verifier"),
         patch("httpx.AsyncClient") as mock_httpx,
         patch(
             "celerp.services.cloud_entitlement.stored_api_key",
@@ -384,6 +391,7 @@ async def test_cloud_activate_relay_unreachable(client):
     token = await _register(client, "act-nonet")
 
     with (
+        patch("celerp.config.settings.activation_verifier", "test-verifier"),
         patch("httpx.AsyncClient") as mock_httpx,
         patch("celerp.gateway.client.get_client", return_value=None),
     ):
@@ -1219,66 +1227,6 @@ async def test_cloud_activate_relay_unreachable_reports_error_and_keeps_disconne
 
 
 @pytest.mark.asyncio
-async def test_cloud_apply_token_clears_disconnect_flag(client):
-    token = await _register(client, "cloud_apply_token_clears_")
-    applied = AsyncMock(return_value=True)
-    with (
-        patch("celerp.config.set_cloud_disconnected"),
-        patch(
-            "celerp.services.cloud_entitlement.stored_api_key",
-            new=AsyncMock(return_value="old-token"),
-        ),
-        patch("celerp.routers.health._apply_gateway_token_api", new=applied),
-        patch("celerp.gateway.client.get_client", return_value=None),
-    ):
-        r = await client.post(
-            "/settings/cloud-apply-token", headers=_h(token),
-            json={"gateway_token": "fresh-token"})
-    assert r.status_code == 200
-    assert r.json()["connected"] is True
-    applied.assert_awaited_once()
-
-@pytest.mark.asyncio
-async def test_cloud_apply_token_tears_down_rejected_client(client):
-    token = await _register(client, "cloud_apply_token_tears_d")
-    applied = AsyncMock(return_value=True)
-    with (
-        patch("celerp.config.set_cloud_disconnected"),
-        patch(
-            "celerp.services.cloud_entitlement.stored_api_key",
-            new=AsyncMock(return_value="old-token"),
-        ),
-        patch("celerp.routers.health._apply_gateway_token_api", new=applied),
-        patch("celerp.gateway.client.get_client", return_value=None),
-    ):
-        r = await client.post(
-            "/settings/cloud-apply-token", headers=_h(token),
-            json={"gateway_token": "fresh-token"})
-    assert r.status_code == 200
-    assert r.json()["connected"] is True
-    applied.assert_awaited_once()
-
-@pytest.mark.asyncio
-async def test_cloud_apply_token_keeps_serving_client(client):
-    token = await _register(client, "cloud_apply_token_keeps_s")
-    applied = AsyncMock(return_value=True)
-    with (
-        patch("celerp.config.set_cloud_disconnected"),
-        patch(
-            "celerp.services.cloud_entitlement.stored_api_key",
-            new=AsyncMock(return_value="old-token"),
-        ),
-        patch("celerp.routers.health._apply_gateway_token_api", new=applied),
-        patch("celerp.gateway.client.get_client", return_value=None),
-    ):
-        r = await client.post(
-            "/settings/cloud-apply-token", headers=_h(token),
-            json={"gateway_token": "fresh-token"})
-    assert r.status_code == 200
-    assert r.json()["connected"] is True
-    applied.assert_awaited_once()
-
-@pytest.mark.asyncio
 async def test_cloud_apply_token_explicit_null_url_stops_serving_client(client):
     token = await _register(client, "cloud_apply_token_explici")
     applied = AsyncMock(return_value=True)
@@ -1306,6 +1254,7 @@ def test_legacy_relay_toggle_routes_absent():
     registered = set(_app.openapi().get("paths", {}).keys())
     assert "/companies/me/relay/enable" not in registered
     assert "/companies/me/relay/disable" not in registered
+    assert "/settings/cloud-apply-token" not in registered
 
 
 @pytest.mark.asyncio
