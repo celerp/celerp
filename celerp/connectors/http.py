@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -22,10 +23,12 @@ class RateLimitedClient:
         timeout: float = 30.0,
         max_retries: int = _DEFAULT_MAX_RETRIES,
         backoff_base: float = _DEFAULT_BACKOFF_BASE,
+        before_request: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
-        self._client = httpx.AsyncClient(timeout=timeout)
+        self._client = httpx.AsyncClient(timeout=timeout, follow_redirects=False)
         self._max_retries = max_retries
         self._backoff_base = backoff_base
+        self._before_request = before_request
 
     async def __aenter__(self) -> "RateLimitedClient":
         return self
@@ -53,6 +56,8 @@ class RateLimitedClient:
     )
 
     async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        if self._before_request is not None:
+            await self._before_request(url)
         for attempt in range(self._max_retries + 1):
             try:
                 resp = await self._client.request(method, url, **kwargs)

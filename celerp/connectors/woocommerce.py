@@ -20,6 +20,7 @@ import httpx
 import json
 
 from celerp.connectors.http import RateLimitedClient
+from celerp.services.outbound_url import validate_public_base_url
 from celerp.connectors.util import money
 from celerp.connectors.base import (
     ConnectorBase,
@@ -41,6 +42,20 @@ def _base_url(ctx: ConnectorContext) -> str:
         raise ValueError("ConnectorContext.store_handle is required for WooCommerce")
     store_url = ctx.store_handle.rstrip("/")
     return f"{store_url}/wp-json/wc/v3"
+
+
+async def _validate_request_url(url: str) -> None:
+    import os
+    await validate_public_base_url(
+        url,
+        allow_http=bool(os.environ.get("CELERP_ALLOW_HTTP_STORE")),
+        reject_query=False,
+        reject_fragment=True,
+    )
+
+
+def _http_client() -> RateLimitedClient:
+    return RateLimitedClient(before_request=_validate_request_url)
 
 
 def _auth(ctx: ConnectorContext) -> tuple[str, str]:
@@ -107,7 +122,7 @@ class WooCommerceConnector(ConnectorBase):
         auth = _auth(ctx)
         page = 1
 
-        async with RateLimitedClient() as client:
+        async with _http_client() as client:
             while True:
                 page_params = {"per_page": _PER_PAGE, "page": page, **(params or {})}
                 resp = await client.get(
@@ -340,7 +355,7 @@ class WooCommerceConnector(ConnectorBase):
         if link and not rediscover:
             item = {"woocommerce_product_id": link.get("product_id"),
                     "woocommerce_variation_id": link.get("variation_id")}
-            async with RateLimitedClient() as client:
+            async with _http_client() as client:
                 resp = await client.get(f"{base_url}{self._product_path(item)}", auth=auth)
             if resp.status_code == 404:
                 async with AsyncSessionLocal() as session:
@@ -359,7 +374,7 @@ class WooCommerceConnector(ConnectorBase):
                     "The linked WooCommerce variation no longer exists; "
                     "run product sync after recreating/importing the exact variation"
                 )
-            async with RateLimitedClient() as client:
+            async with _http_client() as client:
                 resp = await client.get(f"{base_url}/products", auth=auth, params={"sku": sku, "per_page": 100})
                 resp.raise_for_status()
                 exact = [p for p in resp.json() if str(p.get("sku") or "").strip().casefold() == sku.casefold()]
@@ -494,7 +509,7 @@ class WooCommerceConnector(ConnectorBase):
             return result
 
         base_url, auth = _base_url(ctx), _auth(ctx)
-        async with RateLimitedClient() as client:
+        async with _http_client() as client:
             for item in items:
                 product_id = item.get("woocommerce_product_id")
                 if not product_id:
@@ -550,7 +565,7 @@ class WooCommerceConnector(ConnectorBase):
         result = SyncResult(entity=SyncEntity.INVENTORY, direction=SyncDirection.OUTBOUND)
         errors: list[str] = []
         base_url, auth = _base_url(ctx), _auth(ctx)
-        async with RateLimitedClient() as client:
+        async with _http_client() as client:
             for item in items:
                 product_id = item.get("woocommerce_product_id")
                 if not product_id:
@@ -702,7 +717,7 @@ class WooCommerceConnector(ConnectorBase):
         base_url = _base_url(ctx)
         auth = _auth(ctx)
         ids: list[str] = []
-        async with RateLimitedClient() as client:
+        async with _http_client() as client:
             try:
                 for topic in self._WEBHOOK_TOPICS:
                     body = {
@@ -745,7 +760,7 @@ class WooCommerceConnector(ConnectorBase):
         base_url = _base_url(ctx)
         auth = _auth(ctx)
         errors: list[str] = []
-        async with RateLimitedClient() as client:
+        async with _http_client() as client:
             for webhook_id in webhook_ids:
                 try:
                     resp = await client.delete(
