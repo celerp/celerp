@@ -3381,8 +3381,7 @@ async def delete_connector_credentials(token: str, platform: str) -> dict:
         return _raise(await c.delete(f"/connectors/{platform}/credentials")).json()
 
 
-async def get_connector_access_token(token: str, platform: str) -> dict:
-    """GET /connectors/{platform}/access-token - short-lived relay token via the API
-    process. Returns {access_token, store_handle, ...} or {"error": <code>, "detail": str}."""
+async def start_connector_sync(token: str, platform: str) -> dict:
+    """Start the connector's canonical sync plan in the API process."""
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/connectors/{platform}/access-token")).json()
+        return _raise(await c.post(f"/connectors/{platform}/sync-plan")).json()

@@ -3,18 +3,8 @@
 """
 Connector routes — /connectors/*
 
-Cloud-gated: all endpoints require both:
-  - User authentication (get_current_user)
-  - Active Celerp Connect subscription (require_session_token via X-Session-Token)
-
-Token flow (relay model):
-  The client authenticates with relay.celerp.com to obtain a short-lived
-  access_token, then passes it in the request body here. OAuth credentials
-  never touch the core instance.
-
-Self-hosted / bring-your-own-token:
-  Pass access_token + store_handle directly. Core does not validate origin.
-  Session token is still required (your instance must be connected to Celerp Connect).
+Cloud-gated connector operations run through the API process. Provider credentials
+stay inside core and are never returned to the UI.
 """
 from __future__ import annotations
 
@@ -26,7 +16,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import celerp.connectors as connectors
-from celerp.connectors.base import ConnectorContext, SyncEntity
+from celerp.connectors.base import SyncDirection, SyncEntity
 from celerp.db import get_session
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
@@ -49,9 +39,6 @@ local_router = APIRouter(
 
 class SyncRequest(BaseModel):
     entity: SyncEntity
-    access_token: str
-    store_handle: str | None = None   # required for Shopify; optional for others
-    extra: dict | None = None
 
 
 class ConnectorInfo(BaseModel):
@@ -107,12 +94,10 @@ async def trigger_sync(
             detail=f"{connector.display_name} does not support entity '{payload.entity}'",
         )
 
-    ctx = ConnectorContext(
-        company_id=company_id,
-        access_token=payload.access_token,
-        store_handle=payload.store_handle,
-        extra=payload.extra,
-    )
+    from celerp.connectors.relay_token import fetch_context
+    ctx = await fetch_context(str(company_id), connector_name)
+    if ctx is None:
+        raise HTTPException(status_code=409, detail="Connector is not connected")
 
     # Route through run_sync so the manual path gets the same audit row, concurrency
     # guard, and incremental watermark as the scheduled/webhook paths.
@@ -135,6 +120,47 @@ async def trigger_sync(
         errors=result.errors,
         ok=result.ok,
     )
+
+
+@router.post("/{connector_name}/sync-plan")
+async def trigger_sync_plan(
+    connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    from celerp.connectors.relay_token import fetch_context
+    ctx = await fetch_context(str(company_id), connector_name)
+    if ctx is None:
+        raise HTTPException(status_code=409, detail="Connector is not connected")
+
+    from celerp.models.connector_config import ConnectorConfig
+    from sqlalchemy import select
+    config = await session.scalar(
+        select(ConnectorConfig).where(
+            ConnectorConfig.company_id == str(company_id),
+            ConnectorConfig.connector == connector_name,
+        )
+    )
+    direction = SyncDirection(
+        config.direction if config is not None else connector.direction.value
+    )
+
+    from celerp.connectors.sync_runner import run_connector_sync
+    from celerp.services.background import spawn_background
+
+    async def _run() -> None:
+        try:
+            await run_connector_sync(connector, ctx, direction=direction)
+        except Exception:
+            log.exception("connector sync plan failed: %s", connector_name)
+
+    spawn_background(_run())
+    return {"ok": True}
 
 
 # ── Credential management (API-key platforms) ────────────────────────────────
@@ -196,14 +222,19 @@ async def store_credentials(
         import os
         if not store_url:
             return {"ok": False, "error": "store_unreachable", "detail": "Store URL is required."}
-        # The key/secret go to the store as Basic Auth, so cleartext http would
-        # expose them; http is allowed only behind the dev override.
-        allow_http = store_url.startswith("http://") and bool(os.environ.get("CELERP_ALLOW_HTTP_STORE"))
-        if not (store_url.startswith("https://") or allow_http):
-            return {"ok": False, "error": "store_unreachable",
-                    "detail": "Store URL must use https:// (API keys are sent as Basic Auth)."}
+        allow_http = bool(os.environ.get("CELERP_ALLOW_HTTP_STORE"))
         try:
-            async with httpx.AsyncClient(timeout=8.0) as c:
+            from celerp.services.outbound_url import validate_public_base_url
+            store_url = await validate_public_base_url(
+                store_url,
+                allow_http=allow_http,
+                reject_query=True,
+                reject_fragment=True,
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": "store_unreachable", "detail": str(exc)}
+        try:
+            async with httpx.AsyncClient(timeout=8.0, follow_redirects=False) as c:
                 probe = await c.get(
                     f"{store_url}/wp-json/wc/v3/products",
                     params={"per_page": 1},
@@ -395,50 +426,6 @@ async def revoke_credentials(
         await session.rollback()
         return {"ok": False, "error": "local_cleanup_failed", "detail": str(exc)}
     return {"ok": True}
-
-
-@router.get("/{connector_name}/access-token")
-async def connector_access_token(
-    connector_name: str,
-    company_id: Annotated[str, Depends(get_current_company_id)],
-    _: None = require_permission("manage_integrations"),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Return a short-lived decrypted access token from the relay.
-
-    Returns the relay payload ({access_token, store_handle, ...}) on success,
-    else {"error": <code>, "detail": str} with error codes: not_connected,
-    session_invalid, subscription_required, relay_error.
-    """
-    import httpx
-    from celerp.connectors.ownership import connector_owned_by_company
-    from celerp.gateway.state import relay_http_url, relay_session_headers
-
-    if not await connector_owned_by_company(session, company_id, connector_name):
-        return {"error": "not_connected", "detail": "Connector is not owned by the current company."}
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.get(
-                f"{relay_http_url()}/tokens/{connector_name}/access-token",
-                headers=relay_session_headers(),
-            )
-    except Exception as exc:
-        return {"error": "relay_error", "detail": str(exc)}
-
-    if r.status_code == 404:
-        return {"error": "not_connected",
-                "detail": f"No {connector_name} connection found. Connect the platform first."}
-    if r.status_code == 401:
-        return {"error": "session_invalid",
-                "detail": f"{connector_name} token expired. Please reconnect."}
-    if r.status_code == 402:
-        return {"error": "subscription_required",
-                "detail": "An active subscription is required to sync connectors."}
-    if r.status_code != 200:
-        return {"error": "relay_error", "detail": f"relay returned {r.status_code}"}
-    return r.json()
-
 
 
 class ItemSyncRequest(BaseModel):

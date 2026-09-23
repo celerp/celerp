@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -20,52 +19,8 @@ from ui.routes.settings import _check_permission, _token
 from ui.security import is_safe_authorize_url
 
 from celerp.connectors.base import ConnectorCategory, SyncFrequency
-from celerp.services.background import spawn_background
 
 log = logging.getLogger(__name__)
-
-
-async def _register_woocommerce_webhooks(
-    company_id: str, store_url: str, consumer_key: str, consumer_secret: str
-) -> None:
-    """Register the complete WooCommerce webhook set before declaring success."""
-    import secrets as _secrets
-    import sqlalchemy as sa
-    from celerp.connectors.base import ConnectorContext
-    from celerp.connectors.woocommerce import WooCommerceConnector
-    from celerp.db import get_session_ctx
-    from celerp.models.connector_config import ConnectorConfig
-    from ui.config import RELAY_URL
-
-    delivery_url = f"{RELAY_URL.rstrip('/')}/webhooks/woocommerce/events"
-    secret = _secrets.token_hex(32)
-    ctx = ConnectorContext(
-        company_id=str(company_id),
-        access_token=f"{consumer_key}:{consumer_secret}",
-        store_handle=store_url,
-    )
-    connector = WooCommerceConnector()
-    ids = await connector.register_webhooks(ctx, delivery_url, secret=secret)
-    try:
-        async with get_session_ctx() as session:
-            await session.execute(
-                sa.update(ConnectorConfig)
-                .where(
-                    ConnectorConfig.company_id == company_id,
-                    ConnectorConfig.connector == "woocommerce",
-                )
-                .values(webhook_secret=secret, webhook_ids_json=json.dumps(ids))
-            )
-            await session.commit()
-    except Exception:
-        try:
-            await connector.deregister_webhooks(ctx, ids)
-        except Exception:
-            log.warning(
-                "failed to roll back WooCommerce webhooks after local persistence failure",
-                exc_info=True,
-            )
-        raise
 
 
 def _store_url_error(store_url: str, platform: str) -> str | None:
@@ -201,16 +156,6 @@ def _frequency_select(cid: str, current: str, lang: str = "en") -> FT:
     )
 
 
-async def _fetch_access_token(platform: str, token: str) -> dict:
-    """Fetch a short-lived access token via the API process proxy (which holds the
-    relay session - the UI process has none). Raises RuntimeError on failure."""
-    from ui.api_client import get_connector_access_token
-    data = await get_connector_access_token(token, platform)
-    if data.get("error"):
-        raise RuntimeError(data.get("detail") or data["error"])
-    return data
-
-
 async def _fetch_catalog(relay_url: str, instance_id: str, token: str = "") -> tuple[list[dict], str, bool]:
     """Fetch connector catalog via API process proxy (which holds the gateway token).
     Returns (connectors, error_detail, needs_plan) - error_detail is "" on
@@ -296,28 +241,11 @@ async def _get_connector_config(company_id: str, connector: str):
 
 
 async def _kickoff_connector_sync(company_id: str, platform: str, token: str) -> None:
-    """Start the connector's canonical direction-aware sync plan in background."""
-    from celerp.connectors.base import ConnectorContext, SyncDirection
-    from celerp.connectors.registry import get as get_connector
-    from celerp.connectors.sync_runner import run_connector_sync
-
-    connector = get_connector(platform)
-    token_data = await _fetch_access_token(platform, token)
-    ctx = ConnectorContext(
-        company_id=company_id,
-        access_token=token_data["access_token"],
-        store_handle=token_data.get("store_handle"),
-    )
-    config = await _get_connector_config(company_id, platform)
-    direction = SyncDirection(config.direction if config else connector.direction.value)
-
-    async def _do_sync():
-        try:
-            await run_connector_sync(connector, ctx, direction=direction)
-        except Exception as exc:
-            log.warning("connector sync %s failed: %s", platform, exc)
-
-    spawn_background(_do_sync())
+    """Start the connector's canonical sync plan in the API process."""
+    from ui.api_client import start_connector_sync
+    result = await start_connector_sync(token, platform)
+    if not result.get("ok"):
+        raise RuntimeError(result.get("detail") or "Could not start connector sync")
 
 
 async def _autosync_once(company_id: str, platform: str, token: str) -> None:
@@ -1124,36 +1052,6 @@ def setup_routes(app):
                 id=f"connector-card-{platform}",
                 cls="connector-card",
             )
-
-        # A WooCommerce connection is not healthy until all required webhooks
-        # can be created. Roll back both local config and relay credentials on failure.
-        if platform == "woocommerce":
-            try:
-                await _register_woocommerce_webhooks(
-                    company_id, store_url, consumer_key, consumer_secret
-                )
-            except Exception as exc:
-                log.warning("woocommerce webhook registration failed", exc_info=True)
-                try:
-                    rollback_result = await delete_connector_credentials(token, platform)
-                    if not rollback_result.get("ok"):
-                        log.warning(
-                            "failed to roll back WooCommerce credentials: %s",
-                            rollback_result.get("error") or rollback_result.get("detail"),
-                        )
-                except Exception:
-                    log.warning("failed to roll back WooCommerce credentials", exc_info=True)
-                return Div(
-                    Span(
-                        t(
-                            "connectors.connect_check_failed", lang,
-                            detail=f"Webhook setup failed: {exc}",
-                        ),
-                        cls="flash flash--warning",
-                    ),
-                    id=f"connector-card-{platform}",
-                    cls="connector-card",
-                )
 
         # Auto-sync on connect so the merchant's data appears without a manual step
         # (the activation moment). Best-effort: a failure here doesn't block the connect.
