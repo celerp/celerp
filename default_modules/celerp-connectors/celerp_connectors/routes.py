@@ -252,6 +252,7 @@ async def store_credentials(
         ConnectorOwnershipError,
         claim_connector_ownership,
         lock_connector_operation,
+        release_connector_ownership,
     )
     category = getattr(connector.category, "value", connector.category)
     default_frequency = (
@@ -275,10 +276,10 @@ async def store_credentials(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     try:
-        await lock_connector_operation(
+        config = await lock_connector_operation(
             session, company_id, connector_name, require_owner=True
         )
-        async with httpx.AsyncClient(timeout=10.0) as c:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as c:
             r = await c.post(
                 f"{relay_http_url()}/tokens/{connector_name}",
                 json={
@@ -298,7 +299,57 @@ async def store_credentials(
     if r.status_code != 200:
         await session.rollback()
         return {"ok": False, "error": "relay_error", "detail": f"relay returned {r.status_code}"}
-    await session.commit()
+
+    if connector_name == "woocommerce":
+        import secrets
+        from celerp.connectors.base import ConnectorContext
+
+        ctx = ConnectorContext(
+            company_id=str(company_id),
+            access_token=f"{payload.consumer_key}:{payload.consumer_secret}",
+            store_handle=store_url,
+        )
+        secret = secrets.token_hex(32)
+        delivery_url = f"{relay_http_url().rstrip('/')}/webhooks/woocommerce/events"
+        try:
+            webhook_ids = await connector.register_webhooks(
+                ctx, delivery_url, secret=secret
+            )
+        except Exception as exc:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=10.0, follow_redirects=False
+                ) as c:
+                    rollback = await c.delete(
+                        f"{relay_http_url()}/tokens/{connector_name}",
+                        headers=relay_session_headers(),
+                    )
+            except Exception:
+                rollback = None
+            if rollback is not None and rollback.status_code in (200, 404):
+                try:
+                    await release_connector_ownership(
+                        session, company_id, connector_name
+                    )
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+            else:
+                await session.rollback()
+            return {
+                "ok": False,
+                "error": "store_unreachable",
+                "detail": f"Webhook setup failed: {exc}",
+            }
+
+        config.webhook_secret = secret
+        config.webhook_ids = webhook_ids
+
+    try:
+        await session.commit()
+    except Exception as exc:
+        await session.rollback()
+        return {"ok": False, "error": "local_cleanup_failed", "detail": str(exc)}
     return {"ok": True}
 
 
