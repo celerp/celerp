@@ -1,20 +1,9 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Public API surface for Celerp module authors.
+"""Stable API surface for Celerp module authors.
 
-Module authors MAY import from this file.
-Module authors MUST NOT import from celerp.ai.*, celerp.session_gate, or
-any other celerp.* internal. The loader will reject modules that do so.
-
-Current public API
-------------------
-ai_query(query, company_id, session_token, db_session)
-    Run an AI query through the Celerp Connect AI service.
-    Requires an active Cloud+AI subscription.
-    Raises HTTPException(401) if not subscribed.
-    Raises HTTPException(402) if quota exceeded.
-
-Documentation: https://celerp.com/docs/modules/ai-api
+Module authors may import from this file. Celerp internals remain private to the
+application and can change without becoming part of the module contract.
 """
 from __future__ import annotations
 
@@ -27,54 +16,13 @@ if TYPE_CHECKING:
 async def ai_query(
     query: str,
     company_id: str,
-    session_token: str,
     db_session: "AsyncSession",
 ) -> dict:
-    """Run an AI query through the Celerp Connect AI service.
-
-    Routes through session_gate + quota check. Quota is decremented from
-    the Cloud+AI subscription associated with this instance.
-
-    Args:
-        query:         Natural language question (1-2000 chars).
-        company_id:    Company ID for scoped ERP data access.
-        session_token: Gateway session token (from X-Session-Token header).
-        db_session:    Active async SQLAlchemy session.
-
-    Returns:
-        dict with keys: answer (str), model_used (str), tools_called (list[str])
-
-    Raises:
-        HTTPException(401): No active Cloud+AI subscription or invalid token.
-        HTTPException(402): AI query quota exceeded.
-        HTTPException(400): Query too short/long.
-
-    Example (in a module route handler)::
-
-        from celerp.modules.api import ai_query
-        from fastapi import Depends, Request
-        from celerp.db import get_session
-
-        @router.post("/my-module/ai")
-        async def my_ai_endpoint(
-            body: MyRequest,
-            request: Request,
-            session: AsyncSession = Depends(get_session),
-        ):
-            session_token = request.headers.get("X-Session-Token", "")
-            result = await ai_query(
-                query=body.question,
-                company_id=body.company_id,
-                session_token=session_token,
-                db_session=session,
-            )
-            return {"answer": result["answer"]}
-    """
-    # Validate session token (revenue gate — runs against live gateway token)
-    from celerp.gateway.state import get_session_token
+    """Run an AI query for a company through the active Celerp service."""
     from fastapi import HTTPException, status
+    from celerp.gateway.state import get_session_token
 
-    if not session_token:
+    if not get_session_token():
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=(
@@ -83,24 +31,13 @@ async def ai_query(
             ),
         )
 
-    current = get_session_token()
-    if not current or session_token != current:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=(
-                "Session token is invalid or expired. "
-                "Reconnect web access under Settings > Web Access."
-            ),
-        )
+    from celerp.ai.service import AIResponse, run_query
 
-    # Run query through the AI service (the gateway meters usage as the query runs)
-    from celerp.ai.service import run_query, AIResponse
     result: AIResponse = await run_query(
         query=query,
         session=db_session,
         company_id=company_id,
     )
-
     return {
         "answer": result.answer,
         "model_used": result.model_used,
