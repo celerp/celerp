@@ -61,8 +61,12 @@ def _owned_connector_boundary():
         "celerp_inventory.services.detach_external_links_for_platform",
         new=AsyncMock(),
     ), patch(
-        "celerp.services.outbound_url.validate_public_base_url",
-        new=AsyncMock(side_effect=lambda value, **_kwargs: value.rstrip("/")),
+        "celerp.services.outbound_url.asyncio.get_running_loop",
+        return_value=SimpleNamespace(
+            getaddrinfo=AsyncMock(return_value=[
+                (2, 1, 6, "", ("93.184.216.34", 443))
+            ])
+        ),
     ), patch(
         "celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks",
         new=AsyncMock(return_value=["11"]),
