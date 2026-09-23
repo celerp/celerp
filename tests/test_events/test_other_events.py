@@ -113,17 +113,3 @@ def test_system_flow() -> None:
 def test_other_handlers_unknown_raise(fn, event):
     with pytest.raises(ValueError):
         fn({}, event, {})
-
-
-
-def test_system_journal_date_repair_is_fill_only() -> None:
-    state = {"entity_type": "journal_entry", "status": "posted"}
-    state = apply_system_event(
-        state, "sys.journal_entry.date_repaired", {"ts": "2024-02-03"}
-    )
-    assert state["ts"] == "2024-02-03"
-
-    state = apply_system_event(
-        state, "sys.journal_entry.date_repaired", {"ts": "2099-12-31"}
-    )
-    assert state["ts"] == "2024-02-03"

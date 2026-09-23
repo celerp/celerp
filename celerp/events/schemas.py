@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-from datetime import date
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
@@ -991,11 +990,6 @@ class AccPeriodReopened(BaseModel):
 # -----------------
 
 
-class SysJournalEntryDateRepaired(BaseModel):
-    """Fill-only historical correction for a missing JE effective date."""
-    ts: date
-
-
 class SysCompanyCreated(BaseModel):
     name: str
     slug: str
@@ -1290,7 +1284,6 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "acc.period.reopened": AccPeriodReopened,
 
     # System
-    "sys.journal_entry.date_repaired": SysJournalEntryDateRepaired,
     "sys.company.created": SysCompanyCreated,
     "sys.user.created": SysUserCreated,
     "sys.user.deactivated": SysUserDeactivated,
