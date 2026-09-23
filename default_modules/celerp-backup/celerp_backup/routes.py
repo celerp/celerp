@@ -15,12 +15,13 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
@@ -29,17 +30,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
 from celerp.gateway.state import get_session_token
-from celerp.services.auth import get_current_user
-from celerp.services.permissions import require_permission
+from celerp.services.auth import require_install_owner
 from celerp.services.backup import BackupResult
 from ui.i18n import t
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
+router = APIRouter(dependencies=[Depends(require_install_owner)])
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+async def _spool_upload(file: UploadFile) -> Path:
+    tmp = tempfile.NamedTemporaryFile(suffix=".celerp-backup", delete=False)
+    try:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            tmp.write(chunk)
+    finally:
+        tmp.close()
+        await file.close()
+    return Path(tmp.name)
+
 
 def _fmt_size(b: int) -> str:
     if b < 1024:
@@ -143,7 +157,7 @@ def _backup_table(items: list[dict]):
 # ---------------------------------------------------------------------------
 
 @router.post("/trigger")
-async def trigger_backup(_: None = require_permission("run_backups")):
+async def trigger_backup():
     """Run a cloud snapshot (database + files). Returns flash + HX-Trigger to refresh list."""
     from celerp.services import backup_repo, backup_scheduler
     result: BackupResult = await backup_repo.run_snapshot(label="manual")
@@ -200,7 +214,7 @@ async def list_backups(request: Request):
 
 
 @router.post("/restore/{backup_id}")
-async def restore_backup(backup_id: str, _: None = require_permission("run_backups")):
+async def restore_backup(backup_id: str):
     """Restore a cloud snapshot (database + files) via the canonical importer."""
     from celerp.services import backup_repo
     result = await backup_repo.restore_snapshot(backup_id)
@@ -236,35 +250,32 @@ async def export_cloud(backup_id: str) -> FileResponse:
 
 
 @router.post("/import")
-async def import_backup(request: Request, file: UploadFile = File(...), session: AsyncSession = Depends(get_session), _: None = require_permission("run_backups")):
+async def import_backup(
+    request: Request,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+):
     """Import a .celerp-backup file."""
     from celerp.services.backup_import import run_import, validate_archive
 
-    tmp = tempfile.NamedTemporaryFile(suffix=".celerp-backup", delete=False)
-    tmp.write(await file.read())
-    tmp.close()
-    tmp_path = Path(tmp.name)
-
+    tmp_path = await _spool_upload(file)
     try:
-        meta = validate_archive(tmp_path)
-    except ValueError as exc:
+        try:
+            meta = validate_archive(tmp_path)
+        except ValueError as exc:
+            return _flash(str(exc), "error")
+
+        await session.close()
+        result = await run_import(tmp_path)
+        if not result.ok:
+            return _flash(f"Import failed: {result.error or 'Unknown error'}", "error")
+        return _restore_flash(
+            result,
+            f"Imported backup from {meta.company_name or 'unknown'}. "
+            f"Restart the application to apply changes.",
+        )
+    finally:
         tmp_path.unlink(missing_ok=True)
-        return _flash(str(exc), "error")
-
-    # Close session NOW so its connection returns to the pool before engine.dispose().
-    # Keeping it open holds a lock and causes pg_restore to hang.
-    await session.close()
-
-    result = await run_import(tmp_path)
-    tmp_path.unlink(missing_ok=True)
-
-    if not result.ok:
-        return _flash(f"Import failed: {result.error or 'Unknown error'}", "error")
-    return _restore_flash(
-        result,
-        f"Imported backup from {meta.company_name or 'unknown'}. "
-        f"Restart the application to apply changes.",
-    )
 
 
 # ── Bootstrap import (public — no auth, only works before first user exists) ──
@@ -275,46 +286,58 @@ public_router = APIRouter()
 @public_router.post("/import-bootstrap")
 async def import_backup_bootstrap(
     file: UploadFile = File(...),
+    setup_code: str | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ):
-    """Import a .celerp-backup file when no users exist (setup wizard restore)."""
-    from celerp.services.backup_import import run_import, validate_archive
+    """Restore a backup into an unbootstrapped installation."""
     from sqlalchemy import select
     from celerp.models.company import User
+    from celerp.routers.auth import (
+        _bootstrap_restore_lock,
+        _clear_setup_code,
+        _verify_setup_code,
+    )
+    from celerp.services.backup_import import run_import, validate_archive
 
-    existing = (await session.execute(select(User).limit(1))).first()
+    setup_code_configured = _verify_setup_code(setup_code)
+    existing = (await session.execute(select(User.id).limit(1))).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(
             status_code=403,
             detail="System already bootstrapped. Log in and use Settings > Backup to restore.",
         )
 
-    # Close the session NOW so its connection is returned to the pool.
-    # run_import will call engine.dispose() to close all pool connections before
-    # pg_restore runs — keeping this session open would hold a lock and cause pg_restore to hang.
-    await session.close()
-
-    tmp = tempfile.NamedTemporaryFile(suffix=".celerp-backup", delete=False)
-    tmp.write(await file.read())
-    tmp.close()
-    tmp_path = Path(tmp.name)
-
+    tmp_path = await _spool_upload(file)
     try:
-        meta = validate_archive(tmp_path)
-    except ValueError as exc:
+        try:
+            meta = validate_archive(tmp_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        async with _bootstrap_restore_lock():
+            existing = (
+                await session.execute(select(User.id).limit(1))
+            ).scalar_one_or_none()
+            if existing is not None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="System already bootstrapped. Log in and use Settings > Backup to restore.",
+                )
+            await session.close()
+            result = await run_import(tmp_path)
+            if not result.ok:
+                raise HTTPException(
+                    status_code=422, detail=result.error or "Import failed"
+                )
+            if setup_code_configured:
+                await asyncio.to_thread(_clear_setup_code)
+
+        return {
+            "ok": True,
+            "company_name": meta.company_name,
+            "warnings": result.warnings,
+            "schema_warning": result.schema_warning,
+            "restart_scheduled": result.restart_scheduled,
+        }
+    finally:
         tmp_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    result = await run_import(tmp_path)
-    tmp_path.unlink(missing_ok=True)
-
-    if not result.ok:
-        raise HTTPException(status_code=422, detail=result.error or "Import failed")
-
-    return {
-        "ok": True,
-        "company_name": meta.company_name,
-        "warnings": result.warnings,
-        "schema_warning": result.schema_warning,
-        "restart_scheduled": result.restart_scheduled,
-    }

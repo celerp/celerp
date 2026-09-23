@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 import asyncio
 import hashlib
 import logging
@@ -88,6 +90,49 @@ def _setup_code_hash() -> str:
     return read_config().get("auth", {}).get("setup_code_hash", "") or ""
 
 
+def _verify_setup_code(provided: str | None) -> bool:
+    """Validate the one-time setup capability. Return whether one is configured."""
+    required = _setup_code_hash()
+    if not required:
+        return False
+    import hmac as _hmac
+    value = (provided or "").strip()
+    if not value or not _hmac.compare_digest(
+        hashlib.sha256(value.encode()).hexdigest(), required
+    ):
+        raise HTTPException(status_code=403, detail="Invalid or missing setup code.")
+    return True
+
+
+_BOOTSTRAP_LOCAL_LOCK = asyncio.Lock()
+
+
+@asynccontextmanager
+async def _bootstrap_restore_lock():
+    """Serialize restore-based bootstrap with first-admin registration."""
+    from celerp.db import engine
+
+    if engine.dialect.name != "postgresql":
+        async with _BOOTSTRAP_LOCAL_LOCK:
+            yield
+        return
+
+    async with engine.connect() as conn:
+        await conn.execute(
+            text("SELECT pg_advisory_lock(:key)"),
+            {"key": _BOOTSTRAP_LOCK_KEY},
+        )
+        await conn.commit()
+        try:
+            yield
+        finally:
+            await conn.execute(
+                text("SELECT pg_advisory_unlock(:key)"),
+                {"key": _BOOTSTRAP_LOCK_KEY},
+            )
+            await conn.commit()
+
+
 def _clear_setup_code() -> None:
     """Best-effort cleanup after the first admin has already committed.
 
@@ -142,14 +187,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         # Authenticate the headless setup capability before joining the bootstrap
         # lock queue. An unauthenticated caller must not be able to consume the one
         # global serialization point simply by submitting an invalid setup code.
-        required = _setup_code_hash()
-        if required:
-            import hmac as _hmac
-            provided = (payload.setup_code or "").strip()
-            if not provided or not _hmac.compare_digest(
-                hashlib.sha256(provided.encode()).hexdigest(), required
-            ):
-                raise HTTPException(status_code=403, detail="Invalid or missing setup code.")
+        required = _verify_setup_code(payload.setup_code)
 
         # Serialize first-admin bootstrap across workers BEFORE reading user state,
         # so two authenticated callers cannot both observe an empty install and
