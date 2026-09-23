@@ -15,7 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import __version__
 from celerp.db import get_session
-from celerp.services.auth import ROLE_LEVELS, get_current_role, get_current_user
+from celerp.services.auth import (
+    ROLE_LEVELS, get_current_role, get_current_user,
+    is_install_owner, require_install_owner,
+)
 from celerp.services.permissions import require_permission
 from celerp.services.system_health import get_system_health
 
@@ -229,7 +232,7 @@ async def billing_catalog_api() -> dict:
         return {"plans": {}}
 
 
-@settings_router.post("/cloud/billing-portal", dependencies=[require_permission("manage_integrations")])
+@settings_router.post("/cloud/billing-portal", dependencies=[Depends(require_install_owner)])
 async def cloud_billing_portal() -> dict:
     """Create a Stripe Billing Portal session via the relay so the merchant can
     manage their subscription (cancel, change card, download invoices)."""
@@ -242,7 +245,7 @@ async def cloud_billing_portal() -> dict:
     return {"portal_url": url}
 
 
-@settings_router.get("/backup-status", dependencies=[require_permission("manage_company_settings")])
+@settings_router.get("/backup-status", dependencies=[Depends(require_install_owner)])
 async def backup_status() -> dict:
     """Return backup scheduler state: last results and next scheduled run times."""
     from celerp.config import settings
@@ -261,14 +264,13 @@ async def backup_status() -> dict:
         "subscription_tier": tier,
         "subscription_status": subscription_status,
         "enc_ok": bool(settings.backup_encryption_key),
-        "enc_key": settings.backup_encryption_key or "",
         "db": {"ok": db.ok, "error": db.error, "size_bytes": db.size_bytes,
                "last_run": db.last_run.isoformat() if db.last_run else None},
         "next_db_utc": next_db.isoformat() if next_db else None,
     }
 
 
-@settings_router.post("/cloud-disconnect", dependencies=[require_permission("manage_integrations")])
+@settings_router.post("/cloud-disconnect", dependencies=[Depends(require_install_owner)])
 async def cloud_disconnect() -> dict:
     """Persist sticky disconnect first, then stop all live cloud activity."""
     from celerp.config import settings as _s, set_cloud_disconnected
@@ -320,7 +322,7 @@ async def _apply_gateway_token_api(
         keep_disconnected=keep_disconnected,
     )
 
-@settings_router.post("/cloud-activate", dependencies=[require_permission("manage_integrations")])
+@settings_router.post("/cloud-activate", dependencies=[Depends(require_install_owner)])
 async def cloud_activate_api(payload: dict | None = None) -> dict:
     """Synchronise Connect using explicit authority and activation intent."""
     import httpx
@@ -359,15 +361,6 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
     authority = {"kind": "legacy"}
     target = {"iid": local_iid}
 
-    async def _secure_methods(c) -> bool | None:
-        methods_r = await c.get(f"{relay_base}/auth/methods")
-        if methods_r.status_code == 404:
-            return False
-        if methods_r.status_code != 200:
-            return None
-        data = methods_r.json()
-        return bool(data.get("secure_activation", False)) if isinstance(data, dict) else None
-
     async def _verifier_activate(c):
         authority["kind"] = "verifier"
         target["iid"] = local_iid
@@ -386,48 +379,38 @@ async def cloud_activate_api(payload: dict | None = None) -> dict:
             except RelayCredentialError as exc:
                 if exc.status_code not in (401, 403):
                     return {"error": "Could not verify the stored relay credential. Try again."}
-                secure = await _secure_methods(c)
-                if secure is None:
-                    return {"error": "Could not verify relay activation protocol. Try again."}
-                if secure:
-                    if not verifier:
-                        return {
-                            "error": "This computer needs a fresh account verification before it can reconnect. "
-                                     "Use the Link Subscription field below.",
-                            "instance_id": local_iid,
-                        }
+                if verifier:
                     return await _verifier_activate(c)
-                authority["kind"] = "legacy"
-                return await c.post(
-                    f"{relay_base}/auth/activate",
-                    json=activate_payload(local_iid),
-                )
+                return {
+                    "error": "This computer needs a fresh account verification before it can reconnect. "
+                             "Use the Link Subscription field below.",
+                    "instance_id": local_iid,
+                }
 
-            if authenticated_iid and authenticated_iid != local_iid and verifier:
-                return await _verifier_activate(c)
+            if authenticated_iid and authenticated_iid != local_iid:
+                if verifier:
+                    return await _verifier_activate(c)
+                return {
+                    "error": "This computer needs a fresh account verification before it can reconnect. "
+                             "Use the Link Subscription field below.",
+                    "instance_id": local_iid,
+                }
 
             authority["kind"] = "credential"
             target["iid"] = authenticated_iid or local_iid
-            response = await c.post(
+            return await c.post(
                 f"{relay_base}/auth/activate",
                 json=activate_payload(target["iid"]),
                 headers={"Authorization": f"Bearer {jwt}"},
             )
-            if (response.status_code == 403 and not authenticated_iid
-                    and verifier):
-                secure = await _secure_methods(c)
-                if secure:
-                    return await _verifier_activate(c)
-            return response
 
         if verifier:
             return await _verifier_activate(c)
 
-        authority["kind"] = "legacy"
-        return await c.post(
-            f"{relay_base}/auth/activate",
-            json=activate_payload(local_iid),
-        )
+        return {
+            "error": "This computer needs account verification before it can connect.",
+            "instance_id": local_iid,
+        }
 
     try:
         r = await with_relay_client(RELAY_CONTROL_TIMEOUT, _activate)
@@ -611,14 +594,12 @@ async def partner_claim_resolve(payload: dict, role: str = Depends(get_current_r
     return identity
 
 
-@settings_router.post("/partner-claim/accept")
-async def partner_claim_accept(payload: dict, role: str = Depends(get_current_role)) -> dict:
+@settings_router.post("/partner-claim/accept", dependencies=[Depends(require_install_owner)])
+async def partner_claim_accept(payload: dict) -> dict:
     """Accept a partner claim: the relay binds the relationship and pushes the new
     commercial context. Owner/admin only. Accepting a token that is no longer
     acceptable (already claimed or expired) is a relay 409, surfaced as a neutral
     not-available message, never a fabricated success. Never touches gateway_token."""
-    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["admin"]:
-        raise HTTPException(status_code=403, detail="Only an owner or admin can accept a partner claim.")
     from celerp.config import settings
     if not settings.cloud_disconnected:
         return {"error": "Partner claiming is only available while Web Access is disconnected."}
@@ -650,45 +631,7 @@ async def partner_claim_accept(payload: dict, role: str = Depends(get_current_ro
     }
 
 
-@settings_router.post("/cloud-apply-token", dependencies=[require_permission("manage_integrations")])
-async def cloud_apply_token_api(payload: dict) -> dict:
-    """Compatibility endpoint for trusted local callers.
-
-    Current UI never transports gateway credentials through HTML. A local caller
-    may still explicitly apply a credential, using the same durable CAS boundary.
-    """
-    from celerp.config import ensure_instance_id, set_cloud_disconnected
-    from celerp.services.cloud_entitlement import stored_api_key
-    token = str(payload.get("gateway_token") or "").strip()
-    if not token:
-        return {"error": "Missing gateway token."}
-    iid = await asyncio.to_thread(ensure_instance_id)
-    previous = await stored_api_key()
-    try:
-        await asyncio.to_thread(set_cloud_disconnected, False)
-    except Exception as exc:
-        return {"error": f"Could not save reconnect state: {type(exc).__name__}"}
-    accepted = await _apply_gateway_token_api(
-        token,
-        iid,
-        public_url=payload.get("public_url"),
-        tos_version=payload.get("tos_version"),
-        authoritative_public_url="public_url" in payload,
-        expected_api_key=previous or None,
-    )
-    if not accepted:
-        return {"error": "Connection state changed while reconnecting."}
-    import celerp.gateway.client as _gw_mod
-    gw = _gw_mod.get_client()
-    return {
-        "connected": True,
-        "relay_status": gw.relay_status if gw else "connecting",
-        "public_url": payload.get("public_url") or "",
-        "instance_id": iid,
-    }
-
-
-@settings_router.post("/cloud-accept-tos", dependencies=[require_permission("manage_integrations")])
+@settings_router.post("/cloud-accept-tos", dependencies=[Depends(require_install_owner)])
 async def cloud_accept_tos_api() -> dict:
     """Persist TOS acceptance, restart gateway client with new tos_version."""
     import asyncio
@@ -722,18 +665,14 @@ async def cloud_accept_tos_api() -> dict:
     return {"relay_status": new_gw.relay_status, "public_url": _s.celerp_public_url}
 
 
-@settings_router.get("/cloud-instance-id")
-async def cloud_instance_id() -> dict:
-    """Return the canonical instance_id from the API process."""
-    from celerp.config import ensure_instance_id
-    return {"instance_id": await asyncio.to_thread(ensure_instance_id)}
-
-
 RELAY_ACCOUNT_METHODS_TIMEOUT = 6.0
 
 
 @settings_router.get("/account-methods")
-async def account_methods_api() -> dict:
+async def account_methods_api(
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     """Return optional sign-in methods for this local instance.
 
     An incumbent credential proves only the instance it authenticates; it never
@@ -749,6 +688,7 @@ async def account_methods_api() -> dict:
 
     relay_base = _rhu()
     iid = await asyncio.to_thread(ensure_instance_id)
+    install_owner = await is_install_owner(session, user.id)
     google = False
     free_email_quota = 0
     secure_activation = False
@@ -766,6 +706,9 @@ async def account_methods_api() -> dict:
                     google = bool(data.get("google"))
                     free_email_quota = int(data.get("free_email_quota") or 0)
                     secure_activation = bool(data.get("secure_activation", False))
+
+            if not install_owner:
+                return
 
             api_key = await stored_api_key()
             if google and not api_key:
@@ -803,7 +746,7 @@ async def account_methods_api() -> dict:
         start_url = ""
         needs_activation_challenge = False
 
-    if google and needs_activation_challenge:
+    if install_owner and google and needs_activation_challenge:
         try:
             verifier = await asyncio.to_thread(ensure_activation_verifier)
             start_url = (
@@ -816,7 +759,7 @@ async def account_methods_api() -> dict:
     return {
         "google": google,
         "free_email_quota": free_email_quota,
-        "google_start_url": start_url,
+        "google_start_url": start_url if install_owner else "",
     }
 
 
@@ -824,7 +767,7 @@ RELAY_ACCOUNT_SIGNUP_TIMEOUT = 8.0
 RELAY_ACCOUNT_STATUS_TIMEOUT = 8.0
 
 
-@settings_router.post("/account-signup", dependencies=[require_permission("manage_integrations")])
+@settings_router.post("/account-signup", dependencies=[Depends(require_install_owner)])
 async def account_signup_api(payload: dict) -> dict:
     """Proxy the magic-link signup request using the API-process instance_id."""
     import httpx
@@ -871,7 +814,10 @@ async def account_signup_api(payload: dict) -> dict:
 
 
 @settings_router.get("/account-status")
-async def account_status_api() -> dict:
+async def account_status_api(
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     """Proxy status for the durable local instance.
 
     A stored credential may unmask this destination only when it proves the same
@@ -883,6 +829,7 @@ async def account_status_api() -> dict:
         RelayCredentialError, fetch_relay_auth, is_foreign_relay_identity,
         relay_http_url as _rhu, with_relay_client)
     relay_base = _rhu()
+    full_identity = await is_install_owner(session, user.id)
     try:
         iid = await asyncio.to_thread(ensure_instance_id)
     except Exception:
@@ -890,7 +837,7 @@ async def account_status_api() -> dict:
 
     async def _status(c):
         headers = {}
-        api_key = _s.gateway_token
+        api_key = _s.gateway_token if full_identity else ""
         if api_key:
             try:
                 jwt, authenticated_iid = await fetch_relay_auth(c, api_key=api_key)
@@ -984,7 +931,7 @@ async def _activate_after_claim(
         "public_url": data.get("public_url") or "", "instance_id": iid,
     }
 
-@settings_router.post("/cloud-send-otp", dependencies=[require_permission("manage_integrations")])
+@settings_router.post("/cloud-send-otp", dependencies=[Depends(require_install_owner)])
 async def cloud_send_otp_api(payload: dict) -> dict:
     import httpx
     from celerp.config import activation_challenge, ensure_connect_identity
@@ -1047,7 +994,7 @@ async def cloud_send_otp_api(payload: dict) -> dict:
         detail = r.text[:80]
     return {"error": str(detail), "status_code": r.status_code, "instance_id": iid}
 
-@settings_router.post("/cloud-claim", dependencies=[require_permission("manage_integrations")])
+@settings_router.post("/cloud-claim", dependencies=[Depends(require_install_owner)])
 async def cloud_claim_api(payload: dict) -> dict:
     import httpx
     from celerp.config import (

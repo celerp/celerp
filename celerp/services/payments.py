@@ -9,6 +9,7 @@ the same path as a manual payment.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 
 log = logging.getLogger(__name__)
@@ -51,7 +52,9 @@ async def _cloud_post(path: str, payload: dict) -> dict | None:
 # ── Payment (customer-facing, via the hosted invoice view) ───────────────────
 
 async def create_checkout(*, amount_minor: int, currency: str, description: str,
-                          success_url: str, cancel_url: str, metadata: dict) -> dict | None:
+                          success_url: str, cancel_url: str,
+                          company_id: str, entity_id: str,
+                          share_token: str) -> dict | None:
     """Ask Cloud to open a Checkout Session on the merchant's connected account.
 
     Returns {"url": <stripe checkout url>} (redirect the customer there), or None on
@@ -60,7 +63,9 @@ async def create_checkout(*, amount_minor: int, currency: str, description: str,
     """
     return await _cloud_post("/billing/connect/checkout", {
         "amount_minor": amount_minor, "currency": currency, "description": description[:250],
-        "success_url": success_url, "cancel_url": cancel_url, "metadata": metadata,
+        "success_url": success_url, "cancel_url": cancel_url,
+        "company_id": company_id, "entity_id": entity_id,
+        "share_token_hash": hashlib.sha256(share_token.encode()).hexdigest(),
     })
 
 

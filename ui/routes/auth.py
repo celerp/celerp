@@ -208,7 +208,11 @@ def setup_routes(app):
             return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
         if bootstrapped:
             return RedirectResponse("/login", status_code=302)
-        return auth_shell(_setup_import_form(), title=page_title("page.restore_from_backup"))
+        from ui.api_client import setup_code_required as _code_req
+        return auth_shell(
+            _setup_import_form(setup_code_required=await _code_req()),
+            title=page_title("page.restore_from_backup"),
+        )
 
     @app.post("/setup/import-backup")
     async def setup_import_submit(request: Request):
@@ -221,6 +225,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
         file = form.get("backup_file")
+        setup_code = str(form.get("setup_code", "")).strip()
         if not file or not hasattr(file, "read"):
             return auth_shell(_setup_import_form(error=t("auth.select_backup_file")), title=page_title("page.restore_from_backup"))
         raw = await file.read()
@@ -231,6 +236,7 @@ def setup_routes(app):
                 r = await c.post(
                     "/backup/import-bootstrap",
                     files={"file": (file.filename, raw, "application/octet-stream")},
+                    data={"setup_code": setup_code},
                 )
             if r.status_code != 200:
                 ct = r.headers.get("content-type", "")
@@ -610,6 +616,7 @@ def _setup_import_form(
     error: str | None = None,
     warning: str | None = None,
     continue_to: str | None = None,
+    setup_code_required: bool = False,
 ) -> FT:
     # When a warning is present, show a non-blocking "Continue" button instead
     # of re-rendering the form. The user can decide to proceed (GDR - never
@@ -652,6 +659,12 @@ def _setup_import_form(
                       accept=".celerp-backup", required=True, cls="form-input"),
                 cls="form-group",
             ),
+            Div(
+                Label(t("label.setup_code"), For="setup_code", cls="form-label"),
+                Input(type="text", id="setup_code", name="setup_code",
+                      required=True, cls="form-input"),
+                cls="form-group",
+            ) if setup_code_required else "",
             Button(t("auth.restore_backup_btn"), type="submit", id="restore-btn",
                    data_loading_label=t("auth.restoring"), cls="btn btn--primary btn--full"),
             Script("""
