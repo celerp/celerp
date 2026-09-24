@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import json
+import uuid
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import ensure_instance_id
+from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig
 
 
@@ -50,7 +52,43 @@ def _resolve_connector_owner(
     return None
 
 
+async def lock_connector_runtime(session: AsyncSession) -> None:
+    """Join the shared connector-runtime fence for this transaction."""
+    if session.get_bind().dialect.name == "sqlite":
+        return
+    await session.execute(
+        sa.text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:k, 0))"),
+        {"k": "connector-runtime"},
+    )
+
+
+async def lock_connector_maintenance(session: AsyncSession) -> None:
+    """Wait for connector work to finish and exclude new work."""
+    if session.get_bind().dialect.name == "sqlite":
+        return
+    await session.execute(
+        sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": "connector-runtime"},
+    )
+
+
+async def _lock_active_company(session: AsyncSession, company_id) -> Company:
+    try:
+        cid = uuid.UUID(str(company_id))
+    except (TypeError, ValueError) as exc:
+        raise ConnectorOwnershipError("Connector company is invalid") from exc
+    company = await session.get(
+        Company, cid, with_for_update=True, populate_existing=True
+    )
+    if company is None or not company.is_active:
+        raise ConnectorOwnershipError("Connector company is inactive")
+    return company
+
+
 async def lock_connector_key(session: AsyncSession, connector: str) -> None:
+    await lock_connector_runtime(session)
+    if session.get_bind().dialect.name == "sqlite":
+        return
     await session.execute(
         sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
         {"k": f"connector-owner:{connector}"},
@@ -70,6 +108,7 @@ async def lock_connector_operation(
 
     company_id = str(company_id)
     await lock_connector_key(session, connector)
+    await _lock_active_company(session, company_id)
     rows = (await session.execute(
         sa.select(ConnectorConfig)
         .where(ConnectorConfig.connector == connector)
@@ -109,6 +148,7 @@ async def claim_connector_ownership(
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
     await lock_connector_key(session, connector)
+    await _lock_active_company(session, company_id)
     rows = (await session.execute(
         sa.select(ConnectorConfig)
         .where(ConnectorConfig.connector == connector)
@@ -173,6 +213,9 @@ async def connector_owned_by_company(
     session: AsyncSession, company_id, connector: str
 ) -> bool:
     """Check whether a connector configuration belongs to this company."""
+    company = await session.get(Company, uuid.UUID(str(company_id)))
+    if company is None or not company.is_active:
+        return False
     rows = (await session.execute(
         sa.select(ConnectorConfig).where(ConnectorConfig.connector == connector)
     )).scalars().all()

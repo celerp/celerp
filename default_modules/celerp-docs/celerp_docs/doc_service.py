@@ -445,6 +445,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                             "remote_deleted": False,
                             "manage_stock": None,
                         },
+                        expected_sku=source_sku,
                         source="connector",
                     )
 

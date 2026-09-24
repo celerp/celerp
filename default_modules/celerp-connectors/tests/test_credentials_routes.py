@@ -84,6 +84,8 @@ async def test_store_probes_then_stores_on_relay():
     with url_p, hdr_p, respx.mock:
         probe = respx.get(f"{STORE}/wp-json/wc/v3/products").mock(
             return_value=httpx.Response(200, json=[]))
+        respx.delete(f"{RELAY}/tokens/woocommerce").mock(
+            return_value=httpx.Response(404))
         relay = respx.post(f"{RELAY}/tokens/woocommerce").mock(
             return_value=httpx.Response(200, json={"stored": True}))
         result = await store_credentials("woocommerce", _creds(), "company-test", None, _session())
@@ -103,11 +105,12 @@ async def test_store_relay_402_maps_to_subscription_required():
         "celerp.connectors.ownership.release_connector_ownership", release
     ), url_p, hdr_p, respx.mock:
         respx.get(f"{STORE}/wp-json/wc/v3/products").mock(return_value=httpx.Response(200, json=[]))
+        respx.delete(f"{RELAY}/tokens/woocommerce").mock(return_value=httpx.Response(404))
         respx.post(f"{RELAY}/tokens/woocommerce").mock(return_value=httpx.Response(402))
         result = await store_credentials("woocommerce", _creds(), "company-test", None, _session())
     assert result["ok"] is False
     assert result["error"] == "subscription_required"
-    release.assert_awaited_once()
+    release.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -137,6 +140,7 @@ async def test_store_relay_failure_maps_to_relay_error():
     url_p, hdr_p = _relay_state()
     with url_p, hdr_p, respx.mock:
         respx.get(f"{STORE}/wp-json/wc/v3/products").mock(return_value=httpx.Response(200, json=[]))
+        respx.delete(f"{RELAY}/tokens/woocommerce").mock(return_value=httpx.Response(404))
         respx.post(f"{RELAY}/tokens/woocommerce").mock(return_value=httpx.Response(401))
         result = await store_credentials("woocommerce", _creds(), "company-test", None, _session())
     assert result["ok"] is False
@@ -209,7 +213,7 @@ async def test_store_webhook_failure_rolls_back_relay_credential():
 
     assert result["ok"] is False
     assert delete.called
-    release.assert_awaited_once()
+    release.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -227,7 +231,7 @@ async def test_store_webhook_failure_keeps_owner_when_revoke_is_ambiguous():
         respx.post(f"{RELAY}/tokens/woocommerce").mock(
             return_value=httpx.Response(200, json={"stored": True}))
         respx.delete(f"{RELAY}/tokens/woocommerce").mock(
-            return_value=httpx.Response(500))
+            side_effect=[httpx.Response(404), httpx.Response(500)])
         result = await store_credentials(
             "woocommerce", _creds(), "company-test", None, _session()
         )

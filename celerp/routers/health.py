@@ -1200,7 +1200,6 @@ async def connector_authorize_url(
         ConnectorOwnershipError,
         claim_connector_ownership,
         lock_connector_operation,
-        release_connector_ownership,
     )
     from celerp.connectors.registry import get as get_connector
 
@@ -1223,12 +1222,12 @@ async def connector_authorize_url(
             default_sync_frequency=default_frequency,
             report_created=True,
         )
-        await session.commit()
     except ConnectorOwnershipError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     if not ownership_created:
+        await session.rollback()
         return {
             "error": "Disconnect the existing connector before reconnecting it."
         }
@@ -1239,12 +1238,6 @@ async def connector_authorize_url(
         )
     except ConnectorOwnershipError as exc:
         await session.rollback()
-        if ownership_created:
-            try:
-                await release_connector_ownership(session, company_id, platform)
-                await session.commit()
-            except Exception:
-                await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     from celerp.gateway.state import (
@@ -1279,19 +1272,11 @@ async def connector_authorize_url(
         except Exception:
             await session.rollback()
             return False
-        if (
+        await session.rollback()
+        return not (
             isinstance(cancelled, dict)
             or cancelled.status_code not in (200, 404)
-        ):
-            await session.rollback()
-            return False
-        try:
-            await release_connector_ownership(session, company_id, platform)
-            await session.commit()
-            return True
-        except Exception:
-            await session.rollback()
-            return False
+        )
 
     async def _failure(message: str) -> dict:
         cleaned = await _cleanup_new_claim()
@@ -1305,6 +1290,14 @@ async def connector_authorize_url(
         return {"error": message}
 
     try:
+        stale = await with_relay_client(8.0, _cancel)
+        if isinstance(stale, dict) or stale.status_code not in (200, 404):
+            return await _failure("Could not reset the previous connection.")
+        if platform in {"shopify", "woocommerce"}:
+            from celerp_inventory.services import detach_external_links_for_platform
+            await detach_external_links_for_platform(
+                session, company_id, platform
+            )
         response = await with_relay_client(8.0, _authorize)
     except httpx.ConnectError:
         return await _failure("Cannot reach relay.")

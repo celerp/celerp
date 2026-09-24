@@ -476,6 +476,17 @@ def _write_restore_notice(company_name: str | None, warnings: list[str],
         log.warning("Could not write restore notice: %s", exc)
 
 
+async def _clear_restored_connector_state() -> None:
+    import sqlalchemy as sa
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+
+    async with get_session_ctx() as session:
+        await session.execute(sa.delete(OutboundQueue))
+        await session.execute(sa.delete(ConnectorConfig))
+        await session.commit()
+
+
 async def run_import(path: Path):
     """Import from .celerp-backup: safety backup + pg_restore + extract files.
 
@@ -502,17 +513,18 @@ async def run_import(path: Path):
                 return BackupResult(ok=False, size_bytes=0, error="Cannot read database.dump")
             dump_bytes = dump_file.read()
 
-        # Dispose connection pool BEFORE pg_restore so live connections don't
-        # hold locks that block pg_restore from dropping/recreating tables.
-        await _dispose_engine()
+        from celerp.connectors.ownership import lock_connector_maintenance
+        from celerp.db import get_session_ctx
+        from celerp.services.backup_state import writes_paused
 
-        # Run pg_restore in a thread executor — it's a blocking subprocess call.
-        # Running it directly in an async function blocks the uvicorn event loop,
-        # which prevents the response from being sent back and causes HTTPX timeouts.
-        await _run_pg_restore(dump_bytes, settings.database_url)
-
-        # Reconcile schema — run any missing migrations after pg_restore
-        schema_warning = await _reconcile_schema()
+        async with get_session_ctx() as maintenance_session:
+            await lock_connector_maintenance(maintenance_session)
+            with writes_paused():
+                await _dispose_engine()
+                await _run_pg_restore(dump_bytes, settings.database_url)
+                schema_warning = await _reconcile_schema()
+                await _clear_restored_connector_state()
+            await maintenance_session.commit()
 
         # Extract files outside the tar context (already read dump above)
         await _extract_files(path)

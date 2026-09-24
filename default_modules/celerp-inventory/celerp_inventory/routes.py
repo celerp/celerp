@@ -2316,6 +2316,12 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
                     new_qty = int(raw_pieces) if raw_pieces is not None else None
                     payload.fields_changed["quantity"] = {"old": old_qty, "new": new_qty}
 
+    if "sku" in changed_keys:
+        from celerp_inventory.services import stamp_catalog_family_members
+        await stamp_catalog_family_members(
+            session, company_id, entity_id, actor_id=user.id, source="api"
+        )
+
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -3188,6 +3194,16 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     if ch_pieces is not None:
         child_attrs["pieces"] = ch_pieces
     child_data = {k: v for k, v in parent.state.items() if k not in _CHILD_RESET_FIELDS}
+    from celerp_inventory.services import (
+        normalize_sku as _normalize_family_sku,
+        resolve_catalog_anchor_for_item as _resolve_family_anchor,
+    )
+    try:
+        _family_anchor = await _resolve_family_anchor(
+            session, company_id, entity_id
+        )
+    except ValueError:
+        _family_anchor = None
     child_data.update({
         "sku": child_sku,
         "name": parent.state.get("name", child_sku),
@@ -3199,6 +3215,14 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
         # (splittable by default) must not emit a None the item.created schema rejects.
         "allow_splitting": splitting_allowed(parent.state),
     })
+    if (
+        _family_anchor is not None
+        and _normalize_family_sku((_family_anchor.state or {}).get("sku"))
+        == _normalize_family_sku(child_sku)
+    ):
+        child_data["catalog_item_id"] = _family_anchor.entity_id
+    else:
+        child_data.pop("catalog_item_id", None)
     if child_weight is not None:
         child_data["weight"] = child_weight
     await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
@@ -3529,6 +3553,23 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             detail="Items from different catalog products cannot be merged.",
         )
     merged_catalog_id = next(iter(explicit_catalog_ids), None)
+    if merged_catalog_id is None:
+        from celerp_inventory.services import resolve_catalog_anchor_for_item
+        inferred_catalog_ids: set[str] = set()
+        inference_failed = False
+        for proj in source_projections:
+            try:
+                inferred = await resolve_catalog_anchor_for_item(
+                    session, company_id, proj.entity_id
+                )
+            except ValueError:
+                inference_failed = True
+                break
+            inferred_catalog_ids.add(inferred.entity_id)
+        if not inference_failed and len(inferred_catalog_ids) == 1:
+            inferred_id = next(iter(inferred_catalog_ids))
+            if any(proj.entity_id != inferred_id for proj in source_projections):
+                merged_catalog_id = inferred_id
     catalog_anchor = (
         await session.get(
             Projection,

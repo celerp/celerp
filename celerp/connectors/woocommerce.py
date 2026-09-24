@@ -432,7 +432,14 @@ class WooCommerceConnector(ConnectorBase):
                 async with AsyncSessionLocal() as session:
                     await set_external_link_state(
                         session, ctx.company_id, anchor_id, "woocommerce",
-                        remote_deleted=True, actor_id=actor_id, source="connector_ui",
+                        remote_deleted=True,
+                        expected_identity=(
+                            str(link.get("product_id") or ""),
+                            str(link.get("variation_id"))
+                            if link.get("variation_id") not in (None, "")
+                            else None,
+                        ),
+                        actor_id=actor_id, source="connector_ui",
                     )
                     await session.commit()
                 rediscover = True
@@ -495,6 +502,7 @@ class WooCommerceConnector(ConnectorBase):
             else:
                 await set_external_link(
                     session, ctx.company_id, anchor_id, "woocommerce", new_link,
+                    expected_sku=sku,
                     actor_id=actor_id, source="connector_ui",
                 )
             await session.commit()
@@ -775,9 +783,19 @@ class WooCommerceConnector(ConnectorBase):
                 )
             ]
             for row in matches:
+                observed = external_link_for_state(
+                    row.state or {}, "woocommerce"
+                )
                 await set_external_link_state(
                     session, ctx.company_id, row.entity_id, "woocommerce",
-                    remote_deleted=True, source="connector",
+                    remote_deleted=True,
+                    expected_identity=(
+                        str(observed.get("product_id") or ""),
+                        str(observed.get("variation_id"))
+                        if observed.get("variation_id") not in (None, "")
+                        else None,
+                    ),
+                    source="connector",
                 )
             if matches:
                 await session.commit()

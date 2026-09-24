@@ -2214,10 +2214,27 @@ async def deactivate_company(
     """
     import time as _time
     import re as _re2
-    company = await session.get(Company, company_id)
+    import sqlalchemy as sa
+    from celerp.connectors.ownership import lock_connector_maintenance
+    from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+
+    await lock_connector_maintenance(session)
+    company = await session.get(
+        Company, company_id, with_for_update=True, populate_existing=True
+    )
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     company.is_active = False
+    await session.execute(
+        sa.delete(OutboundQueue).where(
+            OutboundQueue.company_id == str(company_id)
+        )
+    )
+    await session.execute(
+        sa.delete(ConnectorConfig).where(
+            ConnectorConfig.company_id == str(company_id)
+        )
+    )
     # Free the slug so the user can re-create a company with the same name later.
     # Strip any previous deactivated suffix first (idempotent), then append new one.
     base_slug = _re2.sub(r"-deactivated-\d+$", "", company.slug)

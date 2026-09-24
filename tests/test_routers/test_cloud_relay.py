@@ -916,7 +916,9 @@ async def test_connector_authorize_url_success(client):
 
     claim = AsyncMock(return_value=(object(), True))
     lock = AsyncMock(return_value=object())
-    relay = AsyncMock(return_value=url_resp)
+    cancelled = MagicMock()
+    cancelled.status_code = 404
+    relay = AsyncMock(side_effect=[cancelled, url_resp])
     with patch("celerp.config.settings") as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
          patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
@@ -1003,6 +1005,9 @@ async def test_connector_authorize_url_shopify_passes_shop(client):
         mock_settings.celerp_relay_url = "https://relay.celerp.com"
 
         mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=tok_resp)
+        mock_httpx.return_value.__aenter__.return_value.delete = AsyncMock(
+            return_value=MagicMock(status_code=404)
+        )
         mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(side_effect=fake_get)
 
         r = await client.get(
@@ -1419,8 +1424,8 @@ async def test_connector_authorize_failure_releases_new_claim_after_cancel(clien
         )
 
     assert response.status_code == 200
-    assert response.json()["error"] == "upstream failed"
-    release.assert_awaited_once()
+    assert response.json()["error"] == "Could not reset the previous connection."
+    release.assert_not_awaited()
     assert relay.await_count == 2
 
 
@@ -1503,4 +1508,4 @@ async def test_connector_authorize_lock_failure_releases_new_claim(client):
         )
 
     assert response.status_code == 409
-    release.assert_awaited_once()
+    release.assert_not_awaited()

@@ -1025,3 +1025,84 @@ async def test_explicit_catalog_relation_accepts_barcoded_catalog_template(use_t
     await session.commit()
     anchor = await resolve_catalog_anchor_for_item(session, cid, child_id)
     assert anchor.entity_id == root_id
+
+
+@pytest.mark.asyncio
+async def test_external_product_identity_has_one_catalog_owner(use_test_session):
+    from celerp.events.engine import emit_event
+    from celerp_inventory.services import (
+        ExternalLinkConflictError,
+        set_external_link,
+    )
+
+    session = use_test_session
+    cid = await _seed_company(session, "ExternalIdentityOwner")
+    for entity_id, sku in (("item:left", "LEFT-1"), ("item:right", "RIGHT-1")):
+        await emit_event(
+            session,
+            company_id=cid,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type="item.created",
+            data={"sku": sku, "name": sku, "sell_by": "piece"},
+            actor_id=None,
+            location_id=None,
+            source="api",
+            idempotency_key=f"create:{entity_id}",
+            metadata_={},
+        )
+    await session.flush()
+
+    link = {
+        "product_id": "9901",
+        "sync_enabled": True,
+        "remote_deleted": False,
+    }
+    await set_external_link(
+        session, cid, "item:left", "woocommerce", link, expected_sku="LEFT-1"
+    )
+    with pytest.raises(ExternalLinkConflictError, match="already linked"):
+        await set_external_link(
+            session, cid, "item:right", "woocommerce", link,
+            expected_sku="RIGHT-1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_external_link_rejects_stale_sku_selection(use_test_session):
+    from celerp.events.engine import emit_event
+    from celerp_inventory.services import (
+        ExternalLinkConflictError,
+        set_external_link,
+    )
+
+    session = use_test_session
+    cid = await _seed_company(session, "ExternalIdentityCas")
+    await emit_event(
+        session,
+        company_id=cid,
+        entity_id="item:cas",
+        entity_type="item",
+        event_type="item.created",
+        data={"sku": "NEW-SKU", "name": "CAS", "sell_by": "piece"},
+        actor_id=None,
+        location_id=None,
+        source="api",
+        idempotency_key="create:cas",
+        metadata_={},
+    )
+    await session.flush()
+
+    with pytest.raises(ExternalLinkConflictError, match="SKU changed"):
+        await set_external_link(
+            session,
+            cid,
+            "item:cas",
+            "woocommerce",
+            {
+                "product_id": "9902",
+                "sync_enabled": True,
+                "remote_deleted": False,
+            },
+            expected_sku="OLD-SKU",
+        )

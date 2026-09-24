@@ -238,6 +238,53 @@ def normalize_sku(value) -> str:
     return str(value or "").strip().casefold()
 
 
+class ExternalLinkConflictError(ValueError):
+    """External product identity changed or is already claimed."""
+
+
+async def _lock_external_identity_namespace(
+    session: AsyncSession, company_id, platform: str
+) -> None:
+    if session.get_bind().dialect.name == "sqlite":
+        return
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+        {"k": f"external-link:{company_id}:{platform}"},
+    )
+
+
+async def _assert_external_identity_available(
+    session: AsyncSession,
+    company_id,
+    platform: str,
+    link: dict,
+    *,
+    exclude_entity_id: str | None = None,
+) -> None:
+    product_id = str(link.get("product_id") or "")
+    if not product_id:
+        raise ExternalLinkConflictError("External product identity is missing")
+    variation_id = link.get(_external_variant_key(platform))
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == uuid.UUID(str(company_id)),
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    for candidate in rows:
+        if candidate.entity_id == exclude_entity_id:
+            continue
+        if _same_external_identity(
+            platform,
+            external_link_for_state(candidate.state or {}, platform),
+            product_id,
+            str(variation_id) if variation_id not in (None, "") else None,
+        ):
+            raise ExternalLinkConflictError(
+                f"{platform} product identity is already linked to another catalog item"
+            )
+
+
 def _is_structural_product_anchor_state(state: dict) -> bool:
     """True when a row is structurally a product root, independent of physical codes."""
     return (
@@ -417,12 +464,22 @@ async def upsert_external_product(
     lock_key = f"external-product:{cid}:{platform}:{sku_lock or identity}"
 
     async with AsyncSessionLocal() as session:
+        await _lock_external_identity_namespace(session, cid, platform)
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
             {"k": lock_key},
         )
         row = await resolve_external_product(
             session, cid, platform, product_id, variation_id, sku=sku
+        )
+        selected_by_identity = bool(
+            row is not None
+            and _same_external_identity(
+                platform,
+                external_link_for_state(row.state or {}, platform),
+                product_id,
+                variation_id,
+            )
         )
         legacy_row = None
         legacy_cleaned = False
@@ -431,6 +488,7 @@ async def upsert_external_product(
             row = await resolve_catalog_anchor_for_item(
                 session, cid, legacy_row.entity_id
             )
+            selected_by_identity = False
         if row is not None:
             row = await session.get(
                 Projection,
@@ -438,6 +496,13 @@ async def upsert_external_product(
                 with_for_update=True,
                 populate_existing=True,
             )
+            if (
+                not selected_by_identity
+                and normalize_sku((row.state or {}).get("sku")) != normalize_sku(sku)
+            ):
+                raise ExternalLinkConflictError(
+                    "Catalog SKU changed while the external product was being resolved"
+                )
 
         incoming_link = {
             "product_id": product_id,
@@ -449,6 +514,9 @@ async def upsert_external_product(
             incoming_link[_external_variant_key(platform)] = variation_id
 
         if row is None:
+            await _assert_external_identity_available(
+                session, cid, platform, incoming_link
+            )
             entity_id = f"item:{identity}"
             data: dict = {
                 "sku": sku,
@@ -511,6 +579,9 @@ async def upsert_external_product(
                     metadata_={},
                 )
                 legacy_cleaned = True
+        await _assert_external_identity_available(
+            session, cid, platform, incoming_link, exclude_entity_id=entity_id
+        )
         explicit = ((state.get("external_links") or {}).get(platform)
                     if isinstance(state.get("external_links"), dict) else None)
         if external_link_intentionally_disabled(explicit):
@@ -532,6 +603,11 @@ async def upsert_external_product(
         )
         desired = {"external_links": links}
         if not identity_only:
+            if normalize_sku(state.get("sku")) != normalize_sku(sku):
+                await stamp_catalog_family_members(
+                    session, cid, entity_id, source="connector"
+                )
+                state = dict(row.state or {})
             desired.update({"sku": sku, "name": name})
             if inventory_type is not None:
                 desired["inventory_type"] = inventory_type
@@ -574,49 +650,83 @@ async def upsert_external_product(
 async def set_external_link_state(
     session: AsyncSession, company_id, entity_id: str, platform: str, *,
     sync_enabled: bool | None = None, remote_deleted: bool | None = None,
-    link_updates: dict | None = None, actor_id=None, source: str = "connector",
+    link_updates: dict | None = None, expected_identity: tuple[str, str | None] | None = None,
+    actor_id=None, source: str = "connector",
 ) -> dict:
     """Patch one external link while preserving every other channel identity."""
     cid = uuid.UUID(str(company_id))
-    row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True)
+    await _lock_external_identity_namespace(session, cid, platform)
+    row = await session.get(
+        Projection, {"company_id": cid, "entity_id": entity_id},
+        with_for_update=True, populate_existing=True,
+    )
     if row is None or row.entity_type != "item":
         raise ValueError(f"Item {entity_id!r} not found")
     current = external_link_for_state(row.state or {}, platform)
     if not current:
         raise ValueError(f"Item {entity_id!r} is not linked to {platform}")
+    if expected_identity is not None and external_identity_key(platform, current) != expected_identity:
+        raise ExternalLinkConflictError(
+            "External product identity changed while the operation was running"
+        )
     updated = dict(current)
-    if sync_enabled is not None: updated["sync_enabled"] = bool(sync_enabled)
-    if remote_deleted is not None: updated["remote_deleted"] = bool(remote_deleted)
-    if link_updates: updated.update(link_updates)
-    return await set_external_link(session, cid, entity_id, platform, updated,
-                                   actor_id=actor_id, source=source)
+    if sync_enabled is not None:
+        updated["sync_enabled"] = bool(sync_enabled)
+    if remote_deleted is not None:
+        updated["remote_deleted"] = bool(remote_deleted)
+    if link_updates:
+        updated.update(link_updates)
+    return await set_external_link(
+        session, cid, entity_id, platform, updated,
+        actor_id=actor_id, source=source,
+    )
 
 
 async def set_external_link(
     session: AsyncSession, company_id, entity_id: str, platform: str, link: dict,
-    *, actor_id=None, source: str = "connector",
+    *, expected_sku: str | None = None, actor_id=None, source: str = "connector",
 ) -> dict:
     """Create or replace one channel link without touching any other channel."""
     cid = uuid.UUID(str(company_id))
-    row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True)
+    await _lock_external_identity_namespace(session, cid, platform)
+    row = await session.get(
+        Projection, {"company_id": cid, "entity_id": entity_id},
+        with_for_update=True, populate_existing=True,
+    )
     if row is None or row.entity_type != "item":
         raise ValueError(f"Item {entity_id!r} not found")
     state = dict(row.state or {})
+    if expected_sku is not None and normalize_sku(state.get("sku")) != normalize_sku(expected_sku):
+        raise ExternalLinkConflictError(
+            "Catalog SKU changed while the external product was being resolved"
+        )
     links = dict(state.get("external_links") or {})
     normalized = dict(link)
     normalized["product_id"] = str(normalized["product_id"])
     variant_key = _external_variant_key(platform)
     if normalized.get(variant_key) not in (None, ""):
         normalized[variant_key] = str(normalized[variant_key])
+    await _assert_external_identity_available(
+        session, cid, platform, normalized, exclude_entity_id=entity_id
+    )
     links[platform] = normalized
     if links == (state.get("external_links") or {}):
         return normalized
-    data = {"fields_changed": {"external_links": {"old": state.get("external_links") or {}, "new": links}}}
+    data = {
+        "fields_changed": {
+            "external_links": {
+                "old": state.get("external_links") or {},
+                "new": links,
+            }
+        }
+    }
     await emit_event(
         session, company_id=cid, entity_id=entity_id, entity_type="item",
         event_type="item.updated", data=data, actor_id=actor_id, location_id=None,
         source=source,
-        idempotency_key=_connector_event_idem(f"external-link:{platform}:{entity_id}:v{row.version}", data),
+        idempotency_key=_connector_event_idem(
+            f"external-link:{platform}:{entity_id}:v{row.version}", data
+        ),
         metadata_={},
     )
     return normalized
@@ -628,6 +738,7 @@ async def detach_external_link(
 ) -> bool:
     """Detach one platform identity while preserving local item and other channels."""
     cid = uuid.UUID(str(company_id))
+    await _lock_external_identity_namespace(session, cid, platform)
     row = await session.get(
         Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True
     )
@@ -792,19 +903,19 @@ def _family_keys(rows: list[Projection]) -> dict[str, tuple[str, str]]:
             candidate.entity_id: candidate
             for candidate in (roots_by_sku.get(sku, []) if sku else [])
         }
-        if len(roots) == 1:
-            keys[row.entity_id] = ("anchor", next(iter(roots)))
-            continue
-        if len(roots) > 1:
-            keys[row.entity_id] = ("sku", sku)
-            continue
-
         explicit = {
             candidate.entity_id: candidate
             for candidate in (explicit_by_sku.get(sku, []) if sku else [])
         }
-        if len(explicit) == 1:
-            keys[row.entity_id] = ("anchor", next(iter(explicit)))
+        root_ids = set(roots)
+        explicit_ids = set(explicit)
+        if len(root_ids) == 1 and len(explicit_ids) <= 1:
+            root_id = next(iter(root_ids))
+            if not explicit_ids or explicit_ids == {root_id}:
+                keys[row.entity_id] = ("anchor", root_id)
+                continue
+        if not root_ids and len(explicit_ids) == 1:
+            keys[row.entity_id] = ("anchor", next(iter(explicit_ids)))
             continue
         keys[row.entity_id] = ("sku", sku)
     return keys
@@ -819,6 +930,62 @@ def catalog_family_rows(
     if key is None:
         return []
     return [row for row in rows if keys.get(row.entity_id) == key]
+
+
+async def stamp_catalog_family_members(
+    session: AsyncSession, company_id, anchor_entity_id: str, *,
+    actor_id=None, source: str = "api",
+) -> int:
+    """Persist currently unambiguous family membership before anchor identity changes."""
+    cid = uuid.UUID(str(company_id))
+    anchor = await session.get(
+        Projection, {"company_id": cid, "entity_id": anchor_entity_id},
+        with_for_update=True, populate_existing=True,
+    )
+    if anchor is None or not _is_product_anchor_state(anchor.state or {}):
+        return 0
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == cid, Projection.entity_type == "item"
+        )
+    )).scalars().all()
+    keys = _family_keys(rows)
+    family_key = ("anchor", anchor.entity_id)
+    stamped = 0
+    for member in rows:
+        if (
+            member.entity_id == anchor.entity_id
+            or keys.get(member.entity_id) != family_key
+            or (member.state or {}).get("catalog_item_id")
+        ):
+            continue
+        locked = await session.get(
+            Projection, {"company_id": cid, "entity_id": member.entity_id},
+            with_for_update=True, populate_existing=True,
+        )
+        if locked is None or (locked.state or {}).get("catalog_item_id"):
+            continue
+        state = dict(locked.state or {})
+        data = {
+            "fields_changed": {
+                "catalog_item_id": {
+                    "old": state.get("catalog_item_id"),
+                    "new": anchor.entity_id,
+                }
+            }
+        }
+        await emit_event(
+            session, company_id=cid, entity_id=locked.entity_id, entity_type="item",
+            event_type="item.updated", data=data, actor_id=actor_id, location_id=None,
+            source=source,
+            idempotency_key=_connector_event_idem(
+                f"catalog-family:{anchor.entity_id}:{locked.entity_id}:v{locked.version}",
+                data,
+            ),
+            metadata_={},
+        )
+        stamped += 1
+    return stamped
 
 
 async def aggregate_sellable_quantity_for_anchor(

@@ -283,12 +283,12 @@ async def store_credentials(
             default_sync_frequency=default_frequency,
             report_created=True,
         )
-        await session.commit()
     except ConnectorOwnershipError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     if not ownership_created:
+        await session.rollback()
         return {
             "ok": False,
             "error": "already_connected",
@@ -300,6 +300,22 @@ async def store_credentials(
             session, company_id, connector_name, require_owner=True
         )
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as c:
+            stale = await c.delete(
+                f"{relay_http_url()}/tokens/{connector_name}",
+                headers=relay_session_headers(),
+            )
+            if stale.status_code not in (200, 404):
+                await session.rollback()
+                return {
+                    "ok": False,
+                    "error": "relay_error",
+                    "detail": f"relay returned {stale.status_code}",
+                }
+            if connector_name in {"shopify", "woocommerce"}:
+                from celerp_inventory.services import detach_external_links_for_platform
+                await detach_external_links_for_platform(
+                    session, company_id, connector_name
+                )
             r = await c.post(
                 f"{relay_http_url()}/tokens/{connector_name}",
                 json={
@@ -315,14 +331,6 @@ async def store_credentials(
 
     if r.status_code == 402:
         await session.rollback()
-        if ownership_created:
-            try:
-                await release_connector_ownership(
-                    session, company_id, connector_name
-                )
-                await session.commit()
-            except Exception:
-                await session.rollback()
         return {"ok": False, "error": "subscription_required", "detail": ""}
     if r.status_code != 200:
         await session.rollback()
@@ -357,23 +365,7 @@ async def store_credentials(
             except Exception:
                 rollback = None
             await session.rollback()
-            if (
-                ownership_created
-                and rollback is not None
-                and rollback.status_code in (200, 404)
-            ):
-                try:
-                    await release_connector_ownership(
-                        session, company_id, connector_name
-                    )
-                    await session.commit()
-                except Exception:
-                    await session.rollback()
-                    log.warning(
-                        "connector ownership cleanup failed after credential rollback",
-                        exc_info=True,
-                    )
-            elif rollback is not None:
+            if rollback is not None and rollback.status_code not in (200, 404):
                 log.warning(
                     "connector credential rollback returned %d",
                     rollback.status_code,

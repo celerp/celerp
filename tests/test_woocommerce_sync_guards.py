@@ -244,4 +244,6 @@ def test_reused_historical_sku_children_follow_current_product_root():
     rows = [old_anchor, new_anchor, physical]
 
     assert catalog_family_rows(rows, old_anchor) == [old_anchor]
-    assert catalog_family_rows(rows, new_anchor) == [new_anchor, physical]
+    assert catalog_family_rows(rows, new_anchor) == [new_anchor]
+    assert physical not in catalog_family_rows(rows, old_anchor)
+    assert physical not in catalog_family_rows(rows, new_anchor)

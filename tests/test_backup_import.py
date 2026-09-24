@@ -24,6 +24,18 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_restored_connector_cleanup(monkeypatch):
+    async def _noop() -> None:
+        return None
+
+    monkeypatch.setattr(
+        "celerp.services.backup_import._clear_restored_connector_state",
+        _noop,
+        raising=False,
+    )
+
+
 def _make_archive(
     company_name: str = "Test",
     version: str | None = None,

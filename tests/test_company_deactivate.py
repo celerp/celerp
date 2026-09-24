@@ -159,3 +159,80 @@ async def test_reactivate_endpoint(client: AsyncClient):
     r = await client.post("/companies/me/reactivate", headers=_auth(token))
     assert r.status_code == 200
     assert r.json()["is_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_deactivated_company_blocks_connector_operations(client: AsyncClient, session):
+    from uuid import UUID
+
+    from celerp.connectors.ownership import (
+        ConnectorOwnershipError,
+        lock_connector_operation,
+    )
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig
+
+    token = await _register(client, "connector-owner@deact.test", "Connector Deact")
+    companies = (await client.get(
+        "/auth/my-companies", headers=_auth(token)
+    )).json()["items"]
+    company_id = UUID(companies[0]["company_id"])
+
+    session.add(ConnectorConfig(
+        company_id=str(company_id),
+        connector="woocommerce",
+    ))
+    await session.commit()
+
+    company = await session.get(Company, company_id)
+    company.is_active = False
+    await session.commit()
+
+    with pytest.raises(ConnectorOwnershipError, match="inactive"):
+        await lock_connector_operation(
+            session, str(company_id), "woocommerce", require_owner=True
+        )
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_deactivate_releases_connector_reservation(client: AsyncClient, session):
+    from uuid import UUID
+    from sqlalchemy import select
+
+    from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+
+    token = await _register(
+        client, "connector-cleanup@deact.test", "Connector Cleanup"
+    )
+    companies = (await client.get(
+        "/auth/my-companies", headers=_auth(token)
+    )).json()["items"]
+    company_id = UUID(companies[0]["company_id"])
+
+    session.add(ConnectorConfig(
+        company_id=str(company_id),
+        connector="woocommerce",
+    ))
+    session.add(OutboundQueue(
+        company_id=str(company_id),
+        connector="woocommerce",
+        entity_type="item",
+        entity_id="item:1",
+    ))
+    await session.commit()
+
+    response = await client.delete("/companies/me", headers=_auth(token))
+    assert response.status_code == 200
+
+    session.expire_all()
+    assert await session.scalar(
+        select(ConnectorConfig).where(
+            ConnectorConfig.company_id == str(company_id)
+        )
+    ) is None
+    assert await session.scalar(
+        select(OutboundQueue).where(
+            OutboundQueue.company_id == str(company_id)
+        )
+    ) is None
