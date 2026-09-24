@@ -228,6 +228,7 @@ async def run_sync(
     expected_config_id=None,
     expected_direction: SyncDirection | None = None,
     expected_store_handle: str | None = None,
+    expected_webhook_secret: str | None = None,
 ) -> SyncResult:
     """Execute one connector entity sync behind the current ownership/config fence."""
     method_name = _SYNC_METHODS.get(entity)
@@ -280,6 +281,13 @@ async def run_sync(
                 or (
                     expected_direction is not None
                     and effective_direction != expected_direction
+                )
+                or (
+                    expected_webhook_secret is not None
+                    and (
+                        config is None
+                        or config.webhook_secret != expected_webhook_secret
+                    )
                 )
             )
             if connection_changed:

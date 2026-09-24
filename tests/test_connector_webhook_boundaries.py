@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -54,10 +53,13 @@ async def test_shopify_webhook_carries_store_snapshot_into_handler():
 async def test_woocommerce_webhook_revalidates_current_secret_under_fence():
     snapshot_session = MagicMock()
     snapshot_rows = MagicMock()
-    snapshot_rows.all.return_value = [("company-test", "old-secret")]
+    snapshot_rows.all.return_value = [("company-test", "old-secret", "both")]
     snapshot_session.execute = AsyncMock(return_value=snapshot_rows)
 
     guard_session = AsyncMock()
+    current_rows = MagicMock()
+    current_rows.all.return_value = [("company-test", "new-secret", "both")]
+    guard_session.execute = AsyncMock(return_value=current_rows)
     guard_session.commit = AsyncMock()
     guard_session.rollback = AsyncMock()
 
@@ -72,12 +74,8 @@ async def test_woocommerce_webhook_revalidates_current_secret_under_fence():
     contexts = iter([snapshot_cm(), guard_cm()])
     connector = MagicMock()
     connector.validate_webhook.side_effect = [True, False]
-    config = SimpleNamespace(
-        id=7,
-        direction="both",
-        webhook_secret="new-secret",
-    )
     fetch = AsyncMock()
+    lock = AsyncMock()
 
     with patch(
         "celerp.connectors.webhooks.connector_registry.get",
@@ -86,8 +84,8 @@ async def test_woocommerce_webhook_revalidates_current_secret_under_fence():
         "celerp.db.get_session_ctx",
         side_effect=lambda: next(contexts),
     ), patch(
-        "celerp.connectors.ownership.lock_connector_operation",
-        new=AsyncMock(return_value=config),
+        "celerp.connectors.ownership.lock_connector_key",
+        new=lock,
     ), patch(
         "celerp.connectors.relay_token.fetch_context",
         new=fetch,
@@ -99,5 +97,6 @@ async def test_woocommerce_webhook_revalidates_current_secret_under_fence():
         )
 
     assert handled is False
+    lock.assert_awaited_once_with(guard_session, "woocommerce")
     fetch.assert_not_awaited()
     guard_session.rollback.assert_awaited_once()

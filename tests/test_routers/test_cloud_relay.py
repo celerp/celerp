@@ -1456,20 +1456,14 @@ async def test_connector_authorize_ambiguous_cleanup_keeps_new_claim(client):
 
 
 @pytest.mark.asyncio
-async def test_connector_reauthorize_failure_does_not_release_existing_owner(client):
+async def test_connector_reauthorize_requires_disconnect_without_releasing_owner(client):
     token = await _register(client, "auth-url-existing-owner")
-    failed = MagicMock()
-    failed.status_code = 502
-    failed.text = "upstream failed"
-    failed.json.return_value = {"detail": "upstream failed"}
-
     claim = AsyncMock(return_value=(object(), False))
-    lock = AsyncMock(return_value=object())
+    lock = AsyncMock()
     release = AsyncMock()
-    relay = AsyncMock(return_value=failed)
+    relay = AsyncMock()
 
     with patch("celerp.config.settings") as mock_settings, \
-         patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
          patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
          patch("celerp.connectors.ownership.lock_connector_operation", lock), \
          patch("celerp.connectors.ownership.release_connector_ownership", release), \
@@ -1482,8 +1476,9 @@ async def test_connector_reauthorize_failure_does_not_release_existing_owner(cli
         )
 
     assert response.status_code == 200
-    assert response.json()["error"] == "upstream failed"
-    assert relay.await_count == 1
+    assert "Disconnect the existing connector" in response.json()["error"]
+    lock.assert_not_awaited()
+    relay.assert_not_awaited()
     release.assert_not_awaited()
 
 
