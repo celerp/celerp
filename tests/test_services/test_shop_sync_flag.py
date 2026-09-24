@@ -102,7 +102,7 @@ async def test_list_items_source_filter(session):
     from types import SimpleNamespace
 
     from celerp.models.projections import Projection
-    from celerp_inventory.routes import list_items
+    from celerp_inventory.routes import ItemListFilters, list_items
 
     cid = uuid.uuid4()
     session.add(Company(id=cid, name="SrcCo", slug=f"srcco-{cid.hex[:8]}"))
@@ -120,7 +120,7 @@ async def test_list_items_source_filter(session):
     await session.flush()
 
     req = SimpleNamespace(query_params=SimpleNamespace(multi_items=lambda: []))
-    resp = await list_items(req, company_id=cid, session=session, role="owner", source="shopify")
+    resp = await list_items(req, company_id=cid, session=session, role="owner", filters=ItemListFilters(source="shopify"))
     assert {i["sku"] for i in resp["items"]} == {"s1"}
-    resp_all = await list_items(req, company_id=cid, session=session, role="owner")
+    resp_all = await list_items(req, company_id=cid, session=session, role="owner", filters=ItemListFilters())
     assert {i["sku"] for i in resp_all["items"]} == {"s1", "w1", "m1"}
