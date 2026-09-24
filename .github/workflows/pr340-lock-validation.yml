@@ -1,4 +1,4 @@
-name: PR340 Lock Validation
+name: PR340 Focused Validation
 
 on:
   push:
@@ -6,17 +6,45 @@ on:
       - pr340-integrity-final-audit
 
 jobs:
-  lock:
+  focused:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Install
-        run: python -m pip install -e .
-      - name: Regenerate lock
+        run: pip install uv && uv pip install --system -e ".[dev]"
+      - name: Focused tests
+        env:
+          ALLOW_INSECURE_JWT: "true"
+          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+        run: >
+          pytest
+          default_modules/celerp-connectors/tests/test_rate_limiting.py
+          default_modules/celerp-connectors/tests/test_credentials_routes.py
+          tests/test_woocommerce_sync_guards.py
+          tests/test_services/test_connector_upsert_integration.py
+          tests/test_company_deactivate.py
+          tests/test_backup_import.py
+          tests/test_routers/test_cloud_relay.py
+          -q --tb=short --timeout=60 -o addopts="" --no-cov
+      - name: Verify lock
         run: |
           python scripts/gen_first_party_lock.py
-          cat default_modules/first_party.lock.json
-          git diff -- default_modules/first_party.lock.json
+          git diff --exit-code default_modules/first_party.lock.json
