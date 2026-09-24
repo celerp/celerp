@@ -2537,6 +2537,7 @@
   "inventory.no_product_images": "No product images yet. Add them in Production documents below.",
   "inventory.no_results_for": "No results for '{q}'.",
   "inventory.no_status_items": "No {status} items.",
+  "inventory.sold_without_price": "{n} without a price",
   "inventory.no_steps_yet": "No steps yet. Add the build steps a worker follows; drag the handle to reorder.",
   "inventory.no_work_orders": "No work orders to show. Create them from an order or on the Demand Planning page.",
   "inventory.not_paired_field": "Not a paired field",

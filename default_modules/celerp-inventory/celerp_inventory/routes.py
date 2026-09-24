@@ -1001,10 +1001,9 @@ async def list_items(
             r["holding_value"] = None if gate_cost else scope_value.get(r.get("id"), 0.0)
 
     # Attach the realized sale price to each sold row (ungated: a sale price is not a cost).
-    if sold_scoped:
-        for r in result:
-            if str(r.get("status") or "").lower() == "sold":
-                r["sold_price"] = sold_price.get(r.get("id"))
+    sold_result = [r for r in result if str(r.get("status") or "").lower() == "sold"] if sold_scoped else []
+    for r in sold_result:
+        r["sold_price"] = sold_price.get(r.get("id"))
 
     # Ordering (FEFO / user column sort / default) is single-sourced in
     # celerp_inventory.search so the list and the global-search bar stay in
@@ -1024,6 +1023,12 @@ async def list_items(
         # Total over the whole scoped set (post-filter, pre-pagination) so the contact
         # card reads it directly and reconciles with the list at the same value basis.
         resp["value_total"] = round(sum(float(scope_value.get(r.get("id"), 0.0)) for r in result), 2)
+    if sold_scoped:
+        # Realized value over the WHOLE filtered set (pre-pagination) so the sold view's
+        # Total card reads the same figure on every page; rows without a resolvable
+        # selling line are counted so the UI can say how many the total leaves out.
+        from celerp.services.holdings import sold_value_total
+        resp["sold_total"], resp["sold_total_missing"] = sold_value_total(sold_result, sold_price)
     return resp
 
 

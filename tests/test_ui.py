@@ -1215,6 +1215,26 @@ class TestInventoryPage:
         assert "badge--available" in avail_cell and "/docs/" not in avail_cell
 
     @pytest.mark.asyncio
+    async def test_sold_view_total_card_shows_money(self, ui_client):
+        """The sold view's Total card carries the money total of the whole filtered set,
+        and names how many sold rows have no recorded price."""
+        sold = {**_ITEM, "entity_id": "gc:200", "status": "sold", "sold_price": 4200.0}
+        resp = {"items": [sold], "total": 1, "sold_total": 4200.0, "sold_total_missing": 2}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value=resp)),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            r = await ui_client.get("/inventory?status=sold", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        card = html.split('class="status-cards"', 1)[1].split("</div>", 1)[0]
+        assert 'status-card-total' in card, "Total card must carry the money total"
+        assert "4,200.00" in card
+        assert "2 without a price" in card
+
+    @pytest.mark.asyncio
     async def test_inventory_on_memo_scope_shows_quoted_value(self, ui_client):
         """Landing from the contact card: the scope is passed to the API, the banner names
         the basis, and the per-row value is the quoted price (not the catalog price)."""

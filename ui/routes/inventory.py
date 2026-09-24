@@ -993,6 +993,9 @@ async def _inventory_content(
         list_total = items_resp.get("total", len(items))
         # Present only under a contact holdings scope: the value of the whole scoped set.
         holdings_total = items_resp.get("value_total")
+        # Present only on the sold view: realized value of the whole filtered set.
+        sold_total = items_resp.get("sold_total")
+        sold_total_missing = int(items_resp.get("sold_total_missing") or 0)
         attribute_facets = items_resp.get("attribute_facets", {})
     except APIError as e:
         # 401 belongs to the caller's auth handler; every other read failure gets
@@ -1077,7 +1080,9 @@ async def _inventory_content(
         _category_tabs(category_counts, p, total_scoped=total_scoped, label_map=category_label_map),
         _inventory_type_tabs(p),
         _valuation_bar(valuation, currency, lang, status=p.get("status", "")),
-        _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p, lang=lang),
+        _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p, lang=lang,
+                                sold_total=sold_total, sold_total_missing=sold_total_missing,
+                                currency=currency),
         _bulk_toolbar(locations, p, total_items, settings=company.get("settings") or {}, role=role),
         Div(
             _column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open),
@@ -5017,12 +5022,15 @@ def _vertical_status_card_defs(vertical: str) -> list[tuple[str, str, str]]:
     return _VERTICAL_STATUS_CARDS.get(vertical, _DEFAULT_STATUS_CARDS)
 
 
-def _inventory_status_cards(count_by_status: dict, active_status: str, vertical: str = "", p: dict | None = None, lang: str = "en") -> FT:
+def _inventory_status_cards(count_by_status: dict, active_status: str, vertical: str = "", p: dict | None = None, lang: str = "en",
+                            sold_total: float | None = None, sold_total_missing: int = 0, currency: str | None = None) -> FT:
     """Status cards driven by backend count_by_status dict (scoped to active category/status filter).
 
     When a specific status filter is active (sold/archived/etc.), shows a single
     'All' card with the total count for that filtered view instead of the
     available/reserved breakdown (which would all be 0 and is meaningless).
+    On the sold view that card also carries the realized money total of the
+    whole filtered set (sold_total) and says how many rows have no price.
     """
     # Strip skus/q: clicking a status card is a catalog navigation action and should
     # clear any transient item-specific filters (post-split/merge result views etc.)
@@ -5034,8 +5042,13 @@ def _inventory_status_cards(count_by_status: dict, active_status: str, vertical:
     _HIDDEN = {"sold", "archived", "merged", "expired", "disposed"}
     if active_status and active_status not in ("", "all"):
         total = sum(count_by_status.values())
-        cards = [{"label": t("chip.total", lang), "count": total, "status": active_status, "color": "gray"}]
-        return status_cards(cards, base_url, active_status)
+        label = t("chip.total", lang)
+        if sold_total is not None and sold_total_missing:
+            label += " (" + t("inventory.sold_without_price", lang, n=sold_total_missing) + ")"
+        card = {"label": label, "count": total, "status": active_status, "color": "gray"}
+        if sold_total is not None:
+            card["total"] = sold_total
+        return status_cards([card], base_url, active_status, currency=currency)
 
     _CARD_DEFS = _vertical_status_card_defs(vertical)
     cards = [

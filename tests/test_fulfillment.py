@@ -2517,24 +2517,19 @@ async def test_reserved_conflict_detail_structured(client, session, auth, _setup
     _check_detail(rc.json()["detail"])
 
 
-@pytest.mark.asyncio
-async def test_sold_view_attaches_realized_sale_price(client, session, auth, _setup_ids):
-    """A sold item listed under status=sold carries sold_price = its selling line's unit price.
-
-    Red statement: list_items does not attach a sold_price key, so the sold record
-    returned by GET /items?status=sold has no realized price to display
-    (celerp-inventory/routes.py list_items, pre-change).
-    """
+async def _sell_item(client, session, auth, ids, sku, qty, unit_price, ref_id):
+    """Create *qty* of *sku*, sell it on a finalized invoice and fulfill the line, so the
+    item is sold with a realized per-unit price of *unit_price*. Returns the item id."""
     from celerp.models.projections import Projection
     from celerp.services.fulfill import execute_fulfill
     from celerp.services.pick import compute_pick_plan
 
-    item_id = await _create_item(client, auth, "SOLDPX-A", 2, cost_price=4.0, sell_by="carat")
+    item_id = await _create_item(client, auth, sku, qty, cost_price=4.0, sell_by="carat")
     doc_id = await _create_and_finalize_invoice(
-        client, auth, [{"sku": "SOLDPX-A", "quantity": 2, "unit_price": 100.0}], ref_id="INV-SOLDPX-1")
+        client, auth, [{"sku": sku, "quantity": qty, "unit_price": unit_price}], ref_id=ref_id)
 
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
+    doc_row = await session.get(Projection, {"company_id": ids["company_id"], "entity_id": doc_id})
+    inv_row = await session.get(Projection, {"company_id": ids["company_id"], "entity_id": item_id})
     available_inv = [{
         "entity_id": item_id, "sku": inv_row.state["sku"],
         "quantity": float(inv_row.state["quantity"]),
@@ -2544,10 +2539,22 @@ async def test_sold_view_attaches_realized_sale_price(client, session, auth, _se
     pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
     await execute_fulfill(
         session, doc_entity_id=doc_id, doc_state=doc_row.state,
-        pick_result=pick_result, company_id=_setup_ids["company_id"],
-        user_id=str(_setup_ids["user_id"]),
+        pick_result=pick_result, company_id=ids["company_id"],
+        user_id=str(ids["user_id"]),
     )
     await session.commit()
+    return item_id
+
+
+@pytest.mark.asyncio
+async def test_sold_view_attaches_realized_sale_price(client, session, auth, _setup_ids):
+    """A sold item listed under status=sold carries sold_price = its selling line's unit price.
+
+    Red statement: list_items does not attach a sold_price key, so the sold record
+    returned by GET /items?status=sold has no realized price to display
+    (celerp-inventory/routes.py list_items, pre-change).
+    """
+    await _sell_item(client, session, auth, _setup_ids, "SOLDPX-A", 2, 100.0, "INV-SOLDPX-1")
 
     r = await client.get("/items", headers=auth["headers"], params={"status": "sold"})
     assert r.status_code == 200, r.text
@@ -2562,6 +2569,34 @@ async def test_sold_view_attaches_realized_sale_price(client, session, auth, _se
     rows = {it["sku"]: it for it in r.json()["items"]}
     assert "SOLDPX-B" in rows
     assert "sold_price" not in rows["SOLDPX-B"]
+
+
+@pytest.mark.asyncio
+async def test_list_items_sold_total_over_full_set(client, session, auth, _setup_ids):
+    """The sold view returns sold_total = sum of realized value (unit price x quantity)
+    over EVERY sold row matching the filter, not only the rows on the current page.
+
+    Red statement: list_items returns no sold_total key, so a page of the sold view
+    cannot show the money total of the whole filtered set.
+    """
+    await _sell_item(client, session, auth, _setup_ids, "SOLDTOT-A", 2, 100.0, "INV-SOLDTOT-1")
+    await _sell_item(client, session, auth, _setup_ids, "SOLDTOT-B", 1, 50.0, "INV-SOLDTOT-2")
+    await _sell_item(client, session, auth, _setup_ids, "SOLDTOT-C", 3, 10.5, "INV-SOLDTOT-3")
+
+    r = await client.get("/items", headers=auth["headers"], params={"status": "sold", "limit": 1})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["items"]) == 1, "limit must still page the rows"
+    assert body["total"] == 3
+    # 2 x 100 + 1 x 50 + 3 x 10.5, across all three rows although only one is on the page.
+    assert body["sold_total"] == 281.5
+    assert body["sold_total_missing"] == 0
+
+    # Not a sold view: no sold total is computed.
+    await _create_item(client, auth, "SOLDTOT-D", 5, cost_price=4.0, sell_by="carat")
+    r = await client.get("/items", headers=auth["headers"], params={"status": "available"})
+    assert r.status_code == 200, r.text
+    assert "sold_total" not in r.json()
 
 
 # ---------------------------------------------------------------------------

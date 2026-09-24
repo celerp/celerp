@@ -180,3 +180,20 @@ def sold_prices(
             unit = (total / qty) if (total is not None and qty) else None
         out[item_id] = round(unit, 2) if unit is not None else None
     return out
+
+
+def sold_value_total(rows: Iterable[dict], prices: dict[str, float | None]) -> tuple[float, int]:
+    """Realized value of sold *rows* (flattened item records): unit price x quantity, the
+    same basis as memo_holdings, summed over every row whose price resolved in *prices*.
+    Returns (total, rows_without_price): an unresolved row adds nothing and is counted,
+    never estimated. A row with no numeric quantity is a single piece."""
+    total = 0.0
+    missing = 0
+    for r in rows:
+        price = prices.get(r.get("id"))
+        if price is None:
+            missing += 1
+            continue
+        qty = _num(r.get("quantity"))
+        total += price * (qty if qty is not None else 1.0)
+    return round(total, 2), missing
