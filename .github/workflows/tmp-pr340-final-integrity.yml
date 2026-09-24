@@ -247,10 +247,13 @@ jobs:
           """)
           
           PY
+          git diff --check
+      - name: Install dependencies and regenerate lock
+        run: |
+          pip install uv
+          uv pip install --system -e ".[dev]" pytest-xdist
           python scripts/gen_first_party_lock.py
           git diff --check
-      - name: Install dependencies
-        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist
       - name: Run focused regression suite
         env:
           ALLOW_INSECURE_JWT: "true"
