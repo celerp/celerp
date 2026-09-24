@@ -241,6 +241,39 @@ async def _get_connector_config(company_id: str, connector: str):
         return None
 
 
+def _local_connector_entry(platform: str) -> dict:
+    """Build display metadata for a locally known connector."""
+    from celerp.connectors.registry import get as get_connector
+
+    connector = get_connector(platform)
+    category = getattr(connector.category, "value", connector.category)
+    return {
+        "id": platform,
+        "name": connector.display_name,
+        "category": category,
+        "auth_type": "api_key" if platform == "woocommerce" else "oauth",
+        "connected": False,
+        "entities": [
+            getattr(entity, "value", entity)
+            for entity in connector.supported_entities
+        ],
+    }
+
+
+async def _owned_connector_configs(company_id: str) -> list:
+    """Return connector configuration rows owned by the current company."""
+    import sqlalchemy as sa
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+
+    async with get_session_ctx() as session:
+        return list((await session.execute(
+            sa.select(ConnectorConfig).where(
+                ConnectorConfig.company_id == str(company_id)
+            )
+        )).scalars().all())
+
+
 async def _kickoff_connector_sync(company_id: str, platform: str, token: str) -> None:
     """Start the connector's canonical sync plan in the API process."""
     from ui.api_client import start_connector_sync
@@ -577,6 +610,17 @@ def _connector_card(
             )
     else:
         # API key auth (WooCommerce)
+        disconnect = (
+            Button(
+                t("connectors.disconnect", lang),
+                cls="btn btn--sm btn--outline btn--danger",
+                hx_delete=f"/settings/connectors/{cid}/disconnect",
+                hx_target=f"#connector-card-{cid}",
+                hx_swap="outerHTML",
+                hx_confirm=t("connectors.disconnect_confirm", lang),
+            )
+            if config is not None else None
+        )
         action_area = Div(
             Form(
                 Input(name="store_url", placeholder="https://mystore.com",
@@ -592,6 +636,7 @@ def _connector_card(
                 hx_swap="outerHTML",
                 style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;",
             ),
+            *([disconnect] if disconnect is not None else []),
             cls="connector-action-area",
         )
 
@@ -655,9 +700,25 @@ async def connectors_tab_content(lang: str, token: str, category: str, company_i
 
     if not catalog:
         if needs_plan:
-            # Free account: the relay's 402 is an entitlement gate, not a
-            # network problem - show the trial CTA, same as the authorize path.
-            return Div(_entitlement_cta(lang), cls="settings-card")
+            owned_cards = []
+            for config in await _owned_connector_configs(company_id):
+                try:
+                    entry = _local_connector_entry(config.connector)
+                except KeyError:
+                    continue
+                if entry["category"] != category:
+                    continue
+                owned_cards.append(
+                    _connector_card(
+                        entry,
+                        None,
+                        relay_url,
+                        company_id,
+                        config=config,
+                        lang=lang,
+                    )
+                )
+            return Div(_entitlement_cta(lang), *owned_cards, cls="settings-card")
         return Div(
             P(fetch_err or t("connectors.fetch_error", lang,
                 default="Could not load connectors from relay. Check your connection."),
@@ -784,7 +845,10 @@ def setup_routes(app):
             await session.commit()
 
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
-        c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
+        c_data = next(
+            (c for c in catalog if c["id"] == platform),
+            _local_connector_entry(platform),
+        )
         last_runs = await _get_last_runs(company_id)
         config = await _get_connector_config(company_id, platform)
         return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id,

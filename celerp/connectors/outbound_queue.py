@@ -162,7 +162,7 @@ async def enqueue_item_change(session, entry, *, previous_state: dict | None = N
 
     if not anchor_ids and not direct_linked:
         sku_keys = {
-            str(state.get("sku") or "").strip().casefold()
+            str(state.get("sku") or "").strip().lower()
             for state in states
             if str(state.get("sku") or "").strip()
         }

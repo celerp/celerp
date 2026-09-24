@@ -426,3 +426,70 @@ async def test_ambiguous_connector_ownership_fails_closed(session, monkeypatch):
         await lock_connector_operation(
             session, company_a, connector, require_owner=True
         )
+
+
+@pytest.mark.asyncio
+async def test_legacy_sku_lookup_is_case_insensitive_in_database(session):
+    company_id = uuid.uuid4()
+    session.add(Company(
+        id=company_id,
+        name="Queue Legacy Case Test",
+        slug=f"queue-case-{company_id.hex[:8]}",
+        settings={},
+    ))
+    session.add(ConnectorConfig(
+        company_id=str(company_id), connector="woocommerce", direction="both"
+    ))
+    now = datetime.now(timezone.utc)
+    session.add_all([
+        Projection(
+            company_id=company_id,
+            entity_id="item:case-anchor",
+            entity_type="item",
+            version=1,
+            created_at=now,
+            updated_at=now,
+            state={
+                "sku": "MiXeD-SKU",
+                "quantity": 0,
+                "status": "available",
+                "external_links": {
+                    "woocommerce": {"product_id": "30", "sync_enabled": True}
+                },
+            },
+        ),
+        Projection(
+            company_id=company_id,
+            entity_id="item:case-child",
+            entity_type="item",
+            version=1,
+            created_at=now,
+            updated_at=now,
+            state={
+                "sku": "MIXED-SKU",
+                "barcode": "CASE-CHILD-1",
+                "quantity": 1,
+                "status": "available",
+            },
+        ),
+    ])
+    await session.flush()
+
+    entry = LedgerEntry(
+        company_id=company_id,
+        entity_id="item:case-child",
+        entity_type="item",
+        event_type="item.quantity.adjusted",
+        data={"new_quantity": 1},
+        source="api",
+        idempotency_key=f"t-{uuid.uuid4()}",
+    )
+    await enqueue_item_change(session, entry)
+    await session.flush()
+
+    identities = set((await session.execute(
+        sa.select(OutboundQueue.entity_id).where(
+            OutboundQueue.company_id == str(company_id)
+        )
+    )).scalars().all())
+    assert identities == {"30"}

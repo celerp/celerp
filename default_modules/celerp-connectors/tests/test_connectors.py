@@ -591,7 +591,7 @@ def wc():
 @pytest.fixture
 def wc_ctx():
     return ConnectorContext(
-        company_id="test-company",
+        company_id="00000000-0000-0000-0000-000000000001",
         access_token="ck_test123:cs_test456",
         store_handle="https://mystore.example.com",
     )

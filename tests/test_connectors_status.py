@@ -292,3 +292,54 @@ def test_pending_oauth_connector_exposes_disconnect():
     html = to_xml(card)
     assert '/settings/connectors/quickbooks/oauth-redirect' in html
     assert 'hx-delete="/settings/connectors/quickbooks/disconnect"' in html
+
+
+def test_pending_apikey_connector_exposes_disconnect():
+    from types import SimpleNamespace
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import _connector_card
+
+    card = _connector_card(
+        {
+            "id": "woocommerce",
+            "name": "WooCommerce",
+            "category": "website",
+            "auth_type": "api_key",
+            "connected": False,
+            "entities": [],
+        },
+        None,
+        "https://relay.example",
+        "company-1",
+        config=SimpleNamespace(direction="both", sync_frequency="realtime"),
+    )
+    html = to_xml(card)
+    assert '/settings/connectors/woocommerce/connect-apikey' in html
+    assert 'hx-delete="/settings/connectors/woocommerce/disconnect"' in html
+
+
+@pytest.mark.asyncio
+async def test_needs_plan_keeps_owned_connector_disconnect_visible():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import connectors_tab_content
+
+    config = SimpleNamespace(
+        connector="quickbooks",
+        direction="both",
+        sync_frequency="manual",
+    )
+    with patch(
+        "ui.routes.settings_connectors._fetch_catalog",
+        new=AsyncMock(return_value=([], "plan required", True)),
+    ), patch(
+        "ui.routes.settings_connectors._owned_connector_configs",
+        new=AsyncMock(return_value=[config]),
+    ):
+        html = to_xml(await connectors_tab_content(
+            "en", "token", "accounting", "company-1"
+        ))
+
+    assert "quickbooks" in html.lower()
+    assert 'hx-delete="/settings/connectors/quickbooks/disconnect"' in html
