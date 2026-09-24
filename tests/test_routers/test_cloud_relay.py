@@ -941,6 +941,29 @@ async def test_connector_authorize_url_success(client):
 
 
 @pytest.mark.asyncio
+async def test_connector_authorize_url_requires_disconnect_before_reconnect(client):
+    token = await _register(client, "auth-url-existing")
+    claim = AsyncMock(return_value=(object(), False))
+    lock = AsyncMock()
+    relay = AsyncMock()
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
+         patch("celerp.connectors.ownership.lock_connector_operation", lock), \
+         patch("celerp.gateway.state.with_relay_client", relay):
+        mock_settings.gateway_token = "my-api-key"
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+        response = await client.get(
+            "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
+        )
+
+    assert response.status_code == 200
+    assert "Disconnect the existing connector" in response.json()["error"]
+    lock.assert_not_awaited()
+    relay.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_connector_authorize_url_not_connected(client):
     """Returns error when no gateway_token configured."""
     token = await _register(client, "auth-url-notoken")

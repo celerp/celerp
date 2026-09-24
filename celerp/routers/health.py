@@ -1228,6 +1228,11 @@ async def connector_authorize_url(
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    if not ownership_created:
+        return {
+            "error": "Disconnect the existing connector before reconnecting it."
+        }
+
     try:
         await lock_connector_operation(
             session, company_id, platform, require_owner=True
