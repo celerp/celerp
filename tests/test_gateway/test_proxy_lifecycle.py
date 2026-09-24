@@ -76,6 +76,58 @@ async def test_gateway_http_cancel_aborts_inflight(client, monkeypatch):
     assert task.cancelled() or task.done(), "http.cancel must cancel the keyed in-flight task"
 
 
+
+@pytest.mark.asyncio
+async def test_proxy_drain_finishes_current_request_and_rejects_new_work(
+        client, monkeypatch):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    handled = []
+
+    async def _handle(payload):
+        handled.append(payload["id"])
+        started.set()
+        await release.wait()
+
+    sent = []
+
+    async def _capture_send(ws, msg):
+        sent.append(msg)
+
+    monkeypatch.setattr(client, "_handle_proxy_request", _handle)
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(_capture_send))
+    client._ws = object()
+
+    await client._dispatch({
+        "type": "http.request",
+        "payload": {"id": "current", "method": "GET", "path": "/x"},
+    })
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert client.has_inflight_proxy_requests()
+
+    client.begin_proxy_drain()
+    idle = asyncio.create_task(client.wait_for_proxy_idle())
+    await asyncio.sleep(0)
+    assert not idle.done()
+
+    await client._dispatch({
+        "type": "http.request",
+        "payload": {"id": "later", "method": "GET", "path": "/y"},
+    })
+    assert handled == ["current"]
+    rejected = [
+        m for m in sent
+        if m.get("type") == "http.response"
+        and m.get("payload", {}).get("id") == "later"
+    ]
+    assert rejected and rejected[-1]["payload"]["status"] == 503
+
+    release.set()
+    await asyncio.wait_for(idle, timeout=1)
+    await asyncio.sleep(0)
+    assert not client.has_inflight_proxy_requests()
+
+
 @pytest.mark.asyncio
 async def test_gateway_timeout_ms_deadline(client, monkeypatch):
     """A proxied request carrying timeout_ms is cancelled past that deadline and an

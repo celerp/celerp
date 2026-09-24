@@ -603,7 +603,7 @@ def _apply_migrations(db_url: str) -> None:
 
         if "companies" in existing_tables:
             from celerp.migrations._auto_stamp import (
-                extract_signatures, find_safe_stamp,
+                extract_signatures, find_safe_stamp, load_kernel_metadata,
             )
             from pathlib import Path as _Path
             script = ScriptDirectory.from_config(alembic_cfg)
@@ -618,7 +618,10 @@ def _apply_migrations(db_url: str) -> None:
             # walk_revisions() yields head→base, the order the walker
             # requires.
             revs_newest_first = list(script.walk_revisions())
-            safe = find_safe_stamp(revs_newest_first, sigs_by_rev, inspector)
+            safe = find_safe_stamp(
+                revs_newest_first, sigs_by_rev, inspector,
+                expected_metadata=load_kernel_metadata(),
+            )
             if safe != "base" and safe != stamped:
                 click.echo(
                     f"  · Live schema matches revision {safe} — "

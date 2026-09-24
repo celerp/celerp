@@ -1,11 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Authoritative Celerp Connect entitlement and credential synchronization.
-
-Connection state and entitlement state are deliberately separate here. Durable
-instance credentials authenticate relay REST reads even when no WebSocket
-session exists; only explicit reconnect/sync starts a tunnel.
-"""
+"""Synchronize Celerp Connect entitlement and local state."""
 from __future__ import annotations
 
 import asyncio
@@ -14,10 +9,69 @@ import logging
 log = logging.getLogger(__name__)
 
 RELAY_ENTITLEMENT_TIMEOUT = 6.0
+RUNTIME_DRAIN_TIMEOUT = 8.0
+
+# Rare, short-lived handoffs scheduled when activation occurs inside a proxied
+# Web Access request. Strong refs prevent a pending post-response restart from
+# being garbage-collected.
+_runtime_transition_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_runtime_transition(coro) -> None:
+    task = asyncio.create_task(coro)
+    _runtime_transition_tasks.add(task)
+    task.add_done_callback(_runtime_transition_tasks.discard)
+
+
+async def reconfigure_gateway_runtime(*, restart: bool) -> bool:
+    """Converge the current gateway generation without cutting off its response."""
+    from celerp.config import settings
+    from celerp.gateway import client as gateway_client
+    from celerp.gateway import ensure_running, shutdown as shutdown_gateway
+
+    expected = gateway_client.get_client()
+    if expected is None:
+        if restart and not settings.cloud_disconnected:
+            ensure_running()
+        return False
+
+    if not expected.has_inflight_proxy_requests():
+        closed = await shutdown_gateway(expected_client=expected)
+        if not closed:
+            return False
+        if restart and not settings.cloud_disconnected:
+            ensure_running()
+        return False
+
+    drain_generation = expected.begin_proxy_drain()
+
+    async def _after_response() -> None:
+        try:
+            try:
+                await asyncio.wait_for(
+                    expected.wait_for_proxy_idle(),
+                    timeout=RUNTIME_DRAIN_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                pass
+            if not expected.owns_proxy_drain(drain_generation):
+                return
+            closed = await shutdown_gateway(expected_client=expected)
+            if not closed:
+                return
+            if restart and not settings.cloud_disconnected:
+                ensure_running()
+        except Exception:
+            log.warning("Deferred gateway reconfiguration failed", exc_info=True)
+        finally:
+            expected.end_proxy_drain(drain_generation)
+
+    _spawn_runtime_transition(_after_response())
+    return True
 
 
 async def stored_api_key() -> str:
-    """Current API key, falling back to the preserved on-disk credential."""
+    """Return the configured Connect credential, if any."""
     from celerp.config import read_config, settings
     if settings.gateway_token:
         return settings.gateway_token
@@ -29,7 +83,7 @@ async def stored_api_key() -> str:
 
 
 async def persisted_api_key() -> str:
-    """Return only the credential persisted in [cloud].token."""
+    """Return the persisted Connect credential, if any."""
     from celerp.config import read_config
     try:
         cfg = await asyncio.to_thread(read_config)
@@ -41,12 +95,7 @@ async def persisted_api_key() -> str:
 async def authenticated_request(method: str, path: str, *, total_s: float = RELAY_ENTITLEMENT_TIMEOUT,
                                 json: dict | None = None, params: dict | None = None,
                                 api_key: str | None = None):
-    """One bounded relay REST request authenticated by the durable instance key.
-
-    A pending local verifier owns destination authority. An incumbent key may
-    still authenticate ordinary reads, but while that verifier exists a key for
-    another instance cannot answer on behalf of the local identity being bound.
-    """
+    """Make one bounded authenticated Connect request."""
     from celerp.config import ensure_instance_id, settings
     from celerp.gateway.state import (
         fetch_relay_auth, is_foreign_relay_identity,
@@ -71,7 +120,7 @@ async def authenticated_request(method: str, path: str, *, total_s: float = RELA
 
 
 async def subscription_status() -> dict | None:
-    """Authoritative subscription state independent of the live WS session."""
+    """Return the current Connect subscription state, if available."""
     try:
         response = await authenticated_request("GET", "/billing/subscription")
     except Exception as exc:
@@ -92,10 +141,12 @@ async def apply_activation_state(
     expected_api_key: str | None = None,
     expected_verifier: str | None = None,
     keep_disconnected: bool = False,
+    restart_transport: bool = False,
 ) -> bool:
     """Persist authoritative activation first, then converge local runtime."""
     from celerp.config import record_cloud_activation, settings
     from celerp.gateway import client as gateway_client
+    from celerp.gateway.state import get_subscription_state, relay_session_headers
     from celerp.services import backup_scheduler
 
     effective_public_url = (
@@ -106,6 +157,10 @@ async def apply_activation_state(
         import base64, secrets
         effective_backup_key = base64.b64encode(
             secrets.token_bytes(32)).decode()
+
+    # Capture the pre-activation runtime before set_subscription_state below
+    # overwrites it. An active socket may still represent the previous entitlement.
+    runtime_tier, _runtime_status = get_subscription_state()
 
     accepted = await asyncio.to_thread(
         record_cloud_activation, token, iid,
@@ -130,10 +185,8 @@ async def apply_activation_state(
         settings.gateway_token = ""
         settings.celerp_public_url = ""
         settings.cloud_disconnected = True
-        existing = gateway_client.get_client()
-        if existing is not None:
-            await existing.close()
-            gateway_client.set_client(None)
+        if gateway_client.get_client() is not None:
+            await reconfigure_gateway_runtime(restart=False)
         backup_scheduler.stop()
         return True
 
@@ -144,15 +197,43 @@ async def apply_activation_state(
     from celerp.gateway import ensure_running, has_active_share
     should_serve = bool(settings.celerp_public_url)
     if not should_serve:
-        should_serve = await has_active_share()
+        try:
+            should_serve = await has_active_share()
+        except Exception:
+            log.debug("Active-share lookup failed during entitlement convergence", exc_info=True)
+            should_serve = False
+
     existing = gateway_client.get_client()
-    if existing is not None and (
-            not existing.is_serving(token)
-            or (authoritative_public_url and not should_serve)):
-        await existing.close()
-        gateway_client.set_client(None)
-    if should_serve:
+    transport_mismatch = False
+    if (authoritative_public_url and existing is not None
+            and existing.relay_status == "active"):
+        runtime_paid = bool(
+            relay_session_headers().get("X-Session-Token", ""))
+        # /auth/activate returns public_url only when the relay considers this
+        # instance Connect-entitled, so this mirrors the server's transport verdict
+        # including its bounded past_due grace.
+        authoritative_paid = bool(effective_public_url)
+        tier_mismatch = bool(
+            tier and runtime_tier and tier != runtime_tier)
+        transport_mismatch = (
+            runtime_paid != authoritative_paid or tier_mismatch)
+
+    restart_required = bool(
+        existing is not None
+        and (
+            restart_transport
+            or not existing.uses_token(token)
+            or transport_mismatch
+            or (authoritative_public_url and not should_serve)
+        )
+    )
+    deferred_restart = False
+    if restart_required:
+        deferred_restart = await reconfigure_gateway_runtime(restart=should_serve)
+    elif should_serve:
         ensure_running()
+
+    if should_serve and not deferred_restart:
         gw = gateway_client.get_client()
         for _ in range(15):
             if gw and gw.relay_status in ("active", "tos_required"):
@@ -165,8 +246,10 @@ async def apply_activation_state(
         backup_scheduler.stop()
     return True
 
-async def sync_existing_entitlement() -> dict | None:
-    """Synchronise a credential without letting authentication rewrite identity."""
+async def sync_existing_entitlement(
+    *, require_persisted_key: bool = False,
+) -> dict | None:
+    """Synchronize an existing Connect installation."""
     from celerp.config import ensure_instance_id, settings
     from celerp.gateway.state import (
         activate_payload, fetch_relay_auth, is_foreign_relay_identity,
@@ -178,6 +261,9 @@ async def sync_existing_entitlement() -> dict | None:
     if not key:
         return None
     persisted_key = await persisted_api_key()
+    if require_persisted_key and (
+            not persisted_key or persisted_key != key):
+        return None
     local_iid = await asyncio.to_thread(ensure_instance_id)
     pending_verifier = settings.activation_verifier or ""
 

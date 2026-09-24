@@ -84,12 +84,9 @@ async def test_checkout_sends_balance_due_and_reconcile_metadata(client, payment
     assert r.headers["location"] == "https://stripe.test/cs_1"
     assert captured["amount_minor"] == 107000  # 1070.00 USD in minor units
     assert captured["currency"] == "USD"
-    # success_url must carry the placeholder Cloud/Stripe substitutes so /return can reconcile
-    assert "{CHECKOUT_SESSION_ID}" in captured["success_url"]
-    # metadata lets the backup gateway push route the confirmation back to this doc
-    assert captured["metadata"]["entity_id"] == eid
-    assert captured["metadata"]["company_id"] == _company_id(tok)
-    assert captured["metadata"]["token"] == token
+    assert captured["entity_id"] == eid
+    assert captured["company_id"] == _company_id(tok)
+    assert captured["share_token"] == token
 
 
 @pytest.mark.asyncio
@@ -114,16 +111,28 @@ async def test_checkout_502_when_cloud_unavailable(client, payments_on, monkeypa
 
 # ── reconcile on the customer's return (idempotent) ──────────────────────────
 
-def _paid_status():
-    return {"paid": True, "reference": "pi_123", "amount_minor": 107000, "currency": "usd"}
+def _paid_status(company_id: str, entity_id: str, token: str, reference: str = "pi_123"):
+    import hashlib
+    return {
+        "paid": True,
+        "reference": reference,
+        "amount_minor": 107000,
+        "currency": "usd",
+        "company_id": company_id,
+        "entity_id": entity_id,
+        "share_token_hash": hashlib.sha256(token.encode()).hexdigest(),
+    }
 
 
 @pytest.mark.asyncio
 async def test_return_reconciles_payment(client, payments_on, monkeypatch):
-    monkeypatch.setattr("celerp.services.payments.checkout_status",
-                        lambda _sid: _async(_paid_status()))
     tok = await _register(client)
     eid, token = await _payable_invoice(client, tok)
+    status = _paid_status(_company_id(tok), eid, token)
+    monkeypatch.setattr(
+        "celerp.services.payments.checkout_status",
+        lambda _sid: _async(status),
+    )
     r = await client.get(f"/pay/{token}/return?session_id=cs_1", follow_redirects=False)
     assert r.status_code == 303
     assert r.headers["location"] == f"/share/{token}"
@@ -137,10 +146,13 @@ async def test_return_reconciles_payment(client, payments_on, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_return_is_idempotent(client, payments_on, monkeypatch):
-    monkeypatch.setattr("celerp.services.payments.checkout_status",
-                        lambda _sid: _async(_paid_status()))
     tok = await _register(client)
     eid, token = await _payable_invoice(client, tok)
+    status = _paid_status(_company_id(tok), eid, token)
+    monkeypatch.setattr(
+        "celerp.services.payments.checkout_status",
+        lambda _sid: _async(status),
+    )
     await client.get(f"/pay/{token}/return?session_id=cs_1", follow_redirects=False)
     await client.get(f"/pay/{token}/return?session_id=cs_1", follow_redirects=False)
     doc = await _doc_state(client, tok, eid)
@@ -235,7 +247,7 @@ async def test_full_online_payment_journey(client, session, payments_on, monkeyp
     async def _fake_send(to, subject, body_html, body_text="", **kw):
         sent.update(html=body_html, text=body_text, subject=subject)
         email_done.set()
-        return True
+        return True, None
     monkeypatch.setattr("celerp.services.email.send_email", _fake_send)
 
     checkout = {}
@@ -263,13 +275,18 @@ async def test_full_online_payment_journey(client, session, payments_on, monkeyp
     r = await client.get(f"/pay/{token}", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "https://stripe.test/cs_journey"
     assert checkout["amount_minor"] == 107000 and checkout["currency"] == "USD"
-    assert checkout["metadata"]["entity_id"] == eid and checkout["metadata"]["token"] == token
-    assert "{CHECKOUT_SESSION_ID}" in checkout["success_url"]
+    assert checkout["entity_id"] == eid
+    assert checkout["company_id"] == _company_id(tok)
+    assert checkout["share_token"] == token
 
     # 4. Stripe confirms; the customer returns; the payment reconciles.
-    monkeypatch.setattr("celerp.services.payments.checkout_status",
-                        lambda sid: _async({"paid": True, "reference": "pi_journey",
-                                            "amount_minor": 107000, "currency": "usd"}))
+    status = _paid_status(
+        _company_id(tok), eid, token, reference="pi_journey"
+    )
+    monkeypatch.setattr(
+        "celerp.services.payments.checkout_status",
+        lambda sid: _async(status),
+    )
     r = await client.get(f"/pay/{token}/return?session_id=cs_j", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == f"/share/{token}"
 

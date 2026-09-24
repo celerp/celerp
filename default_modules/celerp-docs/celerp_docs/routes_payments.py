@@ -18,14 +18,13 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken
 from celerp.services import payments as pay
-from celerp.services.auth import get_current_user
+from celerp.services.auth import get_current_user, require_install_owner
 from celerp.services.money import currency_dp, to_minor_units
 from celerp.services.permissions import require_permission
 
@@ -102,8 +101,12 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
             source="stripe", actor_id=await _company_owner_id(session, company_id),
             idempotency_key=reference,
         )
-    except HTTPException:
-        return None  # replay or already-settled invoice: nothing left to record
+    except HTTPException as exc:
+        if exc.status_code == 409 and exc.detail in {
+            "Payment already recorded", "Invoice already fully paid",
+        }:
+            return None
+        raise
     if getattr(entry, "was_deduped", False):
         return None
     await session.commit()
@@ -122,15 +125,12 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
     if state.get("doc_type") not in _PAYABLE_TYPES or _outstanding(state) <= 0:
         raise HTTPException(status_code=409, detail="This document is not payable")
 
-    base = (settings.celerp_public_url or "").rstrip("/")
     currency = state.get("currency", "USD")
     ref = state.get("ref_id") or state.get("doc_number") or entity_id.split(":")[-1][:8]
     result = await pay.create_checkout(
         amount_minor=to_minor_units(_outstanding(state), currency), currency=currency,
         description=f"Invoice {ref}",
-        success_url=f"{base}/pay/{token}/return?session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{base}/share/{token}",
-        metadata={"entity_id": entity_id, "company_id": str(company_id), "token": token},
+        company_id=str(company_id), entity_id=entity_id, share_token=token,
     )
     if not result or not result.get("url"):
         raise HTTPException(status_code=502, detail="Could not start payment")
@@ -145,7 +145,15 @@ async def return_from_payment(token: str, session_id: str = Query(""),
     if state is not None and session_id:
         try:
             cs = await pay.checkout_status(session_id)
-            if cs and cs.get("paid"):
+            import hashlib
+            binding_matches = bool(
+                cs
+                and cs.get("company_id") == str(company_id)
+                and cs.get("entity_id") == entity_id
+                and cs.get("share_token_hash")
+                    == hashlib.sha256(token.encode()).hexdigest()
+            )
+            if cs and cs.get("paid") and binding_matches:
                 await record_stripe_payment(
                     session, company_id, entity_id, state,
                     reference=cs.get("reference"),
@@ -171,8 +179,8 @@ async def payments_status(user=Depends(get_current_user)) -> dict:
     return await pay.connect_status()
 
 
-@router.post("/payments/connect")
-async def payments_connect(_: None = require_permission("manage_integrations")) -> dict:
+@router.post("/payments/connect", dependencies=[Depends(require_install_owner)])
+async def payments_connect() -> dict:
     """Begin Connect OAuth via Cloud; returns {url} for the UI to redirect to."""
     result = await pay.connect_start()
     if not result or not result.get("url"):
@@ -180,6 +188,6 @@ async def payments_connect(_: None = require_permission("manage_integrations")) 
     return {"url": result["url"]}
 
 
-@router.post("/payments/disconnect")
-async def payments_disconnect(_: None = require_permission("manage_integrations")) -> dict:
+@router.post("/payments/disconnect", dependencies=[Depends(require_install_owner)])
+async def payments_disconnect() -> dict:
     return {"disconnected": await pay.disconnect()}

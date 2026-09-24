@@ -1,11 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Gateway session-token state - internal only.
-
-This module is in _PROTECTED_BSL_INTERNALS. Third-party modules MUST NOT import it.
-The session token is issued by relay.celerp.com after the hello_ack handshake
-and is required for cloud-gated endpoints (/ai/*, /backup/*, /connectors/*).
-"""
+"""Runtime state and HTTP helpers for Celerp Connect."""
 from __future__ import annotations
 
 import copy
@@ -28,19 +23,12 @@ _VALID_COMMERCIAL_MODES = ("celerp_direct", "partner_managed")
 
 
 def get_instance_id() -> str:
-    """Return the relay-canonical instance_id (empty string if not connected)."""
+    """Return the current connected instance id, if any."""
     return _instance_id
 
 
 def set_instance_id(iid: str) -> None:
-    """Set the canonical instance_id. Called only by GatewayClient on hello_ack.
-
-    An observed CHANGE of a known instance_id resets the commercial-context
-    version namespace: the held snapshot belonged to the previous instance, so a
-    new instance's context (which may start from a lower version) must not be
-    rejected as stale. The initial set from the empty default is not a change -
-    it preserves a context loaded from disk at startup.
-    """
+    """Update the current connected instance id."""
     global _instance_id, _commercial_context
     if _instance_id and iid != _instance_id:
         _commercial_context = {}
@@ -48,12 +36,12 @@ def set_instance_id(iid: str) -> None:
 
 
 def get_session_token() -> str:
-    """Return the current live session token (empty string if not connected)."""
+    """Return the current Connect session value, if any."""
     return _session_token
 
 
 def set_session_token(token: str) -> None:
-    """Set the current session token. Called only by GatewayClient."""
+    """Update the current Connect session value."""
     global _session_token
     _session_token = token
 
@@ -682,15 +670,10 @@ def get_local_infra_state() -> dict:
     }
 
 
-# ── Relay connection helpers (single source of truth) ────────────────────────
-# All relay HTTP calls use these. Never inline these values elsewhere.
+# ── Connect HTTP helpers ─────────────────────────────────────────────────────
 
 def relay_http_url() -> str:
-    """Derive the relay HTTP base URL from gateway settings.
-
-    Handles both explicit gateway_http_url config and WS-URL derivation.
-    Single source of truth - used by backup, ai/quota, and any future module.
-    """
+    """Return the configured Connect HTTP base URL."""
     from celerp.config import settings
     if settings.gateway_http_url:
         return settings.gateway_http_url.rstrip("/")
@@ -701,28 +684,20 @@ def relay_http_url() -> str:
     return url.rstrip("/")
 
 
-# Every relay HTTP leg opens its socket under a short connect deadline and, when
-# the connect phase itself fails, opens a fresh socket and tries again. A lost
-# SYN on a path that never retransmits it (observed on macOS) then costs one
-# connect deadline instead of the whole leg. The last attempt gets whatever the
-# leg has left, so a slow but working path keeps a connect window at least as
-# long as it had before. Retries stop at the connect phase: once a request has
-# been sent, its response (of any status) is final.
+# Bounded connection settings shared by Connect HTTP calls.
 RELAY_CONNECT_TIMEOUT_S = 2.0
 RELAY_CONNECT_ATTEMPTS = 3
 
 
 def relay_timeout(total_s: float, connect_s: float = RELAY_CONNECT_TIMEOUT_S):
-    """httpx timeout for a relay leg: total_s for read/write/pool, a short
-    connect deadline so a silently lost connection attempt fails fast."""
+    """Build the timeout used for one Connect HTTP operation."""
     import httpx
 
     return httpx.Timeout(total_s, connect=connect_s)
 
 
 def relay_connect_deadline(total_s: float, attempt: int) -> float:
-    """Connect deadline for one attempt of a leg with total_s seconds: the short
-    deadline for every attempt but the last, which takes the rest of the leg."""
+    """Return the connect timeout for one attempt."""
     if attempt < RELAY_CONNECT_ATTEMPTS:
         return RELAY_CONNECT_TIMEOUT_S
     spent = RELAY_CONNECT_TIMEOUT_S * (RELAY_CONNECT_ATTEMPTS - 1)
@@ -730,16 +705,7 @@ def relay_connect_deadline(total_s: float, attempt: int) -> float:
 
 
 async def with_relay_client(total_s: float, op):
-    """Run op(client) within one true wall-clock budget, reopening on connect failure.
-
-    Only httpx.ConnectError and httpx.ConnectTimeout are retried, and only up to
-    RELAY_CONNECT_ATTEMPTS: both are raised before any request bytes leave the
-    machine, so a retry can never duplicate a request the relay already saw.
-    The outer asyncio.wait_for owns the total wall clock; per-attempt httpx
-    read/write/pool values stay deterministic at total_s while connect gets the
-    short retry budget. Every other outcome propagates from the first attempt
-    that produced it.
-    """
+    """Run one Connect HTTP operation within a bounded timeout."""
     import asyncio
 
     import httpx
@@ -765,22 +731,13 @@ async def with_relay_client(total_s: float, op):
             f"relay operation exceeded {total_s:.1f}s wall-clock budget") from exc
 
 
-# Transient transport failures (slow first network, relay restarting) are retried;
-# any HTTP response of any status is final. Single source for every relay POST that
-# needs this shape (auto-activate, deployment association).
+# Shared retry settings for idempotent Connect setup calls.
 _RELAY_POST_RETRY_DELAYS = (0, 5, 30)
 _RELAY_POST_TIMEOUT_S = 10.0
 
 
 async def relay_post_with_retry(url: str, json_body: dict):
-    """POST json_body to url, retrying only transient transport failures.
-
-    Returns the httpx.Response (of any status) on the first attempt that gets one,
-    or None when every attempt hit a transport error. httpx's own logger is quieted
-    for the duration because its records can carry request detail, and some callers
-    send a credential in the body; the exception value is never logged for the same
-    reason (an httpx error repr can embed the request body).
-    """
+    """POST JSON with bounded transport retries."""
     import asyncio
 
     import httpx
@@ -821,11 +778,7 @@ class RelayProtocolError(RuntimeError):
 async def fetch_relay_auth(
     http_client, api_key: str | None = None,
 ) -> tuple[str, str | None]:
-    """Exchange an API key for a bearer plus the identity that key proves.
-
-    Authentication is deliberately observational: it never mutates local
-    identity or consumes a pending activation proof.
-    """
+    """Authenticate this installation and return the response bearer and instance id."""
     from celerp.config import settings
 
     key = api_key or settings.gateway_token
@@ -844,7 +797,7 @@ async def fetch_relay_auth(
     return str(token), (iid or None)
 
 async def fetch_relay_bearer(http_client, api_key: str | None = None) -> str:
-    """Compatibility wrapper returning only the short-lived relay bearer."""
+    """Authenticate this installation and return the response bearer."""
     bearer, _ = await fetch_relay_auth(http_client, api_key=api_key)
     return bearer
 
@@ -852,15 +805,12 @@ async def fetch_relay_bearer(http_client, api_key: str | None = None) -> str:
 def is_foreign_relay_identity(
     authenticated_iid: str | None, local_iid: str,
 ) -> bool:
-    """Whether a relay credential proves a different concrete instance."""
+    """Return whether the authenticated id conflicts with the expected local id."""
     return bool(authenticated_iid and authenticated_iid != local_iid)
 
 
 def _launch_mode() -> str | None:
-    """The launch channel, when the launcher told us one. Electron sets
-    CELERP_MODE=desktop; a headless service sets headless. A bare or dev run
-    reports nothing rather than guessing: the relay treats a real install with
-    no channel as pypi, and dev builds are already excluded by version."""
+    """Return the configured launch channel, if any."""
     import os
     return os.environ.get("CELERP_MODE")
 
@@ -869,11 +819,7 @@ def activate_payload(
     instance_id: str, *, first_boot: bool | None = None,
     activation_verifier: str | None = None,
 ) -> dict:
-    """Build the activation/check-in request metadata.
-
-    activation_verifier is included only for a challenge-approved recovery. The
-    verifier never appears in email/browser proof requests.
-    """
+    """Build Connect activation and check-in metadata."""
     import platform as _platform
 
     from celerp import __version__
@@ -895,12 +841,7 @@ def activate_payload(
 
 
 def relay_session_headers() -> dict[str, str]:
-    """Return X-Session-Token + X-Instance-ID headers for relay REST calls.
-
-    Always uses the relay-canonical instance_id (set on hello_ack), with the
-    config value as fallback. The relay keys its session table on the canonical
-    id — using the config id directly causes 401 when they differ.
-    """
+    """Return request headers for the current Connect session."""
     from celerp.config import settings
     return {
         "X-Session-Token": _session_token,

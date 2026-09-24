@@ -168,21 +168,16 @@ async def test_ai_quota_status_topup_url_direct(auth_client):
 
 
 # ── AI-api 401 body (celerp/modules/api.py) ─────────────────────────────────
-#
-# The caller has no session token by definition (that is why the 401 fires), so
-# this resolves through build_public_acquisition_url - the pre-auth-safe
-# resolver - never build_commercial_handoff: a named checkout URL here would
-# carry no handoff token this path can mint.
 
 @pytest.mark.asyncio
-async def test_ai_api_401_is_transport_neutral_in_partner_mode():
-    """Missing transport never becomes purchase advice, even in partner mode."""
+async def test_ai_api_401_is_transport_neutral_in_partner_mode(monkeypatch):
+    """Missing service connection never becomes purchase advice."""
     from fastapi import HTTPException
     from celerp.modules.api import ai_query
     _set_partner()
+    monkeypatch.setattr("celerp.gateway.state.get_session_token", lambda: "")
     with pytest.raises(HTTPException) as exc:
-        await ai_query(query="hi", company_id="c1", session_token="",
-                       db_session=None)
+        await ai_query(query="hi", company_id="c1", session_token="", db_session=None)
     assert exc.value.status_code == 401
     detail = str(exc.value.detail)
     assert "celerp.com/subscribe" not in detail
@@ -191,12 +186,12 @@ async def test_ai_api_401_is_transport_neutral_in_partner_mode():
 
 
 @pytest.mark.asyncio
-async def test_ai_api_401_is_transport_neutral_in_direct_mode():
+async def test_ai_api_401_is_transport_neutral_in_direct_mode(monkeypatch):
     from fastapi import HTTPException
     from celerp.modules.api import ai_query
+    monkeypatch.setattr("celerp.gateway.state.get_session_token", lambda: "")
     with pytest.raises(HTTPException) as exc:
-        await ai_query(query="hi", company_id="c1", session_token="",
-                       db_session=None)
+        await ai_query(query="hi", company_id="c1", session_token="", db_session=None)
     assert exc.value.status_code == 401
     detail = str(exc.value.detail)
     assert "celerp.com/subscribe" not in detail
