@@ -1116,7 +1116,7 @@ async def _inventory_content(
             currency=currency,
             sort_target="#inventory-content",
             auto_hide_empty=False,
-            cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency),
+            cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency, can_edit_images=role_has_permission(_cs, role, "edit_inventory")),
             hidden_fields=set(_PAIRED_TABLE.values()),
             column_filters=_inventory_column_filters(eff_schema, schema, locations, attribute_facets, p),
         ) if items else _inventory_empty_state(p),
@@ -1770,7 +1770,7 @@ def setup_routes(app):
         # Include conventional key patterns (e.g. "retail_price" for "Retail")
         pl_conventional = {price_key(n) for n in pl_names}
         pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
-        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS and not f.get("virtual")]
+        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS and f.get("key") not in _LIST_ONLY_KEYS and not f.get("virtual")]
         pricing_fields = [f for f in schema if f.get("key") in pricing_keys]
 
         active_tab = request.query_params.get("tab", "details")
@@ -2896,7 +2896,7 @@ function celerpPrintLabel(entityId, templateId) {
         pl_names = {pl.get("name", "") for pl in price_lists}
         pl_conventional = {price_key(n) for n in pl_names}
         pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
-        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS and not f.get("virtual")]
+        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS and f.get("key") not in _LIST_ONLY_KEYS and not f.get("virtual")]
         right = [f for f in detail_fields if f.get("key") not in _ITEM_CORE_KEYS]
         currency = None
         try:
@@ -4627,12 +4627,49 @@ function celerpPrintLabel(entityId, templateId) {
             headers={"Content-Disposition": f'inline; filename="{filename}"'},
         )
 
-    # ── Legacy attachment upload (redirects to new files endpoint) ────────────
+    # ── List thumbnail column: upload into the cell, serve the preview ─────────
 
-    @app.post("/api/items/{entity_id}/attachments")
-    async def item_upload_attachment_legacy(request: Request, entity_id: str):
-        """Deprecated: use /api/items/{entity_id}/files instead."""
-        return Response("", status_code=308, headers={"Location": f"/api/items/{entity_id}/files"})
+    @app.post("/api/items/{entity_id}/thumbnail")
+    async def item_upload_thumbnail(request: Request, entity_id: str):
+        """Drop or pick an image in the list image cell; returns the re-rendered cell."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        file = form.get("file")
+        error = None
+        if file is None:
+            error = t("msg.no_file_provided")
+        else:
+            try:
+                await api.upload_item_file(token, entity_id, file)
+            except APIError as e:
+                error = str(e.detail)
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        cell = _thumbnail_cell(entity_id, item, editable=True)
+        if error:
+            return Td(*cell.children, P(error, cls="cell-error"), **cell.attrs)
+        return cell
+
+    @app.get("/items/{entity_id}/files/{file_id}/thumbnail")
+    async def item_file_thumbnail(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            resp = await api.get_item_thumbnail(token, entity_id, file_id)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return Response(str(e.detail), status_code=e.status)
+        return Response(
+            content=resp.content,
+            media_type=resp.headers.get("content-type", "image/jpeg"),
+            headers={"Cache-Control": resp.headers.get("cache-control", "private, max-age=86400")},
+        )
 
     @app.delete("/api/items/{entity_id}")
     async def item_delete(request: Request, entity_id: str):
@@ -5206,6 +5243,10 @@ def _inventory_type_tabs(p: dict) -> FT:
 _PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "gross_weight": "gross_weight_unit", "purchase_unit": "purchase_conversion_factor"}
 # Derived from _PAIRED_TABLE — secondary fields already rendered inside paired cells; exclude from standalone rows
 _PAIRED_SECONDARY_KEYS: frozenset[str] = frozenset(_PAIRED_TABLE.values())
+
+# Built-in fields that exist only as list columns: the item detail page has its
+# own files section, so the thumbnail column never renders there.
+_LIST_ONLY_KEYS: frozenset[str] = frozenset({"thumbnail"})
 # Core item fields shown in the left (core details) panel on the detail page — single definition
 _ITEM_CORE_KEYS: frozenset[str] = frozenset({
     "sku", "name", "status", "category", "quantity", "pieces", "weight", "weight_unit",
@@ -5249,7 +5290,7 @@ def _render_virtual_total_cell(entity_id: str, field: str, unit_price: float | N
     )
 
 
-def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None, currency: str | None = None) -> dict:
+def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None, currency: str | None = None, can_edit_images: bool = False) -> dict:
     """Build cell_renderers dict for paired/triple columns.
 
     Handles:
@@ -5484,7 +5525,21 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                 return renderer
             renderers[_rk] = _make_reorder()
 
+    if "thumbnail" in schema_keys:
+        renderers["thumbnail"] = lambda entity_id, row: _thumbnail_cell(entity_id, row, can_edit_images)
+
     return renderers
+
+
+def _thumbnail_cell(entity_id: str, item: dict, editable: bool) -> FT:
+    """List image cell: the item's hero (or first) image thumbnail, or a drop target."""
+    from ui.components.table import display_cell
+    fid = item.get("thumbnail_file_id")
+    return display_cell(
+        entity_id=entity_id, field="thumbnail",
+        value=f"/items/{entity_id}/files/{fid}/thumbnail" if fid else "",
+        cell_type="image", editable=editable,
+    )
 
 
 async def _inject_reorder_hints(token: str, item: dict) -> None:

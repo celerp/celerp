@@ -1194,15 +1194,16 @@ def display_cell(
         return Td(inner, id=_cell_id, cls=f"cell cell--{cell_type}{_x}", data_col=field)
 
     if cell_type == "image":
-        # Drag-drop zone: dropping a file POSTs to the attachment endpoint.
-        # A hidden file input allows click-to-upload as fallback.
+        # Drop zone: the hidden file input carries both click-to-pick and dropped
+        # files (the shell's drop handler assigns them to it) to the thumbnail upload.
         return Td(
             inner,
             Input(
                 type="file",
+                name="file",
                 accept="image/*",
                 cls="cell-image-input",
-                hx_post=f"/api/items/{entity_id}/attachments",
+                hx_post=f"/api/items/{entity_id}/thumbnail",
                 hx_encoding="multipart/form-data",
                 hx_target=f"#img-cell-{entity_id.replace(':', '-')}",
                 hx_swap="outerHTML",

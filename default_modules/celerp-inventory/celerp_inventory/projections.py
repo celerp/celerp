@@ -107,6 +107,18 @@ def _is_image_mime(mime: str) -> bool:
     return mime.startswith("image/")
 
 
+def thumbnail_file_id(state: dict) -> str | None:
+    """Id of the image file the list thumbnail shows: the hero, else the first image."""
+    images = [
+        f for f in (state.get("files") or []) + (state.get("attachments") or [])
+        if _is_image_mime(str(f.get("mime") or ""))
+    ]
+    preview = state.get("preview_image_id")
+    if preview and any(f.get("id") == preview for f in images):
+        return preview
+    return images[0].get("id") if images else None
+
+
 def _maybe_migrate_attachments(current: dict) -> None:
     """Lazily migrate item.state["attachments"] (old format) to item.state["files"].
 
@@ -444,6 +456,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
             "mime": data["mime"],
             "size": data["size"],
             "url": data.get("url", ""),
+            "thumb_url": data.get("thumb_url"),
             "document_tag": data.get("document_tag"),
             "description": data.get("description"),
             "uploaded_at": data.get("uploaded_at"),

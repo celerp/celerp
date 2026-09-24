@@ -659,6 +659,7 @@
   "field.label.inventory_type": "Inventory Type",
   "field.label.location_name": "Location",
   "field.label.name": "Name",
+  "field.label.thumbnail": "Image",
   "field.label.notes": "Notes",
   "field.label.pick_method": "Stock Cutting",
   "field.label.pieces": "Pieces",

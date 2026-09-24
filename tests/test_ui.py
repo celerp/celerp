@@ -20350,3 +20350,82 @@ class TestCommercialPartnerManagedInvariant:
         detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai"}
         html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
         assert "/subscribe/topup" not in html
+
+
+class TestInventoryThumbnailColumn:
+    """The inventory list's thumbnail column: rendered from the item's
+    thumbnail_file_id, and refreshed in place after a drop or click upload."""
+
+    _SCHEMA_WITH_THUMB = [
+        {"key": "thumbnail", "label": "Image", "type": "image", "editable": True,
+         "label_key": "field.label.thumbnail", "show_in_table": False},
+        *_SCHEMA,
+    ]
+
+    def _patches(self, items):
+        import contextlib
+        stack = contextlib.ExitStack()
+        for cm in (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=self._SCHEMA_WITH_THUMB)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items, "total": len(items)})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+        ):
+            stack.enter_context(cm)
+        return stack
+
+    @pytest.mark.asyncio
+    async def test_inventory_list_thumbnail_column_renders(self, ui_client):
+        with_image = {**_ITEM, "thumbnail_file_id": "f-1"}
+        without = {**_ITEM, "entity_id": "gc:456", "name": "Bare", "thumbnail_file_id": None}
+        with self._patches([with_image, without]):
+            r = await ui_client.get(
+                "/inventory/content?cols=thumbnail,name",
+                cookies=_authed(),
+                headers={"HX-Request": "true"},
+            )
+        assert r.status_code == 200, r.text[:500]
+        html = r.text
+        assert 'src="/items/gc:123/files/f-1/thumbnail"' in html
+        assert 'class="cell-thumbnail"' in html and 'loading="lazy"' in html
+        assert 'id="img-cell-gc-456"' in html and "cell-image-empty" in html
+        assert 'hx-post="/api/items/gc:123/thumbnail"' in html
+        assert "/attachments" not in html
+
+    @pytest.mark.asyncio
+    async def test_list_thumbnail_upload_returns_cell(self, ui_client):
+        with (
+            patch("ui.api_client.upload_item_file", new=AsyncMock(return_value={"id": "f-9"})) as up,
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "thumbnail_file_id": "f-9"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/thumbnail",
+                files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200, r.text[:500]
+        assert up.await_count == 1
+        assert 'id="img-cell-gc-123"' in r.text
+        assert 'src="/items/gc:123/files/f-9/thumbnail"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_list_thumbnail_upload_error_keeps_cell_with_message(self, ui_client):
+        from ui.api_client import APIError
+        with (
+            patch("ui.api_client.upload_item_file", new=AsyncMock(side_effect=APIError(413, "File exceeds 50 MB limit"))),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "thumbnail_file_id": None})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/thumbnail",
+                files={"file": ("big.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert 'id="img-cell-gc-123"' in r.text
+        assert "File exceeds 50 MB limit" in r.text

@@ -63,7 +63,7 @@ from celerp.services.pricing import (
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.line_measures import splitting_allowed
-from celerp_inventory.projections import _is_core_key, is_item_available
+from celerp_inventory.projections import _is_core_key, is_item_available, thumbnail_file_id
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -200,6 +200,7 @@ def flatten_item(state: dict, entity_id: str, location_id: str | None = None, lo
     """
     flat = dict(state)
     flat["id"] = entity_id
+    flat["thumbnail_file_id"] = thumbnail_file_id(state)
     attrs = flat.pop("attributes", None) or {}
     for k, v in attrs.items():
         if k not in flat:
@@ -4187,7 +4188,8 @@ async def export_items_csv(
         "created_at", "updated_at",
     ]
     virtual = {fld["key"]: fld["paired_with"] for fld in schema if fld.get("virtual") and fld.get("paired_with")}
-    allowed = set(default_cols) | {fld["key"] for fld in schema} | {"holding_value", "sold_price"}
+    # Image fields are list-only previews with no CSV representation.
+    allowed = set(default_cols) | {fld["key"] for fld in schema if fld.get("type") != "image"} | {"holding_value", "sold_price"}
     out_cols = resolve_export_cols(cols, default_cols, allowed)
 
     # A column the role may not see leaves the header, not just the cells: the rows were already

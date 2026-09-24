@@ -2645,6 +2645,12 @@ async def download_item_file(token: str, entity_id: str, file_id: str) -> httpx.
         return _raise(await c.get(f"/items/{entity_id}/files/{file_id}"))
 
 
+async def get_item_thumbnail(token: str, entity_id: str, file_id: str) -> httpx.Response:
+    """Fetch the list thumbnail bytes; a cloud-stored preview is followed to its URL."""
+    async with _bulk_api_client(token) as c:
+        return _raise(await c.get(f"/items/{entity_id}/files/{file_id}/thumbnail", follow_redirects=True))
+
+
 async def patch_location(token: str, location_id: str, data: dict) -> dict:
     async with _api_client(token) as c:
         result = _raise(await c.patch(f"/companies/me/locations/{location_id}", json=data)).json()

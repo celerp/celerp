@@ -36,6 +36,7 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.attachments import (
     AttachmentType,
+    get_or_create_thumbnail,
     merge_attachments,
     remove_attachment,
     resolve_preview_image_id,
@@ -410,6 +411,7 @@ async def upload_item_file(
             "mime": meta["mime"],
             "size": meta["size"],
             "url": meta.get("url", ""),
+            "thumb_url": meta.get("thumb_url"),
             "document_tag": document_tag,
             "description": None,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
@@ -549,6 +551,39 @@ async def delete_item_file(
         metadata_={},
     )
     await session.commit()
+
+
+@router.get("/{entity_id}/files/{file_id}/thumbnail")
+async def item_file_thumbnail(
+    entity_id: str,
+    file_id: str,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+):
+    """Serve the small JPEG preview of an image file for the item list."""
+    from fastapi.responses import RedirectResponse, Response
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if row is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    files = row.state.get("files") or []
+    atts = row.state.get("attachments") or []
+    match = _get_item_file(files + atts, file_id)
+    if not str(match.get("mime", "")).startswith("image/"):
+        raise HTTPException(status_code=404, detail="File is not an image")
+    thumb_url = match.get("thumb_url") or ""
+    if thumb_url.startswith(("http://", "https://")):
+        return RedirectResponse(thumb_url)
+    data = await get_or_create_thumbnail(str(company_id), match)
+    if data is None:
+        url = match.get("url", "")
+        if url.startswith(("http://", "https://")):
+            return RedirectResponse(url)
+        raise HTTPException(status_code=404, detail="Thumbnail unavailable")
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
 
 
 @router.get("/{entity_id}/files/{file_id}")

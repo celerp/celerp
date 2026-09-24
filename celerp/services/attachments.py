@@ -27,6 +27,8 @@ Backend selection: driven by celerp.config.settings.storage_backend.
 
 from __future__ import annotations
 
+import io
+import logging
 import mimetypes
 import uuid
 from pathlib import Path
@@ -81,6 +83,12 @@ def _stored_extension(mime: str) -> str:
 
 
 _MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+# Longest side of the JPEG list thumbnail derived from every image upload.
+_THUMB_MAX_SIDE = 160
+_THUMB_MIME = "image/jpeg"
+
+logger = logging.getLogger(__name__)
 
 
 def infer_attachment_type(mime: str) -> AttachmentType:
@@ -259,7 +267,7 @@ async def store_upload(
 
     url = await get_backend().store(company_id, att_id, content, mime)
 
-    return {
+    meta = {
         "id": att_id,
         "type": att_type,
         "filename": filename,
@@ -267,6 +275,77 @@ async def store_upload(
         "size": len(content),
         "mime": mime,
     }
+    thumb = make_thumbnail(content, mime)
+    if thumb is not None:
+        meta["thumb_url"] = await get_backend().store(
+            company_id, thumbnail_id(att_id), thumb, _THUMB_MIME
+        )
+    return meta
+
+
+def thumbnail_id(att_id: str) -> str:
+    """Storage id of the list thumbnail derived from attachment ``att_id``."""
+    return f"{att_id}_thumb"
+
+
+def thumbnail_name(att_id: str) -> str:
+    """Stored filename of the list thumbnail for attachment ``att_id``."""
+    return thumbnail_id(att_id) + _stored_extension(_THUMB_MIME)
+
+
+def make_thumbnail(content: bytes, mime: str) -> bytes | None:
+    """Return a JPEG thumbnail (longest side ``_THUMB_MAX_SIDE``) or None.
+
+    None for non-image mimes and for bytes Pillow cannot decode: the original
+    upload is kept either way and the list simply shows no preview.
+    """
+    if mime not in _IMAGE_MIMES:
+        return None
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(content)) as im:
+            im.load()
+            if im.mode in ("RGBA", "LA", "P"):
+                rgba = im.convert("RGBA")
+                flat = Image.new("RGB", rgba.size, (255, 255, 255))
+                flat.paste(rgba, mask=rgba.getchannel("A"))
+                im = flat
+            elif im.mode != "RGB":
+                im = im.convert("RGB")
+            im.thumbnail((_THUMB_MAX_SIDE, _THUMB_MAX_SIDE))
+            out = io.BytesIO()
+            im.save(out, format="JPEG", quality=82, optimize=True)
+            return out.getvalue()
+    except Exception:
+        logger.warning("thumbnail generation failed for %s upload", mime)
+        return None
+
+
+async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | None:
+    """Return the thumbnail bytes for a stored image attachment, or None.
+
+    Locally stored uploads that predate thumbnails get one generated on first
+    request and written next to the original, so the next request reads it
+    back. Cloud-stored originals cannot be read back here and yield None.
+    """
+    if attachment.get("mime") not in _IMAGE_MIMES:
+        return None
+    att_id = str(attachment.get("id") or "")
+    existing = local_attachment_path(company_id, thumbnail_name(att_id))
+    if existing is not None:
+        return existing.read_bytes()
+    url = str(attachment.get("url") or "")
+    if url.startswith(("http://", "https://")):
+        return None
+    source = local_attachment_path(company_id, url.rsplit("/", 1)[-1])
+    if source is None:
+        return None
+    data = make_thumbnail(source.read_bytes(), attachment["mime"])
+    if data is None:
+        return None
+    await LocalBackend().store(company_id, thumbnail_id(att_id), data, _THUMB_MIME)
+    return data
 
 
 def merge_attachments(existing: list[dict], new_entry: dict) -> list[dict]:

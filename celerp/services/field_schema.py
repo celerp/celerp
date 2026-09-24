@@ -44,6 +44,7 @@ _DEFAULT_PRICE_LISTS: list[dict] = [
 
 # Base schema fields (without price columns - those are injected dynamically)
 _BASE_FIELDS: list[dict] = [
+    {"key": "thumbnail",         "label": "Image",             "type": "image",  "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": -1, "show_in_table": False, "label_key": "field.label.thumbnail"},
     {"key": "sku",               "label": "SKU",               "type": "text",   "editable": True,  "required": True,  "options": [],                                            "visible_to_roles": [],               "position": 0,  "show_in_table": True, "label_key": "field.label.sku"},
     {"key": "name",              "label": "Name",              "type": "text",   "editable": True,  "required": True,  "options": [],                                            "visible_to_roles": [],               "position": 1,  "show_in_table": True, "label_key": "field.label.name"},
     {"key": "category",          "label": "Category",          "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 2,  "show_in_table": True, "label_key": "field.label.category"},
