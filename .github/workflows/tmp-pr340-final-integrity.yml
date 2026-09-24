@@ -5,28 +5,98 @@ on:
     branches: [pr340-final-integrity-validation]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  inspect:
+  validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Inspect exact merge conflicts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Reconcile exact PR head with exact main
         run: |
-          set +e
+          set -euo pipefail
           git config user.name "Noah Severs"
           git config user.email "118095044+ngsevers@users.noreply.github.com"
           git reset --hard 4704670a7c63847023f9c1937e7c93ce1aa7ba48
+          set +e
           git merge --no-commit --no-ff 370bd9725a62fea94a05d628fe9e90379dcb2342
           rc=$?
-          echo "merge_rc=$rc"
-          git status --short
-          echo "CONFLICTS"
-          git diff --name-only --diff-filter=U
-          echo "HEALTH_CONFLICT"
-          grep -n -B 25 -A 60 -E '^(<<<<<<<|=======|>>>>>>>)' celerp/routers/health.py || true
-          exit $rc
+          set -e
+          test "$rc" -eq 1
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("celerp/routers/health.py")
+          s = p.read_text()
+          start = s.index("<<<<<<< HEAD\n", s.index("from celerp.services.auth import ("))
+          end_marker = ">>>>>>> 370bd9725a62fea94a05d628fe9e90379dcb2342\n"
+          end = s.index(end_marker, start) + len(end_marker)
+          replacement = (
+              "    ROLE_LEVELS,\n"
+              "    get_current_company_id,\n"
+              "    get_current_role,\n"
+              "    get_current_user,\n"
+              "    is_install_owner,\n"
+              "    require_install_owner,\n"
+          )
+          p.write_text(s[:start] + replacement + s[end:])
+          PY
+          git checkout --ours default_modules/first_party.lock.json
+          git add celerp/routers/health.py default_modules/first_party.lock.json
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git diff --check
+      - name: Install dependencies and regenerate lock
+        run: |
+          pip install uv
+          uv pip install --system -e ".[dev]" pytest-xdist
+          python scripts/gen_first_party_lock.py
+          git add default_modules/first_party.lock.json
+          git diff --check
+      - name: Run reconciliation regression suite
+        env:
+          ALLOW_INSECURE_JWT: "true"
+          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+        run: |
+          pytest -q --tb=short --no-cov --timeout=30 \
+            default_modules/celerp-connectors/tests/test_rate_limiting.py \
+            default_modules/celerp-connectors/tests/test_credentials_routes.py \
+            tests/test_services/test_connector_upsert_integration.py \
+            tests/test_woocommerce_sync_guards.py \
+            tests/test_backup_import.py \
+            tests/test_company_deactivate.py \
+            tests/test_connect_recovery_hardening.py \
+            tests/test_install_owner_and_module_contract.py \
+            tests/test_routers/test_cloud_relay.py
+      - name: Commit reconciled tree and stage
+        env:
+          EXPECTED_PR_HEAD: 4704670a7c63847023f9c1937e7c93ce1aa7ba48
+          EXPECTED_MAIN_HEAD: 370bd9725a62fea94a05d628fe9e90379dcb2342
+          EXPECTED_STAGE_HEAD: 4704670a7c63847023f9c1937e7c93ce1aa7ba48
+        run: |
+          set -euo pipefail
+          test "$(git ls-remote origin refs/heads/woocommerce-sync-integrity | cut -f1)" = "$EXPECTED_PR_HEAD"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$EXPECTED_MAIN_HEAD"
+          test "$(git ls-remote origin refs/heads/pr340-base-reconcile-20260924 | cut -f1)" = "$EXPECTED_STAGE_HEAD"
+          git commit -m "merge main into woocommerce sync integrity"
+          git push origin HEAD:refs/heads/pr340-base-reconcile-20260924
