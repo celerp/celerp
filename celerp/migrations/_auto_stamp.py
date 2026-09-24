@@ -31,12 +31,10 @@ DDL signatures handled:
   - create_index:  index name exists in the table's indexes
   - create_unique_constraint: treated as create_index (Postgres/SQLite
                               both implement unique constraints as indexes)
-  - drop_table:    table does not exist
-  - drop_column:   column does not exist
-  - drop_index / drop_constraint: index/constraint does not exist
 
 DDL signatures NOT introspected (trusted via stamp):
   - alter_column: type/default changes are hard to verify; trust the stamp
+  - drop_column / drop_table: we don't run downgrades; ignore
   - op.execute: data backfills cannot be verified safely; trust the stamp
 """
 from __future__ import annotations
@@ -49,20 +47,18 @@ from typing import Iterable
 # Signatures that can be verified by introspecting the live schema.
 VERIFIABLE_KINDS = frozenset({
     "create_table", "add_column", "create_index", "create_unique_constraint",
-    "drop_table", "drop_column", "drop_index", "drop_constraint",
 })
-
-_DROP_KINDS = frozenset({"drop_table", "drop_column", "drop_index", "drop_constraint"})
 
 
 @dataclass(frozen=True)
 class RevisionSignature:
     """One DDL operation in a revision that can be checked against the live schema."""
     rev: str
-    kind: str
+    kind: str           # "create_table" | "add_column" | "create_index" | "create_unique_constraint"
     table: str          # the table the op targets
     column: str | None = None  # for add_column, the new column name
-    extra: str | None = None   # for create_index, the index name
+    extra: str | None = None   # index / constraint name
+    columns: tuple[str, ...] = ()  # index / unique-constraint columns when literal
 
 
 def _str_arg(node: ast.AST) -> str | None:
@@ -89,13 +85,33 @@ def _kwarg_string(call: ast.Call, *names: str) -> str | None:
     return None
 
 
+def _string_sequence(node: ast.AST | None) -> tuple[str, ...]:
+    """Return literal string items from a list/tuple, otherwise empty."""
+    if not isinstance(node, (ast.List, ast.Tuple)):
+        return ()
+    out: list[str] = []
+    for item in node.elts:
+        value = _str_arg(item)
+        if value is None:
+            return ()
+        out.append(value)
+    return tuple(out)
+
+
+def _kwarg_node(call: ast.Call, name: str) -> ast.AST | None:
+    for kw in call.keywords:
+        if kw.arg == name:
+            return kw.value
+    return None
+
+
 def extract_signatures(migration_file: Path) -> list[RevisionSignature]:
     """AST-walk a migration file and return its verifiable DDL signatures.
 
     Returns an empty list for files that:
       - cannot be parsed (syntax errors)
       - have no `def upgrade():` (e.g. helper modules)
-      - contain only unverifiable ops (alter_column, op.execute)
+      - contain only unverifiable ops (alter_column, op.execute, drops)
 
     Never raises. The walker degrades gracefully.
     """
@@ -169,55 +185,32 @@ def extract_signatures(migration_file: Path) -> list[RevisionSignature]:
                 table = _kwarg_string(stmt, "table_name")
                 if table is None and len(stmt.args) >= 2:
                     table = _str_arg(stmt.args[1])
+                columns_node = _kwarg_node(stmt, "columns")
+                if columns_node is None and len(stmt.args) >= 3:
+                    columns_node = stmt.args[2]
+                columns = _string_sequence(columns_node)
                 if index_name and table:
                     sigs.append(RevisionSignature(
                         rev=rev_id, kind="create_index",
-                        table=table, column=None, extra=index_name,
+                        table=table, column=None, extra=index_name, columns=columns,
                     ))
 
             elif op_name == "create_unique_constraint":
-                # Treated as a uniqueness index for verification purposes
                 constraint_name = _first_string_arg(stmt)
                 table = _kwarg_string(stmt, "table_name")
                 if table is None and len(stmt.args) >= 2:
                     table = _str_arg(stmt.args[1])
+                columns_node = _kwarg_node(stmt, "columns")
+                if columns_node is None and len(stmt.args) >= 3:
+                    columns_node = stmt.args[2]
+                columns = _string_sequence(columns_node)
                 if constraint_name and table:
                     sigs.append(RevisionSignature(
                         rev=rev_id, kind="create_unique_constraint",
-                        table=table, column=None, extra=constraint_name,
+                        table=table, column=None, extra=constraint_name, columns=columns,
                     ))
 
-            elif op_name == "drop_table":
-                table = _first_string_arg(stmt)
-                if table:
-                    sigs.append(RevisionSignature(
-                        rev=rev_id, kind="drop_table",
-                        table=table, column=None, extra=None,
-                    ))
-
-            elif op_name == "drop_column":
-                table = _first_string_arg(stmt)
-                column = _kwarg_string(stmt, "column_name")
-                if column is None and len(stmt.args) >= 2:
-                    column = _str_arg(stmt.args[1])
-                if table and column:
-                    sigs.append(RevisionSignature(
-                        rev=rev_id, kind="drop_column",
-                        table=table, column=column, extra=None,
-                    ))
-
-            elif op_name in {"drop_index", "drop_constraint"}:
-                name = _first_string_arg(stmt)
-                table = _kwarg_string(stmt, "table_name")
-                if table is None and len(stmt.args) >= 2:
-                    table = _str_arg(stmt.args[1])
-                if name and table:
-                    sigs.append(RevisionSignature(
-                        rev=rev_id, kind=op_name,
-                        table=table, column=None, extra=name,
-                    ))
-
-            # alter_column, op.execute: not verifiable — skipped
+            # alter_column, drop_*, op.execute: not verifiable — skipped
     return sigs
 
 
@@ -236,19 +229,74 @@ def _column_exists(inspector, table: str, column: str) -> bool:
     return any(c.get("name") == column for c in cols)
 
 
-def _index_exists(inspector, table: str, index_name: str) -> bool:
+def _index_exists(
+    inspector, table: str, index_name: str | None, columns: tuple[str, ...] = (),
+    *, unique_only: bool = False,
+) -> bool:
     try:
         indexes = inspector.get_indexes(table)
     except Exception:
-        return False
-    if any(i.get("name") == index_name for i in indexes):
-        return True
-    # Unique constraints also show up here in some dialects
+        indexes = []
     try:
         uqs = inspector.get_unique_constraints(table)
     except Exception:
         uqs = []
-    return any(u.get("name") == index_name for u in uqs)
+
+    wanted = tuple(columns)
+    for item in indexes:
+        if unique_only and not item.get("unique"):
+            continue
+        if index_name and item.get("name") == index_name:
+            return True
+        if wanted and tuple(item.get("column_names") or ()) == wanted:
+            return True
+    if unique_only:
+        for item in uqs:
+            if index_name and item.get("name") == index_name:
+                return True
+            if wanted and tuple(item.get("column_names") or ()) == wanted:
+                return True
+    return False
+
+
+def _metadata_has_index(metadata, sig: RevisionSignature, *, unique_only: bool = False) -> bool:
+    table = metadata.tables.get(sig.table)
+    if table is None:
+        return False
+    wanted = tuple(sig.columns)
+    for index in table.indexes:
+        if unique_only and not index.unique:
+            continue
+        if sig.extra and index.name == sig.extra:
+            return True
+        if wanted and tuple(col.name for col in index.columns) == wanted:
+            return True
+    if unique_only:
+        from sqlalchemy import UniqueConstraint
+        for constraint in table.constraints:
+            if not isinstance(constraint, UniqueConstraint):
+                continue
+            if sig.extra and constraint.name == sig.extra:
+                return True
+            if wanted and tuple(col.name for col in constraint.columns) == wanted:
+                return True
+    return False
+
+
+def _signature_expected(metadata, sig: RevisionSignature) -> bool:
+    """Whether this historical create/add operation is still kernel schema."""
+    if metadata is None:
+        return True
+    table = metadata.tables.get(sig.table)
+    if sig.kind == "create_table":
+        return table is not None
+    if sig.kind == "add_column":
+        return table is not None and sig.column in table.c
+    if sig.kind == "create_index":
+        return _metadata_has_index(metadata, sig)
+    if sig.kind == "create_unique_constraint":
+        return _metadata_has_index(metadata, sig, unique_only=True)
+    return True
 
 
 def _signature_applied(inspector, sig: RevisionSignature) -> bool:
@@ -258,95 +306,57 @@ def _signature_applied(inspector, sig: RevisionSignature) -> bool:
     if sig.kind == "add_column":
         return _table_exists(inspector, sig.table) and _column_exists(inspector, sig.table, sig.column)
     if sig.kind == "create_index":
-        return _table_exists(inspector, sig.table) and _index_exists(inspector, sig.table, sig.extra)
+        return _table_exists(inspector, sig.table) and _index_exists(
+            inspector, sig.table, sig.extra, sig.columns)
     if sig.kind == "create_unique_constraint":
-        return _table_exists(inspector, sig.table) and _index_exists(inspector, sig.table, sig.extra)
-    if sig.kind == "drop_table":
-        return not _table_exists(inspector, sig.table)
-    if sig.kind == "drop_column":
-        return not _table_exists(inspector, sig.table) or not _column_exists(
-            inspector, sig.table, sig.column
-        )
-    if sig.kind in {"drop_index", "drop_constraint"}:
-        return not _table_exists(inspector, sig.table) or not _index_exists(
-            inspector, sig.table, sig.extra
-        )
+        return _table_exists(inspector, sig.table) and _index_exists(
+            inspector, sig.table, sig.extra, sig.columns, unique_only=True)
     return False
 
 
-def _signature_key(sig: RevisionSignature) -> tuple[str, str, str | None]:
-    """Return the logical schema object changed by a signature.
-
-    Unique constraints and indexes share one namespace here because both are
-    verified through SQLAlchemy's index/unique-constraint introspection.
-    """
-    if sig.kind in {"create_table", "drop_table"}:
-        return ("table", sig.table, None)
-    if sig.kind in {"add_column", "drop_column"}:
-        return ("column", sig.table, sig.column)
-    return ("index", sig.table, sig.extra)
+def load_kernel_metadata():
+    """Register and return the current kernel model schema used by create_all."""
+    from celerp.models.base import Base
+    import celerp.models  # noqa: F401
+    import celerp.models.company  # noqa: F401
+    import celerp.models.ledger  # noqa: F401
+    import celerp.models.projections  # noqa: F401
+    return Base.metadata
 
 
 def find_safe_stamp(
     revisions: Iterable,
     sigs_by_rev: dict[str, list[RevisionSignature]],
     inspector,
+    *,
+    expected_metadata=None,
 ) -> str:
-    """Walk revisions head→base and return the safe-stamp revision.
+    """Return the newest revision the current kernel schema safely proves.
 
-    Contract:
-      - `revisions` MUST be ordered newest→oldest (walk_revisions() order).
-        Old revisions cannot be verified oldest-first: their DDL may be
-        legitimately absent because a later migration dropped or moved it,
-        while a create_all schema always matches the *newest* revisions.
-      - A revision with zero verifiable signatures (pure data backfill) is
-        undecided: it is skipped, never stamped on its own evidence. A
-        backfill at head must not mask an unapplied revision below it.
-      - The full active schema history is checked. A newer confirmed drop
-        suppresses the older create/add signature for the same object, so
-        historical schema that was intentionally removed does not become a
-        false gap.
-      - If every active signature matches, return head. If a gap is found,
-        return the newest fully-applied revision below that gap so alembic
-        re-runs the missing operation and everything above it.
-      - No revision verifiable at all → "base".
-
-    Args:
-        revisions: Iterable of alembic Script objects (need .revision attr),
-            ordered newest→oldest
-        sigs_by_rev: Mapping of revision_id → list of RevisionSignature
-        inspector: SQLAlchemy Inspector bound to the live DB
-
-    Returns:
-        Revision id safe to stamp, or "base".
+    Revisions are newest→oldest. Data-only revisions carry no schema evidence.
+    When ``expected_metadata`` is supplied, historical objects no longer owned
+    by the current kernel are ignored; this prevents a create_all database from
+    being judged against obsolete intermediate schema while still detecting a
+    missing current column/index in any older revision.
     """
     revs = [r for r in revisions if getattr(r, "revision", None) is not None]
     seen_gap = False
-    superseded: set[tuple[str, str, str | None]] = set()
+    saw_evidence = False
+
     for rev in revs:
-        sigs = sigs_by_rev.get(rev.revision, [])
+        sigs = [
+            sig for sig in sigs_by_rev.get(rev.revision, [])
+            if _signature_expected(expected_metadata, sig)
+        ]
         if not sigs:
-            continue  # undecided — carries no evidence either way
-
-        revision_applied = True
-        for sig in sigs:
-            key = _signature_key(sig)
-            if sig.kind not in _DROP_KINDS and (
-                key in superseded or ("table", sig.table, None) in superseded
-            ):
-                continue
-            applied = _signature_applied(inspector, sig)
-            if sig.kind in _DROP_KINDS:
-                if applied:
-                    superseded.add(key)
-                else:
-                    revision_applied = False
-            elif not applied:
-                revision_applied = False
-
-        if not revision_applied:
+            continue
+        saw_evidence = True
+        if all(_signature_applied(inspector, sig) for sig in sigs):
+            if seen_gap:
+                return rev.revision
+        else:
             seen_gap = True
-        elif seen_gap:
-            return rev.revision
 
-    return "base" if seen_gap else (revs[0].revision if revs else "base")
+    if not saw_evidence or seen_gap:
+        return "base"
+    return revs[0].revision if revs else "base"

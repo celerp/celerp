@@ -137,6 +137,13 @@ async def test_invoice_delivery_is_not_acked_when_recording_fails(monkeypatch):
     record.assert_awaited_once()
     assert client._ws.sent == []
 
+def test_install_owner_backfill_uses_existing_data_reconcile_path():
+    from celerp.migrations._data_reconcile import data_backfill_scripts
+
+    revisions = {script.revision for script in data_backfill_scripts()}
+    assert "h5c6d7e8f9a0" in revisions
+
+
 def test_install_owner_migration_prefers_usable_owner_over_oldest_user(monkeypatch):
     import datetime as dt
     import sqlalchemy as sa
