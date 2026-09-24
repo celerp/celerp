@@ -90,11 +90,20 @@ async def test_release_connector_ownership_clears_work_and_resets_cursor(_db_eng
         release_connector_ownership,
     )
     from celerp.db import get_session_ctx
+    from celerp.models.company import Company
     from celerp.models.connector_config import OutboundQueue
     from celerp.models.sync_run import SyncRun
 
-    cid = f"co-{uuid.uuid4().hex[:10]}"
+    company_uuid = uuid.uuid4()
+    cid = str(company_uuid)
     async with get_session_ctx() as session:
+        session.add(Company(
+            id=company_uuid,
+            name="Connector Release Co",
+            slug=f"connector-release-{company_uuid.hex[:8]}",
+            settings={},
+        ))
+        await session.flush()
         await claim_connector_ownership(
             session, cid, "woocommerce", default_sync_frequency="realtime"
         )
@@ -205,23 +214,42 @@ async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
 async def test_connector_claim_rejects_different_company_owner(_db_engine):
     from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector_ownership
     from celerp.db import get_session_ctx
+    from celerp.models.company import Company
     from celerp.models.connector_config import ConnectorConfig
 
+    company_a_uuid = uuid.uuid4()
+    company_b_uuid = uuid.uuid4()
+    company_a = str(company_a_uuid)
+    company_b = str(company_b_uuid)
     async with get_session_ctx() as session:
-        session.add(ConnectorConfig(
-            company_id="company-a",
-            connector="woocommerce",
-            direction="both",
-        ))
+        session.add_all([
+            Company(
+                id=company_a_uuid,
+                name="Connector Owner A",
+                slug=f"connector-owner-a-{company_a_uuid.hex[:8]}",
+                settings={},
+            ),
+            Company(
+                id=company_b_uuid,
+                name="Connector Owner B",
+                slug=f"connector-owner-b-{company_b_uuid.hex[:8]}",
+                settings={},
+            ),
+            ConnectorConfig(
+                company_id=company_a,
+                connector="woocommerce",
+                direction="both",
+            ),
+        ])
         await session.commit()
 
     async with get_session_ctx() as session:
         with pytest.raises(ConnectorOwnershipError):
-            await claim_connector_ownership(session, "company-b", "woocommerce")
+            await claim_connector_ownership(session, company_b, "woocommerce")
 
     async with get_session_ctx() as session:
         assert await claim_connector_ownership(
-            session, "company-a", "woocommerce"
+            session, company_a, "woocommerce"
         ) is not None
 
 
@@ -233,13 +261,21 @@ async def test_connector_ownership_merges_legacy_operational_state(_db_engine):
 
     from celerp.connectors.ownership import claim_connector_ownership
     from celerp.db import get_session_ctx
+    from celerp.models.company import Company
     from celerp.models.connector_config import ConnectorConfig
 
-    company_id = f"co-{uuid.uuid4().hex[:10]}"
+    company_uuid = uuid.uuid4()
+    company_id = str(company_uuid)
     legacy_id = f"inst-{uuid.uuid4().hex[:10]}"
     connector = f"ownership-merge-{uuid.uuid4().hex[:10]}"
     async with get_session_ctx() as session:
         session.add_all([
+            Company(
+                id=company_uuid,
+                name="Connector Legacy Merge Co",
+                slug=f"connector-legacy-merge-{company_uuid.hex[:8]}",
+                settings={},
+            ),
             ConnectorConfig(
                 company_id=company_id, connector=connector,
                 webhook_ids_json=json.dumps(["11"]), webhook_secret=None,

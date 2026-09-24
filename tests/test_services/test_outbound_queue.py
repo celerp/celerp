@@ -414,10 +414,24 @@ async def test_ambiguous_connector_ownership_fails_closed(session, monkeypatch):
         "celerp.connectors.ownership.ensure_instance_id",
         lambda: legacy_id,
     )
-    company_a = str(uuid.uuid4())
-    company_b = str(uuid.uuid4())
+    company_a_uuid = uuid.uuid4()
+    company_b_uuid = uuid.uuid4()
+    company_a = str(company_a_uuid)
+    company_b = str(company_b_uuid)
     connector = f"ambiguous-{uuid.uuid4().hex[:8]}"
     session.add_all([
+        Company(
+            id=company_a_uuid,
+            name="Ambiguous Connector A",
+            slug=f"ambiguous-a-{company_a_uuid.hex[:8]}",
+            settings={},
+        ),
+        Company(
+            id=company_b_uuid,
+            name="Ambiguous Connector B",
+            slug=f"ambiguous-b-{company_b_uuid.hex[:8]}",
+            settings={},
+        ),
         ConnectorConfig(company_id=company_a, connector=connector),
         ConnectorConfig(company_id=company_b, connector=connector),
     ])

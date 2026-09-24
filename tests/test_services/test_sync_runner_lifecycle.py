@@ -19,13 +19,26 @@ import sqlalchemy as sa
 from celerp.connectors.base import ConnectorContext, SyncDirection, SyncEntity, SyncResult
 from celerp.connectors.sync_runner import run_sync
 from celerp.db import get_session_ctx
+from celerp.models.company import Company
 from celerp.models.sync_run import SyncRun
 
 pytestmark = pytest.mark.asyncio
 
 
 def _cid() -> str:
-    return f"co-{uuid.uuid4().hex[:12]}"
+    return str(uuid.uuid4())
+
+
+async def _seed_company(cid: str) -> None:
+    company_id = uuid.UUID(cid)
+    async with get_session_ctx() as session:
+        session.add(Company(
+            id=company_id,
+            name="Sync Lifecycle Co",
+            slug=f"sync-lifecycle-{company_id.hex[:8]}",
+            settings={},
+        ))
+        await session.commit()
 
 
 class _Stub:
@@ -51,6 +64,7 @@ async def _rows(cid):
 
 async def test_in_progress_row_visible_then_single_terminal_row(_db_engine):
     cid = _cid()
+    await _seed_company(cid)
     seen = {}
 
     async def _mid():
@@ -75,6 +89,7 @@ async def test_in_progress_row_visible_then_single_terminal_row(_db_engine):
 
 async def test_concurrency_guard_refuses_second_run(_db_engine):
     cid = _cid()
+    await _seed_company(cid)
     async with get_session_ctx() as s:
         s.add(SyncRun(
             company_id=cid, connector="stub_lifecycle", entity="orders", started_at=datetime.now(timezone.utc), finished_at=None,
@@ -96,6 +111,7 @@ async def test_concurrency_guard_refuses_second_run(_db_engine):
 
 async def test_failure_records_failed_status(_db_engine):
     cid = _cid()
+    await _seed_company(cid)
     res = await run_sync(_Stub(boom=True), ConnectorContext(company_id=cid, access_token="t"), "orders")
     assert res.errors and "api 500" in res.errors[0]
     rows = await _rows(cid)

@@ -730,7 +730,7 @@ def patch_connector_session_token():
     from celerp.connectors.base import ConnectorContext
     import celerp.gateway.state as gw_state
 
-    async def _context(company_id, connector_name):
+    async def _context(company_id, connector_name, **_kwargs):
         return ConnectorContext(
             company_id=str(company_id),
             access_token="tok",
