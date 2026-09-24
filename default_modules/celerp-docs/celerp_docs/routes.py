@@ -1949,13 +1949,18 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         raise HTTPException(status_code=409, detail="Can only revert documents in 'final', 'sent', or 'awaiting_payment' status")
     if float(state.get("amount_paid", 0) or 0) != 0:
         raise HTTPException(status_code=409, detail="Cannot revert document with existing payments")
+    # Both blocks below name the button on the document's lines that clears them, so the
+    # user is sent to the action rather than left to guess where goods are returned.
     if state.get("received_items"):
-        raise HTTPException(status_code=409, detail="Cannot revert document with received items - return goods first")
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot revert to draft while goods received on this document are still in stock. "
+                   "Select those lines and use Return Goods first, then revert.",
+        )
 
-    # Fix 1: block revert when any line item has been fulfilled.
-    # Fulfilled items are tracked in state["fulfilled_items"]; each entry with a non-null item_id
-    # corresponds to an inventory item that is now in a terminal fulfilled state.
-    # The user must revert fulfillment line-by-line first, then revert the document.
+    # Block revert when any line item has been fulfilled. Fulfilled items are tracked in
+    # state["fulfilled_items"]; each entry with a non-null item_id is an inventory item that is
+    # now out on memo or sold.
     fulfilled_items = [
         fi for fi in (state.get("fulfilled_items") or [])
         if fi.get("item_id") is not None
@@ -1963,8 +1968,8 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     if fulfilled_items:
         raise HTTPException(
             status_code=409,
-            detail="Cannot revert to draft: line items have been fulfilled. "
-                   "Revert fulfillment on each fulfilled line first, then revert the document.",
+            detail="Cannot revert to draft while lines are still out on memo or sold. "
+                   "Select those lines and use Set as available first, then revert.",
         )
 
     event_data: dict = {"reverted_by": str(user.id), "previous_status": previous_status}

@@ -627,10 +627,36 @@ async def test_revert_to_draft_blocked_when_fulfilled_items_exist(client, sessio
                           json={"line_entity_ids": [item_id]})
     assert r.status_code == 200, r.text
 
-    # Revert to draft must be blocked while items are fulfilled
+    # Revert to draft must be blocked while items are out, and the answer names the button
+    # that clears the block: "Set as available" on the memo's lines.
     r = await client.post(f"/docs/{doc_id}/revert-to-draft", headers=auth["headers"], json={})
     assert r.status_code == 409, r.text
-    assert "fulfilled" in r.text.lower()
+    assert "Set as available" in r.json()["detail"], r.text
+
+
+async def test_revert_bill_with_received_goods_names_return_goods(client, auth, _setup_ids):
+    """A bill whose goods were received cannot revert to draft; the 409 names the Return Goods
+    action on the bill's lines as the way to clear it."""
+    h = auth["headers"]
+    r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "ref_id": f"BILL-{uuid.uuid4().hex[:6]}",
+        "line_items": [{"name": "Received widget", "sku": f"RG-{uuid.uuid4().hex[:6]}", "quantity": 2,
+                        "unit_price": 15.0, "sell_by": "piece"}],
+        "subtotal": 30, "tax": 0, "total": 30,
+    })
+    assert r.status_code == 200, r.text
+    bill_id = r.json()["id"]
+    assert (await client.post(f"/docs/{bill_id}/finalize", headers=h)).status_code == 200
+    sku = r.json()["line_items"][0]["sku"] if r.json().get("line_items") else None
+    received = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "location_id": "",
+        "received_items": [{"sku": sku, "name": "Received widget", "quantity_received": 2.0}],
+    })
+    assert received.status_code == 200, received.text
+    r = await client.post(f"/docs/{bill_id}/revert-to-draft", headers=h, json={})
+    assert r.status_code == 409, r.text
+    assert "Return Goods" in r.json()["detail"], r.text
 
 
 async def test_revert_to_draft_allowed_after_all_lines_reverted(client, session, auth, _setup_ids):
