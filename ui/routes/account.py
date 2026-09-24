@@ -593,6 +593,10 @@ def setup_routes(app):
                 )
             except Exception:
                 act = {"error": "unreachable"}
+            if act.get("verification_pending"):
+                return _waiting_panel(
+                    lang, panel_id, mode, n=n, next_action=next_action,
+                    authorize_url=authorize_url)
             # On the Web Access page the whole chrome changes once the relay
             # comes up (value-prop landing -> connected tabs), so load the
             # connected page instead of swapping only the panel.

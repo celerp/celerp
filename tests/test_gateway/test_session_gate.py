@@ -74,8 +74,8 @@ def test_header_present_but_instance_not_connected():
     resp = _client.get("/gated", headers={"X-Session-Token": "some-token"})
     assert resp.status_code == 401
     detail = resp.json()["detail"]
-    assert "not connected" in detail
-    assert "GATEWAY_TOKEN" in detail
+    assert "not connected" in detail.lower()
+    assert "settings > web access" in detail.lower()
 
 
 def test_header_mismatch_returns_expired_error():
@@ -84,8 +84,8 @@ def test_header_mismatch_returns_expired_error():
     resp = _client.get("/gated", headers={"X-Session-Token": "wrong-token-xyz"})
     assert resp.status_code == 401
     detail = resp.json()["detail"]
-    assert "expired" in detail.lower() or "invalid" in detail.lower()
-    assert "Reconnect" in detail
+    assert "no longer valid" in detail.lower()
+    assert "settings > web access" in detail.lower()
 
 
 def test_valid_header_passes():
@@ -134,7 +134,8 @@ def test_session_gate_401_is_commercially_neutral(_partner_mode):
 
 
 def test_same_origin_request_recovers_session_from_durable_entitlement():
-    async def recover():
+    async def recover(*, require_persisted_key=False):
+        assert require_persisted_key is True
         gw_state.set_session_token("recovered-session")
         return {}
     with __import__("unittest.mock", fromlist=["patch"]).patch(
@@ -173,6 +174,10 @@ def test_same_origin_recovery_local_apply_failure_degrades_to_401(monkeypatch):
             new=AsyncMock(return_value=("instance-jwt", "issue-332-iid")),
         ) as relay_auth,
         patch("celerp.gateway.state.with_relay_client", new=run),
+        patch(
+            "celerp.services.cloud_entitlement.persisted_api_key",
+            new=AsyncMock(return_value="durable-api-key"),
+        ),
         patch(
             "celerp.services.cloud_entitlement.apply_activation_state",
             new=AsyncMock(side_effect=OSError("config write failed")),

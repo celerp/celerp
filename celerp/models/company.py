@@ -67,6 +67,13 @@ class WorkCenter(Base):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        sa.Index(
+            "uq_users_install_owner_true", "is_install_owner", unique=True,
+            postgresql_where=sa.text("is_install_owner IS TRUE"),
+            sqlite_where=sa.text("is_install_owner IS TRUE"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
@@ -74,6 +81,7 @@ class User(Base):
     auth_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_install_owner: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     # Password reset token (short-lived, 15min TTL)
     reset_token: Mapped[str | None] = mapped_column(String(64), nullable=True)

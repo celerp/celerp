@@ -24,7 +24,7 @@ from celerp.ai import llm as llm_mod
 from celerp.ai.files import XLSX_CONTENT_TYPE
 from celerp.ai.llm import ModelResult, RelayError, _build_user_content, call_llm, complete
 
-from _fixtures import load_relay
+from _fixtures import synthetic_response
 
 _RELAY = "https://relay.test"
 
@@ -93,7 +93,7 @@ def test_file_only_no_empty_text_part():
 @respx.mock
 async def test_complete_sends_tools_and_reservation_only_when_set(relay):
     route = respx.post(f"{_RELAY}/ai/complete").mock(
-        return_value=httpx.Response(200, json=load_relay("text_completion")))
+        return_value=httpx.Response(200, json=synthetic_response("text_completion")))
 
     await complete(
         [{"role": "user", "content": "hi"}],
@@ -117,12 +117,12 @@ async def test_complete_sends_tools_and_reservation_only_when_set(relay):
 @respx.mock
 async def test_complete_parses_message_model_usage(relay):
     respx.post(f"{_RELAY}/ai/complete").mock(
-        return_value=httpx.Response(200, json=load_relay("text_completion")))
+        return_value=httpx.Response(200, json=synthetic_response("text_completion")))
     result = await complete([{"role": "user", "content": "how many items"}])
     assert result.message["content"].startswith("You currently have 42 items")
-    assert result.model_used == "z-ai/glm-5.3-flash"
+    assert result.model_used == "test-model"
     assert result.usage["total_tokens"] == 187
-    assert result.reservation_id == "11111111-1111-4111-8111-111111111111"
+    assert result.reservation_id == "test-reservation"
     assert result.remaining == 199
 
 
@@ -139,35 +139,34 @@ async def test_complete_without_message_is_unexpected_reply(relay):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_complete_parses_recorded_relay_envelope(relay):
+async def test_complete_parses_structured_tool_call(relay):
     respx.post(f"{_RELAY}/ai/complete").mock(
-        return_value=httpx.Response(200, json=load_relay("read_tool_call")))
+        return_value=httpx.Response(200, json=synthetic_response("read_tool_call")))
     result = await complete([{"role": "user", "content": "find widgets"}])
     calls = result.message["tool_calls"]
     assert calls[0]["type"] == "function"
     assert calls[0]["id"] == "call_read_0001"
-    # Arguments arrive as a JSON string, not a nested object.
     assert isinstance(calls[0]["function"]["arguments"], str)
     assert json.loads(calls[0]["function"]["arguments"]) == {"query": {"q": "widget"}}
 
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_complete_maps_recorded_402_409_429(relay):
+async def test_complete_maps_structured_402_409_429(relay):
     route = respx.post(f"{_RELAY}/ai/complete")
 
-    route.mock(return_value=httpx.Response(402, json=load_relay("error_402")))
+    route.mock(return_value=httpx.Response(402, json=synthetic_response("error_402")))
     with pytest.raises(HTTPException) as ei:
         await complete([{"role": "user", "content": "x"}])
     assert ei.value.status_code == 402
     assert ei.value.detail["code"] == "quota_exceeded"
 
-    route.mock(return_value=httpx.Response(409, json=load_relay("error_409")))
+    route.mock(return_value=httpx.Response(409, json=synthetic_response("error_409")))
     with pytest.raises(RelayError) as ei:
         await complete([{"role": "user", "content": "x"}])
     assert (ei.value.code, ei.value.status) == ("continuation_expired", 409)
 
-    route.mock(return_value=httpx.Response(429, json=load_relay("error_429")))
+    route.mock(return_value=httpx.Response(429, json=synthetic_response("error_429")))
     with pytest.raises(RelayError) as ei:
         await complete([{"role": "user", "content": "x"}])
     assert (ei.value.code, ei.value.status) == ("busy", 429)
@@ -235,7 +234,7 @@ async def test_complete_gateway_error(relay):
 @respx.mock
 async def test_call_llm_returns_content(relay):
     route = respx.post(f"{_RELAY}/ai/complete").mock(
-        return_value=httpx.Response(200, json=load_relay("text_completion")))
+        return_value=httpx.Response(200, json=synthetic_response("text_completion")))
     result = await call_llm("advisory-model", "system", "how many items")
     assert result.message["content"].startswith("You currently have 42 items")
     assert result.usage
@@ -249,7 +248,7 @@ async def test_call_llm_returns_content(relay):
 @respx.mock
 async def test_call_llm_quota_exceeded_raises_402(relay):
     respx.post(f"{_RELAY}/ai/complete").mock(
-        return_value=httpx.Response(402, json=load_relay("error_402")))
+        return_value=httpx.Response(402, json=synthetic_response("error_402")))
     with pytest.raises(HTTPException) as ei:
         await call_llm("m", "s", "u")
     assert ei.value.status_code == 402

@@ -36,6 +36,9 @@ _BACKOFF_MAX = 60     # seconds
 # credential never heals on its own, so beyond a small allowance for a
 # mid-deploy blip every further attempt is noise.
 _AUTH_FAILED_MAX = 3
+_CONNECT_FAILURES_ERROR = 3
+_OWNERSHIP_RETRY_SECONDS = 10
+_RETRYABLE_ERROR_SECONDS = 5
 # Lazy free-tier teardown: check this often, and drop the tunnel only after this
 # many seconds with no live share AND no proxied request (the grace window debounces
 # a revoke-then-reshare so it does not flap connect/disconnect).
@@ -114,6 +117,9 @@ class GatewayClient:
         # terminal (_auth_rejected) and run() idles instead of reconnecting.
         self._auth_failures = 0
         self._auth_rejected = False
+        self._connect_failures = 0
+        self._ownership_conflict = False
+        self._retryable_error = False
         self._required_tos_version: str = ""
         # Hold strong refs to fire-and-forget tasks so the loop can't GC them mid-run
         # (a dropped task = a lost proxy response or webhook sync).
@@ -121,6 +127,14 @@ class GatewayClient:
         # In-flight proxy tasks keyed by relay request id so an http.cancel frame can
         # abort exactly the one request it names, and no other.
         self._inflight: dict[str, asyncio.Task] = {}
+        # A transport reconfiguration may be requested by an activation while the
+        # current Web Access request is itself being proxied over this socket. Drain
+        # already-started requests before reconnecting; new requests fail fast until
+        # the handoff completes so no fresh work is cancelled mid-response.
+        self._proxy_drain_generation = 0
+        self._proxy_draining: int | None = None
+        self._proxy_idle = asyncio.Event()
+        self._proxy_idle.set()
         # Connection generation: bumped on every teardown so a response produced by a
         # request that outlived its socket can be recognised as stale and dropped
         # rather than sent on the freshly rebuilt connection.
@@ -178,6 +192,7 @@ class GatewayClient:
         http.cancel frame can abort exactly that task. The key is cleared when the task
         finishes (a cancel arriving after completion is then a harmless no-op)."""
         request_id = payload.get("id", "")
+        self._proxy_idle.clear()
         task = asyncio.create_task(self._handle_proxy_request(payload))
         self._bg_tasks.add(task)
         self._inflight[request_id] = task
@@ -186,8 +201,34 @@ class GatewayClient:
             self._bg_tasks.discard(t)
             if self._inflight.get(request_id) is t:
                 del self._inflight[request_id]
+            if not self._inflight:
+                self._proxy_idle.set()
 
         task.add_done_callback(_done)
+
+    def has_inflight_proxy_requests(self) -> bool:
+        return bool(self._inflight)
+
+    def begin_proxy_drain(self) -> int:
+        """Stop admitting new proxied requests and return this drain generation."""
+        self._proxy_drain_generation += 1
+        self._proxy_draining = self._proxy_drain_generation
+        return self._proxy_drain_generation
+
+    async def wait_for_proxy_idle(self) -> None:
+        """Wait until all requests admitted before the drain have replied."""
+        while self._inflight:
+            await self._proxy_idle.wait()
+
+    def owns_proxy_drain(self, generation: int) -> bool:
+        return self._proxy_draining == generation
+
+    def end_proxy_drain(self, generation: int) -> None:
+        if self._proxy_draining == generation:
+            self._proxy_draining = None
+
+    def is_draining_for_reconfigure(self) -> bool:
+        return self._proxy_draining is not None
 
     # ── Public API ─────────────────────────────────────────────────────
 
@@ -198,12 +239,37 @@ class GatewayClient:
         observes the same connection it manages, drops the tunnel once no share is
         live and nothing has been served within the grace window."""
         self._running = True
+        self._proxy_draining = None
         self._stop_event.clear()
         self._reaper_stop.clear()
         reaper = asyncio.create_task(self._reaper_loop())
         try:
             backoff = 1
             while self._running:
+                if self._proxy_draining is not None:
+                    try:
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=1)
+                        break
+                    except asyncio.TimeoutError:
+                        continue
+                if self._retryable_error:
+                    try:
+                        await asyncio.wait_for(
+                            self._stop_event.wait(),
+                            timeout=_RETRYABLE_ERROR_SECONDS,
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        pass
+                if self._ownership_conflict:
+                    try:
+                        await asyncio.wait_for(
+                            self._stop_event.wait(),
+                            timeout=_OWNERSHIP_RETRY_SECONDS,
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        pass
                 if self._relay_status == "tos_required" or self._auth_rejected:
                     try:
                         await asyncio.wait_for(self._stop_event.wait(), timeout=1)
@@ -215,6 +281,10 @@ class GatewayClient:
                     await self._connect_and_serve()
                     backoff = 1  # reset on clean disconnect
                 except Exception as exc:
+                    if self._running and not self._auth_rejected:
+                        self._connect_failures += 1
+                        if self._connect_failures >= _CONNECT_FAILURES_ERROR:
+                            self._set_status("error")
                     if self._loss_announced or not self._running or self._auth_rejected:
                         # A failure while stopping is shutdown, not a loss to announce.
                         log.debug("Gateway retry failed: %s. Next attempt in %ds.", exc, backoff)
@@ -242,6 +312,11 @@ class GatewayClient:
         self._loss_announced = False
         self._auth_failures = 0
         self._auth_rejected = False
+        self._connect_failures = 0
+        self._ownership_conflict = False
+        self._retryable_error = False
+        self._proxy_drain_generation += 1
+        self._proxy_draining = None
         self._stop_event.set()
         self._reaper_stop.set()
 
@@ -256,6 +331,11 @@ class GatewayClient:
         self._loss_announced = False
         self._auth_failures = 0
         self._auth_rejected = False
+        self._connect_failures = 0
+        self._ownership_conflict = False
+        self._retryable_error = False
+        self._proxy_drain_generation += 1
+        self._proxy_draining = None
         self._stop_event.set()
         self._reaper_stop.set()
         ws = self._ws
@@ -272,6 +352,8 @@ class GatewayClient:
         drop its tunnel. A paid instance (public_url set) is never reaped. Best
         effort: any error reading state defers teardown (returns False)."""
         try:
+            if self._proxy_draining is not None or self._inflight:
+                return False
             from celerp.config import settings
             if settings.celerp_public_url:
                 return False
@@ -300,7 +382,8 @@ class GatewayClient:
             if await self._should_reap():
                 log.info("Gateway: no active share and idle past grace; dropping tunnel.")
                 await self.close()
-                set_client(None)
+                if get_client() is self:
+                    set_client(None)
                 return
 
     @property
@@ -319,6 +402,13 @@ class GatewayClient:
             and not self._auth_rejected
             and self._relay_status != "error"
         )
+
+    def uses_token(self, token: str) -> bool:
+        return self._token == token
+
+    @property
+    def ownership_conflict(self) -> bool:
+        return self._ownership_conflict
 
     @property
     def required_tos_version(self) -> str:
@@ -361,6 +451,7 @@ class GatewayClient:
             import ssl as _ssl
             _ssl_ctx = _ssl.create_default_context()
             _ssl_ctx.set_alpn_protocols(["http/1.1"])
+        handshake_accepted = False
         try:
             async with websockets.connect(
                 self._url, ssl=_ssl_ctx, ping_interval=20, ping_timeout=20, max_size=160 * 1024 * 1024
@@ -389,6 +480,8 @@ class GatewayClient:
                         log.warning("Gateway sent non-JSON frame: %r", raw)
                         continue
                     await self._dispatch(msg)
+                    if msg.get("type") == "hello_ack":
+                        handshake_accepted = True
         finally:
             # Teardown runs on every exit - clean end of the message stream OR an
             # abnormal disconnect raised mid-serve. Kept in a finally so an exception
@@ -404,6 +497,7 @@ class GatewayClient:
                 if not task.done():
                     task.cancel()
             self._inflight.clear()
+            self._proxy_idle.set()
             log.debug(
                 "Gateway proxy activity this connection: proxied=%d cancelled=%d "
                 "timed_out=%d stale_dropped=%d",
@@ -412,7 +506,12 @@ class GatewayClient:
             )
             from celerp.gateway.state import set_session_token
             set_session_token("")
-            self._set_status("inactive")
+            if self._relay_status not in ("error", "tos_required", "active_elsewhere"):
+                self._set_status("inactive")
+        if (not handshake_accepted and self._running
+                and not self._auth_rejected
+                and self._relay_status not in ("tos_required", "active_elsewhere")):
+            raise ConnectionError("Gateway connection ended before activation.")
 
     def _build_hello_payload(self, tos_version: str, app_version: str) -> dict:
         """Build the hello frame payload.
@@ -433,6 +532,14 @@ class GatewayClient:
         payload = msg.get("payload", {})
 
         if msg_type == "hello_ack":
+            from celerp.config import settings as _settings
+            if _settings.cloud_disconnected:
+                from celerp.gateway.state import set_session_token
+                set_session_token("")
+                return
+            self._ownership_conflict = False
+            self._retryable_error = False
+            self._connect_failures = 0
             self._set_status("active")
             self._auth_failures = 0  # an accepted handshake clears the strike count
             # Relay returns the canonical instance_id - store it for quota calls
@@ -475,6 +582,9 @@ class GatewayClient:
                 set_subscription_state(tier, payload.get("status", ""))
 
         elif msg_type == "session.refresh":
+            from celerp.config import settings as _settings
+            if _settings.cloud_disconnected:
+                return
             from celerp.gateway.state import set_session_token
             session_token = payload.get("session_token")
             if session_token:
@@ -489,6 +599,14 @@ class GatewayClient:
                 self._set_status("tos_required")
                 self._required_tos_version = payload.get("required_version", "")
                 log.warning("Gateway: TOS acceptance required (version=%s)", self._required_tos_version)
+            elif code == "service_unavailable":
+                self._retryable_error = True
+                self._set_status("error")
+                log.warning("Web Access is temporarily unavailable.")
+            elif code == "installation_active":
+                self._ownership_conflict = True
+                self._set_status("active_elsewhere")
+                log.warning("This installation is active on another computer.")
             elif code == "auth_failed":
                 self._auth_failures += 1
                 if self._auth_failures >= _AUTH_FAILED_MAX:
@@ -522,7 +640,18 @@ class GatewayClient:
             set_subscription_state(tier, status)
 
         elif msg_type == "http.request":
-            self._spawn_proxy(payload)
+            if self._proxy_draining is not None:
+                await self._send(self._ws, {
+                    "type": "http.response",
+                    "payload": {
+                        "id": payload.get("id", ""),
+                        "status": 503,
+                        "headers": [["retry-after", "1"]],
+                        "body_b64": "",
+                    },
+                })
+            else:
+                self._spawn_proxy(payload)
 
         elif msg_type == "http.cancel":
             request_id = payload.get("id", "")
@@ -618,11 +747,11 @@ class GatewayClient:
             log.warning("woocommerce webhook handling failed (topic=%s): %s", topic, exc)
 
     async def _handle_invoice_payment(self, payload: dict) -> None:
-        """Backup confirmation for an online invoice payment. Records through the same
-        idempotent path as the customer-return reconcile, so a replay is a no-op."""
+        """Record a delivered invoice payment and acknowledge durable completion."""
         company_id = payload.get("company_id")
         entity_id = payload.get("entity_id")
         reference = payload.get("reference")
+        delivery_id = payload.get("delivery_id")
         if not (company_id and entity_id and reference):
             return
         try:
@@ -640,6 +769,12 @@ class GatewayClient:
                     amount_minor=int(payload.get("amount_minor") or 0),
                     currency=payload.get("currency", "USD"),
                 )
+            if delivery_id and self._ws is not None:
+                await self._send(self._ws, {
+                    "type": "event.ack",
+                    "id": str(uuid.uuid4()),
+                    "payload": {"delivery_id": delivery_id},
+                })
         except Exception as exc:
             log.warning("invoice.payment handling failed (entity=%s): %s", entity_id, exc)
 

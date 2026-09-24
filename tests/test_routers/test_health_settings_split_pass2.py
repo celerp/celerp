@@ -64,9 +64,8 @@ async def test_settings_route_served_when_authenticated(client):
     )
     assert reg.status_code == 200
     h = {"Authorization": f"Bearer {reg.json()['access_token']}"}
-    r = await client.get("/settings/cloud-instance-id", headers=h)
+    r = await client.get("/settings/backup-status", headers=h)
     assert r.status_code == 200, r.text
-    assert r.json().get("instance_id")
 
 
 @pytest.mark.asyncio
@@ -77,10 +76,8 @@ async def test_health_system_requires_auth(client):
 
 
 @pytest.mark.asyncio
-async def test_backup_status_requires_manage_company_settings(client):
-    """backup-status returns the backup encryption key, so a viewer holding the
-    weaker run_backups permission is still refused; it is gated on
-    manage_company_settings (admin floor)."""
+async def test_backup_status_requires_installation_root(client):
+    """Whole-install backup status is limited to the installation root."""
     from test_helpers import make_authed_token
 
     reg = await client.post(
@@ -88,22 +85,23 @@ async def test_backup_status_requires_manage_company_settings(client):
         json={"company_name": "BackupCo", "email": "backupowner@example.com", "name": "Owner", "password": "pwvalid1"},
     )
     owner_h = {"Authorization": f"Bearer {reg.json()['access_token']}"}
-    # A viewer member cannot read the key even though run_backups floors at viewer.
+    # A second company owner still is not the installation root.
     r_new = await client.post(
         "/companies/me/users",
-        json={"email": "viewer-backup@example.com", "name": "Viewer", "role": "viewer", "password": "pw123val"},
+        json={"email": "delegated-owner-backup@example.com", "name": "Viewer", "role": "owner", "password": "pw123val"},
         headers=owner_h,
     )
     assert r_new.status_code == 200, r_new.text
-    r_login = await client.post("/auth/login", json={"email": "viewer-backup@example.com", "password": "pw123val"})
-    viewer_h = {"Authorization": f"Bearer {r_login.json()['access_token']}"}
+    r_login = await client.post("/auth/login", json={"email": "delegated-owner-backup@example.com", "password": "pw123val"})
+    delegated_h = {"Authorization": f"Bearer {r_login.json()['access_token']}"}
 
-    r = await client.get("/settings/backup-status", headers=viewer_h)
+    r = await client.get("/settings/backup-status", headers=delegated_h)
     assert r.status_code == 403, r.text
 
-    # The owner (admin+) can read it.
+    # The installation root can read status, but raw encryption-key bytes never leave.
     r_ok = await client.get("/settings/backup-status", headers=owner_h)
     assert r_ok.status_code == 200, r_ok.text
+    assert "enc_key" not in r_ok.json()
 
 
 @pytest.mark.asyncio

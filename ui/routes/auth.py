@@ -208,7 +208,11 @@ def setup_routes(app):
             return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
         if bootstrapped:
             return RedirectResponse("/login", status_code=302)
-        return auth_shell(_setup_import_form(), title=page_title("page.restore_from_backup"))
+        from ui.api_client import setup_code_required as _code_req
+        return auth_shell(
+            _setup_import_form(setup_code_required=await _code_req()),
+            title=page_title("page.restore_from_backup"),
+        )
 
     @app.post("/setup/import-backup")
     async def setup_import_submit(request: Request):
@@ -221,16 +225,39 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
         file = form.get("backup_file")
+        setup_code = str(form.get("setup_code", "")).strip()
         if not file or not hasattr(file, "read"):
             return auth_shell(_setup_import_form(error=t("auth.select_backup_file")), title=page_title("page.restore_from_backup"))
-        raw = await file.read()
-        if not raw:
-            return auth_shell(_setup_import_form(error=t("auth.file_empty")), title=page_title("page.restore_from_backup"))
+        code_required = await api.setup_code_required()
+        if code_required and not setup_code:
+            return auth_shell(
+                _setup_import_form(
+                    error=t("auth.setup_code_required"),
+                    setup_code_required=True,
+                ),
+                title=page_title("page.restore_from_backup"),
+            )
+        if getattr(file, "size", None) == 0:
+            return auth_shell(
+                _setup_import_form(
+                    error=t("auth.file_empty"),
+                    setup_code_required=code_required,
+                ),
+                title=page_title("page.restore_from_backup"),
+            )
         try:
+            await file.seek(0)
             async with api._local_client(timeout=120.0, follow_redirects=False, bulk=True) as c:
                 r = await c.post(
                     "/backup/import-bootstrap",
-                    files={"file": (file.filename, raw, "application/octet-stream")},
+                    files={
+                        "file": (
+                            file.filename,
+                            file.file,
+                            file.content_type or "application/octet-stream",
+                        )
+                    },
+                    data={"setup_code": setup_code},
                 )
             if r.status_code != 200:
                 ct = r.headers.get("content-type", "")
@@ -241,7 +268,12 @@ def setup_routes(app):
                         detail = t("auth.import_failed_unreadable")
                 else:
                     detail = r.text[:300] or t("auth.import_failed")
-                return auth_shell(_setup_import_form(error=detail), title=page_title("page.restore_from_backup"))
+                return auth_shell(
+                    _setup_import_form(
+                        error=detail, setup_code_required=code_required
+                    ),
+                    title=page_title("page.restore_from_backup"),
+                )
             # Success - surface missing-module / schema warnings (if any) on the form
             warnings: list[str] = []
             schema_warning: str | None = None
@@ -272,9 +304,21 @@ def setup_routes(app):
                     title=page_title("page.restore_from_backup"),
                 )
         except httpx.TimeoutException:
-            return auth_shell(_setup_import_form(error=t("auth.import_timed_out")), title=page_title("page.restore_from_backup"))
+            return auth_shell(
+                _setup_import_form(
+                    error=t("auth.import_timed_out"),
+                    setup_code_required=code_required,
+                ),
+                title=page_title("page.restore_from_backup"),
+            )
         except Exception as exc:
-            return auth_shell(_setup_import_form(error=t("auth.connection_error", exc=repr(exc))), title=page_title("page.restore_from_backup"))
+            return auth_shell(
+                _setup_import_form(
+                    error=t("auth.connection_error", exc=repr(exc)),
+                    setup_code_required=code_required,
+                ),
+                title=page_title("page.restore_from_backup"),
+            )
         return RedirectResponse("/login?imported=1", status_code=302)
 
     @app.post("/setup")
@@ -610,6 +654,7 @@ def _setup_import_form(
     error: str | None = None,
     warning: str | None = None,
     continue_to: str | None = None,
+    setup_code_required: bool = False,
 ) -> FT:
     # When a warning is present, show a non-blocking "Continue" button instead
     # of re-rendering the form. The user can decide to proceed (GDR - never
@@ -652,6 +697,12 @@ def _setup_import_form(
                       accept=".celerp-backup", required=True, cls="form-input"),
                 cls="form-group",
             ),
+            Div(
+                Label(t("label.setup_code"), For="setup_code", cls="form-label"),
+                Input(type="text", id="setup_code", name="setup_code",
+                      required=True, cls="form-input"),
+                cls="form-group",
+            ) if setup_code_required else "",
             Button(t("auth.restore_backup_btn"), type="submit", id="restore-btn",
                    data_loading_label=t("auth.restoring"), cls="btn btn--primary btn--full"),
             Script("""

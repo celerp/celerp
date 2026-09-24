@@ -51,16 +51,18 @@ async def _cloud_post(path: str, payload: dict) -> dict | None:
 # ── Payment (customer-facing, via the hosted invoice view) ───────────────────
 
 async def create_checkout(*, amount_minor: int, currency: str, description: str,
-                          success_url: str, cancel_url: str, metadata: dict) -> dict | None:
+                          company_id: str, entity_id: str,
+                          share_token: str) -> dict | None:
     """Ask Cloud to open a Checkout Session on the merchant's connected account.
 
     Returns {"url": <stripe checkout url>} (redirect the customer there), or None on
-    failure. `amount_minor` is the balance due in minor units. `success_url` should
-    carry the literal `{CHECKOUT_SESSION_ID}` placeholder.
+    failure. `amount_minor` is the balance due in minor units.
     """
     return await _cloud_post("/billing/connect/checkout", {
-        "amount_minor": amount_minor, "currency": currency, "description": description[:250],
-        "success_url": success_url, "cancel_url": cancel_url, "metadata": metadata,
+        "amount_minor": amount_minor, "currency": currency,
+        "description": description[:250],
+        "company_id": company_id, "entity_id": entity_id,
+        "share_token": share_token,
     })
 
 
