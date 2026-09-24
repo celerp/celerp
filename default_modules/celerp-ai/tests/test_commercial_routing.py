@@ -177,7 +177,7 @@ async def test_ai_api_401_is_transport_neutral_in_partner_mode(monkeypatch):
     _set_partner()
     monkeypatch.setattr("celerp.gateway.state.get_session_token", lambda: "")
     with pytest.raises(HTTPException) as exc:
-        await ai_query(query="hi", company_id="c1", db_session=None)
+        await ai_query(query="hi", company_id="c1", session_token="", db_session=None)
     assert exc.value.status_code == 401
     detail = str(exc.value.detail)
     assert "celerp.com/subscribe" not in detail
@@ -191,7 +191,7 @@ async def test_ai_api_401_is_transport_neutral_in_direct_mode(monkeypatch):
     from celerp.modules.api import ai_query
     monkeypatch.setattr("celerp.gateway.state.get_session_token", lambda: "")
     with pytest.raises(HTTPException) as exc:
-        await ai_query(query="hi", company_id="c1", db_session=None)
+        await ai_query(query="hi", company_id="c1", session_token="", db_session=None)
     assert exc.value.status_code == 401
     detail = str(exc.value.detail)
     assert "celerp.com/subscribe" not in detail

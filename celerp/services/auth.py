@@ -291,11 +291,9 @@ async def get_current_user(ctx: AuthContext = Depends(get_auth_context)) -> User
 
 
 async def installation_root_user_id(session: AsyncSession) -> uuid.UUID | None:
-    """Return the stable installation-root user identity."""
+    """Return the durable installation-owner identity."""
     return await session.scalar(
-        select(User.id)
-        .order_by(User.created_at.asc(), User.id.asc())
-        .limit(1)
+        select(User.id).where(User.is_install_owner.is_(True)).limit(1)
     )
 
 

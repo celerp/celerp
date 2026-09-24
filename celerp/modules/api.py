@@ -16,20 +16,13 @@ if TYPE_CHECKING:
 async def ai_query(
     query: str,
     company_id: str,
+    session_token: str,
     db_session: "AsyncSession",
 ) -> dict:
     """Run an AI query for a company through the active Celerp service."""
-    from fastapi import HTTPException, status
-    from celerp.gateway.state import get_session_token
+    from celerp.session_gate import validate_session_token
 
-    if not get_session_token():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=(
-                "No active Celerp Connect session. Reconnect web access under "
-                "Settings > Web Access, then try again."
-            ),
-        )
+    validate_session_token(session_token)
 
     from celerp.ai.service import AIResponse, run_query
 

@@ -101,8 +101,12 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
             source="stripe", actor_id=await _company_owner_id(session, company_id),
             idempotency_key=reference,
         )
-    except HTTPException:
-        return None  # replay or already-settled invoice: nothing left to record
+    except HTTPException as exc:
+        if exc.status_code == 409 and exc.detail in {
+            "Payment already recorded", "Invoice already fully paid",
+        }:
+            return None
+        raise
     if getattr(entry, "was_deduped", False):
         return None
     await session.commit()

@@ -216,6 +216,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
             auth_hash=hash_password(payload.password),
             api_key=None,
             is_active=True,
+            is_install_owner=True,
         )
         session.add(company)
         session.add(user)

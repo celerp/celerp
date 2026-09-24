@@ -743,11 +743,11 @@ class GatewayClient:
             log.warning("woocommerce webhook handling failed (topic=%s): %s", topic, exc)
 
     async def _handle_invoice_payment(self, payload: dict) -> None:
-        """Backup confirmation for an online invoice payment. Records through the same
-        idempotent path as the customer-return reconcile, so a replay is a no-op."""
+        """Record a delivered invoice payment and acknowledge durable completion."""
         company_id = payload.get("company_id")
         entity_id = payload.get("entity_id")
         reference = payload.get("reference")
+        delivery_id = payload.get("delivery_id")
         if not (company_id and entity_id and reference):
             return
         try:
@@ -765,6 +765,12 @@ class GatewayClient:
                     amount_minor=int(payload.get("amount_minor") or 0),
                     currency=payload.get("currency", "USD"),
                 )
+            if delivery_id and self._ws is not None:
+                await self._send(self._ws, {
+                    "type": "event.ack",
+                    "id": str(uuid.uuid4()),
+                    "payload": {"delivery_id": delivery_id},
+                })
         except Exception as exc:
             log.warning("invoice.payment handling failed (entity=%s): %s", entity_id, exc)
 

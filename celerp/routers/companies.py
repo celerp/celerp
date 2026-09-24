@@ -25,6 +25,7 @@ from celerp.services.auth import (
     get_current_role,
     hash_password,
     issue_token_pair,
+    require_install_owner,
     MIN_PASSWORD_LENGTH,
     normalize_role,
     ROLE_LEVELS,
@@ -642,6 +643,42 @@ async def list_users(company_id=Depends(get_current_company_id), session: AsyncS
     return {"items": items, "total": len(items)}
 
 
+@router.post("/me/users/{user_id}/installation-owner")
+async def transfer_install_owner(
+    user_id: uuid.UUID,
+    company_id=Depends(get_current_company_id),
+    owner: User = Depends(require_install_owner),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Transfer installation-wide authority to an active user in this company."""
+    current = (await session.execute(
+        select(User).where(User.is_install_owner.is_(True)).with_for_update()
+    )).scalar_one_or_none()
+    if current is None or current.id != owner.id:
+        raise HTTPException(status_code=403, detail="Installation owner access required")
+    if current.id == user_id:
+        return {"ok": True}
+
+    target = (await session.execute(
+        select(User).where(User.id == user_id).with_for_update()
+    )).scalar_one_or_none()
+    membership = (await session.execute(
+        select(UserCompany).where(
+            UserCompany.user_id == user_id,
+            UserCompany.company_id == company_id,
+            UserCompany.is_active.is_(True),
+        )
+    )).scalar_one_or_none()
+    if target is None or not target.is_active or membership is None:
+        raise HTTPException(status_code=400, detail="Installation owner must be an active user")
+
+    current.is_install_owner = False
+    await session.flush()
+    target.is_install_owner = True
+    await session.commit()
+    return {"ok": True}
+
+
 def _assert_role_assignable(caller_role: str, target_role: str) -> None:
     """A holder of manage_users may not assign a role above their own. The matrix can
     grant manage_users down to any role, so this ceiling is what stops that from
@@ -783,8 +820,7 @@ async def patch_user(
                         detail="Cannot deactivate the last owner. Assign another owner first.",
                     )
 
-            from celerp.services.auth import installation_root_user_id
-            if await installation_root_user_id(session) == user_id:
+            if user.is_install_owner:
                 active_memberships = (
                     await session.execute(
                         select(_func.count()).where(
