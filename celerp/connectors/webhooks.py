@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from celerp.connectors.base import ConnectorContext, SyncDirection
+from celerp.connectors.base import ConnectorContext, SyncDirection, entity_allowed
 from celerp.connectors.sync_runner import run_sync
 import celerp.connectors as connector_registry
 
@@ -66,8 +66,43 @@ async def handle_webhook(
 
     normalized_topic = event.topic.replace("/", ".").lower()
     if event.platform == "woocommerce" and normalized_topic == "product.deleted":
-        await connector.handle_product_deleted(ctx, event.payload or {})
-        log.info("webhook: processed targeted WooCommerce product deletion for %s", ctx.company_id)
+        if not entity_allowed(entity, direction):
+            return
+        from celerp.connectors.ownership import (
+            ConnectorOwnershipError,
+            lock_connector_operation,
+        )
+        from celerp.connectors.relay_token import fetch_context
+        from celerp.db import get_session_ctx
+
+        try:
+            async with get_session_ctx() as guard_session:
+                config = await lock_connector_operation(
+                    guard_session,
+                    ctx.company_id,
+                    event.platform,
+                    require_owner=True,
+                )
+                current_direction = SyncDirection(config.direction)
+                if not entity_allowed(entity, current_direction):
+                    return
+                current_ctx = await fetch_context(
+                    ctx.company_id,
+                    event.platform,
+                    ownership_session=guard_session,
+                )
+                if current_ctx is None:
+                    return
+                await connector.handle_product_deleted(
+                    current_ctx, event.payload or {}
+                )
+                await guard_session.commit()
+        except ConnectorOwnershipError:
+            return
+        log.info(
+            "webhook: processed targeted WooCommerce product deletion for %s",
+            ctx.company_id,
+        )
         return
 
     # Run a targeted incremental sync for just this entity type.

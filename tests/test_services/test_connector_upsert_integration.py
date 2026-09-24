@@ -533,6 +533,98 @@ async def test_run_sync_dispatches_and_gates_outbound_entity(session, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_run_sync_uses_current_connector_context_and_direction(
+    use_test_session, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from celerp.connectors import sync_runner
+    from celerp.connectors.base import (
+        ConnectorBase,
+        ConnectorContext,
+        SyncDirection,
+        SyncEntity,
+        SyncResult,
+    )
+    from celerp.models.connector_config import ConnectorConfig
+
+    session = use_test_session
+    cid = await _seed_company(session, "FreshSync")
+    connector_name = "fresh_ctx_stub"
+    config = ConnectorConfig(
+        company_id=str(cid),
+        connector=connector_name,
+        direction="inbound",
+    )
+    session.add(config)
+    await session.commit()
+
+    seen: list[str] = []
+
+    class _Stub(ConnectorBase):
+        name = connector_name
+        display_name = "Fresh Context Stub"
+        category = None
+        direction = SyncDirection.BOTH
+        supported_entities = [SyncEntity.PRODUCTS]
+        conflict_strategy: dict = {}
+
+        async def sync_products(self, ctx, since=None):
+            seen.append(ctx.access_token)
+            return SyncResult(entity=SyncEntity.PRODUCTS, created=1)
+
+        async def sync_orders(self, ctx, since=None):
+            return SyncResult(entity=SyncEntity.ORDERS)
+
+        async def sync_products_out(self, ctx):
+            seen.append("outbound")
+            return SyncResult(
+                entity=SyncEntity.PRODUCTS,
+                direction=SyncDirection.OUTBOUND,
+                created=1,
+            )
+
+    fresh = ConnectorContext(
+        company_id=str(cid),
+        access_token="new-token",
+        store_handle="new-store",
+    )
+    fetch = AsyncMock(return_value=fresh)
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", fetch)
+
+    stale = ConnectorContext(
+        company_id=str(cid),
+        access_token="old-token",
+        store_handle="old-store",
+    )
+    inbound = await sync_runner.run_sync(
+        _Stub(), stale, "products", direction=SyncDirection.BOTH
+    )
+    assert inbound.created == 1
+    assert seen == ["new-token"]
+    fetch.assert_awaited_once_with(
+        str(cid), connector_name, ownership_session=session
+    )
+
+    changed = await sync_runner.run_sync(
+        _Stub(),
+        stale,
+        "products",
+        direction=SyncDirection.BOTH,
+        expected_config_id=config.id + 1000,
+    )
+    assert changed.errors and "connection changed" in changed.errors[0]
+    assert seen == ["new-token"]
+    assert fetch.await_count == 1
+
+    blocked = await sync_runner.run_sync(
+        _Stub(), stale, "products_out", direction=SyncDirection.BOTH
+    )
+    assert blocked.errors and "blocked by direction=inbound" in blocked.errors[0]
+    assert seen == ["new-token"]
+
+
+@pytest.mark.asyncio
 async def test_woocommerce_processing_order_reserves_across_lots(use_test_session):
     from datetime import datetime, timezone
 
@@ -615,6 +707,70 @@ async def test_woocommerce_same_sku_cannot_steal_live_external_identity(use_test
             str(cid), platform="woocommerce", product_id="702", variation_id=None,
             sku="IDENTITY-SKU", name="Other Remote Product", link_fields={"manage_stock": True},
         )
+
+
+@pytest.mark.asyncio
+async def test_disabled_remote_relink_repairs_identity_without_overwriting_product(
+    use_test_session,
+):
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import (
+        external_link_for_state,
+        set_external_link_state,
+        upsert_external_product,
+    )
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooDisabledRelink")
+    _, entity_id = await upsert_external_product(
+        str(cid),
+        platform="woocommerce",
+        product_id="701",
+        variation_id=None,
+        sku="KEEP-SKU",
+        name="Local Name",
+        description="Local Description",
+        sale_price=10.0,
+        link_fields={"manage_stock": True},
+    )
+    await set_external_link_state(
+        session,
+        cid,
+        entity_id,
+        "woocommerce",
+        sync_enabled=False,
+        remote_deleted=True,
+    )
+    await session.commit()
+
+    outcome, relinked_id = await upsert_external_product(
+        str(cid),
+        platform="woocommerce",
+        product_id="702",
+        variation_id=None,
+        sku="KEEP-SKU",
+        name="Remote Name",
+        description="Remote Description",
+        sale_price=99.0,
+        link_fields={"manage_stock": False},
+    )
+
+    assert outcome == "disabled"
+    assert relinked_id == entity_id
+    row = await session.get(
+        Projection,
+        {"company_id": cid, "entity_id": entity_id},
+        populate_existing=True,
+    )
+    state = row.state or {}
+    assert state["name"] == "Local Name"
+    assert state["description"] == "Local Description"
+    assert state["sale_price"] == 10.0
+    link = external_link_for_state(state, "woocommerce")
+    assert link["product_id"] == "702"
+    assert link["sync_enabled"] is False
+    assert link["remote_deleted"] is False
+    assert link["manage_stock"] is False
 
 
 @pytest.mark.asyncio

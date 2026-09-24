@@ -16,7 +16,9 @@ from fastapi import HTTPException
 
 from celerp_connectors.routes import (
     ApiKeyCredentials,
+    ItemSyncRequest,
     revoke_credentials,
+    set_item_sync,
     store_credentials,
 )
 
@@ -109,7 +111,7 @@ async def test_store_relay_402_maps_to_subscription_required():
 
 
 @pytest.mark.asyncio
-async def test_failed_update_keeps_preexisting_ownership():
+async def test_store_requires_disconnect_before_replacing_credentials():
     url_p, hdr_p = _relay_state()
     release = AsyncMock()
     with patch(
@@ -120,13 +122,13 @@ async def test_failed_update_keeps_preexisting_ownership():
     ), url_p, hdr_p, respx.mock:
         respx.get(f"{STORE}/wp-json/wc/v3/products").mock(
             return_value=httpx.Response(200, json=[]))
-        respx.post(f"{RELAY}/tokens/woocommerce").mock(
-            return_value=httpx.Response(402))
+        relay = respx.post(f"{RELAY}/tokens/woocommerce")
         result = await store_credentials(
             "woocommerce", _creds(), "company-test", None, _session()
         )
 
-    assert result["error"] == "subscription_required"
+    assert result["error"] == "already_connected"
+    assert not relay.called
     release.assert_not_awaited()
 
 
@@ -232,6 +234,50 @@ async def test_store_webhook_failure_keeps_owner_when_revoke_is_ambiguous():
 
     assert result["ok"] is False
     release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_item_sync_serializes_with_connector_operations():
+    session = _session()
+    lock = AsyncMock(return_value=SimpleNamespace(direction="both"))
+    anchor = SimpleNamespace(
+        entity_id="item:1",
+        is_sync_to_shopify=False,
+        state={
+            "sku": "SKU-1",
+            "external_links": {
+                "woocommerce": {
+                    "product_id": "10",
+                    "sync_enabled": True,
+                    "remote_deleted": False,
+                }
+            },
+        },
+    )
+    set_state = AsyncMock()
+    with patch(
+        "celerp.connectors.ownership.lock_connector_operation", lock
+    ), patch(
+        "celerp_inventory.services.resolve_catalog_anchor_for_item",
+        new=AsyncMock(return_value=anchor),
+    ), patch(
+        "celerp_inventory.services.set_external_link_state", set_state
+    ):
+        result = await set_item_sync(
+            "woocommerce",
+            ItemSyncRequest(entity_ids=["item:1"], enable=False),
+            "company-test",
+            SimpleNamespace(id="user-1"),
+            None,
+            session,
+        )
+
+    lock.assert_awaited_once_with(
+        session, "company-test", "woocommerce", require_owner=True
+    )
+    set_state.assert_awaited_once()
+    assert result["updated"] == 1
+    assert session.commit.await_count == 1
 
 
 # ── revoke_credentials ───────────────────────────────────────────────────────

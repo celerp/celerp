@@ -288,6 +288,13 @@ async def store_credentials(
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    if not ownership_created:
+        return {
+            "ok": False,
+            "error": "already_connected",
+            "detail": "Disconnect the existing connector before changing credentials.",
+        }
+
     try:
         config = await lock_connector_operation(
             session, company_id, connector_name, require_owner=True
@@ -571,16 +578,23 @@ async def set_item_sync(
         raise HTTPException(status_code=404, detail="Unsupported catalog connector")
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
-    import sqlalchemy as sa
+    from celerp.connectors.ownership import (
+        ConnectorOwnershipError,
+        lock_connector_operation,
+    )
     from celerp.events.engine import emit_event
-    from celerp.models.connector_config import ConnectorConfig
-    from celerp_inventory.services import external_link_for_state, resolve_catalog_anchor_for_item, set_external_link_state
-    configured = (await session.execute(sa.select(ConnectorConfig.id).where(
-        ConnectorConfig.company_id == str(company_id),
-        ConnectorConfig.connector == connector_name,
-    ))).scalar_one_or_none()
-    if configured is None:
-        raise HTTPException(status_code=409, detail=f"{connector_name} is not connected")
+    from celerp_inventory.services import (
+        external_link_for_state,
+        resolve_catalog_anchor_for_item,
+        set_external_link_state,
+    )
+    try:
+        await lock_connector_operation(
+            session, company_id, connector_name, require_owner=True
+        )
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     anchors: dict[str, object] = {}
     errors: list[str] = []
     for entity_id in dict.fromkeys(payload.entity_ids):
@@ -614,13 +628,11 @@ async def set_item_sync(
             updated += 1
         await session.commit()
     else:
-        from celerp.connectors.ownership import lock_connector_operation
         from celerp.connectors.relay_token import fetch_context
         from celerp.connectors.woocommerce import WooCommerceConnector
-        await lock_connector_operation(
-            session, company_id, "woocommerce", require_owner=True
+        ctx = await fetch_context(
+            str(company_id), "woocommerce", ownership_session=session
         )
-        ctx = await fetch_context(str(company_id), "woocommerce")
         if ctx is None:
             raise HTTPException(status_code=409, detail="WooCommerce is connected but its credentials are not currently available")
         for anchor_id, anchor in anchors.items():
@@ -629,6 +641,7 @@ async def set_item_sync(
                 updated += 1
             except Exception as exc:
                 errors.append(f"{(anchor.state or {}).get('sku') or anchor_id}: {exc}")
+        await session.commit()
     return {"updated": updated, "enabled": payload.enable, "errors": errors}
 
 

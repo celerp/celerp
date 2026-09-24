@@ -9,10 +9,17 @@ from typing import TYPE_CHECKING
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from celerp.connectors.base import ConnectorContext
 
 
-async def fetch_context(company_id: str, connector_name: str) -> "ConnectorContext | None":
+async def fetch_context(
+    company_id: str,
+    connector_name: str,
+    *,
+    ownership_session: "AsyncSession | None" = None,
+) -> "ConnectorContext | None":
     import httpx
 
     from celerp.connectors.base import ConnectorContext
@@ -23,13 +30,21 @@ async def fetch_context(company_id: str, connector_name: str) -> "ConnectorConte
     if not get_session_token():
         return None
 
-    async with get_session_ctx() as session:
-        if not await connector_owned_by_company(session, company_id, connector_name):
-            log.warning(
-                "connector context unavailable for %s and company %s",
-                connector_name, company_id,
+    if ownership_session is None:
+        async with get_session_ctx() as session:
+            owned = await connector_owned_by_company(
+                session, company_id, connector_name
             )
-            return None
+    else:
+        owned = await connector_owned_by_company(
+            ownership_session, company_id, connector_name
+        )
+    if not owned:
+        log.warning(
+            "connector context unavailable for %s and company %s",
+            connector_name, company_id,
+        )
+        return None
     try:
         async with httpx.AsyncClient(timeout=15.0) as c:
             r = await c.get(

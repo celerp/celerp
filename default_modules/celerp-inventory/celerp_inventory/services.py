@@ -525,16 +525,23 @@ async def upsert_external_product(
             **incoming_link,
             "sync_enabled": relinked_external_sync_enabled(previous_link),
         }
-        desired = {"sku": sku, "name": name, "external_links": links}
-        if inventory_type is not None:
-            desired["inventory_type"] = inventory_type
-        if sell_by is not None:
-            desired["sell_by"] = sell_by
-        if description is not None:
-            desired["description"] = description
-        if sale_price is not None:
-            desired["sale_price"] = sale_price
-            desired["retail_price"] = sale_price
+        identity_only = bool(
+            previous_link
+            and previous_link.get("remote_deleted") is True
+            and previous_link.get("sync_enabled") is False
+        )
+        desired = {"external_links": links}
+        if not identity_only:
+            desired.update({"sku": sku, "name": name})
+            if inventory_type is not None:
+                desired["inventory_type"] = inventory_type
+            if sell_by is not None:
+                desired["sell_by"] = sell_by
+            if description is not None:
+                desired["description"] = description
+            if sale_price is not None:
+                desired["sale_price"] = sale_price
+                desired["retail_price"] = sale_price
 
         fields_changed = {
             key: {"old": state.get(key), "new": value}

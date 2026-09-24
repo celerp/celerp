@@ -302,6 +302,45 @@ async def test_handle_webhook_unknown_platform():
         mock_sync.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_woocommerce_delete_webhook_rechecks_current_direction():
+    import contextlib
+    from types import SimpleNamespace
+
+    from celerp.connectors.base import SyncDirection
+
+    event = WebhookEvent(
+        platform="woocommerce",
+        topic="product.deleted",
+        payload={"id": 10},
+    )
+    ctx = ConnectorContext(company_id="company-test", access_token="stale")
+    connector = MagicMock()
+    connector.handle_product_deleted = AsyncMock()
+    guard_session = AsyncMock()
+
+    @contextlib.asynccontextmanager
+    async def _guard():
+        yield guard_session
+
+    with patch(
+        "celerp.connectors.webhooks.connector_registry.get",
+        return_value=connector,
+    ), patch(
+        "celerp.db.get_session_ctx", _guard,
+    ), patch(
+        "celerp.connectors.ownership.lock_connector_operation",
+        new=AsyncMock(return_value=SimpleNamespace(direction="outbound")),
+    ), patch(
+        "celerp.connectors.relay_token.fetch_context",
+        new=AsyncMock(),
+    ) as fetch:
+        await handle_webhook(event, ctx, SyncDirection.BOTH)
+
+    connector.handle_product_deleted.assert_not_awaited()
+    fetch.assert_not_awaited()
+
+
 # ── ConnectorConfig model ────────────────────────────────────────────────────
 
 # ── /connectors router (HTTP) ─────────────────────────────────────────────────

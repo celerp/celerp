@@ -865,11 +865,13 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
+        from celerp.connectors.ownership import (
+            ConnectorOwnershipError,
+            lock_connector_operation,
+        )
         from celerp.db import get_session_ctx
-        from celerp.models.connector_config import ConnectorConfig
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
-        import sqlalchemy as sa
 
         company_id = _request_company_id(request)
         lang = get_lang(request)
@@ -879,14 +881,14 @@ def setup_routes(app):
             direction = "both"
 
         async with get_session_ctx() as session:
-            await session.execute(
-                sa.update(ConnectorConfig)
-                .where(
-                    ConnectorConfig.company_id == company_id,
-                    ConnectorConfig.connector == platform,
+            try:
+                config = await lock_connector_operation(
+                    session, company_id, platform, require_owner=True
                 )
-                .values(direction=direction)
-            )
+            except ConnectorOwnershipError as exc:
+                await session.rollback()
+                return Span(str(exc), cls="flash flash--warning")
+            config.direction = direction
             await session.commit()
 
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
@@ -1104,6 +1106,8 @@ def setup_routes(app):
                 msg = t("connectors.no_subscription", lang)
             elif err in ("store_rejected", "store_unreachable"):
                 msg = t("connectors.connect_check_failed", lang, detail=detail)
+            elif err == "already_connected" and detail:
+                msg = detail
             else:
                 msg = t("connectors.connect_failed", lang)
             return Div(
