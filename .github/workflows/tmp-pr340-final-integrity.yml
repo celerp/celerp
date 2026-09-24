@@ -50,6 +50,20 @@ jobs:
               p.write_text(s2)
           
           replace(
+              "tests/test_services/test_connector_upsert_integration.py",
+              """    co = "wm-since-1"
+    watermark = datetime(2026, 5, 1, tzinfo=timezone.utc)""",
+              """    co = str(await _seed_company(session, "WatermarkSync"))
+    watermark = datetime(2026, 5, 1, tzinfo=timezone.utc)""",
+          )
+          replace(
+              "tests/test_services/test_connector_upsert_integration.py",
+              """    ctx = ConnectorContext(company_id="co-out-1", access_token="t", store_handle="s")""",
+              """    co = str(await _seed_company(session, "OutboundSync"))
+    ctx = ConnectorContext(company_id=co, access_token="t", store_handle="s")""",
+          )
+
+          replace(
               "default_modules/celerp-inventory/celerp_inventory/services.py",
               """async def set_external_link(
               session: AsyncSession, company_id, entity_id: str, platform: str, link: dict,
