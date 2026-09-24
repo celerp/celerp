@@ -1517,7 +1517,7 @@ async def test_connector_authorize_failure_releases_new_claim_after_cancel(clien
 
     assert response.status_code == 200
     assert response.json()["error"] == "Could not reset the previous connection."
-    release.assert_not_awaited()
+    release.assert_awaited_once()
     assert relay.await_count == 2
 
 
@@ -1553,6 +1553,50 @@ async def test_connector_authorize_ambiguous_cleanup_keeps_new_claim(client):
 
 
 @pytest.mark.asyncio
+async def test_connector_authorize_persists_owner_before_ambiguous_remote_write():
+    import httpx as _httpx
+    from celerp.routers.health import connector_authorize_url
+
+    session = AsyncMock()
+    claim = AsyncMock(return_value=(object(), True))
+    lock = AsyncMock(return_value=object())
+    release = AsyncMock()
+    events = []
+
+    async def _commit():
+        events.append("commit")
+
+    session.commit = AsyncMock(side_effect=_commit)
+
+    async def _relay(*_args, **_kwargs):
+        events.append("relay")
+        if events.count("relay") == 1:
+            raise _httpx.TimeoutException("authorize timed out")
+        raise _httpx.ConnectError("cleanup unavailable")
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
+         patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
+         patch("celerp.connectors.ownership.lock_connector_operation", lock), \
+         patch("celerp.connectors.ownership.release_connector_ownership", release), \
+         patch(
+             "celerp.gateway.state.with_relay_client",
+             new=AsyncMock(side_effect=_relay),
+         ):
+        mock_settings.gateway_token = "my-api-key"
+        result = await connector_authorize_url(
+            "quickbooks",
+            company_id="company-test",
+            session=session,
+        )
+
+    assert "disconnect it before retrying" in result["error"]
+    assert events[0] == "commit"
+    assert events[1:] == ["relay", "relay"]
+    release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_connector_reauthorize_requires_disconnect_without_releasing_owner(client):
     token = await _register(client, "auth-url-existing-owner")
     claim = AsyncMock(return_value=(object(), False))
@@ -1580,7 +1624,7 @@ async def test_connector_reauthorize_requires_disconnect_without_releasing_owner
 
 
 @pytest.mark.asyncio
-async def test_connector_authorize_lock_failure_releases_new_claim(client):
+async def test_connector_authorize_lock_failure_keeps_durable_claim(client):
     from celerp.connectors.ownership import ConnectorOwnershipError
 
     token = await _register(client, "auth-url-lock-fails")

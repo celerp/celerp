@@ -725,7 +725,8 @@ _CONNECTOR_SESSION_TOKEN = "test-session-token-abc123"
 
 
 @pytest.fixture(autouse=False)
-def patch_connector_session_token():
+def patch_connector_session_token(session):
+    from contextlib import asynccontextmanager
     from unittest.mock import AsyncMock, patch
     from celerp.connectors.base import ConnectorContext
     import celerp.gateway.state as gw_state
@@ -737,10 +738,17 @@ def patch_connector_session_token():
             store_handle="test.myshopify.com",
         )
 
+    @asynccontextmanager
+    async def _shared_session_ctx():
+        yield session
+
     gw_state.set_session_token(_CONNECTOR_SESSION_TOKEN)
     with patch(
         "celerp.connectors.relay_token.fetch_context",
         new=AsyncMock(side_effect=_context),
+    ), patch(
+        "celerp.db.get_session_ctx",
+        new=_shared_session_ctx,
     ):
         yield
     gw_state.set_session_token("")

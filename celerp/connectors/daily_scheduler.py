@@ -109,14 +109,28 @@ async def check_and_run_daily_syncs(
             log.warning("daily_scheduler: all entities failed for %s — will retry when next due", config.connector)
             continue
 
-        synced.append(config.connector)
+        from celerp.connectors.ownership import (
+            ConnectorOwnershipError,
+            lock_connector_operation,
+        )
+
         async with get_session_ctx() as session:
-            await session.execute(
-                sa.update(ConnectorConfig)
-                .where(ConnectorConfig.id == config.id)
-                .values(last_daily_sync_at=now)
-            )
+            try:
+                current = await lock_connector_operation(
+                    session,
+                    company_id,
+                    config.connector,
+                    require_owner=True,
+                )
+            except ConnectorOwnershipError:
+                await session.rollback()
+                continue
+            if current.id != config.id:
+                await session.rollback()
+                continue
+            current.last_daily_sync_at = now
             await session.commit()
+        synced.append(config.connector)
 
     return synced
 

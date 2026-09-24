@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import asynccontextmanager
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -70,6 +71,29 @@ async def lock_connector_maintenance(session: AsyncSession) -> None:
         sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
         {"k": "connector-runtime"},
     )
+
+
+@asynccontextmanager
+async def connector_maintenance_guard():
+    """Exclude connector work across a multi-transaction maintenance operation."""
+    from celerp.db import LifecycleSessionLocal
+
+    async with LifecycleSessionLocal() as session:
+        if session.get_bind().dialect.name == "sqlite":
+            yield
+            return
+        await session.execute(
+            sa.text("SELECT pg_advisory_lock(hashtextextended(:k, 0))"),
+            {"k": "connector-runtime"},
+        )
+        try:
+            yield
+        finally:
+            await session.execute(
+                sa.text("SELECT pg_advisory_unlock(hashtextextended(:k, 0))"),
+                {"k": "connector-runtime"},
+            )
+            await session.rollback()
 
 
 async def _lock_active_company(session: AsyncSession, company_id) -> Company:

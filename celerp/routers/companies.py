@@ -2281,10 +2281,10 @@ async def deactivate_company(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Soft-delete the current company. Sets is_active=False. Admin only.
+    """Soft-delete the current company and disconnect its external connectors.
 
-    Does not delete any data. All records (ledger, documents, users) are preserved.
-    Use POST /me/reactivate to restore.
+    Business records are preserved. Connector credentials are revoked so the
+    installation-wide connection can be claimed again after deactivation.
     """
     import time as _time
     import re as _re2
@@ -2292,6 +2292,10 @@ async def deactivate_company(
     from celerp.connectors.ownership import (
         lock_connector_maintenance,
         record_connector_reset,
+    )
+    from celerp.connectors.remote_state import (
+        ConnectorRemoteCleanupError,
+        revoke_connector_remote_state,
     )
     from celerp.models.connector_config import ConnectorConfig, OutboundQueue
 
@@ -2301,13 +2305,33 @@ async def deactivate_company(
     )
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
-    company.is_active = False
     company_id_str = str(company_id)
-    connectors = set((await session.scalars(
-        sa.select(ConnectorConfig.connector).where(
-            ConnectorConfig.company_id == company_id_str
-        )
+    configs = list((await session.scalars(
+        sa.select(ConnectorConfig)
+        .where(ConnectorConfig.company_id == company_id_str)
+        .with_for_update()
     )).all())
+    for config in configs:
+        connector_name = config.connector
+        webhook_ids = list(config.webhook_ids or [])
+        try:
+            await revoke_connector_remote_state(
+                company_id_str,
+                connector_name,
+                webhook_ids=webhook_ids,
+            )
+        except ConnectorRemoteCleanupError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Could not disconnect {connector_name}; "
+                    "the company was not deactivated."
+                ),
+            ) from exc
+
+    company.is_active = False
+    connectors = {config.connector for config in configs}
     connectors.update((await session.scalars(
         sa.select(OutboundQueue.connector).where(
             OutboundQueue.company_id == company_id_str

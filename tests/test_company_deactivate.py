@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Tests for company soft-delete (deactivate/reactivate)."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from httpx import AsyncClient
 
@@ -224,8 +226,16 @@ async def test_deactivate_releases_connector_reservation(client: AsyncClient, se
     ))
     await session.commit()
 
-    response = await client.delete("/companies/me", headers=_auth(token))
+    cleanup = AsyncMock()
+    with patch(
+        "celerp.connectors.remote_state.revoke_connector_remote_state",
+        cleanup,
+    ):
+        response = await client.delete("/companies/me", headers=_auth(token))
     assert response.status_code == 200
+    cleanup.assert_awaited_once_with(
+        str(company_id), "woocommerce", webhook_ids=[]
+    )
 
     session.expire_all()
     assert await session.scalar(
@@ -247,3 +257,44 @@ async def test_deactivate_releases_connector_reservation(client: AsyncClient, se
     )
     assert reset is not None
     assert reset.status == "reset"
+
+
+
+@pytest.mark.asyncio
+async def test_deactivate_fails_closed_when_remote_cleanup_is_ambiguous(
+    client: AsyncClient, session
+):
+    from uuid import UUID
+    from sqlalchemy import select
+
+    from celerp.connectors.remote_state import ConnectorRemoteCleanupError
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig
+
+    token = await _register(
+        client, "connector-cleanup-fails@deact.test", "Connector Cleanup Fails"
+    )
+    companies = (await client.get(
+        "/auth/my-companies", headers=_auth(token)
+    )).json()["items"]
+    company_id = UUID(companies[0]["company_id"])
+    session.add(ConnectorConfig(
+        company_id=str(company_id),
+        connector="woocommerce",
+    ))
+    await session.commit()
+
+    with patch(
+        "celerp.connectors.remote_state.revoke_connector_remote_state",
+        new=AsyncMock(side_effect=ConnectorRemoteCleanupError("unknown")),
+    ):
+        response = await client.delete("/companies/me", headers=_auth(token))
+
+    assert response.status_code == 503
+    session.expire_all()
+    company = await session.get(Company, company_id)
+    assert company is not None and company.is_active is True
+    assert await session.scalar(select(ConnectorConfig).where(
+        ConnectorConfig.company_id == str(company_id),
+        ConnectorConfig.connector == "woocommerce",
+    )) is not None

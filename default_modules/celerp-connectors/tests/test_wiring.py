@@ -128,8 +128,10 @@ async def test_scheduler_reconciles_realtime_config():
     run_sync_mock = AsyncMock(
         return_value=[SyncResult(entity=SyncEntity.PRODUCTS, created=1)]
     )
+    lock = AsyncMock(return_value=config)
     with patch("celerp.db.get_session_ctx", return_value=cm), \
-         patch("celerp.connectors.sync_runner.run_connector_sync", new=run_sync_mock):
+         patch("celerp.connectors.sync_runner.run_connector_sync", new=run_sync_mock), \
+         patch("celerp.connectors.ownership.lock_connector_operation", new=lock):
         synced = await check_and_run_daily_syncs("co-1", token_fetcher=AsyncMock(return_value=MagicMock()))
 
     assert "shopify" in synced                # realtime connector was reconciled
@@ -143,6 +145,36 @@ async def test_scheduler_reconciles_realtime_config():
     entities_run = set(sync_plan(connector, direction))
     assert {"products", "orders", "contacts"} <= entities_run
     assert "products_out" in entities_run
+    lock.assert_awaited_once_with(
+        sess, "co-1", "shopify", require_owner=True
+    )
+    assert config.last_daily_sync_at is not None
+
+
+@pytest.mark.asyncio
+async def test_scheduler_does_not_stamp_reconnected_generation():
+    from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
+    from celerp.connectors.base import SyncEntity, SyncResult
+
+    config = _sched_config()
+    cm = _sched_session(config)
+    replacement = MagicMock(id=8)
+    replacement.last_daily_sync_at = None
+    run_sync_mock = AsyncMock(
+        return_value=[SyncResult(entity=SyncEntity.PRODUCTS, created=1)]
+    )
+    with patch("celerp.db.get_session_ctx", return_value=cm), \
+         patch("celerp.connectors.sync_runner.run_connector_sync", new=run_sync_mock), \
+         patch(
+             "celerp.connectors.ownership.lock_connector_operation",
+             new=AsyncMock(return_value=replacement),
+         ):
+        synced = await check_and_run_daily_syncs(
+            "co-1", token_fetcher=AsyncMock(return_value=MagicMock())
+        )
+
+    assert synced == []
+    assert replacement.last_daily_sync_at is None
 
 
 def _sched_config(**over):
@@ -159,6 +191,7 @@ def _sched_session(config):
     sess = MagicMock()
     sess.execute = AsyncMock(return_value=[(config,)])
     sess.commit = AsyncMock()
+    sess.rollback = AsyncMock()
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=sess)
     cm.__aexit__ = AsyncMock(return_value=False)
@@ -304,7 +337,11 @@ async def test_scheduler_full_reconciles_woocommerce_products():
     cm = _sched_session(config)
     run = AsyncMock(return_value=[SyncResult(entity=SyncEntity.PRODUCTS, created=0)])
     with patch("celerp.db.get_session_ctx", return_value=cm), \
-         patch("celerp.connectors.sync_runner.run_connector_sync", new=run):
+         patch("celerp.connectors.sync_runner.run_connector_sync", new=run), \
+         patch(
+             "celerp.connectors.ownership.lock_connector_operation",
+             new=AsyncMock(return_value=config),
+         ):
         await check_and_run_daily_syncs(
             "co", token_fetcher=AsyncMock(return_value=MagicMock())
         )

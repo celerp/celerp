@@ -476,6 +476,33 @@ def _write_restore_notice(company_name: str | None, warnings: list[str],
         log.warning("Could not write restore notice: %s", exc)
 
 
+async def _revoke_current_connector_state() -> None:
+    import sqlalchemy as sa
+
+    from celerp.connectors.remote_state import revoke_connector_remote_state
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+
+    async with get_session_ctx() as session:
+        configs = [
+            (
+                str(config.company_id),
+                config.connector,
+                list(config.webhook_ids or []),
+            )
+            for config in (await session.scalars(
+                sa.select(ConnectorConfig)
+            )).all()
+        ]
+
+    for company_id, connector, webhook_ids in configs:
+        await revoke_connector_remote_state(
+            company_id,
+            connector,
+            webhook_ids=webhook_ids,
+        )
+
+
 async def _clear_restored_connector_state(session) -> None:
     import sqlalchemy as sa
 
@@ -523,18 +550,19 @@ async def run_import(path: Path):
                 return BackupResult(ok=False, size_bytes=0, error="Cannot read database.dump")
             dump_bytes = dump_file.read()
 
-        from celerp.connectors.ownership import lock_connector_maintenance
+        from celerp.connectors.ownership import connector_maintenance_guard
         from celerp.db import get_session_ctx
         from celerp.services.backup_state import writes_paused
 
-        async with get_session_ctx() as maintenance_session:
-            await lock_connector_maintenance(maintenance_session)
+        async with connector_maintenance_guard():
+            await _revoke_current_connector_state()
             with writes_paused():
                 await _dispose_engine()
                 await _run_pg_restore(dump_bytes, settings.database_url)
                 schema_warning = await _reconcile_schema()
-                await _clear_restored_connector_state(maintenance_session)
-            await maintenance_session.commit()
+                async with get_session_ctx() as restored_session:
+                    await _clear_restored_connector_state(restored_session)
+                    await restored_session.commit()
 
         # Extract files outside the tar context (already read dump above)
         await _extract_files(path)

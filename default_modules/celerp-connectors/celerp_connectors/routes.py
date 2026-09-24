@@ -248,7 +248,7 @@ async def store_credentials(
                 timeout=8.0,
                 allow_http=allow_http,
                 auth=(payload.consumer_key, payload.consumer_secret),
-                params={"per_page": 1},
+                params={"per_page": 1, "_fields": "id"},
             )
             if probe.status_code == 401:
                 return {"ok": False, "error": "store_rejected",
@@ -296,27 +296,76 @@ async def store_credentials(
         }
 
     try:
+        await session.commit()
         config = await lock_connector_operation(
             session, company_id, connector_name, require_owner=True
         )
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as c:
-            stale = await c.delete(
-                f"{relay_http_url()}/tokens/{connector_name}",
-                headers=relay_session_headers(),
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        await session.rollback()
+        return {"ok": False, "error": "local_cleanup_failed", "detail": str(exc)}
+
+    from celerp.connectors.remote_state import (
+        ConnectorRemoteCleanupError,
+        revoke_connector_remote_state,
+    )
+
+    async def _failure(
+        error: str,
+        detail: str,
+        *,
+        webhook_ids: list[str] | None = None,
+    ) -> dict:
+        try:
+            await revoke_connector_remote_state(
+                company_id,
+                connector_name,
+                webhook_ids=webhook_ids,
             )
-            if stale.status_code not in (200, 404):
-                await session.rollback()
-                return {
-                    "ok": False,
-                    "error": "relay_error",
-                    "detail": f"relay returned {stale.status_code}",
-                }
-            if connector_name in {"shopify", "woocommerce"}:
-                from celerp_inventory.services import detach_external_links_for_platform
-                await detach_external_links_for_platform(
-                    session, company_id, connector_name
-                )
-            r = await c.post(
+        except ConnectorRemoteCleanupError:
+            await session.rollback()
+            suffix = (
+                " The connection could not be cleaned up automatically; "
+                "disconnect it before retrying."
+            )
+            return {"ok": False, "error": error, "detail": (detail + suffix).strip()}
+
+        await session.rollback()
+        try:
+            await release_connector_ownership(
+                session, company_id, connector_name
+            )
+            await session.commit()
+        except Exception as exc:
+            await session.rollback()
+            return {
+                "ok": False,
+                "error": "local_cleanup_failed",
+                "detail": str(exc),
+            }
+        return {"ok": False, "error": error, "detail": detail}
+
+    try:
+        # Remove any stale remote state before starting the new generation.
+        await revoke_connector_remote_state(company_id, connector_name)
+    except ConnectorRemoteCleanupError as exc:
+        await session.rollback()
+        return {
+            "ok": False,
+            "error": "relay_error",
+            "detail": f"{exc} Disconnect it before retrying.",
+        }
+
+    try:
+        if connector_name in {"shopify", "woocommerce"}:
+            from celerp_inventory.services import detach_external_links_for_platform
+            await detach_external_links_for_platform(
+                session, company_id, connector_name
+            )
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+            r = await client.post(
                 f"{relay_http_url()}/tokens/{connector_name}",
                 json={
                     "consumer_key": payload.consumer_key,
@@ -326,17 +375,15 @@ async def store_credentials(
                 headers=relay_session_headers(),
             )
     except Exception as exc:
-        await session.rollback()
-        return {"ok": False, "error": "relay_error", "detail": str(exc)}
+        return await _failure("relay_error", str(exc))
 
     if r.status_code == 402:
-        await session.rollback()
-        return {"ok": False, "error": "subscription_required", "detail": ""}
+        return await _failure("subscription_required", "")
     if r.status_code != 200:
-        await session.rollback()
-        return {"ok": False, "error": "relay_error", "detail": f"relay returned {r.status_code}"}
+        return await _failure(
+            "relay_error", f"relay returned {r.status_code}"
+        )
 
-    webhook_ctx = None
     webhook_ids: list[str] = []
     if connector_name == "woocommerce":
         import secrets
@@ -354,27 +401,11 @@ async def store_credentials(
                 webhook_ctx, delivery_url, secret=secret
             )
         except Exception as exc:
-            try:
-                async with httpx.AsyncClient(
-                    timeout=10.0, follow_redirects=False
-                ) as c:
-                    rollback = await c.delete(
-                        f"{relay_http_url()}/tokens/{connector_name}",
-                        headers=relay_session_headers(),
-                    )
-            except Exception:
-                rollback = None
-            await session.rollback()
-            if rollback is not None and rollback.status_code not in (200, 404):
-                log.warning(
-                    "connector credential rollback returned %d",
-                    rollback.status_code,
-                )
-            return {
-                "ok": False,
-                "error": "store_unreachable",
-                "detail": f"Webhook setup failed: {exc}",
-            }
+            return await _failure(
+                "store_unreachable",
+                f"Webhook setup failed: {exc}",
+                webhook_ids=webhook_ids,
+            )
 
         config.webhook_secret = secret
         config.webhook_ids = webhook_ids
@@ -382,51 +413,11 @@ async def store_credentials(
     try:
         await session.commit()
     except Exception as exc:
-        await session.rollback()
-        if webhook_ctx is not None and webhook_ids:
-            try:
-                await connector.deregister_webhooks(webhook_ctx, webhook_ids)
-            except Exception:
-                log.warning(
-                    "WooCommerce webhook cleanup failed after local commit failure",
-                    exc_info=True,
-                )
-                return {
-                    "ok": False,
-                    "error": "local_cleanup_failed",
-                    "detail": str(exc),
-                }
-            try:
-                async with httpx.AsyncClient(
-                    timeout=10.0, follow_redirects=False
-                ) as client:
-                    revoked = await client.delete(
-                        f"{relay_http_url()}/tokens/{connector_name}",
-                        headers=relay_session_headers(),
-                    )
-                if ownership_created and revoked.status_code in (200, 404):
-                    try:
-                        await release_connector_ownership(
-                            session, company_id, connector_name
-                        )
-                        await session.commit()
-                    except Exception:
-                        await session.rollback()
-                        log.warning(
-                            "connector ownership cleanup failed after credential rollback",
-                            exc_info=True,
-                        )
-                else:
-                    log.warning(
-                        "connector credential rollback returned %d",
-                        revoked.status_code,
-                    )
-            except Exception:
-                log.warning(
-                    "connector credential rollback failed after local commit failure",
-                    exc_info=True,
-                )
-        return {"ok": False, "error": "local_cleanup_failed", "detail": str(exc)}
+        return await _failure(
+            "local_cleanup_failed",
+            str(exc),
+            webhook_ids=webhook_ids,
+        )
     return {"ok": True}
 
 
@@ -438,15 +429,16 @@ async def revoke_credentials(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Disconnect one company-owned connector and clear its local sync state."""
-    import httpx
-
-    from celerp.connectors.base import ConnectorContext
     from celerp.connectors.ownership import (
         ConnectorOwnershipError,
         lock_connector_operation,
         release_connector_ownership,
     )
-    from celerp.gateway.state import relay_http_url, relay_session_headers
+    from celerp.connectors.remote_state import (
+        ConnectorRemoteCleanupError,
+        ConnectorRemoteStateChangedError,
+        revoke_connector_remote_state,
+    )
 
     try:
         config = await lock_connector_operation(
@@ -456,88 +448,22 @@ async def revoke_credentials(
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    expected_credential: tuple[str, str | None] | None = None
-    if connector_name == "woocommerce" and config and config.webhook_ids:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                token_response = await c.get(
-                    f"{relay_http_url()}/tokens/{connector_name}/access-token",
-                    headers=relay_session_headers(),
-                )
-            if token_response.status_code != 200:
-                await session.rollback()
-                return {
-                    "ok": False,
-                    "error": "relay_error",
-                    "detail": f"credential lookup returned {token_response.status_code}",
-                }
-            token_data = token_response.json()
-            expected_credential = (
-                str(token_data["access_token"]),
-                token_data.get("store_handle"),
-            )
-            from celerp.connectors.woocommerce import WooCommerceConnector
-            ctx = ConnectorContext(
-                company_id=str(company_id),
-                access_token=expected_credential[0],
-                store_handle=expected_credential[1],
-            )
-            await WooCommerceConnector().deregister_webhooks(
-                ctx, config.webhook_ids
-            )
-            config.webhook_ids = []
-            config.webhook_secret = None
-            await session.commit()
-            config = await lock_connector_operation(
-                session, company_id, connector_name, require_owner=True
-            )
-        except Exception as exc:
-            await session.rollback()
-            return {"ok": False, "error": "relay_error", "detail": str(exc)}
-
     try:
-        async with httpx.AsyncClient(timeout=10.0) as c:
-            if expected_credential is not None:
-                current = await c.get(
-                    f"{relay_http_url()}/tokens/{connector_name}/access-token",
-                    headers=relay_session_headers(),
-                )
-                if current.status_code == 200:
-                    current_data = current.json()
-                    current_credential = (
-                        str(current_data["access_token"]),
-                        current_data.get("store_handle"),
-                    )
-                    if current_credential != expected_credential:
-                        await session.rollback()
-                        return {
-                            "ok": False,
-                            "error": "connection_changed",
-                            "detail": "Connector credentials changed while disconnecting; retry.",
-                        }
-                elif current.status_code != 404:
-                    await session.rollback()
-                    return {
-                        "ok": False,
-                        "error": "relay_error",
-                        "detail": f"credential lookup returned {current.status_code}",
-                    }
-
-            response = await c.delete(
-                f"{relay_http_url()}/tokens/{connector_name}",
-                headers=relay_session_headers(),
-            )
-    except Exception as exc:
-        await session.rollback()
-        return {"ok": False, "error": "relay_error", "detail": str(exc)}
-
-    if response.status_code not in (200, 404):
+        await revoke_connector_remote_state(
+            company_id,
+            connector_name,
+            webhook_ids=list(config.webhook_ids or []),
+        )
+    except ConnectorRemoteStateChangedError as exc:
         await session.rollback()
         return {
             "ok": False,
-            "error": "relay_error",
-            "detail": f"relay returned {response.status_code}",
+            "error": "connection_changed",
+            "detail": str(exc),
         }
+    except ConnectorRemoteCleanupError as exc:
+        await session.rollback()
+        return {"ok": False, "error": "relay_error", "detail": str(exc)}
 
     try:
         if connector_name in {"shopify", "woocommerce"}:
@@ -551,6 +477,9 @@ async def revoke_credentials(
         await session.rollback()
         return {"ok": False, "error": "local_cleanup_failed", "detail": str(exc)}
     return {"ok": True}
+
+
+_ITEM_SYNC_LIMIT = 200
 
 
 class ItemSyncRequest(BaseModel):
@@ -570,6 +499,14 @@ async def set_item_sync(
         raise HTTPException(status_code=404, detail="Unsupported catalog connector")
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    if len(payload.entity_ids) > _ITEM_SYNC_LIMIT:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"At most {_ITEM_SYNC_LIMIT} items can be synchronized in one request "
+                f"(received {len(payload.entity_ids)})."
+            ),
+        )
     from celerp.connectors.ownership import (
         ConnectorOwnershipError,
         lock_connector_operation,

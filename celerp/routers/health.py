@@ -1211,6 +1211,7 @@ async def connector_authorize_url(
         ConnectorOwnershipError,
         claim_connector_ownership,
         lock_connector_operation,
+        release_connector_ownership,
     )
     from celerp.connectors.registry import get as get_connector
 
@@ -1244,12 +1245,16 @@ async def connector_authorize_url(
         }
 
     try:
+        await session.commit()
         await lock_connector_operation(
             session, company_id, platform, require_owner=True
         )
     except ConnectorOwnershipError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception:
+        await session.rollback()
+        return {"error": "Could not save the connector connection state."}
 
     from celerp.gateway.state import (
         fetch_relay_auth, relay_http_url as _rhu, with_relay_client)
@@ -1275,19 +1280,26 @@ async def connector_authorize_url(
         )
 
     async def _cleanup_new_claim() -> bool:
-        if not ownership_created:
-            await session.rollback()
-            return True
         try:
             cancelled = await with_relay_client(8.0, _cancel)
         except Exception:
             await session.rollback()
             return False
-        await session.rollback()
-        return not (
+        if (
             isinstance(cancelled, dict)
             or cancelled.status_code not in (200, 404)
-        )
+        ):
+            await session.rollback()
+            return False
+
+        await session.rollback()
+        try:
+            await release_connector_ownership(session, company_id, platform)
+            await session.commit()
+            return True
+        except Exception:
+            await session.rollback()
+            return False
 
     async def _failure(message: str) -> dict:
         cleaned = await _cleanup_new_claim()
