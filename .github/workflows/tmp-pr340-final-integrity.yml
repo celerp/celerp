@@ -38,6 +38,7 @@ jobs:
         run: git reset --hard dab81cc36ffcd6118a0f843ae2aabd458b155e85
       - name: Apply final integrity fixes
         run: |
+          python - <<'PY'
           from pathlib import Path
           
           def replace(path, old, new, count=1):
@@ -245,6 +246,7 @@ jobs:
                   )
           """)
           
+          PY
           python scripts/gen_first_party_lock.py
           git diff --check
       - name: Install dependencies
