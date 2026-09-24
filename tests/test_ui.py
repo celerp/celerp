@@ -22,6 +22,7 @@ Patching rules:
 from __future__ import annotations
 
 import base64
+import html
 import json
 import os
 import pathlib
@@ -3909,6 +3910,60 @@ class TestCSVExport:
             r = await ui_client.get("/inventory/export/csv", cookies=_authed())
         assert r.status_code == 200
         assert b"sku" in r.content or b"attachment" in r.headers.get("content-disposition", "").encode()
+
+    @pytest.mark.asyncio
+    async def test_export_link_encodes_full_state(self, ui_client):
+        """Export what you see: the inventory Export link carries the page's whole filter,
+        sort and column state, and each export route forwards that state to the API with
+        the pagination stripped."""
+        with (
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0, "category_counts": {}})),
+        ):
+            r = await ui_client.get(
+                "/inventory?status=sold&category=Rings&q=ruby&sort=name&dir=asc&cols=name,sku&page=2",
+                cookies=_authed())
+        assert r.status_code == 200
+        href = re.search(r'href="(/inventory/export/csv[^"]*)"', r.text)
+        assert href, "Export CSV link missing"
+        link = html.unescape(href.group(1))
+        for part in ("status=sold", "category=Rings", "q=ruby", "sort=name", "dir=asc", "cols=name%2Csku"):
+            assert part in link, link
+        assert "page=" not in link
+
+        items_mock = AsyncMock(return_value=b"name,sku\n")
+        with patch("ui.api_client.export_items_csv", items_mock):
+            r = await ui_client.get(
+                "/inventory/export/csv?status=sold&category=Rings&q=ruby&sort=name&dir=asc&cols=name,sku&page=3&per_page=25",
+                cookies=_authed())
+        assert r.status_code == 200
+        params = items_mock.call_args.args[1]
+        assert params == {"status": "sold", "category": "Rings", "q": "ruby", "sort": "name",
+                          "dir": "asc", "cols": "name,sku"}, params
+
+        async def _stream():
+            yield b"entity_id\n"
+
+        docs_mock = AsyncMock(return_value=(_stream(), {}))
+        with patch("ui.api_client.export_docs_csv", docs_mock):
+            r = await ui_client.get(
+                "/docs/export/csv?type=invoice&status_in=paid,partial&contact_id=c:9&preset=custom"
+                "&from=2026-01-01&to=2026-02-01&page=2&per_page=25&sort=total&dir=asc",
+                cookies=_authed())
+        assert r.status_code == 200
+        params = docs_mock.call_args.args[1]
+        assert params == {"doc_type": "invoice", "status_in": "paid,partial", "contact_id": "c:9",
+                          "date_from": "2026-01-01", "date_to": "2026-02-01"}, params
+
+        lists_mock = AsyncMock(return_value=(_stream(), {}))
+        with patch("ui.api_client.export_lists_csv", lists_mock):
+            r = await ui_client.get(
+                "/lists/export/csv?type=quotation&preset=custom&from=2026-01-01&to=2026-02-01&page=2",
+                cookies=_authed())
+        assert r.status_code == 200
+        params = lists_mock.call_args.args[1]
+        assert params == {"list_type": "quotation", "all_issued": "1",
+                          "date_from": "2026-01-01", "date_to": "2026-02-01"}, params
 
     @pytest.mark.asyncio
     async def test_docs_export_csv_returns_csv(self, ui_client):
@@ -14440,11 +14495,11 @@ class TestBugFixesBatch25Mar:
 
     def test_list_items_sku_filter(self):
         """API list_items route accepts sku param for exact matching."""
-        import inspect
-        from celerp_inventory.routes import list_items
-        sig = inspect.signature(list_items)
-        assert "sku" in sig.parameters
-        assert "barcode" in sig.parameters
+        from dataclasses import fields
+        from celerp_inventory.routes import ItemListFilters
+        names = {f.name for f in fields(ItemListFilters)}
+        assert "sku" in names
+        assert "barcode" in names
 
     def test_catalog_lookup_tries_barcode(self):
         """Catalog lookup should try barcode match between SKU and general search."""

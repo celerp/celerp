@@ -359,9 +359,9 @@ def _doc_api_params(state: dict[str, str], date_from: str, date_to: str, *, limi
     """The list_docs query for a page state. limit=None asks the API for every matching row."""
     is_drafts_view = state.get("view") == "drafts" or state.get("status") == "draft"
     has_status_filter = any(state.get(k) for k in _DOC_STATUS_KEYS)
-    params: dict = {"offset": offset}
+    params: dict = {}
     if limit is not None:
-        params["limit"] = limit
+        params["limit"], params["offset"] = limit, offset
     for src, dst in (("q", "q"), ("contact_id", "contact_id"), ("ids", "ids"), ("type", "doc_type")):
         if state.get(src):
             params[dst] = state[src]
@@ -425,9 +425,9 @@ def _list_api_params(state: dict[str, str], date_from: str, date_to: str, *, lim
     show-everything view and drafts have their own view."""
     status = state.get("status", "")
     is_drafts_view = state.get("view") == "drafts" or status == "draft"
-    params: dict = {"offset": offset}
+    params: dict = {}
     if limit is not None:
-        params["limit"] = limit
+        params["limit"], params["offset"] = limit, offset
     if state.get("q"):
         params["q"] = state["q"]
     if state.get("type"):
@@ -1406,19 +1406,16 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        params: dict = {}
-        q = request.query_params.get("q", "")
-        doc_type = request.query_params.get("type", "") or request.query_params.get("doc_type", "")
-        status = request.query_params.get("status", "")
-        if q:
-            params["q"] = q
-        if doc_type:
-            params["doc_type"] = doc_type
-        if status:
-            params["status"] = status
+        # The export is the list the user is looking at, in full: every filter and the
+        # date window travel; the page does not.
         from starlette.responses import Response, StreamingResponse
+        state = _doc_list_state(request)
         try:
-            stream, headers = await api.export_docs_csv(token, params)
+            company = await api.get_company(token)
+            date_from, date_to, _preset = await _doc_list_dates(request, state, company)
+            stream, headers = await api.export_docs_csv(
+                token, _doc_api_params(state, date_from, date_to, limit=None),
+            )
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
@@ -4157,8 +4154,13 @@ celerpUpdateBulkAlloc();
         if not token:
             return RedirectResponse("/login", status_code=302)
         from starlette.responses import Response, StreamingResponse
+        state = _list_page_state(request)
         try:
-            stream, headers = await api.export_lists_csv(token)
+            company = await api.get_company(token)
+            date_from, date_to, _preset = await _list_page_dates(request, state, company)
+            stream, headers = await api.export_lists_csv(
+                token, _list_api_params(state, date_from, date_to, limit=None),
+            )
         except APIError as e:
             logger.warning("API error on lists_export_csv: %s", e.detail)
             return Response(content=b"error\n", media_type="text/csv",

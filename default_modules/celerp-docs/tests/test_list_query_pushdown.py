@@ -269,6 +269,43 @@ async def test_list_export_csv_streams(client):
         "Offending statements:\n" + "\n".join(full))
 
 
+@pytest.mark.asyncio
+async def test_export_lists_csv_matches_index_filters(client):
+    """The export narrows by every index filter (date window, status card, customer id search),
+    ignores limit/offset, keeps the index order, and still never reads a whole state row."""
+    t = await _register(client)
+    a = await _quotation(client, t, ref_id="EXP-A")
+    r = await client.post("/lists", headers=_h(t),
+                          json={"list_type": "quotation", "ref_id": "EXP-B", "customer_id": "cust:zebra-unique"})
+    assert r.status_code == 200, r.text
+
+    def _refs(text: str) -> list[str]:
+        return [l.split(",")[1] for l in text.strip().splitlines()[1:] if l]
+
+    with _sql_spy() as sql:
+        r_all = await client.get("/lists/export/csv?status=draft&limit=1&offset=1", headers=_h(t))
+    assert r_all.status_code == 200, r_all.text
+    assert _refs(r_all.text) == ["EXP-B", "EXP-A"], r_all.text
+    assert not _full_state_reads(sql)
+
+    r_window = await client.get("/lists/export/csv?date_from=2999-01-01", headers=_h(t))
+    assert r_window.status_code == 200
+    assert _refs(r_window.text) == []
+
+    r_cust = await client.get("/lists/export/csv?q=zebra-unique", headers=_h(t))
+    assert r_cust.status_code == 200
+    assert _refs(r_cust.text) == ["EXP-B"]
+
+    r_issued = await client.get("/lists/export/csv?all_issued=1", headers=_h(t))
+    assert r_issued.status_code == 200
+    assert _refs(r_issued.text) == []
+
+    r_bad = await client.get("/lists/export/csv?cols=ref_id,bogus_col", headers=_h(t))
+    assert r_bad.status_code == 422
+    assert "bogus_col" in r_bad.json()["detail"]
+    assert a
+
+
 # ── GET /lists/{id}/page : new bounded paged read ──────────────────────────────
 
 @pytest.mark.asyncio

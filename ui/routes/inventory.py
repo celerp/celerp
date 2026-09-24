@@ -869,6 +869,22 @@ async def _load_inventory_view_metadata(token: str) -> tuple:
     return (schema, cat_schemas, col_prefs, company, locations, units, cat_labels)
 
 
+async def _export_columns(token: str, p: dict) -> list[str]:
+    """The columns the list shows for state ``p`` when the URL names none: the saved
+    column preference for the view (else the schema defaults), plus the derived money
+    column of an active holdings or sold scope. Raises `APIError` like the metadata load."""
+    schema, cat_schemas, col_prefs, _company, _locations, _units, _cat_labels = (
+        await _load_inventory_view_metadata(token)
+    )
+    active_cat = p.get("category", "")
+    cols = _resolve_visible_cols(_effective_schema(schema, cat_schemas, active_cat), col_prefs, active_cat, [])
+    if p.get("on_memo_to") or p.get("consigned_from"):
+        cols.append("holding_value")
+    if "sold" in {s.strip().lower() for s in str(p.get("status") or "").split(",") if s.strip()}:
+        cols.append("sold_price")
+    return cols
+
+
 async def _render_inventory_fragment(
     token: str, p: dict, lang: str, role: str, **content_kwargs,
 ):
@@ -1230,7 +1246,7 @@ def setup_routes(app):
                 ),
                 A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary") if _can_import_export else "",
                 Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _can_edit_inventory else "",
-                A(t("btn.export_csv", lang), href="/inventory/export/csv", cls="btn btn--secondary") if _can_import_export else "",
+                A(t("btn.export_csv", lang), href="/inventory/export/csv?" + urlencode(_base_state(p)), cls="btn btn--secondary") if _can_import_export else "",
                 A(t("inv.customize_fields"), href="/settings/inventory?tab=category-library", cls="btn btn--ghost btn--sm") if _can_import_export else "",
             ),
             content,
@@ -1316,17 +1332,14 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
+        # The export carries the whole list state (every filter, the sort, the visible
+        # columns) and never the page: it is the list the user is looking at, in full.
         p = _parse_params(request)
-        params: dict = {}
-        if p["q"]:
-            params["q"] = p["q"]
-        if p["status"]:
-            params["status"] = p["status"]
-        if p["category"]:
-            params["category"] = p["category"]
-        if p.get("inventory_type"):
-            params["inventory_type"] = p["inventory_type"]
+        params = _base_state(p)
+        params.pop("per_page", None)
         try:
+            if not params.get("cols"):
+                params["cols"] = ",".join(await _export_columns(token, p))
             data = await api.export_items_csv(token, params)
         except APIError as e:
             if e.status == 401:

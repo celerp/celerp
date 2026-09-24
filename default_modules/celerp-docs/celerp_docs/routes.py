@@ -4,12 +4,11 @@
 from __future__ import annotations
 
 import asyncio
-import csv
 import hashlib
-import io
 import json
 import math
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone, date as _date
 from typing import Literal
 
@@ -33,6 +32,7 @@ from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
 from celerp.services.document_lines import line_item_id
 from celerp.services.attachments import store_upload
+from celerp.services.csv_export import csv_stream, resolve_export_cols
 from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, require_permission, role_has_permission
@@ -655,33 +655,35 @@ async def _assert_ref_id_unique(
         raise HTTPException(status_code=409, detail=f"Document number '{ref_id}' already exists")
 
 
-@router.get("", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
-async def list_docs(
-    doc_type: str | None = None,
-    status: str | None = None,
-    status_in: str | None = None,
-    exclude_status: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    due_from: str | None = None,
-    due_to: str | None = None,
-    q: str | None = None,
-    contact_id: str | None = None,
-    limit: int | None = None,
-    offset: int = 0,
-    overdue_only: bool = False,
-    all_issued: bool = False,
-    unfulfilled_only: bool = False,
-    not_restocked: bool = False,
-    not_stocked: bool = False,
-    converted_to_type: str | None = None,
-    ids: str | None = None,
-    company_id: str = Depends(get_current_company_id),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    from datetime import date as _date_cls
-    today = _date_cls.today().isoformat()
-    id_list = [x.strip() for x in ids.split(",") if x.strip()] if ids else []
+@dataclass
+class DocListFilters:
+    """Every filter the document list accepts, as one query-parameter dependency, so the list and
+    its CSV export read the same filters and can never drift apart."""
+
+    doc_type: str | None = None
+    status: str | None = None
+    status_in: str | None = None
+    exclude_status: str | None = None
+    date_from: str | None = None
+    date_to: str | None = None
+    due_from: str | None = None
+    due_to: str | None = None
+    q: str | None = None
+    contact_id: str | None = None
+    overdue_only: bool = False
+    all_issued: bool = False
+    unfulfilled_only: bool = False
+    not_restocked: bool = False
+    not_stocked: bool = False
+    converted_to_type: str | None = None
+    ids: str | None = None
+
+
+async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, *, limit: int | None, offset: int = 0) -> dict:
+    """The filtered, newest-first document list: ``{"items", "total"}`` where items carry ``id``.
+    ``limit=None`` returns every matching row (the export); the index passes its page."""
+    today = _date.today().isoformat()
+    id_list = [x.strip() for x in f.ids.split(",") if x.strip()] if f.ids else []
     if len(id_list) > MAX_IDS_FILTER:
         raise HTTPException(status_code=422, detail=f"ids accepts at most {MAX_IDS_FILTER} document ids")
 
@@ -692,50 +694,50 @@ async def list_docs(
         Projection.company_id == company_id,
         Projection.entity_type == "doc",
     ]
-    if doc_type:
-        base_where.append(Projection.state["doc_type"].as_string() == doc_type)
-    if status:
-        base_where.append(Projection.state["status"].as_string() == status)
-    if status_in:
-        _allowed = set(status_in.split(","))
+    if f.doc_type:
+        base_where.append(Projection.state["doc_type"].as_string() == f.doc_type)
+    if f.status:
+        base_where.append(Projection.state["status"].as_string() == f.status)
+    if f.status_in:
+        _allowed = set(f.status_in.split(","))
         base_where.append(Projection.state["status"].as_string().in_(_allowed))
-    if exclude_status:
-        base_where.append(Projection.state["status"].as_string() != exclude_status)
-    if contact_id:
-        base_where.append(Projection.state["contact_id"].as_string() == contact_id)
+    if f.exclude_status:
+        base_where.append(Projection.state["status"].as_string() != f.exclude_status)
+    if f.contact_id:
+        base_where.append(Projection.state["contact_id"].as_string() == f.contact_id)
     if id_list:
         base_where.append(Projection.entity_id.in_(id_list))
-    if date_from:
-        base_where.append(Projection.state["issue_date"].as_string() >= date_from)
-    if date_to:
-        base_where.append(Projection.state["issue_date"].as_string() <= date_to)
-    if due_from:
-        base_where.append(Projection.state["due_date"].as_string() >= due_from)
-    if due_to:
-        base_where.append(Projection.state["due_date"].as_string() <= due_to)
-    _q_clause = doc_q_clause(q)
+    if f.date_from:
+        base_where.append(Projection.state["issue_date"].as_string() >= f.date_from)
+    if f.date_to:
+        base_where.append(Projection.state["issue_date"].as_string() <= f.date_to)
+    if f.due_from:
+        base_where.append(Projection.state["due_date"].as_string() >= f.due_from)
+    if f.due_to:
+        base_where.append(Projection.state["due_date"].as_string() <= f.due_to)
+    _q_clause = doc_q_clause(f.q)
     if _q_clause is not None:
         base_where.append(_q_clause)
 
     # Remaining filters still need Python evaluation (multi-field logic).
-    needs_python_filter = any([all_issued, overdue_only, unfulfilled_only, not_restocked, not_stocked, converted_to_type])
+    needs_python_filter = any([f.all_issued, f.overdue_only, f.unfulfilled_only, f.not_restocked, f.not_stocked, f.converted_to_type])
 
     if needs_python_filter:
         # Fetch only needed columns to reduce deserialization cost.
         rows = (await session.execute(select(Projection).where(*base_where))).scalars().all()
         out = [r.state | {"id": r.entity_id} for r in rows]
-        if all_issued:
+        if f.all_issued:
             out = [x for x in out if x.get("status") not in ("draft", "void")]
-        if overdue_only:
+        if f.overdue_only:
             out = [x for x in out if x.get("due_date") and x["due_date"] < today and x.get("status") not in ("draft", "void")]
-        if unfulfilled_only:
+        if f.unfulfilled_only:
             out = [x for x in out if x.get("status") not in ("draft", "void", "closed") and x.get("fulfillment_status") != "fulfilled"]
-        if not_restocked:
+        if f.not_restocked:
             out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("return_received_items") or [])]
-        if not_stocked:
+        if f.not_stocked:
             out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("received_items") or [])]
-        if converted_to_type:
-            out = [x for x in out if x.get("converted_to_type") == converted_to_type]
+        if f.converted_to_type:
+            out = [x for x in out if x.get("converted_to_type") == f.converted_to_type]
         # Tiebreak on the unique id so equal-date rows have a deterministic order (same
         # reason as the SQL path: otherwise OFFSET pagination can skip/duplicate a row).
         out.sort(key=lambda x: (x.get("issue_date") or x.get("created_at") or x.get("date") or "", x.get("id") or ""), reverse=True)
@@ -768,6 +770,17 @@ async def list_docs(
     rows = (await session.execute(list_q)).scalars().all()
     out = [r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None} for r in rows]
     return {"items": out, "total": total}
+
+
+@router.get("", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
+async def list_docs(
+    filters: DocListFilters = Depends(),
+    limit: int | None = None,
+    offset: int = 0,
+    company_id: str = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await query_docs(session, company_id, filters, limit=limit, offset=offset)
 
 
 @router.get("/summary", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
@@ -3999,35 +4012,23 @@ async def batch_import_docs(
 # ---------------------------------------------------------------------------
 
 
+_DOC_EXPORT_COLS = ["entity_id", "doc_number", "doc_type", "contact_name", "date", "due_date", "total", "amount_outstanding", "status"]
+
+
 @router.get("/export/csv")
 async def export_docs_csv(
+    filters: DocListFilters = Depends(),
+    cols: str | None = None,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
-    q: str | None = None,
-    doc_type: str | None = None,
-    status: str | None = None,
 ) -> StreamingResponse:
-    rows = (await session.execute(
-        select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "doc")
-    )).scalars().all()
-    docs = [r.state | {"entity_id": r.entity_id} for r in rows]
-    if q:
-        ql = q.lower()
-        docs = [d for d in docs if ql in str(d.get("doc_number", "")).lower() or ql in str(d.get("contact_name", "")).lower()]
-    if doc_type:
-        docs = [d for d in docs if d.get("doc_type", d.get("type", "")) == doc_type]
-    if status:
-        docs = [d for d in docs if d.get("status") == status]
-
-    _COLS = ["entity_id", "doc_number", "doc_type", "contact_name", "date", "due_date", "total", "amount_outstanding", "status"]
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=_COLS, extrasaction="ignore")
-    writer.writeheader()
-    for d in docs:
-        writer.writerow({c: d.get(c, "") for c in _COLS})
-    output.seek(0)
+    """The document list as CSV: the same filters and order as the index, every matching row
+    (no page), and the columns the screen asked for via ``cols``."""
+    out_cols = resolve_export_cols(cols, _DOC_EXPORT_COLS, _DOC_EXPORT_COLS)
+    docs = (await query_docs(session, company_id, filters, limit=None))["items"]
+    rows = (d | {"entity_id": d["id"]} for d in docs)
     return StreamingResponse(
-        iter([output.getvalue()]),
+        csv_stream(out_cols, rows),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=documents.csv"},
     )
@@ -4145,52 +4146,64 @@ def _list_sort_date():
     return _func.coalesce(issue, created, date)
 
 
-def _list_search_where(q: str, *, include_customer_id: bool):
-    """SQL predicate for the free-text list search over ref_id / customer_name (and customer_id for
-    the index, matching its wider Python match; export deliberately omits customer_id)."""
+def _list_search_where(q: str):
+    """SQL predicate for the free-text list search over ref_id / customer_name / customer_id."""
     ql = f"%{q.lower()}%"
-    clauses = [
+    return _sa.or_(
         _func.lower(Projection.state["ref_id"].as_string()).like(ql),
         _func.lower(Projection.state["customer_name"].as_string()).like(ql),
-    ]
-    if include_customer_id:
-        clauses.append(_func.lower(Projection.state["customer_id"].as_string()).like(ql))
-    return _sa.or_(*clauses)
+        _func.lower(Projection.state["customer_id"].as_string()).like(ql),
+    )
+
+
+@dataclass
+class ListIndexFilters:
+    """Every filter the list index accepts, as one query-parameter dependency shared with its CSV
+    export so both narrow the same way."""
+
+    list_type: str | None = None
+    status: str | None = None
+    exclude_status: str | None = None
+    date_from: str | None = None
+    date_to: str | None = None
+    q: str | None = None
+    all_issued: bool = False
+    converted_to_type: str | None = None
+
+
+def _list_index_where(company_id, f: ListIndexFilters, sort_date) -> list:
+    """The index's full WHERE for ``f`` (company scope included); ``sort_date`` is the
+    ``_list_sort_date()`` expression the caller also orders by."""
+    base_where = _list_base_where(company_id)
+    if f.list_type:
+        base_where.append(Projection.state["list_type"].as_string() == f.list_type)
+    if f.all_issued:
+        base_where.append(Projection.state["status"].as_string().notin_((DRAFT, VOID)))
+    elif f.status:
+        base_where.append(Projection.state["status"].as_string() == f.status)
+    if f.exclude_status:
+        base_where.append(Projection.state["status"].as_string() != f.exclude_status)
+    if f.converted_to_type:
+        base_where.append(Projection.state["converted_to_type"].as_string() == f.converted_to_type)
+    if f.date_from:
+        base_where.append(sort_date >= f.date_from)
+    if f.date_to:
+        base_where.append(sort_date <= f.date_to)
+    if f.q:
+        base_where.append(_list_search_where(f.q))
+    return base_where
 
 
 @lists_router.get("")
 async def list_lists(
-    list_type: str | None = None,
-    status: str | None = None,
-    exclude_status: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
-    q: str | None = None,
+    filters: ListIndexFilters = Depends(),
     limit: int | None = None,
     offset: int = 0,
-    all_issued: bool = False,
-    converted_to_type: str | None = None,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    base_where = _list_base_where(company_id)
-    if list_type:
-        base_where.append(Projection.state["list_type"].as_string() == list_type)
-    if all_issued:
-        base_where.append(Projection.state["status"].as_string().notin_((DRAFT, VOID)))
-    elif status:
-        base_where.append(Projection.state["status"].as_string() == status)
-    if exclude_status:
-        base_where.append(Projection.state["status"].as_string() != exclude_status)
-    if converted_to_type:
-        base_where.append(Projection.state["converted_to_type"].as_string() == converted_to_type)
     sort_date = _list_sort_date()
-    if date_from:
-        base_where.append(sort_date >= date_from)
-    if date_to:
-        base_where.append(sort_date <= date_to)
-    if q:
-        base_where.append(_list_search_where(q, include_customer_id=True))
+    base_where = _list_index_where(company_id, filters, sort_date)
 
     total = (await session.execute(
         select(_func.count()).select_from(Projection).where(*base_where))).scalar_one()
@@ -4311,59 +4324,47 @@ async def get_list_summary(
     }
 
 
+_LIST_EXPORT_COLS = ["id", "ref_id", "list_type", "customer_name", "date", "total", "status"]
+
+
 @lists_router.get("/export/csv")
 async def export_lists_csv(
+    filters: ListIndexFilters = Depends(),
+    cols: str | None = None,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
-    q: str | None = None,
-    list_type: str | None = None,
-    status: str | None = None,
 ) -> StreamingResponse:
-    base_where = _list_base_where(company_id)
-    if q:
-        # Export matches ref_id / customer_name only (never customer_id), matching its own historic
-        # behaviour rather than the wider index search.
-        base_where.append(_list_search_where(q, include_customer_id=False))
-    if list_type:
-        base_where.append(Projection.state["list_type"].as_string() == list_type)
-    if status:
-        base_where.append(Projection.state["status"].as_string() == status)
-    _COLS = ["id", "ref_id", "list_type", "customer_name", "date", "total", "status"]
+    """The list index as CSV: the index's filters and order, every matching row (no page), and the
+    columns the screen asked for via ``cols``."""
+    out_cols = resolve_export_cols(cols, _LIST_EXPORT_COLS, _LIST_EXPORT_COLS)
+    sort_date = _list_sort_date()
+    base_where = _list_index_where(company_id, filters, sort_date)
+    # Select only the exported columns straight from the json state, so a list's whole line_items
+    # array is never deserialized just to write its row.
+    col_exprs = [Projection.entity_id.label("id")] + [
+        Projection.state[c].as_string().label(c) for c in out_cols if c != "id"
+    ]
 
     async def _rows():
         # Read the projection in bounded SQL batches so the whole set is never buffered in Python.
-        header = io.StringIO()
-        writer = csv.DictWriter(header, fieldnames=_COLS, extrasaction="ignore")
-        writer.writeheader()
-        yield header.getvalue()
         batch = 500
         offset = 0
-        # Select only the seven columns the CSV emits, straight from the json state, so a list's whole
-        # line_items array is never deserialized just to write its header row.
-        col_exprs = [Projection.entity_id.label("id")] + [
-            Projection.state[c].as_string().label(c) for c in _COLS if c != "id"
-        ]
         while True:
             rows = (await session.execute(
                 select(*col_exprs)
                 .where(*base_where)
-                .order_by(Projection.entity_id.desc())
+                .order_by(sort_date.desc(), Projection.entity_id.desc())
                 .offset(offset)
                 .limit(batch)
             )).all()
-            if not rows:
-                break
-            buf = io.StringIO()
-            w = csv.DictWriter(buf, fieldnames=_COLS, extrasaction="ignore")
             for r in rows:
-                w.writerow({c: (getattr(r, c) or "") for c in _COLS})
-            yield buf.getvalue()
+                yield {c: getattr(r, c) for c in out_cols}
             if len(rows) < batch:
                 break
             offset += batch
 
     return StreamingResponse(
-        _rows(),
+        csv_stream(out_cols, _rows()),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=lists.csv"},
     )
