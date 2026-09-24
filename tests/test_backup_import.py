@@ -26,14 +26,70 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _isolate_restored_connector_cleanup(monkeypatch):
-    async def _noop() -> None:
+    from celerp.services import backup_import
+
+    original = backup_import._clear_restored_connector_state
+
+    async def _noop(*_args, **_kwargs) -> None:
         return None
 
     monkeypatch.setattr(
-        "celerp.services.backup_import._clear_restored_connector_state",
+        backup_import,
+        "_clear_restored_connector_state",
         _noop,
         raising=False,
     )
+    return original
+
+
+@pytest.mark.asyncio
+async def test_restored_connector_cleanup_fences_stale_context(
+    session, _isolate_restored_connector_cleanup
+):
+    import uuid
+
+    from sqlalchemy import select
+
+    from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+    from celerp.models.sync_run import SyncRun
+
+    company_id = uuid.uuid4()
+    session.add(Company(
+        id=company_id,
+        name="Restored Connector Co",
+        slug=f"restored-connector-{company_id.hex[:8]}",
+        settings={},
+    ))
+    session.add(ConnectorConfig(
+        company_id=str(company_id),
+        connector="woocommerce",
+    ))
+    session.add(OutboundQueue(
+        company_id=str(company_id),
+        connector="woocommerce",
+        entity_type="item",
+        entity_id="item:restore",
+    ))
+    await session.flush()
+
+    await _isolate_restored_connector_cleanup(session)
+    await session.flush()
+
+    assert await session.scalar(select(ConnectorConfig).where(
+        ConnectorConfig.company_id == str(company_id)
+    )) is None
+    assert await session.scalar(select(OutboundQueue).where(
+        OutboundQueue.company_id == str(company_id)
+    )) is None
+    reset = await session.scalar(select(SyncRun).where(
+        SyncRun.company_id == str(company_id),
+        SyncRun.connector == "woocommerce",
+        SyncRun.entity == CONNECTOR_RESET_ENTITY,
+    ))
+    assert reset is not None
+    assert reset.status == "reset"
 
 
 def _make_archive(

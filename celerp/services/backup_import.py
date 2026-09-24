@@ -476,15 +476,25 @@ def _write_restore_notice(company_name: str | None, warnings: list[str],
         log.warning("Could not write restore notice: %s", exc)
 
 
-async def _clear_restored_connector_state() -> None:
+async def _clear_restored_connector_state(session) -> None:
     import sqlalchemy as sa
-    from celerp.db import get_session_ctx
+
+    from celerp.connectors.ownership import record_connector_reset
+    from celerp.models.company import Company
     from celerp.models.connector_config import ConnectorConfig, OutboundQueue
 
-    async with get_session_ctx() as session:
-        await session.execute(sa.delete(OutboundQueue))
-        await session.execute(sa.delete(ConnectorConfig))
-        await session.commit()
+    connectors = set((await session.scalars(
+        sa.select(ConnectorConfig.connector)
+    )).all())
+    connectors.update((await session.scalars(
+        sa.select(OutboundQueue.connector)
+    )).all())
+    company_ids = (await session.scalars(sa.select(Company.id))).all()
+    for company_id in company_ids:
+        for connector in connectors:
+            record_connector_reset(session, company_id, connector)
+    await session.execute(sa.delete(OutboundQueue))
+    await session.execute(sa.delete(ConnectorConfig))
 
 
 async def run_import(path: Path):
@@ -523,7 +533,7 @@ async def run_import(path: Path):
                 await _dispose_engine()
                 await _run_pg_restore(dump_bytes, settings.database_url)
                 schema_warning = await _reconcile_schema()
-                await _clear_restored_connector_state()
+                await _clear_restored_connector_state(maintenance_session)
             await maintenance_session.commit()
 
         # Extract files outside the tar context (already read dump above)

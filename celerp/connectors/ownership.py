@@ -225,15 +225,36 @@ async def connector_owned_by_company(
         return False
 
 
+def record_connector_reset(
+    session: AsyncSession, company_id, connector: str
+) -> None:
+    """Fence config-less work until this connector is explicitly reconnected."""
+    from datetime import datetime, timezone
+
+    from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
+    from celerp.models.sync_run import SyncRun
+
+    now = datetime.now(timezone.utc)
+    session.add(SyncRun(
+        company_id=str(company_id),
+        connector=connector,
+        entity=CONNECTOR_RESET_ENTITY,
+        direction="inbound",
+        started_at=now,
+        finished_at=now,
+        created_count=0,
+        updated_count=0,
+        skipped_count=0,
+        errors_json=None,
+        status="reset",
+    ))
+
+
 async def release_connector_ownership(
     session: AsyncSession, company_id, connector: str
 ) -> None:
     """Release one company's connector state."""
-    from datetime import datetime, timezone
-
     from celerp.models.connector_config import OutboundQueue
-    from celerp.models.sync_run import SyncRun
-    from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
 
     company_id = str(company_id)
     await lock_connector_key(session, connector)
@@ -254,19 +275,6 @@ async def release_connector_ownership(
             OutboundQueue.connector == connector,
         )
     )
-    now = datetime.now(timezone.utc)
-    session.add(SyncRun(
-        company_id=company_id,
-        connector=connector,
-        entity=CONNECTOR_RESET_ENTITY,
-        direction="inbound",
-        started_at=now,
-        finished_at=now,
-        created_count=0,
-        updated_count=0,
-        skipped_count=0,
-        errors_json=None,
-        status="reset",
-    ))
+    record_connector_reset(session, company_id, connector)
     await session.delete(current)
     await session.flush()

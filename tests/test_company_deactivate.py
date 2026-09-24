@@ -200,7 +200,9 @@ async def test_deactivate_releases_connector_reservation(client: AsyncClient, se
     from uuid import UUID
     from sqlalchemy import select
 
+    from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
     from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+    from celerp.models.sync_run import SyncRun
 
     token = await _register(
         client, "connector-cleanup@deact.test", "Connector Cleanup"
@@ -236,3 +238,12 @@ async def test_deactivate_releases_connector_reservation(client: AsyncClient, se
             OutboundQueue.company_id == str(company_id)
         )
     ) is None
+    reset = await session.scalar(
+        select(SyncRun).where(
+            SyncRun.company_id == str(company_id),
+            SyncRun.connector == "woocommerce",
+            SyncRun.entity == CONNECTOR_RESET_ENTITY,
+        )
+    )
+    assert reset is not None
+    assert reset.status == "reset"

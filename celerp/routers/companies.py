@@ -2289,7 +2289,10 @@ async def deactivate_company(
     import time as _time
     import re as _re2
     import sqlalchemy as sa
-    from celerp.connectors.ownership import lock_connector_maintenance
+    from celerp.connectors.ownership import (
+        lock_connector_maintenance,
+        record_connector_reset,
+    )
     from celerp.models.connector_config import ConnectorConfig, OutboundQueue
 
     await lock_connector_maintenance(session)
@@ -2299,14 +2302,27 @@ async def deactivate_company(
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     company.is_active = False
+    company_id_str = str(company_id)
+    connectors = set((await session.scalars(
+        sa.select(ConnectorConfig.connector).where(
+            ConnectorConfig.company_id == company_id_str
+        )
+    )).all())
+    connectors.update((await session.scalars(
+        sa.select(OutboundQueue.connector).where(
+            OutboundQueue.company_id == company_id_str
+        )
+    )).all())
+    for connector in connectors:
+        record_connector_reset(session, company_id_str, connector)
     await session.execute(
         sa.delete(OutboundQueue).where(
-            OutboundQueue.company_id == str(company_id)
+            OutboundQueue.company_id == company_id_str
         )
     )
     await session.execute(
         sa.delete(ConnectorConfig).where(
-            ConnectorConfig.company_id == str(company_id)
+            ConnectorConfig.company_id == company_id_str
         )
     )
     # Free the slug so the user can re-create a company with the same name later.
