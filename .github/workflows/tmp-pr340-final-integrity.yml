@@ -27,4 +27,6 @@ jobs:
           git status --short
           echo "CONFLICTS"
           git diff --name-only --diff-filter=U
+          echo "HEALTH_CONFLICT"
+          grep -n -B 25 -A 60 -E '^(<<<<<<<|=======|>>>>>>>)' celerp/routers/health.py || true
           exit $rc
