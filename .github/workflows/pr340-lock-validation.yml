@@ -1,0 +1,22 @@
+name: PR340 Lock Validation
+
+on:
+  push:
+    branches:
+      - pr340-integrity-final-audit
+
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -e .
+      - name: Regenerate lock
+        run: |
+          python scripts/gen_first_party_lock.py
+          cat default_modules/first_party.lock.json
+          git diff -- default_modules/first_party.lock.json

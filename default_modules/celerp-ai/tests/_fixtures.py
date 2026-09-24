@@ -1,33 +1,93 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-
-"""Loaders for the recorded relay wire fixtures.
-
-Every fake-model test builds its scripted responses from the JSON captured in
-fixtures/relay/*.json so the loop is exercised against the exact envelope the
-relay sends, including tool-call arguments arriving as a JSON string. Recording
-is done once by a person (scripts/record_relay_fixtures.py); tests never call
-the relay.
-"""
-
+"""Synthetic model responses used by AI tests."""
 from __future__ import annotations
 
 import copy
 import json
-from pathlib import Path
 
 from celerp.ai.llm import ModelResult
 
-_RELAY_DIR = Path(__file__).parent / "fixtures" / "relay"
+
+_SYNTHETIC_RESPONSES = {
+    "text_completion": {
+        "message": {
+            "role": "assistant",
+            "content": "You currently have 42 items in the test catalog.",
+        },
+        "model_used": "test-model",
+        "usage": {"total_tokens": 187},
+        "reservation_id": "test-reservation",
+        "remaining": 199,
+    },
+    "read_tool_call": {
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_read_0001",
+                "type": "function",
+                "function": {
+                    "name": "list_items",
+                    "arguments": json.dumps({"query": {"q": "widget"}}),
+                },
+            }],
+        },
+        "model_used": "test-model",
+        "usage": {"total_tokens": 204},
+        "reservation_id": "test-reservation",
+        "remaining": 199,
+    },
+    "mutation_tool_call": {
+        "message": {
+            "role": "assistant",
+            "content": "I can create that test contact.",
+            "tool_calls": [{
+                "id": "call_write_0001",
+                "type": "function",
+                "function": {
+                    "name": "create_contact",
+                    "arguments": json.dumps({
+                        "body": {
+                            "name": "Example Supplier",
+                            "contact_type": "supplier",
+                        }
+                    }),
+                },
+            }],
+        },
+        "model_used": "test-model",
+        "usage": {"total_tokens": 231},
+        "reservation_id": "test-reservation",
+        "remaining": 198,
+    },
+    "error_402": {
+        "detail": {
+            "code": "quota_exceeded",
+            "message": "No test credits remain.",
+        }
+    },
+    "error_409": {
+        "detail": {
+            "code": "continuation_expired",
+            "message": "Start a new question.",
+        }
+    },
+    "error_429": {
+        "detail": {
+            "code": "rate_limited",
+            "message": "The service is busy. Try again.",
+        }
+    },
+}
 
 
-def load_relay(name: str) -> dict:
-    """Return the parsed relay fixture envelope (or error body) by base name."""
-    return json.loads((_RELAY_DIR / f"{name}.json").read_text())
+def synthetic_response(name: str) -> dict:
+    """Return an isolated synthetic response by test-case name."""
+    return copy.deepcopy(_SYNTHETIC_RESPONSES[name])
 
 
 def model_result(envelope: dict) -> ModelResult:
-    """Build a ModelResult from a recorded relay envelope, as complete() would."""
     message = envelope.get("message")
     if not isinstance(message, dict):
         message = {"role": "assistant", "content": envelope.get("answer", "")}
@@ -40,15 +100,10 @@ def model_result(envelope: dict) -> ModelResult:
     )
 
 
-_TOOL_CALL_TEMPLATE = load_relay("read_tool_call")["message"]["tool_calls"][0]
+_TOOL_CALL_TEMPLATE = _SYNTHETIC_RESPONSES["read_tool_call"]["message"]["tool_calls"][0]
 
 
 def tool_call(name: str, arguments: dict, call_id: str) -> dict:
-    """Clone the recorded tool_call wire shape with a new name/arguments/id.
-
-    Arguments are serialized to the JSON string form the model emits, matching
-    the recorded fixture exactly.
-    """
     call = copy.deepcopy(_TOOL_CALL_TEMPLATE)
     call["id"] = call_id
     call["function"]["name"] = name
@@ -57,11 +112,6 @@ def tool_call(name: str, arguments: dict, call_id: str) -> dict:
 
 
 def raw_tool_call(name: str, raw_arguments: str, call_id: str) -> dict:
-    """As tool_call, but with a caller-supplied raw arguments string.
-
-    For the invalid-JSON and shape-hint cases that need a non-object or malformed
-    arguments string in the recorded wire form.
-    """
     call = copy.deepcopy(_TOOL_CALL_TEMPLATE)
     call["id"] = call_id
     call["function"]["name"] = name
@@ -73,19 +123,18 @@ def tool_result(
     *,
     content: str = "",
     calls: list[dict] | None = None,
-    model_used: str = "z-ai/glm-5.3-flash",
-    reservation_id: str | None = "11111111-1111-4111-8111-111111111111",
+    model_used: str = "test-model",
+    reservation_id: str | None = "test-reservation",
     remaining: int | None = 199,
     usage: dict | None = None,
 ) -> ModelResult:
-    """Build a scripted ModelResult (message with optional tool_calls)."""
     message: dict = {"role": "assistant", "content": content}
     if calls:
         message["tool_calls"] = calls
     return ModelResult(
         message=message,
         model_used=model_used,
-        usage=usage or {"total_tokens": 128, "credits": 1, "cost": 0.0002},
+        usage=usage or {"total_tokens": 128},
         reservation_id=reservation_id,
         remaining=remaining,
     )

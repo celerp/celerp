@@ -81,7 +81,7 @@ without launching, then have your service run `celerp start` — see
 
 ## How it works
 
-Celerp runs entirely on your machine. Your data never leaves your computer.
+Celerp runs on your machine and keeps its primary database local. Optional Connect features can relay remote access or send selected data to Celerp cloud services.
 
 - **No setup** - the desktop app bundles Postgres, runs migrations on launch, opens in your browser
 - **No lock-in** - your data stays in a standard Postgres database you control

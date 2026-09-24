@@ -235,6 +235,19 @@ async def test_demo_reseed_full_wizard_flow(client):
 
 
 @pytest.mark.asyncio
+async def test_patch_user_cannot_deactivate_last_owner(client):
+    headers = await _headers(client)
+    users = (await client.get("/companies/me/users", headers=headers)).json()["items"]
+    owner_id = next(u["id"] for u in users if u["role"] == "owner")
+    r = await client.patch(
+        f"/companies/me/users/{owner_id}",
+        json={"is_active": False},
+        headers=headers,
+    )
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_create_company_seeds_self_contact(client):
     """POST /companies seeds ONE self-contact typed `both` (the company is its own customer AND vendor),
     and that single record shows up in both the customer and vendor lists."""

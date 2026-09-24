@@ -300,7 +300,7 @@ class TestAutoActivateProbe:
         assert activate.call_count == 0
 
     @respx.mock
-    async def test_legacy_old_relay_404_falls_back_to_one_activation(self, tmp_path, monkeypatch):
+    async def test_checkin_404_never_falls_back_to_activation(self, tmp_path, monkeypatch):
         mod, _ = self._prepare(tmp_path, monkeypatch)
         legacy_iid = "00000000-0000-4000-8000-000000000002"
         mod.write_config({"cloud": {"instance_id": legacy_iid}})
@@ -312,7 +312,7 @@ class TestAutoActivateProbe:
         from celerp.main import _try_auto_activate
         await _try_auto_activate()
         assert checkin.call_count == 1
-        assert activate.call_count == 1
+        assert activate.call_count == 0
 
     @respx.mock
     async def test_legacy_checkin_transport_ambiguity_never_activates(self, tmp_path, monkeypatch):

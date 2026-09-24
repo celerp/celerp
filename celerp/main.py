@@ -100,28 +100,18 @@ async def _try_auto_activate() -> None:
         verifier = _s.activation_verifier or ""
 
         if not verifier:
-            # Legacy installations may predate challenge-bound activation. New
-            # relays expose an observation-only check-in, so UUID knowledge never
-            # becomes credential authority there. If and only if that endpoint is
-            # absent (404), make one compatibility activation call for an old
-            # relay. Never retry this mutating legacy operation after ambiguity.
-            async def _legacy_activate():
+            async def _checkin():
                 async with httpx.AsyncClient(timeout=6.0) as c:
-                    checkin = await c.post(
-                        f"{relay_base}/auth/checkin",
-                        json=activate_payload(iid, first_boot=first_boot))
-                    if checkin.status_code != 404:
-                        return None
                     return await c.post(
-                        f"{relay_base}/auth/activate",
-                        json=activate_payload(iid, first_boot=first_boot))
+                        f"{relay_base}/auth/checkin",
+                        json=activate_payload(iid, first_boot=first_boot),
+                    )
 
             try:
-                r = await asyncio.wait_for(_legacy_activate(), timeout=6.0)
+                await asyncio.wait_for(_checkin(), timeout=6.0)
             except (httpx.HTTPError, asyncio.TimeoutError):
-                return
-            if r is None:
-                return
+                pass
+            return
         else:
             # Challenge redemption is idempotent for this verifier, so transient
             # transport retries are safe here.
@@ -149,6 +139,16 @@ async def _try_auto_activate() -> None:
     except Exception as exc:
         logging.getLogger(__name__).debug(
             "Activation recovery/check-in failed (expected for self-hosted): %s", exc)
+
+
+async def _try_sync_existing_entitlement() -> None:
+    """Best-effort boot convergence for an already-persisted relay credential."""
+    try:
+        from celerp.services.cloud_entitlement import sync_existing_entitlement
+        await sync_existing_entitlement(require_persisted_key=True)
+    except Exception as exc:
+        logging.getLogger(__name__).debug(
+            "Cloud startup reconciliation failed (non-fatal): %s", exc)
 
 
 @asynccontextmanager
@@ -304,6 +304,10 @@ async def lifespan(_app: FastAPI):
         from celerp.gateway import ensure_running, has_active_share
         if settings.celerp_public_url or await has_active_share():
             ensure_running()
+        # Authenticated activation is the canonical durable reconciliation path.
+        # It is bounded, idempotent for established credentials, and runs in the
+        # background so tunnel startup is never delayed.
+        asyncio.create_task(_try_sync_existing_entitlement())
     else:
         # Auto-activate: probe relay for an existing subscription (silent, no-op on failure)
         asyncio.create_task(_try_auto_activate())

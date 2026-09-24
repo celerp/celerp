@@ -42,3 +42,9 @@ def test_build_checkout_has_history_for_semver_derivation():
     checkout = workflow.rfind("- uses: actions/checkout@v4", 0, step)
     assert checkout >= 0
     assert "fetch-depth: 0" in workflow[checkout:step]
+
+
+def test_account_poll_waits_for_fresh_takeover_proof():
+    source = Path("ui/routes/account.py").read_text()
+    assert 'if act.get("verification_pending"):' in source
+    assert "return _waiting_panel(" in source

@@ -3,8 +3,8 @@
 
 """AI router: /ai/* and /settings/ai/*
 
-Every route requires an authenticated user, a valid gateway session token
-(the Connect subscription gate) and the ``use_ai_assistant`` permission.
+AI routes require an authenticated user, an active Connect session, and the
+``use_ai_assistant`` permission.
 
 Endpoints:
   POST   /ai/query                                   One-off question, no conversation
@@ -91,10 +91,7 @@ router = APIRouter(
     dependencies=[Depends(get_current_user), Depends(require_session_token), require_permission("use_ai_assistant")],
 )
 
-# Settings endpoints (quota, usage) - user auth only, no session token required.
-# These run in the API process which has the session token in-memory via the
-# gateway client. The UI process does NOT have the session token, so gating
-# these behind require_session_token breaks the separate-process architecture.
+# Settings endpoints are authenticated separately from AI execution routes.
 settings_router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
