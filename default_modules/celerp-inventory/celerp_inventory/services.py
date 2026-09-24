@@ -777,17 +777,6 @@ def _family_keys(rows: list[Projection]) -> dict[str, tuple[str, str]]:
             continue
 
         sku = normalize_sku(state.get("sku"))
-        explicit = {
-            candidate.entity_id: candidate
-            for candidate in (explicit_by_sku.get(sku, []) if sku else [])
-        }
-        if len(explicit) == 1:
-            keys[row.entity_id] = ("anchor", next(iter(explicit)))
-            continue
-        if len(explicit) > 1:
-            keys[row.entity_id] = ("sku", sku)
-            continue
-
         if _is_product_anchor_state(state):
             keys[row.entity_id] = ("anchor", row.entity_id)
             continue
@@ -796,11 +785,21 @@ def _family_keys(rows: list[Projection]) -> dict[str, tuple[str, str]]:
             candidate.entity_id: candidate
             for candidate in (roots_by_sku.get(sku, []) if sku else [])
         }
-        keys[row.entity_id] = (
-            ("anchor", next(iter(roots)))
-            if len(roots) == 1
-            else ("sku", sku)
-        )
+        if len(roots) == 1:
+            keys[row.entity_id] = ("anchor", next(iter(roots)))
+            continue
+        if len(roots) > 1:
+            keys[row.entity_id] = ("sku", sku)
+            continue
+
+        explicit = {
+            candidate.entity_id: candidate
+            for candidate in (explicit_by_sku.get(sku, []) if sku else [])
+        }
+        if len(explicit) == 1:
+            keys[row.entity_id] = ("anchor", next(iter(explicit)))
+            continue
+        keys[row.entity_id] = ("sku", sku)
     return keys
 
 

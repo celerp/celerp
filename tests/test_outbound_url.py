@@ -11,7 +11,9 @@ import respx
 
 from celerp.services.outbound_url import (
     PublicFetchTooLarge,
+    _PublicNetworkBackend,
     fetch_public_bytes,
+    public_async_transport,
     validate_public_base_url,
 )
 
@@ -123,3 +125,25 @@ async def test_public_fetch_rejects_invalid_redirect_destination():
                 max_bytes=10,
                 max_redirects=1,
             )
+
+
+@pytest.mark.asyncio
+async def test_public_network_backend_connects_to_validated_numeric_address():
+    delegate = SimpleNamespace(
+        connect_tcp=AsyncMock(return_value=object()),
+        sleep=AsyncMock(),
+    )
+    backend = _PublicNetworkBackend(delegate)
+    with patch(
+        "celerp.services.outbound_url._resolve_public_addresses",
+        new=AsyncMock(return_value=["93.184.216.34"]),
+    ):
+        await backend.connect_tcp("example.com", 443, timeout=1.0)
+
+    delegate.connect_tcp.assert_awaited_once()
+    assert delegate.connect_tcp.await_args.args[:2] == ("93.184.216.34", 443)
+
+
+def test_public_transport_installs_guarded_network_backend():
+    transport = public_async_transport()
+    assert isinstance(transport._pool._network_backend, _PublicNetworkBackend)

@@ -467,3 +467,28 @@ async def test_sync_inventory_identity_out_pushes_only_selected_product(woo, ctx
     assert result.updated == 1
     assert len(selected.calls) == 1
     assert len(other.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_full_product_sync_runs_missing_link_reconciliation(woo, ctx):
+    reconcile = AsyncMock(return_value=2)
+    with patch.object(woo, "_reconcile_missing_product_links", new=reconcile), respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        result = await woo.sync_products(ctx, since=None)
+
+    reconcile.assert_awaited_once_with(ctx, set(), set())
+    assert result.updated == 2
+
+
+@pytest.mark.asyncio
+async def test_incremental_product_sync_does_not_infer_remote_deletions(woo, ctx):
+    reconcile = AsyncMock(return_value=0)
+    with patch.object(woo, "_reconcile_missing_product_links", new=reconcile), respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        await woo.sync_products(ctx, since=datetime.now(timezone.utc))
+
+    reconcile.assert_not_awaited()

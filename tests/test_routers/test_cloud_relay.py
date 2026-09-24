@@ -914,21 +914,16 @@ async def test_connector_authorize_url_success(client):
             "https://accounts.intuit.com/oauth2/v1/authorize?state=xyz"
     }
 
-    claim = AsyncMock(return_value=object())
+    claim = AsyncMock(return_value=(object(), True))
     lock = AsyncMock(return_value=object())
+    relay = AsyncMock(return_value=url_resp)
     with patch("celerp.config.settings") as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
          patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
          patch("celerp.connectors.ownership.lock_connector_operation", lock), \
-         patch("httpx.AsyncClient") as mock_httpx:
+         patch("celerp.gateway.state.with_relay_client", relay):
         mock_settings.gateway_token = "my-api-key"
         mock_settings.celerp_relay_url = "https://relay.celerp.com"
-        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
-            return_value=tok_resp
-        )
-        mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(
-            return_value=url_resp
-        )
 
         response = await client.get(
             "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
@@ -941,8 +936,8 @@ async def test_connector_authorize_url_success(client):
     assert claim.await_count == 1
     assert claim.await_args.args[2] == "quickbooks"
     assert claim.await_args.kwargs["default_sync_frequency"] == "manual"
-    assert lock.await_count == 1
-    assert lock.await_args.kwargs["require_owner"] is True
+    assert claim.await_args.kwargs["report_created"] is True
+    lock.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1370,3 +1365,124 @@ async def test_account_signup_config_wait_runs_off_event_loop(client):
     assert ticked.is_set()
     assert worker_threads
     assert all(tid != main_thread for tid in worker_threads)
+
+
+@pytest.mark.asyncio
+async def test_connector_authorize_failure_releases_new_claim_after_cancel(client):
+    token = await _register(client, "auth-url-cleanup")
+    failed = MagicMock()
+    failed.status_code = 502
+    failed.text = "upstream failed"
+    failed.json.return_value = {"detail": "upstream failed"}
+    cancelled = MagicMock()
+    cancelled.status_code = 404
+
+    claim = AsyncMock(return_value=(object(), True))
+    lock = AsyncMock(return_value=object())
+    release = AsyncMock()
+    relay = AsyncMock(side_effect=[failed, cancelled])
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
+         patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
+         patch("celerp.connectors.ownership.lock_connector_operation", lock), \
+         patch("celerp.connectors.ownership.release_connector_ownership", release), \
+         patch("celerp.gateway.state.with_relay_client", relay):
+        mock_settings.gateway_token = "my-api-key"
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+        response = await client.get(
+            "/settings/connectors/quickbooks/authorize-url",
+            headers=_h(token),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["error"] == "upstream failed"
+    release.assert_awaited_once()
+    assert relay.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_connector_authorize_ambiguous_cleanup_keeps_new_claim(client):
+    import httpx as _httpx
+
+    token = await _register(client, "auth-url-cleanup-fails")
+    claim = AsyncMock(return_value=(object(), True))
+    lock = AsyncMock(return_value=object())
+    release = AsyncMock()
+    relay = AsyncMock(side_effect=[
+        _httpx.TimeoutException("authorize timed out"),
+        _httpx.ConnectError("cleanup unavailable"),
+    ])
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
+         patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
+         patch("celerp.connectors.ownership.lock_connector_operation", lock), \
+         patch("celerp.connectors.ownership.release_connector_ownership", release), \
+         patch("celerp.gateway.state.with_relay_client", relay):
+        mock_settings.gateway_token = "my-api-key"
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+        response = await client.get(
+            "/settings/connectors/quickbooks/authorize-url",
+            headers=_h(token),
+        )
+
+    assert response.status_code == 200
+    assert "disconnect it before retrying" in response.json()["error"]
+    release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_connector_reauthorize_failure_does_not_release_existing_owner(client):
+    token = await _register(client, "auth-url-existing-owner")
+    failed = MagicMock()
+    failed.status_code = 502
+    failed.text = "upstream failed"
+    failed.json.return_value = {"detail": "upstream failed"}
+
+    claim = AsyncMock(return_value=(object(), False))
+    lock = AsyncMock(return_value=object())
+    release = AsyncMock()
+    relay = AsyncMock(return_value=failed)
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
+         patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
+         patch("celerp.connectors.ownership.lock_connector_operation", lock), \
+         patch("celerp.connectors.ownership.release_connector_ownership", release), \
+         patch("celerp.gateway.state.with_relay_client", relay):
+        mock_settings.gateway_token = "my-api-key"
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+        response = await client.get(
+            "/settings/connectors/quickbooks/authorize-url",
+            headers=_h(token),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["error"] == "upstream failed"
+    assert relay.await_count == 1
+    release.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_connector_authorize_lock_failure_releases_new_claim(client):
+    from celerp.connectors.ownership import ConnectorOwnershipError
+
+    token = await _register(client, "auth-url-lock-fails")
+    claim = AsyncMock(return_value=(object(), True))
+    lock = AsyncMock(side_effect=ConnectorOwnershipError("ownership changed"))
+    release = AsyncMock()
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.connectors.ownership.claim_connector_ownership", claim), \
+         patch("celerp.connectors.ownership.lock_connector_operation", lock), \
+         patch("celerp.connectors.ownership.release_connector_ownership", release):
+        mock_settings.gateway_token = "my-api-key"
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+        response = await client.get(
+            "/settings/connectors/quickbooks/authorize-url",
+            headers=_h(token),
+        )
+
+    assert response.status_code == 409
+    release.assert_awaited_once()

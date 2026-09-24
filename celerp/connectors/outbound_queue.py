@@ -120,17 +120,13 @@ async def enqueue_item_change(session, entry, *, previous_state: dict | None = N
 
     current_state = dict(row.state or {})
     states = [state for state in (previous_state, current_state) if state]
-    sku_keys = {
-        str(state.get("sku") or "").strip().casefold()
-        for state in states
-        if str(state.get("sku") or "").strip()
-    }
     anchor_ids = {
         str(state.get("catalog_item_id"))
         for state in states
         if state.get("catalog_item_id")
     }
-    if any(_woo_link(state) for state in states):
+    direct_linked = any(_woo_link(state) for state in states)
+    if direct_linked:
         anchor_ids.add(str(entry.entity_id))
 
     identities: set[str] = set()
@@ -146,23 +142,14 @@ async def enqueue_item_change(session, entry, *, previous_state: dict | None = N
             if key:
                 identities.add(key)
 
-    rows = (await session.execute(
-        sa.select(Projection).where(
-            Projection.company_id == entry.company_id,
-            Projection.entity_type == "item",
+    for anchor_id in anchor_ids:
+        candidate = await session.get(
+            Projection,
+            {"company_id": entry.company_id, "entity_id": anchor_id},
         )
-    )).scalars().all()
-    for candidate in rows:
-        state = candidate.state or {}
-        candidate_sku = str(state.get("sku") or "").strip().casefold()
-        candidate_anchor = str(state.get("catalog_item_id") or "")
-        if not (
-            (candidate_sku and candidate_sku in sku_keys)
-            or candidate.entity_id in anchor_ids
-            or (candidate_anchor and candidate_anchor in anchor_ids)
-        ):
+        if candidate is None or candidate.entity_type != "item":
             continue
-        link = _woo_link(state)
+        link = _woo_link(candidate.state or {})
         if (
             link
             and link.get("sync_enabled") is not False
@@ -172,6 +159,39 @@ async def enqueue_item_change(session, entry, *, previous_state: dict | None = N
             key = _identity(link)
             if key:
                 identities.add(key)
+
+    if not anchor_ids and not direct_linked:
+        sku_keys = {
+            str(state.get("sku") or "").strip().casefold()
+            for state in states
+            if str(state.get("sku") or "").strip()
+        }
+        if sku_keys:
+            sku_expr = sa.func.lower(Projection.state.op("->>")("sku"))
+            linked = (await session.execute(
+                sa.select(Projection).where(
+                    Projection.company_id == entry.company_id,
+                    Projection.entity_type == "item",
+                    sku_expr.in_(sku_keys),
+                    sa.text(
+                        "("
+                        "NULLIF(state -> 'external_links' -> 'woocommerce' ->> 'product_id', '') "
+                        "IS NOT NULL OR state ->> 'idempotency_key' LIKE 'woocommerce:%'"
+                        ")"
+                    ),
+                )
+            )).scalars().all()
+            for candidate in linked:
+                link = _woo_link(candidate.state or {})
+                if (
+                    link
+                    and link.get("sync_enabled") is not False
+                    and link.get("remote_deleted") is not True
+                    and link.get("inventory_sync_paused") is not True
+                ):
+                    key = _identity(link)
+                    if key:
+                        identities.add(key)
 
     for identity in identities:
         session.add(OutboundQueue(
@@ -279,9 +299,18 @@ async def process_outbound_queue_once(limit: int = 100) -> int:
                 default=None,
             )
             if blocked_until is not None:
-                for row in locked_rows:
-                    if row.next_retry_at is None or row.next_retry_at < blocked_until:
-                        row.next_retry_at = blocked_until
+                keeper = locked_rows[-1]
+                stale_ids = [row.id for row in locked_rows[:-1]]
+                if stale_ids:
+                    await session.execute(
+                        sa.delete(OutboundQueue).where(OutboundQueue.id.in_(stale_ids))
+                    )
+                keeper.retry_count = max(row.retry_count for row in locked_rows)
+                keeper.next_retry_at = blocked_until
+                keeper.error_message = next(
+                    (row.error_message for row in reversed(locked_rows) if row.error_message),
+                    None,
+                )
                 await session.commit()
                 continue
 
@@ -326,11 +355,16 @@ async def process_outbound_queue_once(limit: int = 100) -> int:
                 retry_count = max((row.retry_count for row in locked_rows), default=0) + 1
                 delay = min(3600, 5 * (2 ** min(retry_count, 9)))
                 retry_at = retry_now + timedelta(seconds=delay)
-                for row in locked_rows:
-                    row.retry_count = retry_count
-                    row.next_retry_at = retry_at
-                    row.error_message = str(exc)[:2000]
-                    row.status = "pending"
+                keeper = locked_rows[-1]
+                stale_ids = [row.id for row in locked_rows[:-1]]
+                if stale_ids:
+                    await session.execute(
+                        sa.delete(OutboundQueue).where(OutboundQueue.id.in_(stale_ids))
+                    )
+                keeper.retry_count = retry_count
+                keeper.next_retry_at = retry_at
+                keeper.error_message = str(exc)[:2000]
+                keeper.status = "pending"
                 await session.commit()
 
             processed += len(ids)

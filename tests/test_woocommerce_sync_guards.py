@@ -137,6 +137,7 @@ def test_structural_catalog_family_survives_anchor_sku_change():
         is_sync_to_shopify=False,
         state={
             "sku": "OLD-SKU",
+            "barcode": "OLD-LOT",
             "quantity": 3,
             "status": "available",
         },
@@ -178,3 +179,69 @@ def test_legacy_sku_history_stays_unassigned_when_two_explicit_anchors_claim_it(
 
     assert legacy not in catalog_family_rows(rows, left)
     assert legacy not in catalog_family_rows(rows, right)
+
+
+def test_reused_historical_sku_stays_a_separate_product_root():
+    from types import SimpleNamespace
+
+    anchor = SimpleNamespace(
+        entity_id="item:old",
+        is_sync_to_shopify=False,
+        state={
+            "sku": "NEW-SKU",
+            "_catalog_sku_aliases": ["OLD-SKU"],
+            "external_links": {
+                "woocommerce": {"product_id": "42", "sync_enabled": True}
+            },
+        },
+    )
+    reused = SimpleNamespace(
+        entity_id="item:new",
+        is_sync_to_shopify=False,
+        state={
+            "sku": "OLD-SKU",
+            "name": "New product",
+            "quantity": 1,
+            "status": "available",
+        },
+    )
+    rows = [anchor, reused]
+    assert catalog_family_rows(rows, anchor) == [anchor]
+    assert catalog_family_rows(rows, reused) == [reused]
+    states = build_channel_states(rows)
+    assert "woocommerce" not in states[reused.entity_id]
+
+
+def test_reused_historical_sku_children_follow_current_product_root():
+    from types import SimpleNamespace
+
+    old_anchor = SimpleNamespace(
+        entity_id="item:old",
+        is_sync_to_shopify=False,
+        state={
+            "sku": "NEW-SKU",
+            "_catalog_sku_aliases": ["OLD-SKU"],
+            "external_links": {
+                "woocommerce": {"product_id": "42", "sync_enabled": True}
+            },
+        },
+    )
+    new_anchor = SimpleNamespace(
+        entity_id="item:new",
+        is_sync_to_shopify=False,
+        state={"sku": "OLD-SKU", "name": "New product", "quantity": 0, "status": "available"},
+    )
+    physical = SimpleNamespace(
+        entity_id="item:new-stock",
+        is_sync_to_shopify=False,
+        state={
+            "sku": "OLD-SKU",
+            "barcode": "NEW-STOCK-1",
+            "quantity": 1,
+            "status": "available",
+        },
+    )
+    rows = [old_anchor, new_anchor, physical]
+
+    assert catalog_family_rows(rows, old_anchor) == [old_anchor]
+    assert catalog_family_rows(rows, new_anchor) == [new_anchor, physical]

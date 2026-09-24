@@ -60,10 +60,19 @@ async def run_connector_sync(
     connector: ConnectorBase,
     ctx: ConnectorContext,
     direction: SyncDirection,
+    *,
+    full_entities: set[str] | None = None,
 ) -> list[SyncResult]:
     """Execute a connector's canonical plan through the audited per-entity runner."""
+    full_entities = full_entities or set()
     return [
-        await run_sync(connector, ctx, entity, direction=direction)
+        await run_sync(
+            connector,
+            ctx,
+            entity,
+            direction=direction,
+            use_watermark=entity not in full_entities,
+        )
         for entity in sync_plan(connector, direction)
     ]
 
@@ -196,6 +205,7 @@ async def run_sync(
     entity: str,
     since: datetime | None = None,
     direction: SyncDirection | None = None,
+    use_watermark: bool = True,
 ) -> SyncResult:
     """Execute a sync operation and record a SyncRun audit entry.
 
@@ -239,7 +249,7 @@ async def run_sync(
 
     # Incremental by default: pull only what changed since the last successful run
     # for this entity. Idempotency keys make any overlap dup-safe.
-    if since is None and entity not in _OUTBOUND_ENTITIES:
+    if since is None and entity not in _OUTBOUND_ENTITIES and use_watermark:
         since = await _last_success_watermark(ctx.company_id, connector.name, entity)
 
     try:

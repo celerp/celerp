@@ -1,14 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Fetch a short-lived connector access token from the relay.
-
-Autonomous syncs (the reconciliation scheduler and webhook-triggered syncs) run
-inside the core process, so unlike the manual sync route — where the UI passes
-the token in the request body — they must fetch the token themselves. The relay
-holds the encrypted token and returns a short-lived copy to the authenticated
-instance. Returns None when there is no relay session (e.g. a self-hosted
-instance not connected to Celerp Connect), in which case the caller skips.
-"""
+"""Build connector context for background synchronization."""
 from __future__ import annotations
 
 import logging
@@ -29,12 +21,12 @@ async def fetch_context(company_id: str, connector_name: str) -> "ConnectorConte
     from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
 
     if not get_session_token():
-        return None  # no cloud session → no relay token available
+        return None
 
     async with get_session_ctx() as session:
         if not await connector_owned_by_company(session, company_id, connector_name):
             log.warning(
-                "refusing relay credential for %s: company %s is not its owner",
+                "connector context unavailable for %s and company %s",
                 connector_name, company_id,
             )
             return None

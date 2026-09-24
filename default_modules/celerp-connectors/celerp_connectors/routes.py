@@ -1,11 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""
-Connector routes — /connectors/*
-
-Cloud-gated connector operations run through the API process. Provider credentials
-stay inside core and are never returned to the UI.
-"""
+"""Connector routes - /connectors/*."""
 from __future__ import annotations
 
 import logging
@@ -180,10 +175,6 @@ async def trigger_sync_plan(
 
 
 # ── Credential management (API-key platforms) ────────────────────────────────
-# These endpoints run in the API process, which holds the live relay session
-# from the gateway WebSocket handshake. The UI process has no relay session of
-# its own, so all relay credential operations must proxy through here.
-# Credentials are stored encrypted on the relay only - never persisted locally.
 
 class ApiKeyCredentials(BaseModel):
     consumer_key: str
@@ -292,9 +283,6 @@ async def store_credentials(
             default_sync_frequency=default_frequency,
             report_created=True,
         )
-        # This ownership row is the authorization boundary for an installation-wide
-        # relay credential. Persist it before the remote write so a crash cannot
-        # leave a live credential without an owning ERP company.
         await session.commit()
     except ConnectorOwnershipError as exc:
         await session.rollback()
@@ -498,9 +486,6 @@ async def revoke_credentials(
             await WooCommerceConnector().deregister_webhooks(
                 ctx, config.webhook_ids
             )
-            # The remote hooks are confirmed gone. Persist that fact before
-            # revoking the credential so a retry never needs credentials merely
-            # to repeat cleanup that already succeeded.
             config.webhook_ids = []
             config.webhook_secret = None
             await session.commit()

@@ -24,9 +24,17 @@ class RateLimitedClient:
         max_retries: int = _DEFAULT_MAX_RETRIES,
         backoff_base: float = _DEFAULT_BACKOFF_BASE,
         before_request: Callable[[str], Awaitable[None]] | None = None,
+        public_only: bool = False,
     ) -> None:
+        transport = None
+        if public_only:
+            from celerp.services.outbound_url import public_async_transport
+            transport = public_async_transport()
         self._client = httpx.AsyncClient(
-            timeout=timeout, follow_redirects=False, trust_env=False
+            timeout=timeout,
+            follow_redirects=False,
+            trust_env=False,
+            transport=transport,
         )
         self._max_retries = max_retries
         self._backoff_base = backoff_base

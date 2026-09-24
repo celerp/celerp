@@ -193,12 +193,12 @@ async def test_connector_ui_enable_enqueues_current_woocommerce_identity(session
 
 
 @pytest.mark.asyncio
-async def test_sku_change_invalidates_old_and_new_woocommerce_families(session):
+async def test_legacy_sku_change_invalidates_old_and_new_woocommerce_families(session):
     company_id = uuid.uuid4()
     session.add(Company(
         id=company_id,
-        name="Queue SKU Test",
-        slug=f"queue-sku-{company_id.hex[:8]}",
+        name="Queue Legacy SKU Test",
+        slug=f"queue-legacy-{company_id.hex[:8]}",
         settings={},
     ))
     session.add(ConnectorConfig(
@@ -208,14 +208,14 @@ async def test_sku_change_invalidates_old_and_new_woocommerce_families(session):
     session.add_all([
         Projection(
             company_id=company_id,
-            entity_id="item:a",
+            entity_id="item:old-anchor",
             entity_type="item",
             version=1,
             created_at=now,
             updated_at=now,
             state={
-                "sku": "NEW",
-                "quantity": 1,
+                "sku": "OLD-SKU",
+                "quantity": 0,
                 "status": "available",
                 "external_links": {
                     "woocommerce": {"product_id": "10", "sync_enabled": True}
@@ -224,28 +224,41 @@ async def test_sku_change_invalidates_old_and_new_woocommerce_families(session):
         ),
         Projection(
             company_id=company_id,
-            entity_id="item:b",
+            entity_id="item:new-anchor",
             entity_type="item",
             version=1,
             created_at=now,
             updated_at=now,
             state={
-                "sku": "NEW",
-                "quantity": 1,
+                "sku": "NEW-SKU",
+                "quantity": 0,
                 "status": "available",
                 "external_links": {
                     "woocommerce": {"product_id": "20", "sync_enabled": True}
                 },
             },
         ),
+        Projection(
+            company_id=company_id,
+            entity_id="item:legacy-child",
+            entity_type="item",
+            version=2,
+            created_at=now,
+            updated_at=now,
+            state={
+                "sku": "NEW-SKU",
+                "quantity": 2,
+                "status": "available",
+            },
+        ),
     ])
     await session.flush()
     entry = LedgerEntry(
         company_id=company_id,
-        entity_id="item:a",
+        entity_id="item:legacy-child",
         entity_type="item",
         event_type="item.updated",
-        data={"fields_changed": {"sku": {"old": "OLD", "new": "NEW"}}},
+        data={"sku": "NEW-SKU"},
         source="api",
         idempotency_key=f"t-{uuid.uuid4()}",
     )
@@ -253,20 +266,86 @@ async def test_sku_change_invalidates_old_and_new_woocommerce_families(session):
         session,
         entry,
         previous_state={
-            "sku": "OLD",
-            "external_links": {
-                "woocommerce": {"product_id": "10", "sync_enabled": True}
-            },
+            "sku": "OLD-SKU",
+            "quantity": 2,
+            "status": "available",
         },
     )
+    await session.flush()
+
+    identities = set((await session.execute(
+        sa.select(OutboundQueue.entity_id).where(
+            OutboundQueue.company_id == str(company_id)
+        )
+    )).scalars().all())
+    assert identities == {"10", "20"}
+
+
+@pytest.mark.asyncio
+async def test_explicit_catalog_child_change_enqueues_anchor_identity(session):
+    company_id = uuid.uuid4()
+    session.add(Company(
+        id=company_id,
+        name="Queue Family Test",
+        slug=f"queue-family-{company_id.hex[:8]}",
+        settings={},
+    ))
+    session.add(ConnectorConfig(
+        company_id=str(company_id), connector="woocommerce", direction="both"
+    ))
+    now = datetime.now(timezone.utc)
+    anchor_id = "item:anchor"
+    child_id = "item:child"
+    session.add_all([
+        Projection(
+            company_id=company_id,
+            entity_id=anchor_id,
+            entity_type="item",
+            version=1,
+            created_at=now,
+            updated_at=now,
+            state={
+                "sku": "FAMILY",
+                "quantity": 0,
+                "status": "available",
+                "external_links": {
+                    "woocommerce": {"product_id": "10", "sync_enabled": True}
+                },
+            },
+        ),
+        Projection(
+            company_id=company_id,
+            entity_id=child_id,
+            entity_type="item",
+            version=1,
+            created_at=now,
+            updated_at=now,
+            state={
+                "sku": "FAMILY",
+                "quantity": 2,
+                "status": "available",
+                "catalog_item_id": anchor_id,
+            },
+        ),
+    ])
+    await session.flush()
+    entry = LedgerEntry(
+        company_id=company_id,
+        entity_id=child_id,
+        entity_type="item",
+        event_type="item.quantity.adjusted",
+        data={"new_quantity": 2},
+        source="api",
+        idempotency_key=f"t-{uuid.uuid4()}",
+    )
+    await enqueue_item_change(session, entry)
     await session.flush()
     identities = set((await session.execute(
         sa.select(OutboundQueue.entity_id).where(
             OutboundQueue.company_id == str(company_id)
         )
     )).scalars().all())
-    assert {"10", "20"} <= identities
-
+    assert identities == {"10"}
 
 @pytest.mark.asyncio
 async def test_identity_backoff_applies_to_newer_rows():
@@ -317,9 +396,10 @@ async def test_identity_backoff_applies_to_newer_rows():
                 OutboundQueue.entity_id == "77",
             )
         )).scalars().all()
-        assert len(rows) == 2
-        assert all(row.next_retry_at is not None for row in rows)
-        assert min(row.next_retry_at for row in rows) >= deadline
+        assert len(rows) == 1
+        assert rows[0].next_retry_at is not None
+        assert rows[0].next_retry_at >= deadline
+        assert rows[0].retry_count == 3
 
 
 @pytest.mark.asyncio

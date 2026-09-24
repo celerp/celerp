@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Validation for server-side requests to user-configured public endpoints."""
+"""Validation and bounded fetching for user-configured public endpoints."""
 from __future__ import annotations
 
 import asyncio
@@ -9,6 +9,7 @@ import socket
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
+import httpcore
 import httpx
 
 
@@ -17,6 +18,26 @@ def _blocked_ip(addr: str) -> bool:
         return not ipaddress.ip_address(addr).is_global
     except ValueError:
         return True
+
+
+async def _resolve_public_addresses(host: str, port: int) -> list[str]:
+    try:
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP,
+        )
+    except (socket.gaierror, UnicodeError, ValueError) as exc:
+        raise ValueError("URL host could not be resolved") from exc
+
+    addresses: list[str] = []
+    for info in infos:
+        address = str(info[4][0])
+        if _blocked_ip(address):
+            raise ValueError("URL host is not a public address")
+        if address not in addresses:
+            addresses.append(address)
+    if not addresses:
+        raise ValueError("URL host could not be resolved")
+    return addresses
 
 
 async def validate_public_base_url(
@@ -45,18 +66,57 @@ async def validate_public_base_url(
         raise ValueError("Base URL must not contain a fragment")
 
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    try:
-        infos = await asyncio.get_running_loop().getaddrinfo(
-            parsed.hostname,
-            port,
-            type=socket.SOCK_STREAM,
-            proto=socket.IPPROTO_TCP,
-        )
-    except (socket.gaierror, UnicodeError, ValueError) as exc:
-        raise ValueError("URL host could not be resolved") from exc
-    if not infos or any(_blocked_ip(info[4][0]) for info in infos):
-        raise ValueError("URL host is not a public address")
+    await _resolve_public_addresses(parsed.hostname, port)
     return cleaned
+
+
+class _PublicNetworkBackend(httpcore.AsyncNetworkBackend):
+    def __init__(self, backend=None) -> None:
+        self._backend = backend or httpcore.AnyIOBackend()
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options=None,
+    ):
+        addresses = await _resolve_public_addresses(host, port)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout if timeout is not None else None
+        last_error = None
+        for address in addresses:
+            remaining = max(0.0, deadline - loop.time()) if deadline is not None else None
+            try:
+                return await self._backend.connect_tcp(
+                    address,
+                    port,
+                    timeout=remaining,
+                    local_address=local_address,
+                    socket_options=socket_options,
+                )
+            except (httpcore.ConnectError, httpcore.ConnectTimeout) as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise httpcore.ConnectError("No public address was available")
+
+    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        raise httpcore.ConnectError("Unix sockets are not supported")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._backend.sleep(seconds)
+
+
+def public_async_transport() -> httpx.AsyncHTTPTransport:
+    """HTTP transport whose TCP connections use validated public addresses."""
+    transport = httpx.AsyncHTTPTransport(trust_env=False)
+    pool = getattr(transport, "_pool", None)
+    if pool is None or not hasattr(pool, "_network_backend"):
+        raise RuntimeError("HTTP transport does not support the public network guard")
+    pool._network_backend = _PublicNetworkBackend()
+    return transport
 
 
 @dataclass(frozen=True)
@@ -86,7 +146,10 @@ async def fetch_public_bytes(
     current = url
     request_params = params
     async with httpx.AsyncClient(
-        timeout=timeout, follow_redirects=False, trust_env=False
+        timeout=timeout,
+        follow_redirects=False,
+        trust_env=False,
+        transport=public_async_transport(),
     ) as client:
         for hop in range(max_redirects + 1):
             current = await validate_public_base_url(
