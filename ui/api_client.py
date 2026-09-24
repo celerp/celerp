@@ -1291,10 +1291,8 @@ async def get_doc(token: str, entity_id: str) -> dict:
         return _raise(await c.get(f"/docs/{entity_id}")).json()
 
 
-async def get_doc_summary(token: str, doc_type: str = "") -> dict:
-    params = {}
-    if doc_type:
-        params["doc_type"] = doc_type
+async def get_doc_summary(token: str, doc_type: str = "", date_from: str = "", date_to: str = "") -> dict:
+    params = {k: v for k, v in (("doc_type", doc_type), ("date_from", date_from), ("date_to", date_to)) if v}
     async with _api_client(token) as c:
         return _raise(await c.get("/docs/summary", params=params)).json()
 
@@ -2067,9 +2065,10 @@ async def get_list(token: str, entity_id: str) -> dict:
         return _raise(await c.get(f"/lists/{entity_id}")).json()
 
 
-async def get_list_summary(token: str) -> dict:
+async def get_list_summary(token: str, list_type: str = "", date_from: str = "", date_to: str = "") -> dict:
+    params = {k: v for k, v in (("list_type", list_type), ("date_from", date_from), ("date_to", date_to)) if v}
     async with _api_client(token) as c:
-        return _raise(await c.get("/lists/summary")).json()
+        return _raise(await c.get("/lists/summary", params=params)).json()
 
 
 async def create_list(token: str, data: dict) -> dict:

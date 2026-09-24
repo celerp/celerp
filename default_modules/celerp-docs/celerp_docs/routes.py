@@ -773,9 +773,13 @@ async def list_docs(
 @router.get("/summary", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc_summary(
     doc_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Counts and totals for the document list. date_from/date_to window on issue_date exactly as
+    list_docs does, so the cards over a windowed list count the rows the list shows."""
     from datetime import date as _date_cls
     today = _date_cls.today().isoformat()
     summary_where = [
@@ -784,6 +788,10 @@ async def get_doc_summary(
     ]
     if doc_type:
         summary_where.append(Projection.state["doc_type"].as_string() == doc_type)
+    if date_from:
+        summary_where.append(Projection.state["issue_date"].as_string() >= date_from)
+    if date_to:
+        summary_where.append(Projection.state["issue_date"].as_string() <= date_to)
     rows = (await session.execute(select(Projection).where(*summary_where))).scalars().all()
     ar_gross = ar_paid = ar_outstanding = 0.0
     count_by_status: dict[str, int] = {}
@@ -4235,10 +4243,22 @@ async def list_lists(
 
 @lists_router.get("/summary")
 async def get_list_summary(
+    list_type: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Status counts for the lists page, over the same type and date window as list_lists so the
+    cards count the rows the page shows."""
     base_where = _list_base_where(company_id)
+    if list_type:
+        base_where.append(Projection.state["list_type"].as_string() == list_type)
+    sort_date = _list_sort_date()
+    if date_from:
+        base_where.append(sort_date >= date_from)
+    if date_to:
+        base_where.append(sort_date <= date_to)
     status_expr = _func.coalesce(Projection.state["status"].as_string(), "")
     # One grouped pass over the projection: a bounded histogram (one row per status), with the
     # value sum carried per group so total_value is derived without a second scan. total is text

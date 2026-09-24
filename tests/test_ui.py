@@ -13637,7 +13637,7 @@ class TestDocumentsOverhaul:
         """GET /docs?type=invoice passes doc_type to get_doc_summary."""
         captured = {}
         original_summary = AsyncMock(return_value=_DOC_SUMMARY)
-        async def _capture_summary(token, doc_type=""):
+        async def _capture_summary(token, doc_type="", **_window):
             captured["doc_type"] = doc_type
             return await original_summary(token)
         with (

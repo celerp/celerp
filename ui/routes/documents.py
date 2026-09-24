@@ -320,6 +320,147 @@ _LIST_DATE_FIELDS = {"date", "link_expiry"}
 
 _PER_PAGE = 50
 _PER_PAGE_OPTIONS = [25, 50, 100, 250]
+
+# Every URL parameter the document list understands. One dict, read once per request, feeds
+# the API call, the date bar, the status cards, the sort links, the search box, pagination
+# and the export link, so no link on the page can drop a filter another link set.
+_DOC_STATE_KEYS = ("q", "type", "status", "status_in", "contact_id", "overdue_only", "unfulfilled_only",
+                   "not_restocked", "not_stocked", "all_issued", "converted_to_type", "view", "ids",
+                   "sort", "dir", "per_page", "preset", "from", "to")
+_DOC_BOOL_KEYS = frozenset({"overdue_only", "unfulfilled_only", "not_restocked", "not_stocked", "all_issued"})
+# The keys a status card replaces when clicked; card links carry everything else.
+_DOC_STATUS_KEYS = ("status", "status_in", "overdue_only", "unfulfilled_only", "not_restocked", "not_stocked",
+                    "all_issued", "converted_to_type", "view", "ids")
+_DATE_KEYS = ("preset", "from", "to")
+# Document types whose card row carries an All issued card: with no status filter the page shows
+# exactly that card's set, so the card is highlighted and its count matches the rows.
+_ALL_ISSUED_DEFAULT_TYPES = frozenset({"invoice", "memo", "credit_note", "bill", "consignment_in"})
+
+
+def _doc_list_state(request: Request) -> dict[str, str]:
+    qp = request.query_params
+    state: dict[str, str] = {}
+    for key in _DOC_STATE_KEYS:
+        value = qp.get(key, "")
+        if key == "type" and not value:
+            value = qp.get("doc_type", "")
+        if key in _DOC_BOOL_KEYS:
+            value = "1" if value in ("1", "true") else ""
+        if value:
+            state[key] = value
+    return state
+
+
+def _state_query(state: dict[str, str], *, without: tuple[str, ...] = ()) -> str:
+    return urlencode({k: v for k, v in state.items() if k not in without})
+
+
+def _doc_api_params(state: dict[str, str], date_from: str, date_to: str, *, limit: int | None, offset: int = 0) -> dict:
+    """The list_docs query for a page state. limit=None asks the API for every matching row."""
+    is_drafts_view = state.get("view") == "drafts" or state.get("status") == "draft"
+    has_status_filter = any(state.get(k) for k in _DOC_STATUS_KEYS)
+    params: dict = {"offset": offset}
+    if limit is not None:
+        params["limit"] = limit
+    for src, dst in (("q", "q"), ("contact_id", "contact_id"), ("ids", "ids"), ("type", "doc_type")):
+        if state.get(src):
+            params[dst] = state[src]
+    if is_drafts_view:
+        params["status"] = "draft"
+    elif state.get("status_in"):
+        params["status_in"] = state["status_in"]
+    elif state.get("all_issued"):
+        params["all_issued"] = "1"
+    elif state.get("status"):
+        params["status"] = state["status"]
+    elif not has_status_filter and state.get("type") in _ALL_ISSUED_DEFAULT_TYPES:
+        params["all_issued"] = "1"
+    elif not has_status_filter or not any(state.get(k) for k in ("status", "status_in", "all_issued")):
+        params["exclude_status"] = "draft"
+    for key in ("overdue_only", "unfulfilled_only", "not_restocked", "not_stocked"):
+        if state.get(key):
+            params[key] = "1"
+    if state.get("converted_to_type"):
+        params["converted_to_type"] = state["converted_to_type"]
+    if date_from:
+        params["date_from"] = date_from
+    if date_to:
+        params["date_to"] = date_to
+    return params
+
+
+async def _doc_list_dates(request: Request, state: dict[str, str], company: dict) -> tuple[str, str, str]:
+    """(date_from, date_to, preset) for the list: an explicit id batch is never windowed, an
+    explicit selection wins, else the company default preset."""
+    if state.get("ids"):
+        return "", "", "all"
+    if any(state.get(k) for k in _DATE_KEYS):
+        return _parse_dates(request)
+    default_preset = company.get("docs_default_preset") or "last_12m"
+    if default_preset == "all":
+        return "", "", "all"
+    date_from, date_to = _resolve_preset(default_preset)
+    return date_from, date_to, default_preset
+
+
+_LIST_STATE_KEYS = ("q", "type", "status", "converted_to_type", "all_issued", "view", "preset", "from", "to")
+_LIST_STATUS_KEYS = ("status", "converted_to_type", "all_issued", "view")
+
+
+def _list_page_state(request: Request) -> dict[str, str]:
+    qp = request.query_params
+    state: dict[str, str] = {}
+    for key in _LIST_STATE_KEYS:
+        value = qp.get(key, "")
+        if key == "all_issued":
+            value = "1" if value in ("1", "true") else ""
+        if value:
+            state[key] = value
+    return state
+
+
+def _list_api_params(state: dict[str, str], date_from: str, date_to: str, *, limit: int | None, offset: int = 0) -> dict:
+    """The list_lists query for a page state. limit=None asks the API for every matching row.
+    With no status filter the page shows the issued lists (the All issued card); "all" is the
+    show-everything view and drafts have their own view."""
+    status = state.get("status", "")
+    is_drafts_view = state.get("view") == "drafts" or status == "draft"
+    params: dict = {"offset": offset}
+    if limit is not None:
+        params["limit"] = limit
+    if state.get("q"):
+        params["q"] = state["q"]
+    if state.get("type"):
+        params["list_type"] = state["type"]
+    if is_drafts_view:
+        params["status"] = "draft"
+    elif state.get("all_issued") or (not status and not state.get("converted_to_type")):
+        params["all_issued"] = "1"
+    elif status and status != "all":
+        params["status"] = status
+    if state.get("converted_to_type"):
+        params["converted_to_type"] = state["converted_to_type"]
+    if date_from:
+        params["date_from"] = date_from
+    if date_to:
+        params["date_to"] = date_to
+    return params
+
+
+async def _list_page_dates(request: Request, state: dict[str, str], company: dict) -> tuple[str, str, str]:
+    """(date_from, date_to, preset) for the lists page. The drafts view is never date-windowed by
+    default: a draft is open work, and many list types carry no issue date yet, so a default
+    window would silently hide them."""
+    if any(state.get(k) for k in _DATE_KEYS):
+        return _parse_dates(request)
+    if state.get("view") == "drafts" or state.get("status") == "draft":
+        return "", "", "all"
+    default_preset = company.get("docs_default_preset") or "last_12m"
+    if default_preset == "all":
+        return "", "", "all"
+    date_from, date_to = _resolve_preset(default_preset)
+    return date_from, date_to, default_preset
+
 _DOC_TYPES = ["invoice", "purchase_order", "bill", "receipt", "credit_note", "memo", "consignment_in", "list"]
 # Doc types that support per-line inventory item status display (fetch + render).
 # Keep in sync with doc_constants.FULFILLABLE_STATUSES (different package - cannot import directly).
@@ -1125,104 +1266,44 @@ def setup_routes(app):
         denied = await _check_permission(request, "view_documents", page_view=True)
         if denied:
             return denied
-        q = request.query_params.get("q", "")
-        doc_type = request.query_params.get("type", "") or request.query_params.get("doc_type", "")
-        status = request.query_params.get("status", "")
-        status_in = request.query_params.get("status_in", "")
-        contact_id = request.query_params.get("contact_id", "")
-        overdue_only = request.query_params.get("overdue_only", "") in ("1", "true")
-        unfulfilled_only = request.query_params.get("unfulfilled_only", "") in ("1", "true")
-        not_restocked = request.query_params.get("not_restocked", "") in ("1", "true")
-        not_stocked = request.query_params.get("not_stocked", "") in ("1", "true")
-        all_issued = request.query_params.get("all_issued", "") in ("1", "true")
-        converted_to_type = request.query_params.get("converted_to_type", "")
-        view = request.query_params.get("view", "")  # "drafts" = drafts-only mode
-        ids = ",".join(x.strip() for x in request.query_params.get("ids", "").split(",") if x.strip())
+        state = _doc_list_state(request)
+        q = state.get("q", "")
+        doc_type = state.get("type", "")
+        status = state.get("status", "")
+        status_in = state.get("status_in", "")
+        contact_id = state.get("contact_id", "")
+        overdue_only = bool(state.get("overdue_only"))
+        unfulfilled_only = bool(state.get("unfulfilled_only"))
+        not_restocked = bool(state.get("not_restocked"))
+        not_stocked = bool(state.get("not_stocked"))
+        converted_to_type = state.get("converted_to_type", "")
+        view = state.get("view", "")  # "drafts" = drafts-only mode
+        ids = ",".join(x.strip() for x in state.get("ids", "").split(",") if x.strip())
         page = int(request.query_params.get("page", 1))
-        sort = request.query_params.get("sort", "date")
-        sort_dir = request.query_params.get("dir", "desc")
+        sort = state.get("sort", "date")
+        sort_dir = state.get("dir", "desc")
         try:
-            per_page = max(1, int(request.query_params.get("per_page", _PER_PAGE)))
+            per_page = max(1, int(state.get("per_page", _PER_PAGE)))
         except (ValueError, TypeError):
             per_page = _PER_PAGE
-
-        # Date filter: use explicit URL param if set, otherwise fall back to
-        # the per-company saved preference (default: last_12m).
-        _has_explicit_date = (
-            request.query_params.get("preset")
-            or request.query_params.get("from")
-            or request.query_params.get("to")
-        )
         try:
             company = await api.get_company(token)
         except Exception:
             company = {}
         currency = company.get("currency") or None
-        if ids:
-            # An explicit id list is the whole filter: a batch of AI drafts may carry
-            # receipt dates outside the saved date preset and must still all show.
-            date_from, date_to, preset = "", "", "all"
-        elif _has_explicit_date:
-            date_from, date_to, preset = _parse_dates(request)
-        else:
-            _default_preset = company.get("docs_default_preset") or "last_12m"
-            if _default_preset == "all":
-                date_from, date_to, preset = "", "", "all"
-            else:
-                date_from, date_to = _resolve_preset(_default_preset)
-                preset = _default_preset
+        date_from, date_to, preset = await _doc_list_dates(request, state, company)
 
         # Drafts are segregated: only shown when ?view=drafts or explicit ?status=draft.
         # All other views exclude drafts by default (like email treats Drafts).
         is_drafts_view = view == "drafts" or status == "draft"
-        effective_status = status
-        if is_drafts_view:
-            effective_status = "draft"
-        elif not status and not status_in:
-            effective_status = "exclude_draft"  # backend must support this param
-
+        params = _doc_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
+        all_issued = params.get("all_issued") == "1"
+        has_status_filter = any(state.get(k) for k in _DOC_STATUS_KEYS)
         try:
-            params = {"limit": per_page, "offset": (page - 1) * per_page}
-            if q:
-                params["q"] = q
-            if contact_id:
-                params["contact_id"] = contact_id
-            if ids:
-                params["ids"] = ids
-            if doc_type:
-                params["doc_type"] = doc_type
-            if is_drafts_view:
-                params["status"] = "draft"
-            elif status_in:
-                params["status_in"] = status_in
-                if overdue_only:
-                    params["overdue_only"] = "1"
-            elif all_issued:
-                params["all_issued"] = "1"
-                if overdue_only:
-                    params["overdue_only"] = "1"
-            elif effective_status == "exclude_draft":
-                params["exclude_status"] = "draft"
-            elif effective_status:
-                params["status"] = effective_status
-            if overdue_only and not status_in and not all_issued:
-                params["overdue_only"] = "1"
-            if unfulfilled_only:
-                params["unfulfilled_only"] = "1"
-            if not_restocked:
-                params["not_restocked"] = "1"
-            if not_stocked:
-                params["not_stocked"] = "1"
-            if converted_to_type:
-                params["converted_to_type"] = converted_to_type
-            if date_from:
-                params["date_from"] = date_from
-            if date_to:
-                params["date_to"] = date_to
             import asyncio as _asyncio
             docs_resp, summary = await _asyncio.gather(
                 api.list_docs(token, params),
-                api.get_doc_summary(token, doc_type=doc_type),
+                api.get_doc_summary(token, doc_type=doc_type, date_from=date_from, date_to=date_to),
             )
             docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
             draft_count = summary.get("draft_count", 0) if isinstance(summary, dict) else 0
@@ -1231,12 +1312,15 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             docs_resp, docs, summary, draft_count = {}, [], {}, 0
 
-        extra = f"&q={quote_plus(q)}&type={quote_plus(doc_type)}&status={quote_plus(status)}&view={quote_plus(view)}&ids={quote_plus(ids)}".strip("&")
+        # Links that switch one dimension keep every other: the date bar keeps the filters,
+        # the status cards keep the dates and sort, the sort links and pages keep everything.
+        date_bar_extra = _state_query(state, without=_DATE_KEYS)
+        cards_base_url = "/docs?" + urlencode({"type": doc_type, **{k: v for k, v in state.items() if k not in _DOC_STATUS_KEYS and k != "type"}})
         total_count = docs_resp.get("total", len(docs)) if isinstance(docs_resp, dict) else len(docs)
 
         # Auto-redirect to drafts when no finalized docs exist but drafts do.
         # Prevents the "where did my draft go?" confusion for new users.
-        if not is_drafts_view and not docs and draft_count > 0 and not q and not status and not status_in:
+        if not is_drafts_view and not docs and draft_count > 0 and not q and not has_status_filter:
             redirect_params = f"?view=drafts"
             if doc_type:
                 redirect_params += f"&type={doc_type}"
@@ -1246,7 +1330,7 @@ def setup_routes(app):
         section_label_key = _DOC_TYPE_PAGE_LABELS.get(doc_type, "page.documents")
         section_title = t(section_label_key)
         new_label = _doc_type_new_label(doc_type, lang)
-        search_url = f"/docs/search?type={doc_type}" if doc_type else "/docs/search"
+        search_url = "/docs/search?" + _state_query(state, without=("q",))
         create_type = doc_type or "invoice"
         _role = _get_role(request)
         _settings = company.get("settings") or {}
@@ -1265,24 +1349,24 @@ def setup_routes(app):
                     hx_swap="none",
                     cls="btn btn--primary",
                 ) if role_has_permission(_settings, _role, "edit_documents") else "",
-                A(t("btn.export_csv"), href="/docs/export/csv", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
+                A(t("btn.export_csv"), href="/docs/export/csv?" + _state_query(state), cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
                 A(t("doc.import_csv"), href="/docs/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
             ),
             _doc_type_intro(doc_type),
-            _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "", lang=lang),
+            _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{date_bar_extra}" if date_bar_extra else "", lang=lang),
             _summary_bar(summary, doc_type, currency, lang),
-            _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang, status_in=status_in, overdue_only=overdue_only, unfulfilled_only=unfulfilled_only, not_restocked=not_restocked, not_stocked=not_stocked, all_issued=all_issued, converted_to_type=converted_to_type),
+            _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang, status_in=status_in, overdue_only=overdue_only, unfulfilled_only=unfulfilled_only, not_restocked=not_restocked, not_stocked=not_stocked, all_issued=all_issued, converted_to_type=converted_to_type, base_url=cards_base_url),
             _doc_table(
                 docs,
                 sort=sort,
                 sort_dir=sort_dir,
-                base_params={"q": q, "type": doc_type, "status": status, "contact_id": contact_id, "view": view, "ids": ids, "page": str(page), "per_page": str(per_page)},
+                base_params={**state, "page": str(page)},
                 doc_type=doc_type,
                 lang=lang,
                 currency=currency,
                 is_drafts_view=is_drafts_view,
             ),
-            pagination(page, total_count, per_page, "/docs", f"q={q}&type={doc_type}&status={status}&view={view}&ids={ids}&sort={sort}&dir={sort_dir}".strip("&")),
+            pagination(page, total_count, per_page, "/docs", _state_query(state, without=("per_page",))),
             title=page_title(section_label_key),
             nav_active=_doc_nav_key(doc_type),
             lang=lang,
@@ -1294,30 +1378,27 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        q = request.query_params.get("q", "")
-        doc_type = request.query_params.get("type", "") or request.query_params.get("doc_type", "")
-        status = request.query_params.get("status", "")
+        state = _doc_list_state(request)
         page = int(request.query_params.get("page", 1))
-        sort = request.query_params.get("sort", "date")
-        sort_dir = request.query_params.get("dir", "desc")
         try:
-            params = {"limit": _PER_PAGE, "offset": (page - 1) * _PER_PAGE}
-            if q:
-                params["q"] = q
-            if doc_type:
-                params["doc_type"] = doc_type
-            if status:
-                params["status"] = status
+            company = await api.get_company(token)
+        except APIError:
+            company = {}
+        date_from, date_to, _preset = await _doc_list_dates(request, state, company)
+        try:
+            params = _doc_api_params(state, date_from, date_to, limit=_PER_PAGE, offset=(page - 1) * _PER_PAGE)
             docs = (await api.list_docs(token, params)).get("items", [])
         except APIError as e:
             docs = []
         return _doc_table(
             docs,
-            sort=sort,
-            sort_dir=sort_dir,
-            base_params={"q": q, "type": doc_type, "status": status, "page": str(page)},
-            doc_type=doc_type,
+            sort=state.get("sort", "date"),
+            sort_dir=state.get("dir", "desc"),
+            base_params={**state, "page": str(page)},
+            doc_type=state.get("type", ""),
             lang=get_lang(request),
+            currency=company.get("currency") or None,
+            is_drafts_view=state.get("view") == "drafts" or state.get("status") == "draft",
         )
 
     @app.get("/docs/export/csv")
@@ -3976,74 +4057,33 @@ celerpUpdateBulkAlloc();
         denied = await _check_permission(request, "view_documents", page_view=True)
         if denied:
             return denied
-        q = request.query_params.get("q", "")
-        list_type = request.query_params.get("type", "")
-        status = request.query_params.get("status", "")
-        view = request.query_params.get("view", "")
-        converted_to_type_list = request.query_params.get("converted_to_type", "")
-        all_issued_list = request.query_params.get("all_issued", "") in ("1", "true")
+        state = _list_page_state(request)
+        q = state.get("q", "")
+        list_type = state.get("type", "")
+        status = state.get("status", "")
+        converted_to_type_list = state.get("converted_to_type", "")
         page = int(request.query_params.get("page", 1))
-        is_drafts_view = view == "drafts" or status == "draft"
-        # "all" is the show-everything view (no status filter), NOT a literal status to match — the
-        # default (no status) instead hides drafts, which have their own tab.
-        if is_drafts_view:
-            effective_status = "draft"
-        elif status == "all":
-            effective_status = ""          # no status / exclude filter -> every list
-        elif not status:
-            effective_status = "exclude_draft"
-        else:
-            effective_status = status
-        # Date range: explicit selection wins, else company default. EXCEPTION: the drafts
-        # view is never date-windowed — a draft is open work-in-progress, and many list types
-        # (transfer/audit/blank) carry no issue date yet, so a default last_12m window would
-        # silently hide them and the page looks broken. Drafts always show in full.
-        _has_explicit_date = (request.query_params.get("preset")
-                              or request.query_params.get("from") or request.query_params.get("to"))
-        if is_drafts_view and not _has_explicit_date:
-            date_from, date_to, preset = "", "", "all"
-        elif _has_explicit_date:
-            date_from, date_to, preset = _parse_dates(request)
-        else:
-            try:
-                _default_preset = (await api.get_company(token)).get("docs_default_preset") or "last_12m"
-            except APIError:
-                _default_preset = "last_12m"
-            if _default_preset == "all":
-                date_from, date_to, preset = "", "", "all"
-            else:
-                date_from, date_to = _resolve_preset(_default_preset)
-                preset = _default_preset
         try:
-            params: dict = {"limit": _PER_PAGE, "offset": (page - 1) * _PER_PAGE}
-            if q:
-                params["q"] = q
-            if list_type:
-                params["list_type"] = list_type
-            if all_issued_list:
-                params["all_issued"] = "1"
-            elif effective_status == "exclude_draft":
-                params["exclude_status"] = "draft"
-            elif effective_status:
-                params["status"] = effective_status
-            if converted_to_type_list:
-                params["converted_to_type"] = converted_to_type_list
-            if date_from:
-                params["date_from"] = date_from
-            if date_to:
-                params["date_to"] = date_to
+            company = await api.get_company(token)
+        except APIError:
+            company = {}
+        date_from, date_to, preset = await _list_page_dates(request, state, company)
+        params = _list_api_params(state, date_from, date_to, limit=_PER_PAGE, offset=(page - 1) * _PER_PAGE)
+        all_issued_list = params.get("all_issued") == "1"
+        try:
             result = await api.list_lists(token, params)
             lists = result.get("items", [])
             filtered_total = result.get("total", len(lists))
-            summary = await api.get_list_summary(token)
+            summary = await api.get_list_summary(token, list_type=list_type, date_from=date_from, date_to=date_to)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             lists, summary, filtered_total = [], {}, 0
         lang = get_lang(request)
-        _lists_extra = f"q={quote_plus(q)}&type={quote_plus(list_type)}&status={quote_plus(status)}&view={quote_plus(view)}".strip("&")
+        _lists_extra = _state_query(state, without=_DATE_KEYS)
+        cards_base_url = "/lists?" + _state_query(state, without=_LIST_STATUS_KEYS)
         _role = _get_role(request)
-        _settings = (await api.get_company(token)).get("settings") or {}
+        _settings = company.get("settings") or {}
         # Audits are location-bound, not blank drafts: send the user through the location picker.
         if list_type == "audit":
             _new_btn = A(t("documents.new_audit"), href="/lists/new-audit", cls="btn btn--primary")
@@ -4058,7 +4098,7 @@ celerpUpdateBulkAlloc();
                 search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-table", url="/lists/search",
                            label=t("documents.search_lists")),
                 _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
-                A(t("btn.export_csv"), href="/lists/export/csv", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
+                A(t("btn.export_csv"), href="/lists/export/csv?" + _state_query(state), cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
                 A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
             ),
             _date_filter_bar("/lists", date_from, date_to, preset,
@@ -4066,10 +4106,9 @@ celerpUpdateBulkAlloc();
             _list_type_tabs(list_type),
             # Self-explanatory page: the shipping tab says what these are and what to do next.
             (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
-            _list_status_cards(summary, status, converted_to_type=converted_to_type_list),
+            _list_status_cards(summary, "all_issued" if all_issued_list else status, converted_to_type=converted_to_type_list, base_url=cards_base_url),
             _list_table(lists, lang=lang),
-            pagination(page, filtered_total, _PER_PAGE, "/lists",
-                       f"q={q}&type={list_type}&status={status}&view={view}".strip("&")),
+            pagination(page, filtered_total, _PER_PAGE, "/lists", _state_query(state)),
             title=page_title("page.lists"),
             nav_active="lists",
             request=request,
@@ -4097,17 +4136,15 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        q = request.query_params.get("q", "")
-        list_type = request.query_params.get("type", "")
-        status = request.query_params.get("status", "")
+        state = _list_page_state(request)
+        page = int(request.query_params.get("page", 1))
         try:
-            params: dict = {"limit": _PER_PAGE}
-            if q:
-                params["q"] = q
-            if list_type:
-                params["list_type"] = list_type
-            if status and status != "all":  # "all" = no status filter (show everything)
-                params["status"] = status
+            company = await api.get_company(token)
+        except APIError:
+            company = {}
+        date_from, date_to, _preset = await _list_page_dates(request, state, company)
+        try:
+            params = _list_api_params(state, date_from, date_to, limit=_PER_PAGE, offset=(page - 1) * _PER_PAGE)
             lists = (await api.list_lists(token, params)).get("items", [])
         except APIError as e:
             logger.warning("API error on lists_search: %s", e.detail)
@@ -9563,10 +9600,11 @@ def _doc_history_section(ledger: list[dict]) -> FT:
     )
 
 
-def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None = None, currency: str | None = None, doc_type: str = "", lang: str = "en", status_in: str = "", overdue_only: bool = False, unfulfilled_only: bool = False, not_restocked: bool = False, not_stocked: bool = False, all_issued: bool = False, converted_to_type: str = "") -> FT:
-    """Render status cards for the doc list page. Doc-type-aware."""
+def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None = None, currency: str | None = None, doc_type: str = "", lang: str = "en", status_in: str = "", overdue_only: bool = False, unfulfilled_only: bool = False, not_restocked: bool = False, not_stocked: bool = False, all_issued: bool = False, converted_to_type: str = "", base_url: str | None = None) -> FT:
+    """Render status cards for the doc list page. Doc-type-aware. base_url carries the
+    filters a card click keeps (search, dates, sort); it always holds a query string."""
     _sm = summary or {}
-    base_url = f"/docs?type={doc_type}" if doc_type else "/docs"
+    base_url = base_url or f"/docs?type={doc_type}"
     _cbs = _sm.get("count_by_status") or {}
 
     # Determine active card key
@@ -9644,8 +9682,6 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         converted_cnt  = _cbs.get("converted", 0)
         void_cnt       = _cbs.get("void", 0)
 
-        if all_issued or active_status == "" and not overdue_only:
-            _active_key = _active_key or ""
         if active_status == "draft":
             _active_key = "draft"
         elif all_issued:
@@ -9861,7 +9897,8 @@ def _list_table(lists: list[dict], lang: str = "en") -> FT:
     )
 
 
-def _list_status_cards(summary: dict, active_status: str = "", converted_to_type: str = "") -> FT:
+def _list_status_cards(summary: dict, active_status: str = "", converted_to_type: str = "", base_url: str = "/lists?") -> FT:
+    """base_url carries the filters a card click keeps (search, type, dates); it always holds a query string."""
     count_by_status = summary.get("count_by_status", {})
     draft_cnt          = count_by_status.get("draft", 0)
     all_issued_cnt     = summary.get("all_issued_count", 0)
@@ -9880,12 +9917,12 @@ def _list_status_cards(summary: dict, active_status: str = "", converted_to_type
 
     cards = [
         {"label": t("status.draft"),                "count": draft_cnt,      "total": None, "status": "draft",            "color": "gray"},
-        {"label": t("status.all_issued"),           "count": all_issued_cnt, "total": None, "status": "all_issued",       "color": "blue",  "_url": "/lists?all_issued=1",              "_active_key": "all_issued"},
-        {"label": t("status.converted_to_memo"),    "count": memo_cnt,       "total": None, "status": "converted_to_memo","color": "green", "_url": "/lists?converted_to_type=memo",    "_active_key": "converted_to_memo"},
-        {"label": t("status.converted_to_invoice"), "count": invoice_cnt,    "total": None, "status": "converted_to_invoice","color": "green","_url": "/lists?converted_to_type=invoice","_active_key": "converted_to_invoice"},
+        {"label": t("status.all_issued"),           "count": all_issued_cnt, "total": None, "status": "all_issued",       "color": "blue",  "_url": f"{base_url}&all_issued=1",              "_active_key": "all_issued"},
+        {"label": t("status.converted_to_memo"),    "count": memo_cnt,       "total": None, "status": "converted_to_memo","color": "green", "_url": f"{base_url}&converted_to_type=memo",    "_active_key": "converted_to_memo"},
+        {"label": t("status.converted_to_invoice"), "count": invoice_cnt,    "total": None, "status": "converted_to_invoice","color": "green","_url": f"{base_url}&converted_to_type=invoice","_active_key": "converted_to_invoice"},
         {"label": t("btn.void"),                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
     ]
-    return status_cards(cards, "/lists", _active_key or None, show_all_card=False)
+    return status_cards(cards, base_url, _active_key or None, show_all_card=False)
 
 
 def _list_type_tabs(active: str) -> FT:
