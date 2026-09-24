@@ -326,6 +326,7 @@ class WooCommerceConnector(ConnectorBase):
                     row.entity_id,
                     "woocommerce",
                     remote_deleted=True,
+                    expected_identity=identity,
                     source="connector",
                 )
                 changed += 1
@@ -497,12 +498,28 @@ class WooCommerceConnector(ConnectorBase):
                         "manage_stock": remote.get("manage_stock"),
                         "inventory_sync_paused": False,
                     },
+                    expected_identity=(
+                        str(link.get("product_id") or ""),
+                        str(link.get("variation_id"))
+                        if link.get("variation_id") not in (None, "")
+                        else None,
+                    ),
                     actor_id=actor_id, source="connector_ui",
                 )
             else:
                 await set_external_link(
                     session, ctx.company_id, anchor_id, "woocommerce", new_link,
                     expected_sku=sku,
+                    expected_identity=(
+                        (
+                            str(link.get("product_id") or ""),
+                            str(link.get("variation_id"))
+                            if link.get("variation_id") not in (None, "")
+                            else None,
+                        )
+                        if link else None
+                    ),
+                    require_unlinked=not bool(link),
                     actor_id=actor_id, source="connector_ui",
                 )
             await session.commit()

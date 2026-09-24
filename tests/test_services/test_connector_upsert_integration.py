@@ -455,7 +455,7 @@ async def test_run_sync_feeds_watermark_as_since(session, monkeypatch):
         yield session
     monkeypatch.setattr("celerp.db.get_session_ctx", _ctx)
 
-    co = "wm-since-1"
+    co = str(await _seed_company(session, "WatermarkSync"))
     watermark = datetime(2026, 5, 1, tzinfo=timezone.utc)
     session.add(SyncRun(company_id=co, connector="shopify", entity="products",
                         direction="inbound", started_at=watermark, finished_at=watermark, status="success"))
@@ -520,7 +520,8 @@ async def test_run_sync_dispatches_and_gates_outbound_entity(session, monkeypatc
             calls.append("products_out")
             return SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND, created=1)
 
-    ctx = ConnectorContext(company_id="co-out-1", access_token="t", store_handle="s")
+    co = str(await _seed_company(session, "OutboundSync"))
+    ctx = ConnectorContext(company_id=co, access_token="t", store_handle="s")
 
     # direction=both -> the outbound method IS dispatched.
     r1 = await sync_runner.run_sync(_Stub(), ctx, "products_out", direction=SyncDirection.BOTH)
@@ -1105,4 +1106,53 @@ async def test_external_link_rejects_stale_sku_selection(use_test_session):
                 "remote_deleted": False,
             },
             expected_sku="OLD-SKU",
+        )
+
+
+@pytest.mark.asyncio
+async def test_external_link_compare_and_set_rejects_stale_writers(use_test_session):
+    from celerp.events.engine import emit_event
+    from celerp_inventory.services import (
+        ExternalLinkConflictError,
+        set_external_link,
+    )
+
+    session = use_test_session
+    cid = await _seed_company(session, "LinkCas")
+    entity_id = "item:link-cas"
+    await emit_event(
+        session,
+        company_id=cid,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.created",
+        data={"sku": "CAS-1", "name": "CAS", "sell_by": "piece"},
+        actor_id=None,
+        location_id=None,
+        source="test",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    await set_external_link(
+        session, cid, entity_id, "woocommerce",
+        {"product_id": "1", "sync_enabled": True},
+    )
+    await set_external_link(
+        session, cid, entity_id, "woocommerce",
+        {"product_id": "2", "sync_enabled": True},
+    )
+
+    with pytest.raises(ExternalLinkConflictError):
+        await set_external_link(
+            session, cid, entity_id, "woocommerce",
+            {"product_id": "3", "sync_enabled": True},
+            expected_identity=("1", None),
+        )
+
+    with pytest.raises(ExternalLinkConflictError):
+        await set_external_link(
+            session, cid, entity_id, "woocommerce",
+            {"product_id": "3", "sync_enabled": True},
+            require_unlinked=True,
         )

@@ -684,7 +684,10 @@ async def set_external_link_state(
 
 async def set_external_link(
     session: AsyncSession, company_id, entity_id: str, platform: str, link: dict,
-    *, expected_sku: str | None = None, actor_id=None, source: str = "connector",
+    *, expected_sku: str | None = None,
+    expected_identity: tuple[str, str | None] | None = None,
+    require_unlinked: bool = False,
+    actor_id=None, source: str = "connector",
 ) -> dict:
     """Create or replace one channel link without touching any other channel."""
     cid = uuid.UUID(str(company_id))
@@ -699,6 +702,17 @@ async def set_external_link(
     if expected_sku is not None and normalize_sku(state.get("sku")) != normalize_sku(expected_sku):
         raise ExternalLinkConflictError(
             "Catalog SKU changed while the external product was being resolved"
+        )
+    current = external_link_for_state(state, platform)
+    if require_unlinked and current:
+        raise ExternalLinkConflictError(
+            "External product identity changed while the operation was running"
+        )
+    if expected_identity is not None and (
+        not current or external_identity_key(platform, current) != expected_identity
+    ):
+        raise ExternalLinkConflictError(
+            "External product identity changed while the operation was running"
         )
     links = dict(state.get("external_links") or {})
     normalized = dict(link)

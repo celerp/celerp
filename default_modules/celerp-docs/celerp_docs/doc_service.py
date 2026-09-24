@@ -238,6 +238,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     from celerp_inventory.projections import is_item_available
     from celerp_inventory.services import (
         catalog_family_rows,
+        external_identity_key,
         external_link_for_state,
         resolve_catalog_anchor_for_item,
         resolve_external_product,
@@ -446,6 +447,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                             "manage_stock": None,
                         },
                         expected_sku=source_sku,
+                        require_unlinked=True,
                         source="connector",
                     )
 
@@ -732,10 +734,16 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             for sold in sold_items:
                 try:
                     anchor = await resolve_catalog_anchor_for_item(session, cid, sold.entity_id)
-                    if external_link_for_state(anchor.state or {}, "woocommerce"):
+                    link = external_link_for_state(
+                        anchor.state or {}, "woocommerce"
+                    )
+                    if link:
                         await set_external_link_state(
                             session, cid, anchor.entity_id, "woocommerce",
                             link_updates={"inventory_sync_paused": True},
+                            expected_identity=external_identity_key(
+                                "woocommerce", link
+                            ),
                             source="connector",
                         )
                 except ValueError:
