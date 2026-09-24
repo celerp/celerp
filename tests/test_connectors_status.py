@@ -96,6 +96,7 @@ async def test_release_connector_ownership_clears_work_and_resets_cursor(_db_eng
 
     company_uuid = uuid.uuid4()
     cid = str(company_uuid)
+    connector = f"release-{uuid.uuid4().hex[:10]}"
     async with get_session_ctx() as session:
         session.add(Company(
             id=company_uuid,
@@ -105,30 +106,29 @@ async def test_release_connector_ownership_clears_work_and_resets_cursor(_db_eng
         ))
         await session.flush()
         await claim_connector_ownership(
-            session, cid, "woocommerce", default_sync_frequency="realtime"
+            session, cid, connector, default_sync_frequency="realtime"
         )
         session.add(OutboundQueue(
-            company_id=cid, connector="woocommerce", entity_type="inventory",
+            company_id=cid, connector=connector, entity_type="inventory",
             entity_id="10", status="pending", retry_count=0,
         ))
-        await session.commit()
+        await session.flush()
 
-    async with get_session_ctx() as session:
-        await release_connector_ownership(session, cid, "woocommerce")
-        await session.commit()
+        await release_connector_ownership(session, cid, connector)
+        await session.flush()
 
-    async with get_session_ctx() as session:
         assert await session.scalar(sa.select(sa.func.count()).select_from(OutboundQueue).where(
             OutboundQueue.company_id == cid,
-            OutboundQueue.connector == "woocommerce",
+            OutboundQueue.connector == connector,
         )) == 0
         assert await session.scalar(sa.select(sa.func.count()).select_from(SyncRun).where(
             SyncRun.company_id == cid,
-            SyncRun.connector == "woocommerce",
+            SyncRun.connector == connector,
             SyncRun.entity == "__connector_reset__",
         )) == 1
         with pytest.raises(ConnectorOwnershipError):
-            await lock_connector_operation(session, cid, "woocommerce")
+            await lock_connector_operation(session, cid, connector)
+        await session.rollback()
 
 
 def test_entitlement_cta_renders_trial_link():
@@ -221,6 +221,7 @@ async def test_connector_claim_rejects_different_company_owner(_db_engine):
     company_b_uuid = uuid.uuid4()
     company_a = str(company_a_uuid)
     company_b = str(company_b_uuid)
+    connector = f"owner-reject-{uuid.uuid4().hex[:10]}"
     async with get_session_ctx() as session:
         session.add_all([
             Company(
@@ -237,20 +238,18 @@ async def test_connector_claim_rejects_different_company_owner(_db_engine):
             ),
             ConnectorConfig(
                 company_id=company_a,
-                connector="woocommerce",
+                connector=connector,
                 direction="both",
             ),
         ])
-        await session.commit()
+        await session.flush()
 
-    async with get_session_ctx() as session:
         with pytest.raises(ConnectorOwnershipError):
-            await claim_connector_ownership(session, company_b, "woocommerce")
-
-    async with get_session_ctx() as session:
+            await claim_connector_ownership(session, company_b, connector)
         assert await claim_connector_ownership(
-            session, company_a, "woocommerce"
+            session, company_a, connector
         ) is not None
+        await session.rollback()
 
 
 @pytest.mark.asyncio
@@ -287,15 +286,13 @@ async def test_connector_ownership_merges_legacy_operational_state(_db_engine):
                 direction="both",
             ),
         ])
-        await session.commit()
+        await session.flush()
 
-    with patch("celerp.connectors.ownership.ensure_instance_id", return_value=legacy_id):
-        async with get_session_ctx() as session:
+        with patch("celerp.connectors.ownership.ensure_instance_id", return_value=legacy_id):
             row = await claim_connector_ownership(session, company_id, connector)
-            await session.commit()
+            await session.flush()
             assert row is not None
 
-    async with get_session_ctx() as session:
         rows = (await session.execute(sa.select(ConnectorConfig).where(
             ConnectorConfig.connector == connector,
             ConnectorConfig.company_id.in_([company_id, legacy_id]),
@@ -304,6 +301,7 @@ async def test_connector_ownership_merges_legacy_operational_state(_db_engine):
         assert rows[0].company_id == company_id
         assert set(rows[0].webhook_ids) == {"11", "12"}
         assert rows[0].webhook_secret == "legacy-secret"
+        await session.rollback()
 
 
 def test_pending_oauth_connector_exposes_disconnect():
