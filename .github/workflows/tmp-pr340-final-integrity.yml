@@ -18,6 +18,8 @@ jobs:
       - name: Inspect exact merge conflicts
         run: |
           set +e
+          git config user.name "Noah Severs"
+          git config user.email "118095044+ngsevers@users.noreply.github.com"
           git reset --hard 4704670a7c63847023f9c1937e7c93ce1aa7ba48
           git merge --no-commit --no-ff 370bd9725a62fea94a05d628fe9e90379dcb2342
           rc=$?
