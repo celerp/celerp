@@ -21,9 +21,9 @@ The walker recognises these DDL signatures:
   - add_column: column exists in the table
   - create_index: index exists on the table
   - create_unique_constraint: looks at indexes (unique impls differ)
-  - alter_column / drop_column / data backfills: cannot introspect
-    safely — we trust the stamp for these (caller skips the stamp repair
-    and lets alembic run normally).
+  - drop operations are verified by absence and suppress the matching older
+    create/add signature;
+  - alter_column / data backfills cannot be introspected safely.
 
 The walker never invents a stamp higher than what's in the DB. If a
 revision's DDL is partially present (e.g. column added but not its index),
@@ -186,6 +186,23 @@ def downgrade():
         assert ("add_column", "users", "email", None) in kinds
         assert ("create_index", "users", None, "ix_users_email") in kinds
 
+    def test_extracts_drop_signatures(self, tmp_path):
+        mig_dir = tmp_path / "migrations" / "versions"
+        mig_dir.mkdir(parents=True)
+        mig = mig_dir / "drop001_remove_email.py"
+        mig.write_text('''
+revision = "drop001"
+down_revision = "base"
+
+def upgrade():
+    op.drop_index("ix_users_email", table_name="users")
+    op.drop_column("users", "email")
+''')
+        sigs = extract_signatures(mig)
+        kinds = {(s.kind, s.table, s.column, s.extra) for s in sigs}
+        assert ("drop_index", "users", None, "ix_users_email") in kinds
+        assert ("drop_column", "users", "email", None) in kinds
+
     def test_no_signatures_for_data_backfill(self, tmp_path):
         """A pure-data migration (only op.execute) yields no signatures.
 
@@ -242,7 +259,8 @@ def downgrade():
                 assert s.rev != ""
                 assert s.kind in ("add_column", "create_table",
                                   "create_index", "create_unique_constraint",
-                                  "alter_column")
+                                  "drop_table", "drop_column", "drop_index",
+                                  "drop_constraint", "alter_column")
 
 
 # ── find_safe_stamp ───────────────────────────────────────────────────────────
@@ -373,6 +391,40 @@ class TestFindSafeStamp:
         result = find_safe_stamp(revs, sigs_by_rev, inspector)
         # All fully applied → safe stamp is the newest
         assert result == "rev3"
+
+    def test_newer_ddl_does_not_mask_missing_older_active_ddl(self):
+        """A matching unrelated schema revision at head must not hide a
+        missing still-active column below it."""
+        from unittest.mock import MagicMock
+        inspector = self._make_inspector(
+            ("users", ["id"]),
+            ("orders", ["id"]),
+        )
+        revs = [MagicMock(revision=f"rev{i}") for i in (3, 2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table",
+                                        table="users")],
+            "rev2": [RevisionSignature(rev="rev2", kind="add_column",
+                                        table="users", column="email")],
+            "rev3": [RevisionSignature(rev="rev3", kind="create_table",
+                                        table="orders")],
+        }
+        assert find_safe_stamp(revs, sigs_by_rev, inspector) == "rev1"
+
+    def test_confirmed_drop_suppresses_older_add_signature(self):
+        """Historical DDL intentionally removed later is not treated as a gap."""
+        from unittest.mock import MagicMock
+        inspector = self._make_inspector(("users", ["id"]))
+        revs = [MagicMock(revision=f"rev{i}") for i in (3, 2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table",
+                                        table="users")],
+            "rev2": [RevisionSignature(rev="rev2", kind="add_column",
+                                        table="users", column="email")],
+            "rev3": [RevisionSignature(rev="rev3", kind="drop_column",
+                                        table="users", column="email")],
+        }
+        assert find_safe_stamp(revs, sigs_by_rev, inspector) == "rev3"
 
     def test_backfill_at_head_does_not_mask_missing_ddl_below(self):
         """Regression: a signature-less backfill at head must not be trusted
