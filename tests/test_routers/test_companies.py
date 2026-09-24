@@ -235,6 +235,19 @@ async def test_demo_reseed_full_wizard_flow(client):
 
 
 @pytest.mark.asyncio
+async def test_patch_user_cannot_deactivate_last_owner(client):
+    headers = await _headers(client)
+    users = (await client.get("/companies/me/users", headers=headers)).json()["items"]
+    owner_id = next(u["id"] for u in users if u["role"] == "owner")
+    r = await client.patch(
+        f"/companies/me/users/{owner_id}",
+        json={"is_active": False},
+        headers=headers,
+    )
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_create_company_seeds_self_contact(client):
     """POST /companies seeds ONE self-contact typed `both` (the company is its own customer AND vendor),
     and that single record shows up in both the customer and vendor lists."""
@@ -482,3 +495,17 @@ async def test_rename_category_updates_display_name(client):
     dn = (await client.get("/companies/me/category-display-names", headers=headers)).json()
     assert dn.get("after_rename") == "After Rename"
     assert "before_rename" not in dn
+
+@pytest.mark.asyncio
+async def test_company_settings_reject_invalid_timezone(client):
+    headers = await _headers(client)
+    r = await client.patch(
+        "/companies/me",
+        json={"settings": {"timezone": "Synthetic/Invalid"}},
+        headers=headers,
+    )
+    assert r.status_code == 422, r.text
+    me = await client.get("/companies/me", headers=headers)
+    assert me.status_code == 200
+    assert (me.json().get("settings") or {}).get("timezone") != "Synthetic/Invalid"
+

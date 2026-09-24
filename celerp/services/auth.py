@@ -290,6 +290,31 @@ async def get_current_user(ctx: AuthContext = Depends(get_auth_context)) -> User
     return ctx.user
 
 
+async def installation_root_user_id(session: AsyncSession) -> uuid.UUID | None:
+    """Return the durable installation-owner identity."""
+    return await session.scalar(
+        select(User.id).where(User.is_install_owner.is_(True)).limit(1)
+    )
+
+
+async def is_install_owner(session: AsyncSession, user_id) -> bool:
+    root_id = await installation_root_user_id(session)
+    return root_id is not None and root_id == user_id
+
+
+async def require_install_owner(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> User:
+    """Require authority for installation-wide operations."""
+    if not await is_install_owner(session, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Installation owner access required",
+        )
+    return user
+
+
 async def get_current_company_id(ctx: AuthContext = Depends(get_auth_context)) -> uuid.UUID:
     return ctx.company_id
 

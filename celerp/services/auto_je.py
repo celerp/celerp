@@ -883,6 +883,59 @@ async def create_for_doc_cogs_adjustment(session, *, company_id, user_id, doc_id
     )
 
 
+async def void_for_doc_cogs_adjustments(
+    session, *, company_id, user_id, doc_id: str, line_indices: set[int] | None
+) -> None:
+    """Void live fulfillment true-ups for the reversed document lines."""
+    prefix = f"je:auto:{doc_id}:cogs-adj:"
+    rows = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+        Projection.entity_id.like(f"{prefix}%"),
+    ))).scalars().all()
+    live = [r for r in rows if (r.state or {}).get("status") == "posted"]
+    if not live:
+        return
+    if line_indices is None:
+        raise ValueError("cannot safely identify the fulfillment adjustment for this legacy allocation")
+
+    targets: list[Projection] = []
+    for row in live:
+        suffix = row.entity_id[len(prefix):].split(":unvoid:", 1)[0]
+        if ":l" not in suffix:
+            raise ValueError("cannot safely identify a legacy fulfillment adjustment")
+        line_part = suffix.rsplit(":l", 1)[1]
+        try:
+            batch_lines = {int(x) for x in line_part.split("-") if x != ""}
+        except ValueError as exc:
+            raise ValueError("cannot safely identify a legacy fulfillment adjustment") from exc
+        if not (batch_lines & line_indices):
+            continue
+        if not batch_lines.issubset(line_indices):
+            raise ValueError(
+                "cannot safely reverse only part of a legacy multi-line COGS adjustment; "
+                "reverse the affected lines together"
+            )
+        targets.append(row)
+
+    for row in targets:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=row.entity_id,
+            entity_type="journal_entry",
+            event_type="acc.journal_entry.voided",
+            data=je_void_data(f"Reversed: {doc_id} fulfillment reversed", row.state or {}),
+            actor_id=user_id,
+            location_id=None,
+            source="auto_je",
+            idempotency_key=je_idempotency_key(
+                doc_id, f"fulfillment_reversed:{row.entity_id[len(prefix):]}", "void"
+            ),
+            metadata_={"trigger": "doc.fulfillment_reversed", "doc_id": doc_id},
+        )
+
+
 async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) -> None:
     """Restore exactly what the immediately preceding void removed.
 

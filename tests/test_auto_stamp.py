@@ -48,6 +48,7 @@ from celerp.migrations._auto_stamp import (
     RevisionSignature,
     extract_signatures,
     find_safe_stamp,
+    load_kernel_metadata,
 )
 
 
@@ -61,8 +62,7 @@ def _pg_inspector_for_models():
 
     from sqlalchemy import create_engine, inspect, text
 
-    from celerp.models.base import Base
-    import celerp.models  # noqa: F401 — register all models on Base.metadata
+    metadata = load_kernel_metadata()
 
     base_url = os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
     schema = f"stamptest_{uuid.uuid4().hex[:8]}"
@@ -74,7 +74,7 @@ def _pg_inspector_for_models():
 
     engine = create_engine(base_url, connect_args={"options": f"-csearch_path={schema}"})
     try:
-        Base.metadata.create_all(engine)
+        metadata.create_all(engine)
         yield inspect(engine)
     finally:
         engine.dispose()
@@ -160,9 +160,10 @@ def downgrade():
     op.drop_index("ix_users_email", table_name="users")
 ''')
         sigs = extract_signatures(mig)
-        assert RevisionSignature(rev="ghi789", kind="create_index",
-                                 table="users", column=None,
-                                 extra="ix_users_email") in sigs
+        assert RevisionSignature(
+            rev="ghi789", kind="create_index", table="users", column=None,
+            extra="ix_users_email", columns=("email",),
+        ) in sigs
 
     def test_extracts_multiple_signatures(self, tmp_path):
         """A migration that adds a column AND an index on it yields both."""
@@ -374,6 +375,48 @@ class TestFindSafeStamp:
         # All fully applied → safe stamp is the newest
         assert result == "rev3"
 
+    def test_current_kernel_filter_ignores_obsolete_historical_index(self):
+        """A historical index absent from the current model is not a gap."""
+        from unittest.mock import MagicMock
+        import sqlalchemy as sa
+
+        metadata = sa.MetaData()
+        sa.Table("users", metadata, sa.Column("id", sa.Integer),
+                 sa.Column("email", sa.String))
+        inspector = self._make_inspector(("users", ["id", "email"]))
+        revs = [MagicMock(revision=f"rev{i}") for i in (3, 2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="users")],
+            "rev2": [RevisionSignature(rev="rev2", kind="add_column",
+                                        table="users", column="email")],
+            "rev3": [RevisionSignature(rev="rev3", kind="create_index",
+                                        table="users", extra="obsolete_idx",
+                                        columns=("id",))],
+        }
+        assert find_safe_stamp(
+            revs, sigs_by_rev, inspector, expected_metadata=metadata) == "rev3"
+
+    def test_current_kernel_filter_still_finds_older_missing_current_column(self):
+        """A newer obsolete object cannot mask a missing current column below it."""
+        from unittest.mock import MagicMock
+        import sqlalchemy as sa
+
+        metadata = sa.MetaData()
+        sa.Table("users", metadata, sa.Column("id", sa.Integer),
+                 sa.Column("email", sa.String))
+        inspector = self._make_inspector(("users", ["id"]))
+        revs = [MagicMock(revision=f"rev{i}") for i in (3, 2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="users")],
+            "rev2": [RevisionSignature(rev="rev2", kind="add_column",
+                                        table="users", column="email")],
+            "rev3": [RevisionSignature(rev="rev3", kind="create_index",
+                                        table="users", extra="obsolete_idx",
+                                        columns=("id",))],
+        }
+        assert find_safe_stamp(
+            revs, sigs_by_rev, inspector, expected_metadata=metadata) == "rev1"
+
     def test_backfill_at_head_does_not_mask_missing_ddl_below(self):
         """Regression: a signature-less backfill at head must not be trusted
         while a DDL revision below it is unapplied. (The old walker
@@ -423,7 +466,8 @@ class TestRealMigrationsVsSchema:
                 sigs_by_rev[sigs[0].rev] = sigs
 
         with _pg_inspector_for_models() as inspector:
-            result = find_safe_stamp(revs, sigs_by_rev, inspector)
+            result = find_safe_stamp(
+                revs, sigs_by_rev, inspector, expected_metadata=load_kernel_metadata())
 
         # Result should be the latest revision (i.e. head) or close to it.
         # We don't assert exact equality because model vs migration drift
@@ -470,7 +514,8 @@ class TestCliStampsBehindOnDevSchema:
                 sigs_by_rev[sigs[0].rev] = sigs
 
         with _pg_inspector_for_models() as ins:
-            result = find_safe_stamp(revs, sigs_by_rev, ins)
+            result = find_safe_stamp(
+                revs, sigs_by_rev, ins, expected_metadata=load_kernel_metadata())
 
         head = script.get_current_head()
         # Result should be head, OR a recent revision if some columns
@@ -503,8 +548,7 @@ def _inspector_missing_wc_default_columns():
 
     from sqlalchemy import create_engine, inspect, text
 
-    from celerp.models.base import Base
-    import celerp.models  # noqa: F401  register all models on Base.metadata
+    metadata = load_kernel_metadata()
 
     base_url = os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
     schema = f"stampmiss_{uuid.uuid4().hex[:8]}"
@@ -516,7 +560,7 @@ def _inspector_missing_wc_default_columns():
 
     engine = create_engine(base_url, connect_args={"options": f"-csearch_path={schema}"})
     try:
-        Base.metadata.create_all(engine)
+        metadata.create_all(engine)
         with engine.begin() as conn:
             conn.execute(text("DROP INDEX IF EXISTS uq_work_center_one_default"))
             conn.execute(text("ALTER TABLE work_centers DROP COLUMN IF EXISTS is_default"))
@@ -577,7 +621,8 @@ def test_stamped_but_columns_absent_stamped_behind():
     sigs_by_rev = _real_sigs_by_rev()
 
     with _inspector_missing_wc_default_columns() as inspector:
-        stamp = find_safe_stamp(revs, sigs_by_rev, inspector)
+        stamp = find_safe_stamp(
+            revs, sigs_by_rev, inspector, expected_metadata=load_kernel_metadata())
 
     assert stamp != script.get_current_head()
     e7c9 = script.get_revision("e7c9a1b3d5f2")

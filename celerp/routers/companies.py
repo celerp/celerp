@@ -25,6 +25,7 @@ from celerp.services.auth import (
     get_current_role,
     hash_password,
     issue_token_pair,
+    require_install_owner,
     MIN_PASSWORD_LENGTH,
     normalize_role,
     ROLE_LEVELS,
@@ -40,6 +41,7 @@ from celerp.services.permissions import (
 )
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 from celerp.services.terms import terms_templates
+from celerp.services.business_time import business_timezone
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -347,6 +349,11 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
                 detail="Role permissions are set through the permissions matrix, not company settings",
             )
         merged = {**(company.settings or {}), **payload.settings}
+        if "timezone" in payload.settings:
+            try:
+                business_timezone(payload.settings.get("timezone"))
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         # Price config must pass the same gate as the dedicated endpoints: the read
         # path trusts stored config, so no door may store what the validator rejects.
         if "price_lists" in payload.settings or "base_price_list" in payload.settings:
@@ -642,6 +649,42 @@ async def list_users(company_id=Depends(get_current_company_id), session: AsyncS
     return {"items": items, "total": len(items)}
 
 
+@router.post("/me/users/{user_id}/installation-owner")
+async def transfer_install_owner(
+    user_id: uuid.UUID,
+    company_id=Depends(get_current_company_id),
+    owner: User = Depends(require_install_owner),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Transfer installation-wide authority to an active user in this company."""
+    current = (await session.execute(
+        select(User).where(User.is_install_owner.is_(True)).with_for_update()
+    )).scalar_one_or_none()
+    if current is None or current.id != owner.id:
+        raise HTTPException(status_code=403, detail="Installation owner access required")
+    if current.id == user_id:
+        return {"ok": True}
+
+    target = (await session.execute(
+        select(User).where(User.id == user_id).with_for_update()
+    )).scalar_one_or_none()
+    membership = (await session.execute(
+        select(UserCompany).where(
+            UserCompany.user_id == user_id,
+            UserCompany.company_id == company_id,
+            UserCompany.is_active.is_(True),
+        ).with_for_update()
+    )).scalar_one_or_none()
+    if target is None or not target.is_active or membership is None:
+        raise HTTPException(status_code=400, detail="Installation owner must be an active user")
+
+    current.is_install_owner = False
+    await session.flush()
+    target.is_install_owner = True
+    await session.commit()
+    return {"ok": True}
+
+
 def _assert_role_assignable(caller_role: str, target_role: str) -> None:
     """A holder of manage_users may not assign a role above their own. The matrix can
     grant manage_users down to any role, so this ceiling is what stops that from
@@ -725,9 +768,14 @@ async def patch_user(
     from celerp.models.accounting import UserCompany
     from sqlalchemy import func as _func
 
-    user = await session.get(User, user_id)
+    user = (await session.execute(
+        select(User).where(User.id == user_id).with_for_update()
+    )).scalar_one_or_none()
     link = (await session.execute(
-        select(UserCompany).where(UserCompany.user_id == user_id, UserCompany.company_id == company_id)
+        select(UserCompany).where(
+            UserCompany.user_id == user_id,
+            UserCompany.company_id == company_id,
+        ).with_for_update()
     )).scalar_one_or_none()
     if not user or not link:
         raise HTTPException(status_code=404, detail="User not found")
@@ -766,6 +814,38 @@ async def patch_user(
             security_change = True
         link.role = payload.role
     if payload.is_active is not None:
+        if payload.is_active is False and link.is_active:
+            if normalize_role(link.role) == "owner":
+                owner_count = (
+                    await session.execute(
+                        select(_func.count()).where(
+                            UserCompany.company_id == company_id,
+                            UserCompany.role == "owner",
+                            UserCompany.is_active.is_(True),
+                        )
+                    )
+                ).scalar()
+                if owner_count <= 1:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot deactivate the last owner. Assign another owner first.",
+                    )
+
+            if user.is_install_owner:
+                active_memberships = (
+                    await session.execute(
+                        select(_func.count()).where(
+                            UserCompany.user_id == user_id,
+                            UserCompany.is_active.is_(True),
+                        )
+                    )
+                ).scalar()
+                if active_memberships <= 1:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Cannot deactivate the installation owner's last active membership.",
+                    )
+
         if payload.is_active != link.is_active:
             security_change = True
         link.is_active = payload.is_active

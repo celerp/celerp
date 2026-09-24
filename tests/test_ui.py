@@ -17843,21 +17843,17 @@ class TestCelerpAccountSurface:
         assert b"Signed in as" in r.content
 
     @pytest.mark.asyncio
-    async def test_poll_does_not_reapply_activation_credential(self, ui_client):
-        """Activation owns credential persistence. The UI consumes only the
-        normalized connected result and must never apply a second token itself."""
+    async def test_poll_consumes_normalized_activation_result(self, ui_client):
+        """Activation owns credential persistence; the UI consumes its result."""
         status = {"email": "o@shop.example", "email_verified": True, "tier": "free",
                   "pending_selection": False, "linked_elsewhere": False}
-        apply_tok = AsyncMock()
         with (
             patch("ui.api_client.account_status", new=AsyncMock(return_value=status)),
             patch("ui.api_client.activate_relay",
                   new=AsyncMock(return_value={"connected": True, "relay_status": "active",
                                               "instance_id": "i-1"})),
-            patch("ui.api_client.apply_relay_token", new=apply_tok),
         ):
             r = await ui_client.get("/account/poll?n=3&mode=google", cookies=_authed())
-        assert apply_tok.await_count == 0
         assert b"Signed in as" in r.content
         assert b"could not be connected" not in r.content
 
