@@ -63,16 +63,22 @@ async def run_connector_sync(
     *,
     full_entities: set[str] | None = None,
 ) -> list[SyncResult]:
-    """Execute one connector generation through the audited per-entity runner."""
+    """Execute one stable connector generation through the audited per-entity runner."""
     from celerp.connectors.ownership import lock_connector_operation
     from celerp.db import get_session_ctx
 
     full_entities = full_entities or set()
+    resolved_direction = (
+        direction if isinstance(direction, SyncDirection) else SyncDirection(direction)
+    )
     async with get_session_ctx() as guard_session:
         config = await lock_connector_operation(
             guard_session, ctx.company_id, connector.name
         )
+        if config is not None:
+            resolved_direction = SyncDirection(config.direction)
         expected_config_id = config.id if config is not None else None
+        expected_direction = resolved_direction if config is not None else None
         await guard_session.commit()
 
     return [
@@ -80,11 +86,13 @@ async def run_connector_sync(
             connector,
             ctx,
             entity,
-            direction=direction,
+            direction=resolved_direction,
             use_watermark=entity not in full_entities,
             expected_config_id=expected_config_id,
+            expected_direction=expected_direction,
+            expected_store_handle=ctx.store_handle,
         )
-        for entity in sync_plan(connector, direction)
+        for entity in sync_plan(connector, resolved_direction)
     ]
 
 
@@ -218,6 +226,8 @@ async def run_sync(
     direction: SyncDirection | None = None,
     use_watermark: bool = True,
     expected_config_id=None,
+    expected_direction: SyncDirection | None = None,
+    expected_store_handle: str | None = None,
 ) -> SyncResult:
     """Execute one connector entity sync behind the current ownership/config fence."""
     method_name = _SYNC_METHODS.get(entity)
@@ -235,19 +245,6 @@ async def run_sync(
         if direction is not None
         else connector.direction
     )
-    if direction is not None and not entity_allowed(entity, effective_direction):
-        try:
-            entity_enum = SyncEntity(entity)
-        except ValueError:
-            entity_enum = entity
-        return SyncResult(
-            entity=entity_enum,
-            direction=effective_direction,
-            errors=[
-                f"{entity} sync blocked by direction={effective_direction.value}"
-            ],
-        )
-
     started_at = datetime.now(timezone.utc)
     run_id = await _begin_run(
         ctx.company_id,
@@ -276,10 +273,13 @@ async def run_sync(
                 effective_direction = SyncDirection(config.direction)
 
             connection_changed = (
-                expected_config_id is not None
-                and (
-                    config is None
-                    or config.id != expected_config_id
+                (
+                    expected_config_id is not None
+                    and (config is None or config.id != expected_config_id)
+                )
+                or (
+                    expected_direction is not None
+                    and effective_direction != expected_direction
                 )
             )
             if connection_changed:
@@ -322,7 +322,16 @@ async def run_sync(
                             "connector credentials are temporarily unavailable"
                         )
 
-                if entity in _OUTBOUND_ENTITIES:
+                if (
+                    expected_store_handle is not None
+                    and current_ctx.store_handle != expected_store_handle
+                ):
+                    result = SyncResult(
+                        entity=entity,
+                        direction=effective_direction,
+                        errors=["connector connection changed while sync plan was running"],
+                    )
+                elif entity in _OUTBOUND_ENTITIES:
                     result = await sync_method(current_ctx)
                 else:
                     result = await sync_method(current_ctx, since=since)

@@ -623,6 +623,25 @@ async def test_run_sync_uses_current_connector_context_and_direction(
     assert blocked.errors and "blocked by direction=inbound" in blocked.errors[0]
     assert seen == ["new-token"]
 
+    config.direction = "outbound"
+    await session.commit()
+
+    allowed = await sync_runner.run_sync(
+        _Stub(), stale, "products_out", direction=SyncDirection.INBOUND
+    )
+    assert allowed.created == 1
+    assert seen == ["new-token", "outbound"]
+
+    replaced = await sync_runner.run_sync(
+        _Stub(),
+        stale,
+        "products_out",
+        direction=SyncDirection.BOTH,
+        expected_store_handle="old-store",
+    )
+    assert replaced.errors and "connection changed" in replaced.errors[0]
+    assert seen == ["new-token", "outbound"]
+
 
 @pytest.mark.asyncio
 async def test_woocommerce_processing_order_reserves_across_lots(use_test_session):

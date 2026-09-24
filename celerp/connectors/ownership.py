@@ -50,7 +50,7 @@ def _resolve_connector_owner(
     return None
 
 
-async def _lock_connector_key(session: AsyncSession, connector: str) -> None:
+async def lock_connector_key(session: AsyncSession, connector: str) -> None:
     await session.execute(
         sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
         {"k": f"connector-owner:{connector}"},
@@ -69,7 +69,7 @@ async def lock_connector_operation(
     from celerp.models.sync_run import SyncRun
 
     company_id = str(company_id)
-    await _lock_connector_key(session, connector)
+    await lock_connector_key(session, connector)
     rows = (await session.execute(
         sa.select(ConnectorConfig)
         .where(ConnectorConfig.connector == connector)
@@ -108,7 +108,7 @@ async def claim_connector_ownership(
     """Atomically claim one installation/platform credential for one ERP company."""
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
-    await _lock_connector_key(session, connector)
+    await lock_connector_key(session, connector)
     rows = (await session.execute(
         sa.select(ConnectorConfig)
         .where(ConnectorConfig.connector == connector)
@@ -193,7 +193,7 @@ async def release_connector_ownership(
     from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
 
     company_id = str(company_id)
-    await _lock_connector_key(session, connector)
+    await lock_connector_key(session, connector)
     rows = (await session.execute(
         sa.select(ConnectorConfig)
         .where(ConnectorConfig.connector == connector)

@@ -10,6 +10,7 @@ column by the engine) while preserving the rest of the item state.
 from __future__ import annotations
 
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -68,6 +69,30 @@ async def test_shop_sync_disabled_clears_flag(session):
 
     proj = (await session.execute(select(Projection).where(Projection.entity_id == eid))).scalar_one()
     assert proj.is_sync_to_shopify is False
+
+
+@pytest.mark.asyncio
+async def test_shop_sync_event_acquires_connector_fence(session, monkeypatch):
+    cid = uuid.uuid4()
+    session.add(Company(id=cid, name="FenceCo", slug=f"fenceco-{cid.hex[:8]}"))
+    await session.flush()
+    eid = "item:fence-1"
+    await _emit(
+        session,
+        cid,
+        eid,
+        "item.created",
+        {"sku": "F", "name": "Fence", "quantity": 1},
+    )
+
+    lock = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "celerp.connectors.ownership.lock_connector_key",
+        lock,
+    )
+    await _emit(session, cid, eid, "shop.sync.disabled", {})
+
+    lock.assert_awaited_once_with(session, "shopify")
 
 
 @pytest.mark.asyncio

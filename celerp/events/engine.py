@@ -190,6 +190,11 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
                 session, kwargs.get("company_id"), doc_type, line_set
             )
 
+    if kwargs.get("event_type") in {"shop.sync.enabled", "shop.sync.disabled"}:
+        from celerp.connectors.ownership import lock_connector_key
+
+        await lock_connector_key(session, "shopify")
+
     entry = LedgerEntry(**kwargs)
 
     try:
