@@ -60,8 +60,6 @@ async def test_woocommerce_webhook_revalidates_current_secret_under_fence():
     current_rows = MagicMock()
     current_rows.all.return_value = [("company-test", "new-secret", "both")]
     guard_session.execute = AsyncMock(return_value=current_rows)
-    guard_session.commit = AsyncMock()
-    guard_session.rollback = AsyncMock()
 
     @asynccontextmanager
     async def snapshot_cm():
@@ -99,4 +97,3 @@ async def test_woocommerce_webhook_revalidates_current_secret_under_fence():
     assert handled is False
     lock.assert_awaited_once_with(guard_session, "woocommerce")
     fetch.assert_not_awaited()
-    guard_session.rollback.assert_awaited_once()

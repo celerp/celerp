@@ -191,23 +191,19 @@ async def dispatch_woocommerce_webhook(
                 None,
             )
             if current is None:
-                await guard_session.rollback()
                 continue
             secret = current[1]
             if (
                 not secret
                 or not connector.validate_webhook(raw_body, signature, secret)
             ):
-                await guard_session.rollback()
                 continue
 
             ctx = await fetch_context(company_id, "woocommerce")
             if ctx is None:
-                await guard_session.rollback()
                 continue
             direction = SyncDirection(current[2] or "both")
             expected_store_handle = ctx.store_handle
-            await guard_session.commit()
 
         try:
             data = json.loads(raw_body or b"{}")
