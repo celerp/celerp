@@ -667,7 +667,7 @@ async def transfer_install_owner(
             UserCompany.user_id == user_id,
             UserCompany.company_id == company_id,
             UserCompany.is_active.is_(True),
-        )
+        ).with_for_update()
     )).scalar_one_or_none()
     if target is None or not target.is_active or membership is None:
         raise HTTPException(status_code=400, detail="Installation owner must be an active user")
@@ -762,9 +762,14 @@ async def patch_user(
     from celerp.models.accounting import UserCompany
     from sqlalchemy import func as _func
 
-    user = await session.get(User, user_id)
+    user = (await session.execute(
+        select(User).where(User.id == user_id).with_for_update()
+    )).scalar_one_or_none()
     link = (await session.execute(
-        select(UserCompany).where(UserCompany.user_id == user_id, UserCompany.company_id == company_id)
+        select(UserCompany).where(
+            UserCompany.user_id == user_id,
+            UserCompany.company_id == company_id,
+        ).with_for_update()
     )).scalar_one_or_none()
     if not user or not link:
         raise HTTPException(status_code=404, detail="User not found")
