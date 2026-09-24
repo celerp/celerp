@@ -268,3 +268,27 @@ async def test_connector_ownership_merges_legacy_operational_state(_db_engine):
         assert rows[0].company_id == company_id
         assert set(rows[0].webhook_ids) == {"11", "12"}
         assert rows[0].webhook_secret == "legacy-secret"
+
+
+def test_pending_oauth_connector_exposes_disconnect():
+    from types import SimpleNamespace
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import _connector_card
+
+    card = _connector_card(
+        {
+            "id": "quickbooks",
+            "name": "QuickBooks",
+            "category": "accounting",
+            "auth_type": "oauth",
+            "connected": False,
+            "entities": [],
+        },
+        None,
+        "https://relay.example",
+        "company-1",
+        config=SimpleNamespace(direction="both", sync_frequency="manual"),
+    )
+    html = to_xml(card)
+    assert '/settings/connectors/quickbooks/oauth-redirect' in html
+    assert 'hx-delete="/settings/connectors/quickbooks/disconnect"' in html

@@ -92,7 +92,10 @@ async def check_and_run_daily_syncs(
         direction = SyncDirection(config.direction)
         try:
             entity_results = await run_connector_sync(
-                connector, ctx, direction=direction
+                connector,
+                ctx,
+                direction=direction,
+                full_entities={"products"} if config.connector == "woocommerce" else None,
             )
         except Exception as exc:
             log.error("daily_scheduler: sync error %s: %s", config.connector, exc)

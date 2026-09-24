@@ -914,7 +914,7 @@ async def test_connector_authorize_url_success(client):
             "https://accounts.intuit.com/oauth2/v1/authorize?state=xyz"
     }
 
-    claim = AsyncMock(return_value=object())
+    claim = AsyncMock(return_value=(object(), True))
     lock = AsyncMock(return_value=object())
     with patch("celerp.config.settings") as mock_settings, \
          patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
@@ -941,7 +941,8 @@ async def test_connector_authorize_url_success(client):
     assert claim.await_count == 1
     assert claim.await_args.args[2] == "quickbooks"
     assert claim.await_args.kwargs["default_sync_frequency"] == "manual"
-    assert lock.await_count == 1
+    assert claim.await_args.kwargs["report_created"] is True
+    lock.assert_awaited_once()
     assert lock.await_args.kwargs["require_owner"] is True
 
 
@@ -1370,3 +1371,72 @@ async def test_account_signup_config_wait_runs_off_event_loop(client):
     assert ticked.is_set()
     assert worker_threads
     assert all(tid != main_thread for tid in worker_threads)
+
+
+@pytest.mark.asyncio
+async def test_connector_authorize_failure_cleans_new_claim(client):
+    token = await _register(client, "auth-url-cleanup")
+    failed = MagicMock(status_code=502, text="upstream failed")
+    failed.json.return_value = {"detail": "upstream failed"}
+    cancelled = MagicMock(status_code=404)
+    relay_call = AsyncMock(side_effect=[failed, cancelled])
+    release = AsyncMock()
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
+         patch(
+             "celerp.connectors.ownership.claim_connector_ownership",
+             new=AsyncMock(return_value=(object(), True)),
+         ), \
+         patch(
+             "celerp.connectors.ownership.lock_connector_operation",
+             new=AsyncMock(return_value=object()),
+         ), \
+         patch("celerp.connectors.ownership.release_connector_ownership", release), \
+         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.example"), \
+         patch("celerp.gateway.state.with_relay_client", new=relay_call):
+        mock_settings.gateway_token = "api-key"
+        response = await client.get(
+            "/settings/connectors/quickbooks/authorize-url",
+            headers=_h(token),
+        )
+
+    assert response.status_code == 200
+    assert response.json()["error"] == "upstream failed"
+    assert relay_call.await_count == 2
+    release.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_connector_authorize_cleanup_fails_closed(client):
+    import httpx as _httpx
+
+    token = await _register(client, "auth-url-cleanup-fails")
+    relay_call = AsyncMock(side_effect=[
+        _httpx.TimeoutException("timed out"),
+        _httpx.ConnectError("still unavailable"),
+    ])
+    release = AsyncMock()
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
+         patch(
+             "celerp.connectors.ownership.claim_connector_ownership",
+             new=AsyncMock(return_value=(object(), True)),
+         ), \
+         patch(
+             "celerp.connectors.ownership.lock_connector_operation",
+             new=AsyncMock(return_value=object()),
+         ), \
+         patch("celerp.connectors.ownership.release_connector_ownership", release), \
+         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.example"), \
+         patch("celerp.gateway.state.with_relay_client", new=relay_call):
+        mock_settings.gateway_token = "api-key"
+        response = await client.get(
+            "/settings/connectors/quickbooks/authorize-url",
+            headers=_h(token),
+        )
+
+    assert response.status_code == 200
+    assert "Disconnect before retrying" in response.json()["error"]
+    release.assert_not_awaited()

@@ -56,7 +56,9 @@ async def _validate_request_url(url: str) -> None:
 
 def _http_client(*, max_retries: int = 3) -> RateLimitedClient:
     return RateLimitedClient(
-        max_retries=max_retries, before_request=_validate_request_url
+        max_retries=max_retries,
+        before_request=_validate_request_url,
+        public_only=True,
     )
 
 
@@ -166,6 +168,9 @@ class WooCommerceConnector(ConnectorBase):
 
         result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
+        full_scan = since is None
+        seen_identities: set[tuple[str, str | None]] = set()
+        incomplete_parents: set[str] = set()
         params: dict = {}
         if since:
             params["modified_after"] = since.isoformat()
@@ -212,9 +217,11 @@ class WooCommerceConnector(ConnectorBase):
                     variations = await self._paginate(ctx, f"/products/{pid}/variations")
                 except (httpx.HTTPStatusError, ValueError) as exc:
                     errors.append(f"Product {pid} variations: {exc}")
+                    incomplete_parents.add(str(pid))
                     continue
                 for var in variations:
                     vid = var.get("id")
+                    seen_identities.add((str(pid), str(vid)))
                     var_sku = (var.get("sku") or "").strip() or f"WC-{pid}-{vid}"
                     opts = " / ".join(
                         str(a.get("option", "")) for a in (var.get("attributes") or [])
@@ -247,6 +254,7 @@ class WooCommerceConnector(ConnectorBase):
                             log.warning("woocommerce file pull failed for item %s: %s", entity_id, img_exc)
                 continue
 
+            seen_identities.add((str(pid), None))
             sku = (product.get("sku") or "").strip() or f"WC-{pid}"
             sell_price = money(product.get("regular_price"))
             if sell_price is None:
@@ -263,8 +271,67 @@ class WooCommerceConnector(ConnectorBase):
                 except Exception as img_exc:
                     log.warning("woocommerce file pull failed for item %s: %s", entity_id, img_exc)
 
+        if full_scan:
+            try:
+                result.updated += await self._reconcile_missing_product_links(
+                    ctx, seen_identities, incomplete_parents
+                )
+            except Exception as exc:
+                errors.append(f"Product reconciliation: {exc}")
+
         result.errors = errors or None
         return result
+
+    async def _reconcile_missing_product_links(
+        self,
+        ctx: ConnectorContext,
+        seen: set[tuple[str, str | None]],
+        incomplete_parents: set[str],
+    ) -> int:
+        from sqlalchemy import select
+        from celerp.db import SessionLocal as AsyncSessionLocal
+        from celerp.models.projections import Projection
+        from celerp_inventory.services import (
+            external_link_for_state,
+            set_external_link_state,
+        )
+
+        changed = 0
+        async with AsyncSessionLocal() as session:
+            rows = (await session.execute(
+                select(Projection).where(
+                    Projection.company_id == ctx.company_id,
+                    Projection.entity_type == "item",
+                )
+            )).scalars().all()
+            for row in rows:
+                link = external_link_for_state(row.state or {}, "woocommerce")
+                product_id = str(link.get("product_id") or "")
+                if (
+                    not product_id
+                    or link.get("remote_deleted") is True
+                    or product_id in incomplete_parents
+                ):
+                    continue
+                variation = link.get("variation_id")
+                identity = (
+                    product_id,
+                    str(variation) if variation not in (None, "") else None,
+                )
+                if identity in seen:
+                    continue
+                await set_external_link_state(
+                    session,
+                    ctx.company_id,
+                    row.entity_id,
+                    "woocommerce",
+                    remote_deleted=True,
+                    source="connector",
+                )
+                changed += 1
+            if changed:
+                await session.commit()
+        return changed
 
     async def _pull_product_files(self, ctx: ConnectorContext, product: dict[str, Any], entity_id: str) -> None:
         """Pull images and certificate metafields onto an already-resolved item."""

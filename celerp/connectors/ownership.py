@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Canonical ownership for installation-scoped connector credentials."""
+"""Connector configuration ownership."""
 from __future__ import annotations
 
 import json
@@ -13,17 +13,17 @@ from celerp.models.connector_config import ConnectorConfig
 
 
 class ConnectorOwnershipError(RuntimeError):
-    """The installation-scoped platform credential is not owned by this company."""
+    """Connector configuration is unavailable for this company."""
 
 
 class ConnectorOwnershipAmbiguousError(ConnectorOwnershipError):
-    """Connector ownership is inconsistent and must be reconciled before use."""
+    """Connector ownership is inconsistent."""
 
 
 def _resolve_connector_owner(
     rows: list[ConnectorConfig], company_id
 ) -> ConnectorConfig | None:
-    """Resolve one installation-scoped owner, failing closed on legacy/corrupt ambiguity."""
+    """Resolve one configured owner."""
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
     legacy = [row for row in rows if str(row.company_id) == legacy_id]
@@ -172,7 +172,7 @@ async def claim_connector_ownership(
 async def connector_owned_by_company(
     session: AsyncSession, company_id, connector: str
 ) -> bool:
-    """Fail-closed ownership check for relay credential reads/revocation."""
+    """Check whether a connector configuration belongs to this company."""
     rows = (await session.execute(
         sa.select(ConnectorConfig).where(ConnectorConfig.connector == connector)
     )).scalars().all()
@@ -185,7 +185,7 @@ async def connector_owned_by_company(
 async def release_connector_ownership(
     session: AsyncSession, company_id, connector: str
 ) -> None:
-    """Release one company's connector state after remote revocation is confirmed."""
+    """Release one company's connector state."""
     from datetime import datetime, timezone
 
     from celerp.models.connector_config import OutboundQueue

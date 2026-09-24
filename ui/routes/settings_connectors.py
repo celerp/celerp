@@ -529,8 +529,18 @@ def _connector_card(
             cls="connector-action-area",
         )
     elif c.get("auth_type") == "oauth":
+        disconnect = (
+            Button(
+                t("connectors.disconnect", lang),
+                cls="btn btn--sm btn--outline btn--danger",
+                hx_delete=f"/settings/connectors/{cid}/disconnect",
+                hx_target=f"#connector-card-{cid}",
+                hx_swap="outerHTML",
+                hx_confirm=t("connectors.disconnect_confirm", lang),
+            )
+            if config is not None else None
+        )
         if cid == "shopify":
-            # Shopify needs the shop domain first
             action_area = Div(
                 Form(
                     Input(
@@ -550,6 +560,7 @@ def _connector_card(
                     hx_swap="outerHTML",
                     style="display:flex;align-items:center;gap:4px;",
                 ),
+                *([disconnect] if disconnect is not None else []),
                 cls="connector-action-area",
             )
         else:
@@ -561,6 +572,7 @@ def _connector_card(
                     hx_target=f"#connector-card-{cid}",
                     hx_swap="outerHTML",
                 ),
+                *([disconnect] if disconnect is not None else []),
                 cls="connector-action-area",
             )
     else:
@@ -662,17 +674,13 @@ async def connectors_tab_content(lang: str, token: str, category: str, company_i
 
     last_runs = await _get_last_runs(company_id)
 
-    # Load configs for all connected connectors
     configs: dict[str, object] = {}
     for c in catalog:
-        if c.get("connected"):
-            cfg = await _get_connector_config(company_id, c["id"])
-            if cfg is None:
-                # Relay connected state is installation-wide. It is not authority
-                # to claim this company merely because the settings page was viewed.
-                c["connected"] = False
-                continue
+        cfg = await _get_connector_config(company_id, c["id"])
+        if cfg is not None:
             configs[c["id"]] = cfg
+        elif c.get("connected"):
+            c["connected"] = False
 
     # Auto-sync a freshly connected store that has never synced (e.g. just returned from
     # OAuth) so the merchant's data appears without a manual step - the activation moment.

@@ -777,6 +777,10 @@ def _family_keys(rows: list[Projection]) -> dict[str, tuple[str, str]]:
             continue
 
         sku = normalize_sku(state.get("sku"))
+        if _is_product_anchor_state(state):
+            keys[row.entity_id] = ("anchor", row.entity_id)
+            continue
+
         explicit = {
             candidate.entity_id: candidate
             for candidate in (explicit_by_sku.get(sku, []) if sku else [])
@@ -786,10 +790,6 @@ def _family_keys(rows: list[Projection]) -> dict[str, tuple[str, str]]:
             continue
         if len(explicit) > 1:
             keys[row.entity_id] = ("sku", sku)
-            continue
-
-        if _is_product_anchor_state(state):
-            keys[row.entity_id] = ("anchor", row.entity_id)
             continue
 
         roots = {

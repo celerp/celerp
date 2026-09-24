@@ -293,3 +293,20 @@ def test_sync_plan_honours_direction(direction, expected_inbound, expected_outbo
     plan = sync_plan(registry.get("woocommerce"), SyncDirection(direction))
     assert ("products" in plan) is expected_inbound
     assert ("inventory_out" in plan) is expected_outbound
+
+
+@pytest.mark.asyncio
+async def test_scheduler_full_reconciles_woocommerce_products():
+    from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
+    from celerp.connectors.base import SyncEntity, SyncResult
+
+    config = _sched_config(connector="woocommerce")
+    cm = _sched_session(config)
+    run = AsyncMock(return_value=[SyncResult(entity=SyncEntity.PRODUCTS, created=0)])
+    with patch("celerp.db.get_session_ctx", return_value=cm), \
+         patch("celerp.connectors.sync_runner.run_connector_sync", new=run):
+        await check_and_run_daily_syncs(
+            "co", token_fetcher=AsyncMock(return_value=MagicMock())
+        )
+
+    assert run.await_args.kwargs["full_entities"] == {"products"}
