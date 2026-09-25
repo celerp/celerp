@@ -22,7 +22,7 @@ from celerp.inventory_codes import (
 from celerp.models.company import Company, Location
 from celerp.models.projections import Projection
 from celerp.importers.tabular import CsvImportSpec
-from celerp.services.field_schema import AMOUNT_ITEM_KEYS
+from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.permissions import role_has_permission
 from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key
@@ -937,6 +937,15 @@ async def commit_import_batch(
         entity_id = rec.entity_id
         idem_key = rec.idempotency_key
         primary = existing.get(idem_key)
+
+        managed = sorted(SYSTEM_ITEM_KEYS & set(data))
+        if managed:
+            errors.append(
+                f"Row (SKU={data.get('sku', '?')}): {managed} cannot be imported; "
+                "remove these columns and import again"
+            )
+            skipped += 1
+            continue
 
         if event_type == "item.patched":
             if primary is not None:

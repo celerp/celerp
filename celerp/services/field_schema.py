@@ -12,6 +12,7 @@ import uuid as _uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company
+from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS
 from celerp.services.pricing import is_cost_list_name, is_derived, price_key
 
 # Reserved system value for a field whose sources disagreed and cannot be reconciled (e.g. a merge
@@ -23,6 +24,16 @@ MIXED_VALUE = "Mixed"
 # edit_inventory_amounts permission. One source of truth, mirroring the
 # COST_ITEM_KEYS precedent in celerp.services.cost_visibility.
 AMOUNT_ITEM_KEYS: frozenset[str] = frozenset({"quantity", "weight", "pieces", "gross_weight"})
+
+# Item keys only the app's own item events write: the cost components derived from cost_total
+# and landed cost, reservation and fulfilment counters, lineage and document links, and files.
+# An import may set cost_total and the prices (permission-gated), never these.
+SYSTEM_ITEM_KEYS: frozenset[str] = COST_DERIVED_ITEM_KEYS | {
+    "entity_id", "company_id", "reserved_quantity", "quantity_fulfilled",
+    "children", "child_skus", "merged_into", "split_from", "transformed_from", "transformed_into",
+    "fulfilled_for_docs", "status_doc_id", "status_doc_number", "manufacturing_order_id",
+    "files", "attachments", "preview_image_id",
+}
 
 # Fields whose edit is gated by edit_inventory_amounts. Superset of the numeric
 # amount keys with sell_by added: changing the sell unit rewrites quantity, so it
