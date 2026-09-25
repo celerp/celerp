@@ -178,7 +178,7 @@ async def _grant_export(client, admin_token: str, role: str = "viewer") -> None:
 @pytest.mark.asyncio
 async def test_export_items_csv_respects_visible_columns_and_visibility(client, session):
     """cols= exports exactly the columns the screen shows, in order; an unknown column is a
-    422 naming it; a column the role may not see is left out rather than leaking."""
+    422 naming it; a column the role may not see is left out."""
     admin = await _reg(client)
     viewer = await _user_with_role(client, session, admin, "viewer")
     await _grant_export(client, admin)

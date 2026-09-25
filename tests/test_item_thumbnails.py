@@ -119,7 +119,7 @@ async def test_thumbnail_route_undecodable_returns_404(client):
 @pytest.mark.asyncio
 async def test_thumbnail_route_other_company_404(client):
     h = await _headers(client)
-    item_id = await _item(client, h, "THUMB-TENANT")
+    item_id = await _item(client, h, "THUMB-OTHER")
     file_id = await _upload(client, h, item_id, _png())
     # A second company for the same user.
     r = await client.post("/companies", json={"name": "OtherCo"}, headers=h)
