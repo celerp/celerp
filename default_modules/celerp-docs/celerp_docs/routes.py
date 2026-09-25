@@ -29,6 +29,7 @@ from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
+from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
@@ -5761,7 +5762,10 @@ async def fulfill_lines(
     span_consumed: set[str] = set()  # extra lots pulled in by cross-lot spanning
     fulfillment_line_index: dict[str, int] = {}
     _locked_lots = await _lock_item_sku_lots(session, company_id, set(body.line_entity_ids))
-    for item_eid in body.line_entity_ids:
+    # Lines are drawn in document order and a lot bound to another line is never a
+    # spanning sibling (doc_bound_lots), matching the allocation finalize recognized.
+    _bound_lots = doc_bound_lots(state.get("line_items", []))
+    for item_eid in sorted(body.line_entity_ids, key=lambda e: line_index_by_eid.get(e, len(line_index_by_eid))):
         item_proj = _locked_lots.get(item_eid)
         if item_proj is None:
             errors.append(f"{item_eid}: item not found")
@@ -5793,7 +5797,7 @@ async def fulfill_lines(
             if splitting_allowed(item_proj.state):
                 _draws = await _plan_span_draws(
                     session, company_id, item_proj, line_qty,
-                    exclude=set(to_fulfill) | span_consumed,
+                    exclude=set(to_fulfill) | span_consumed | (_bound_lots - {item_eid}),
                     owner_entity_id=entity_id, locked_lots=_locked_lots,
                 )
                 if _draws is not None:

@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from celerp.services.document_lines import line_item_id
 from celerp.services.line_measures import splitting_allowed
 
 
@@ -83,6 +84,16 @@ def _sorted_inventory(inventory: list[dict], strategy: str) -> list[dict]:
     if strategy == "fefo":
         return sorted(inventory, key=lambda it: (it.get("expires_at") or "9999-99-99", it.get("created_at") or ""))
     return sorted(inventory, key=lambda it: it.get("created_at") or "")  # fifo
+
+
+def doc_bound_lots(line_items: list[dict]) -> set[str]:
+    """The lots a document's lines reference directly.
+
+    A lot bound by one line is that line's stock: it is never drawn as another
+    line's spanning sibling, so one physical lot cannot satisfy two lines and a
+    document allocates the same way whatever order its lines are processed in.
+    """
+    return {str(ref) for li in line_items if (ref := line_item_id(li))}
 
 
 def plan_lot_draws(

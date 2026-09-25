@@ -3501,3 +3501,91 @@ async def test_reserve_shipped_cross_lot_invoice_covers_complete_allocation(clie
         assert item["status"] == "available"
         assert not item.get("status_doc_id")
 
+
+
+async def _two_bound_lots_invoice(client, auth):
+    """Lots A 2 at 10, B 3 at 30, C 3 at 50 of one splittable SKU, and a finalized
+    invoice whose line 0 takes 5 bound to A and line 1 takes 3 bound to B."""
+    sku = f"TWOBOUND-{uuid.uuid4().hex[:6]}"
+    lot_a = await _create_item(client, auth, sku, 2, cost_price=10.0)
+    lot_b = await _create_item(client, auth, sku, 3, cost_price=30.0)
+    lot_c = await _create_item(client, auth, sku, 3, cost_price=50.0)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 5, "unit_price": 50.0, "entity_id": lot_a},
+        {"sku": sku, "name": sku, "quantity": 3, "unit_price": 50.0, "entity_id": lot_b},
+    ])
+    return doc_id, lot_a, lot_b, lot_c
+
+
+@pytest.mark.asyncio
+async def test_finalize_cogs_keeps_another_lines_bound_lot_for_that_line(client, session, auth, _setup_ids):
+    """Line 0 spans past lot A. Lot B belongs to line 1, so line 0 draws its
+    shortfall from C: COGS is 2*10 + 3*50 for line 0 plus 3*30 for line 1 = 260,
+    never lot B counted for both lines (200)."""
+    await _two_bound_lots_invoice(client, auth)
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 260.0, nets
+    assert nets.get("1130-P") == -260.0, nets
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batches", [["a", "b"], ["b", "a"], ["a"], ["b"]], ids=[
+    "one-call-doc-order", "one-call-reverse-order", "line-0-then-line-1", "line-1-then-line-0"])
+async def test_fulfill_two_same_sku_bound_lots_draws_each_lot_once(
+    client, session, auth, _setup_ids, batches
+):
+    """Whatever the call pattern, the two lines draw A, B and C exactly once each:
+    every lot ends sold, the fulfilled cost matches the 260 recognized at finalize,
+    and no adjustment is posted."""
+    doc_id, lot_a, lot_b, lot_c = await _two_bound_lots_invoice(client, auth)
+    ids = {"a": lot_a, "b": lot_b}
+    if len(batches) == 2:
+        calls = [[ids[k] for k in batches]]
+    else:
+        first = batches[0]
+        calls = [[ids[first]], [ids["b" if first == "a" else "a"]]]
+    for call in calls:
+        r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                              json={"line_entity_ids": call})
+        assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "fulfilled"
+
+    for eid in (lot_a, lot_b, lot_c):
+        item = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+        assert item["status"] == "sold", item
+
+    led = (await client.get(f"/ledger?entity_id={lot_b}", headers=auth["headers"])).json()["items"]
+    assert sum(1 for e in led if e.get("event_type") == "item.fulfilled") == 1
+
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 260.0, nets
+
+
+@pytest.mark.asyncio
+async def test_reversing_adjustments_leaves_similarly_named_documents_alone(client, session, auth, _setup_ids):
+    """Document ids are free text on import, so an id containing _ or % must match
+    only its own fulfillment adjustments."""
+    from celerp.models.projections import Projection
+    from celerp.services import auto_je
+
+    cid = _setup_ids["company_id"]
+    uid = _setup_ids["user_id"]
+    for doc_id in ("doc:IMP-A_", "doc:IMP-AB", "doc:IMP-%", "doc:IMP-XY"):
+        await auto_je.create_for_doc_cogs_adjustment(
+            session, company_id=cid, user_id=uid, doc_id=doc_id, delta=5.0,
+            cycle_tag="fulfill-0:l0", doc_number=doc_id,
+        )
+    await session.commit()
+
+    for doc_id in ("doc:IMP-A_", "doc:IMP-%"):
+        await auto_je.void_for_doc_cogs_adjustments(
+            session, company_id=cid, user_id=uid, doc_id=doc_id, line_indices={0})
+    await session.commit()
+
+    session.expire_all()
+    status = {}
+    for doc_id in ("doc:IMP-A_", "doc:IMP-AB", "doc:IMP-%", "doc:IMP-XY"):
+        je = await session.get(Projection, {"company_id": cid, "entity_id": f"je:auto:{doc_id}:cogs-adj:fulfill-0:l0"})
+        status[doc_id] = je.state.get("status")
+    assert status == {"doc:IMP-A_": "void", "doc:IMP-AB": "posted",
+                      "doc:IMP-%": "void", "doc:IMP-XY": "posted"}
