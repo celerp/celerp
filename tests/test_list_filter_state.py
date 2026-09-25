@@ -95,8 +95,23 @@ class TestDocListState:
             r = await ui_client.get("/docs?type=invoice&preset=custom&from=2026-01-01&to=2026-03-31",
                                     cookies=_cookies())
         assert r.status_code == 200
-        kwargs = summary.call_args.kwargs
-        assert kwargs.get("date_from") == "2026-01-01" and kwargs.get("date_to") == "2026-03-31", kwargs
+        params = summary.call_args.args[1]
+        assert params == {"doc_type": "invoice", "date_from": "2026-01-01", "date_to": "2026-03-31"}, params
+
+    @pytest.mark.asyncio
+    async def test_doc_summary_follows_search_and_contact(self, ui_client):
+        """The status cards summarise the rows the list shows: the search term and the
+        contact filter travel to the summary, the status filter and page never do."""
+        summary = AsyncMock(return_value=_SUMMARY)
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})), \
+             patch("ui.api_client.get_doc_summary", new=summary):
+            r = await ui_client.get("/docs?type=invoice&q=ruby&contact_id=c:9&status=paid&page=2",
+                                    cookies=_cookies())
+        assert r.status_code == 200
+        params = summary.call_args.args[1]
+        assert params.get("q") == "ruby" and params.get("contact_id") == "c:9", params
+        assert "status" not in params and "page" not in params and "limit" not in params, params
 
     @pytest.mark.asyncio
     async def test_doc_list_default_card_active(self, ui_client):
@@ -138,8 +153,7 @@ class TestListPageState:
         assert len(active) == 1 and "all_issued=1" in active[0], active
         assert "type=audit" in active[0] and "from=2026-01-01" in active[0], active
         assert list_lists.call_args.args[1].get("all_issued") == "1"
-        assert summary.call_args.kwargs.get("list_type") == "audit"
-        assert summary.call_args.kwargs.get("date_from") == "2026-01-01"
+        assert summary.call_args.args[1] == {"list_type": "audit", "date_from": "2026-01-01", "date_to": "2026-03-31"}
         page_hrefs = _hrefs(r.text, "page-btn")
         per_page = re.findall(r"window.location='([^\"]*)\"", r.text)
         assert per_page and "type=audit" in per_page[0] and "from=2026-01-01" in per_page[0], per_page

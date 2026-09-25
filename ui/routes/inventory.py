@@ -870,19 +870,23 @@ async def _load_inventory_view_metadata(token: str) -> tuple:
 
 
 async def _export_columns(token: str, p: dict) -> list[str]:
-    """The columns the list shows for state ``p`` when the URL names none: the saved
-    column preference for the view (else the schema defaults), plus the derived money
-    column of an active holdings or sold scope. Raises `APIError` like the metadata load."""
+    """The columns the export carries for state ``p``: the URL's ``cols`` when given, else the
+    saved column preference for the view (else the schema defaults) plus the derived money
+    column of an active holdings or sold scope. Image columns are list-only previews and never
+    export. Raises `APIError` like the metadata load."""
     schema, cat_schemas, col_prefs, _company, _locations, _units, _cat_labels = (
         await _load_inventory_view_metadata(token)
     )
     active_cat = p.get("category", "")
-    cols = _resolve_visible_cols(_effective_schema(schema, cat_schemas, active_cat), col_prefs, active_cat, [])
-    if p.get("on_memo_to") or p.get("consigned_from"):
-        cols.append("holding_value")
-    if "sold" in {s.strip().lower() for s in str(p.get("status") or "").split(",") if s.strip()}:
-        cols.append("sold_price")
-    return cols
+    eff_schema = _effective_schema(schema, cat_schemas, active_cat)
+    cols = list(p.get("cols") or []) or _resolve_visible_cols(eff_schema, col_prefs, active_cat, [])
+    if not p.get("cols"):
+        if p.get("on_memo_to") or p.get("consigned_from"):
+            cols.append("holding_value")
+        if "sold" in {s.strip().lower() for s in str(p.get("status") or "").split(",") if s.strip()}:
+            cols.append("sold_price")
+    image_keys = {fld["key"] for fld in eff_schema if fld.get("type") == "image"}
+    return [c for c in cols if c not in image_keys]
 
 
 async def _render_inventory_fragment(
@@ -1338,13 +1342,13 @@ def setup_routes(app):
         params = _base_state(p)
         params.pop("per_page", None)
         try:
-            if not params.get("cols"):
-                params["cols"] = ",".join(await _export_columns(token, p))
+            params["cols"] = ",".join(await _export_columns(token, p))
             data = await api.export_items_csv(token, params)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            data = b"error\n" + e.detail.encode()
+            # A failed export is an error page, never a downloaded file that says "error".
+            return Response(content=str(e.detail), status_code=e.status, media_type="text/plain")
         return Response(
             content=data,
             media_type="text/csv",
@@ -4634,7 +4638,7 @@ function celerpPrintLabel(entityId, templateId) {
         """Drop or pick an image in the list image cell; returns the re-rendered cell."""
         token = _token(request)
         if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
+            return _thumbnail_cell_error(entity_id, t("error.unauthorized"))
         form = await request.form()
         file = form.get("file")
         error = None
@@ -4642,14 +4646,18 @@ function celerpPrintLabel(entityId, templateId) {
             error = t("msg.no_file_provided")
         else:
             try:
-                await api.upload_item_file(token, entity_id, file)
+                # A drop into the cell is a request to show this image, so it becomes the
+                # preview even when the item already has one.
+                await api.upload_item_file(token, entity_id, file, as_hero=True)
             except APIError as e:
                 error = str(e.detail)
         try:
             item = await api.get_item(token, entity_id)
+            settings = (await api.get_company(token)).get("settings") or {}
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
-        cell = _thumbnail_cell(entity_id, item, editable=True)
+            return _thumbnail_cell_error(entity_id, str(e.detail))
+        editable = role_has_permission(settings, _get_role(request), "edit_inventory")
+        cell = _thumbnail_cell(entity_id, item, editable=editable)
         if error:
             return Td(*cell.children, P(error, cls="cell-error"), **cell.attrs)
         return cell
@@ -5542,6 +5550,13 @@ def _thumbnail_cell(entity_id: str, item: dict, editable: bool) -> FT:
     )
 
 
+def _thumbnail_cell_error(entity_id: str, message: str) -> FT:
+    """The image cell with ``message`` in place of a preview, so a failed upload swaps a
+    cell for a cell and the row keeps its shape."""
+    cell = _thumbnail_cell(entity_id, {}, editable=False)
+    return Td(P(message, cls="cell-error"), **cell.attrs)
+
+
 async def _inject_reorder_hints(token: str, item: dict) -> None:
     """Attach velocity-suggestion hint strings for EMPTY reorder fields, so the item
     detail can show them as a grey placeholder. Mutates `item` in place; best-effort
@@ -5669,6 +5684,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         if (td) td.style.display = show ? '' : 'none';
       }});
     }});
+    window.celerpSyncExportCols(table);
   }}
 
   // Sync checkboxes in menu to match localStorage
@@ -5710,6 +5726,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         if (td) tr.appendChild(td);
       }});
     }});
+    window.celerpSyncExportCols(table);
   }}
 
   // Mirror the picker label order to match a given key array (picker is source of truth)

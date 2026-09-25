@@ -8,7 +8,7 @@ import hashlib
 import json
 import math
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from datetime import datetime, timezone, date as _date
 from typing import Literal
 
@@ -677,19 +677,33 @@ class DocListFilters:
     not_stocked: bool = False
     converted_to_type: str | None = None
     ids: str | None = None
+    sort: str | None = None
+    dir: str = "desc"
 
 
-async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, *, limit: int | None, offset: int = 0) -> dict:
-    """The filtered, newest-first document list: ``{"items", "total"}`` where items carry ``id``.
-    ``limit=None`` returns every matching row (the export); the index passes its page."""
-    today = _date.today().isoformat()
+# Sort keys the list accepts, mapped to the state field they order by. "updated" orders by the
+# projection's updated_at column, which the rows expose as _updated_at.
+_DOC_SORT_FIELDS = {
+    "number": "doc_number",
+    "type": "doc_type",
+    "contact": "contact_name",
+    "date": "issue_date",
+    "due": "due_date",
+    "total": "total",
+    "outstanding": "amount_outstanding",
+    "status": "status",
+    "updated": "_updated_at",
+}
+_DOC_NUMERIC_SORT_FIELDS = frozenset({"total", "amount_outstanding"})
+
+
+def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
+    """The SQL WHERE for ``f`` (company scope included): every filter the DB can evaluate. The
+    multi-field filters (all_issued, overdue_only, ...) are not here; query_docs applies them in
+    Python, and the summary ignores them by design."""
     id_list = [x.strip() for x in f.ids.split(",") if x.strip()] if f.ids else []
     if len(id_list) > MAX_IDS_FILTER:
         raise HTTPException(status_code=422, detail=f"ids accepts at most {MAX_IDS_FILTER} document ids")
-
-    # Build SQL WHERE conditions - push all indexable filters into the DB.
-    # Complex post-filters (overdue_only, unfulfilled_only, etc.) still run in
-    # Python because they reference nested JSON fields or multi-column logic.
     base_where = [
         Projection.company_id == company_id,
         Projection.entity_type == "doc",
@@ -718,6 +732,60 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     _q_clause = doc_q_clause(f.q)
     if _q_clause is not None:
         base_where.append(_q_clause)
+    return base_where
+
+
+def _doc_sort_field(f: DocListFilters) -> str:
+    """The state field ``f.sort``/``f.dir`` order by, or a 422 naming the accepted values."""
+    if f.dir not in ("asc", "desc"):
+        raise HTTPException(status_code=422, detail="dir must be asc or desc")
+    if f.sort is None:
+        return "issue_date"
+    field = _DOC_SORT_FIELDS.get(f.sort)
+    if field is None:
+        raise HTTPException(status_code=422, detail=f"Unknown sort {f.sort!r}. Choose from: {', '.join(_DOC_SORT_FIELDS)}")
+    return field
+
+
+def _doc_sql_order(field: str, descending: bool) -> list:
+    """ORDER BY for a sort field, with the unique entity_id tiebreak so the sort is a TOTAL order.
+    Without it, rows sharing a value come back in an arbitrary order that differs between the
+    per-page queries, so a row on a page boundary can be skipped (or duplicated) by OFFSET."""
+    if field == "_updated_at":
+        expr = Projection.updated_at
+    elif field in _DOC_NUMERIC_SORT_FIELDS:
+        expr = _sa.cast(_func.nullif(Projection.state[field].as_string(), ""), _sa.Numeric)
+    else:
+        expr = Projection.state[field].as_string()
+    if descending:
+        return [expr.desc().nulls_last(), Projection.entity_id.desc()]
+    return [expr.asc().nulls_first(), Projection.entity_id.asc()]
+
+
+def _doc_python_sort_key(field: str):
+    """The Python-path sort key for ``field``, ordering the same values the SQL path does."""
+    if field in _DOC_NUMERIC_SORT_FIELDS:
+        return lambda x: (float(x.get(field) or 0), x.get("id") or "")
+    if field == "issue_date":
+        return lambda x: (x.get("issue_date") or x.get("created_at") or x.get("date") or "", x.get("id") or "")
+    return lambda x: (x.get(field) or "", x.get("id") or "")
+
+
+def _doc_row(r: Projection) -> dict:
+    return r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None}
+
+
+async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, *, limit: int | None, offset: int = 0) -> dict:
+    """The filtered, sorted document list (newest first unless ``sort``/``dir`` say otherwise):
+    ``{"items", "total"}`` where items carry ``id``. ``limit=None`` returns every matching row
+    (the export); the index passes its page."""
+    today = _date.today().isoformat()
+    sort_field = _doc_sort_field(f)
+    descending = f.dir == "desc"
+    # Push all indexable filters into the DB. Complex post-filters (overdue_only,
+    # unfulfilled_only, etc.) still run in Python because they reference nested JSON
+    # fields or multi-column logic.
+    base_where = _doc_sql_where(company_id, f)
 
     # Remaining filters still need Python evaluation (multi-field logic).
     needs_python_filter = any([f.all_issued, f.overdue_only, f.unfulfilled_only, f.not_restocked, f.not_stocked, f.converted_to_type])
@@ -725,7 +793,7 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     if needs_python_filter:
         # Fetch only needed columns to reduce deserialization cost.
         rows = (await session.execute(select(Projection).where(*base_where))).scalars().all()
-        out = [r.state | {"id": r.entity_id} for r in rows]
+        out = [_doc_row(r) for r in rows]
         if f.all_issued:
             out = [x for x in out if x.get("status") not in ("draft", "void")]
         if f.overdue_only:
@@ -738,9 +806,9 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
             out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("received_items") or [])]
         if f.converted_to_type:
             out = [x for x in out if x.get("converted_to_type") == f.converted_to_type]
-        # Tiebreak on the unique id so equal-date rows have a deterministic order (same
+        # Tiebreak on the unique id so equal-value rows have a deterministic order (same
         # reason as the SQL path: otherwise OFFSET pagination can skip/duplicate a row).
-        out.sort(key=lambda x: (x.get("issue_date") or x.get("created_at") or x.get("date") or "", x.get("id") or ""), reverse=True)
+        out.sort(key=_doc_python_sort_key(sort_field), reverse=descending)
         total = len(out)
         if offset:
             out = out[offset:]
@@ -755,21 +823,14 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     list_q = (
         select(Projection)
         .where(*base_where)
-        .order_by(
-            Projection.state["issue_date"].as_string().desc(),
-            # Unique tiebreaker so the sort is a TOTAL order. Without it, rows sharing an
-            # issue_date come back in an arbitrary order that differs between the per-page
-            # queries, so a row on a page boundary can be skipped (or duplicated) by OFFSET.
-            Projection.entity_id.desc(),
-        )
+        .order_by(*_doc_sql_order(sort_field, descending))
         .offset(offset)
     )
     if limit is not None:
         list_q = list_q.limit(limit)
 
     rows = (await session.execute(list_q)).scalars().all()
-    out = [r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None} for r in rows]
-    return {"items": out, "total": total}
+    return {"items": [_doc_row(r) for r in rows], "total": total}
 
 
 @router.get("", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
@@ -785,26 +846,15 @@ async def list_docs(
 
 @router.get("/summary", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
 async def get_doc_summary(
-    doc_type: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
+    filters: DocListFilters = Depends(),
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Counts and totals for the document list. date_from/date_to window on issue_date exactly as
-    list_docs does, so the cards over a windowed list count the rows the list shows."""
-    from datetime import date as _date_cls
-    today = _date_cls.today().isoformat()
-    summary_where = [
-        Projection.company_id == company_id,
-        Projection.entity_type == "doc",
-    ]
-    if doc_type:
-        summary_where.append(Projection.state["doc_type"].as_string() == doc_type)
-    if date_from:
-        summary_where.append(Projection.state["issue_date"].as_string() >= date_from)
-    if date_to:
-        summary_where.append(Projection.state["issue_date"].as_string() <= date_to)
+    """Counts and totals for the document list, over the same filters as list_docs (type, search,
+    contact, ids, date window) so the cards over a filtered list count the rows the list shows.
+    The status filters are ignored: the cards split the filtered set by status."""
+    today = _date.today().isoformat()
+    summary_where = _doc_sql_where(company_id, _dc_replace(filters, status=None, status_in=None, exclude_status=None))
     rows = (await session.execute(select(Projection).where(*summary_where))).scalars().all()
     ar_gross = ar_paid = ar_outstanding = 0.0
     count_by_status: dict[str, int] = {}
@@ -4015,7 +4065,7 @@ async def batch_import_docs(
 _DOC_EXPORT_COLS = ["entity_id", "doc_number", "doc_type", "contact_name", "date", "due_date", "total", "amount_outstanding", "status"]
 
 
-@router.get("/export/csv")
+@router.get("/export/csv", dependencies=[require_permission("view_documents"), require_permission("import_export_data")])
 async def export_docs_csv(
     filters: DocListFilters = Depends(),
     cols: str | None = None,
@@ -4194,7 +4244,7 @@ def _list_index_where(company_id, f: ListIndexFilters, sort_date) -> list:
     return base_where
 
 
-@lists_router.get("")
+@lists_router.get("", dependencies=[require_permission("view_documents")])
 async def list_lists(
     filters: ListIndexFilters = Depends(),
     limit: int | None = None,
@@ -4259,24 +4309,19 @@ async def list_lists(
     return {"items": out, "total": total}
 
 
-@lists_router.get("/summary")
+@lists_router.get("/summary", dependencies=[require_permission("view_documents")])
 async def get_list_summary(
-    list_type: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
+    filters: ListIndexFilters = Depends(),
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Status counts for the lists page, over the same type and date window as list_lists so the
-    cards count the rows the page shows."""
-    base_where = _list_base_where(company_id)
-    if list_type:
-        base_where.append(Projection.state["list_type"].as_string() == list_type)
+    """Status counts for the lists page, over the same type, search and date window as list_lists
+    so the cards count the rows the page shows. The status filters are ignored: the cards split
+    the filtered set by status. draft_count is never date-windowed, because the drafts view the
+    card opens is not."""
     sort_date = _list_sort_date()
-    if date_from:
-        base_where.append(sort_date >= date_from)
-    if date_to:
-        base_where.append(sort_date <= date_to)
+    unsplit = _dc_replace(filters, status=None, exclude_status=None, all_issued=False, converted_to_type=None)
+    base_where = _list_index_where(company_id, unsplit, sort_date)
     status_expr = _func.coalesce(Projection.state["status"].as_string(), "")
     # One grouped pass over the projection: a bounded histogram (one row per status), with the
     # value sum carried per group so total_value is derived without a second scan. total is text
@@ -4298,8 +4343,11 @@ async def get_list_summary(
         total_count += n
         if st != VOID:
             total_value += float(value_sum or 0)
-    draft_count = count_by_status.get(DRAFT, 0)
     all_issued_count = sum(v for k, v in count_by_status.items() if k not in (DRAFT, VOID))
+    draft_count = (await session.execute(
+        select(_func.count()).select_from(Projection)
+        .where(*_list_index_where(company_id, _dc_replace(unsplit, status=DRAFT, date_from=None, date_to=None), sort_date))
+    )).scalar_one()
 
     # Converted outcomes: closed lists whose result is a conversion, split by target type.
     converted_where = base_where + [
@@ -4327,7 +4375,7 @@ async def get_list_summary(
 _LIST_EXPORT_COLS = ["id", "ref_id", "list_type", "customer_name", "date", "total", "status"]
 
 
-@lists_router.get("/export/csv")
+@lists_router.get("/export/csv", dependencies=[require_permission("view_documents"), require_permission("import_export_data")])
 async def export_lists_csv(
     filters: ListIndexFilters = Depends(),
     cols: str | None = None,

@@ -44,6 +44,7 @@ from celerp.services.attachments import (
 )
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
+from celerp_inventory.routes import get_item_projection
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -95,9 +96,7 @@ async def upload_attachment(
     if attachment_type is not None and attachment_type not in _VALID_TYPES:
         raise HTTPException(status_code=422, detail=f"Invalid attachment_type: {attachment_type!r}")
 
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
 
     try:
         att = await store_upload(
@@ -127,9 +126,7 @@ async def delete_attachment(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     """Remove one attachment from an item."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
 
     existing: list[dict] = row.state.get("attachments") or []
     updated = remove_attachment(existing, att_id)
@@ -153,9 +150,7 @@ async def set_preview_image(
     The referenced attachment must exist and have type == "image".
     Returns {"preview_image_id": att_id}.
     """
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
 
     attachments: list[dict] = row.state.get("attachments") or []
     target = next((a for a in attachments if a["id"] == att_id), None)
@@ -371,26 +366,25 @@ async def upload_item_file(
     entity_id: str,
     file: UploadFile = File(...),
     document_tag: str | None = None,
+    as_hero: bool = False,
     company_id=Depends(get_current_company_id),
     _: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Upload a file and attach it to an item via item.file.attached event."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    """Upload a file and attach it to an item via item.file.attached event. An image becomes the
+    hero when the item has none yet, or when ``as_hero`` asks for it to replace the current one."""
+    row = await get_item_projection(session, company_id, entity_id)
 
     try:
         meta = await store_upload(company_id, file)
     except ValueError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
 
-    # First image uploaded → auto-set as hero if no hero exists
     existing_files: list[dict] = row.state.get("files", [])
     has_hero = any(f.get("is_hero") for f in existing_files)
     _is_image = meta.get("mime", "").startswith("image/")
-    is_hero = (not has_hero) and _is_image
+    is_hero = _is_image and (as_hero or not has_hero)
     # The upload area implies the type: an image attached to an inventory item is a product image, so
     # tag it as such by default (untagged-image uploads otherwise show up untagged everywhere).
     if document_tag is None and _is_image:
@@ -437,9 +431,7 @@ async def tag_item_file(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
     f = _get_item_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -469,9 +461,7 @@ async def update_item_file_description(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
     f = _get_item_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -501,9 +491,7 @@ async def set_item_file_hero(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Mark a file as the hero (featured) image. Must be an image MIME type."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
     target = _get_item_file(row.state.get("files", []), file_id)
     if not target.get("mime", "").startswith("image/"):
         raise HTTPException(status_code=422, detail="Hero can only be set on an image file")
@@ -533,9 +521,7 @@ async def delete_item_file(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
     f = _get_item_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -558,13 +544,12 @@ async def item_file_thumbnail(
     entity_id: str,
     file_id: str,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("view_inventory"),
     session: AsyncSession = Depends(get_session),
 ):
     """Serve the small JPEG preview of an image file for the item list."""
     from fastapi.responses import RedirectResponse, Response
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
     files = row.state.get("files") or []
     atts = row.state.get("attachments") or []
     match = _get_item_file(files + atts, file_id)
@@ -591,12 +576,11 @@ async def download_item_file(
     entity_id: str,
     file_id: str,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("view_inventory"),
     session: AsyncSession = Depends(get_session),
 ):
     from fastapi.responses import FileResponse
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
     # Check new files first, fall back to old attachments
     files = row.state.get("files") or []
     atts = row.state.get("attachments") or []

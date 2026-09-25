@@ -1496,6 +1496,18 @@ def data_table(
     }});
   }}
 
+  // One source for the export link's column list: the columns the table shows, in order.
+  window.celerpSyncExportCols = function(t) {{
+    var keys = Array.from(t.querySelectorAll('thead th[data-key]'))
+      .filter(function(th) {{ return th.style.display !== 'none'; }})
+      .map(function(th) {{ return th.dataset.key; }});
+    document.querySelectorAll('a[href*="/inventory/export/csv"]').forEach(function(a) {{
+      var url = new URL(a.getAttribute('href'), window.location.origin);
+      url.searchParams.set('cols', keys.join(','));
+      a.setAttribute('href', url.pathname + url.search);
+    }});
+  }};
+
   // Apply visibility — accept optional live table so post-swap calls use the new DOM node
   function applyVis(liveTable) {{
     liveTable = liveTable || table;
@@ -1514,6 +1526,7 @@ def data_table(
         if (td) td.style.display = show ? '' : 'none';
       }});
     }});
+    window.celerpSyncExportCols(liveTable);
     localStorage.setItem(PAGE_KEY, JSON.stringify(prefs));
   }}
   applyVis();
@@ -1660,6 +1673,7 @@ def data_table(
       var newOrder = Array.from(thead_tr.querySelectorAll('th[data-key]')).map(function(h){{return h.dataset.key;}});
       try {{ localStorage.setItem(ORDER_KEY, JSON.stringify(newOrder)); }} catch(e) {{}}
       document.dispatchEvent(new CustomEvent('celerp:col-reorder', {{detail: {{order: newOrder}}}}));
+      window.celerpSyncExportCols(table);
       dragKey = null;
     }});
   }});

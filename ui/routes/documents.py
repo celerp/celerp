@@ -337,6 +337,24 @@ _DATE_KEYS = ("preset", "from", "to")
 _ALL_ISSUED_DEFAULT_TYPES = frozenset({"invoice", "memo", "credit_note", "bill", "consignment_in"})
 
 
+def _page_number(request: Request) -> int:
+    """The 1-based page from the URL; anything that is not a positive integer is page 1."""
+    try:
+        return max(1, int(request.query_params.get("page", 1)))
+    except (ValueError, TypeError):
+        return 1
+
+
+# The summary cards count the set the list's narrowing filters select, split by status, so a
+# status filter never travels to the summary and neither does the page.
+_DOC_SUMMARY_KEYS = ("doc_type", "q", "contact_id", "ids", "date_from", "date_to")
+_LIST_SUMMARY_KEYS = ("list_type", "q", "date_from", "date_to")
+
+
+def _summary_params(params: dict, keys: tuple[str, ...]) -> dict:
+    return {k: params[k] for k in keys if k in params}
+
+
 def _doc_list_state(request: Request) -> dict[str, str]:
     qp = request.query_params
     state: dict[str, str] = {}
@@ -386,6 +404,15 @@ def _doc_api_params(state: dict[str, str], date_from: str, date_to: str, *, limi
         params["date_from"] = date_from
     if date_to:
         params["date_to"] = date_to
+    # The sort travels with the filters so the export and every page are the list the user
+    # sees; drafts are open work, so their default order is last-updated rather than date.
+    sort = state.get("sort", "")
+    if is_drafts_view and sort in ("", "date"):
+        sort = "updated"
+    if sort:
+        params["sort"] = sort
+    if state.get("dir"):
+        params["dir"] = state["dir"]
     return params
 
 
@@ -1279,7 +1306,7 @@ def setup_routes(app):
         converted_to_type = state.get("converted_to_type", "")
         view = state.get("view", "")  # "drafts" = drafts-only mode
         ids = ",".join(x.strip() for x in state.get("ids", "").split(",") if x.strip())
-        page = int(request.query_params.get("page", 1))
+        page = _page_number(request)
         sort = state.get("sort", "date")
         sort_dir = state.get("dir", "desc")
         try:
@@ -1303,7 +1330,7 @@ def setup_routes(app):
             import asyncio as _asyncio
             docs_resp, summary = await _asyncio.gather(
                 api.list_docs(token, params),
-                api.get_doc_summary(token, doc_type=doc_type, date_from=date_from, date_to=date_to),
+                api.get_doc_summary(token, _summary_params(params, _DOC_SUMMARY_KEYS)),
             )
             docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
             draft_count = summary.get("draft_count", 0) if isinstance(summary, dict) else 0
@@ -1379,7 +1406,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         state = _doc_list_state(request)
-        page = int(request.query_params.get("page", 1))
+        page = _page_number(request)
         try:
             company = await api.get_company(token)
         except APIError:
@@ -1419,11 +1446,8 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return Response(
-                content=b"error\n",
-                media_type="text/csv",
-                headers={"Content-Disposition": "attachment; filename=documents.csv"},
-            )
+            # A failed export is an error page, never a downloaded file that says "error".
+            return Response(content=str(e.detail), status_code=e.status, media_type="text/plain")
         out_headers = {"Content-Disposition": "attachment; filename=documents.csv"}
         if "content-length" in headers:
             out_headers["Content-Length"] = headers["content-length"]
@@ -3942,7 +3966,7 @@ celerpUpdateBulkAlloc();
         safe_id = entity_id.replace(":", "-").replace("/", "-")
         _DEFAULT_PER_PAGE = 10
         try:
-            page = max(1, int(request.query_params.get("page", 1)))
+            page = _page_number(request)
         except ValueError:
             page = 1
         try:
@@ -4059,7 +4083,7 @@ celerpUpdateBulkAlloc();
         list_type = state.get("type", "")
         status = state.get("status", "")
         converted_to_type_list = state.get("converted_to_type", "")
-        page = int(request.query_params.get("page", 1))
+        page = _page_number(request)
         try:
             company = await api.get_company(token)
         except APIError:
@@ -4071,7 +4095,7 @@ celerpUpdateBulkAlloc();
             result = await api.list_lists(token, params)
             lists = result.get("items", [])
             filtered_total = result.get("total", len(lists))
-            summary = await api.get_list_summary(token, list_type=list_type, date_from=date_from, date_to=date_to)
+            summary = await api.get_list_summary(token, _summary_params(params, _LIST_SUMMARY_KEYS))
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
@@ -4134,7 +4158,7 @@ celerpUpdateBulkAlloc();
         if not token:
             return RedirectResponse("/login", status_code=302)
         state = _list_page_state(request)
-        page = int(request.query_params.get("page", 1))
+        page = _page_number(request)
         try:
             company = await api.get_company(token)
         except APIError:
@@ -4162,9 +4186,9 @@ celerpUpdateBulkAlloc();
                 token, _list_api_params(state, date_from, date_to, limit=None),
             )
         except APIError as e:
-            logger.warning("API error on lists_export_csv: %s", e.detail)
-            return Response(content=b"error\n", media_type="text/csv",
-                            headers={"Content-Disposition": "attachment; filename=lists.csv"})
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return Response(content=str(e.detail), status_code=e.status, media_type="text/plain")
         out_headers = {"Content-Disposition": "attachment; filename=lists.csv"}
         if "content-length" in headers:
             out_headers["Content-Length"] = headers["content-length"]
@@ -5012,22 +5036,10 @@ def _doc_table(
     # Checkboxes: invoice/bill for bulk payment; any doc type in draft view for bulk delete
     show_checkboxes = doc_type in ("invoice", "bill", "memo") or is_drafts_view
 
-    sort_keys = {
-        "number": lambda d: str(d.get("doc_number") or d.get("ref") or ""),
-        "type": lambda d: str(d.get("doc_type") or ""),
-        "contact": lambda d: str(d.get("contact_name") or d.get("contact_id") or ""),
-        "date": lambda d: str(d.get("issue_date") or d.get("created_at") or ""),
-        "due": lambda d: str(d.get("due_date") or d.get("payment_due_date") or ""),
-        "total": lambda d: float(d.get("total_amount") if d.get("total_amount") is not None else (d.get("total") or 0) or 0),
-        "outstanding": lambda d: float(d.get("outstanding_balance") if d.get("outstanding_balance") is not None else (d.get("amount_outstanding") or 0) or 0),
-        "status": lambda d: str(d.get("status") or ""),
-        "updated": lambda d: str(d.get("_updated_at") or d.get("issue_date") or d.get("created_at") or ""),
-    }
-    # Draft views default to sorting by last-updated desc unless caller overrides
+    # The rows arrive in the API's order (the same sort the export uses); the headers only
+    # mark it. Draft views default to last-updated, matching _doc_api_params.
     if is_drafts_view and sort == "date":
         sort = "updated"
-    key_fn = sort_keys.get(sort, sort_keys["updated" if is_drafts_view else "date"])
-    docs = sorted(docs, key=key_fn, reverse=(sort_dir == "desc"))
 
     def _th(label: str, key: str) -> FT:
         next_dir = "asc" if (sort == key and sort_dir == "desc") else "desc"

@@ -27,6 +27,7 @@ Backend selection: driven by celerp.config.settings.storage_backend.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import mimetypes
@@ -86,6 +87,9 @@ _MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
 
 # Longest side of the JPEG list thumbnail derived from every image upload.
 _THUMB_MAX_SIDE = 160
+# Largest image (in pixels) a thumbnail is decoded from; bigger uploads keep their original and
+# get no preview, so one oversized upload can never pin the process on decoding it.
+_MAX_IMAGE_PIXELS = 40_000_000
 _THUMB_MIME = "image/jpeg"
 
 logger = logging.getLogger(__name__)
@@ -275,11 +279,16 @@ async def store_upload(
         "size": len(content),
         "mime": mime,
     }
-    thumb = make_thumbnail(content, mime)
+    # The preview is best effort: the original is stored and returned whatever happens to
+    # the thumbnail, so a failed derivative never turns a completed upload into an error.
+    thumb = await asyncio.to_thread(make_thumbnail, content, mime)
     if thumb is not None:
-        meta["thumb_url"] = await get_backend().store(
-            company_id, thumbnail_id(att_id), thumb, _THUMB_MIME
-        )
+        try:
+            meta["thumb_url"] = await get_backend().store(
+                company_id, thumbnail_id(att_id), thumb, _THUMB_MIME
+            )
+        except Exception:
+            logger.warning("thumbnail store failed for attachment %s", att_id)
     return meta
 
 
@@ -296,16 +305,25 @@ def thumbnail_name(att_id: str) -> str:
 def make_thumbnail(content: bytes, mime: str) -> bytes | None:
     """Return a JPEG thumbnail (longest side ``_THUMB_MAX_SIDE``) or None.
 
-    None for non-image mimes and for bytes Pillow cannot decode: the original
-    upload is kept either way and the list simply shows no preview.
+    None for non-image mimes, for images above ``_MAX_IMAGE_PIXELS`` and for bytes
+    Pillow cannot decode: the original upload is kept either way and the list simply
+    shows no preview. Pillow decodes synchronously; callers on the event loop run this
+    in a thread.
     """
     if mime not in _IMAGE_MIMES:
         return None
-    from PIL import Image
+    from PIL import Image, ImageOps
 
     try:
         with Image.open(io.BytesIO(content)) as im:
+            if im.width * im.height > _MAX_IMAGE_PIXELS:
+                logger.warning("thumbnail skipped: %sx%s image exceeds the pixel limit", im.width, im.height)
+                return None
+            # JPEG decodes straight to a reduced size; other formats ignore the hint.
+            im.draft("RGB", (_THUMB_MAX_SIDE, _THUMB_MAX_SIDE))
             im.load()
+            # Honour the camera orientation tag so a portrait photo previews upright.
+            im = ImageOps.exif_transpose(im) or im
             if im.mode in ("RGBA", "LA", "P"):
                 rgba = im.convert("RGBA")
                 flat = Image.new("RGB", rgba.size, (255, 255, 255))
@@ -341,7 +359,7 @@ async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | 
     source = local_attachment_path(company_id, url.rsplit("/", 1)[-1])
     if source is None:
         return None
-    data = make_thumbnail(source.read_bytes(), attachment["mime"])
+    data = await asyncio.to_thread(lambda: make_thumbnail(source.read_bytes(), attachment["mime"]))
     if data is None:
         return None
     await LocalBackend().store(company_id, thumbnail_id(att_id), data, _THUMB_MIME)

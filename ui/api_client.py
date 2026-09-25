@@ -1186,13 +1186,16 @@ async def upload_attachment(token: str, entity_id: str, file) -> dict:
         )).json()
 
 
-async def upload_item_file(token: str, entity_id: str, file) -> dict:
+async def upload_item_file(token: str, entity_id: str, file, *, as_hero: bool = False) -> dict:
+    """Attach ``file`` to an item; ``as_hero`` makes an image the item's preview even when it
+    already has one."""
     async with _bulk_api_client(token) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "upload")
         content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
         return _raise(await c.post(
             f"/items/{entity_id}/files",
+            params={"as_hero": "true"} if as_hero else None,
             files={"file": (filename, content, content_type)},
         )).json()
 
@@ -1291,10 +1294,10 @@ async def get_doc(token: str, entity_id: str) -> dict:
         return _raise(await c.get(f"/docs/{entity_id}")).json()
 
 
-async def get_doc_summary(token: str, doc_type: str = "", date_from: str = "", date_to: str = "") -> dict:
-    params = {k: v for k, v in (("doc_type", doc_type), ("date_from", date_from), ("date_to", date_to)) if v}
+async def get_doc_summary(token: str, params: dict | None = None) -> dict:
+    """Document counts and totals; ``params`` are the list filters the cards summarise."""
     async with _api_client(token) as c:
-        return _raise(await c.get("/docs/summary", params=params)).json()
+        return _raise(await c.get("/docs/summary", params=params or {})).json()
 
 
 async def _wrap_fields_changed(c, get_path: str, data: dict) -> dict:
@@ -2065,10 +2068,10 @@ async def get_list(token: str, entity_id: str) -> dict:
         return _raise(await c.get(f"/lists/{entity_id}")).json()
 
 
-async def get_list_summary(token: str, list_type: str = "", date_from: str = "", date_to: str = "") -> dict:
-    params = {k: v for k, v in (("list_type", list_type), ("date_from", date_from), ("date_to", date_to)) if v}
+async def get_list_summary(token: str, params: dict | None = None) -> dict:
+    """List status counts; ``params`` are the index filters the cards summarise."""
     async with _api_client(token) as c:
-        return _raise(await c.get("/lists/summary", params=params)).json()
+        return _raise(await c.get("/lists/summary", params=params or {})).json()
 
 
 async def create_list(token: str, data: dict) -> dict:

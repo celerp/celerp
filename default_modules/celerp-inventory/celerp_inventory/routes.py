@@ -1915,7 +1915,7 @@ def _validate_rfid_epc(rfid_epc) -> None:
         raise HTTPException(status_code=422, detail=str(e))
 
 
-async def _get_item_projection(session: AsyncSession, company_id, entity_id: str) -> Projection:
+async def get_item_projection(session: AsyncSession, company_id, entity_id: str) -> Projection:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "item":
         raise HTTPException(status_code=404, detail="Item not found")
@@ -2157,7 +2157,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # CURRENT status is draft, anyone with edit_inventory finishes authoring the
     # item freely; the status is re-read here on every patch, so an edit landing
     # after another user commits the item is gated like any available item.
-    _proj = await _get_item_projection(session, company_id, entity_id)
+    _proj = await get_item_projection(session, company_id, entity_id)
     _is_draft = str((_proj.state or {}).get("status") or "").lower() == "draft"
     # Cost fields are gated by set_inventory_prices, not by the schema role floor:
     # a granted operator edits cost, an ungranted manager still cannot.
@@ -3888,7 +3888,7 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
     # (edit_inventory) authors its cost while it is still a draft - the same carve-out
     # patch_item applies, so the pricing tab's Cost card works for the person entering
     # the item. Sell prices stay gated, and the gate re-arms once the item is available.
-    _proj = await _get_item_projection(session, company_id, entity_id)
+    _proj = await get_item_projection(session, company_id, entity_id)
     _is_draft = str((_proj.state or {}).get("status") or "").lower() == "draft"
     if not (is_cost_price_type(payload.price_type) and draft_cost_carveout(_is_draft, role, settings)):
         if not role_has_permission(settings, role, "set_inventory_prices"):
@@ -4159,11 +4159,13 @@ def _fmt_ts(val) -> str:
     return s.rstrip() + "Z"
 
 
-@router.get("/export/csv")
+@router.get(
+    "/export/csv",
+    dependencies=[require_permission("view_inventory"), require_permission("import_export_data")],
+)
 async def export_items_csv(
     request: Request,
     company_id=Depends(get_current_company_id),
-    _: None = require_permission("view_inventory"),
     session: AsyncSession = Depends(get_session),
     role: str = Depends(get_current_role),
     settings: dict = Depends(get_current_company_settings),
@@ -4174,13 +4176,16 @@ async def export_items_csv(
     applies) and, via ``cols``, the columns the screen shows in the order it shows them."""
     from celerp.services.field_schema import get_effective_field_schema
 
-    listed = await query_items(session, company_id, role, filters, _attr_filters(request))
     price_config = await get_price_config(session, company_id)
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
     # The column universe: the default export set, the effective schema (the filtered category's
-    # when exactly one is selected, else the base item schema) and the derived money columns.
+    # when exactly one is selected, else the base item schema plus every category's fields, as
+    # the All view's column manager offers them) and the derived money columns.
     single_cat = filters.category if filters.category and "," not in filters.category else None
     schema = await get_effective_field_schema(session, company_id, category=single_cat)
+    category_fields: list[dict] = [] if single_cat else [
+        fld for fields in (settings.get("category_schemas") or {}).values() for fld in fields
+    ]
     price_cols = [price_key(pl["name"]) for pl in price_config[0] if pl.get("name")]
     default_cols = ["id", "sku", "name", "category", "quantity", "status"] + price_cols + [
         "weight", "weight_unit", "pieces", "sell_by", "barcode", "gtin", "rfid_epc", "hs_code",
@@ -4189,8 +4194,12 @@ async def export_items_csv(
     ]
     virtual = {fld["key"]: fld["paired_with"] for fld in schema if fld.get("virtual") and fld.get("paired_with")}
     # Image fields are list-only previews with no CSV representation.
-    allowed = set(default_cols) | {fld["key"] for fld in schema if fld.get("type") != "image"} | {"holding_value", "sold_price"}
+    allowed = set(default_cols) | {
+        fld["key"] for fld in schema + category_fields if fld.get("type") != "image"
+    } | {"holding_value", "sold_price"}
+    # The columns are settled before the rows are fetched, so an unknown column costs no query.
     out_cols = resolve_export_cols(cols, default_cols, allowed)
+    listed = await query_items(session, company_id, role, filters, _attr_filters(request))
 
     # A column the role may not see leaves the header, not just the cells: the rows were already
     # stripped by the list pipeline, so this keeps the header honest. A cost-list column such as

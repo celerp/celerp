@@ -3953,7 +3953,8 @@ class TestCSVExport:
         assert r.status_code == 200
         params = docs_mock.call_args.args[1]
         assert params == {"doc_type": "invoice", "status_in": "paid,partial", "contact_id": "c:9",
-                          "date_from": "2026-01-01", "date_to": "2026-02-01"}, params
+                          "date_from": "2026-01-01", "date_to": "2026-02-01",
+                          "sort": "total", "dir": "asc"}, params
 
         lists_mock = AsyncMock(return_value=(_stream(), {}))
         with patch("ui.api_client.export_lists_csv", lists_mock):
@@ -13712,8 +13713,8 @@ class TestDocumentsOverhaul:
         """GET /docs?type=invoice passes doc_type to get_doc_summary."""
         captured = {}
         original_summary = AsyncMock(return_value=_DOC_SUMMARY)
-        async def _capture_summary(token, doc_type="", **_window):
-            captured["doc_type"] = doc_type
+        async def _capture_summary(token, params=None):
+            captured["doc_type"] = (params or {}).get("doc_type")
             return await original_summary(token)
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -20429,3 +20430,95 @@ class TestInventoryThumbnailColumn:
         assert r.status_code == 200
         assert 'id="img-cell-gc-123"' in r.text
         assert "File exceeds 50 MB limit" in r.text
+
+    @pytest.mark.asyncio
+    async def test_list_thumbnail_upload_is_hero_and_follows_role(self, ui_client):
+        """A drop into the cell asks the API to make the image the preview, and the returned
+        cell is a drop target only for a role that may edit inventory."""
+        up = AsyncMock(return_value={"id": "f-9"})
+        with (
+            patch("ui.api_client.upload_item_file", new=up),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "thumbnail_file_id": "f-9"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            owner = await ui_client.post(
+                "/api/items/gc:123/thumbnail",
+                files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+                cookies=_authed(),
+            )
+            viewer = await ui_client.post(
+                "/api/items/gc:123/thumbnail",
+                files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+                cookies=_authed(role="viewer"),
+            )
+        assert up.call_args.kwargs.get("as_hero") is True
+        assert owner.status_code == 200 and 'hx-post="/api/items/gc:123/thumbnail"' in owner.text
+        assert viewer.status_code == 200 and 'id="cell-gc-123-thumbnail"' in viewer.text
+        assert "hx-post" not in viewer.text and 'src="/items/gc:123/files/f-9/thumbnail"' in viewer.text
+
+    @pytest.mark.asyncio
+    async def test_list_thumbnail_upload_failure_returns_a_cell(self, ui_client):
+        """When the item cannot be re-read the response is still the image cell carrying
+        the message, so the swap keeps the row's shape."""
+        from ui.api_client import APIError
+        with (
+            patch("ui.api_client.upload_item_file", new=AsyncMock(return_value={"id": "f-9"})),
+            patch("ui.api_client.get_item", new=AsyncMock(side_effect=APIError(404, "Item not found"))),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/thumbnail",
+                files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+                cookies=_authed(), headers={"HX-Request": "true"},
+            )
+        assert r.status_code == 200
+        assert r.text.lstrip().startswith("<td"), r.text[:200]
+        assert 'class="cell-error"' in r.text and "Item not found" in r.text
+        assert "hx-post" not in r.text
+
+
+class TestReviewedListRoutes:
+    @pytest.mark.asyncio
+    async def test_page_parameter_is_guarded(self, ui_client):
+        """A page value that is not a positive integer is page 1, never a server error."""
+        with (
+            patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={})),
+        ):
+            for path in ("/docs?type=invoice&page=abc", "/docs?type=invoice&page=-3",
+                         "/docs/search?type=invoice&page=abc", "/lists?type=quotation&page=abc",
+                         "/lists/search?type=quotation&page=x"):
+                r = await ui_client.get(path, cookies=_authed())
+                assert r.status_code == 200, (path, r.status_code)
+
+    @pytest.mark.asyncio
+    async def test_export_failures_are_error_responses_not_downloads(self, ui_client):
+        """A refused or invalid export answers with the API's status and message as text,
+        never a downloaded CSV that says error."""
+        from ui.api_client import APIError
+        err = AsyncMock(side_effect=APIError(422, "Unknown export column(s): bogus"))
+        with (
+            patch("ui.api_client.export_items_csv", new=err),
+            patch("ui.api_client.export_docs_csv", new=err),
+            patch("ui.api_client.export_lists_csv", new=err),
+        ):
+            for path in ("/inventory/export/csv?cols=bogus", "/docs/export/csv?type=invoice",
+                         "/lists/export/csv?type=quotation"):
+                r = await ui_client.get(path, cookies=_authed())
+                assert r.status_code == 422, (path, r.status_code)
+                assert "content-disposition" not in {k.lower() for k in r.headers}, path
+                assert r.headers["content-type"].startswith("text/plain"), path
+                assert "bogus" in r.text
+
+    @pytest.mark.asyncio
+    async def test_inventory_export_never_sends_image_columns(self, ui_client):
+        """The image column is a list-only preview: it is dropped from the export whether
+        the URL names the columns or the saved preference does."""
+        from ui.routes.inventory import _export_columns
+        meta = ([{"key": "sku", "type": "text"}, {"key": "name", "type": "text"},
+                 {"key": "thumbnail", "type": "image"}], {}, {"": ["thumbnail", "sku", "name"]}, {}, [], [], {})
+        with patch("ui.routes.inventory._load_inventory_view_metadata", new=AsyncMock(return_value=meta)):
+            assert await _export_columns("tok", {"cols": ["thumbnail", "name", "sku"]}) == ["name", "sku"]
+            resolved = await _export_columns("tok", {})
+        assert "thumbnail" not in resolved and "sku" in resolved and "name" in resolved

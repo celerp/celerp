@@ -845,7 +845,7 @@ async def _load_dashboard(token: str):
 
     valuation = await _safe(api.get_valuation(token), {})
     doc_summary = await _safe(api.get_doc_summary(token), {})
-    memo_doc_summary = await _safe(api.get_doc_summary(token, doc_type="memo"), {})
+    memo_doc_summary = await _safe(api.get_doc_summary(token, {"doc_type": "memo"}), {})
     doc_summary = {**doc_summary, **memo_doc_summary}
     kpis_data = await _safe(api.get_dashboard_kpis(token), {})
     try:

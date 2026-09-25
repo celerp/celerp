@@ -1219,7 +1219,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_csv_export_empty(self, ui):
-        with _Patches({"ui.api_client.export_items_csv": AsyncMock(return_value=b"name,sku\n")}):
+        with _Patches({**_inventory_mocks(), "ui.api_client.export_items_csv": AsyncMock(return_value=b"name,sku\n")}):
             r = await ui.get("/inventory/export/csv", cookies=_c())
         assert r.status_code == 200
 
