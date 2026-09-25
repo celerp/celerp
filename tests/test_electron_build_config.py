@@ -537,38 +537,6 @@ def test_main_js_activate_shows_hidden_window():
     )
 
 
-def test_shell_pypi_check_btn_visible():
-    """In the PyPI path, the check button must NOT be hidden.
-
-    The check button was previously hidden for PyPI installs, making the UI
-    inconsistent with Electron (WET: different behaviour, same widget).
-    PyPI path now wires the button to runPyPICheck() instead.
-    """
-    src = _shell_src()
-    # Confirm the PyPI branch no longer hides checkBtn
-    # Look for the tell-tale old pattern: checkBtn.style.display = 'none' outside Electron branch
-    # We require runPyPICheck to exist instead
-    assert "runPyPICheck" in src, (
-        "shell.py PyPI path is missing runPyPICheck(). "
-        "The check button has no click handler in PyPI mode."
-    )
-
-
-def test_shell_pypi_auto_check_on_load():
-    """PyPI path must call runPyPICheck() automatically on load (not just on button click)."""
-    src = _shell_src()
-    # The auto-call must appear after the button click handler wiring
-    pypi_idx = src.find("runPyPICheck")
-    assert pypi_idx != -1, "runPyPICheck not found in shell.py"
-    # The function definition ends, then there's a btn click wiring, then the auto-call
-    # Simply confirm runPyPICheck() appears at least twice (definition + auto-call)
-    count = src.count("runPyPICheck")
-    assert count >= 3, (  # definition + addEventListener + auto-call
-        f"runPyPICheck appears only {count} time(s) in shell.py. "
-        "Expect at least 3: function definition, click handler body, and auto-call on load."
-    )
-
-
 def test_main_js_cmd_q_quits_fully():
     """Cmd+Q (before-quit) must set isQuitting=true so the close handler lets it through.
 

@@ -132,6 +132,12 @@ def _pip_blocker() -> str | None:
 # The blockers that also stop `celerp upgrade` (the rest only concern the in-app update).
 PIP_BLOCKERS = ("pip_missing", "pip_old", "not_writable")
 
+# Every reason the update card can show (`shell.update_blocked_<code>`): the
+# blockers, "administrator" for everyone but the install owner, and the refusals
+# a person can get from asking for an update.
+CARD_REASONS = ("channel", "dev_build", "unsupervised", *PIP_BLOCKERS, "container",
+                "administrator", "in_progress", "check_failed", "current")
+
 
 def self_update_blockers() -> list[str]:
     """Reasons this install cannot update itself, as codes the card translates

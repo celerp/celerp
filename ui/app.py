@@ -53,7 +53,7 @@ from ui.routes import (
     auth, setup, search, settings, settings_import,
     settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
     settings_contacts, settings_cloud, settings_connectors, settings_payments, notifications, events, stars,
-    modules_page, account, commercial,
+    modules_page, account, commercial, system_update,
 )
 from fasthtml.common import *
 from starlette.responses import HTMLResponse
@@ -429,7 +429,7 @@ if not _ENABLED_MODULES and os.environ.get("MODULE_DIR"):
 for mod in (auth, setup, search, settings, settings_import,
             settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
             settings_contacts, settings_cloud, settings_connectors, settings_payments,
-            notifications, events, stars, modules_page, account, commercial):
+            notifications, events, stars, modules_page, account, commercial, system_update):
     mod.setup_routes(app)
 
 # Module-conditional UI routes

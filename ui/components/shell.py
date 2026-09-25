@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from fasthtml.common import *
 
+from celerp.services.update import CARD_REASONS, PIP_BLOCKERS
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs
 from ui.components.table import searchable_select
@@ -1042,69 +1043,151 @@ document.addEventListener('DOMContentLoaded', function() {
         });
       }
     } else {
-      // ── PyPI / pip path ───────────────────────────────────────────────
-      // Electron-only controls are hidden; everything else (version label,
-      // state text, check button, pip upgrade command) works identically.
-      if (restartBtn) restartBtn.style.display = 'none';
+      // ── pip path ──────────────────────────────────────────────────────
+      // The API checks the package index and says whether this install can
+      // update itself and whether this user may install; the card shows that.
+      var i18n = window.__shellI18n;
+      var releaseEl = card.querySelector('.update-card__release');
+      var upgradeEl = card.querySelector('.update-card__upgrade-cmd');
+      var autoEl = card.querySelector('.update-card__auto');
+      var autoInput = card.querySelector('.update-card__auto-input');
+      // Reasons the pip command is the way to update (see the markup).
+      var pipReasons = upgradeEl ? upgradeEl.dataset.reasons.split(' ') : [];
+      var lastStatus = null;
       if (progressBar) progressBar.style.display = 'none';
 
-      function fetchLatestRelease() {
-        return fetch('https://pypi.org/pypi/celerp/json').then(function(r) { return r.json(); }).then(function(pypi) {
-          return pypi.info && pypi.info.version ? pypi.info.version : null;
+      function show(el, visible) { if (el) el.style.display = visible ? '' : 'none'; }
+      function reasonText(code) { return i18n.updateBlocked[code] || ''; }
+
+      function resultText(r) {
+        if (r.ok) return i18n.updateResultOk.replace('{version}', r.to);
+        var text = r.outcome === 'rollback_failed' ? i18n.updateResultRollbackFailed : i18n.updateResultFailed;
+        return text.replace('{version}', r.to).replace('{reason}', r.reason || '');
+      }
+
+      function render(s) {
+        lastStatus = s;
+        if (versionEl) versionEl.textContent = 'v' + s.current;
+        var notes = [];
+        // The last attempt stays on the card while it is still the news: the
+        // version it installed is running, or the version it failed on is
+        // still the one on offer.
+        var r = s.last_result;
+        if (r && ((r.ok && r.to === s.current) || (!r.ok && r.to === s.latest))) notes.push(resultText(r));
+        show(upgradeEl, false);
+        show(autoEl, s.can_install);
+        if (autoInput) autoInput.checked = !!s.auto;
+        setCheckBtn(s.reason !== 'administrator' && !s.installing);
+        if (s.installing) {
+          setState(reasonText('in_progress'), false);
+          show(autoEl, false);
+        } else if (s.check_error) {
+          setState(i18n.updateCheckFailed, false);
+        } else if (!s.checked_at) {
+          setState(i18n.updateNotChecked, false);
+        } else if (s.latest) {
+          setState(i18n.updateAvailablePrefix + s.latest, s.can_install);
+          window.celerpSetUpdateReady(s.latest);
+          if (!s.can_install) {
+            notes.push(reasonText(s.reason));
+            show(upgradeEl, pipReasons.indexOf(s.reason) !== -1);
+          }
+        } else {
+          setState(i18n.upToDate, false);
+        }
+        if (releaseEl) releaseEl.textContent = notes.join(' ');
+      }
+
+      function load(method, url) {
+        return fetch(url, { method: method }).then(function(r) {
+          if (!r.ok) throw new Error(String(r.status));
+          return r.json();
         });
       }
 
-      function runPyPICheck() {
+      function refresh(check) {
         setCheckBtn(false);
-        setState(window.__shellI18n.checking, false);
-        var releaseEl = card.querySelector('.update-card__release');
-        if (releaseEl) releaseEl.textContent = '';
-        fetch('/health').then(function(r) { return r.json(); }).then(function(health) {
-          var current = health.version || '';
-          var isDev = current.indexOf('.dev') !== -1 || current.indexOf('+dev') !== -1 || current.indexOf('0.0.0') === 0;
-          if (versionEl) versionEl.textContent = isDev ? window.__shellI18n.developmentBuild : (current ? 'v' + current : window.__shellI18n.unknownVersion);
-          if (isDev) {
-            setState(window.__shellI18n.runningFromSource, false);
-            resetToIdle();
-            // A source build is not pip-upgradable, so it is never offered an
-            // update. Show the latest published release, best-effort, so the
-            // developer can see whether newer releases landed since their build.
-            return fetchLatestRelease().then(function(latest) {
-              if (releaseEl && latest) releaseEl.textContent = window.__shellI18n.latestReleasePrefix + latest;
-            }).catch(function() {});
-          }
-          return fetchLatestRelease().then(function(latest) {
-            if (!latest) { setState(window.__shellI18n.upToDate, false); resetToIdle(); return; }
-            if (latest !== current) {
-              setState(window.__shellI18n.updateAvailablePrefix + latest, false);
-              var upgrade = card.querySelector('.update-card__upgrade-cmd');
-              if (upgrade) upgrade.style.display = '';
-              window.celerpSetUpdateReady(latest);
-            } else {
-              setState(window.__shellI18n.upToDate, false);
-            }
-            resetToIdle();
+        setState(i18n.checking, false);
+        load(check ? 'POST' : 'GET', check ? '/system/update/check' : '/system/update')
+          .then(render)
+          .catch(function() {
+            setState(i18n.updateCheckFailed, false);
+            setCheckBtn(true);
           });
-        }).catch(function() {
-          setState(window.__shellI18n.checkFailed, false);
-          resetToIdle();
-        });
+      }
+
+      // Celerp restarts to install, so the UI itself is away for part of the
+      // wait: a failed poll means "still restarting", not an error.
+      function waitForUpdate(target, before) {
+        var deadline = Date.now() + 5 * 60 * 1000;
+        (function poll() {
+          if (Date.now() > deadline) { setState(i18n.updateStillRestarting, false); return; }
+          setTimeout(function() {
+            load('GET', '/system/update').then(function(s) {
+              var r = s.last_result;
+              if (!s.installing && r && r.to === target && r.at !== before) { window.location.reload(); return; }
+              poll();
+            }).catch(poll);
+          }, 3000);
+        })();
       }
 
       if (checkBtn) {
-        checkBtn.addEventListener('click', function() { runPyPICheck(); });
+        checkBtn.addEventListener('click', function() { refresh(true); });
+      }
+
+      if (restartBtn) {
+        restartBtn.addEventListener('click', function() {
+          if (!confirm(restartBtn.dataset.confirm)) return;
+          var before = lastStatus && lastStatus.last_result ? lastStatus.last_result.at : null;
+          restartBtn.disabled = true;
+          fetch('/system/update', { method: 'POST' }).then(function(r) {
+            return r.json().catch(function() { return {}; }).then(function(body) {
+              restartBtn.disabled = false;
+              if (!r.ok) {
+                setState(reasonText(body.detail) || i18n.updateCheckFailed, false);
+                return;
+              }
+              setState(i18n.updateInstalling.replace('{version}', body.installing), false);
+              setCheckBtn(false);
+              show(autoEl, false);
+              waitForUpdate(body.installing, before);
+            });
+          }).catch(function() {
+            restartBtn.disabled = false;
+            setState(i18n.updateCheckFailed, false);
+          });
+        });
+      }
+
+      if (autoInput) {
+        autoInput.addEventListener('change', function() {
+          var wanted = autoInput.checked;
+          fetch('/system/update/settings', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ auto: wanted }),
+          }).then(function(r) {
+            if (!r.ok) throw new Error(String(r.status));
+          }).catch(function() {
+            autoInput.checked = !wanted;
+            setState(i18n.requestFailedPrefix, false);
+          });
+        });
+        autoInput.addEventListener('keydown', function(e) {
+          if (e.key === 'Escape') autoInput.blur();
+        });
       }
 
       var copyBtn = card.querySelector('.update-card__copy-btn');
       if (copyBtn) {
         copyBtn.addEventListener('click', function() {
           navigator.clipboard.writeText('pip install --upgrade celerp').catch(function() {});
-          _copiedFeedback(copyBtn, window.__shellI18n.copyLabel);
+          _copiedFeedback(copyBtn, i18n.copyLabel);
         });
       }
 
-      // Auto-check on load so the card shows a version immediately.
-      runPyPICheck();
+      refresh(false);
     }
   })();
 });
@@ -1474,12 +1557,14 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "errorPrefix": t("shell.error_prefix", lang),
         "checking": t("shell.checking", lang),
         "restarting": t("shell.restarting", lang),
-        "developmentBuild": t("shell.development_build", lang),
-        "unknownVersion": t("shell.unknown_version", lang),
-        "runningFromSource": t("shell.running_from_source", lang),
-        "latestReleasePrefix": t("shell.latest_release_prefix", lang),
         "updateAvailablePrefix": t("shell.update_available_prefix", lang),
-        "checkFailed": t("shell.check_failed", lang),
+        "updateNotChecked": t("shell.update_not_checked", lang),
+        "updateInstalling": t("shell.update_installing", lang),
+        "updateStillRestarting": t("shell.update_still_restarting", lang),
+        "updateResultOk": t("shell.update_result_ok", lang),
+        "updateResultFailed": t("shell.update_result_failed", lang),
+        "updateResultRollbackFailed": t("shell.update_result_rollback_failed", lang),
+        "updateBlocked": {code: t(f"shell.update_blocked_{code}", lang) for code in CARD_REASONS},
         "starOnGithub": t("shell.star_on_github", lang),
         "appreciateSupport": t("shell.appreciate_support", lang),
     }
@@ -1780,11 +1865,19 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                         Button(t("btn.check_for_updates"), cls="update-card__check-btn", type="button"),
                         Span("", cls="update-card__release"),
                         Button(t("btn.restart_to_install"), cls="update-card__restart-btn", type="button",
-                               style="display:none;"),
+                               data_confirm=t("shell.update_restart_confirm"), style="display:none;"),
+                        Label(
+                            Input(type="checkbox", cls="update-card__auto-input"),
+                            Span(t("shell.update_auto_label")),
+                            cls="update-card__auto",
+                            style="display:none;",
+                        ),
                         Div(
                             Code("pip install --upgrade celerp", cls="update-card__cmd"),
                             Button(t("btn.copy"), cls="update-card__copy-btn", type="button"),
                             cls="update-card__upgrade-cmd",
+                            # The pip command is shown for these reasons only.
+                            data_reasons=" ".join(("unsupervised", *PIP_BLOCKERS)),
                             style="display:none;",
                         ),
                         A(t("msg.releases"), href="https://github.com/celerp/celerp/releases",

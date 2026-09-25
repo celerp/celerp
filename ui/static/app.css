@@ -2724,6 +2724,14 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
   font-size: 0.78rem;
 }
 .update-card__releases-link:hover { text-decoration: underline; }
+.update-card__auto {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--c-text2);
+  cursor: pointer;
+}
 .update-card__actions {
   display: flex;
   flex-direction: column;
