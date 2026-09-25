@@ -237,32 +237,3 @@ class TestLazyMigration:
         ], "files": []}
         _maybe_migrate_attachments(state)
         assert state["files"][0]["document_tag"] == "view_360"
-
-
-class TestItemFileThumbnailSet:
-    def _set(self, state: dict, file_id: str = "f1", url: str = "https://cdn.example.test/co/f1_thumb") -> dict:
-        return apply_item_event(state, "item.file.thumbnail_set", {
-            "entity_id": "item:test", "entity_type": "item", "file_id": file_id, "thumb_url": url,
-        })
-
-    def test_sets_the_thumbnail_and_replays_idempotently(self):
-        state = _file_attached(_base_state(), "f1", is_hero=True)
-        state = self._set(self._set(state))
-        assert len(state["files"]) == 1
-        assert state["files"][0]["thumb_url"] == "https://cdn.example.test/co/f1_thumb"
-
-    def test_unknown_file_id_changes_nothing(self):
-        state = _file_attached(_base_state(), "f1")
-        state["attachments"] = None  # older states can hold an explicit null here
-        state = self._set(state, file_id="missing")
-        assert state["files"][0]["thumb_url"] is None
-
-    def test_legacy_attachment_keeps_its_thumbnail_through_migration(self):
-        state = _base_state()
-        state["attachments"] = [{"id": "a1", "type": "image", "filename": "a1.jpg", "mime": "image/jpeg",
-                                 "size": 10, "url": "https://cdn.example.test/co/a1.jpg"}]
-        state = self._set(state, file_id="a1", url="https://cdn.example.test/co/a1_thumb")
-        assert state["attachments"][0]["thumb_url"] == "https://cdn.example.test/co/a1_thumb"
-        state = _file_attached(state, "f2")  # the next file event migrates attachments to files
-        migrated = next(f for f in state["files"] if f["id"] == "a1")
-        assert migrated["thumb_url"] == "https://cdn.example.test/co/a1_thumb"

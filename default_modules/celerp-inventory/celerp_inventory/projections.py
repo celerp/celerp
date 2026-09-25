@@ -148,7 +148,6 @@ def _maybe_migrate_attachments(current: dict) -> None:
             "mime": att.get("mime", ""),
             "size": att.get("size", 0),
             "url": att.get("url", ""),
-            "thumb_url": att.get("thumb_url"),
             "document_tag": tag,
             "description": att.get("label") or None,
             "uploaded_at": None,
@@ -457,7 +456,6 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
             "mime": data["mime"],
             "size": data["size"],
             "url": data.get("url", ""),
-            "thumb_url": data.get("thumb_url"),
             "document_tag": data.get("document_tag"),
             "description": data.get("description"),
             "uploaded_at": data.get("uploaded_at"),
@@ -501,11 +499,6 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
             f["is_hero"] = f.get("id") == fid
         hero = next((f for f in current.get("files", []) if f.get("is_hero")), None)
         current["preview_image_id"] = hero["id"] if hero else None
-    elif event_type == "item.file.thumbnail_set":
-        # The thumbnail route previews legacy attachments too, so the file can be in either list.
-        for f in (current.get("files") or []) + (current.get("attachments") or []):
-            if f.get("id") == data["file_id"]:
-                f["thumb_url"] = data["thumb_url"]
     else:
         raise ValueError(f"Unsupported item event: {event_type}")
     return current

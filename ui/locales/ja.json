@@ -1639,7 +1639,6 @@
   "event.file.deleted": "ファイルが削除されました",
   "event.file.description_updated": "ファイルの説明が更新されました",
   "event.file.hero_set": "ヒーロー画像が設定されました",
-  "event.file.thumbnail_set": "サムネイルが作成されました",
   "field.contact_name": "接触",
   "field.contact_company_name": "取引先企業",
   "field.contact_id": "接触",

@@ -1640,7 +1640,6 @@
   "event.file.deleted": "Datei entfernt",
   "event.file.description_updated": "Dateibeschreibung aktualisiert",
   "event.file.hero_set": "Hero-Bild festgelegt",
-  "event.file.thumbnail_set": "Miniaturansicht erstellt",
   "field.contact_name": "Kontakt",
   "field.contact_company_name": "Kontaktunternehmen",
   "field.contact_id": "Kontakt",

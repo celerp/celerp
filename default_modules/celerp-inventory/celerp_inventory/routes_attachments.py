@@ -38,9 +38,9 @@ from celerp.models.projections import Projection
 from celerp.services.attachments import (
     AttachmentType,
     get_or_create_thumbnail,
+    local_attachment_url_path,
     merge_attachments,
     remove_attachment,
-    repair_remote_thumbnail,
     resolve_preview_image_id,
     store_upload,
 )
@@ -330,7 +330,6 @@ async def bulk_attach_files(
                         "mime": meta["mime"],
                         "size": meta["size"],
                         "url": meta.get("url", ""),
-                        "thumb_url": meta.get("thumb_url"),
                         "document_tag": tag,
                         "description": label,
                         "uploaded_at": datetime.now(timezone.utc).isoformat(),
@@ -412,7 +411,6 @@ async def upload_item_file(
             "mime": meta["mime"],
             "size": meta["size"],
             "url": meta.get("url", ""),
-            "thumb_url": meta.get("thumb_url"),
             "document_tag": document_tag,
             "description": None,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),
@@ -546,33 +544,6 @@ async def delete_item_file(
     await session.commit()
 
 
-async def _record_thumbnail(
-    session: AsyncSession, company_id, entity_id: str, match: dict, thumb_url: str, actor_id
-) -> None:
-    """Record a repaired thumbnail on its file. The key is fixed per file and URL, so views
-    racing on the same file record it once. A failed write is logged and dropped: the
-    thumbnail is already stored and the next view repairs the record again."""
-    try:
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="item",
-            event_type="item.file.thumbnail_set",
-            data={"entity_id": entity_id, "entity_type": "item", "file_id": match["id"],
-                  "thumb_url": thumb_url, "filename": match.get("filename")},
-            actor_id=actor_id,
-            location_id=None,
-            source="thumbnail",
-            idempotency_key=f"item.file.thumbnail_set:{match['id']}:{thumb_url}",
-            metadata_={},
-        )
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        logger.warning("could not record the repaired thumbnail of file %s", match.get("id"))
-
-
 async def _assert_image_visible(session: AsyncSession, company_id, role: str, row: Projection, match: dict) -> None:
     """An image file follows the image field's visibility for the item's category, the same
     rule that strips the item's image ids, so a role denied the image cannot fetch it."""
@@ -590,16 +561,15 @@ async def item_file_thumbnail(
     file_id: str,
     company_id=Depends(get_current_company_id),
     _: None = require_permission("view_inventory"),
-    user=Depends(get_current_user),
     role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ):
     """Serve the small JPEG preview of an image file for the item list.
 
-    A cloud-stored image from before thumbnails were recorded gets its thumbnail made and
-    recorded on first view. Until that succeeds there is no preview: the full original is
-    never sent in its place."""
-    from fastapi.responses import RedirectResponse, Response
+    The preview comes from storage under the id derived from the file; an image stored
+    before thumbnails existed gets one made on first view. Until that succeeds there is
+    no preview: the full original is never sent in its place."""
+    from fastapi.responses import Response
     row = await get_item_projection(session, company_id, entity_id)
     files = row.state.get("files") or []
     atts = row.state.get("attachments") or []
@@ -607,16 +577,6 @@ async def item_file_thumbnail(
     if not str(match.get("mime", "")).startswith("image/"):
         raise HTTPException(status_code=404, detail="File is not an image")
     await _assert_image_visible(session, company_id, role, row, match)
-    thumb_url = match.get("thumb_url") or ""
-    if thumb_url.startswith(("http://", "https://")):
-        return RedirectResponse(thumb_url)
-    url = match.get("url", "")
-    if url.startswith(("http://", "https://")):
-        repaired = await repair_remote_thumbnail(str(company_id), match)
-        if repaired is None:
-            raise HTTPException(status_code=404, detail="Thumbnail unavailable")
-        await _record_thumbnail(session, company_id, entity_id, match, repaired, user.id)
-        return RedirectResponse(repaired)
     data = await get_or_create_thumbnail(str(company_id), match)
     if data is None:
         raise HTTPException(status_code=404, detail="Thumbnail unavailable")
@@ -650,9 +610,8 @@ async def download_item_file(
     if url.startswith("http://") or url.startswith("https://"):
         from fastapi.responses import RedirectResponse as _Redir
         return _Redir(url)
-    from celerp.config import settings as _settings
-    dest = _settings.data_dir / url.lstrip("/")
-    if not dest.exists():
+    dest = local_attachment_url_path(str(company_id), url)
+    if dest is None:
         raise HTTPException(status_code=404, detail="File missing from disk")
     return FileResponse(
         path=str(dest),

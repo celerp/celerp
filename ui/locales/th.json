@@ -1639,7 +1639,6 @@
   "event.file.deleted": "ลบไฟล์แล้ว",
   "event.file.description_updated": "อัปเดตคำอธิบายไฟล์แล้ว",
   "event.file.hero_set": "ตั้งภาพหลักแล้ว",
-  "event.file.thumbnail_set": "สร้างภาพขนาดย่อแล้ว",
   "field.contact_name": "ผู้ติดต่อ",
   "field.contact_company_name": "บริษัทของผู้ติดต่อ",
   "field.contact_id": "ผู้ติดต่อ",

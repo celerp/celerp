@@ -6920,7 +6920,7 @@ async def download_doc_file(
     """Download a file attached to a doc (invoice, bill, etc.)."""
     from fastapi.responses import FileResponse, RedirectResponse
     from pathlib import Path
-    from celerp.config import settings
+    from celerp.services.attachments import local_attachment_url_path
 
     row = await _get_doc(session, company_id, entity_id)
     match = _get_doc_file(row.state.get("files", []), file_id)
@@ -6935,8 +6935,8 @@ async def download_doc_file(
         ext = Path(match.get("filename", "")).suffix
         url = f"/static/attachments/{company_id}/{file_id}{ext}"
 
-    dest = settings.data_dir / url.lstrip("/")
-    if not dest.exists():
+    dest = local_attachment_url_path(str(company_id), url)
+    if dest is None:
         raise HTTPException(status_code=404, detail="File missing from disk")
 
     return FileResponse(

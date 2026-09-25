@@ -1743,7 +1743,6 @@
   "event.file.deleted": "ፋይል ተወግዷል",
   "event.file.description_updated": "የፋይል መግለጫ ተዘምኗል",
   "event.file.hero_set": "የጀግና ምስል ስብስብ",
-  "event.file.thumbnail_set": "ትንሽ ምስል ተፈጥሯል",
   "field.contact_name": "ዕውቂያ",
   "field.contact_company_name": "የእውቂያ ኩባንያ",
   "field.contact_id": "ዕውቂያ",

@@ -22,9 +22,8 @@ def test_event_type_values() -> None:
     assert EventType.ITEM_SPLIT_FROM == "item.split_from"
     assert EventType.ITEM_TRANSFORM == "item.transform"
     assert EventType.ITEM_TRANSFORMED_FROM == "item.transformed_from"
-    assert EventType.ITEM_FILE_THUMBNAIL_SET == "item.file.thumbnail_set"
     # Spot-check total count
-    assert len(EventType) == 113
+    assert len(EventType) == 112
 
 
 def test_log_level_default_is_info() -> None:

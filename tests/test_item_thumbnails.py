@@ -47,8 +47,12 @@ async def _upload(client, h: dict, item_id: str, data: bytes, name: str = "photo
     return r.json()["id"]
 
 
+def _thumb_name(file_id: str) -> str:
+    return att_svc.thumbnail_id(file_id) + ".jpg"
+
+
 def _thumb_path(company_id: str, file_id: str):
-    return att_svc.local_attachment_path(company_id, att_svc.thumbnail_name(file_id))
+    return att_svc.local_attachment_path(company_id, _thumb_name(file_id))
 
 
 async def _company_id(client, h: dict) -> str:
@@ -63,9 +67,9 @@ async def test_store_upload_writes_thumbnail(tmp_path, monkeypatch):
     monkeypatch.setattr(att_svc.LocalBackend, "_root", property(lambda self: tmp_path))
     up = UploadFile(io.BytesIO(_png(640, 400)), filename="photo.png", headers={"content-type": "image/png"})
     meta = await att_svc.store_upload("co-1", up)
-    thumb = tmp_path / "co-1" / att_svc.thumbnail_name(meta["id"])
+    thumb = tmp_path / "co-1" / _thumb_name(meta["id"])
     assert thumb.is_file()
-    assert meta["thumb_url"].endswith("/" + att_svc.thumbnail_name(meta["id"]))
+    assert "thumb_url" not in meta  # found by its id, never by a recorded URL
     with Image.open(thumb) as im:
         assert im.format == "JPEG"
         assert max(im.size) == 160
@@ -308,7 +312,7 @@ async def test_store_upload_survives_thumbnail_store_failure(tmp_path, monkeypat
     meta = await att_svc.store_upload("co-2", up)
     assert len(calls) == 2
     assert (tmp_path / "co-2" / meta["url"].rsplit("/", 1)[-1]).is_file()
-    assert meta.get("thumb_url") is None
+    assert not (tmp_path / "co-2" / _thumb_name(meta["id"])).exists()
 
 
 @pytest.mark.asyncio
@@ -329,7 +333,7 @@ async def test_store_upload_makes_thumbnail_off_the_event_loop(tmp_path, monkeyp
     up = UploadFile(io.BytesIO(_png(640, 400)), filename="photo.png", headers={"content-type": "image/png"})
     meta = await att_svc.store_upload("co-3", up)
     assert att_svc.make_thumbnail in threaded
-    assert meta["thumb_url"]
+    assert (tmp_path / "co-3" / _thumb_name(meta["id"])).is_file()
 
 
 def test_make_thumbnail_honors_exif_orientation():
@@ -353,13 +357,6 @@ def test_make_thumbnail_refuses_oversized_images(monkeypatch):
     assert att_svc.make_thumbnail(_png(640, 400), "image/png") is not None
 
 
-class _RemoteBackend:
-    """A cloud-style backend: keeps nothing on disk and hands back an absolute URL."""
-
-    async def store(self, company_id, att_id, content, mime):
-        return f"https://cdn.example.test/{company_id}/{att_id}"
-
-
 def _zip(files: dict[str, bytes]) -> bytes:
     import zipfile
 
@@ -374,9 +371,46 @@ def _item_files(item: dict) -> list[dict]:
     return item.get("files") or (item.get("attributes") or {}).get("files") or []
 
 
+class _CloudBackend:
+    """A cloud-style backend that reads back only what it stored, like S3Backend."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.reads: list[str] = []
+        self.fail_read = False
+        self.fail_thumb_store = False
+
+    def _url(self, company_id, stored_id) -> str:
+        return f"https://cdn.example.test/{company_id}/{stored_id}"
+
+    async def store(self, company_id, att_id, content, mime):
+        if self.fail_thumb_store and att_id.endswith("_thumb"):
+            raise RuntimeError("storage unavailable")
+        url = self._url(company_id, att_id)
+        self.objects[url] = content
+        return url
+
+    async def read(self, company_id, url, max_bytes):
+        self.reads.append(url)
+        if self.fail_read:
+            raise RuntimeError("read failed")
+        if not url.startswith(self._url(company_id, "")):
+            return None
+        return self.objects.get(url)
+
+    async def read_stored(self, company_id, stored_id, mime, max_bytes):
+        return self.objects.get(self._url(company_id, stored_id))
+
+
+def _thumb_bytes_ok(content: bytes) -> None:
+    with Image.open(io.BytesIO(content)) as im:
+        assert im.format == "JPEG" and max(im.size) == 160
+
+
 @pytest.mark.asyncio
-async def test_bulk_attached_remote_image_previews_from_its_thumbnail(client, monkeypatch):
-    monkeypatch.setattr(att_svc, "_backend", _RemoteBackend())
+async def test_bulk_attached_cloud_image_previews_from_its_thumbnail(client, monkeypatch):
+    backend = _CloudBackend()
+    monkeypatch.setattr(att_svc, "_backend", backend)
     h = await _headers(client, "ThumbBulkCo", "thumbs-bulk@example.com")
     item_id = await _item(client, h, "THUMB-BULK")
     r = await client.post(
@@ -391,8 +425,9 @@ async def test_bulk_attached_remote_image_previews_from_its_thumbnail(client, mo
     file_id = files[0]["id"]
 
     r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
-    assert r.status_code in (302, 307), r.text
-    assert r.headers["location"].endswith("/" + att_svc.thumbnail_id(file_id))
+    assert r.status_code == 200, r.text
+    _thumb_bytes_ok(r.content)
+    assert backend.reads == []  # the stored thumbnail is served; the original is never read
 
 
 @pytest.mark.asyncio
@@ -403,88 +438,14 @@ async def test_merged_item_keeps_the_file_thumbnail(client):
     file_id = await _upload(client, h, a, _png())
     r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert r.status_code == 200, r.text
-    merged = (await client.get(f"/items/{r.json()['id']}", headers=h)).json()
-    thumbs = {f["id"]: f.get("thumb_url") for f in _item_files(merged)}
-    assert thumbs.get(file_id), thumbs
-
-
-@pytest.mark.asyncio
-async def test_connector_download_records_the_thumbnail_url(monkeypatch):
-    from types import SimpleNamespace
-
-    import celerp.connectors.images as images
-    import celerp.events.engine as engine_mod
-
-    emitted: dict = {}
-
-    async def _emit(session, **kw):
-        emitted.update(kw["data"])
-
-    async def _store(company_id, upload):
-        return {"id": "att-1", "filename": "p.png", "mime": "image/png", "size": 3,
-                "url": "https://cdn.example.test/c/att-1",
-                "thumb_url": "https://cdn.example.test/c/att-1_thumb"}
-
-    class _Resp:
-        content = b"png"
-        headers = {"content-type": "image/png"}
-
-        def raise_for_status(self):
-            return None
-
-    class _Http:
-        def __init__(self, **kw):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def get(self, url, **kw):
-            return _Resp()
-
-    class _Session:
-        async def get(self, *a, **k):
-            return SimpleNamespace(state={"files": []})
-
-    monkeypatch.setattr(engine_mod, "emit_event", _emit)
-    monkeypatch.setattr(att_svc, "store_upload", _store)
-    monkeypatch.setattr(images.httpx, "AsyncClient", _Http)
-
-    ok = await images.download_and_emit_file(
-        _Session(), "co", "item:1", "user:1", "https://img.example.test/p.png", "p.png", "product_images", True,
-    )
-    assert ok is True
-    assert emitted["thumb_url"] == "https://cdn.example.test/c/att-1_thumb"
-
-
-class _CloudBackend:
-    """A cloud-style backend that can read back what it stored, like S3Backend."""
-
-    def __init__(self) -> None:
-        self.objects: dict[str, bytes] = {}
-        self.reads = 0
-        self.fail_read = False
-        self.fail_thumb_store = False
-
-    async def store(self, company_id, att_id, content, mime):
-        if self.fail_thumb_store and att_id.endswith("_thumb"):
-            raise RuntimeError("storage unavailable")
-        url = f"https://cdn.example.test/{company_id}/{att_id}"
-        self.objects[url] = content
-        return url
-
-    async def read(self, company_id, url, max_bytes):
-        self.reads += 1
-        if self.fail_read:
-            raise RuntimeError("read failed")
-        return self.objects.get(url)
+    merged_id = r.json()["id"]
+    r = await client.get(f"/items/{merged_id}/files/{file_id}/thumbnail", headers=h)
+    assert r.status_code == 200, r.text
+    _thumb_bytes_ok(r.content)
 
 
 async def _legacy_cloud_image(client, monkeypatch, company: str, data: bytes | None = None):
-    """An item whose cloud-stored image was attached before thumbnails were recorded."""
+    """An item whose cloud-stored image was attached before thumbnails were made."""
     backend = _CloudBackend()
     monkeypatch.setattr(att_svc, "_backend", backend)
     h = await _headers(client, company, f"{company.lower()}@example.com")
@@ -495,115 +456,140 @@ async def _legacy_cloud_image(client, monkeypatch, company: str, data: bytes | N
     original = next(u for u in backend.objects if u.endswith("/" + file_id))
     if data is not None:
         backend.objects[original] = data
-    assert _item_files((await client.get(f"/items/{item_id}", headers=h)).json())[0]["thumb_url"] is None
+    assert not any(u.endswith("_thumb") for u in backend.objects)
     return backend, h, item_id, file_id, original
 
 
-async def _recorded_thumb(client, h, item_id) -> str | None:
-    return _item_files((await client.get(f"/items/{item_id}", headers=h)).json())[0]["thumb_url"]
+async def _item_history(session, company_id: str, item_id: str):
+    from sqlalchemy import func, select
+
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    session.expire_all()
+    events = await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id == item_id))
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+    return events, row.updated_at, row.version if hasattr(row, "version") else None
 
 
 @pytest.mark.asyncio
 async def test_legacy_cloud_image_gets_a_thumbnail_on_first_view(client, monkeypatch):
-    backend, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairCo")
+    backend, h, item_id, file_id, original = await _legacy_cloud_image(client, monkeypatch, "RepairCo")
     r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
-    assert r.status_code in (302, 307), r.text
-    thumb_url = r.headers["location"]
-    assert thumb_url.endswith("/" + att_svc.thumbnail_id(file_id))
-    with Image.open(io.BytesIO(backend.objects[thumb_url])) as im:
-        assert max(im.size) == 160
-    assert await _recorded_thumb(client, h, item_id) == thumb_url
+    assert r.status_code == 200, r.text
+    assert "location" not in r.headers
+    _thumb_bytes_ok(r.content)
+    assert backend.objects[backend._url(await _company_id(client, h), att_svc.thumbnail_id(file_id))] == r.content
 
     r2 = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
-    assert r2.headers["location"] == thumb_url
-    assert backend.reads == 1  # the recorded thumbnail is served without reading the original again
+    assert r2.content == r.content
+    assert backend.reads == [original]  # the stored thumbnail is served without reading the original again
 
 
 @pytest.mark.asyncio
-async def test_cloud_repair_has_no_preview_when_the_read_fails(client, monkeypatch):
-    backend, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairReadCo")
+async def test_viewing_a_thumbnail_never_changes_the_item(client, session, monkeypatch):
+    """Making a missing thumbnail on view writes storage only: no event, no change to the
+    item's history or its place in lists ordered by last change."""
+    _, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairQuietCo")
+    company_id = await _company_id(client, h)
+    before = await _item_history(session, company_id, item_id)
+    r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
+    assert r.status_code == 200, r.text
+    assert await _item_history(session, company_id, item_id) == before
+
+
+@pytest.mark.asyncio
+async def test_thumbnail_never_follows_a_recorded_url(client, session, monkeypatch):
+    """A file entry carrying a foreign original or thumbnail URL is never fetched from or
+    redirected to: the preview only ever comes from this company's own storage."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from celerp.models.projections import Projection
+
+    backend = _CloudBackend()
+    monkeypatch.setattr(att_svc, "_backend", backend)
+    h = await _headers(client, "ThumbForeignCo", "thumbs-foreign@example.com")
+    company_id = await _company_id(client, h)
+    item_id = await _item(client, h, "THUMB-FOREIGN")
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+    state = dict(row.state)
+    state["files"] = [{"id": "planted", "filename": "p.png", "mime": "image/png", "size": 1,
+                       "url": "http://169.254.169.254/latest/meta-data",
+                       "thumb_url": "https://attacker.example.test/pixel.png", "is_hero": True}]
+    row.state = state
+    flag_modified(row, "state")
+    await session.commit()
+
+    r = await client.get(f"/items/{item_id}/files/planted/thumbnail", headers=h)
+    assert r.status_code == 404
+    assert "location" not in r.headers
+    assert backend.objects == {}  # nothing fetched, nothing stored
+
+
+@pytest.mark.asyncio
+async def test_cloud_thumbnail_has_no_preview_when_the_read_fails(client, monkeypatch):
+    backend, h, item_id, file_id, original = await _legacy_cloud_image(client, monkeypatch, "RepairReadCo")
     backend.fail_read = True
     for expected_reads in (1, 2):
         r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
         assert r.status_code == 404 and "location" not in r.headers
-        assert backend.reads == expected_reads  # nothing recorded, so the next view retries
-    assert await _recorded_thumb(client, h, item_id) is None
+        assert len(backend.reads) == expected_reads  # nothing stored, so the next view retries
 
 
 @pytest.mark.asyncio
-async def test_cloud_repair_skips_an_original_that_does_not_decode(client, monkeypatch):
+async def test_cloud_thumbnail_skips_an_original_that_does_not_decode(client, monkeypatch):
     backend, h, item_id, file_id, _ = await _legacy_cloud_image(
         client, monkeypatch, "RepairBytesCo", data=b"not an image")
     r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
     assert r.status_code == 404 and "location" not in r.headers
-    assert backend.reads == 1
-    assert await _recorded_thumb(client, h, item_id) is None
+    assert len(backend.reads) == 1
     assert not any(u.endswith("_thumb") for u in backend.objects)
 
 
 @pytest.mark.asyncio
-async def test_cloud_repair_has_no_preview_when_the_thumbnail_cannot_be_stored(client, monkeypatch):
+async def test_cloud_thumbnail_has_no_preview_when_it_cannot_be_stored(client, monkeypatch):
     backend, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairStoreCo")
     backend.fail_thumb_store = True
     r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
     assert r.status_code == 404 and "location" not in r.headers
-    assert backend.reads == 1
-    assert await _recorded_thumb(client, h, item_id) is None
+    assert len(backend.reads) == 1
 
 
 @pytest.mark.asyncio
-async def test_cloud_repair_waits_for_a_free_slot(client, monkeypatch):
-    """A view past the repair limit waits for a slot rather than loading the full original."""
+async def test_thumbnail_waits_for_a_free_slot(client, monkeypatch):
+    """A view past the limit waits for a slot rather than loading another full original."""
     backend, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairBusyCo")
-    monkeypatch.setattr(att_svc, "_remote_repairs", att_svc._MAX_REMOTE_REPAIRS)
+    monkeypatch.setattr(att_svc, "_thumbnail_jobs", att_svc._MAX_THUMBNAIL_JOBS)
 
-    async def _finish_other_repair():
+    async def _finish_other_job():
         await asyncio.sleep(0.3)
-        att_svc._remote_repairs -= 1
+        att_svc._thumbnail_jobs -= 1
 
-    freeing = asyncio.create_task(_finish_other_repair())
+    freeing = asyncio.create_task(_finish_other_job())
     r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
     await freeing
-    assert r.headers["location"].endswith("/" + att_svc.thumbnail_id(file_id))
-    assert backend.reads == 1
+    assert r.status_code == 200, r.text
+    assert len(backend.reads) == 1
 
 
 @pytest.mark.asyncio
-async def test_cloud_repair_has_no_preview_when_no_slot_frees_up(client, monkeypatch):
+async def test_thumbnail_has_no_preview_when_no_slot_frees_up(client, monkeypatch):
     backend, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairFullCo")
-    monkeypatch.setattr(att_svc, "_remote_repairs", att_svc._MAX_REMOTE_REPAIRS)
-    monkeypatch.setattr(att_svc, "_REMOTE_REPAIR_WAIT_S", 0.3)
+    monkeypatch.setattr(att_svc, "_thumbnail_jobs", att_svc._MAX_THUMBNAIL_JOBS)
+    monkeypatch.setattr(att_svc, "_THUMBNAIL_JOB_WAIT_S", 0.3)
     r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
     assert r.status_code == 404 and "location" not in r.headers
-    assert backend.reads == 0
+    assert backend.reads == []
 
 
 @pytest.mark.asyncio
-async def test_view_only_role_repairs_a_cloud_thumbnail(client, session, monkeypatch):
+async def test_view_only_role_gets_a_cloud_thumbnail(client, session, monkeypatch):
     backend, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairViewCo")
     viewer = await _user_with_role(client, session, h, "viewer")
     r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=viewer)
-    assert r.headers["location"].endswith("/" + att_svc.thumbnail_id(file_id))
-    assert await _recorded_thumb(client, h, item_id) == r.headers["location"]
-
-
-@pytest.mark.asyncio
-async def test_repaired_thumbnail_is_recorded_once_per_file(client, session, monkeypatch):
-    """Views racing on the same file each try to record the same thumbnail; the ledger keeps one."""
-    from celerp_inventory.routes_attachments import _record_thumbnail
-    from sqlalchemy import func, select
-    from celerp.models.ledger import LedgerEntry
-
-    _, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairOnceCo")
-    company_id = await _company_id(client, h)
-    match = {"id": file_id, "filename": "photo.png"}
-    url = f"https://cdn.example.test/{company_id}/{att_svc.thumbnail_id(file_id)}"
-    for _ in range(2):
-        await _record_thumbnail(session, company_id, item_id, match, url, None)
-    count = await session.scalar(select(func.count()).select_from(LedgerEntry).where(
-        LedgerEntry.entity_id == item_id, LedgerEntry.event_type == "item.file.thumbnail_set"))
-    assert count == 1
-    assert await _recorded_thumb(client, h, item_id) == url
+    assert r.status_code == 200, r.text
+    _thumb_bytes_ok(r.content)
 
 
 class _S3Object:
@@ -658,3 +644,27 @@ async def test_s3_read_back_refuses_an_original_over_the_limit(monkeypatch):
     assert await s3.read("co1", url, 10) is None
     monkeypatch.setattr(att_svc, "_s3_client", lambda *a: _S3Client(b"x" * 11, length=0))
     assert await s3.read("co1", url, 10) is None  # a missing or wrong length still stops at the limit
+
+
+class _MissingKey(Exception):
+    response = {"Error": {"Code": "NoSuchKey"}}
+
+
+class _S3MissingClient(_S3Client):
+    async def get_object(self, Bucket, Key):
+        self.keys.append((Bucket, Key))
+        raise _MissingKey()
+
+
+@pytest.mark.asyncio
+async def test_s3_reads_a_stored_thumbnail_by_its_id(monkeypatch):
+    fake = _S3Client(b"thumb")
+    monkeypatch.setattr(att_svc, "_s3_client", lambda *a: fake)
+    s3 = att_svc.S3Backend("https://s3.example.test", "bucket", "k", "s")
+    assert await s3.read_stored("co1", "a1_thumb", "image/jpeg", 100) == b"thumb"
+    assert fake.keys == [("bucket", "attachments/co1/a1_thumb.jpg")]
+    assert await s3.read_stored("co1", "../co2/a1_thumb", "image/jpeg", 100) is None
+    assert len(fake.keys) == 1
+    missing = _S3MissingClient(b"")
+    monkeypatch.setattr(att_svc, "_s3_client", lambda *a: missing)
+    assert await s3.read_stored("co1", "a2_thumb", "image/jpeg", 100) is None

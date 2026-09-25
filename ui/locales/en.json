@@ -1762,7 +1762,6 @@
   "event.file.deleted": "File removed",
   "event.file.description_updated": "File description updated",
   "event.file.hero_set": "Hero image set",
-  "event.file.thumbnail_set": "Thumbnail created",
   "field.contact_name": "Contact",
   "field.contact_company_name": "Contact company",
   "field.contact_id": "Contact",

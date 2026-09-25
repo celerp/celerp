@@ -3770,7 +3770,6 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
                     "mime": f.get("mime", ""),
                     "size": f.get("size", 0),
                     "url": f.get("url", ""),
-                    "thumb_url": f.get("thumb_url"),
                     "document_tag": f.get("document_tag"),
                     "description": f.get("description"),
                     "uploaded_at": f.get("uploaded_at") or _dt.now(_tz.utc).isoformat(),

@@ -21,7 +21,7 @@ from starlette.responses import FileResponse
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.projections import Projection
-from celerp.services.attachments import remove_attachment, store_upload
+from celerp.services.attachments import local_attachment_url_path, remove_attachment, store_upload
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
 
@@ -370,15 +370,13 @@ async def download_contact_file(
 
     match = _get_contact_file(row.state.get("files", []), file_id)
     url = match.get("url", "")
-    from celerp.config import settings
     # Local backend: url = /static/attachments/<company_id>/<file>
-    # Resolve against data_dir — url is web-relative, not cwd-relative.
     # Legacy records (pre-fix) have no url stored; reconstruct from file_id + filename.
     if not url:
         ext = Path(match.get("filename", "")).suffix
         url = f"/static/attachments/{company_id}/{file_id}{ext}"
-    dest = settings.data_dir / url.lstrip("/")
-    if not dest.exists():
+    dest = local_attachment_url_path(str(company_id), url)
+    if dest is None:
         raise HTTPException(status_code=404, detail="File missing from disk")
 
     return FileResponse(

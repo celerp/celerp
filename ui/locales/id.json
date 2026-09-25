@@ -1639,7 +1639,6 @@
   "event.file.deleted": "File dihapus",
   "event.file.description_updated": "Deskripsi file diperbarui",
   "event.file.hero_set": "Gambar utama ditetapkan",
-  "event.file.thumbnail_set": "Thumbnail dibuat",
   "field.contact_name": "Kontak",
   "field.contact_company_name": "Hubungi perusahaan",
   "field.contact_id": "Kontak",
