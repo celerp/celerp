@@ -35,7 +35,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from decimal import Decimal
 
-from celerp.services.money import doc_rate, round_money, round_rate, to_decimal, to_stored_float
+from celerp.services.money import (document_discount_amount, document_line_amount, document_line_unit, doc_rate, round_money, round_rate, to_decimal, to_stored_float)
 
 
 def _dec(value: object) -> Decimal | None:
@@ -48,13 +48,19 @@ def _dec(value: object) -> Decimal | None:
         return None
 
 
-def _header_factor(state: dict) -> Decimal:
-    """Share of each line amount the customer actually pays after the header discount:
-    (subtotal - discount_amount) / subtotal, so the discount is allocated to lines in
-    proportion to their amount. 1 when there is no header discount."""
-    subtotal, discount = _dec(state.get("subtotal")), _dec(state.get("discount_amount"))
-    if not subtotal or not discount:
-        return Decimal(1)
+def _header_factor(state: dict, base_currency: str) -> Decimal | None:
+    currency = str(state.get("currency") or base_currency)
+    subtotal = _dec(state.get("subtotal"))
+    if subtotal is None:
+        amounts = [document_line_amount(line, currency) for line in state.get("line_items", []) or []]
+        if any(amount is None for amount in amounts):
+            return None
+        subtotal = sum((amount for amount in amounts if amount is not None), Decimal(0))
+    discount = document_discount_amount(state, subtotal, currency)
+    if discount is None:
+        return None
+    if subtotal == 0:
+        return Decimal(1) if discount == 0 else None
     return (subtotal - discount) / subtotal
 
 
@@ -78,9 +84,11 @@ class _LineIndex:
                 rate = doc_rate(state, base_currency)
             except ValueError:
                 rate = None
-            factor = _header_factor(state) * rate if rate is not None else None
+            header_factor = _header_factor(state, base_currency)
+            factor = header_factor * rate if rate is not None and header_factor is not None else None
+            currency = str(state.get("currency") or base_currency)
             for line in state.get("line_items", []) or []:
-                unit = self._line_unit(line)
+                unit = self._line_unit(line, currency)
                 value = unit * factor if unit is not None and factor is not None else None
                 ref = line.get("entity_id") or line.get("item_id")
                 sku = str(line.get("sku") or "").strip()
@@ -90,13 +98,8 @@ class _LineIndex:
                     self._by_sku.setdefault((str(doc_id), sku), []).append(value)
 
     @staticmethod
-    def _line_unit(line: dict) -> Decimal | None:
-        """What a line charges per unit in its document currency, before header discount:
-        ``line_total`` over ``quantity`` when both are stored, else ``unit_price``."""
-        total, qty = _dec(line.get("line_total")), _dec(line.get("quantity"))
-        if total is not None and qty:
-            return total / qty
-        return _dec(line.get("unit_price"))
+    def _line_unit(line: dict, currency: str) -> Decimal | None:
+        return document_line_unit(line, currency)
 
     def unit_value(self, doc_id: str, item_id: str, sku: str | None) -> Decimal | None:
         """Per-unit value, in the company currency, of the line that carries this item."""

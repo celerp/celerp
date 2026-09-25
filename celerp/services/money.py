@@ -167,6 +167,69 @@ def doc_rate(doc: dict, base_currency: str) -> Decimal | None:
     return rate
 
 
+def require_doc_rate(doc: dict, base_currency: str) -> Decimal:
+    """A document rate suitable for creating base-currency money."""
+    rate = doc_rate(doc, base_currency)
+    if rate is None:
+        currency = str(doc.get("currency") or "").upper() or "foreign currency"
+        base = str(base_currency or "").upper()
+        raise ValueError(f"a conversion rate is required for {currency} documents in {base} books")
+    return rate
+
+
+def document_line_unit(line: dict, currency: str) -> Decimal | None:
+    """Effective per-unit charge before any document-level discount."""
+    try:
+        qty = to_decimal(line.get("quantity", 0) or 0)
+        raw_total = line.get("line_total")
+        if raw_total not in (None, "") and qty:
+            total = to_decimal(raw_total)
+            return total / qty if total.is_finite() else None
+        raw_price = line.get("unit_price")
+        if raw_price in (None, ""):
+            raw_price = line.get("price")
+        if raw_price in (None, ""):
+            return None
+        price = to_decimal(raw_price)
+        discount = to_decimal(line.get("discount_pct", 0) or 0)
+        unit = price * (Decimal(1) - discount / Decimal(100))
+        return unit if unit.is_finite() else None
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+
+
+def document_line_amount(line: dict, currency: str) -> Decimal | None:
+    """Effective line amount, reconstructing a line discount when needed."""
+    raw_total = line.get("line_total")
+    try:
+        if raw_total not in (None, ""):
+            total = to_decimal(raw_total)
+            return round_money(total, currency) if total.is_finite() else None
+        qty = to_decimal(line.get("quantity", 0) or 0)
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    unit = document_line_unit(line, currency)
+    return round_money(unit * qty, currency) if unit is not None else None
+
+
+def document_discount_amount(doc: dict, subtotal: _MoneyInput, currency: str) -> Decimal | None:
+    """Effective document discount amount, including older unmaterialized shapes."""
+    try:
+        raw = doc.get("discount_amount")
+        if raw not in (None, ""):
+            amount = to_decimal(raw)
+        else:
+            discount = to_decimal(doc.get("discount", 0) or 0)
+            amount = (
+                to_decimal(subtotal) * discount / Decimal(100)
+                if doc.get("discount_type", "flat") == "percentage"
+                else discount
+            )
+        return round_money(amount, currency) if amount.is_finite() else None
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+
+
 def to_base(amount: _MoneyInput, rate: _MoneyInput, base_currency: str) -> float:
     """A document-currency amount expressed in the books' currency, ready to store.
 

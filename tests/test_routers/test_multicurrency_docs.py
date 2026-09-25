@@ -475,3 +475,19 @@ async def test_finalize_with_rate_revenue_entry_in_base(client, session):
     assert rev_entry is not None
     # 100 USD * 40 = 4000 THB
     assert abs(float(rev_entry["credit"]) - 4000.0) < 0.01, f"Expected 4000, got {rev_entry['credit']}"
+
+
+@pytest.mark.asyncio
+async def test_batch_import_rejects_posting_foreign_doc_without_rate_before_emit(client):
+    token = await _register(client)
+    await _set_base_currency(client, _auth(token), "THB")
+    payload = {"records": [{
+        "entity_id": "doc:fx-import-no-rate", "event_type": "doc.created",
+        "data": {"doc_type": "invoice", "status": "final", "currency": "USD", "total": 100.0, "amount_outstanding": 100.0,
+                 "line_items": [{"name": "X", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}]},
+        "idempotency_key": "test:fx-import-no-rate", "source": "test"
+    }]}
+    r = await client.post("/docs/import/batch", headers=_auth(token), json=payload)
+    assert r.status_code == 200
+    assert r.json()["errors"]
+    assert (await client.get("/docs/doc:fx-import-no-rate", headers=_auth(token))).status_code == 404

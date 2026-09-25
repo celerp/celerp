@@ -360,3 +360,21 @@ def test_holdings_banner_says_how_many_items_have_no_value():
     html = to_xml(_holdings_scope_banner({"on_memo_to": "contact:1"}, 150.0, "USD", 2))
     assert "$150.00 (2 without a price)" in html
     assert "without a price" not in to_xml(_holdings_scope_banner({"on_memo_to": "contact:1"}, 150.0, "USD"))
+
+
+def test_sold_price_reconstructs_line_discount_without_materialized_line_total():
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A"})]
+    docs = [("doc:A", {"line_items": [{"item_id": "item:1", "quantity": 10, "unit_price": 10.0, "discount_pct": 10}]})]
+    assert sold_prices(items, docs, "USD") == {"item:1": 9.0}
+
+
+def test_sold_price_reconstructs_header_discount_without_discount_amount():
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A"})]
+    docs = [("doc:A", {"subtotal": 100.0, "discount": 10, "discount_type": "percentage", "line_items": [{"item_id": "item:1", "quantity": 1, "unit_price": 100.0}]})]
+    assert sold_prices(items, docs, "USD") == {"item:1": 90.0}
+
+
+def test_header_discount_derives_subtotal_when_legacy_doc_did_not_store_it():
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A"})]
+    docs = [("doc:A", {"discount": 10, "discount_type": "percentage", "line_items": [{"item_id": "item:1", "quantity": 2, "unit_price": 50.0}]})]
+    assert sold_prices(items, docs, "USD") == {"item:1": 45.0}

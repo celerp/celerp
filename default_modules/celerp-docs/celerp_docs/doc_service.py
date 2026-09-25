@@ -34,6 +34,18 @@ def _line_total(li_total, qty: float, unit_price: float, currency: str | None) -
     return _amt(base, currency)
 
 
+def _source_rate(value, *, invert: bool = False):
+    if value in (None, ""):
+        return None
+    from celerp.services.money import checked_exchange_rate, to_decimal, to_stored_float
+    try:
+        raw = checked_exchange_rate(value)
+        rate = checked_exchange_rate(to_decimal(1) / raw) if invert else raw
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    return to_stored_float(rate)
+
+
 async def upsert_order_from_shopify(company_id: str, order: dict) -> str:
     """
     Create/update a doc (invoice) from a Shopify order dict.
@@ -264,6 +276,7 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> str:
             "total": total,
             "amount_outstanding": balance,
             "currency": currency,
+            "conversion_rate": _source_rate(invoice.get("ExchangeRate")),
             "quickbooks_invoice_id": str(invoice["Id"]),
         }
         return await _emit_doc(session, company_id, data, idem_key)
@@ -314,6 +327,7 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> str:
             "total": total,
             "amount_outstanding": amount_due,
             "currency": currency,
+            "conversion_rate": _source_rate(invoice.get("CurrencyRate"), invert=True),
             "xero_invoice_id": str(invoice["InvoiceID"]),
         }
         return await _emit_doc(session, company_id, data, idem_key)

@@ -76,3 +76,48 @@ async def test_export_docs_csv_streams_and_does_not_buffer(monkeypatch):
 async def test_export_lists_csv_streams_and_does_not_buffer(monkeypatch):
     await _assert_streams_lazily(
         monkeypatch, lambda: api.export_lists_csv("tok", {}), "/lists/export/csv")
+
+
+@pytest.mark.asyncio
+async def test_backend_exports_use_one_streamed_statement():
+    from types import SimpleNamespace
+    import importlib
+    routes = importlib.import_module("celerp_docs.routes")
+
+    class Result:
+        def __init__(self, rows):
+            self.rows = rows
+            self.closed = False
+        def __aiter__(self):
+            async def gen():
+                for row in self.rows:
+                    yield row
+            return gen()
+        async def close(self):
+            self.closed = True
+
+    class Session:
+        def __init__(self):
+            self.stream_calls = 0
+            self.execute_calls = 0
+            self.results = []
+        async def stream(self, stmt):
+            self.stream_calls += 1
+            keys = list(stmt.selected_columns.keys())
+            row = tuple(["doc:1"] + [None] * (len(keys) - 1)) if "entity_id" in keys else SimpleNamespace(**{k: None for k in keys})
+            result = Result([row])
+            self.results.append(result)
+            return result
+        async def execute(self, stmt):
+            self.execute_calls += 1
+            raise AssertionError("export must use one streamed statement")
+
+    s = Session()
+    response = await routes.export_docs_csv(filters=routes.DocListFilters(), cols=None, company_id="00000000-0000-0000-0000-000000000001", session=s)
+    _ = [chunk async for chunk in response.body_iterator]
+    assert s.stream_calls == 1 and s.execute_calls == 0 and s.results[0].closed
+
+    s = Session()
+    response = await routes.export_lists_csv(filters=routes.ListIndexFilters(), cols=None, company_id="00000000-0000-0000-0000-000000000001", session=s)
+    _ = [chunk async for chunk in response.body_iterator]
+    assert s.stream_calls == 1 and s.execute_calls == 0 and s.results[0].closed

@@ -40,7 +40,7 @@ from celerp.services.permissions import assert_role_permission, get_current_comp
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
-from celerp.services.money import checked_exchange_rate, doc_rate, round_money, round_rate, to_decimal, to_stored_float
+from celerp.services.money import checked_exchange_rate, doc_rate, require_doc_rate, round_money, round_rate, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.output.document_context import prepare_document_output
@@ -125,6 +125,16 @@ def _stored_conversion_rate(v: float | None) -> float | None:
         return to_stored_float(checked_exchange_rate(v))
     except ValueError as exc:
         raise ValueError(f"conversion_rate {exc}") from exc
+
+
+def _require_doc_rate_http(doc: dict, base_currency: str) -> Decimal:
+    try:
+        return require_doc_rate(doc, base_currency)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"This document has no usable exchange rate. {exc}. Base-currency documents use rate 1; foreign-currency documents require a stored rate. Set the exchange rate to continue.",
+        ) from exc
 
 
 class DocCreatePayload(BaseModel):
@@ -1833,36 +1843,7 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
     _company = await session.get(Company, company_id)
     _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
 
-    # The stored currency and the stored rate have to agree before anything posts.
-    # Checked here rather than on entry: this is the last point before the journal
-    # entry is minted, both values are final, and the rate is immutable afterwards.
-    _doc_currency = _initial_doc_state.get("currency", _base_currency)
-    _stored_rate = _initial_doc_state.get("conversion_rate")
-    _rate = None
-    if _stored_rate not in (None, ""):
-        try:
-            _rate = checked_exchange_rate(_stored_rate)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail=f"This document's conversion rate {exc}. Correct it before finalizing.",
-            ) from exc
-    if _doc_currency != _base_currency and _rate is None:
-        raise HTTPException(
-            status_code=422,
-            detail="A conversion rate is required for foreign-currency documents. Set the exchange rate before finalizing.",
-        )
-    # A document in the company's own currency converts at 1 by definition, so any
-    # other rate silently restates it: 100 USD posted as 3500 in USD books. The
-    # manual journal door refuses the same mismatch on a journal line.
-    if _doc_currency == _base_currency and _rate is not None and _rate != 1:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"{_doc_currency} is this company's own currency, so its conversion rate is 1, "
-                f"not {_stored_rate}. Clear the rate before finalizing."
-            ),
-        )
+    _require_doc_rate_http(_initial_doc_state, _base_currency)
 
     # Invoices: assign real INV number on finalize, preserving PF ref.
     # On re-finalize (after revert-to-draft) the doc already holds the INV ref
@@ -2427,6 +2408,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     # event is written, the same way finalization refuses it on the document.
     _company = await session.get(Company, company_id)
     _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
+    _document_rate = float(_require_doc_rate_http(doc_state, _base_currency))
     if body.get("currency") == _base_currency and body.get("conversion_rate") not in (None, "") \
             and to_decimal(body["conversion_rate"]) != 1:
         raise HTTPException(
@@ -2458,8 +2440,8 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         # cleared at that rate; the bank moves at the rate the cash actually
         # converted at. A payer who records no rate of their own settled at
         # the document's rate, so the two agree and no difference arises.
-        doc_rate=float(doc_state.get("conversion_rate") or 1),
-        settlement_rate=float(body.get("conversion_rate") or doc_state.get("conversion_rate") or 1),
+        doc_rate=_document_rate,
+        settlement_rate=(float(checked_exchange_rate(body["conversion_rate"])) if body.get("conversion_rate") not in (None, "") else _document_rate),
     )
     from celerp.modules.slots import fire_lifecycle
     await fire_lifecycle(
@@ -2845,6 +2827,9 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
         raise HTTPException(status_code=409, detail="Amount exceeds invoice outstanding")
 
     payment_date = payload.date or datetime.now(timezone.utc).date().isoformat()
+    _cn_company = await session.get(Company, company_id)
+    _cn_base_currency = (_cn_company.settings.get("currency", "USD") if _cn_company else "USD")
+    _cn_rate = float(_require_doc_rate_http(cn, _cn_base_currency))
 
     # Both sides get allocated indices so their identity fields never
     # collide with skip-allocated payments on either doc.
@@ -2883,14 +2868,12 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    _cn_company = await session.get(Company, company_id)
-    _cn_base_currency = (_cn_company.settings.get("currency", "USD") if _cn_company else "USD")
     await auto_je.create_for_cn_application(
         session, company_id=company_id, user_id=user.id,
         doc_id=payload.target_doc_id, cn_id=entity_id, amount=payload.amount,
         payment_index=payment_idx, payment_date=payment_date,
         base_currency=_cn_base_currency,
-        conversion_rate=float(cn_row.state.get("conversion_rate") or 1),
+        conversion_rate=_cn_rate,
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -2930,6 +2913,9 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
         raise HTTPException(status_code=422, detail="bank_account is required")
     bank_code = payload.bank_account
 
+    _refund_company = await session.get(Company, company_id)
+    _refund_base_currency = (_refund_company.settings.get("currency", "USD") if _refund_company else "USD")
+    _refund_rate = float(_require_doc_rate_http(cn, _refund_base_currency))
     payment_index = await _alloc_payment_index(session, company_id, cn.get("payments", []),
                                                key_doc_id=entity_id, key_type="invoice.paid")
     entry = await emit_event(
@@ -2945,8 +2931,6 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
     # JE: debit AR, credit bank
-    _refund_company = await session.get(Company, company_id)
-    _refund_base_currency = (_refund_company.settings.get("currency", "USD") if _refund_company else "USD")
     await auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
         amount=payload.amount, payment_index=payment_index,
@@ -2955,8 +2939,8 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
         base_currency=_refund_base_currency,
         # A refund is issued at the rate the credit note itself carries, and
         # there is no second rate to record: the form does not ask for one.
-        doc_rate=float(cn.get("conversion_rate") or 1),
-        settlement_rate=float(cn.get("conversion_rate") or 1),
+        doc_rate=_refund_rate,
+        settlement_rate=_refund_rate,
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -4082,6 +4066,16 @@ async def batch_import_docs(
             skipped_existing += 1
             continue
         try:
+            _status = rec.data.get("status", "draft")
+            _type = rec.data.get("doc_type", "")
+            _total = float(rec.data.get("total", 0) or 0)
+            _posts = _total > 0 and (
+                (_type == "invoice" and _status in ("sent", "final", "partial", "paid", "awaiting_payment"))
+                or (_type == "purchase_order" and _status in ("received", "partially_received", "final"))
+                or (_type == "bill" and _status in ("awaiting_payment", "partial", "paid", "final"))
+            )
+            if _posts:
+                _require_doc_rate_http(rec.data, _batch_base_currency)
             entry = await emit_event(
                 session,
                 company_id=company_id,
@@ -4139,25 +4133,20 @@ async def export_docs_csv(
     keys = sorted(fields | {k for field in fields for k in _DOC_DISPLAY_FALLBACKS.get(field, ())})
 
     async def _rows():
-        # Bounded batches over a total order (``_doc_sql_order`` ends on entity_id), so the whole
-        # set is never buffered and no row is skipped or repeated between batches.
-        batch = 500
-        offset = 0
-        while True:
-            rows = (await session.execute(
-                select(Projection.entity_id, *(Projection.state[k] for k in keys))
-                .where(*base_where)
-                .order_by(*order_by)
-                .offset(offset)
-                .limit(batch)
-            )).all()
-            for entity_id, *values in rows:
+        stmt = (
+            select(Projection.entity_id, *(Projection.state[k] for k in keys))
+            .where(*base_where)
+            .order_by(*order_by)
+            .execution_options(yield_per=500)
+        )
+        result = await session.stream(stmt)
+        try:
+            async for entity_id, *values in result:
                 row = _doc_display({k: v for k, v in zip(keys, values) if v is not None})
                 if keep is None or keep(row):
                     yield row | {"entity_id": entity_id}
-            if len(rows) < batch:
-                break
-            offset += batch
+        finally:
+            await result.close()
 
     return StreamingResponse(
         csv_stream(out_cols, _rows()),
@@ -4486,22 +4475,18 @@ async def export_lists_csv(
     col_exprs = [columns[c].label(c) for c in out_cols]
 
     async def _rows():
-        # Read the projection in bounded SQL batches so the whole set is never buffered in Python.
-        batch = 500
-        offset = 0
-        while True:
-            rows = (await session.execute(
-                select(*col_exprs)
-                .where(*base_where)
-                .order_by(sort_date.desc(), Projection.entity_id.desc())
-                .offset(offset)
-                .limit(batch)
-            )).all()
-            for r in rows:
+        stmt = (
+            select(*col_exprs)
+            .where(*base_where)
+            .order_by(sort_date.desc(), Projection.entity_id.desc())
+            .execution_options(yield_per=500)
+        )
+        result = await session.stream(stmt)
+        try:
+            async for r in result:
                 yield {c: getattr(r, c) for c in out_cols}
-            if len(rows) < batch:
-                break
-            offset += batch
+        finally:
+            await result.close()
 
     return StreamingResponse(
         csv_stream(out_cols, _rows()),

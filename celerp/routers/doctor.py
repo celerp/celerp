@@ -453,63 +453,40 @@ async def _emit_payment_je(
     payment_index: int = 0,
     payment: dict | None = None,
 ) -> None:
-    """Delegate to auto_je.create_for_doc_payment for DRY compliance.
-
-    Doctor repair: uses the first recorded bank_account from state, falling back to
-    "1111" (the default bank account that always exists) when original is unknown.
-    This is the one legitimate fallback - historical repair where real bank is unknowable.
-    """
     from celerp.models.company import Company
     from celerp.services import auto_je as _auto_je
+    from celerp.services.money import checked_exchange_rate, require_doc_rate
+
     payment = payment or {}
-    bank_code = payment.get("bank_account") or "1111"  # Doctor fallback: default bank always exists
-    ts = (payment.get("payment_date") or state.get("issue_date") or state.get("created_at")
-          or __import__("datetime").date.today().isoformat())
-    # A repair posts the entry the payment should have made, so it reads the same
-    # base currency and the same two rates the recorder does. Repairing a
-    # foreign-currency payment without them would post the document-currency
-    # figure into the books as though it were already converted.
     company = await session.get(Company, company_id)
     base_currency = (company.settings.get("currency", "USD") if company else "USD")
-    doc_rate = float(state.get("conversion_rate") or 1)
+    document_rate = require_doc_rate(state, base_currency)
+    raw_settlement = payment.get("conversion_rate")
+    settlement_rate = checked_exchange_rate(raw_settlement) if raw_settlement not in (None, "") else document_rate
     await _auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id,
         amount=amount, payment_index=payment_index,
-        bank_account_code=bank_code,
+        bank_account_code=payment.get("bank_account") or "1111",
         doc_type=state.get("doc_type", "invoice"),
-        payment_date=str(ts)[:10],
+        payment_date=str(payment.get("payment_date") or state.get("issue_date") or state.get("created_at") or __import__("datetime").date.today().isoformat())[:10],
         base_currency=base_currency,
-        doc_rate=doc_rate,
-        settlement_rate=float(payment.get("conversion_rate") or doc_rate),
+        doc_rate=float(document_rate),
+        settlement_rate=float(settlement_rate),
     )
 
 
 async def _emit_po_received_je(
     session: AsyncSession, company_id, user_id, doc_id: str, state: dict,
 ) -> None:
-    total = float(state.get("total", 0) or 0)
-    purchase_kind = str(state.get("purchase_kind") or "inventory").strip().lower()
-    debit_account = {"inventory": "1130", "expense": "6950", "asset": "1210"}.get(purchase_kind, "1130")
-    ts = state.get("issue_date") or state.get("created_at")
-    je_id = f"je:auto:{doc_id}:rcv"
+    from celerp.models.company import Company
+    from celerp.services import auto_je as _auto_je
 
-    await emit_event(
-        session, company_id=company_id, entity_id=je_id,
-        entity_type="journal_entry", event_type="acc.journal_entry.created",
-        data={"memo": f"Auto JE for {doc_id} received", "entries": [
-            {"account": debit_account, "debit": total, "credit": 0.0},
-            {"account": "2110", "debit": 0.0, "credit": total},
-        ], "ts": ts},
-        actor_id=user_id, location_id=None, source="auto_je",
-        idempotency_key=je_idempotency_key(doc_id, "po.received", "c"),
-        metadata_={"trigger": "doc.received", "doc_id": doc_id, "purchase_kind": purchase_kind},
-    )
-    await emit_event(
-        session, company_id=company_id, entity_id=je_id,
-        entity_type="journal_entry", event_type="acc.journal_entry.posted",
-        data={}, actor_id=user_id, location_id=None, source="auto_je",
-        idempotency_key=je_idempotency_key(doc_id, "po.received", "p"),
-        metadata_={"trigger": "doc.received", "doc_id": doc_id, "purchase_kind": purchase_kind},
+    company = await session.get(Company, company_id)
+    base_currency = (company.settings.get("currency", "USD") if company else "USD")
+    await _auto_je.create_for_po_received(
+        session, company_id=company_id, user_id=user_id, po_id=doc_id,
+        doc=state, total=float(state.get("total", 0) or 0),
+        base_currency=base_currency, receive_date=state.get("issue_date") or state.get("created_at"),
     )
 
 

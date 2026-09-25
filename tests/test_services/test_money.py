@@ -13,6 +13,9 @@ from celerp.services.money import (
     checked_exchange_rate,
     currency_dp,
     doc_rate,
+    document_discount_amount,
+    document_line_amount,
+    require_doc_rate,
     rate_dp,
     round_exchange_rate,
     round_money,
@@ -328,3 +331,16 @@ def test_doc_rate_converts_into_the_books_currency_or_is_unknown(doc, expected):
 def test_doc_rate_refuses_a_rate_that_cannot_be_right(doc):
     with pytest.raises(ValueError):
         doc_rate(doc, "THB")
+
+
+def test_require_doc_rate_refuses_unknown_foreign_rate():
+    with pytest.raises(ValueError, match="conversion rate is required"):
+        require_doc_rate({"currency": "USD"}, "THB")
+
+
+def test_document_line_amount_reconstructs_legacy_line_discount():
+    assert document_line_amount({"quantity": 10, "unit_price": 10, "discount_pct": 10}, "USD") == Decimal("90.00")
+
+
+def test_document_discount_amount_reconstructs_legacy_percentage_header():
+    assert document_discount_amount({"discount": 10, "discount_type": "percentage"}, Decimal("300"), "USD") == Decimal("30.00")

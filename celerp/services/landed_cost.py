@@ -70,17 +70,21 @@ async def compute_bill_landed_allocation(session, company_id, doc_state: dict) -
     landed amounts are converted to base currency by the bill conversion rate. Reuses the same
     account-routing logic as the bill JE so cost allocation and GL postings stay consistent.
     """
-    from celerp.services.auto_je import landed_account_for_line
-    from celerp.services.units import is_non_stock_line
+    from celerp.models.company import Company
     from celerp.models.projections import Projection
+    from celerp.services.auto_je import landed_account_for_line
+    from celerp.services.money import require_doc_rate, to_base
+    from celerp.services.units import is_non_stock_line
 
-    rate = float(doc_state.get("conversion_rate") or 1)
+    company = await session.get(Company, company_id)
+    base_currency = (company.settings.get("currency", "USD") if company else "USD")
+    rate = require_doc_rate(doc_state, base_currency)
     components: list[dict] = []
     goods: list[dict] = []
     for li in doc_state.get("line_items", []):
         line_total = float(li.get("line_total") or
                            (float(li.get("quantity") or 0) * float(li.get("unit_price") or 0)))
-        base_amt = round(line_total * rate, 2)
+        base_amt = to_base(line_total, rate, base_currency)
         acct = await landed_account_for_line(session, company_id, li)
         if acct in _KIND_BY_CLEARING:
             if base_amt:
