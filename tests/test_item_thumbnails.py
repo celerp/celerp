@@ -520,33 +520,33 @@ async def test_legacy_cloud_image_gets_a_thumbnail_on_first_view(client, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_cloud_repair_falls_back_to_the_original_when_the_read_fails(client, monkeypatch):
-    backend, h, item_id, file_id, original = await _legacy_cloud_image(client, monkeypatch, "RepairReadCo")
+async def test_cloud_repair_has_no_preview_when_the_read_fails(client, monkeypatch):
+    backend, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairReadCo")
     backend.fail_read = True
     for expected_reads in (1, 2):
         r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
-        assert r.headers["location"] == original
+        assert r.status_code == 404 and "location" not in r.headers
         assert backend.reads == expected_reads  # nothing recorded, so the next view retries
     assert await _recorded_thumb(client, h, item_id) is None
 
 
 @pytest.mark.asyncio
 async def test_cloud_repair_skips_an_original_that_does_not_decode(client, monkeypatch):
-    backend, h, item_id, file_id, original = await _legacy_cloud_image(
+    backend, h, item_id, file_id, _ = await _legacy_cloud_image(
         client, monkeypatch, "RepairBytesCo", data=b"not an image")
     r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
-    assert r.headers["location"] == original
+    assert r.status_code == 404 and "location" not in r.headers
     assert backend.reads == 1
     assert await _recorded_thumb(client, h, item_id) is None
     assert not any(u.endswith("_thumb") for u in backend.objects)
 
 
 @pytest.mark.asyncio
-async def test_cloud_repair_falls_back_when_the_thumbnail_cannot_be_stored(client, monkeypatch):
-    backend, h, item_id, file_id, original = await _legacy_cloud_image(client, monkeypatch, "RepairStoreCo")
+async def test_cloud_repair_has_no_preview_when_the_thumbnail_cannot_be_stored(client, monkeypatch):
+    backend, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairStoreCo")
     backend.fail_thumb_store = True
     r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
-    assert r.headers["location"] == original
+    assert r.status_code == 404 and "location" not in r.headers
     assert backend.reads == 1
     assert await _recorded_thumb(client, h, item_id) is None
 
@@ -569,12 +569,12 @@ async def test_cloud_repair_waits_for_a_free_slot(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cloud_repair_falls_back_when_no_slot_frees_up(client, monkeypatch):
-    backend, h, item_id, file_id, original = await _legacy_cloud_image(client, monkeypatch, "RepairFullCo")
+async def test_cloud_repair_has_no_preview_when_no_slot_frees_up(client, monkeypatch):
+    backend, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairFullCo")
     monkeypatch.setattr(att_svc, "_remote_repairs", att_svc._MAX_REMOTE_REPAIRS)
     monkeypatch.setattr(att_svc, "_REMOTE_REPAIR_WAIT_S", 0.3)
     r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
-    assert r.headers["location"] == original
+    assert r.status_code == 404 and "location" not in r.headers
     assert backend.reads == 0
 
 

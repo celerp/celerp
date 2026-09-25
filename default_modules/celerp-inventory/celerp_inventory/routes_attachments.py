@@ -597,7 +597,8 @@ async def item_file_thumbnail(
     """Serve the small JPEG preview of an image file for the item list.
 
     A cloud-stored image from before thumbnails were recorded gets its thumbnail made and
-    recorded on first view; until that succeeds it previews from its original."""
+    recorded on first view. Until that succeeds there is no preview: the full original is
+    never sent in its place."""
     from fastapi.responses import RedirectResponse, Response
     row = await get_item_projection(session, company_id, entity_id)
     files = row.state.get("files") or []
@@ -613,7 +614,7 @@ async def item_file_thumbnail(
     if url.startswith(("http://", "https://")):
         repaired = await repair_remote_thumbnail(str(company_id), match)
         if repaired is None:
-            return RedirectResponse(url)
+            raise HTTPException(status_code=404, detail="Thumbnail unavailable")
         await _record_thumbnail(session, company_id, entity_id, match, repaired, user.id)
         return RedirectResponse(repaired)
     data = await get_or_create_thumbnail(str(company_id), match)
