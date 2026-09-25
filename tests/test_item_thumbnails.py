@@ -73,6 +73,29 @@ async def test_store_upload_writes_thumbnail(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("att_id", ["../outside", "..\\outside", "sub/name", "..", ""])
+async def test_local_store_writes_only_inside_the_company_folder(tmp_path, monkeypatch, att_id):
+    monkeypatch.setattr(att_svc.LocalBackend, "_root", property(lambda self: tmp_path / "attachments"))
+    with pytest.raises(ValueError):
+        await att_svc.LocalBackend().store("co-1", att_id, b"x", "image/jpeg")
+    assert [p.name for p in tmp_path.rglob("*") if p.is_file()] == []
+
+
+@pytest.mark.asyncio
+async def test_imported_attachment_id_cannot_place_a_thumbnail_elsewhere(tmp_path, monkeypatch):
+    from celerp.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    company_dir = tmp_path / "static" / "attachments" / "co-1"
+    company_dir.mkdir(parents=True)
+    (company_dir / "original.png").write_bytes(_png(64, 64))
+    attachment = {"id": "..\\..\\escaped", "mime": "image/png",
+                  "url": "/static/attachments/co-1/original.png"}
+    assert await att_svc.get_or_create_thumbnail("co-1", attachment) is None
+    assert sorted(p.name for p in tmp_path.rglob("*") if p.is_file()) == ["original.png"]
+
+
+@pytest.mark.asyncio
 async def test_thumbnail_route_lazy_backfill_idempotent(client):
     h = await _headers(client)
     company_id = await _company_id(client, h)

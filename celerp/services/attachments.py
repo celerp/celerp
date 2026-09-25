@@ -142,9 +142,17 @@ class LocalBackend:
         mime: str,
     ) -> str:
         dest_name = f"{att_id}{_stored_extension(mime)}"
-        dest = self._company_dir(company_id) / dest_name
+        root = self._company_dir(company_id).resolve()
+        dest = (root / dest_name).resolve() if _is_plain_name(att_id) else None
+        if dest is None or dest.parent != root:
+            raise ValueError(f"Invalid attachment id: {att_id!r}")
         dest.write_bytes(content)
         return f"/static/attachments/{company_id}/{dest_name}"
+
+
+def _is_plain_name(name: str) -> bool:
+    """A single file name: no separator of either platform and no dot reference."""
+    return bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name
 
 
 def local_attachment_path(company_id: str, filename: str) -> Path | None:
@@ -156,7 +164,7 @@ def local_attachment_path(company_id: str, filename: str) -> Path | None:
     caller serves a 404 rather than another tenant's file. This owns the
     on-disk layout shared with :class:`LocalBackend`.
     """
-    if not filename or filename in (".", "..") or "/" in filename or "\\" in filename:
+    if not _is_plain_name(filename):
         return None
     from celerp.config import settings  # lazy: settings not ready at import time
     root = (settings.data_dir / "static" / "attachments" / str(company_id)).resolve()
@@ -201,6 +209,8 @@ class S3Backend:
         content: bytes,
         mime: str,
     ) -> str:
+        if not _is_plain_name(att_id):
+            raise ValueError(f"Invalid attachment id: {att_id!r}")
         key = f"attachments/{company_id}/{att_id}{_stored_extension(mime)}"
 
         async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
@@ -381,7 +391,11 @@ async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | 
     data = await asyncio.to_thread(lambda: make_thumbnail(source.read_bytes(), attachment["mime"]))
     if data is None:
         return None
-    await LocalBackend().store(company_id, thumbnail_id(att_id), data, _THUMB_MIME)
+    try:
+        await LocalBackend().store(company_id, thumbnail_id(att_id), data, _THUMB_MIME)
+    except ValueError:
+        logger.warning("thumbnail not stored for attachment %r", att_id)
+        return None
     return data
 
 
