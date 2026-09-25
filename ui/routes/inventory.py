@@ -757,12 +757,14 @@ def _base_state(p: dict, include_page: bool = False) -> dict:
     return state
 
 
-def _holdings_scope_banner(p: dict, holdings_total: float | None, currency: str | None) -> FT:
+def _holdings_scope_banner(p: dict, holdings_total: float | None, currency: str | None,
+                           holdings_missing: int = 0) -> FT:
     """Banner for the contact-scoped holdings views, with a way back to all inventory.
 
     Under a scope the Value column is not the catalog price: for memo it is the price the
     customer was quoted, for consignment it is what the goods cost us. Say so, so the
-    figure is never read as a list price.
+    figure is never read as a list price. Items with no resolvable value are left out of
+    the total, and the banner says how many.
     """
     from ui.components.table import fmt_money
 
@@ -773,8 +775,10 @@ def _holdings_scope_banner(p: dict, holdings_total: float | None, currency: str 
         label, basis = t("inventory.memo_scope_label"), t("inventory.memo_scope_basis")
     else:
         label, basis = t("inventory.consign_scope_label"), t("inventory.consign_scope_basis")
-    total_el = (Span(fmt_money(holdings_total, currency), cls="holdings-scope-total")
-                if holdings_total is not None else "")
+    total_text = fmt_money(holdings_total, currency) if holdings_total is not None else ""
+    if total_text and holdings_missing:
+        total_text += " (" + t("inventory.sold_without_price", n=holdings_missing) + ")"
+    total_el = Span(total_text, cls="holdings-scope-total") if total_text else ""
     return Div(
         Div(Span(label, cls="holdings-scope-label"), total_el, cls="holdings-scope-heading"),
         Div(basis, cls="holdings-scope-basis"),
@@ -1013,6 +1017,7 @@ async def _inventory_content(
         list_total = items_resp.get("total", len(items))
         # Present only under a contact holdings scope: the value of the whole scoped set.
         holdings_total = items_resp.get("value_total")
+        holdings_missing = int(items_resp.get("value_total_missing") or 0)
         # Present only on the sold view: realized value of the whole filtered set.
         sold_total = items_resp.get("sold_total")
         sold_total_missing = int(items_resp.get("sold_total_missing") or 0)
@@ -1096,7 +1101,7 @@ async def _inventory_content(
     total_items = valuation.get("item_count", 0)
 
     return Div(
-        _holdings_scope_banner(p, holdings_total, currency),
+        _holdings_scope_banner(p, holdings_total, currency, holdings_missing),
         _category_tabs(category_counts, p, total_scoped=total_scoped, label_map=category_label_map),
         _inventory_type_tabs(p),
         _valuation_bar(valuation, currency, lang, status=p.get("status", "")),

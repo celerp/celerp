@@ -63,6 +63,7 @@ from celerp.services.pricing import (
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.line_measures import splitting_allowed
+from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp_inventory.projections import _is_core_key, is_item_available, thumbnail_file_id
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -808,6 +809,7 @@ async def query_items(
     # document permission: a contact scope is refused without it, and a sold row carries
     # no price.
     can_see_docs = role_has_permission(settings, role, "view_documents")
+    base_currency = settings.get("currency") or "USD"
     holding_scoped = bool(f.on_memo_to or f.consigned_from)
     if holding_scoped:
         assert_role_permission(settings, role, "view_documents")
@@ -832,7 +834,7 @@ async def query_items(
     # Membership is derived from that contact's docs (celerp.services.holdings), and is
     # authoritative: it narrows result on its own. The per-item scope value (quoted memo
     # price / consignment cost) is attached after cost-visibility gating, below.
-    scope_value: dict[str, float] = {}
+    scope_value: dict[str, float | None] = {}
     if holding_scoped:
         from celerp.services.holdings import consignment_holdings, memo_holdings
         items_state = [(r.entity_id, r.state) for r in rows]
@@ -854,8 +856,8 @@ async def query_items(
             if str((d.state or {}).get("status") or "").lower() not in ("draft", "void")
         ]
         scope_value = (
-            memo_holdings(items_state, issued) if f.on_memo_to
-            else consignment_holdings(items_state, issued)
+            memo_holdings(items_state, issued, base_currency) if f.on_memo_to
+            else consignment_holdings(items_state, issued, base_currency)
         )
         result = [r for r in result if r.get("id") in scope_value]
 
@@ -885,6 +887,7 @@ async def query_items(
             sold_price = sold_prices(
                 [(r.entity_id, r.state) for r in sold_rows],
                 [(d.entity_id, d.state) for d in sold_docs],
+                base_currency,
             )
 
     # Connector source: items linked to a platform encode it in the idempotency key
@@ -997,9 +1000,9 @@ async def query_items(
     gate_cost = bool(f.consigned_from) and not can_see_costs
     if holding_scoped:
         for r in result:
-            r["holding_value"] = None if gate_cost else scope_value.get(r.get("id"), 0.0)
+            r["holding_value"] = None if gate_cost else scope_value.get(r.get("id"))
 
-    # Attach the realized sale price to each sold row (ungated: a sale price is not a cost).
+    # Attach the realized sale price to each sold row (not a cost, so not cost-gated).
     sold_result = [r for r in result if str(r.get("status") or "").lower() == "sold"] if sold_scoped else []
     for r in sold_result:
         r["sold_price"] = sold_price.get(r.get("id"))
@@ -1018,14 +1021,17 @@ async def query_items(
     resp: dict = {"items": result, "total": len(result), "attribute_facets": attribute_facets}
     if holding_scoped and not gate_cost:
         # Total over the whole scoped set (post-filter, pre-pagination) so the contact
-        # card reads it directly and reconciles with the list at the same value basis.
-        resp["value_total"] = round(sum(float(scope_value.get(r.get("id"), 0.0)) for r in result), 2)
+        # card reads it directly and reconciles with the list at the same value basis; items
+        # with no resolvable value are counted, never estimated.
+        from celerp.services.holdings import value_total
+        resp["value_total"], resp["value_total_missing"] = value_total(
+            (scope_value.get(r.get("id")) for r in result), base_currency)
     if sold_scoped:
         # Realized value over the WHOLE filtered set (pre-pagination) so the sold view's
         # Total card reads the same figure on every page; rows without a resolvable
         # selling line are counted so the UI can say how many the total leaves out.
         from celerp.services.holdings import sold_value_total
-        resp["sold_total"], resp["sold_total_missing"] = sold_value_total(sold_result, sold_price)
+        resp["sold_total"], resp["sold_total_missing"] = sold_value_total(sold_result, sold_price, base_currency)
     return resp
 
 
@@ -1108,8 +1114,8 @@ async def get_valuation(
             if str((d.state or {}).get("status") or "").lower() not in ("draft", "void")
         ]
         scope_value = (
-            memo_holdings(items_state, issued) if on_memo_to
-            else consignment_holdings(items_state, issued)
+            memo_holdings(items_state, issued, settings.get("currency") or "USD") if on_memo_to
+            else consignment_holdings(items_state, issued, settings.get("currency") or "USD")
         )
         holding_scope = set(scope_value.keys())
 
@@ -1696,12 +1702,14 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
         derived_field_deps=DERIVED_FIELD_DEPS,
     )
     result = filtered[0]
-    if str(row.state.get("status") or "").lower() == "sold" and row.state.get("status_doc_id"):
+    if (str(row.state.get("status") or "").lower() == "sold" and row.state.get("status_doc_id")
+            and role_has_permission(settings, role, "view_documents")):
         from celerp.services.holdings import sold_prices
         sold_doc = await session.get(Projection, {"company_id": company_id, "entity_id": str(row.state["status_doc_id"])})
         if sold_doc is not None:
             result["sold_price"] = sold_prices(
                 [(row.entity_id, row.state)], [(sold_doc.entity_id, sold_doc.state)],
+                settings.get("currency") or "USD",
             ).get(row.entity_id)
     return result
 
@@ -4222,14 +4230,21 @@ async def export_items_csv(
     out_cols = [c for c in out_cols if c in visible and virtual.get(c, c) in visible]
 
     unit_map = build_unit_map(await _get_company_units(session, company_id))
+    currency = settings.get("currency") or "USD"
 
     def _rows():
         for it in listed["items"]:
             row = dict(it)
-            # A virtual total the row does not carry is its price times the quantity, as on screen.
+            # A virtual total the row does not carry is what the table shows: the stored cost_total
+            # for the cost total, else the price times the quantity, at the currency's precision.
             for total_key, price_col in virtual.items():
-                if total_key not in row and row.get(price_col) not in (None, ""):
-                    row[total_key] = round(float(row[price_col]) * float(row.get("quantity") or 0), 2)
+                if total_key in row:
+                    continue
+                if total_key == "cost_price_total" and row.get("cost_total") not in (None, ""):
+                    row[total_key] = row["cost_total"]
+                elif row.get(price_col) not in (None, ""):
+                    row[total_key] = to_stored_float(round_money(
+                        to_decimal(row[price_col]) * to_decimal(row.get("quantity") or 0), currency))
             # The measure the sell unit already IS derives from quantity: the stored companion
             # field is absent on fresh items and can go stale after sales. Matches the table.
             sell_by = row.get("sell_by")

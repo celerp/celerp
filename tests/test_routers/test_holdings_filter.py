@@ -175,6 +175,25 @@ async def test_return_items_rejects_goods_not_on_hand(client, session):
     assert item["status"] == "memo_out" and item["quantity"] == 2.0
 
 
+async def _sell_item(client, token: str, sku: str, unit_price: float) -> str:
+    r = await client.post("/items", headers=_h(token),
+                          json={"status": "available", "sku": sku, "name": sku, "quantity": 1, "sell_by": "piece"})
+    assert r.status_code in {200, 201}, r.text
+    item_id = r.json()["id"]
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "invoice", "status": "draft",
+        "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": unit_price,
+                        "line_total": unit_price, "entity_id": item_id}],
+        "total": unit_price, "amount_outstanding": unit_price,
+    })
+    assert r.status_code in {200, 201}, r.text
+    doc_id = r.json()["id"]
+    assert (await client.post(f"/docs/{doc_id}/finalize", headers=_h(token))).status_code in {200, 201}
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=_h(token), json={"line_entity_ids": [item_id]})
+    assert r.status_code in {200, 201}, r.text
+    return item_id
+
+
 async def _revoke_documents(client, token: str) -> None:
     r = await client.patch("/companies/me/role-permissions", headers=_h(token),
                            json={"perm_key": "view_documents", "role_key": "owner", "granted": False})
@@ -187,6 +206,8 @@ async def test_holdings_and_sold_figures_need_document_access(client, session):
     location_id = await _create_location(client, token)
     supplier = "contact:supNoDocs"
     await _consign_in_received(client, token, location_id, supplier, "CIN-NODOC-1", cost_price=250.0)
+    sold_id = await _sell_item(client, token, "SOLD-NODOC-1", 120.0)
+    assert (await client.get(f"/items/{sold_id}", headers=_h(token))).json()["sold_price"] == 120.0
     await _revoke_documents(client, token)
 
     for params in ({"consigned_from": supplier}, {"on_memo_to": "contact:custNoDocs"}):
@@ -198,3 +219,6 @@ async def test_holdings_and_sold_figures_need_document_access(client, session):
     assert sold.status_code == 200, sold.text
     assert "sold_total" not in sold.json()
     assert all("sold_price" not in i for i in sold.json()["items"])
+    detail = await client.get(f"/items/{sold_id}", headers=_h(token))
+    assert detail.status_code == 200, detail.text
+    assert "sold_price" not in detail.json()
