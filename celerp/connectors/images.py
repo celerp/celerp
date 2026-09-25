@@ -11,9 +11,9 @@ import logging
 import mimetypes
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
-import httpx
+from celerp.services.attachments import MAX_FILE_BYTES
+from celerp.services.public_fetch import fetch_public
 
 log = logging.getLogger(__name__)
 
@@ -97,16 +97,13 @@ async def download_and_emit_file(
         return False  # already have this URL
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(url, follow_redirects=True)
-            resp.raise_for_status()
-            content = resp.content
-            content_type = resp.headers.get("content-type", "").split(";")[0].strip()
-            if not content_type:
-                content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        content, content_type = await fetch_public(
+            url, max_bytes=MAX_FILE_BYTES, timeout=30, schemes=("http", "https"))
     except Exception as exc:
         log.warning("connector: failed to download %s: %s", url, exc)
         return False
+    if not content_type:
+        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
     import io
     upload = UploadFile(
