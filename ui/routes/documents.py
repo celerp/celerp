@@ -9891,8 +9891,8 @@ def _list_table(lists: list[dict], lang: str = "en") -> FT:
         return Tr(
             Td(A(ref, href=f"/lists/{eid}", cls="table-link")),
             Td(format_value(d.get("list_type"), "badge")),
-            Td(format_value(d.get("customer_name") or d.get("receiver") or d.get("customer_id"))),
-            Td(format_value(d.get("created_at") or d.get("date"), "date")),
+            Td(format_value(d.get("customer"))),
+            Td(format_value(d.get("date"), "date")),
             Td(count_cell, cls="cell--number"),
             Td(f"{weight:.2f}" if weight else EMPTY, cls="cell--number"),
             Td(format_value(d.get("total"), "money"), cls="cell--number"),

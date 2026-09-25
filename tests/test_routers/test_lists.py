@@ -129,7 +129,7 @@ class TestListCRUD:
         # search by customer name
         r = await client.get("/lists?q=sakura", headers=_h(token))
         assert r.json()["total"] == 1
-        assert r.json()["items"][0]["customer_name"] == "Sakura Gems"
+        assert r.json()["items"][0]["customer"] == "Sakura Gems"
 
         # search by ref_id
         r = await client.get(f"/lists?q={ref}", headers=_h(token))
@@ -563,7 +563,7 @@ class TestListExportCSV:
         assert len(lines) == 2  # header + 1 data row
         header = lines[0]
         assert "id" in header
-        assert "customer_name" in header
+        assert "customer" in header.split(",")
         assert "CSV Corp" in lines[1]
 
     @pytest.mark.asyncio

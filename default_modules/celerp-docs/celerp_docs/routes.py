@@ -4206,12 +4206,31 @@ def _list_sort_date():
     return _func.coalesce(issue, created, date)
 
 
+def _list_customer():
+    """The customer a list shows: its customer name, else its receiver, else its customer id.
+    The index rows, the search and the CSV export all read this one expression."""
+    return _func.coalesce(*(
+        _func.nullif(Projection.state[k].as_string(), "") for k in ("customer_name", "receiver", "customer_id")
+    ))
+
+
+def _list_converted(target_type: str | None = None) -> list:
+    """A list closed by converting it, optionally into ``target_type``. Reopening a list clears
+    its result, so a reopened list is no longer converted even though it still names the
+    document it was once converted to. Shared by the converted cards and the filter they open."""
+    where = [Projection.state["status"].as_string() == CLOSED, Projection.state["result"].as_string() == "converted"]
+    if target_type:
+        where.append(Projection.state["converted_to_type"].as_string() == target_type)
+    return where
+
+
 def _list_search_where(q: str):
-    """SQL predicate for the free-text list search over ref_id / customer_name / customer_id."""
+    """SQL predicate for the free-text list search over the reference, the shown customer and
+    the customer id."""
     ql = f"%{q.lower()}%"
     return _sa.or_(
         _func.lower(Projection.state["ref_id"].as_string()).like(ql),
-        _func.lower(Projection.state["customer_name"].as_string()).like(ql),
+        _func.lower(_list_customer()).like(ql),
         _func.lower(Projection.state["customer_id"].as_string()).like(ql),
     )
 
@@ -4244,7 +4263,7 @@ def _list_index_where(company_id, f: ListIndexFilters, sort_date) -> list:
     if f.exclude_status:
         base_where.append(Projection.state["status"].as_string() != f.exclude_status)
     if f.converted_to_type:
-        base_where.append(Projection.state["converted_to_type"].as_string() == f.converted_to_type)
+        base_where.extend(_list_converted(f.converted_to_type))
     if f.date_from:
         base_where.append(sort_date >= f.date_from)
     if f.date_to:
@@ -4252,6 +4271,21 @@ def _list_index_where(company_id, f: ListIndexFilters, sort_date) -> list:
     if f.q:
         base_where.append(_list_search_where(f.q))
     return base_where
+
+
+def _list_columns(sort_date) -> dict:
+    """Every header value the index shows and the CSV exports, by column name, as one set of
+    SQL expressions, so a row on screen and its CSV line carry the same values. ``date`` is
+    ``sort_date``, the date the index orders and windows by."""
+    return {
+        "id": Projection.entity_id,
+        "ref_id": Projection.state["ref_id"].as_string(),
+        "list_type": Projection.state["list_type"].as_string(),
+        "customer": _list_customer(),
+        "date": sort_date,
+        "total": Projection.state["total"].as_string(),
+        "status": Projection.state["status"].as_string(),
+    }
 
 
 @lists_router.get("", dependencies=[require_permission("view_documents")])
@@ -4276,19 +4310,10 @@ async def list_lists(
         "NULLIF(elem ->> 'weight_ct', '')::numeric, NULLIF(elem ->> 'weight', '')::numeric, 0)), 0) "
         "FROM json_array_elements(projections.state -> 'line_items') AS elem)"
     )
+    columns = _list_columns(sort_date)
     list_q = (
         select(
-            Projection.entity_id,
-            Projection.created_at,
-            Projection.state["ref_id"].as_string().label("ref_id"),
-            Projection.state["list_type"].as_string().label("list_type"),
-            Projection.state["customer_name"].as_string().label("customer_name"),
-            Projection.state["receiver"].as_string().label("receiver"),
-            Projection.state["customer_id"].as_string().label("customer_id"),
-            Projection.state["date"].as_string().label("date"),
-            Projection.state["total"].as_string().label("total"),
-            Projection.state["status"].as_string().label("status"),
-            Projection.state["created_at"].as_string().label("state_created_at"),
+            *(expr.label(name) for name, expr in columns.items()),
             item_count.label("item_count"),
             weight_sum.label("total_weight"),
         )
@@ -4302,17 +4327,7 @@ async def list_lists(
         list_q = list_q.limit(limit)
     rows = (await session.execute(list_q)).all()
     out = [{
-        "id": r.entity_id,
-        "created_at": (r.created_at.isoformat() if r.created_at is not None
-                       else r.state_created_at or ""),
-        "ref_id": r.ref_id,
-        "list_type": r.list_type,
-        "customer_name": r.customer_name,
-        "receiver": r.receiver,
-        "customer_id": r.customer_id,
-        "date": r.date,
-        "total": r.total,
-        "status": r.status,
+        **{name: getattr(r, name) for name in columns},
         "item_count": r.item_count,
         "total_weight": float(r.total_weight or 0),
     } for r in rows]
@@ -4360,10 +4375,7 @@ async def get_list_summary(
     )).scalar_one()
 
     # Converted outcomes: closed lists whose result is a conversion, split by target type.
-    converted_where = base_where + [
-        status_expr == CLOSED,
-        Projection.state["result"].as_string() == "converted",
-    ]
+    converted_where = base_where + _list_converted()
     ctt_expr = Projection.state["converted_to_type"].as_string()
     converted_rows = (await session.execute(
         select(ctt_expr, _func.count())
@@ -4382,7 +4394,7 @@ async def get_list_summary(
     }
 
 
-_LIST_EXPORT_COLS = ["id", "ref_id", "list_type", "customer_name", "date", "total", "status"]
+_LIST_EXPORT_COLS = ["id", "ref_id", "list_type", "customer", "date", "total", "status"]
 
 
 @lists_router.get("/export/csv", dependencies=[require_permission("view_documents"), require_permission("import_export_data")])
@@ -4397,11 +4409,10 @@ async def export_lists_csv(
     out_cols = resolve_export_cols(cols, _LIST_EXPORT_COLS, _LIST_EXPORT_COLS)
     sort_date = _list_sort_date()
     base_where = _list_index_where(company_id, filters, sort_date)
-    # Select only the exported columns straight from the json state, so a list's whole line_items
-    # array is never deserialized just to write its row.
-    col_exprs = [Projection.entity_id.label("id")] + [
-        Projection.state[c].as_string().label(c) for c in out_cols if c != "id"
-    ]
+    # Select only the exported columns, from the same expressions the index rows use, so a list's
+    # whole line_items array is never deserialized just to write its row.
+    columns = _list_columns(sort_date)
+    col_exprs = [columns[c].label(c) for c in out_cols]
 
     async def _rows():
         # Read the projection in bounded SQL batches so the whole set is never buffered in Python.
