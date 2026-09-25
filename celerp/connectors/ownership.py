@@ -445,9 +445,10 @@ STORE_PROOF_SAMPLE = 20
 
 async def bind_connector_store(session: AsyncSession, company_id, connector, ctx) -> None:
     """Tie a company's imported records from one connector to the store they
-    came from. Stores that number orders and customers per store would
-    overwrite those records, so a store is accepted only when no records
-    exist yet or when it still holds a sample of them. Caller commits."""
+    came from. Stores that number orders, customers and products per store
+    would overwrite those records, so a store is accepted only when no records
+    exist yet or when it still holds a sample of them. Each new connection is
+    checked once, even when the store address is unchanged. Caller commits."""
     from datetime import datetime, timezone
 
     from celerp.models.connector_source import ConnectorSource
@@ -460,22 +461,32 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
     cid = uuid.UUID(str(company_id))
     key = (str(cid), connector.name)
     source = await session.get(ConnectorSource, key, populate_existing=True)
-    if source is not None and source.store_handle == store_handle:
+    config_id = await session.scalar(sa.select(ConnectorConfig.id).where(
+        ConnectorConfig.company_id == key[0],
+        ConnectorConfig.connector == connector.name,
+    ))
+    if (source is not None and source.store_handle == store_handle
+            and source.config_id == config_id):
         return
 
-    async def sample(kind: str) -> list[dict]:
+    async def sample(*conditions) -> list[dict]:
         return list((await session.scalars(
             sa.select(Projection.state)
-            .where(
-                Projection.company_id == cid,
-                Projection.entity_id.like(f"{kind}:{connector.name}:%"),
-            )
+            .where(Projection.company_id == cid, *conditions)
             .order_by(Projection.created_at.desc().nulls_last())
             .limit(STORE_PROOF_SAMPLE)
         )).all())
 
-    # Orders and invoices prove the store best; customers do when none exist.
-    samples = await sample("doc") or await sample("contact")
+    # Orders and invoices prove the store best, then customers, then products.
+    prefix = f"{connector.name}:%"
+    samples = (
+        await sample(Projection.entity_id.like(f"doc:{prefix}"))
+        or await sample(Projection.entity_id.like(f"contact:{prefix}"))
+        or await sample(
+            Projection.entity_type == "item",
+            Projection.state.op("->>")("idempotency_key").like(prefix),
+        )
+    )
     if samples:
         origin = f" from {source.store_handle}" if source is not None else ""
         try:
@@ -487,7 +498,7 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
             ) from exc
         if not confirmed:
             raise ConnectorStoreChangedError(
-                f"This company already has {connector.display_name} orders and customers"
+                f"This company already has {connector.display_name} records"
                 f"{origin}, and {store_handle} does not have them. Connect the store they "
                 f"came from, or use a separate company for {store_handle}."
             )
@@ -495,8 +506,10 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
     now = datetime.now(timezone.utc)
     if source is None:
         session.add(ConnectorSource(
-            company_id=key[0], connector=key[1], store_handle=store_handle, bound_at=now,
+            company_id=key[0], connector=key[1], store_handle=store_handle,
+            bound_at=now, config_id=config_id,
         ))
     else:
         source.store_handle = store_handle
         source.bound_at = now
+        source.config_id = config_id

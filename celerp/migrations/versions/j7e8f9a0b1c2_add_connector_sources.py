@@ -24,6 +24,7 @@ def upgrade() -> None:
         sa.Column("connector", sa.String(32), primary_key=True),
         sa.Column("store_handle", sa.Text(), nullable=False),
         sa.Column("bound_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("config_id", sa.Integer(), nullable=True),
     )
 
 

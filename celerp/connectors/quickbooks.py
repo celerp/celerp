@@ -112,11 +112,17 @@ class QuickBooksConnector(ConnectorBase):
     }
 
     async def same_store(self, ctx: ConnectorContext, records: list[dict]) -> bool:
-        """Invoice and customer ids repeat across companies, so a sampled
+        """Invoice, customer and item ids repeat across companies, so a sampled
         invoice counts only when its number and total match what was imported,
-        and a sampled customer only when its contact details do."""
+        a sampled customer only when its contact details do, and a sampled item
+        only when its SKU or name does."""
         def customer_id(record: dict) -> str:
             return str((record.get("attributes") or {}).get("quickbooks_id") or "")
+
+        def item_id(record: dict) -> str:
+            prefix = "quickbooks:item:"
+            key = str(record.get("idempotency_key") or "")
+            return key[len(prefix):] if key.startswith(prefix) else ""
 
         async def fetch(entity: str, ids: set[str]) -> dict[str, dict]:
             ids = {i for i in ids if i.isdigit()}
@@ -127,10 +133,12 @@ class QuickBooksConnector(ConnectorBase):
 
         invoices = await fetch("Invoice", {str(r.get("quickbooks_invoice_id") or "") for r in records})
         customers = await fetch("Customer", {customer_id(r) for r in records})
+        items = await fetch("Item", {item_id(r) for r in records})
         matches = []
         for record in records:
             invoice = invoices.get(str(record.get("quickbooks_invoice_id") or ""))
             customer = customers.get(customer_id(record))
+            item = items.get(item_id(record))
             if invoice is not None:
                 ref_id = str(invoice.get("DocNumber") or f"quickbooks-{invoice['Id']}")
                 matches.append(
@@ -145,6 +153,11 @@ class QuickBooksConnector(ConnectorBase):
                     "email": (customer.get("PrimaryEmailAddr") or {}).get("Address"),
                     "phone": (customer.get("PrimaryPhone") or {}).get("FreeFormNumber"),
                 }))
+            elif item is not None:
+                matches.append(
+                    bool(item.get("Name")) and item.get("Name") == record.get("name")
+                    or bool(item.get("Sku")) and item.get("Sku") == record.get("sku")
+                )
             else:
                 matches.append(False)
         return store_holds_records(matches)

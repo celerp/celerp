@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Which store a company's imported connector records came from.
 
-WooCommerce and QuickBooks number orders and customers per store, so records
+WooCommerce and QuickBooks number orders, customers and products per store, so records
 from a second store would overwrite the first store's. These tests pin that a
 store is accepted only when nothing was imported yet or when it still holds
 the imported records, and that company settings play no part in it.
@@ -21,6 +21,7 @@ from celerp.connectors.ownership import ConnectorStoreChangedError, bind_connect
 from celerp.connectors.quickbooks import QuickBooksConnector
 from celerp.connectors.woocommerce import WooCommerceConnector
 from celerp.models.company import Company
+from celerp.models.connector_config import ConnectorConfig
 from celerp.models.connector_source import ConnectorSource
 from celerp.models.projections import Projection
 
@@ -250,3 +251,83 @@ async def test_quickbooks_store_match(fetched, expected):
         ctx = ConnectorContext(company_id="c", access_token="t", store_handle="123")
         assert await QuickBooksConnector().same_store(ctx, records) is expected
     assert query.await_args.args[1] == "SELECT * FROM Invoice WHERE Id IN ('4','5')"
+
+
+_PRODUCT = {"id": 55, "sku": "MUG-1", "name": "Blue mug"}
+_ITEM = {"sku": "MUG-1", "name": "Blue mug", "idempotency_key": "woocommerce:55",
+         "external_links": {"woocommerce": {"product_id": "55"}}}
+
+
+@pytest.mark.parametrize("fetched, accepted", [
+    ([_PRODUCT], True),
+    ([{**_PRODUCT, "sku": "", "name": "Blue mug"}], True),
+    ([{**_PRODUCT, "sku": "LAMP-9", "name": "Desk lamp"}], False),
+    ([], False),
+])
+async def test_products_alone_confirm_the_store_they_came_from(session, fetched, accepted):
+    """With no orders or customers imported, products show whether a store is
+    the one they came from."""
+    cid = await _company(session)
+    session.add(Projection(
+        company_id=cid, entity_id="item:woocommerce:55", entity_type="item",
+        state=_ITEM, version=1, updated_at=datetime.now(timezone.utc),
+    ))
+    await session.flush()
+    bind = bind_connector_store(
+        session, cid, WooCommerceConnector(), _ctx(cid, "https://shop.example")
+    )
+    with _store(fetched):
+        if accepted:
+            await bind
+        else:
+            with pytest.raises(ConnectorStoreChangedError, match="does not have them"):
+                await bind
+    assert await _source(session, cid) == ("https://shop.example" if accepted else None)
+
+
+@pytest.mark.parametrize("stored, expected", [
+    ({"name": "Blue mug - Large", "sku": "MUG-1-L"}, True),
+    ({"name": "Blue mugs", "sku": "OTHER"}, False),
+])
+async def test_woocommerce_variation_match(stored, expected):
+    record = {**stored, "idempotency_key": "woocommerce:55:56"}
+    with _store([{**_PRODUCT, "sku": ""}]):
+        assert await WooCommerceConnector().same_store(
+            _ctx(uuid.uuid4(), "https://s.example"), [record]
+        ) is expected
+
+
+@pytest.mark.parametrize("fetched, expected", [
+    ({"Name": "Blue mug", "Sku": "MUG-1"}, True),
+    ({"Name": "Desk lamp"}, False),
+])
+async def test_quickbooks_item_match(fetched, expected):
+    records = [{"name": "Blue mug", "sku": "MUG-1", "idempotency_key": "quickbooks:item:12"}]
+    query = AsyncMock(return_value=[{"Id": "12", **fetched}])
+    with patch("celerp.connectors.quickbooks._query", query):
+        ctx = ConnectorContext(company_id="c", access_token="t", store_handle="123")
+        assert await QuickBooksConnector().same_store(ctx, records) is expected
+    assert query.await_args.args[1] == "SELECT * FROM Item WHERE Id IN ('12')"
+
+
+async def test_every_new_connection_checks_the_store_again(session):
+    """A connection keeps its checked store, but a new connection to the same
+    address is checked again: the address alone does not prove the records
+    are still there."""
+    cid = await _company(session)
+    await _imported_order(session, cid)
+    session.add(ConnectorConfig(company_id=str(cid), connector="woocommerce"))
+    await session.flush()
+    ctx = _ctx(cid, "https://shop.example")
+    with _store([_ORDER]):
+        await bind_connector_store(session, cid, WooCommerceConnector(), ctx)
+
+    with _store([]) as store:
+        await bind_connector_store(session, cid, WooCommerceConnector(), ctx)
+    store.assert_not_awaited()
+
+    await session.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.company_id == str(cid)))
+    session.add(ConnectorConfig(company_id=str(cid), connector="woocommerce"))
+    await session.flush()
+    with _store([]), pytest.raises(ConnectorStoreChangedError, match="does not have them"):
+        await bind_connector_store(session, cid, WooCommerceConnector(), ctx)

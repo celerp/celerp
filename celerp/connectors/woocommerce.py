@@ -115,14 +115,23 @@ class WooCommerceConnector(ConnectorBase):
     }
 
     async def same_store(self, ctx: ConnectorContext, records: list[dict]) -> bool:
-        """Order and customer numbers repeat across stores, so a sampled order
-        counts only when its total, currency and item names match what was
-        imported, and a sampled customer only when its contact details do."""
+        """Order, customer and product numbers repeat across stores, so a
+        sampled order counts only when its total, currency and item names match
+        what was imported, a sampled customer only when its contact details do,
+        and a sampled product only when its SKU or name does."""
         def customer_id(record: dict) -> str:
             return str((record.get("attributes") or {}).get("woocommerce_id") or "")
 
+        def product_id(record: dict) -> str:
+            link = (record.get("external_links") or {}).get(self.name) or {}
+            if link.get("product_id") not in (None, ""):
+                return str(link["product_id"])
+            parts = str(record.get("idempotency_key") or "").split(":")
+            return parts[1] if len(parts) >= 2 and parts[0] == self.name else ""
+
         order_ids = {str(r["woocommerce_order_id"]) for r in records if r.get("woocommerce_order_id")}
         customer_ids = {customer_id(r) for r in records} - {""}
+        product_ids = {product_id(r) for r in records} - {""}
         orders = {
             str(o.get("id")): o
             for o in (await self._paginate(ctx, "/orders", params={"include": ",".join(order_ids)}) if order_ids else [])
@@ -131,10 +140,15 @@ class WooCommerceConnector(ConnectorBase):
             str(c.get("id")): c
             for c in (await self._paginate(ctx, "/customers", params={"include": ",".join(customer_ids)}) if customer_ids else [])
         }
+        products = {
+            str(p.get("id")): p
+            for p in (await self._paginate(ctx, "/products", params={"include": ",".join(product_ids)}) if product_ids else [])
+        }
         matches = []
         for record in records:
             order = orders.get(str(record.get("woocommerce_order_id") or ""))
             customer = customers.get(customer_id(record))
+            product = products.get(product_id(record))
             if order is not None:
                 names = {li.get("name") for li in order.get("line_items", []) if li.get("name")}
                 matches.append(
@@ -152,6 +166,14 @@ class WooCommerceConnector(ConnectorBase):
                     "phone": customer.get("phone") or billing.get("phone"),
                     "name": " ".join(p for p in (first, last) if p).strip() or email,
                 }))
+            elif product is not None:
+                # A variation is imported as "<product name> - <options>".
+                name = str(product.get("name") or "")
+                stored = str(record.get("name") or "")
+                matches.append(
+                    bool(product.get("sku")) and product.get("sku") == record.get("sku")
+                    or bool(name) and (stored == name or stored.startswith(f"{name} - "))
+                )
             else:
                 matches.append(False)
         return store_holds_records(matches)
