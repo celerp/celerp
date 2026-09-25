@@ -84,7 +84,13 @@ def _stored_extension(mime: str) -> str:
     return _MIME_EXTENSIONS.get(mime, "")
 
 
-_MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
+MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
+def check_file_size(size: int) -> None:
+    """ValueError when a file of *size* bytes is over the attachment limit."""
+    if size > MAX_FILE_BYTES:
+        raise ValueError(f"File exceeds {MAX_FILE_BYTES // 1024 // 1024} MB limit")
 
 # Longest side of the JPEG list thumbnail derived from every image upload.
 _THUMB_MAX_SIDE = 160
@@ -332,8 +338,7 @@ async def store_upload(
     Callers pass attachment_type="view_360" for 360 images uploaded as image/jpeg.
     """
     content = await file.read()
-    if len(content) > _MAX_FILE_BYTES:
-        raise ValueError(f"File exceeds {_MAX_FILE_BYTES // 1024 // 1024} MB limit")
+    check_file_size(len(content))
 
     mime = file.content_type or (
         mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
@@ -441,7 +446,7 @@ async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | 
         return None
     backend = _backend_holding(str(attachment.get("url") or ""))
     try:
-        existing = await backend.read_stored(company_id, thumbnail_id(att_id), _THUMB_MIME, _MAX_FILE_BYTES)
+        existing = await backend.read_stored(company_id, thumbnail_id(att_id), _THUMB_MIME, MAX_FILE_BYTES)
     except Exception:
         logger.warning("thumbnail read failed for attachment %s", att_id)
         return None
@@ -455,7 +460,7 @@ async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | 
     _thumbnail_jobs += 1
     try:
         content = await asyncio.wait_for(
-            backend.read(company_id, str(attachment.get("url") or ""), _MAX_FILE_BYTES),
+            backend.read(company_id, str(attachment.get("url") or ""), MAX_FILE_BYTES),
             _ORIGINAL_READ_TIMEOUT_S,
         )
         if content is None:

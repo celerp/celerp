@@ -37,6 +37,7 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.attachments import (
     AttachmentType,
+    check_file_size,
     get_or_create_thumbnail,
     local_attachment_url_path,
     merge_attachments,
@@ -55,6 +56,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 _VALID_TYPES: set[str] = {"image", "video", "certificate", "view_360"}
+
+# A bulk ZIP is checked against these before anything is extracted: every entry's
+# size is read from the archive directory, and extraction never produces more
+# than an entry declares.
+_BULK_MAX_ENTRIES = 5000
+_BULK_MAX_UNPACKED = 2 * 1024 * 1024 * 1024  # 2 GB
 
 
 async def _patch_item_attachments(
@@ -238,9 +245,21 @@ async def bulk_attach_files(
     import mimetypes as _mt
     from starlette.datastructures import Headers as _Headers
 
-    content = await file.read()
-    if not zipfile.is_zipfile(io.BytesIO(content)):
+    if not zipfile.is_zipfile(file.file):
         raise HTTPException(status_code=422, detail="Uploaded file is not a valid ZIP archive")
+    file.file.seek(0)
+    zf = zipfile.ZipFile(file.file)
+    entries = [info for info in zf.infolist() if not info.is_dir()]
+    if len(entries) > _BULK_MAX_ENTRIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The ZIP holds {len(entries)} files; split it into archives of at most {_BULK_MAX_ENTRIES}",
+        )
+    if sum(info.file_size for info in entries) > _BULK_MAX_UNPACKED:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The ZIP unpacks to more than {_BULK_MAX_UNPACKED // 1024 ** 3} GB; split it into smaller archives",
+        )
 
     rows = (
         await session.execute(
@@ -262,12 +281,13 @@ async def bulk_attach_files(
     # Track which SKUs have already had a hero assigned in this batch
     hero_assigned: set[str] = set()
 
-    with zipfile.ZipFile(io.BytesIO(content)) as zf:
-        for name in sorted(zf.namelist()):  # sorted for deterministic hero selection
+    with zf:
+        for info in sorted(entries, key=lambda i: i.filename):  # sorted for deterministic hero selection
+            name = info.filename
             # Check the BASENAME, not the full ZIP path, so nested junk like
             # sub/.DS_Store is skipped too (the full name doesn't start with '.') — F5.
             base = _Path(name).name
-            if name.endswith("/") or base.startswith("__") or base.startswith("."):
+            if base.startswith("__") or base.startswith("."):
                 continue
 
             stem = _Path(name).stem
@@ -292,7 +312,8 @@ async def bulk_attach_files(
                 continue
 
             try:
-                raw = zf.read(name)
+                check_file_size(info.file_size)  # before anything is decompressed
+                raw = zf.read(info)
                 guessed_mime = _mt.guess_type(name)[0] or "application/octet-stream"
                 upload = UploadFile(
                     file=io.BytesIO(raw),
