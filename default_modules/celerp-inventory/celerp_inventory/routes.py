@@ -1136,8 +1136,9 @@ async def get_valuation(
         row_status = str(state.get("status") or "").lower()
         row_cat = str(state.get("category") or state.get("item_type") or "").strip()
 
-        # Exclude consignment_in items: they are borrowed, not owned -- exclude from all valuation
-        if row.consignment_flag == "in" or state.get("consignment_flag") == "in":
+        # Consigned-in goods are borrowed, not owned, so they stay out of stock value. Under a
+        # holdings scope the scope alone decides membership, so the cards count what the list shows.
+        if holding_scope is None and (row.consignment_flag == "in" or state.get("consignment_flag") == "in"):
             continue
 
         # Exclude non-stocked and service items from valuation (only stocked items have physical value)

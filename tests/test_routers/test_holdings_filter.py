@@ -72,6 +72,26 @@ async def test_items_consigned_from_lists_held_at_cost(client, session):
 
 
 @pytest.mark.asyncio
+async def test_valuation_consigned_from_counts_the_held_goods(client, session):
+    # The cards on the consignment view count what the list shows, not zero.
+    token = await _register(client)
+    location_id = await _create_location(client, token)
+    supplier = "contact:supCards"
+    owned_before = (await client.get("/items/valuation", headers=_h(token))).json()["item_count"]
+    _doc, item_id = await _consign_in_received(client, token, location_id, supplier, "CIN-CARD-1")
+    r = await client.patch(f"/items/{item_id}", headers=_h(token), json={"fields_changed": {"category": {"old": None, "new": "Rings"}}})
+    assert r.status_code == 200, r.text
+
+    val = (await client.get("/items/valuation", headers=_h(token), params={"consigned_from": supplier})).json()
+    assert val["item_count"] == 1
+    assert val["total_scoped_count"] == 1
+    assert sum(val["count_by_status"].values()) == 1
+    assert val["category_counts"] == {"Rings": 1}
+    # Borrowed goods still stay out of the company's own stock value.
+    assert (await client.get("/items/valuation", headers=_h(token))).json()["item_count"] == owned_before
+
+
+@pytest.mark.asyncio
 async def test_items_consigned_from_excludes_returned(client, session):
     token = await _register(client)
     location_id = await _create_location(client, token)
