@@ -60,6 +60,8 @@ service. Point it at a specific server with `celerp init --db-url postgresql+asy
 Running headless or under a process manager? Use `celerp init --no-start` to set up
 without launching, then have your service run `celerp start` — see
 [Run as a service (systemd)](CONTRIBUTING.md#run-as-a-service-systemd).
+Updates install automatically overnight; the owner can turn that off from the update
+card in the notifications panel.
 
 ---
 

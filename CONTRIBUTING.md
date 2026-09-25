@@ -96,12 +96,24 @@ celerp init --force --db-url "postgresql+asyncpg://celerp:celerp@newhost:5432/ce
 
 `celerp init` launches the servers and blocks (good for the one-command desktop
 flow). For a headless box where a process manager owns the lifecycle, set up with
-`--no-start` and let systemd run `celerp start`:
+`--no-start` and let systemd run `celerp start`.
+
+Install Celerp into a virtual environment owned by the service user. `celerp start`
+installs updates itself, which needs the service user to be able to change its own
+install; a root-owned install still runs, and the update card shows the pip command
+to run instead.
+
+```bash
+sudo useradd --system --create-home celerp
+sudo python3 -m venv /opt/celerp
+sudo /opt/celerp/bin/pip install celerp
+sudo chown -R celerp /opt/celerp
+```
 
 ```bash
 # First boot against a system PostgreSQL: provision DB + migrations + config, then
 # exit (do not block). Run as root so init can create the role/database.
-sudo celerp init --no-start \
+sudo /opt/celerp/bin/celerp init --no-start \
   --db-url "postgresql+asyncpg://celerp:<password>@localhost:5432/celerp" \
   --api-port 8000 --ui-port 8080
 ```
@@ -119,7 +131,7 @@ Description=Celerp
 After=network.target postgresql.service
 
 [Service]
-ExecStart=/usr/local/bin/celerp start
+ExecStart=/opt/celerp/bin/celerp start
 Restart=on-failure
 User=celerp
 
@@ -129,6 +141,16 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl enable --now celerp
+```
+
+New versions install automatically between 03:00 and 05:00 in the company's time
+zone. Each update takes a backup first and is undone if the new version does not
+start. The owner can turn this off in the update card in the notifications panel, or
+set it in `config.toml`:
+
+```toml
+[updates]
+auto = false
 ```
 
 ## Troubleshooting
