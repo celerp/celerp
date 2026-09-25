@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from celerp import embedded_pg
+from celerp.db_url import sync_url
 
 pytestmark = [
     pytest.mark.embedded_pg,
@@ -66,7 +67,7 @@ def config_dir(tmp_path, monkeypatch):
 
 
 def _sync(uri: str) -> str:
-    return uri.replace("+asyncpg", "")
+    return sync_url(uri)
 
 
 def test_ensure_cluster_boots_and_creates_app_db(config_dir):

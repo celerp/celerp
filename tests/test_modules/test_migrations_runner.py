@@ -25,6 +25,7 @@ from celerp.modules.migrations_runner import (
     run_module_migrations,
 )
 from celerp.db import _MIGRATION_LOCK_KEY
+from celerp.db_url import sync_url
 
 
 # ── fixture builders ──────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ def _make_module(base: Path, name: str, migrations: dict[str, str], *,
 
 
 def _sync_url() -> str:
-    return os.environ["DATABASE_URL"].replace("+asyncpg", "")
+    return sync_url(os.environ["DATABASE_URL"])
 
 
 # Guarded: creates acme_equipment(id, name) only if absent.
@@ -148,7 +149,7 @@ from pathlib import Path
 
 
 def upgrade():
-    url = os.environ["DATABASE_URL"].replace("+asyncpg", "")
+    url = os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
     eng = sa.create_engine(url)
     try:
         with eng.connect() as c:
