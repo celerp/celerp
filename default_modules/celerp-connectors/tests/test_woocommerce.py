@@ -309,12 +309,17 @@ def _orders_by_params(pages: dict):
 async def test_sync_orders_retries_carried_attention_by_id(woo, ctx):
     """Entries carried from the previous run are re-fetched by id first. One that
     imports drops off, one that still fails keeps its reason, one WooCommerce no
-    longer returns is dropped, and an order fetched by id is not imported twice
-    when the incremental page returns it as well."""
+    longer returns is dropped unless it waits on an unreconciled change, and an
+    order fetched by id is not imported twice when the incremental page returns
+    it as well."""
     carried = [
         {"id": "7", "label": "Order 7", "reason": "old reason"},
         {"id": "8", "label": "Order 8", "reason": "old reason"},
         {"id": "9", "label": "Order 9", "reason": "gone"},
+        {"id": "11", "label": "Order 11", "reason": "refund", "signature": "s11",
+         "reconciled": False},
+        {"id": "12", "label": "Order 12", "reason": "refund", "signature": "s12",
+         "reconciled": True},
     ]
 
     async def _upsert(company_id, order):
@@ -332,11 +337,15 @@ async def test_sync_orders_retries_carried_attention_by_id(woo, ctx):
         with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new_callable=AsyncMock, side_effect=_upsert) as up:
             result = await woo.sync_orders(ctx, attention=carried)
 
-    assert route.calls[0].request.url.params["include"] == "7,8,9"
+    assert route.calls[0].request.url.params["include"] == "7,8,9,11,12"
     assert not result.errors
     assert result.created == 2  # 7 (retried) and 10; 7 is not imported a second time
-    assert [a["id"] for a in result.attention] == ["8"]
+    assert [a["id"] for a in result.attention] == ["8", "11"]
     assert result.attention[0]["reason"] == "still no stock"
+    assert result.attention[1] == {
+        "id": "11", "label": "Order 11", "signature": "s11", "reconciled": False,
+        "reason": "WooCommerce Order 11 no longer exists in the store; reconcile it by hand",
+    }
     assert sorted(c.args[1]["id"] for c in up.await_args_list) == [7, 8, 10]
 
 

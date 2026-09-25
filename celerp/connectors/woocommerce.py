@@ -568,7 +568,8 @@ class WooCommerceConnector(ConnectorBase):
         watermark advances. Entries carried from the previous run are fetched
         by id and retried first; one that imports drops off, one that still
         fails stays with its current reason, and one WooCommerce no longer
-        returns is dropped."""
+        returns is dropped unless it waits on a change a person has not yet
+        reconciled, which stays on the list saying the order is gone."""
         result = SyncResult(entity=SyncEntity.ORDERS)
         carried = {
             str(entry.get("id")): entry for entry in (attention or []) if entry.get("id")
@@ -611,6 +612,13 @@ class WooCommerceConnector(ConnectorBase):
                 return result
             for order in retried:
                 await _import(order)
+        for order_id, entry in carried.items():
+            if order_id not in processed and entry.get("signature") and not entry.get("reconciled"):
+                pending[order_id] = {
+                    **entry,
+                    "reason": f"WooCommerce {entry.get('label') or f'order {order_id}'} "
+                              "no longer exists in the store; reconcile it by hand",
+                }
 
         params: dict = {}
         if since:
