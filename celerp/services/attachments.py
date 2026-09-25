@@ -224,10 +224,7 @@ class S3Backend:
     async def read(self, company_id: str, url: str, max_bytes: int) -> bytes | None:
         """Read back an object this backend stored for ``company_id``, by its public URL.
 
-        Only a URL this backend builds for this company's own prefix is read, and it is read
-        through the bucket credentials rather than fetched over the network, so a URL
-        from any other origin or tenant yields None. Objects larger than ``max_bytes``
-        also yield None."""
+        Any other URL, or an object larger than ``max_bytes``, yields None."""
         prefix = f"attachments/{company_id}/"
         base = self._public_url(prefix)
         name = url[len(base):] if url.startswith(base) else ""

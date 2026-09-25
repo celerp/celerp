@@ -121,8 +121,7 @@ async def test_thumbnail_route_other_company_404(client):
     h = await _headers(client)
     item_id = await _item(client, h, "THUMB-TENANT")
     file_id = await _upload(client, h, item_id, _png())
-    # A second company for the same user: register is bootstrap-only, so the
-    # tenant boundary is crossed by creating a company and using its token.
+    # A second company for the same user.
     r = await client.post("/companies", json={"name": "OtherCo"}, headers=h)
     assert r.status_code == 200, r.text
     other = {"Authorization": f"Bearer {r.json()['access_token']}"}
@@ -581,7 +580,7 @@ class _S3Client:
 
 
 @pytest.mark.asyncio
-async def test_s3_read_back_is_limited_to_its_own_company_prefix(monkeypatch):
+async def test_s3_read_back_reads_only_the_companys_own_objects(monkeypatch):
     fake = _S3Client(b"original")
     monkeypatch.setattr(att_svc, "_s3_client", lambda *a: fake)
     s3 = att_svc.S3Backend("https://s3.example.test", "bucket", "k", "s")
@@ -591,7 +590,7 @@ async def test_s3_read_back_is_limited_to_its_own_company_prefix(monkeypatch):
     for foreign in (f"{base}/co2/a1.png", "https://elsewhere.example.test/bucket/attachments/co1/a1.png",
                     f"{base}/co1/../co2/a1.png", f"{base}/co1/"):
         assert await s3.read("co1", foreign, 100) is None
-    assert len(fake.keys) == 1  # nothing outside this company's prefix is ever requested
+    assert len(fake.keys) == 1
 
 
 @pytest.mark.asyncio
