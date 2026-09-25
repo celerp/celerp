@@ -765,6 +765,16 @@ _DOC_DISPLAY_FALLBACKS = {
 }
 
 
+_SQL_NUMBER_PATTERN = r"^[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?$"
+
+
+def _sql_number(expr):
+    """``expr`` (json text) as NUMERIC, or NULL when it is not a number. Imported and hand-edited
+    documents can hold text such as "N/A" in an amount field; a plain cast fails the whole query on
+    one such row, where this treats that row's amount as missing."""
+    return _sa.case((expr.op("~")(_SQL_NUMBER_PATTERN), _sa.cast(expr, _sa.Numeric)), else_=None)
+
+
 def _doc_sql_order(field: str, descending: bool) -> list:
     """ORDER BY for a sort field, with the unique entity_id tiebreak so the sort is a TOTAL order.
     Without it, rows sharing a value come back in an arbitrary order that differs between the
@@ -778,7 +788,7 @@ def _doc_sql_order(field: str, descending: bool) -> list:
         ]
         expr = _func.coalesce(*values) if len(values) > 1 else values[0]
         if field in _DOC_NUMERIC_SORT_FIELDS:
-            expr = _sa.cast(expr, _sa.Numeric)
+            expr = _sql_number(expr)
     if descending:
         return [expr.desc().nulls_last(), Projection.entity_id.desc()]
     return [expr.asc().nulls_first(), Projection.entity_id.asc()]
@@ -4350,9 +4360,8 @@ async def get_list_summary(
     status_expr = _func.coalesce(Projection.state["status"].as_string(), "")
     # One grouped pass over the projection: a bounded histogram (one row per status), with the
     # value sum carried per group so total_value is derived without a second scan. total is text
-    # in the json state, so cast the ->> output to numeric - never a jsonb cast.
-    total_num = _sa.cast(
-        _func.nullif(Projection.state["total"].as_string(), ""), _sa.Numeric)
+    # in the json state, so read the ->> output as a number - never a jsonb cast.
+    total_num = _sql_number(Projection.state["total"].as_string())
     grouped = (await session.execute(
         select(status_expr,
                _func.count(),

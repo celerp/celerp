@@ -288,3 +288,46 @@ async def test_doc_export_carries_the_issue_date(client):
     assert r.status_code == 200, r.text
     rows = _csv_rows(r.text)
     assert rows and rows[0]["issue_date"] == issue_date
+
+
+@pytest.mark.asyncio
+async def test_doc_amount_sort_puts_text_amounts_with_missing_ones(client, session):
+    """An amount stored as text such as "N/A" sorts as a missing amount instead of failing the
+    list and its export."""
+    tok = await _reg(client)
+    company_id = await _company_id(client, tok)
+    await _seed_docs(session, company_id, {
+        "doc:txt-a": {"total": 10.0, "amount_outstanding": 10.0},
+        "doc:txt-b": {"total": "N/A", "amount_outstanding": "n/a"},
+        "doc:txt-c": {"total": 30.0, "amount_outstanding": 1.5e1},
+    })
+    for sort in ("total", "outstanding"):
+        r = await client.get(f"/docs?doc_type=invoice&sort={sort}&dir=asc", headers=_h(tok))
+        assert r.status_code == 200, r.text
+        assert [d["id"] for d in r.json()["items"]] == ["doc:txt-b", "doc:txt-a", "doc:txt-c"], sort
+        r = await client.get(f"/docs/export/csv?doc_type=invoice&sort={sort}&dir=desc", headers=_h(tok))
+        assert r.status_code == 200, r.text
+        assert [row["entity_id"] for row in _csv_rows(r.text)] == ["doc:txt-c", "doc:txt-a", "doc:txt-b"], sort
+
+
+@pytest.mark.asyncio
+async def test_list_summary_skips_a_text_total(client, session):
+    """A list whose total is text is counted, and adds nothing to the value, instead of failing
+    the lists page cards."""
+    import uuid as _uuid
+    from celerp.events.engine import emit_event
+
+    tok = await _reg(client)
+    company_id = await _company_id(client, tok)
+    for ref, total in (("TXT-1", "N/A"), ("TXT-2", "12.5")):
+        r = await client.post("/lists", headers=_h(tok), json={"list_type": "quotation", "ref_id": ref})
+        assert r.status_code == 200, r.text
+        await emit_event(
+            session, company_id=company_id, entity_id=r.json()["id"], entity_type="list",
+            event_type="list.patched", data={"total": total}, actor_id=None, location_id=None,
+            source="test", idempotency_key=str(_uuid.uuid4()), metadata_={},
+        )
+    r = await client.get("/lists/summary", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    assert r.json()["total_count"] == 2
+    assert r.json()["total_value"] == 12.5
