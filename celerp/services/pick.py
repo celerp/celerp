@@ -93,7 +93,7 @@ def doc_bound_lots(line_items: list[dict]) -> set[str]:
     line's spanning sibling, so one physical lot cannot satisfy two lines and a
     document allocates the same way whatever order its lines are processed in.
     """
-    return {str(ref) for li in line_items if (ref := line_item_id(li))}
+    return {str(line_item_id(li)) for li in line_items if line_item_id(li)}
 
 
 def plan_lot_draws(
