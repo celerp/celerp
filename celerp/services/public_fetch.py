@@ -3,10 +3,9 @@
 """Fetching a URL that came from outside the company.
 
 A URL supplied by a sender, a store or any other remote system is fetched only
-when its host resolves solely to public addresses. Redirects are followed one hop
-at a time and each hop is checked the same way, and a response body is read only
-up to a stated size, so a remote system cannot point the fetch at the local
-machine or network, or make it read without limit.
+when its host resolves to public internet addresses. Redirects are followed one
+hop at a time and each hop is checked the same way, and a response body is read
+only up to a stated size.
 """
 
 from __future__ import annotations
