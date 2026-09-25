@@ -77,6 +77,7 @@ echo "Installing Celerp dependencies into bundled Python (this takes a few minut
 "$PYTHON_BIN" -m pip install \
   --quiet \
   --no-warn-script-location \
+  -c "$REPO_ROOT/constraints.txt" \
   "$REPO_ROOT[prod]"
 
 echo ""
