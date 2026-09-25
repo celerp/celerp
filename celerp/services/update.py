@@ -19,8 +19,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import asyncio
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
@@ -153,12 +155,12 @@ def self_update_blockers() -> list[str]:
 
 
 def available_update(timeout: float = CHECK_TIMEOUT_SECONDS) -> str | None:
-    """The celerp version pip would install as an upgrade, or None.
+    """The celerp version pip would install as an upgrade, or None when current.
 
     pip resolves the full dependency set, so a release that cannot install on
     this Python or platform is never offered; yanked and pre-releases are
-    skipped and PIP_INDEX_URL / PIP_FIND_LINKS are honoured. Any error or a
-    timeout is None: the caller shows "could not check", never a guess.
+    skipped and PIP_INDEX_URL / PIP_FIND_LINKS are honoured. An error or a
+    timeout raises UpdateError, so callers say "could not check", never guess.
     """
     try:
         result = subprocess.run(
@@ -168,24 +170,22 @@ def available_update(timeout: float = CHECK_TIMEOUT_SECONDS) -> str | None:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         log.warning("update check failed: %s", exc)
-        return None
+        raise UpdateError("could not reach the package index") from exc
     if result.returncode != 0:
         log.warning("update check failed: %s", result.stderr.strip()[-500:])
-        return None
+        raise UpdateError("could not reach the package index")
     try:
         report = json.loads(result.stdout)
-    except ValueError:
-        log.warning("update check returned no report")
-        return None
+    except ValueError as exc:
+        raise UpdateError("the package index gave no answer") from exc
     for item in report.get("install", []):
         meta = item.get("metadata", {})
         if meta.get("name", "").lower() == "celerp":
-            version = meta.get("version", "")
             try:
-                if Version(version) > Version(installed_version()):
-                    return version
-            except InvalidVersion:
-                return None
+                newer = Version(meta.get("version", "")) > Version(installed_version())
+            except InvalidVersion as exc:
+                raise UpdateError("the package index gave no answer") from exc
+            return meta["version"] if newer else None
     return None
 
 
@@ -232,6 +232,183 @@ def in_install_window(now_utc: datetime, tz_name: str | None) -> bool:
     except (ZoneInfoNotFoundError, ValueError):
         tz = timezone.utc
     return WINDOW_START_HOUR <= now_utc.astimezone(tz).hour < WINDOW_END_HOUR
+
+
+# ── Status, requests and the nightly loop (API side) ─────────────────────────
+
+CHECK_INTERVAL_SECONDS = 3600  # hourly ticks always land inside the two-hour window
+FIRST_CHECK_DELAY_SECONDS = 60  # startup stays light; a quick restart makes no index call
+
+# The last check, kept in memory: one answer for every page view.
+_check: dict = {"latest": None, "error": "", "checked_at": None}
+_request_lock = threading.Lock()
+
+
+class UpdateRefused(UpdateError):
+    """An update request that cannot go ahead; `code` is shown via
+    `shell.update_blocked_<code>` like the blockers."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+def refresh_check() -> dict:
+    """Ask the package index now and keep the answer. Blocking; run in a thread."""
+    try:
+        latest, error = available_update(), ""
+    except UpdateError as exc:
+        latest, error = None, str(exc)
+    _check.update(latest=latest, error=error, checked_at=_now())
+    return dict(_check)
+
+
+def status(*, owner: bool) -> dict:
+    """What the update card shows. Only the install owner may install; everyone
+    else sees reason "administrator"."""
+    blockers = self_update_blockers()
+    reason = (blockers[0] if blockers else "") if owner else "administrator"
+    return {
+        "current": installed_version(),
+        "latest": _check["latest"],
+        "check_error": _check["error"],
+        "checked_at": _check["checked_at"],
+        "can_install": owner and not blockers,
+        "reason": reason,
+        "auto": auto_enabled(),
+        "installing": update_in_progress(),
+        "last_result": read_state().get("last_result"),
+    }
+
+
+def request_available(*, automatic: bool = False) -> str:
+    """Check the index, then ask the supervisor to install the newest version.
+
+    The version always comes from this check, never from a caller. Returns the
+    requested version; raises UpdateRefused. The caller restarts the API.
+    Automatic requests skip a version that already failed here; a person can
+    still ask for it.
+    """
+    with _request_lock:  # two requests at once produce one sentinel
+        blockers = self_update_blockers()
+        if blockers:
+            raise UpdateRefused(blockers[0])
+        if update_in_progress():
+            raise UpdateRefused("in_progress")
+        check = refresh_check()
+        if check["error"]:
+            raise UpdateRefused("check_failed")
+        target = check["latest"]
+        if not target:
+            raise UpdateRefused("current")
+        if automatic and target in read_state().get("failed_versions", []):
+            raise UpdateRefused("failed_before")
+        request_update(target)
+        return target
+
+
+def set_auto(enabled: bool) -> None:
+    from celerp.config import _update_config
+
+    def _set(cfg: dict) -> None:
+        cfg["updates"] = {"auto": enabled}
+    _update_config(_set)
+
+
+async def _owner_timezone(session) -> str | None:
+    """The time zone of the install owner's first company, if set."""
+    from sqlalchemy import select
+
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import Company
+    from celerp.services.auth import installation_root_user_id
+
+    owner_id = await installation_root_user_id(session)
+    if owner_id is None:
+        return None
+    settings = await session.scalar(
+        select(Company.settings)
+        .join(UserCompany, UserCompany.company_id == Company.id)
+        .where(UserCompany.user_id == owner_id)
+        .order_by(Company.created_at)
+        .limit(1)
+    )
+    return (settings or {}).get("timezone")
+
+
+def result_message(result: dict) -> tuple[str, str]:
+    """(title, body) for the notification about an update attempt."""
+    if result.get("ok"):
+        return (f"Celerp was updated to {result['to']}",
+                f"Celerp is now on version {result['to']}.")
+    title = f"Celerp could not update to {result['to']}"
+    if result.get("outcome") == ROLLBACK_FAILED:
+        return title, (f"The update to {result['to']} failed and could not be undone: "
+                       f"{result.get('reason', '')}. The backup taken before the update is "
+                       "kept; see the update instructions to restore it.")
+    return title, (f"Celerp is still on {result['from']}: {result.get('reason', '')}. "
+                   "Your data was not changed.")
+
+
+async def notify_last_result(session) -> int:
+    """One high-priority notification per company about the last update attempt,
+    once. The state is marked only after the commit, so a crash in between can
+    repeat the notice, never lose it. Returns the number created."""
+    from sqlalchemy import select
+
+    from celerp.models.company import Company
+    from celerp.notifications import service as notif_service
+
+    state = read_state()
+    result = state.get("last_result")
+    if not result or result.get("notified"):
+        return 0
+    title, body = result_message(result)
+    company_ids = (await session.execute(
+        select(Company.id).where(Company.is_active.is_(True)))).scalars().all()
+    for company_id in company_ids:
+        await notif_service.create(session, company_id, "system", title, body, priority="high")
+    await session.commit()
+    result["notified"] = True
+    write_state(state)
+    return len(company_ids)
+
+
+async def auto_update_tick(session, now_utc: datetime, restart: Callable[[], None]) -> str | None:
+    """One loop tick: refresh the check, and inside the install window with
+    automatic updates on, request the update and restart. Returns the version
+    requested, if any."""
+    if not auto_enabled() or not in_install_window(now_utc, await _owner_timezone(session)):
+        await asyncio.to_thread(refresh_check)
+        return None
+    try:
+        target = await asyncio.to_thread(request_available, automatic=True)
+    except UpdateRefused as exc:
+        log.info("automatic update skipped: %s", exc.code)
+        return None
+    log.info("automatic update to %s requested", target)
+    await asyncio.to_thread(restart)
+    return target
+
+
+async def update_loop(restart: Callable[[], None]) -> None:
+    """Background loop started from the API lifespan: report the last update,
+    then tick hourly."""
+    from celerp.db import get_session_ctx
+
+    try:
+        async with get_session_ctx() as session:
+            await notify_last_result(session)
+    except Exception:
+        log.exception("update result notification failed")
+    await asyncio.sleep(FIRST_CHECK_DELAY_SECONDS)
+    while True:
+        try:
+            async with get_session_ctx() as session:
+                await auto_update_tick(session, datetime.now(timezone.utc), restart)
+        except Exception:
+            log.exception("update check failed")
+        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
 
 
 # ── The update (supervisor side) ──────────────────────────────────────────────

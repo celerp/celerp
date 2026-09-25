@@ -1408,7 +1408,11 @@ def upgrade():
         click.echo(f"Cannot upgrade: {'; '.join(blocked)}.", err=True)
         sys.exit(1)
     click.echo("Checking for a newer version...")
-    target = update.available_update()
+    try:
+        target = update.available_update()
+    except update.UpdateError as exc:
+        click.echo(f"Could not check for updates: {exc}.", err=True)
+        sys.exit(1)
     if not target:
         click.echo(f"No newer version found (installed: {update.installed_version()}).")
         return

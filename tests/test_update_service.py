@@ -328,10 +328,19 @@ def test_available_update_reads_pips_resolution(monkeypatch):
 @pytest.mark.parametrize("kwargs", [
     {"stdout": json.dumps({"install": []})},                                   # up to date
     {"stdout": json.dumps({"install": [{"metadata": {"name": "celerp", "version": "0.9"}}]})},
-    {"returncode": 1},                                                           # offline, no index
-    {"stdout": "not json"},
-    {"exc": subprocess.TimeoutExpired("pip", 1)},
 ])
-def test_available_update_is_none_when_nothing_newer_or_unknown(monkeypatch, kwargs):
+def test_available_update_is_none_when_nothing_newer(monkeypatch, kwargs):
     _pip_report(monkeypatch, **kwargs)
     assert update.available_update() is None
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"returncode": 1},                                                           # offline, no index
+    {"stdout": "not json"},
+    {"stdout": json.dumps({"install": [{"metadata": {"name": "celerp", "version": "x!"}}]})},
+    {"exc": subprocess.TimeoutExpired("pip", 1)},
+])
+def test_available_update_raises_when_it_cannot_tell(monkeypatch, kwargs):
+    _pip_report(monkeypatch, **kwargs)
+    with pytest.raises(update.UpdateError):
+        update.available_update()

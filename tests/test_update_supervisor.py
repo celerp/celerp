@@ -237,7 +237,8 @@ def _upgrade(tmp_path, *, running=False, blockers=(), target="1.1.0", result=Non
         patch("celerp.config.config_path", return_value=tmp_path / "config.toml"),
         patch.object(update, "get_json", return_value={"status": "ok"} if running else None),
         patch.object(update, "self_update_blockers", return_value=list(blockers)),
-        patch.object(update, "available_update", return_value=target),
+        patch.object(update, "available_update",
+                     **({"side_effect": target} if isinstance(target, Exception) else {"return_value": target})),
         patch.object(update, "installed_version", return_value="1.0.0"),
         patch.object(update, "run_update", run_update),
     ):
@@ -293,3 +294,11 @@ def test_upgrade_failure_exits_nonzero(tmp_path):
     res, _ = _upgrade(tmp_path, result=_result(update.FAILED, "install failed: x"))
     assert res.exit_code == 1
     assert "install failed: x" in res.output
+
+
+def test_upgrade_that_cannot_check_exits_nonzero(tmp_path):
+    res, run_update = _upgrade(
+        tmp_path, target=update.UpdateError("could not reach the package index"))
+    assert res.exit_code == 1
+    assert "could not reach the package index" in res.output
+    run_update.assert_not_called()

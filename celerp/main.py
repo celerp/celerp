@@ -364,6 +364,11 @@ async def lifespan(_app: FastAPI):
     from celerp.services.reorder import reorder_alert_loop
     reorder_alert_task = asyncio.create_task(reorder_alert_loop())
 
+    # Update checks: reports the last update attempt once, then checks hourly and,
+    # when automatic updates are on, installs overnight in the owner's time zone.
+    from celerp.services.update import update_loop
+    update_task = asyncio.create_task(update_loop(restart=system._send_sigterm))
+
     yield
 
     # Terminate all active SSE connections so Uvicorn doesn't hang on shutdown
@@ -376,6 +381,7 @@ async def lifespan(_app: FastAPI):
     connector_sched_task.cancel()
     outbound_connector_task.cancel()
     reorder_alert_task.cancel()
+    update_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:
@@ -509,6 +515,7 @@ app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(ledger.router, prefix="/ledger", tags=["ledger"])
 app.include_router(companies.router, prefix="/companies", tags=["companies"])
 app.include_router(system.router, prefix="/system", tags=["system"])
+app.include_router(system.update_router, prefix="/system", tags=["system"])
 app.include_router(stars_router_mod.router, prefix="/stars", tags=["stars"])
 app.include_router(notifications.router)
 app.include_router(events_router_mod.router)
