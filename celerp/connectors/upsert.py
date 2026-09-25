@@ -76,6 +76,15 @@ async def list_items_with_external_id(company_id: str, platform: str) -> list:
     return await items_svc.list_items_with_external_id(company_id, platform=platform)
 
 
+async def list_item_for_external_identity(
+    company_id: str, platform: str, product_id: str, variation_id: str | None
+) -> list:
+    from celerp_inventory import services as items_svc
+    return await items_svc.list_item_for_external_identity(
+        company_id, platform, product_id, variation_id
+    )
+
+
 async def list_items_modified_since_last_sync(company_id: str, platform: str) -> list:
     from celerp_inventory import services as items_svc
     return await items_svc.list_items_modified_since_last_sync(company_id, platform=platform)

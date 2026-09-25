@@ -901,9 +901,10 @@ class WooCommerceConnector(ConnectorBase):
         self, ctx: ConnectorContext, identity: str
     ) -> SyncResult:
         """Push one queued Woo product identity using freshly aggregated Celerp stock."""
+        product_id, _, variation_id = identity.partition(":")
         try:
-            items = await _upsert.list_items_with_external_id(
-                ctx.company_id, platform="woocommerce"
+            selected = await _upsert.list_item_for_external_identity(
+                ctx.company_id, "woocommerce", product_id, variation_id or None
             )
         except Exception as exc:
             result = SyncResult(
@@ -911,16 +912,6 @@ class WooCommerceConnector(ConnectorBase):
             )
             result.errors = [f"Failed to load inventory: {exc}"]
             return result
-
-        product_id, sep, variation_id = identity.partition(":")
-        selected = [
-            item for item in items
-            if str(item.get("woocommerce_product_id") or "") == product_id
-            and (
-                str(item.get("woocommerce_variation_id") or "")
-                == (variation_id if sep else "")
-            )
-        ]
         if not selected:
             return SyncResult(
                 entity=SyncEntity.INVENTORY,

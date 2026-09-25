@@ -718,15 +718,11 @@ async def test_sync_inventory_identity_out_pushes_only_selected_product(woo, ctx
             "quantity": 2, "woocommerce_product_id": "10",
             "external_link": {"product_id": "10", "manage_stock": True},
         },
-        {
-            "quantity": 9, "woocommerce_product_id": "11",
-            "external_link": {"product_id": "11", "manage_stock": True},
-        },
     ]
     with patch(
-        "celerp.connectors.upsert.list_items_with_external_id",
+        "celerp.connectors.upsert.list_item_for_external_identity",
         new_callable=AsyncMock, return_value=items,
-    ):
+    ) as lookup:
         with respx.mock:
             selected = respx.put(
                 "https://store.example.com/wp-json/wc/v3/products/10"
@@ -735,6 +731,7 @@ async def test_sync_inventory_identity_out_pushes_only_selected_product(woo, ctx
                 "https://store.example.com/wp-json/wc/v3/products/11"
             ).mock(return_value=httpx.Response(200, json={}))
             result = await woo.sync_inventory_identity_out(ctx, "10")
+    lookup.assert_awaited_once_with(ctx.company_id, "woocommerce", "10", None)
     assert result.updated == 1
     assert len(selected.calls) == 1
     assert len(other.calls) == 0

@@ -1005,6 +1005,16 @@ async def load_catalog_family_rows(
     identical to a whole-catalog scan because every row it consults shares one
     of those SKUs; when the SKUs cannot be narrowed in SQL the whole catalog
     is loaded."""
+    return catalog_family_rows(
+        await _catalog_family_candidates(session, company_id, anchor), anchor
+    )
+
+
+async def _catalog_family_candidates(
+    session: AsyncSession, company_id, anchor: Projection
+) -> list[Projection]:
+    """Every row load_catalog_family_rows consults: the anchor, rows pinned to
+    it, and rows sharing its SKU or an alias of it."""
     cid = uuid.UUID(str(company_id))
     state = anchor.state or {}
     skus = {normalize_sku(state.get("sku"))}
@@ -1021,8 +1031,7 @@ async def load_catalog_family_rows(
             Projection.state.op("->>")("catalog_item_id") == anchor.entity_id,
             *narrowing,
         ))
-    rows = (await session.execute(query)).scalars().all()
-    return catalog_family_rows(list(rows), anchor)
+    return list((await session.execute(query)).scalars().all())
 
 
 async def stamp_catalog_family_members(
@@ -1223,25 +1232,51 @@ def _choose_outbound_anchor(candidates: list[Projection], platform: str) -> Proj
     raise ValueError(f"Multiple item rows claim the same {platform} product identity")
 
 
-async def _items_with_external_id(
-    company_id: str,
-    platform: str,
-    require_sync_flag: bool = False,
-    *,
-    inventory_only: bool = False,
-) -> list[dict]:
-    """Return one outbound row per linked external product identity."""
-    from celerp.db import SessionLocal as AsyncSessionLocal
-    from celerp_inventory.projections import is_item_available
+def _outbound_link(
+    row: Projection, platform: str, *, require_sync_flag: bool, inventory_only: bool
+) -> dict | None:
+    """The row's external link when the row takes part in outbound sync."""
+    link = external_link_for_state(row.state or {}, platform)
+    if not link or link.get("product_id") in (None, "") or link.get("remote_deleted") is True:
+        return None
+    if inventory_only and link.get("inventory_sync_paused") is True:
+        return None
+    if platform == "shopify":
+        if require_sync_flag and row.is_sync_to_shopify is not True:
+            return None
+    elif link.get("sync_enabled") is False:
+        return None
+    return link
 
-    cid = uuid.UUID(str(company_id))
-    async with AsyncSessionLocal() as session:
-        rows = (await session.execute(
-            select(Projection).where(
-                Projection.company_id == cid,
-                Projection.entity_type == "item",
-            )
-        )).scalars().all()
+
+def _outbound_row(
+    anchor: Projection, platform: str, quantity: float, sku_anchor_count: int
+) -> dict:
+    st = anchor.state or {}
+    if normalize_sku(st.get("sku")) and sku_anchor_count > 1:
+        raise ValueError(
+            f"SKU {st.get('sku')!r} matches multiple catalog product anchors"
+        )
+    return {
+        "entity_id": anchor.entity_id,
+        "sku": st.get("sku"),
+        "name": st.get("name"),
+        "description": st.get("description"),
+        "sale_price": st.get("sale_price", st.get("retail_price")),
+        "quantity": quantity,
+        "files": st.get("files") or [],
+        "inventory_type": st.get("inventory_type", "stocked"),
+        "sell_by": st.get("sell_by"),
+        "external_link": external_link_for_state(st, platform),
+        **_external_ids(platform, st),
+    }
+
+
+def _outbound_totals(
+    rows: list[Projection],
+) -> tuple[dict[str, tuple[str, str]], dict[tuple[str, str], float], dict[str, int]]:
+    """Family keys, sellable quantity per family and product anchors per SKU."""
+    from celerp_inventory.projections import is_item_available
 
     roots_by_sku: dict[str, int] = {}
     family_keys = _family_keys(rows)
@@ -1257,49 +1292,84 @@ async def _items_with_external_id(
                 sellable_by_family.get(family_key, 0.0)
                 + float(st.get("quantity") or 0)
             )
+    return family_keys, sellable_by_family, roots_by_sku
+
+
+def _outbound_rows(
+    rows: list[Projection], anchors: list[Projection], platform: str
+) -> list[dict]:
+    family_keys, sellable_by_family, roots_by_sku = _outbound_totals(rows)
+    return [
+        _outbound_row(
+            r, platform,
+            sellable_by_family.get(family_keys.get(r.entity_id), 0.0),
+            roots_by_sku.get(normalize_sku((r.state or {}).get("sku")), 0),
+        )
+        for r in anchors
+    ]
+
+
+async def _items_with_external_id(
+    company_id: str,
+    platform: str,
+    require_sync_flag: bool = False,
+    *,
+    inventory_only: bool = False,
+) -> list[dict]:
+    """Return one outbound row per linked external product identity."""
+    from celerp.db import SessionLocal as AsyncSessionLocal
+
+    cid = uuid.UUID(str(company_id))
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(
+            select(Projection).where(
+                Projection.company_id == cid,
+                Projection.entity_type == "item",
+            )
+        )).scalars().all()
 
     grouped: dict[tuple[str, str | None], list[Projection]] = {}
     for r in rows:
-        st = r.state or {}
-        link = external_link_for_state(st, platform)
-        if not link or link.get("product_id") in (None, "") or link.get("remote_deleted") is True:
-            continue
-        if inventory_only and link.get("inventory_sync_paused") is True:
-            continue
-        if platform == "shopify":
-            if require_sync_flag and r.is_sync_to_shopify is not True:
-                continue
-        elif link.get("sync_enabled") is False:
-            continue
-        key = external_identity_key(platform, link)
-        grouped.setdefault(key, []).append(r)
+        link = _outbound_link(
+            r, platform,
+            require_sync_flag=require_sync_flag, inventory_only=inventory_only,
+        )
+        if link is not None:
+            grouped.setdefault(external_identity_key(platform, link), []).append(r)
+    anchors = [
+        _choose_outbound_anchor(candidates, platform)
+        for candidates in grouped.values()
+    ]
+    return _outbound_rows(list(rows), anchors, platform)
 
-    out: list[dict] = []
-    for candidates in grouped.values():
-        r = _choose_outbound_anchor(candidates, platform)
-        st = r.state or {}
-        link = external_link_for_state(st, platform)
-        sku_key = normalize_sku(st.get("sku"))
-        if sku_key and roots_by_sku.get(sku_key, 0) > 1:
-            raise ValueError(
-                f"SKU {st.get('sku')!r} matches multiple catalog product anchors"
+
+async def list_item_for_external_identity(
+    company_id: str, platform: str, product_id: str, variation_id: str | None
+) -> list[dict]:
+    """The inventory outbound row for one external product identity, loading
+    only the rows that carry the identity and the anchor's catalog family."""
+    from celerp.db import SessionLocal as AsyncSessionLocal
+
+    cid = uuid.UUID(str(company_id))
+    async with AsyncSessionLocal() as session:
+        candidates = [
+            r for r in (await session.execute(
+                _external_identity_candidates(cid, platform, str(product_id))
+            )).scalars().all()
+            if _outbound_link(
+                r, platform,
+                require_sync_flag=(platform == "shopify"), inventory_only=True,
+            ) is not None
+            and _same_external_identity(
+                platform, external_link_for_state(r.state or {}, platform),
+                str(product_id), variation_id,
             )
-        out.append({
-            "entity_id": r.entity_id,
-            "sku": st.get("sku"),
-            "name": st.get("name"),
-            "description": st.get("description"),
-            "sale_price": st.get("sale_price", st.get("retail_price")),
-            "quantity": sellable_by_family.get(
-                family_keys.get(r.entity_id), 0.0
-            ),
-            "files": st.get("files") or [],
-            "inventory_type": st.get("inventory_type", "stocked"),
-            "sell_by": st.get("sell_by"),
-            "external_link": link,
-            **_external_ids(platform, st),
-        })
-    return out
+        ]
+        if not candidates:
+            return []
+        anchor = _choose_outbound_anchor(candidates, platform)
+        rows = await _catalog_family_candidates(session, cid, anchor)
+    return _outbound_rows(rows, [anchor], platform)
 
 
 async def list_items_with_external_id(company_id: str, platform: str) -> list[dict]:

@@ -1960,3 +1960,77 @@ async def test_shopify_import_relinks_a_product_after_disconnect(use_test_sessio
     link = external_link_for_state(rows[0].state or {}, "shopify")
     assert link["product_id"] == "1"
     assert link["variant_id"] == "10"
+
+
+@pytest.mark.asyncio
+async def test_queued_woocommerce_stock_push_reads_only_that_product(
+    use_test_session, monkeypatch
+):
+    """A queued stock push for one WooCommerce product reads that product's
+    rows, not the whole catalog, and still sends the family's sellable stock."""
+    import datetime as dt
+    from unittest.mock import AsyncMock
+
+    import httpx
+    import respx
+    from sqlalchemy import event
+
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.woocommerce import WooCommerceConnector
+    from celerp.models.projections import Projection
+
+    session = use_test_session
+    cid = await _seed_company(session, "Pointstock")
+    now = dt.datetime.now(dt.timezone.utc)
+
+    def item(entity_id, state):
+        session.add(Projection(
+            company_id=cid, entity_id=entity_id, entity_type="item",
+            state={"status": "available", **state}, version=1, updated_at=now,
+        ))
+
+    item("item:shirt", {
+        "sku": "SHIRT", "quantity": 2,
+        "external_links": {"woocommerce": {"product_id": "10", "manage_stock": True}},
+    })
+    item("item:shirt-lot", {"sku": "SHIRT", "quantity": 3, "catalog_item_id": "item:shirt"})
+    item("item:hat", {
+        "sku": "HAT", "quantity": 9,
+        "external_links": {"woocommerce": {"product_id": "11", "manage_stock": True}},
+    })
+    item("item:sock", {"sku": "SOCK", "quantity": 4})
+    await session.flush()
+    session.expunge_all()
+
+    loaded: list[str] = []
+
+    def on_load(target, _context):
+        loaded.append(target.entity_id)
+
+    monkeypatch.setattr(
+        "celerp.connectors.upsert.list_items_with_external_id",
+        AsyncMock(side_effect=AssertionError("whole catalog loaded")),
+    )
+    monkeypatch.setattr(
+        "celerp.services.outbound_url._resolve_public_addresses",
+        AsyncMock(return_value=["93.184.216.34"]),
+    )
+    ctx = ConnectorContext(
+        company_id=str(cid),
+        access_token="ck_testkey:cs_testsecret",
+        store_handle="https://store.example.com",
+    )
+    event.listen(Projection, "load", on_load)
+    try:
+        with respx.mock:
+            shirt = respx.put(
+                "https://store.example.com/wp-json/wc/v3/products/10"
+            ).mock(return_value=httpx.Response(200, json={}))
+            result = await WooCommerceConnector().sync_inventory_identity_out(ctx, "10")
+    finally:
+        event.remove(Projection, "load", on_load)
+
+    assert result.errors is None
+    assert result.updated == 1
+    assert shirt.calls.last.request.content == b'{"stock_quantity":5}'
+    assert set(loaded) == {"item:shirt", "item:shirt-lot"}
