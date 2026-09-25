@@ -4127,7 +4127,8 @@ celerpUpdateBulkAlloc();
             _list_type_tabs(list_type),
             # Self-explanatory page: the shipping tab says what these are and what to do next.
             (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
-            _list_status_cards(summary, "all_issued" if all_issued_list else status, converted_to_type=converted_to_type_list, base_url=cards_base_url),
+            _list_status_cards(summary, "all_issued" if all_issued_list else status, converted_to_type=converted_to_type_list, base_url=cards_base_url,
+                               dates_chosen=any(state.get(k) for k in _DATE_KEYS)),
             _list_table(lists, lang=lang),
             pagination(page, filtered_total, _PER_PAGE, "/lists", _state_query(state)),
             title=page_title("page.lists"),
@@ -9911,10 +9912,12 @@ def _list_table(lists: list[dict], lang: str = "en") -> FT:
     )
 
 
-def _list_status_cards(summary: dict, active_status: str = "", converted_to_type: str = "", base_url: str = "/lists?") -> FT:
-    """base_url carries the filters a card click keeps (search, type, dates); it always holds a query string."""
+def _list_status_cards(summary: dict, active_status: str = "", converted_to_type: str = "", base_url: str = "/lists?",
+                       dates_chosen: bool = False) -> FT:
+    """base_url carries the filters a card click keeps (search, type, dates); it always holds a query string.
+    The Draft card counts every draft, like the drafts view it opens, unless the user chose a date range."""
     count_by_status = summary.get("count_by_status", {})
-    draft_cnt          = count_by_status.get("draft", 0)
+    draft_cnt          = count_by_status.get("draft", 0) if dates_chosen else summary.get("draft_count", 0)
     all_issued_cnt     = summary.get("all_issued_count", 0)
     memo_cnt           = summary.get("converted_to_memo_count", 0)
     invoice_cnt        = summary.get("converted_to_invoice_count", 0)

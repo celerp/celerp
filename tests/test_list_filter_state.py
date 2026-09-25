@@ -158,6 +158,27 @@ class TestListPageState:
         per_page = re.findall(r"window.location='([^\"]*)\"", r.text)
         assert per_page and "type=audit" in per_page[0] and "from=2026-01-01" in per_page[0], per_page
 
+    @pytest.mark.asyncio
+    async def test_list_draft_card_counts_every_draft_unless_dates_are_chosen(self, ui_client):
+        """The Draft card opens the drafts view, which shows every draft, so it counts every draft.
+        A date range the user picked applies to it like every other card."""
+        summary = AsyncMock(return_value={"count_by_status": {"draft": 1, "open": 2},
+                                          "draft_count": 7, "all_issued_count": 2})
+
+        def _draft_count(html: str) -> str:
+            m = re.search(r'<a href="[^"]*status=draft"[^>]*>.*?status-card-count">(\d+)<', html, re.S)
+            assert m, html
+            return m.group(1)
+
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": [], "total": 0})), \
+             patch("ui.api_client.get_list_summary", new=summary):
+            default = await ui_client.get("/lists", cookies=_cookies())
+            chosen = await ui_client.get("/lists?preset=custom&from=2026-01-01&to=2026-03-31", cookies=_cookies())
+        assert default.status_code == 200 and chosen.status_code == 200
+        assert _draft_count(default.text) == "7"
+        assert _draft_count(chosen.text) == "1"
+
 
 def _doc_row(company_id, doc_type: str, status: str, issue_date: str, total: float = 100.0) -> Projection:
     eid = str(uuid.uuid4())
