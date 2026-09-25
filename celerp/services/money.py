@@ -212,19 +212,28 @@ def document_line_amount(line: dict, currency: str) -> Decimal | None:
     return round_money(unit * qty, currency) if unit is not None else None
 
 
-def document_discount_amount(doc: dict, subtotal: _MoneyInput, currency: str) -> Decimal | None:
-    """Effective document discount amount, including older unmaterialized shapes."""
+def discount_from_inputs(doc: dict, subtotal: _MoneyInput, currency: str) -> Decimal | None:
+    """Document discount derived from its ``discount`` and ``discount_type`` inputs, or None
+    when the discount is not a number."""
     try:
-        raw = doc.get("discount_amount")
-        if raw not in (None, ""):
-            amount = to_decimal(raw)
-        else:
-            discount = to_decimal(doc.get("discount", 0) or 0)
-            amount = (
-                to_decimal(subtotal) * discount / Decimal(100)
-                if doc.get("discount_type", "flat") == "percentage"
-                else discount
-            )
+        discount = to_decimal(doc.get("discount", 0) or 0)
+        amount = (
+            to_decimal(subtotal) * discount / Decimal(100)
+            if doc.get("discount_type", "flat") == "percentage"
+            else discount
+        )
+        return round_money(amount, currency) if amount.is_finite() else None
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+
+
+def document_discount_amount(doc: dict, subtotal: _MoneyInput, currency: str) -> Decimal | None:
+    """Effective document discount amount: the stored amount, else derived from its inputs."""
+    raw = doc.get("discount_amount")
+    if raw in (None, ""):
+        return discount_from_inputs(doc, subtotal, currency)
+    try:
+        amount = to_decimal(raw)
         return round_money(amount, currency) if amount.is_finite() else None
     except (ArithmeticError, TypeError, ValueError):
         return None

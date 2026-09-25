@@ -12,6 +12,7 @@ from celerp.services.money import (
     RATE_EXTRA_DP,
     checked_exchange_rate,
     currency_dp,
+    discount_from_inputs,
     doc_rate,
     document_discount_amount,
     document_line_amount,
@@ -344,3 +345,13 @@ def test_document_line_amount_reconstructs_legacy_line_discount():
 
 def test_document_discount_amount_reconstructs_legacy_percentage_header():
     assert document_discount_amount({"discount": 10, "discount_type": "percentage"}, Decimal("300"), "USD") == Decimal("30.00")
+
+
+def test_discount_from_inputs_ignores_a_stale_stored_amount():
+    doc = {"discount": 10, "discount_type": "percentage", "discount_amount": 5}
+    assert discount_from_inputs(doc, Decimal("300"), "USD") == Decimal("30.00")
+    assert document_discount_amount(doc, Decimal("300"), "USD") == Decimal("5.00")
+
+
+def test_discount_from_inputs_is_none_for_a_non_numeric_discount():
+    assert discount_from_inputs({"discount": "ten"}, Decimal("300"), "USD") is None

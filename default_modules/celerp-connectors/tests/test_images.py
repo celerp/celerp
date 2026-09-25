@@ -72,12 +72,14 @@ _ARGS = ("co", "item:1", "sys", "https://x.test/img.jpg", "f.jpg", "product_imag
 _ADDRESSES = {"x.test": ["93.184.216.34"], "inside.test": ["10.0.0.5"]}
 
 
+# Requests go to the validated address, so routes are mocked on it rather than the host name.
+_IMG = "https://93.184.216.34/img.jpg"
+
+
 @pytest.fixture(autouse=True)
-def _dns(monkeypatch):
-    """Resolve the test hosts without a network: x.test is public, inside.test is not."""
-    async def _resolve(host):
-        return _ADDRESSES.get(host, ["127.0.0.1"])
-    monkeypatch.setattr("celerp.services.public_fetch._resolve", _resolve, raising=False)
+def _dns(fake_dns):
+    """x.test is public, inside.test is not."""
+    fake_dns(_ADDRESSES)
 
 
 @pytest.mark.asyncio
@@ -95,7 +97,7 @@ async def test_download_emit_already_stored_returns_false():
 async def test_download_emit_download_failure_returns_false():
     sess = _sess(_proj([]))
     with respx.mock:
-        respx.get("https://x.test/img.jpg").mock(return_value=httpx.Response(500))
+        respx.get(_IMG).mock(return_value=httpx.Response(500))
         assert await download_and_emit_file(sess, *_ARGS) is False
 
 
@@ -104,7 +106,7 @@ async def test_download_emit_store_failure_returns_false():
     sess = _sess(_proj([]))
     with respx.mock, \
          patch("celerp.services.attachments.store_upload", new=AsyncMock(side_effect=RuntimeError("disk full"))):
-        respx.get("https://x.test/img.jpg").mock(
+        respx.get(_IMG).mock(
             return_value=httpx.Response(200, content=b"abc", headers={"content-type": "image/jpeg"}))
         assert await download_and_emit_file(sess, *_ARGS) is False
 
@@ -117,7 +119,7 @@ async def test_download_emit_success_emits_event():
     with respx.mock, \
          patch("celerp.services.attachments.store_upload", new=AsyncMock(return_value=meta)), \
          patch("celerp.events.engine.emit_event", new=emit):
-        respx.get("https://x.test/img.jpg").mock(
+        respx.get(_IMG).mock(
             return_value=httpx.Response(200, content=b"abc", headers={"content-type": "image/jpeg"}))
         result = await download_and_emit_file(sess, *_ARGS)
     assert result is True
@@ -142,21 +144,24 @@ async def test_download_emit_guesses_mime_when_header_missing():
     with respx.mock, \
          patch("celerp.services.attachments.store_upload", new=_store), \
          patch("celerp.events.engine.emit_event", new=AsyncMock()):
-        respx.get("https://x.test/img.jpg").mock(return_value=httpx.Response(200, content=b"abc"))  # no content-type
+        respx.get(_IMG).mock(return_value=httpx.Response(200, content=b"abc"))  # no content-type
         result = await download_and_emit_file(sess, *_ARGS)
     assert result is True
     assert captured["ct"] == "image/jpeg"  # guessed from f.jpg
 
 
-@pytest.mark.parametrize("target", ["http://inside.test/img.jpg", "http://127.0.0.1/img.jpg"])
+@pytest.mark.parametrize("target, address", [
+    ("https://inside.test/img.jpg", "https://10.0.0.5/img.jpg"),
+    ("https://127.0.0.1/img.jpg", "https://127.0.0.1/img.jpg"),
+])
 @pytest.mark.asyncio
-async def test_download_does_not_follow_a_redirect_to_a_non_public_host(target):
+async def test_download_does_not_follow_a_redirect_to_a_non_public_host(target, address):
     sess = _sess(_proj([]))
     store = AsyncMock(return_value={"id": "f3", "filename": "f.jpg", "mime": "image/jpeg", "size": 3, "url": "/x"})
     with respx.mock, patch("celerp.services.attachments.store_upload", new=store), \
          patch("celerp.events.engine.emit_event", new=AsyncMock()):
-        respx.get("https://x.test/img.jpg").mock(return_value=httpx.Response(302, headers={"location": target}))
-        inner = respx.get(target).mock(
+        respx.get(_IMG).mock(return_value=httpx.Response(302, headers={"location": target}))
+        inner = respx.get(address).mock(
             return_value=httpx.Response(200, content=b"abc", headers={"content-type": "image/jpeg"}))
         assert await download_and_emit_file(sess, *_ARGS) is False
     assert not inner.called
@@ -170,7 +175,7 @@ async def test_download_refuses_a_file_over_the_attachment_limit(monkeypatch):
     store = AsyncMock(return_value={"id": "f4", "filename": "f.jpg", "mime": "image/jpeg", "size": 11, "url": "/x"})
     with respx.mock, patch("celerp.services.attachments.store_upload", new=store), \
          patch("celerp.events.engine.emit_event", new=AsyncMock()):
-        respx.get("https://x.test/img.jpg").mock(
+        respx.get(_IMG).mock(
             return_value=httpx.Response(200, content=b"x" * 11, headers={"content-type": "image/jpeg"}))
         assert await download_and_emit_file(sess, *_ARGS) is False
     store.assert_not_awaited()

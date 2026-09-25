@@ -399,13 +399,22 @@ async def test_doc_export_reads_in_batches_and_only_the_exported_fields(client, 
         for i in range(3)
     })
     bare_state = re.compile(r"\bprojections\.state\b(?!\s*(?:->|::|\[))")
-    with _sql_spy() as captured:
-        r = await client.get(f"/docs/export/csv?doc_type=invoice{query}", headers=_h(tok))
+    batch_sizes: dict[str, object] = {}
+
+    def _batch_size(conn, cursor, statement, parameters, context, executemany):
+        batch_sizes[statement] = context.execution_options.get("yield_per")
+
+    event.listen(Engine, "before_cursor_execute", _batch_size)
+    try:
+        with _sql_spy() as captured:
+            r = await client.get(f"/docs/export/csv?doc_type=invoice{query}", headers=_h(tok))
+    finally:
+        event.remove(Engine, "before_cursor_execute", _batch_size)
     assert r.status_code == 200, r.text
     rows = _csv_rows(r.text)
     assert sorted(x["doc_number"] for x in rows) == ["INV-000", "INV-001", "INV-002"]
     assert {x["total"] for x in rows} == {"5.0"}
     selects = [s for s in captured if s.lower().lstrip().startswith("select") and "from projections" in s.lower()]
     assert selects
-    assert not [s for s in selects if not re.search(r"limit \$?\d", s.lower()) and "count(" not in s.lower()]
+    assert not [s for s in selects if "count(" not in s.lower() and not batch_sizes.get(s)]
     assert not [s for s in selects if bare_state.search(s[:s.lower().find("from projections")])]

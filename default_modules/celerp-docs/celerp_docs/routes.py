@@ -40,7 +40,7 @@ from celerp.services.permissions import assert_role_permission, get_current_comp
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
-from celerp.services.money import checked_exchange_rate, doc_rate, require_doc_rate, round_money, round_rate, to_decimal, to_stored_float
+from celerp.services.money import checked_exchange_rate, discount_from_inputs, doc_rate, require_doc_rate, round_money, round_rate, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.output.document_context import prepare_document_output
@@ -4666,11 +4666,13 @@ async def patch_list(
         raise HTTPException(status_code=409, detail="Reload the list to get its latest version before saving line changes")
     if payload.expected_version is not None and row.version != payload.expected_version:
         raise HTTPException(status_code=409, detail="This list was changed by someone else; reload to get the latest before saving")
+    _new_values = {f: (c or {}).get("new") for f, c in payload.fields_changed.items()}
     try:
-        _validate_shipment_values({f: (c or {}).get("new")
-                                   for f, c in payload.fields_changed.items()})
+        _validate_shipment_values(_new_values)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    if "discount" in _new_values and discount_from_inputs(_new_values, 0, row.state.get("currency")) is None:
+        raise HTTPException(status_code=422, detail="Discount must be a number")
     if isinstance(_new_lines, list):
         _normalize_line_item_ids(_new_lines)  # keep the item link the editable UI sends as entity_id
         _existing = {li.get("item_id") for li in row.state.get("line_items") or []}

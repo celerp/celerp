@@ -6,7 +6,7 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal
 
-from celerp.services.money import document_discount_amount, document_line_amount, round_money, to_decimal, to_stored_float
+from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
 
 
 def _recalc_list_totals(state: dict) -> dict:
@@ -24,7 +24,10 @@ def _recalc_list_totals(state: dict) -> dict:
     subtotal = round_money(sum((_li_amount(i) for i in items), to_decimal(0)), currency)
     state["subtotal"] = to_stored_float(subtotal)
 
-    discount_amount = document_discount_amount(state, subtotal, currency) or to_decimal(0)
+    # Always from the inputs: the stored discount_amount is this function's own previous output.
+    discount_amount = discount_from_inputs(state, subtotal, currency)
+    if discount_amount is None:
+        raise ValueError("Discount must be a number")
     state["discount_amount"] = to_stored_float(discount_amount)
 
     taxable = subtotal - discount_amount

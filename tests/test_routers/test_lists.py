@@ -683,6 +683,22 @@ class TestListTotalsRecalc:
         assert detail["discount_amount"] == 1000
         assert detail["total"] == 9000
 
+    @pytest.mark.asyncio
+    async def test_patch_non_numeric_discount_is_rejected(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, line_items=[
+            {"name": "X", "quantity": 1, "unit_price": 10000, "line_total": 10000},
+        ], discount=500, tax=0)
+
+        r = await client.patch(f"/lists/{eid}", headers=_h(token), json={
+            "fields_changed": {"discount": {"old": 500, "new": "ten"}},
+        })
+        assert r.status_code == 422
+
+        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        assert detail["discount_amount"] == 500
+        assert detail["total"] == 9500
+
 
 @pytest.mark.asyncio
 async def test_list_note_added(client):

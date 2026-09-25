@@ -19,14 +19,8 @@ _ADDRESSES = {
 
 
 @pytest.fixture(autouse=True)
-def _dns(monkeypatch):
-    async def _resolve(host):
-        if host[0].isdigit():
-            return [host]
-        if host not in _ADDRESSES:
-            raise OSError("unknown host")
-        return _ADDRESSES[host]
-    monkeypatch.setattr(public_fetch, "_resolve", _resolve)
+def _dns(fake_dns):
+    fake_dns(_ADDRESSES)
 
 
 @pytest.mark.parametrize(

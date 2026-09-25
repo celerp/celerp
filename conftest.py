@@ -412,6 +412,20 @@ def _ensure_slots() -> None:
             register(slot, contrib)
 
 
+@pytest.fixture
+def fake_dns(monkeypatch):
+    """Resolve host names for outbound fetches from a fixed table instead of the network."""
+    def _install(addresses: dict[str, list[str]]) -> None:
+        async def _resolve(host):
+            if host[0].isdigit():
+                return [host]
+            if host not in addresses:
+                raise OSError("unknown host")
+            return addresses[host]
+        monkeypatch.setattr("celerp.services.public_fetch._resolve", _resolve)
+    return _install
+
+
 @pytest.fixture(autouse=True)
 def _reset_hot_path_caches():
     """Bust the in-process nonce and drain caches before each test.
