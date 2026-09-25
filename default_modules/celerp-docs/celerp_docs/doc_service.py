@@ -241,12 +241,13 @@ async def _lock_woocommerce_order(session, cid, order_id: str) -> None:
 
 
 async def _woocommerce_order_anchor_ids(session, cid, doc) -> list[str]:
-    """The catalog products one WooCommerce order touches."""
+    """The catalog products one WooCommerce order touches, through the unit a
+    line is bound to or, on an unbound line, the catalog product it names."""
     from celerp_inventory.services import resolve_catalog_anchor_for_item
 
     anchors: list[str] = []
     for li in (doc.state or {}).get("line_items", []):
-        item_id = li.get("item_id") or li.get("entity_id")
+        item_id = li.get("item_id") or li.get("entity_id") or li.get("catalog_item_id")
         if not item_id:
             continue
         try:
@@ -307,11 +308,12 @@ async def _set_woocommerce_order_stock_paused(session, cid, doc, paused: bool) -
 
 
 async def _record_woocommerce_hold(
-    session, cid, doc, *, reason: str | None, signature: str, wc_status: str,
+    session, cid, doc, *, reason: str | None, signature: str | None, wc_status: str,
 ) -> bool:
-    """Record on an imported order the change waiting on a person (``reason``)
-    and the source state they review (``signature``), or clear both once
-    nothing waits. Only a mark for that same signature reconciles it."""
+    """Record on an imported order the change waiting on a person (``reason``,
+    None once nothing waits) and the source state under review (``signature``,
+    None once nothing is under review). Only a mark for that same signature
+    reconciles it."""
     import uuid
 
     from celerp.events.engine import emit_event
@@ -320,7 +322,7 @@ async def _record_woocommerce_hold(
     wanted = {
         "woocommerce_status": wc_status,
         "woocommerce_reconciliation_required": reason,
-        "woocommerce_reconciliation_signature": signature if reason else None,
+        "woocommerce_reconciliation_signature": signature,
     }
     fields = {
         key: {"old": state.get(key), "new": value}
@@ -520,7 +522,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             if (doc.state or {}).get("woocommerce_reconciliation_signature") != signature:
                 return False
             await _record_woocommerce_hold(
-                session, cid, doc, reason=None, signature=signature, wc_status=wc_status,
+                session, cid, doc, reason=None, signature=None, wc_status=wc_status,
             )
             doc = await _get_doc(session, cid, entity_id, for_update=True)
             await _set_woocommerce_order_stock_paused(session, cid, doc, False)
@@ -528,7 +530,16 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
 
         existing_state = dict(existing.state or {}) if existing is not None else {}
         if existing_state.get("woocommerce_reconciled_signature") == signature:
-            # A person reconciled exactly this source state by hand.
+            # A person reconciled exactly this source state by hand. A hold
+            # recorded for a later change the store has since reverted no
+            # longer applies: the order is back under the reviewed state.
+            if existing_state.get("woocommerce_reconciliation_signature") != signature:
+                await _record_woocommerce_hold(
+                    session, cid, existing, reason=None, signature=signature,
+                    wc_status=wc_status,
+                )
+                doc = await _get_doc(session, cid, entity_id, for_update=True)
+                await _set_woocommerce_order_stock_paused(session, cid, doc, False)
             await session.commit()
             return "noop"
         same_commercial_source = (
@@ -706,7 +717,10 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                         # Woo has not reduced stock for this status. Keep the
                         # commercial line unbound; a later stock-reduced status
                         # rebuilds the draft against then-current sellable stock.
+                        # The catalog product is recorded so the order still
+                        # names the products it touches without claiming a unit.
                         line_items.append({
+                            "catalog_item_id": anchor.entity_id,
                             "sku": sku,
                             "name": line_name,
                             "quantity": qty,
@@ -729,6 +743,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                         })
                     if not family and link.get("manage_stock") in (False, "parent"):
                         line_items.append({
+                            "catalog_item_id": anchor.entity_id,
                             "sku": sku,
                             "name": line_name,
                             "quantity": qty,
@@ -993,8 +1008,8 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                 if needs_manual else None
             )
             if await _record_woocommerce_hold(
-                session, cid, doc, reason=reason, signature=signature,
-                wc_status=wc_status,
+                session, cid, doc, reason=reason,
+                signature=signature if reason else None, wc_status=wc_status,
             ):
                 changed = True
             await session.commit()

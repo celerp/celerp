@@ -1761,3 +1761,112 @@ async def test_mark_reconciled_refusals(use_test_session, order_id, entry, signa
     with pytest.raises(HTTPException) as exc:
         await _set_order_reconciled(session, cid, order_id, signature, None)
     assert exc.value.status_code == status
+
+
+async def _woo_stocked_product(session, cid, product_id, sku):
+    """A WooCommerce-linked catalog product with one available lot."""
+    from datetime import datetime, timezone
+
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import upsert_external_product
+
+    _, root_id = await upsert_external_product(
+        str(cid), platform="woocommerce", product_id=str(product_id), variation_id=None,
+        sku=sku, name=f"Product {sku}", link_fields={"manage_stock": True},
+    )
+    now = datetime.now(timezone.utc)
+    session.add(Projection(
+        company_id=cid, entity_id=f"item:{sku.lower()}-lot", entity_type="item",
+        version=1, created_at=now, updated_at=now,
+        state={"sku": sku, "name": f"Product {sku}", "quantity": 4,
+               "status": "available", "sell_by": "piece", "lot": True,
+               "parent_item_id": root_id, "allow_splitting": True},
+    ))
+    await session.commit()
+    return root_id
+
+
+def _woo_stocked_order(order_id, product_id, sku, **fields):
+    return {
+        "id": order_id, "number": str(order_id), "status": "on-hold", "currency": "USD",
+        "total": "10.00", "total_tax": "0",
+        "line_items": [{
+            "product_id": product_id, "variation_id": 0, "sku": sku,
+            "name": f"Product {sku}", "quantity": 1, "total": "10.00", "total_tax": "0",
+        }],
+        "shipping_lines": [], "fee_lines": [],
+        **fields,
+    }
+
+
+async def _woo_stock_paused(session, cid, root_id):
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import external_link_for_state
+
+    session.expire_all()
+    root = await session.get(
+        Projection, {"company_id": cid, "entity_id": root_id}, populate_existing=True,
+    )
+    return external_link_for_state(root.state or {}, "woocommerce").get("inventory_sync_paused")
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_change_reverted_to_the_reconciled_state_releases_its_hold(use_test_session):
+    """A person reconciles a refund, the store changes the order again, then
+    the store puts it back exactly as reconciled. The later hold no longer
+    applies: the order is reconciled again, stock sync resumes and Undo still
+    works."""
+    from celerp_connectors.routes import _set_order_reconciled
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooRevertedChange")
+    root_id = await _woo_stocked_product(session, cid, 781, "REVERT-SKU")
+    order = _woo_stocked_order(782, 781, "REVERT-SKU")
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    refunded = {**order, "refunds": [{"id": 70, "total": "-4.00"}]}
+    with pytest.raises(WooCommerceReconciliationRequired) as first:
+        await u.upsert_order_from_woocommerce(str(cid), refunded)
+    await _attention_run(session, cid, [_entry("782", first.value)])
+    await _set_order_reconciled(session, cid, "782", first.value.signature, None)
+    assert await _woo_stock_paused(session, cid, root_id) is False
+
+    with pytest.raises(WooCommerceReconciliationRequired):
+        await u.upsert_order_from_woocommerce(str(cid), {
+            **refunded, "refunds": [*refunded["refunds"], {"id": 71, "total": "-1.00"}],
+        })
+    assert await _woo_stock_paused(session, cid, root_id) is True
+
+    assert await u.upsert_order_from_woocommerce(str(cid), refunded) == "noop"
+    st = await _state(session, cid, "woocommerce:order:782")
+    assert st["woocommerce_reconciliation_required"] is None
+    assert st["woocommerce_reconciliation_signature"] == first.value.signature
+    assert st["woocommerce_reconciled_signature"] == first.value.signature
+    assert await _woo_stock_paused(session, cid, root_id) is False
+
+    undone = await _set_order_reconciled(session, cid, "782", None, None)
+    assert undone["entry"]["reconciled"] is False
+    assert await _woo_stock_paused(session, cid, root_id) is True
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_order_refunded_when_first_seen_pauses_its_products(use_test_session):
+    """An order already refunded the first time Celerp sees it still pauses
+    outbound stock for its products until a person reconciles it, and the
+    order line records the catalog product without claiming a physical unit."""
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooRefundedFirstSeen")
+    root_id = await _woo_stocked_product(session, cid, 791, "FIRST-SKU")
+    order = _woo_stocked_order(
+        792, 791, "FIRST-SKU", status="refunded",
+        refunds=[{"id": 72, "total": "-10.00"}],
+    )
+    with pytest.raises(WooCommerceReconciliationRequired):
+        await u.upsert_order_from_woocommerce(str(cid), order)
+    st = await _state(session, cid, "woocommerce:order:792")
+    line = st["line_items"][0]
+    assert line.get("catalog_item_id") == root_id
+    assert not line.get("item_id")
+    assert await _woo_stock_paused(session, cid, root_id) is True
