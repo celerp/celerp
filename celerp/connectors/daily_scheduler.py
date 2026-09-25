@@ -22,9 +22,25 @@ from celerp.models.connector_config import ConnectorConfig
 log = logging.getLogger(__name__)
 
 _CHECK_INTERVAL_SECONDS = 3600  # check every hour
-_MIN_HOURS_BETWEEN_SYNCS = 23
 
 TokenFetcher = Callable[[str, str], Awaitable["ConnectorContext"]]  # noqa: F821
+
+
+def latest_scheduled_run(now: datetime, hour: int) -> datetime:
+    """The most recent daily_sync_hour occurrence at or before now (UTC)."""
+    today = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    return today if today <= now else today - timedelta(days=1)
+
+
+def daily_sync_due(last_daily_sync_at: datetime | None, hour: int, now: datetime) -> bool:
+    """A connector is due when its latest scheduled occurrence has not run yet.
+
+    The configured hour is when a run is scheduled, not the only hour it may run:
+    an instance that was off or asleep at that hour catches up at the next check.
+    """
+    if last_daily_sync_at is None:
+        return True
+    return last_daily_sync_at.replace(tzinfo=timezone.utc) < latest_scheduled_run(now, hour)
 
 
 async def check_and_run_daily_syncs(
@@ -58,14 +74,7 @@ async def check_and_run_daily_syncs(
         configs = [row[0] for row in rows]
 
     for config in configs:
-        # Check if enough time has passed since last daily sync
-        if config.last_daily_sync_at:
-            elapsed = now - config.last_daily_sync_at.replace(tzinfo=timezone.utc)
-            if elapsed < timedelta(hours=_MIN_HOURS_BETWEEN_SYNCS):
-                continue
-
-        # Check if current UTC hour matches configured hour
-        if now.hour != config.daily_sync_hour:
+        if not daily_sync_due(config.last_daily_sync_at, config.daily_sync_hour, now):
             continue
 
         try:
@@ -103,8 +112,8 @@ async def check_and_run_daily_syncs(
 
         # Only mark the connector synced (advancing the daily clock) if at least one
         # entity made progress. On a total failure (e.g. a transient outage) we leave
-        # last_daily_sync_at unset, so the connector stays "due" and retries at the next
-        # tick that lands on its configured hour (the next day, or sooner on app restart).
+        # last_daily_sync_at where it was, so the connector stays due and retries at the
+        # next hourly check.
         if not any((r.created or r.updated or not r.errors) for r in entity_results):
             log.warning("daily_scheduler: all entities failed for %s — will retry when next due", config.connector)
             continue

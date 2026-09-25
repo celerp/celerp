@@ -199,10 +199,11 @@ def _sched_session(config):
 
 
 @pytest.mark.asyncio
-async def test_scheduler_skips_recently_synced():
-    from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
-    recent = datetime.now(timezone.utc) - timedelta(hours=1)   # < 23h ago → not due
-    cm = _sched_session(_sched_config(last_daily_sync_at=recent))
+async def test_scheduler_skips_when_latest_occurrence_already_ran():
+    from celerp.connectors.daily_scheduler import check_and_run_daily_syncs, latest_scheduled_run
+    hour = (datetime.now(timezone.utc).hour - 3) % 24
+    ran = latest_scheduled_run(datetime.now(timezone.utc), hour) + timedelta(minutes=5)
+    cm = _sched_session(_sched_config(daily_sync_hour=hour, last_daily_sync_at=ran))
     run = AsyncMock()
     with patch("celerp.db.get_session_ctx", return_value=cm), \
          patch("celerp.connectors.sync_runner.run_connector_sync", new=run):
@@ -211,15 +212,34 @@ async def test_scheduler_skips_recently_synced():
 
 
 @pytest.mark.asyncio
-async def test_scheduler_skips_wrong_hour():
-    from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
-    off_hour = (datetime.now(timezone.utc).hour + 1) % 24
-    cm = _sched_session(_sched_config(daily_sync_hour=off_hour))
-    run = AsyncMock()
+async def test_scheduler_catches_up_a_missed_daily_hour():
+    """An instance that was off at its configured hour runs at the next check."""
+    from celerp.connectors.daily_scheduler import check_and_run_daily_syncs, latest_scheduled_run
+    hour = (datetime.now(timezone.utc).hour - 3) % 24
+    before = latest_scheduled_run(datetime.now(timezone.utc), hour) - timedelta(hours=2)
+    config = _sched_config(daily_sync_hour=hour, last_daily_sync_at=before)
+    cm = _sched_session(config)
+    result = MagicMock(created=1, updated=0, errors=[])
+    run = AsyncMock(return_value=[result])
     with patch("celerp.db.get_session_ctx", return_value=cm), \
-         patch("celerp.connectors.sync_runner.run_sync", new=run):
-        synced = await check_and_run_daily_syncs("co", token_fetcher=AsyncMock())
-    assert synced == [] and run.await_count == 0
+         patch("celerp.connectors.sync_runner.run_connector_sync", new=run), \
+         patch("celerp.connectors.ownership.lock_connector_operation", new=AsyncMock(return_value=config)):
+        synced = await check_and_run_daily_syncs("co", token_fetcher=AsyncMock(return_value=MagicMock()))
+    assert run.await_count == 1
+    assert synced == ["shopify"]
+
+
+def test_daily_sync_due_follows_the_latest_occurrence():
+    from celerp.connectors.daily_scheduler import daily_sync_due
+    now = datetime(2026, 9, 25, 10, 30, tzinfo=timezone.utc)
+    # Scheduled 02:00 today; last ran yesterday 02:05 -> today's run is outstanding.
+    assert daily_sync_due(datetime(2026, 9, 24, 2, 5), 2, now)
+    # Already ran after today's 02:00.
+    assert not daily_sync_due(datetime(2026, 9, 25, 2, 5), 2, now)
+    # Scheduled 23:00: the latest occurrence is yesterday 23:00.
+    assert not daily_sync_due(datetime(2026, 9, 24, 23, 10), 23, now)
+    assert daily_sync_due(datetime(2026, 9, 24, 22, 50), 23, now)
+    assert daily_sync_due(None, 23, now)
 
 
 @pytest.mark.asyncio

@@ -670,13 +670,17 @@ async def test_woocommerce_sync_products(wc, wc_ctx):
             {"id": 2, "sku": "", "name": "No SKU Item", "regular_price": "10.00"},
         ], headers={"X-WP-TotalPages": "1"})
     )
+    reconcile = AsyncMock(return_value=0)
     with patch(
         "celerp_inventory.services.upsert_external_product",
         new=AsyncMock(return_value=("created", "item:test")),
+    ), patch.object(wc, "_pull_product_files", new=AsyncMock()), patch.object(
+        wc, "_reconcile_missing_product_links", new=reconcile
     ):
         result = await wc.sync_products(wc_ctx)
     assert result.ok
     assert result.created == 2  # both get SKUs (second gets WC-2 fallback)
+    reconcile.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -746,11 +750,6 @@ async def test_rate_limited_client_gives_up_after_max_retries():
 
 
 # ── Daily scheduler unit tests ───────────────────────────────────────────────
-
-def test_daily_scheduler_min_hours():
-    from celerp.connectors.daily_scheduler import _MIN_HOURS_BETWEEN_SYNCS
-    assert _MIN_HOURS_BETWEEN_SYNCS == 23
-
 
 def test_daily_scheduler_check_interval():
     from celerp.connectors.daily_scheduler import _CHECK_INTERVAL_SECONDS
