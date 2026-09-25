@@ -29,6 +29,7 @@ from celerp.connectors.base import (
     SyncDirection,
     SyncEntity,
     SyncResult,
+    store_holds_records,
 )
 import celerp.connectors.upsert as _upsert
 
@@ -111,6 +112,28 @@ class WooCommerceConnector(ConnectorBase):
         "orders": "external_wins",
         "contacts": "external_wins",
     }
+
+    async def same_store(self, ctx: ConnectorContext, records: list[dict]) -> bool:
+        """Order numbers repeat across stores, so an order counts only when its
+        total, currency and item names match what was imported."""
+        stored = {
+            str(r["woocommerce_order_id"]): r for r in records if r.get("woocommerce_order_id")
+        }
+        if not stored:
+            return False
+        orders = await self._paginate(ctx, "/orders", params={"include": ",".join(stored)})
+        matches = []
+        for order in orders:
+            doc = stored.get(str(order.get("id")))
+            if doc is None:
+                continue
+            names = {li.get("name") for li in order.get("line_items", []) if li.get("name")}
+            matches.append(
+                abs((money(order.get("total")) or 0.0) - float(doc.get("total") or 0)) < 0.005
+                and order.get("currency") == doc.get("currency")
+                and names <= {li.get("name") for li in doc.get("line_items") or []}
+            )
+        return store_holds_records(matches)
 
     # -- Internal helpers ------------------------------------------------------
 

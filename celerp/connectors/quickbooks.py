@@ -32,6 +32,7 @@ from celerp.connectors.base import (
     SyncDirection,
     SyncEntity,
     SyncResult,
+    store_holds_records,
 )
 import celerp.connectors.upsert as _upsert
 
@@ -108,6 +109,29 @@ class QuickBooksConnector(ConnectorBase):
         SyncEntity.ORDERS: "platform",
         SyncEntity.CONTACTS: "merge",
     }
+
+    async def same_store(self, ctx: ConnectorContext, records: list[dict]) -> bool:
+        """Invoice ids repeat across companies, so an invoice counts only when
+        its number and total match what was imported."""
+        stored = {
+            str(r["quickbooks_invoice_id"]): r
+            for r in records
+            if str(r.get("quickbooks_invoice_id") or "").isdigit()
+        }
+        if not stored:
+            return False
+        ids = ",".join(f"'{i}'" for i in stored)
+        matches = []
+        for invoice in await _query(ctx, f"SELECT * FROM Invoice WHERE Id IN ({ids})"):
+            doc = stored.get(str(invoice.get("Id")))
+            if doc is None:
+                continue
+            ref_id = str(invoice.get("DocNumber") or f"quickbooks-{invoice['Id']}")
+            matches.append(
+                ref_id == doc.get("ref_id")
+                and abs((money(invoice.get("TotalAmt")) or 0.0) - float(doc.get("total") or 0)) < 0.005
+            )
+        return store_holds_records(matches)
 
     # -- Products (Items in QB) ------------------------------------------------
 

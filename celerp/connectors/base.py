@@ -104,6 +104,12 @@ class SyncResult:
             self.skipped += 1
 
 
+def store_holds_records(matches: list[bool]) -> bool:
+    """A store holds imported records when it returned some of them and most
+    of those returned are unchanged. One edited record does not disprove it."""
+    return bool(matches) and sum(matches) * 2 > len(matches)
+
+
 class ConnectorBase(ABC):
     """Abstract base for all platform connectors (inbound + outbound)."""
 
@@ -113,6 +119,15 @@ class ConnectorBase(ABC):
     direction: SyncDirection
     category: ConnectorCategory
     conflict_strategy: dict[str, str]
+
+    # Order and customer numbers are only unique within one store, so imported
+    # records are tied to the store they came from (see bind_connector_store).
+    store_scoped_ids: bool = True
+
+    async def same_store(self, ctx: ConnectorContext, records: list[dict]) -> bool:
+        """True when the store in ctx still holds most of these imported
+        document states. Connectors that cannot tell return False."""
+        return False
 
     @abstractmethod
     async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:

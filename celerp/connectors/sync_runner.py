@@ -422,7 +422,7 @@ async def run_sync(
                     )
                 else:
                     await bind_connector_store(
-                        guard_session, ctx.company_id, connector.name, current_ctx.store_handle
+                        guard_session, ctx.company_id, connector, current_ctx
                     )
                     if entity in _OUTBOUND_ENTITIES:
                         result = await sync_method(current_ctx)

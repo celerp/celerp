@@ -1524,6 +1524,57 @@ async def test_woocommerce_partial_refund_on_issued_order_needs_reconciliation(u
     session.expire_all()
     st = await _state(session, cid, "woocommerce:order:2101")
     assert st["woocommerce_reconciliation_required"] == str(exc.value)
+    assert st["woocommerce_reconciliation_signature"] == exc.value.signature
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_change_after_issue_is_recorded_on_the_order(use_test_session):
+    """A change to an issued order stops for a person and the order itself
+    records which change is waiting."""
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooChangedAfterIssue")
+    order = {**_WOO_PLAIN_ORDER, "id": 2105}
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+
+    with pytest.raises(WooCommerceReconciliationRequired, match="after the Celerp invoice") as exc:
+        await u.upsert_order_from_woocommerce(str(cid), {**order, "total": "99.00"})
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:2105")
+    assert st["woocommerce_reconciliation_required"] == str(exc.value)
+    assert st["woocommerce_reconciliation_signature"] == exc.value.signature
+
+
+@pytest.mark.asyncio
+async def test_marking_a_change_that_was_replaced_is_refused(use_test_session):
+    """The order changed again in WooCommerce after the list was built: marking
+    the earlier change is refused and the newer change still waits."""
+    from fastapi import HTTPException
+
+    from celerp_connectors.routes import _set_order_reconciled
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooReplacedChange")
+    order = {**_WOO_PLAIN_ORDER, "id": 2106}
+    await u.upsert_order_from_woocommerce(str(cid), order)
+    refunded = {**order, "refunds": [{"id": 59, "total": "-4.00"}]}
+    with pytest.raises(WooCommerceReconciliationRequired) as first:
+        await u.upsert_order_from_woocommerce(str(cid), refunded)
+    await _attention_run(session, cid, [_entry("2106", first.value)])
+    with pytest.raises(WooCommerceReconciliationRequired) as second:
+        await u.upsert_order_from_woocommerce(str(cid), {
+            **refunded, "refunds": [*refunded["refunds"], {"id": 60, "total": "-1.00"}],
+        })
+
+    with pytest.raises(HTTPException) as refused:
+        await _set_order_reconciled(session, cid, "2106", first.value.signature, None)
+    assert refused.value.status_code == 409
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:2106")
+    assert st.get("woocommerce_reconciled_signature") is None
+    assert st["woocommerce_reconciliation_required"] == str(second.value)
 
 
 @pytest.mark.asyncio

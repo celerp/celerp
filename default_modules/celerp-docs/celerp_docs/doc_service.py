@@ -226,6 +226,10 @@ class WooCommerceReconciliationRequired(ValueError):
         self.signature = signature
 
 
+class WooCommerceReconciliationChanged(ValueError):
+    """The order changed since the person reviewed it."""
+
+
 async def _lock_woocommerce_order(session, cid, order_id: str) -> None:
     """Serialize every change to one external order (webhook, sync, a person)."""
     from sqlalchemy import text
@@ -302,16 +306,46 @@ async def _set_woocommerce_order_stock_paused(session, cid, doc, paused: bool) -
             )
 
 
+async def _record_woocommerce_hold(
+    session, cid, doc, *, reason: str | None, signature: str, wc_status: str, idem_key: str,
+) -> bool:
+    """Record on an imported order the change waiting on a person (``reason``)
+    and the source state they review (``signature``), or clear both once
+    nothing waits. Only a mark for that same signature reconciles it."""
+    from celerp.events.engine import emit_event
+
+    state = doc.state or {}
+    wanted = {
+        "woocommerce_status": wc_status,
+        "woocommerce_reconciliation_required": reason,
+        "woocommerce_reconciliation_signature": signature if reason else None,
+    }
+    fields = {
+        key: {"old": state.get(key), "new": value}
+        for key, value in wanted.items()
+        if state.get(key) != value
+    }
+    if fields:
+        await emit_event(
+            session, company_id=cid, entity_id=doc.entity_id, entity_type="doc",
+            event_type="doc.updated", data={"fields_changed": fields},
+            actor_id=None, location_id=None, source="connector",
+            idempotency_key=f"{idem_key}:reversal:{signature}", metadata_={},
+        )
+    return bool(fields)
+
+
 async def set_woocommerce_order_reconciled(
     session, company_id: str, order_id: str, *,
-    signature: str | None, reason: str | None, actor_id,
+    signature: str, reconciled: bool, reason: str | None, actor_id,
 ) -> None:
-    """Record (``signature``) or withdraw (None) a person's note that they
-    reconciled a WooCommerce order change by hand. The import leaves the order
-    alone while its source still matches the signature, and stock sync resumes
-    for its products once no other open order touches them; withdrawing puts
-    ``reason`` back as the order's reconciliation note and pauses stock again
-    at once. Caller commits."""
+    """Record (``reconciled``) or withdraw a person's note that they reconciled
+    the WooCommerce order change with this ``signature`` by hand. The import
+    leaves the order alone while its source still matches the signature, and
+    stock sync resumes for its products once no other open order touches them;
+    withdrawing puts ``reason`` back as the order's reconciliation note and
+    pauses stock again at once. Raises WooCommerceReconciliationChanged when
+    the order now waits on a different change. Caller commits."""
     import uuid
 
     from celerp.events.engine import emit_event
@@ -321,14 +355,19 @@ async def set_woocommerce_order_reconciled(
     await _lock_woocommerce_order(session, cid, order_id)
     entity_id = f"doc:woocommerce:order:{order_id}"
     doc = await session.get(
-        Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True
+        Projection, {"company_id": cid, "entity_id": entity_id},
+        with_for_update=True, populate_existing=True,
     )
     if doc is None or doc.entity_type != "doc":
         raise ValueError(f"WooCommerce order {order_id} has not been imported")
     state = doc.state or {}
+    if state.get("woocommerce_reconciliation_signature") != signature:
+        raise WooCommerceReconciliationChanged(
+            "This order changed in WooCommerce; refresh to review the change"
+        )
     wanted = {
-        "woocommerce_reconciled_signature": signature,
-        "woocommerce_reconciliation_required": None if signature else reason,
+        "woocommerce_reconciled_signature": signature if reconciled else None,
+        "woocommerce_reconciliation_required": None if reconciled else reason,
     }
     fields = {
         key: {"old": state.get(key), "new": value}
@@ -458,6 +497,19 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         if existing is not None and existing.entity_type != "doc":
             raise ValueError(f"WooCommerce order identity collides with {existing.entity_type}")
 
+        async def hold_for_reconciliation(reason: str):
+            """Pause the order's products, record ``reason`` on the order, and
+            stop: a person reconciles the change by hand."""
+            doc = await _get_doc(session, cid, entity_id, for_update=True)
+            await _set_woocommerce_order_stock_paused(session, cid, doc, True)
+            doc = await _get_doc(session, cid, entity_id, for_update=True)
+            await _record_woocommerce_hold(
+                session, cid, doc, reason=reason, signature=signature,
+                wc_status=wc_status, idem_key=idem_key,
+            )
+            await session.commit()
+            raise WooCommerceReconciliationRequired(reason, signature)
+
         existing_state = dict(existing.state or {}) if existing is not None else {}
         if existing_state.get("woocommerce_reconciled_signature") == signature:
             # A person reconciled exactly this source state by hand.
@@ -492,24 +544,21 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             and wc_status not in stock_release_statuses
             and not refund_pending
         ):
-            raise WooCommerceReconciliationRequired(
+            await hold_for_reconciliation(
                 f"WooCommerce order {order.get('number') or order_id} changed after "
-                "stock was reserved; manual reconciliation is required",
-                signature,
+                "stock was reserved; manual reconciliation is required"
             )
 
         if existing is not None and existing_state.get("finalized"):
             if (existing.state or {}).get("woocommerce_source_fingerprint") != source_fingerprint:
-                raise WooCommerceReconciliationRequired(
+                await hold_for_reconciliation(
                     f"WooCommerce order {order.get('number') or order_id} changed after "
-                    "the Celerp invoice was issued; manual reconciliation is required",
-                    signature,
+                    "the Celerp invoice was issued; manual reconciliation is required"
                 )
             if wc_status not in handled_statuses:
-                raise WooCommerceReconciliationRequired(
+                await hold_for_reconciliation(
                     f"WooCommerce order {order.get('number') or order_id} moved to "
-                    f"{wc_status!r} after issuance; manual reconciliation is required",
-                    signature,
+                    f"{wc_status!r} after issuance; manual reconciliation is required"
                 )
             outcome = "noop"
         elif existing is not None and (
@@ -805,31 +854,6 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             raise ValueError("Company has no owner available to post the WooCommerce sale")
         actor = SimpleNamespace(id=owner_id)
 
-        async def hold_for_reconciliation(reason: str):
-            """Pause the order's products, record ``reason`` on the order, and
-            stop: a person reconciles the change by hand."""
-            doc = await _get_doc(session, cid, entity_id, for_update=True)
-            await _set_woocommerce_order_stock_paused(session, cid, doc, True)
-            doc = await _get_doc(session, cid, entity_id, for_update=True)
-            fields = {}
-            current_status = str((doc.state or {}).get("woocommerce_status") or "")
-            if current_status != wc_status:
-                fields["woocommerce_status"] = {"old": current_status, "new": wc_status}
-            if (doc.state or {}).get("woocommerce_reconciliation_required") != reason:
-                fields["woocommerce_reconciliation_required"] = {
-                    "old": (doc.state or {}).get("woocommerce_reconciliation_required"),
-                    "new": reason,
-                }
-            if fields:
-                await emit_event(
-                    session, company_id=cid, entity_id=entity_id, entity_type="doc",
-                    event_type="doc.updated", data={"fields_changed": fields},
-                    actor_id=owner_id, location_id=None, source="connector",
-                    idempotency_key=f"{idem_key}:reversal:{signature}", metadata_={},
-                )
-            await session.commit()
-            raise WooCommerceReconciliationRequired(reason, signature)
-
         doc = await _get_doc(session, cid, entity_id, for_update=True)
         changed = outcome != "noop"
         if refund_pending:
@@ -942,10 +966,6 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                 except ValueError:
                     pass
             doc = await _get_doc(session, cid, entity_id, for_update=True)
-            fields = {}
-            current_status = str((doc.state or {}).get("woocommerce_status") or "")
-            if current_status != wc_status:
-                fields["woocommerce_status"] = {"old": current_status, "new": wc_status}
             needs_manual = bool(
                 doc.state.get("finalized")
                 or sold_items
@@ -956,18 +976,10 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                 "manual financial/fulfillment reconciliation is required"
                 if needs_manual else None
             )
-            if (doc.state or {}).get("woocommerce_reconciliation_required") != reason:
-                fields["woocommerce_reconciliation_required"] = {
-                    "old": (doc.state or {}).get("woocommerce_reconciliation_required"),
-                    "new": reason,
-                }
-            if fields:
-                await emit_event(
-                    session, company_id=cid, entity_id=entity_id, entity_type="doc",
-                    event_type="doc.updated", data={"fields_changed": fields},
-                    actor_id=owner_id, location_id=None, source="connector",
-                    idempotency_key=f"{idem_key}:reversal:{signature}", metadata_={},
-                )
+            if await _record_woocommerce_hold(
+                session, cid, doc, reason=reason, signature=signature,
+                wc_status=wc_status, idem_key=idem_key,
+            ):
                 changed = True
             await session.commit()
             if needs_manual:

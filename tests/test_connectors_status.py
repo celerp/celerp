@@ -515,13 +515,19 @@ async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_e
     from celerp.connectors.sync_runner import run_sync
     from celerp.db import get_session_ctx
     from celerp.models.company import Company
+    from celerp.models.connector_source import ConnectorSource
     from celerp.models.projections import Projection
     from celerp.models.sync_run import SyncRun
 
     class _Store:
         name = "woocommerce"
+        display_name = "WooCommerce"
         direction = SyncDirection.BOTH
+        store_scoped_ids = True
         calls = 0
+
+        async def same_store(self, ctx, records):
+            return False
 
         async def sync_orders(self, ctx, since=None):
             type(self).calls += 1
@@ -561,6 +567,7 @@ async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_e
     finally:
         async with get_session_ctx() as session:
             await session.execute(sa.delete(SyncRun).where(SyncRun.company_id == cid))
+            await session.execute(sa.delete(ConnectorSource).where(ConnectorSource.company_id == cid))
             await session.execute(sa.delete(Projection).where(Projection.company_id == cid_uuid))
             await session.execute(sa.delete(Company).where(Company.id == cid_uuid))
             await session.commit()

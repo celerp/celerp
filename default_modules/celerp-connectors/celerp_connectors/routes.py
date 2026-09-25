@@ -262,7 +262,7 @@ async def store_credentials(
         except Exception as exc:
             return {"ok": False, "error": "store_unreachable", "detail": str(exc)}
 
-    from celerp.connectors.base import ConnectorCategory, SyncFrequency
+    from celerp.connectors.base import ConnectorCategory, ConnectorContext, SyncFrequency
     from celerp.connectors.ownership import (
         ConnectorOwnershipError,
         ConnectorStoreChangedError,
@@ -349,8 +349,13 @@ async def store_credentials(
             }
         return {"ok": False, "error": error, "detail": detail}
 
+    store_ctx = ConnectorContext(
+        company_id=str(company_id),
+        access_token=f"{payload.consumer_key}:{payload.consumer_secret}",
+        store_handle=store_url or None,
+    )
     try:
-        await bind_connector_store(session, company_id, connector_name, store_url or None)
+        await bind_connector_store(session, company_id, connector, store_ctx)
     except ConnectorStoreChangedError as exc:
         return await _failure("store_changed", str(exc))
 
@@ -394,18 +399,12 @@ async def store_credentials(
     webhook_ids: list[str] = []
     if connector_name == "woocommerce":
         import secrets
-        from celerp.connectors.base import ConnectorContext
 
-        webhook_ctx = ConnectorContext(
-            company_id=str(company_id),
-            access_token=f"{payload.consumer_key}:{payload.consumer_secret}",
-            store_handle=store_url,
-        )
         secret = secrets.token_hex(32)
         delivery_url = f"{relay_http_url().rstrip('/')}/webhooks/woocommerce/events"
         try:
             webhook_ids = await connector.register_webhooks(
-                webhook_ctx, delivery_url, secret=secret
+                store_ctx, delivery_url, secret=secret
             )
         except Exception as exc:
             return await _failure(
@@ -503,7 +502,10 @@ async def _set_order_reconciled(
     """Mark (signature) or unmark (None) one WooCommerce order on the attention
     list as reconciled by hand, on the list and on the order together."""
     from celerp.connectors.sync_runner import update_attention_entry
-    from celerp_docs.doc_service import set_woocommerce_order_reconciled
+    from celerp_docs.doc_service import (
+        WooCommerceReconciliationChanged,
+        set_woocommerce_order_reconciled,
+    )
 
     if not order_id.isdigit():
         raise HTTPException(status_code=422, detail="order_id must be a WooCommerce order number")
@@ -529,8 +531,12 @@ async def _set_order_reconciled(
     try:
         await set_woocommerce_order_reconciled(
             session, str(company_id), order_id,
-            signature=signature, reason=entry.get("reason"), actor_id=actor_id,
+            signature=entry["signature"], reconciled=signature is not None,
+            reason=entry.get("reason"), actor_id=actor_id,
         )
+    except WooCommerceReconciliationChanged as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         await session.rollback()
         raise HTTPException(status_code=404, detail=str(exc)) from exc

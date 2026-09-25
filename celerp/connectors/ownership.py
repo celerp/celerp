@@ -438,35 +438,70 @@ async def release_connector_ownership(
     await session.flush()
 
 
-async def bind_connector_store(
-    session: AsyncSession, company_id, connector: str, store_handle: str | None
-) -> None:
+# Imported records a connector reads back from the store to confirm it is the
+# store they came from.
+STORE_PROOF_SAMPLE = 20
+
+
+async def bind_connector_store(session: AsyncSession, company_id, connector, ctx) -> None:
     """Tie a company's imported records from one connector to the store they
-    came from. Orders and customers keep the store's own numbers, so records
-    from a second store would overwrite them; a different store is refused
-    while those records exist. Caller commits."""
+    came from. Stores that number orders and customers per store would
+    overwrite those records, so a store is accepted only when no records
+    exist yet or when it still holds a sample of them. Caller commits."""
+    from datetime import datetime, timezone
+
+    from celerp.models.connector_source import ConnectorSource
     from celerp.models.projections import Projection
 
-    if not store_handle:
+    store_handle = ctx.store_handle
+    if not connector.store_scoped_ids or not store_handle:
         return
-    company = await _lock_active_company(session, company_id)
-    key = f"connector_store:{connector}"
-    bound = (company.settings or {}).get(key)
-    if bound == store_handle:
+    await _lock_active_company(session, company_id)
+    cid = uuid.UUID(str(company_id))
+    key = (str(cid), connector.name)
+    source = await session.get(ConnectorSource, key, populate_existing=True)
+    if source is not None and source.store_handle == store_handle:
         return
-    if bound:
-        imported = await session.scalar(
-            sa.select(Projection.entity_id).where(
-                Projection.company_id == company.id,
-                sa.or_(
-                    Projection.entity_id.like(f"doc:{connector}:%"),
-                    Projection.entity_id.like(f"contact:{connector}:%"),
-                ),
-            ).limit(1)
-        )
-        if imported is not None:
-            raise ConnectorStoreChangedError(
-                f"This company's {connector} orders and customers came from {bound}. "
-                f"Connect that store, or use a separate company for {store_handle}."
+
+    imported = sa.or_(
+        Projection.entity_id.like(f"doc:{connector.name}:%"),
+        Projection.entity_id.like(f"contact:{connector.name}:%"),
+    )
+    has_history = await session.scalar(
+        sa.select(Projection.entity_id)
+        .where(Projection.company_id == cid, imported)
+        .limit(1)
+    )
+    if has_history is not None:
+        samples = list((await session.scalars(
+            sa.select(Projection.state)
+            .where(
+                Projection.company_id == cid,
+                Projection.entity_id.like(f"doc:{connector.name}:%"),
             )
-    company.settings = {**(company.settings or {}), key: store_handle}
+            .order_by(Projection.created_at.desc().nulls_last())
+            .limit(STORE_PROOF_SAMPLE)
+        )).all())
+        origin = f" from {source.store_handle}" if source is not None else ""
+        try:
+            confirmed = bool(samples) and await connector.same_store(ctx, samples)
+        except Exception as exc:
+            raise ConnectorStoreChangedError(
+                f"Could not read {store_handle} to confirm this company's "
+                f"{connector.display_name} orders came from it. Try again."
+            ) from exc
+        if not confirmed:
+            raise ConnectorStoreChangedError(
+                f"This company already has {connector.display_name} orders and customers"
+                f"{origin}, and {store_handle} does not have them. Connect the store they "
+                f"came from, or use a separate company for {store_handle}."
+            )
+
+    now = datetime.now(timezone.utc)
+    if source is None:
+        session.add(ConnectorSource(
+            company_id=key[0], connector=key[1], store_handle=store_handle, bound_at=now,
+        ))
+    else:
+        source.store_handle = store_handle
+        source.bound_at = now

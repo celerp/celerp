@@ -57,6 +57,7 @@ def _headers(ctx: ConnectorContext) -> dict[str, str]:
 class ShopifyConnector(ConnectorBase):
     name = "shopify"
     display_name = "Shopify"
+    store_scoped_ids = False  # Shopify ids are unique across all stores
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
     category = ConnectorCategory.WEBSITE
     direction = SyncDirection.BOTH
