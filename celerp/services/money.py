@@ -145,7 +145,12 @@ def checked_exchange_rate(v: _MoneyInput) -> Decimal:
         raise ValueError(f"must be a number, not {v!r}") from exc
     if not rate.is_finite() or rate <= 0:
         raise ValueError(f"must be greater than zero, not {v}")
-    return round_exchange_rate(rate)
+    stored = round_exchange_rate(rate)
+    if stored <= 0:
+        raise ValueError(
+            f"must be greater than zero at {EXCHANGE_RATE_DP} decimal places, not {v}"
+        )
+    return stored
 
 
 def doc_rate(doc: dict, base_currency: str) -> Decimal | None:

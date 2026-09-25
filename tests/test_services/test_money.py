@@ -235,6 +235,11 @@ def test_checked_exchange_rate_returns_the_rate_at_the_ceiling():
     assert checked_exchange_rate(1) == 1
 
 
+def test_checked_exchange_rate_refuses_a_positive_rate_that_rounds_to_zero():
+    with pytest.raises(ValueError, match="greater than zero"):
+        checked_exchange_rate("0.0000000000004")
+
+
 @pytest.mark.parametrize("bad", [0, 0.0, "0", -1, -0.5, "-35", float("nan"), float("inf")])
 def test_checked_exchange_rate_refuses_a_rate_that_is_not_a_rate(bad):
     """Zero, negative and non-finite are wrong answers, not slow paths.
