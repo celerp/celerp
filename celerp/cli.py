@@ -15,7 +15,7 @@ from pathlib import Path
 
 import click
 
-from celerp.config import config_path as _config_path, read_config as _read_config, write_config as _write_config, resolve_install_order as _resolve_install_order, set_enabled_modules as _set_enabled_modules
+from celerp.config import sync_db_url as _sync_url, config_path as _config_path, read_config as _read_config, write_config as _write_config, resolve_install_order as _resolve_install_order, set_enabled_modules as _set_enabled_modules
 from celerp.services.auth import MIN_PASSWORD_LENGTH, validate_password
 
 # ── Config helpers ────────────────────────────────────────────────────────────
@@ -181,19 +181,6 @@ def _fix_ownership(db_url: str) -> str | None:
             capture_output=True, text=True,
         )
     return None
-
-
-def _sync_url(db_url: str) -> str:
-    """The configured URL with any async/psycopg2 driver stripped.
-
-    Alembic, the grant statements and the pg_dump helpers all need a plain
-    synchronous URL, and the conversion was written out inline at each of them.
-    One copy, so a third driver prefix is added here rather than in seven places.
-    """
-    return (
-        db_url.replace("postgresql+asyncpg://", "postgresql://")
-        .replace("postgresql+psycopg2://", "postgresql://")
-    )
 
 
 def _needs_ownership_fix(db_url: str) -> bool:

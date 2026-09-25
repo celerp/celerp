@@ -145,3 +145,41 @@ def test_sold_price_is_none_when_selling_line_missing():
 def test_sold_price_is_none_without_status_doc():
     items = [("item:1", {"status": "sold"})]
     assert sold_prices(items, []) == {"item:1": None}
+
+
+def test_sold_price_is_the_discounted_line_amount_per_unit():
+    # unit_price is the quoted price before the line discount; line_total is what the line
+    # actually charged, so the realized price is line_total / quantity.
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A"})]
+    docs = [("doc:A", {"line_items": [
+        {"item_id": "item:1", "quantity": 10, "unit_price": 10.0, "discount_pct": 10, "line_total": 90.0},
+    ]})]
+    assert sold_prices(items, docs) == {"item:1": 9.0}
+
+
+def test_sold_price_by_sku_is_none_when_same_sku_lines_disagree():
+    # Two lines for the sku at different prices: no way to know which one sold this item.
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A", "sku": "GEM-1"})]
+    docs = [("doc:A", {"line_items": [
+        {"sku": "GEM-1", "quantity": 1, "unit_price": 100.0, "line_total": 100.0},
+        {"sku": "GEM-1", "quantity": 1, "unit_price": 80.0, "line_total": 80.0},
+    ]})]
+    assert sold_prices(items, docs) == {"item:1": None}
+
+
+def test_sold_price_by_sku_resolves_when_same_sku_lines_agree():
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A", "sku": "GEM-1"})]
+    docs = [("doc:A", {"line_items": [
+        {"sku": "GEM-1", "quantity": 1, "unit_price": 100.0, "line_total": 100.0},
+        {"sku": "GEM-1", "quantity": 2, "unit_price": 100.0, "line_total": 200.0},
+    ]})]
+    assert sold_prices(items, docs) == {"item:1": 100.0}
+
+
+def test_memo_value_is_the_discounted_line_amount_per_unit_times_remaining():
+    # Quoted 100 each, 10% off on the line: the customer holds 180 of goods, not 200.
+    items = [("item:1", {"status": "memo_out", "quantity": 2, "fulfilled_for_docs": ["doc:A"]})]
+    memo_docs = [("doc:A", {"line_items": [
+        {"entity_id": "item:1", "quantity": 2, "unit_price": 100.0, "line_total": 180.0},
+    ]})]
+    assert memo_holdings(items, memo_docs) == {"item:1": 180.0}

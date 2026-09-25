@@ -324,6 +324,7 @@ async def bulk_attach_files(
                         "mime": meta["mime"],
                         "size": meta["size"],
                         "url": meta.get("url", ""),
+                        "thumb_url": meta.get("thumb_url"),
                         "document_tag": tag,
                         "description": label,
                         "uploaded_at": datetime.now(timezone.utc).isoformat(),

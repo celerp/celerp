@@ -9,9 +9,21 @@ from pathlib import Path
 from pydantic import Field
 from pydantic.aliases import AliasChoices
 from pydantic_settings import BaseSettings
+from sqlalchemy.engine import make_url
 
 _DEFAULT_JWT_SECRET = "dev-secret"
 _CONFIG_ENV_VAR = "CELERP_CONFIG"
+
+
+def sync_db_url(db_url: str) -> str:
+    """``db_url`` on the synchronous psycopg2 driver, for the engines that cannot run on
+    asyncpg (Alembic and the CLI's maintenance statements). The driver is named rather than
+    left bare: a plain ``postgresql://`` takes SQLAlchemy's default driver, which is psycopg
+    (v3) from 2.1 on, and psycopg2 is the one installed. Non-Postgres URLs pass through."""
+    url = make_url(db_url)
+    if url.drivername.split("+")[0] != "postgresql":
+        return db_url
+    return url.set(drivername="postgresql+psycopg2").render_as_string(hide_password=False)
 
 
 class Settings(BaseSettings):

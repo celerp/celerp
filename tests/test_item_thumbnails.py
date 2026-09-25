@@ -294,3 +294,110 @@ def test_make_thumbnail_refuses_oversized_images(monkeypatch):
     assert att_svc.make_thumbnail(_png(640, 400), "image/png") is None
     monkeypatch.setattr(att_svc, "_MAX_IMAGE_PIXELS", 40_000_000)
     assert att_svc.make_thumbnail(_png(640, 400), "image/png") is not None
+
+
+class _RemoteBackend:
+    """A cloud-style backend: keeps nothing on disk and hands back an absolute URL."""
+
+    async def store(self, company_id, att_id, content, mime):
+        return f"https://cdn.example.test/{company_id}/{att_id}"
+
+
+def _zip(files: dict[str, bytes]) -> bytes:
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    return buf.getvalue()
+
+
+def _item_files(item: dict) -> list[dict]:
+    return item.get("files") or (item.get("attributes") or {}).get("files") or []
+
+
+@pytest.mark.asyncio
+async def test_bulk_attached_remote_image_previews_from_its_thumbnail(client, monkeypatch):
+    monkeypatch.setattr(att_svc, "_backend", _RemoteBackend())
+    h = await _headers(client, "ThumbBulkCo", "thumbs-bulk@example.com")
+    item_id = await _item(client, h, "THUMB-BULK")
+    r = await client.post(
+        "/items/files/bulk",
+        files={"file": ("photos.zip", _zip({"THUMB-BULK.png": _png()}), "application/zip")},
+        headers=h,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["matched"] == 1
+    files = _item_files((await client.get(f"/items/{item_id}", headers=h)).json())
+    assert len(files) == 1
+    file_id = files[0]["id"]
+
+    r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
+    assert r.status_code in (302, 307), r.text
+    assert r.headers["location"].endswith("/" + att_svc.thumbnail_id(file_id))
+
+
+@pytest.mark.asyncio
+async def test_merged_item_keeps_the_file_thumbnail(client):
+    h = await _headers(client, "ThumbMergeCo", "thumbs-merge@example.com")
+    a = await _item(client, h, "THUMB-MERGE-A")
+    b = await _item(client, h, "THUMB-MERGE-B")
+    file_id = await _upload(client, h, a, _png())
+    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
+    assert r.status_code == 200, r.text
+    merged = (await client.get(f"/items/{r.json()['id']}", headers=h)).json()
+    thumbs = {f["id"]: f.get("thumb_url") for f in _item_files(merged)}
+    assert thumbs.get(file_id), thumbs
+
+
+@pytest.mark.asyncio
+async def test_connector_download_records_the_thumbnail_url(monkeypatch):
+    from types import SimpleNamespace
+
+    import celerp.connectors.images as images
+    import celerp.events.engine as engine_mod
+
+    emitted: dict = {}
+
+    async def _emit(session, **kw):
+        emitted.update(kw["data"])
+
+    async def _store(company_id, upload):
+        return {"id": "att-1", "filename": "p.png", "mime": "image/png", "size": 3,
+                "url": "https://cdn.example.test/c/att-1",
+                "thumb_url": "https://cdn.example.test/c/att-1_thumb"}
+
+    class _Resp:
+        content = b"png"
+        headers = {"content-type": "image/png"}
+
+        def raise_for_status(self):
+            return None
+
+    class _Http:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, **kw):
+            return _Resp()
+
+    class _Session:
+        async def get(self, *a, **k):
+            return SimpleNamespace(state={"files": []})
+
+    monkeypatch.setattr(engine_mod, "emit_event", _emit)
+    monkeypatch.setattr(att_svc, "store_upload", _store)
+    monkeypatch.setattr(images.httpx, "AsyncClient", _Http)
+
+    ok = await images.download_and_emit_file(
+        _Session(), "co", "item:1", "user:1", "https://img.example.test/p.png", "p.png", "product_images", True,
+    )
+    assert ok is True
+    assert emitted["thumb_url"] == "https://cdn.example.test/c/att-1_thumb"

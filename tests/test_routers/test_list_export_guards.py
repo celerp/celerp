@@ -157,3 +157,108 @@ async def test_doc_list_and_export_share_sort(client):
     assert bad_sort.status_code == 422 and "sideways" in bad_sort.json()["detail"], bad_sort.text
     bad_dir = await client.get("/docs?sort=total&dir=up", headers=_h(tok))
     assert bad_dir.status_code == 422 and "asc or desc" in bad_dir.json()["detail"], bad_dir.text
+
+
+# ── query and sort equivalence ────────────────────────────────────────────────
+
+import contextlib
+import csv
+import io
+from datetime import datetime, timezone
+
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
+
+
+@contextlib.contextmanager
+def _sql_spy():
+    captured: list[str] = []
+
+    def _before(conn, cursor, statement, parameters, context, executemany):
+        captured.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _before)
+    try:
+        yield captured
+    finally:
+        event.remove(Engine, "before_cursor_execute", _before)
+
+
+async def _company_id(client, tok: str) -> str:
+    r = await client.get("/auth/my-companies", headers=_h(tok))
+    return r.json()["items"][0]["company_id"]
+
+
+async def _seed_docs(session, company_id: str, docs: dict[str, dict]) -> None:
+    from celerp.models.projections import Projection
+
+    now = datetime.now(timezone.utc)
+    for eid, state in docs.items():
+        session.add(Projection(company_id=company_id, entity_id=eid, entity_type="doc",
+                               state={"doc_type": "invoice", "status": "issued", "total": 1.0} | state,
+                               version=1, updated_at=now))
+    await session.commit()
+
+
+def _csv_rows(text: str) -> list[dict]:
+    return list(csv.DictReader(io.StringIO(text)))
+
+
+@pytest.mark.asyncio
+async def test_all_issued_list_pages_in_sql(client, session):
+    """The default typed list (all_issued) is paged by the database like every other list: no
+    request reads every document of the type into Python to slice one page. Drafts and voids
+    stay off the list."""
+    tok = await _reg(client)
+    company_id = await _company_id(client, tok)
+    await _seed_docs(session, company_id, {
+        "doc:page-1": {}, "doc:page-2": {}, "doc:page-3": {},
+        "doc:page-draft": {"status": "draft"}, "doc:page-void": {"status": "void"},
+    })
+    with _sql_spy() as captured:
+        r = await client.get("/docs?doc_type=invoice&all_issued=1&limit=2&offset=1", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 3 and len(body["items"]) == 2
+    selects = [s for s in captured if s.lower().lstrip().startswith("select") and "from projections" in s.lower()]
+    assert selects
+    unbounded = [s for s in selects if "limit" not in s.lower() and "count(" not in s.lower()]
+    assert not unbounded, unbounded
+
+
+@pytest.mark.asyncio
+async def test_doc_sort_orders_by_the_values_the_list_displays(client, session):
+    """Imported documents carry their number and dates under older keys (ref, ref_id,
+    payment_due_date); the list shows those, so the sort has to order by them too. Same order
+    on the SQL-paged path, the Python-filtered path and the export."""
+    tok = await _reg(client)
+    company_id = await _company_id(client, tok)
+    await _seed_docs(session, company_id, {
+        "doc:sort-a": {"doc_number": "INV-002", "due_date": "2026-03-01", "issue_date": "2026-01-02"},
+        "doc:sort-b": {"ref_id": "INV-001", "payment_due_date": "2026-04-01", "issue_date": "2026-01-01"},
+        "doc:sort-c": {"ref": "INV-003", "due_date": "2026-02-01", "issue_date": "2026-01-03"},
+    })
+    expect = {"number": ["doc:sort-b", "doc:sort-a", "doc:sort-c"],
+              "due": ["doc:sort-c", "doc:sort-a", "doc:sort-b"]}
+    for sort, order in expect.items():
+        for extra in ("", "&unfulfilled_only=1"):
+            r = await client.get(f"/docs?doc_type=invoice&sort={sort}&dir=asc{extra}", headers=_h(tok))
+            assert r.status_code == 200, r.text
+            assert [d["id"] for d in r.json()["items"]] == order, (sort, extra)
+        r = await client.get(f"/docs/export/csv?doc_type=invoice&sort={sort}&dir=asc", headers=_h(tok))
+        assert r.status_code == 200, r.text
+        assert [row["entity_id"] for row in _csv_rows(r.text)] == order, sort
+    rows = {row["entity_id"]: row for row in _csv_rows(r.text)}
+    assert rows["doc:sort-b"]["doc_number"] == "INV-001"
+    assert rows["doc:sort-b"]["due_date"] == "2026-04-01"
+
+
+@pytest.mark.asyncio
+async def test_doc_export_carries_the_issue_date(client):
+    tok = await _reg(client)
+    doc_id = await _invoice(client, tok, 5.0)
+    issue_date = (await client.get(f"/docs/{doc_id}", headers=_h(tok))).json()["issue_date"]
+    r = await client.get("/docs/export/csv?doc_type=invoice", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    rows = _csv_rows(r.text)
+    assert rows and rows[0]["issue_date"] == issue_date

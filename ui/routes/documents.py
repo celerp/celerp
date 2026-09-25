@@ -393,7 +393,7 @@ def _doc_api_params(state: dict[str, str], date_from: str, date_to: str, *, limi
         params["status"] = state["status"]
     elif not has_status_filter and state.get("type") in _ALL_ISSUED_DEFAULT_TYPES:
         params["all_issued"] = "1"
-    elif not has_status_filter or not any(state.get(k) for k in ("status", "status_in", "all_issued")):
+    else:
         params["exclude_status"] = "draft"
     for key in ("overdue_only", "unfulfilled_only", "not_restocked", "not_stocked"):
         if state.get(key):
@@ -5053,12 +5053,12 @@ def _doc_table(
 
     def _row(d: dict) -> FT:
         eid = d.get("entity_id") or d.get("id", "")
-        doc_number = d.get("doc_number") or d.get("ref") or d.get("ref_id") or eid
-        contact = d.get("contact_name") or d.get("contact_id") or d.get("contact_external_id")
-        issue_date = d.get("issue_date") or d.get("created_at")
-        due_date = d.get("due_date") or d.get("payment_due_date")
-        total_amount = d.get("total_amount") if d.get("total_amount") is not None else d.get("total")
-        outstanding_amount = d.get("outstanding_balance") if d.get("outstanding_balance") is not None else d.get("amount_outstanding")
+        doc_number = d.get("doc_number") or eid
+        contact = d.get("contact_name")
+        issue_date = d.get("issue_date")
+        due_date = d.get("due_date")
+        total_amount = d.get("total")
+        outstanding_amount = d.get("amount_outstanding")
         outstanding = float(outstanding_amount or 0)
         checkbox_td = [Td(Input(type="checkbox", cls="doc-row-select", value=eid,
                      data_contact_id=d.get("contact_id") or "",

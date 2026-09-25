@@ -134,6 +134,7 @@ async def download_and_emit_file(
             "mime": meta["mime"],
             "size": meta["size"],
             "url": meta.get("url", ""),
+            "thumb_url": meta.get("thumb_url"),
             "document_tag": tag,
             "description": None,
             "uploaded_at": datetime.now(timezone.utc).isoformat(),

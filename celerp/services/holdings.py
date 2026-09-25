@@ -6,9 +6,9 @@ Three mirror-image questions, answered as pure reads over existing projection st
 (no new columns, no migration):
 
 - What is currently out on memo TO a customer? Items with status ``memo_out`` whose
-  ``fulfilled_for_docs`` points at one of that customer's memo docs. Valued at the
-  price the customer was quoted, i.e. the memo LINE's ``unit_price`` (per unit,
-  post-discount) times the quantity still out, NOT the item's catalog price.
+  ``fulfilled_for_docs`` points at one of that customer's memo docs. Valued at what
+  the memo LINE charges per unit (its ``line_total`` over its quantity, so a line
+  discount is included) times the quantity still out, NOT the item's catalog price.
 - What do we currently hold on consignment FROM a supplier? Items with
   ``consignment_flag == "in"`` created by one of that supplier's ``consignment_in``
   docs (tracked on the doc as ``received_item_ids``). Valued at cost.
@@ -43,6 +43,16 @@ def _lines_by_ref(docs: Iterable[tuple[str, dict]]) -> dict[tuple[str, str], dic
     return out
 
 
+def _line_unit_value(line: dict) -> float | None:
+    """What a document line charges per unit: ``line_total`` over ``quantity`` when both are
+    stored (``line_total`` is the amount after the line discount), else the quoted
+    ``unit_price`` (the price before any discount), else None."""
+    total, qty = _num(line.get("line_total")), _num(line.get("quantity"))
+    if total is not None and qty:
+        return total / qty
+    return _num(line.get("unit_price"))
+
+
 def _num(value: object) -> float | None:
     """Coerce a stored price/quantity to float, or None when absent/blank/garbage."""
     if value in (None, ""):
@@ -63,12 +73,12 @@ def memo_holdings(
     ``memo_docs``: (entity_id, state) for that customer's issued memo docs.
 
     An item is out on memo when its status is ``memo_out`` and its
-    ``fulfilled_for_docs`` intersects the memo docs supplied. The value is the
-    memo line's ``unit_price`` times the quantity still out (so partial returns
-    step the value down), falling back to the line's ``line_total`` when no unit
-    price is stored, and to 0.0 when the line carries no price or cannot be
-    matched. An unpriceable item is still returned: the point of the view is that
-    nothing out on memo is quietly missing from it.
+    ``fulfilled_for_docs`` intersects the memo docs supplied. The value is what the
+    memo line charges per unit (``_line_unit_value``) times the quantity still out
+    (so partial returns step the value down), falling back to the line's
+    ``line_total`` when no per-unit figure can be derived, and to 0.0 when the line
+    carries no price or cannot be matched. An unpriceable item is still returned:
+    the point of the view is that nothing out on memo is quietly missing from it.
     """
     memo_docs = list(memo_docs)
     doc_ids = {doc_id for doc_id, _ in memo_docs}
@@ -92,11 +102,8 @@ def memo_holdings(
             line = line_by.get((doc_id, item_id))
             if line is None:
                 continue
-            unit = _num(line.get("unit_price"))
-            if unit is not None:
-                value = unit * remaining
-            else:
-                value = _num(line.get("line_total")) or 0.0
+            unit = _line_unit_value(line)
+            value = unit * remaining if unit is not None else (_num(line.get("line_total")) or 0.0)
             break
         out[item_id] = round(value, 2)
     return out
@@ -146,19 +153,21 @@ def sold_prices(
     (its ``status_doc_id``). The line is matched by its item reference where the doc
     carries one (imported docs, per-line fulfillment), else by SKU (engine-fulfilled
     invoices created from a SKU carry no item reference on the line, only the sku the
-    item still holds). The value is the line's ``unit_price`` (per sell-unit,
-    post-discount); when only a ``line_total`` is stored it is divided by the line
-    quantity to a per-unit figure. Returns None for an item whose selling line or
-    price cannot be resolved, so the view shows an honest ``--`` rather than a
-    fabricated 0.
+    item still holds). The value is what the line charges per unit
+    (``_line_unit_value``: ``line_total`` over quantity, else the quoted
+    ``unit_price``). A SKU that appears on several lines of the doc resolves only when
+    those lines charge the same per-unit amount; otherwise there is no way to tell
+    which line sold this item. Returns None for an item whose selling line or price
+    cannot be resolved, so the view shows an honest ``--`` rather than a fabricated 0.
     """
     sold_docs = list(sold_docs)
     line_by_ref = _lines_by_ref(sold_docs)
-    line_by_sku: dict[tuple[str, str], dict] = {}
+    units_by_sku: dict[tuple[str, str], set[float | None]] = {}
     for doc_id, line in _doc_lines(sold_docs):
         sku = str(line.get("sku") or "").strip()
         if sku:
-            line_by_sku.setdefault((doc_id, sku), line)  # first line for the sku wins
+            unit = _line_unit_value(line)
+            units_by_sku.setdefault((doc_id, sku), set()).add(round(unit, 2) if unit is not None else None)
 
     out: dict[str, float | None] = {}
     for item_id, state in items:
@@ -168,16 +177,12 @@ def sold_prices(
             out[item_id] = None
             continue
         line = line_by_ref.get((str(doc_id), item_id))
-        if line is None:
+        if line is not None:
+            unit = _line_unit_value(line)
+        else:
             sku = str(state.get("sku") or "").strip()
-            line = line_by_sku.get((str(doc_id), sku)) if sku else None
-        if line is None:
-            out[item_id] = None
-            continue
-        unit = _num(line.get("unit_price"))
-        if unit is None:
-            total, qty = _num(line.get("line_total")), _num(line.get("quantity"))
-            unit = (total / qty) if (total is not None and qty) else None
+            units = units_by_sku.get((str(doc_id), sku), set()) if sku else set()
+            unit = next(iter(units)) if len(units) == 1 else None
         out[item_id] = round(unit, 2) if unit is not None else None
     return out
 

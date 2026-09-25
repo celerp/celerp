@@ -699,8 +699,8 @@ _DOC_NUMERIC_SORT_FIELDS = frozenset({"total", "amount_outstanding"})
 
 def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
     """The SQL WHERE for ``f`` (company scope included): every filter the DB can evaluate. The
-    multi-field filters (all_issued, overdue_only, ...) are not here; query_docs applies them in
-    Python, and the summary ignores them by design."""
+    multi-field filters (overdue_only, unfulfilled_only, not_restocked, not_stocked) are not
+    here; query_docs applies them in Python, and the summary ignores them by design."""
     id_list = [x.strip() for x in f.ids.split(",") if x.strip()] if f.ids else []
     if len(id_list) > MAX_IDS_FILTER:
         raise HTTPException(status_code=422, detail=f"ids accepts at most {MAX_IDS_FILTER} document ids")
@@ -717,6 +717,10 @@ def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
         base_where.append(Projection.state["status"].as_string().in_(_allowed))
     if f.exclude_status:
         base_where.append(Projection.state["status"].as_string() != f.exclude_status)
+    if f.all_issued:
+        base_where.append(Projection.state["status"].as_string().notin_((DRAFT, VOID)))
+    if f.converted_to_type:
+        base_where.append(Projection.state["converted_to_type"].as_string() == f.converted_to_type)
     if f.contact_id:
         base_where.append(Projection.state["contact_id"].as_string() == f.contact_id)
     if id_list:
@@ -747,6 +751,17 @@ def _doc_sort_field(f: DocListFilters) -> str:
     return field
 
 
+# Older keys a document may carry a displayed value under (imported documents store their
+# number and dates this way). The list row is filled from them and the sort orders by them,
+# so the order on the page is the order of what the page shows.
+_DOC_DISPLAY_FALLBACKS = {
+    "doc_number": ("ref", "ref_id"),
+    "contact_name": ("contact_id", "contact_external_id"),
+    "issue_date": ("created_at",),
+    "due_date": ("payment_due_date",),
+}
+
+
 def _doc_sql_order(field: str, descending: bool) -> list:
     """ORDER BY for a sort field, with the unique entity_id tiebreak so the sort is a TOTAL order.
     Without it, rows sharing a value come back in an arbitrary order that differs between the
@@ -755,6 +770,11 @@ def _doc_sql_order(field: str, descending: bool) -> list:
         expr = Projection.updated_at
     elif field in _DOC_NUMERIC_SORT_FIELDS:
         expr = _sa.cast(_func.nullif(Projection.state[field].as_string(), ""), _sa.Numeric)
+    elif field in _DOC_DISPLAY_FALLBACKS:
+        expr = _func.coalesce(*(
+            _func.nullif(Projection.state[k].as_string(), "")
+            for k in (field, *_DOC_DISPLAY_FALLBACKS[field])
+        ))
     else:
         expr = Projection.state[field].as_string()
     if descending:
@@ -762,17 +782,14 @@ def _doc_sql_order(field: str, descending: bool) -> list:
     return [expr.asc().nulls_first(), Projection.entity_id.asc()]
 
 
-def _doc_python_sort_key(field: str):
-    """The Python-path sort key for ``field``, ordering the same values the SQL path does."""
-    if field in _DOC_NUMERIC_SORT_FIELDS:
-        return lambda x: (float(x.get(field) or 0), x.get("id") or "")
-    if field == "issue_date":
-        return lambda x: (x.get("issue_date") or x.get("created_at") or x.get("date") or "", x.get("id") or "")
-    return lambda x: (x.get(field) or "", x.get("id") or "")
-
-
 def _doc_row(r: Projection) -> dict:
-    return r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None}
+    """The list row for a document: its state with ``id``, ``_updated_at`` and each displayed
+    field filled from its older keys (``_DOC_DISPLAY_FALLBACKS``) when the current key is empty."""
+    row = r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None}
+    for field, alternates in _DOC_DISPLAY_FALLBACKS.items():
+        if not row.get(field):
+            row[field] = next((row[k] for k in alternates if row.get(k)), row.get(field))
+    return row
 
 
 async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, *, limit: int | None, offset: int = 0) -> dict:
@@ -782,20 +799,16 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     today = _date.today().isoformat()
     sort_field = _doc_sort_field(f)
     descending = f.dir == "desc"
-    # Push all indexable filters into the DB. Complex post-filters (overdue_only,
-    # unfulfilled_only, etc.) still run in Python because they reference nested JSON
-    # fields or multi-column logic.
+    # Every single-field filter is in the SQL WHERE. The multi-field filters below run in
+    # Python over the SQL-ordered rows, so both paths share one ORDER BY.
     base_where = _doc_sql_where(company_id, f)
+    order_by = _doc_sql_order(sort_field, descending)
 
-    # Remaining filters still need Python evaluation (multi-field logic).
-    needs_python_filter = any([f.all_issued, f.overdue_only, f.unfulfilled_only, f.not_restocked, f.not_stocked, f.converted_to_type])
+    needs_python_filter = any([f.overdue_only, f.unfulfilled_only, f.not_restocked, f.not_stocked])
 
     if needs_python_filter:
-        # Fetch only needed columns to reduce deserialization cost.
-        rows = (await session.execute(select(Projection).where(*base_where))).scalars().all()
+        rows = (await session.execute(select(Projection).where(*base_where).order_by(*order_by))).scalars().all()
         out = [_doc_row(r) for r in rows]
-        if f.all_issued:
-            out = [x for x in out if x.get("status") not in ("draft", "void")]
         if f.overdue_only:
             out = [x for x in out if x.get("due_date") and x["due_date"] < today and x.get("status") not in ("draft", "void")]
         if f.unfulfilled_only:
@@ -804,11 +817,6 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
             out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("return_received_items") or [])]
         if f.not_stocked:
             out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("received_items") or [])]
-        if f.converted_to_type:
-            out = [x for x in out if x.get("converted_to_type") == f.converted_to_type]
-        # Tiebreak on the unique id so equal-value rows have a deterministic order (same
-        # reason as the SQL path: otherwise OFFSET pagination can skip/duplicate a row).
-        out.sort(key=_doc_python_sort_key(sort_field), reverse=descending)
         total = len(out)
         if offset:
             out = out[offset:]
@@ -823,7 +831,7 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     list_q = (
         select(Projection)
         .where(*base_where)
-        .order_by(*_doc_sql_order(sort_field, descending))
+        .order_by(*order_by)
         .offset(offset)
     )
     if limit is not None:
@@ -854,7 +862,7 @@ async def get_doc_summary(
     contact, ids, date window) so the cards over a filtered list count the rows the list shows.
     The status filters are ignored: the cards split the filtered set by status."""
     today = _date.today().isoformat()
-    summary_where = _doc_sql_where(company_id, _dc_replace(filters, status=None, status_in=None, exclude_status=None))
+    summary_where = _doc_sql_where(company_id, _dc_replace(filters, status=None, status_in=None, exclude_status=None, all_issued=False))
     rows = (await session.execute(select(Projection).where(*summary_where))).scalars().all()
     ar_gross = ar_paid = ar_outstanding = 0.0
     count_by_status: dict[str, int] = {}
@@ -4062,7 +4070,7 @@ async def batch_import_docs(
 # ---------------------------------------------------------------------------
 
 
-_DOC_EXPORT_COLS = ["entity_id", "doc_number", "doc_type", "contact_name", "date", "due_date", "total", "amount_outstanding", "status"]
+_DOC_EXPORT_COLS = ["entity_id", "doc_number", "doc_type", "contact_name", "issue_date", "due_date", "total", "amount_outstanding", "status"]
 
 
 @router.get("/export/csv", dependencies=[require_permission("view_documents"), require_permission("import_export_data")])

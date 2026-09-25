@@ -24,6 +24,7 @@ from celerp.modules.migrations_runner import (
     run_migration_phase,
     run_module_migrations,
 )
+from celerp.config import sync_db_url
 from celerp.db import _MIGRATION_LOCK_KEY
 
 
@@ -49,7 +50,7 @@ def _make_module(base: Path, name: str, migrations: dict[str, str], *,
 
 
 def _sync_url() -> str:
-    return os.environ["DATABASE_URL"].replace("+asyncpg", "")
+    return sync_db_url(os.environ["DATABASE_URL"])
 
 
 # Guarded: creates acme_equipment(id, name) only if absent.
