@@ -291,15 +291,25 @@ OWNERSHIP_OWNED = "owned"
 OWNERSHIP_NONE = "none"
 OWNERSHIP_OTHER = "other"
 OWNERSHIP_AMBIGUOUS = "ambiguous"
+# Set up before companies had their own connectors and not yet assigned to one.
+OWNERSHIP_UNASSIGNED = "unassigned"
+
+
+def _unassigned_only(rows: list[ConnectorConfig]) -> bool:
+    legacy_id = ensure_instance_id()
+    return bool(rows) and all(str(row.company_id) == legacy_id for row in rows)
 
 
 async def connector_ownership_state(
     session: AsyncSession, company_id, connector: str
 ) -> str:
     """Unlocked read of where this connector's configuration stands for one
-    company: owned, none, other (another company uses it) or ambiguous
-    (linked to more than one company)."""
+    company: owned, none, other (another company uses it), ambiguous
+    (linked to more than one company) or unassigned (set up before companies
+    had their own connectors)."""
     rows = await _connector_rows(session, connector, for_update=False)
+    if _unassigned_only(rows):
+        return OWNERSHIP_UNASSIGNED
     try:
         current = _resolve_connector_owner(rows, company_id)
     except ConnectorOwnershipAmbiguousError:
@@ -438,6 +448,42 @@ async def release_connector_ownership(
     )
     record_connector_reset(session, company_id, connector, status=status)
     for row in mine:
+        await session.delete(row)
+    await session.flush()
+
+
+async def lock_unassigned_connector(
+    session: AsyncSession, connector: str
+) -> list[ConnectorConfig]:
+    """Lock a connector that no company owns for a reset. Raises when any
+    company holds it, so a reset never removes a company's connection."""
+    await lock_connector_key(session, connector, exclusive=True)
+    rows = await _connector_rows(session, connector, for_update=True)
+    if not _unassigned_only(rows):
+        raise ConnectorOwnershipError(
+            f"{connector} has no unassigned connection to reset"
+        )
+    return rows
+
+
+async def release_unassigned_connector(
+    session: AsyncSession, connector: str, *,
+    status: str = RESET_STATUS_DISCONNECTED,
+) -> None:
+    """Remove an unassigned connector and its queued changes, and record the
+    reset. No company becomes its owner; one reconnects it to take it over."""
+    from celerp.models.connector_config import OutboundQueue
+
+    legacy_id = ensure_instance_id()
+    rows = await lock_unassigned_connector(session, connector)
+    await session.execute(
+        sa.delete(OutboundQueue).where(
+            OutboundQueue.company_id == legacy_id,
+            OutboundQueue.connector == connector,
+        )
+    )
+    record_connector_reset(session, legacy_id, connector, status=status)
+    for row in rows:
         await session.delete(row)
     await session.flush()
 

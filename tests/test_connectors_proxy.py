@@ -286,6 +286,60 @@ async def test_pending_oauth_claim_renders_finish_or_cancel():
 
 
 @pytest.mark.asyncio
+async def test_connector_no_company_owns_offers_a_reset_to_the_installation_owner():
+    """A connector no company owns can be reset by the installation owner, who
+    is told it disconnects it for the entire installation. Anyone else is told
+    who can reset it and sees no action they cannot perform."""
+    base = {**_OAUTH, "connected": False, "ownership": "unassigned", "local_claim": False}
+    owner = await _card_html([{**base, "can_reset": True}])
+    assert "no company is assigned to it" in owner
+    assert 'hx-delete="/settings/connectors/quickbooks/reset"' in owner
+    assert "disconnects the legacy integration for the entire installation" in owner
+    assert "oauth-redirect" not in owner
+
+    other = await _card_html([{**base, "can_reset": False}])
+    assert "Ask the installation owner to reset it" in other
+    assert "hx-delete" not in other
+    assert "oauth-redirect" not in other
+
+
+@pytest.mark.asyncio
+async def test_failed_reset_changes_nothing_and_offers_to_reset_anyway():
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+    from ui.app import app as ui_app
+
+    reset = AsyncMock(return_value={"ok": False, "error": "relay_error"})
+    with patch(
+        "ui.api_client.get_company",
+        AsyncMock(return_value={
+            "id": "00000000-0000-0000-0000-000000000002",
+            "settings": {},
+            "current_role": "owner",
+        }),
+    ), patch("ui.api_client.reset_unassigned_connector", reset):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui"
+        ) as client:
+            normal = await client.delete(
+                "/settings/connectors/woocommerce/reset",
+                cookies={"celerp_token": make_test_token(role="owner")},
+            )
+            forced = await client.delete(
+                "/settings/connectors/woocommerce/reset?force=1",
+                cookies={"celerp_token": make_test_token(role="owner")},
+            )
+
+    html = normal.content.decode()
+    assert "Disconnect failed. Nothing was changed" in html
+    assert 'hx-delete="/settings/connectors/woocommerce/reset?force=1"' in html
+    assert 'hx-target="#connector-card-woocommerce"' in html
+    assert reset.await_args_list[0].kwargs == {"force": False}
+    assert reset.await_args_list[1].kwargs == {"force": True}
+    assert "Disconnect anyway" not in forced.content.decode()
+
+
+@pytest.mark.asyncio
 async def test_connector_linked_twice_shows_banner_and_disconnect():
     """A connector linked to more than one company is shown, never resolved on
     its own: a linked company can disconnect it; any other sees the explanation

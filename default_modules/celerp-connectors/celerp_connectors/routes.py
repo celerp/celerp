@@ -13,7 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import celerp.connectors as connectors
 from celerp.connectors.base import SyncDirection, SyncEntity
 from celerp.db import get_session
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auth import (
+    get_current_company_id,
+    get_current_user,
+    require_install_owner,
+)
 from celerp.services.permissions import require_permission
 from celerp.session_gate import require_session_token
 
@@ -454,11 +458,6 @@ async def revoke_credentials(
         lock_connector_operation,
         release_connector_ownership,
     )
-    from celerp.connectors.remote_state import (
-        ConnectorRemoteCleanupError,
-        ConnectorRemoteStateChangedError,
-        revoke_connector_remote_state,
-    )
 
     try:
         try:
@@ -475,20 +474,10 @@ async def revoke_credentials(
         await session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    try:
-        await revoke_connector_remote_state(
-            company_id, connector_name, webhook_ids=webhook_ids, force=force,
-        )
-    except ConnectorRemoteStateChangedError as exc:
-        await session.rollback()
-        return {
-            "ok": False,
-            "error": "connection_changed",
-            "detail": str(exc),
-        }
-    except ConnectorRemoteCleanupError as exc:
-        await session.rollback()
-        return {"ok": False, "error": "relay_error", "detail": str(exc)}
+    if failure := await _revoke_remote(
+        session, company_id, connector_name, webhook_ids, force=force
+    ):
+        return failure
 
     try:
         if connector_name in {"shopify", "woocommerce"}:
@@ -498,6 +487,81 @@ async def revoke_credentials(
             )
         await release_connector_ownership(
             session, company_id, connector_name,
+            status=RESET_STATUS_FORCED if force else RESET_STATUS_DISCONNECTED,
+        )
+        await session.commit()
+    except Exception as exc:
+        await session.rollback()
+        return {"ok": False, "error": "local_cleanup_failed", "detail": str(exc)}
+    return {"ok": True}
+
+
+async def _revoke_remote(
+    session: AsyncSession, company_id: str, connector_name: str,
+    webhook_ids: list[str], *, force: bool,
+) -> dict | None:
+    """Disconnect the connector remotely. Returns the failure response, with
+    the local transaction rolled back, or None when it is disconnected."""
+    from celerp.connectors.remote_state import (
+        ConnectorRemoteCleanupError,
+        ConnectorRemoteStateChangedError,
+        revoke_connector_remote_state,
+    )
+
+    try:
+        await revoke_connector_remote_state(
+            company_id, connector_name, webhook_ids=webhook_ids, force=force,
+        )
+    except ConnectorRemoteStateChangedError as exc:
+        await session.rollback()
+        return {"ok": False, "error": "connection_changed", "detail": str(exc)}
+    except ConnectorRemoteCleanupError as exc:
+        await session.rollback()
+        return {"ok": False, "error": "relay_error", "detail": str(exc)}
+    return None
+
+
+@router.delete("/{connector_name}/unassigned")
+async def reset_unassigned_connector(
+    connector_name: str,
+    _owner=Depends(require_install_owner),
+    session: AsyncSession = Depends(get_session),
+    force: bool = False,
+) -> dict:
+    """Disconnect a connector set up before companies had their own
+    connectors, for the whole installation. No company becomes its owner;
+    the company that should use it reconnects it afterwards."""
+    from celerp.config import ensure_instance_id
+    from celerp.connectors.ownership import (
+        RESET_STATUS_DISCONNECTED,
+        RESET_STATUS_FORCED,
+        ConnectorOwnershipError,
+        lock_unassigned_connector,
+        release_unassigned_connector,
+    )
+
+    try:
+        connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    try:
+        rows = await lock_unassigned_connector(session, connector_name)
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    webhook_ids = list(dict.fromkeys(
+        wid for row in rows for wid in (row.webhook_ids or [])
+    ))
+
+    if failure := await _revoke_remote(
+        session, ensure_instance_id(), connector_name, webhook_ids, force=force
+    ):
+        return failure
+
+    try:
+        await release_unassigned_connector(
+            session, connector_name,
             status=RESET_STATUS_FORCED if force else RESET_STATUS_DISCONNECTED,
         )
         await session.commit()

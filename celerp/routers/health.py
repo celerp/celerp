@@ -1135,6 +1135,7 @@ async def cloud_claim_api(payload: dict) -> dict:
 @settings_router.get("/connectors-catalog", dependencies=[require_permission("manage_integrations")])
 async def connectors_catalog_api(
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Proxy relay /api/connectors using a fresh relay JWT (API process only)."""
@@ -1151,11 +1152,13 @@ async def connectors_catalog_api(
     if r.status_code == 200:
         from celerp.connectors.ownership import (
             OWNERSHIP_OWNED,
+            OWNERSHIP_UNASSIGNED,
             company_has_connector_claim,
             connector_ownership_state,
         )
 
         connectors = r.json().get("connectors", [])
+        install_owner = await is_install_owner(session, user.id)
         for connector in connectors:
             name = str(connector.get("id") or "")
             ownership = await connector_ownership_state(session, company_id, name)
@@ -1163,6 +1166,7 @@ async def connectors_catalog_api(
             connector["local_claim"] = await company_has_connector_claim(
                 session, company_id, name
             )
+            connector["can_reset"] = install_owner and ownership == OWNERSHIP_UNASSIGNED
             if connector.get("connected") and ownership != OWNERSHIP_OWNED:
                 connector["connected"] = False
         return {"connectors": connectors}

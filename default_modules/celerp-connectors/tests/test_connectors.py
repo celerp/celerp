@@ -16,6 +16,7 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 import pytest
 import respx
 import httpx
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from celerp.connectors.base import (
@@ -754,3 +755,53 @@ async def test_rate_limited_client_gives_up_after_max_retries():
 def test_daily_scheduler_check_interval():
     from celerp.connectors.daily_scheduler import _CHECK_INTERVAL_SECONDS
     assert _CHECK_INTERVAL_SECONDS == 3600
+
+
+@pytest.mark.asyncio
+async def test_reset_of_a_connector_no_company_owns_needs_the_installation_owner(
+    client, session, patch_session_token,
+):
+    """Only the installation owner resets a connector no company owns: it is
+    disconnected remotely first, then removed, and no company becomes its owner."""
+    from test_helpers import invite_user, register_admin
+
+    owner_h = {"Authorization": f"Bearer {await register_admin(client)}",
+               "X-Session-Token": _FAKE_SESSION_TOKEN}
+    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, owner_h, 'reset-admin@example.test', 'admin')}",
+               "X-Session-Token": _FAKE_SESSION_TOKEN}
+    order = []
+    lock = AsyncMock(return_value=[SimpleNamespace(webhook_ids=["11"])])
+    remote = AsyncMock(side_effect=lambda *a, **k: order.append("remote"))
+    release = AsyncMock(side_effect=lambda *a, **k: order.append("release"))
+    with patch("celerp.connectors.ownership.lock_unassigned_connector", lock), \
+         patch("celerp.connectors.remote_state.revoke_connector_remote_state", remote), \
+         patch("celerp.connectors.ownership.release_unassigned_connector", release), \
+         patch("celerp.config.ensure_instance_id", return_value="inst-reset"):
+        refused = await client.delete("/connectors/woocommerce/unassigned", headers=admin_h)
+        assert refused.status_code == 403
+        lock.assert_not_awaited()
+
+        r = await client.delete("/connectors/woocommerce/unassigned", headers=owner_h)
+        assert r.status_code == 200 and r.json() == {"ok": True}
+    remote.assert_awaited_once_with("inst-reset", "woocommerce", webhook_ids=["11"], force=False)
+    assert order == ["remote", "release"]
+
+
+@pytest.mark.asyncio
+async def test_reset_keeps_the_connector_when_remote_cleanup_fails(
+    client, patch_session_token,
+):
+    from celerp.connectors.remote_state import ConnectorRemoteCleanupError
+    from test_helpers import register_admin
+
+    owner_h = {"Authorization": f"Bearer {await register_admin(client)}",
+               "X-Session-Token": _FAKE_SESSION_TOKEN}
+    release = AsyncMock()
+    with patch("celerp.connectors.ownership.lock_unassigned_connector",
+               AsyncMock(return_value=[SimpleNamespace(webhook_ids=[])])), \
+         patch("celerp.connectors.remote_state.revoke_connector_remote_state",
+               AsyncMock(side_effect=ConnectorRemoteCleanupError("store did not answer"))), \
+         patch("celerp.connectors.ownership.release_unassigned_connector", release):
+        r = await client.delete("/connectors/woocommerce/unassigned", headers=owner_h)
+    assert r.json() == {"ok": False, "error": "relay_error", "detail": "store did not answer"}
+    release.assert_not_awaited()

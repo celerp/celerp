@@ -3374,6 +3374,15 @@ async def delete_connector_credentials(token: str, platform: str, *, force: bool
         return _raise(await c.delete(f"/connectors/{platform}/credentials", params=params)).json()
 
 
+async def reset_unassigned_connector(token: str, platform: str, *, force: bool = False) -> dict:
+    """DELETE /connectors/{platform}/unassigned - disconnect a connection no
+    company owns, for the whole installation. Returns {"ok": True} or
+    {"ok": False, "error": <code>}."""
+    params = {"force": "true"} if force else None
+    async with _api_client(token) as c:
+        return _raise(await c.delete(f"/connectors/{platform}/unassigned", params=params)).json()
+
+
 async def set_woocommerce_order_reconciled(
     token: str, order_id: str, signature: str | None
 ) -> dict:

@@ -1108,6 +1108,39 @@ async def test_connectors_catalog_shows_this_companys_connection_state(client):
     assert by_id["xero"]["ownership"] == "ambiguous" and by_id["xero"]["local_claim"] is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("install_owner", [True, False])
+async def test_connectors_catalog_offers_reset_only_to_the_installation_owner(client, install_owner):
+    """A connector no company owns is marked resettable only for the
+    installation owner, and never a connector some company owns."""
+    token = await _register(client, f"conn-reset-{install_owner}")
+    cat_resp = MagicMock()
+    cat_resp.status_code = 200
+    cat_resp.json.return_value = {"connectors": [
+        {"id": "woocommerce", "name": "WooCommerce", "category": "website", "connected": True},
+        {"id": "shopify", "name": "Shopify", "category": "website", "connected": True},
+    ]}
+    states = {"woocommerce": "unassigned", "shopify": "other"}
+
+    async def _state(session, company_id, name):
+        return states[name]
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid-reset"), \
+         patch("celerp.connectors.ownership.connector_ownership_state", _state), \
+         patch("celerp.connectors.ownership.company_has_connector_claim", AsyncMock(return_value=False)), \
+         patch("celerp.routers.health.is_install_owner", AsyncMock(return_value=install_owner)), \
+         patch("celerp.gateway.state.with_relay_client", AsyncMock(return_value=cat_resp)):
+        mock_settings.gateway_token = "my-api-key"
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+        r = await client.get("/settings/connectors-catalog", headers=_h(token))
+
+    by_id = {c["id"]: c for c in r.json()["connectors"]}
+    assert by_id["woocommerce"]["connected"] is False
+    assert by_id["woocommerce"]["can_reset"] is install_owner
+    assert by_id["shopify"]["can_reset"] is False
+
+
 # /settings/connectors/{platform}/authorize-url
 # ---------------------------------------------------------------------------
 

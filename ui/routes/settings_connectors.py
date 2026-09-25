@@ -586,6 +586,26 @@ def _connector_detail_body(
     )
 
 
+def _disconnect_failed(
+    result: dict, lang: str, *, force: bool, retry: str, target: str, swap: str, **wrapper,
+) -> FT:
+    """The outcome of a disconnect that changed nothing. Unless it was already
+    forced, it offers to disconnect anyway, with a warning."""
+    detail = result.get("detail") or result.get("error") or "disconnect_failed"
+    return Div(
+        Span(t("connectors.disconnect_failed", lang, detail=detail), cls="flash flash--warning"),
+        *([] if force else [Button(
+            t("connectors.disconnect_anyway", lang),
+            cls="btn btn--danger btn--sm",
+            hx_delete=retry,
+            hx_target=target,
+            hx_swap=swap,
+            hx_confirm=t("connectors.disconnect_anyway_confirm", lang),
+        )]),
+        **wrapper,
+    )
+
+
 def _connector_card(
     c: dict,
     last_run,
@@ -675,6 +695,22 @@ def _connector_card(
                 hx_swap="outerHTML",
                 hx_confirm=t("connectors.disconnect_confirm", lang),
             ),
+            cls="connector-action-area",
+        )
+    elif ownership == "unassigned":
+        action_area = Div(
+            P(
+                t("connectors.unassigned" if c.get("can_reset") else "connectors.unassigned_ask_owner", lang),
+                cls="flash flash--warning",
+            ),
+            *([Button(
+                t("connectors.reset", lang),
+                cls="btn btn--sm btn--outline btn--danger",
+                hx_delete=f"/settings/connectors/{cid}/reset",
+                hx_target=f"#connector-card-{cid}",
+                hx_swap="outerHTML",
+                hx_confirm=t("connectors.reset_confirm", lang),
+            )] if c.get("can_reset") else []),
             cls="connector-action-area",
         )
     elif ambiguous:
@@ -1099,35 +1135,60 @@ def setup_routes(app):
         except Exception as exc:
             revoke_result = {"ok": False, "detail": str(exc)}
         if not revoke_result.get("ok"):
-            detail = revoke_result.get("detail") or revoke_result.get("error") or "disconnect_failed"
             # The detail page shows the outcome under its buttons; the overview
             # replaces the connector's card.
             if request.query_params.get("redirect"):
-                redirect, target = "&redirect=1", f"#connector-disconnect-result-{platform}"
-                swap, wrapper = "innerHTML", {}
-            else:
-                redirect, target = "", f"#connector-card-{platform}"
-                swap, wrapper = "outerHTML", {"id": f"connector-card-{platform}", "cls": "connector-card"}
-            return Div(
-                Span(
-                    t("connectors.disconnect_failed", lang, detail=detail),
-                    cls="flash flash--warning",
-                ),
-                *([] if force else [Button(
-                    t("connectors.disconnect_anyway", lang),
-                    cls="btn btn--danger btn--sm",
-                    hx_delete=f"/settings/connectors/{platform}/disconnect?force=1{redirect}",
-                    hx_target=target,
-                    hx_swap=swap,
-                    hx_confirm=t("connectors.disconnect_anyway_confirm", lang),
-                )]),
-                **wrapper,
+                return _disconnect_failed(
+                    revoke_result, lang, force=force,
+                    retry=f"/settings/connectors/{platform}/disconnect?force=1&redirect=1",
+                    target=f"#connector-disconnect-result-{platform}", swap="innerHTML",
+                )
+            return _disconnect_failed(
+                revoke_result, lang, force=force,
+                retry=f"/settings/connectors/{platform}/disconnect?force=1",
+                target=f"#connector-card-{platform}", swap="outerHTML",
+                id=f"connector-card-{platform}", cls="connector-card",
             )
 
         if request.query_params.get("redirect"):
             # Disconnected from the full-page detail view -> return to the overview tab.
             from starlette.responses import Response
             return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud?tab=website"})
+
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
+        c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
+        last_runs = await _get_last_runs(company_id)
+        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id, lang=lang)
+
+    @app.delete("/settings/connectors/{platform}/reset")
+    async def connector_reset(request: Request, platform: str):
+        """HTMX: reset a connection no company owns, for the whole installation."""
+        token = _token(request)
+        if not token:
+            return Span(t("error.unauthorized"), cls="flash flash--warning")
+        if (r := await _check_permission(request, "manage_integrations")):
+            return r
+        if (err := _validate_platform(platform)):
+            return err
+
+        from ui.api_client import reset_unassigned_connector
+        from ui.config import RELAY_URL
+        from ui.i18n import get_lang
+
+        company_id = _request_company_id(request)
+        lang = get_lang(request)
+        force = request.query_params.get("force") == "1"
+        try:
+            result = await reset_unassigned_connector(token, platform, force=force)
+        except Exception as exc:
+            result = {"ok": False, "detail": str(exc)}
+        if not result.get("ok"):
+            return _disconnect_failed(
+                result, lang, force=force,
+                retry=f"/settings/connectors/{platform}/reset?force=1",
+                target=f"#connector-card-{platform}", swap="outerHTML",
+                id=f"connector-card-{platform}", cls="connector-card",
+            )
 
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
