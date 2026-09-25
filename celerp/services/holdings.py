@@ -17,10 +17,11 @@ Three mirror-image questions, answered as pure reads over existing projection st
 
 Document amounts are valued the way the books value them: the line's per-unit charge
 (``line_total`` over quantity, so a line discount is included), less its pro-rata share
-of any header discount, converted at the document's ``conversion_rate`` into the
-company currency. All arithmetic is Decimal and rounds through celerp.services.money.
-A line that cannot be attributed to an item unambiguously, or carries no price, yields
-None (shown as ``--``) and is counted, never estimated.
+of any header discount, converted at the document's rate into the company currency
+(``doc_rate``: a foreign document with no rate has no company-currency value). All
+arithmetic is Decimal and rounds through celerp.services.money. A line that cannot be
+attributed to an item unambiguously, or carries no price, yields None (shown as ``--``)
+and is counted, never estimated.
 
 Every function is pure over already-loaded rows so the inventory endpoint can share
 one item scan, and so the membership predicate is unit-testable in isolation. The
@@ -33,7 +34,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from decimal import Decimal
 
-from celerp.services.money import round_money, round_rate, to_decimal, to_stored_float
+from celerp.services.money import doc_rate, round_money, round_rate, to_decimal, to_stored_float
 
 
 def _dec(value: object) -> Decimal | None:
@@ -59,27 +60,32 @@ def _header_factor(state: dict) -> Decimal:
 class _LineIndex:
     """Every line of a set of documents, resolved to one item by one rule.
 
-    A line belongs to an item by its item reference, else (for lines that carry no item
-    reference) by the item's SKU. When several lines match, they resolve only if they all
-    charge the same exact per-unit amount; otherwise there is no way to tell which line
-    is the item's, and the result is None.
+    A line belongs to an item by its item reference; failing that, by the item's SKU,
+    which also finds a sibling lot sold on a line that names another lot of the same
+    SKU. When several lines match, they resolve only if they all charge the same exact
+    per-unit amount; otherwise there is no way to tell which line is the item's, and the
+    result is None. A document whose conversion into the company currency is unknown
+    or invalid (``doc_rate``) values every line None.
     """
 
     def __init__(self, docs: Iterable[tuple[str, dict]], base_currency: str) -> None:
-        self._base = base_currency
         self._by_ref: dict[tuple[str, str], list[Decimal | None]] = {}
         self._by_sku: dict[tuple[str, str], list[Decimal | None]] = {}
         for doc_id, state in docs:
             state = state or {}
-            factor = _header_factor(state) * (_dec(state.get("conversion_rate")) or Decimal(1))
+            try:
+                rate = doc_rate(state, base_currency)
+            except ValueError:
+                rate = None
+            factor = _header_factor(state) * rate if rate is not None else None
             for line in state.get("line_items", []) or []:
                 unit = self._line_unit(line)
-                value = unit * factor if unit is not None else None
+                value = unit * factor if unit is not None and factor is not None else None
                 ref = line.get("entity_id") or line.get("item_id")
                 sku = str(line.get("sku") or "").strip()
                 if ref:
                     self._by_ref.setdefault((str(doc_id), str(ref)), []).append(value)
-                elif sku:
+                if sku:
                     self._by_sku.setdefault((str(doc_id), sku), []).append(value)
 
     @staticmethod

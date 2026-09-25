@@ -9,6 +9,8 @@ tests then layer the HTTP wiring on top.
 
 from __future__ import annotations
 
+import pytest
+
 from celerp.services.holdings import (
     consignment_holdings,
     memo_holdings,
@@ -214,13 +216,32 @@ def test_same_sku_lines_are_compared_before_rounding():
     assert sold_prices(items, docs, "USD") == {"item:1": None}
 
 
-def test_sku_lines_ignore_lines_that_name_another_item():
+def test_sku_match_is_none_when_any_same_sku_line_disagrees():
+    # item:2 could have gone out on either GEM-1 line, including the one naming item:1.
     items = [("item:2", {"status": "sold", "status_doc_id": "doc:A", "sku": "GEM-1"})]
     docs = [("doc:A", {"line_items": [
         {"item_id": "item:1", "sku": "GEM-1", "quantity": 1, "unit_price": 500.0},
         {"sku": "GEM-1", "quantity": 1, "unit_price": 100.0},
     ]})]
+    assert sold_prices(items, docs, "USD") == {"item:2": None}
+
+
+def test_sibling_lot_sold_on_a_line_naming_another_lot_prices_by_sku():
+    # item:2 was split from item:1; the invoice line still names item:1.
+    items = [("item:2", {"status": "sold", "status_doc_id": "doc:A", "sku": "GEM-1"})]
+    docs = [("doc:A", {"line_items": [
+        {"item_id": "item:1", "sku": "GEM-1", "quantity": 2, "unit_price": 100.0},
+    ]})]
     assert sold_prices(items, docs, "USD") == {"item:2": 100.0}
+
+
+def test_exact_item_reference_wins_over_same_sku_lines():
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A", "sku": "GEM-1"})]
+    docs = [("doc:A", {"line_items": [
+        {"item_id": "item:1", "sku": "GEM-1", "quantity": 1, "unit_price": 500.0},
+        {"sku": "GEM-1", "quantity": 1, "unit_price": 100.0},
+    ]})]
+    assert sold_prices(items, docs, "USD") == {"item:1": 500.0}
 
 
 def test_memo_line_without_item_reference_resolves_by_sku():
@@ -243,6 +264,37 @@ def test_values_convert_at_the_document_rate_into_the_company_currency():
     memo_docs = [("doc:A", {"currency": "USD", "conversion_rate": 150,
                             "line_items": [{"item_id": "item:1", "quantity": 1, "unit_price": 10.5}]})]
     assert memo_holdings(items, memo_docs, "JPY") == {"item:1": 1575.0}
+
+
+def test_foreign_document_without_a_rate_has_no_company_currency_value():
+    # A USD memo in a THB company with no rate: 10.50 USD is not 10.50 THB.
+    items = [("item:1", {"status": "memo_out", "quantity": 1, "fulfilled_for_docs": ["doc:A"]}),
+             ("item:2", {"status": "sold", "status_doc_id": "doc:A"})]
+    docs = [("doc:A", {"currency": "USD", "line_items": [
+        {"item_id": "item:1", "quantity": 1, "unit_price": 10.5},
+        {"item_id": "item:2", "quantity": 1, "unit_price": 20.0},
+    ]})]
+    assert memo_holdings(items, docs, "THB") == {"item:1": None}
+    assert sold_prices(items[1:], docs, "THB") == {"item:2": None}
+
+
+@pytest.mark.parametrize("doc", [
+    {"currency": "THB", "conversion_rate": 35},
+    {"currency": "USD", "conversion_rate": 0},
+    {"currency": "USD", "conversion_rate": "abc"},
+])
+def test_document_with_an_invalid_rate_has_no_company_currency_value(doc):
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A"})]
+    docs = [("doc:A", {**doc, "line_items": [{"item_id": "item:1", "quantity": 1, "unit_price": 10.0}]})]
+    assert sold_prices(items, docs, "THB") == {"item:1": None}
+
+
+def test_company_currency_document_values_at_one_with_or_without_a_rate():
+    items = [("item:1", {"status": "sold", "status_doc_id": "doc:A"}),
+             ("item:2", {"status": "sold", "status_doc_id": "doc:B"})]
+    docs = [("doc:A", {"currency": "THB", "line_items": [{"item_id": "item:1", "unit_price": 10.0}]}),
+            ("doc:B", {"currency": "thb", "conversion_rate": 1, "line_items": [{"item_id": "item:2", "unit_price": 20.0}]})]
+    assert sold_prices(items, docs, "THB") == {"item:1": 10.0, "item:2": 20.0}
 
 
 def test_values_keep_the_company_currency_precision():

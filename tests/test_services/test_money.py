@@ -12,6 +12,7 @@ from celerp.services.money import (
     RATE_EXTRA_DP,
     checked_exchange_rate,
     currency_dp,
+    doc_rate,
     rate_dp,
     round_exchange_rate,
     round_money,
@@ -300,3 +301,30 @@ def test_reconciliation_property_random_realistic():
     for t, q in itertools.product(totals, qtys):
         up = unit_price_from_total(t, q, "USD")
         assert round_money(up * to_decimal(q), "USD") == round_money(t, "USD"), f"{t}/{q} -> {up}"
+
+
+# ---------------------------------------------------------------------------
+# doc_rate
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("doc,expected", [
+    ({"currency": "THB"}, Decimal(1)),
+    ({}, Decimal(1)),
+    ({"currency": "thb", "conversion_rate": 1}, Decimal(1)),
+    ({"currency": "USD", "conversion_rate": "35.5"}, Decimal("35.5")),
+    ({"currency": "USD"}, None),
+    ({"currency": "USD", "conversion_rate": ""}, None),
+])
+def test_doc_rate_converts_into_the_books_currency_or_is_unknown(doc, expected):
+    assert doc_rate(doc, "THB") == expected
+
+
+@pytest.mark.parametrize("doc", [
+    {"currency": "THB", "conversion_rate": 35},
+    {"currency": "USD", "conversion_rate": 0},
+    {"currency": "USD", "conversion_rate": -2},
+    {"currency": "USD", "conversion_rate": "abc"},
+])
+def test_doc_rate_refuses_a_rate_that_cannot_be_right(doc):
+    with pytest.raises(ValueError):
+        doc_rate(doc, "THB")

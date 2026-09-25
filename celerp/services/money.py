@@ -148,6 +148,25 @@ def checked_exchange_rate(v: _MoneyInput) -> Decimal:
     return round_exchange_rate(rate)
 
 
+def doc_rate(doc: dict, base_currency: str) -> Decimal | None:
+    """The rate that converts *doc*'s amounts into the books' currency, or None if unknown.
+
+    A document in the books' currency converts at 1; a stored rate other than 1 on it
+    is a contradiction and raises ValueError. A foreign-currency document converts at
+    its stored rate, and with no stored rate its conversion is unknown (None): nothing
+    may assume 1 for it. A malformed, zero or negative rate raises ValueError.
+    """
+    base = str(base_currency or "").upper()
+    currency = str(doc.get("currency") or base).upper()
+    raw = doc.get("conversion_rate")
+    if raw in (None, ""):
+        return Decimal(1) if currency == base else None
+    rate = checked_exchange_rate(raw)
+    if currency == base and rate != 1:
+        raise ValueError(f"a {base} document cannot carry a conversion rate of {raw}")
+    return rate
+
+
 def to_base(amount: _MoneyInput, rate: _MoneyInput, base_currency: str) -> float:
     """A document-currency amount expressed in the books' currency, ready to store.
 
