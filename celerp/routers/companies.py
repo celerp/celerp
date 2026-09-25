@@ -41,6 +41,7 @@ from celerp.services.permissions import (
 )
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 from celerp.services.terms import terms_templates
+from celerp.services.business_time import business_timezone
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -348,6 +349,11 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
                 detail="Role permissions are set through the permissions matrix, not company settings",
             )
         merged = {**(company.settings or {}), **payload.settings}
+        if "timezone" in payload.settings:
+            try:
+                business_timezone(payload.settings.get("timezone"))
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         # Price config must pass the same gate as the dedicated endpoints: the read
         # path trusts stored config, so no door may store what the validator rejects.
         if "price_lists" in payload.settings or "base_price_list" in payload.settings:

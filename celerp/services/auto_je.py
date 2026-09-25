@@ -19,7 +19,7 @@ from celerp.models.projections import Projection
 from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_money, to_base, to_decimal, to_stored_float
-from celerp.services.pick import plan_lot_draws, resolve_pick_method
+from celerp.services.pick import doc_bound_lots, plan_lot_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line
 from sqlalchemy import select as _select
 
@@ -141,11 +141,12 @@ def _lot_unit_cost(state: dict) -> float:
 
 
 async def _span_line_lots(
-    session, company_id, primary_proj, needed: float, doc_id: str | None,
+    session, company_id, primary_proj, needed: float, doc_id: str | None, exclude: set[str],
 ) -> tuple[list[dict], float, float]:
     """Resolve a spanning line's draws across the SKU's sibling lots.
 
     Eligible siblings: same company, item entity, same SKU, positive quantity,
+    not in exclude (lots bound to or already drawn by the document's other lines),
     and either available or reserved by doc_id (this document's own hold).
     Draw order is the bound lot first, then the effective pick method. Returns
     (lots, provisional_qty, amount); the shortfall no lot covers is priced
@@ -170,7 +171,7 @@ async def _span_line_lots(
         Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
     siblings: list[dict] = []
     for r in rows:
-        if r.entity_id == primary_proj.entity_id:
+        if r.entity_id == primary_proj.entity_id or r.entity_id in exclude:
             continue
         s = r.state or {}
         if str(s.get("sku") or "").strip() != sku:
@@ -210,12 +211,19 @@ async def compute_doc_cogs(
     reserved by doc_id - in the effective pick order; whatever no lot covers
     stays priced at the bound lot's cost as provisional_qty.
 
+    Lines are allocated together in document order, the way fulfillment draws
+    them: a lot bound to another line, or already drawn by an earlier line's span,
+    is never a sibling.
+
     Non-stock lines (service, freight) hold no goods and contribute nothing.
     Per-line amounts are clamped at zero so one mis-costed lot cannot cancel
     correctly costed siblings.
     """
     result = CogsResult()
-    for index, li in enumerate(doc.get("line_items", [])):
+    line_items = doc.get("line_items", [])
+    bound = doc_bound_lots(line_items)
+    span_consumed: set[str] = set()
+    for index, li in enumerate(line_items):
         line_qty = float(li.get("quantity") or 0)
         if line_qty <= 0:
             continue
@@ -235,7 +243,9 @@ async def compute_doc_cogs(
             result.ambiguous = True
         if spans and span_lots:
             lots, provisional_qty, amount = await _span_line_lots(
-                session, company_id, proj, line_qty, doc_id)
+                session, company_id, proj, line_qty, doc_id,
+                exclude=(bound - {str(item_id)}) | span_consumed)
+            span_consumed.update(lot["lot_entity_id"] for lot in lots)
         else:
             lots = [{"lot_entity_id": str(item_id), "qty": line_qty, "unit_cost": unit_cost}]
             provisional_qty = 0.0
@@ -881,6 +891,56 @@ async def create_for_doc_cogs_adjustment(session, *, company_id, user_id, doc_id
         entries=entries,
         metadata_={"trigger": "doc.fulfilled", "doc_id": doc_id, "cogs_delta": round(float(delta), 2)},
     )
+
+
+async def void_for_doc_cogs_adjustments(
+    session, *, company_id, user_id, doc_id: str, line_indices: set[int] | None
+) -> None:
+    """Void live fulfillment true-ups for the reversed document lines."""
+    prefix = f"je:auto:{doc_id}:cogs-adj:"
+    jes = await _doc_recognition_jes(session, company_id, doc_id)
+    live = [r for suffix, r in jes.items()
+            if suffix.startswith("cogs-adj:") and (r.state or {}).get("status") == "posted"]
+    if not live:
+        return
+    if line_indices is None:
+        raise ValueError("cannot safely identify the fulfillment adjustment for this legacy allocation")
+
+    targets: list[Projection] = []
+    for row in live:
+        suffix = row.entity_id[len(prefix):].split(":unvoid:", 1)[0]
+        if ":l" not in suffix:
+            raise ValueError("cannot safely identify a legacy fulfillment adjustment")
+        line_part = suffix.rsplit(":l", 1)[1]
+        try:
+            batch_lines = {int(x) for x in line_part.split("-") if x != ""}
+        except ValueError as exc:
+            raise ValueError("cannot safely identify a legacy fulfillment adjustment") from exc
+        if not (batch_lines & line_indices):
+            continue
+        if not batch_lines.issubset(line_indices):
+            raise ValueError(
+                "cannot safely reverse only part of a legacy multi-line COGS adjustment; "
+                "reverse the affected lines together"
+            )
+        targets.append(row)
+
+    for row in targets:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=row.entity_id,
+            entity_type="journal_entry",
+            event_type="acc.journal_entry.voided",
+            data=je_void_data(f"Reversed: {doc_id} fulfillment reversed", row.state or {}),
+            actor_id=user_id,
+            location_id=None,
+            source="auto_je",
+            idempotency_key=je_idempotency_key(
+                doc_id, f"fulfillment_reversed:{row.entity_id[len(prefix):]}", "void"
+            ),
+            metadata_={"trigger": "doc.fulfillment_reversed", "doc_id": doc_id},
+        )
 
 
 async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str) -> None:

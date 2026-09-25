@@ -11,6 +11,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from celerp.db_url import sync_url
 from celerp.models.base import Base
 
 # Register all models with Base.metadata by importing them.
@@ -46,8 +47,7 @@ target_metadata = Base.metadata
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/celerp")
 
-# Strip async driver prefix — Alembic's synchronous engine can't use asyncpg.
-_sync_url = DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+_sync_url = sync_url(DATABASE_URL)
 
 
 def run_migrations_offline() -> None:

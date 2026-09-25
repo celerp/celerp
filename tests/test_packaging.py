@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import json
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -66,7 +67,13 @@ def test_pyproject_declares_lock_as_package_data():
 
 def test_built_wheel_includes_first_party_lock(tmp_path):
     """Build the wheel and confirm the lock is inside it - the one failure that
-    would fail-close every pip install fleet-wide and no source-tree test catches."""
+    would fail-close every pip install fleet-wide and no source-tree test catches.
+
+    The build writes build/ and celerp.egg-info/ into the source tree; the test
+    removes the ones it created, because a leftover egg-info replaces the installed
+    package metadata for every later import in this checkout."""
+    artifacts = [REPO_ROOT / "build", REPO_ROOT / "celerp.egg-info"]
+    created = [p for p in artifacts if not p.exists()]
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "pip", "wheel", "--no-deps",
@@ -74,6 +81,9 @@ def test_built_wheel_includes_first_party_lock(tmp_path):
             capture_output=True, text=True, timeout=600)
     except FileNotFoundError:
         pytest.skip("pip unavailable")
+    finally:
+        for path in created:
+            shutil.rmtree(path, ignore_errors=True)
     if proc.returncode != 0:
         pytest.skip(f"wheel build unavailable in this environment: {proc.stderr[-500:]}")
     wheels = list(tmp_path.glob("celerp-*.whl"))

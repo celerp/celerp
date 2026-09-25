@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from celerp import embedded_pg
+from celerp.db_url import sync_url
 
 pytestmark = [
     pytest.mark.embedded_pg,
@@ -66,7 +67,7 @@ def config_dir(tmp_path, monkeypatch):
 
 
 def _sync(uri: str) -> str:
-    return uri.replace("+asyncpg", "")
+    return sync_url(uri)
 
 
 def test_ensure_cluster_boots_and_creates_app_db(config_dir):
@@ -231,18 +232,18 @@ def test_backup_roundtrip_via_bundled_tools(config_dir, monkeypatch):
         return re.sub(r"/celerp(\?|$)", rf"/{name}\1", u, count=1)
 
     dump = config_dir / "bk.dump"
-    sync = _sync(uri)
-    r = subprocess.run([pg_dump, "-Fc", "-f", str(dump), "-d", sync],
+    libpq = uri.replace("+asyncpg", "")
+    r = subprocess.run([pg_dump, "-Fc", "-f", str(dump), "-d", libpq],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    engine = create_engine(_db(sync, "postgres"), isolation_level="AUTOCOMMIT")
+    engine = create_engine(_sync(_db(libpq, "postgres")), isolation_level="AUTOCOMMIT")
     with engine.connect() as conn:
         conn.execute(text("CREATE DATABASE bkrestore"))
     engine.dispose()
-    r = subprocess.run([pg_restore, "-d", _db(sync, "bkrestore"), str(dump)],
+    r = subprocess.run([pg_restore, "-d", _db(libpq, "bkrestore"), str(dump)],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    engine = create_engine(_db(sync, "bkrestore"))
+    engine = create_engine(_sync(_db(libpq, "bkrestore")))
     try:
         with engine.connect() as conn:
             assert conn.execute(text("SELECT v FROM bk")).scalar() == "roundtrip"
