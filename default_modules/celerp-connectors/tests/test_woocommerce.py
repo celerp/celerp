@@ -350,6 +350,56 @@ async def test_sync_orders_retries_carried_attention_by_id(woo, ctx):
 
 
 @pytest.mark.asyncio
+async def test_sync_orders_keeps_a_reconciled_entry_until_the_order_changes(woo, ctx):
+    """An order a person marked reconciled stays on the list, still marked and
+    with its Undo, for as long as WooCommerce returns the state they reviewed.
+    Once the order changes the mark goes: a change that imports drops off and
+    one that needs a person again comes back as a new open entry."""
+    from celerp_docs.doc_service import (
+        WooCommerceReconciliationRequired,
+        woocommerce_reconciliation_signature,
+    )
+
+    orders = {
+        21: {"id": 21, "status": "refunded", "total": "5.00"},
+        22: {"id": 22, "status": "completed", "total": "6.00"},
+        23: {"id": 23, "status": "refunded", "total": "7.00",
+             "refunds": [{"id": 1, "total": "-7.00"}]},
+    }
+    reviewed = {
+        21: woocommerce_reconciliation_signature(orders[21]),
+        22: "reviewed-while-refunded",
+        23: "reviewed-before-the-second-refund",
+    }
+    carried = [
+        {"id": str(order_id), "label": f"Order {order_id}", "reason": "refund",
+         "signature": signature, "reconciled": True}
+        for order_id, signature in reviewed.items()
+    ]
+
+    async def _upsert(company_id, order):
+        if order["id"] == 23:
+            raise WooCommerceReconciliationRequired("has another refund", signature="new")
+        return "noop"
+
+    with respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(
+            side_effect=_orders_by_params({
+                "include": list(orders.values()),
+                "list": [],
+            })
+        )
+        with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new_callable=AsyncMock, side_effect=_upsert):
+            result = await woo.sync_orders(ctx, attention=carried)
+
+    assert not result.errors
+    assert result.attention == [
+        carried[0],
+        {"id": "23", "label": "Order 23", "reason": "has another refund", "signature": "new"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_sync_orders_api_error_on_carried_fetch_keeps_attention(woo, ctx, mock_upsert_order):
     """A failed run must not lose the attention list it was carrying."""
     carried = [{"id": "7", "label": "Order 7", "reason": "no stock"}]

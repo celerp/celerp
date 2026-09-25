@@ -420,6 +420,25 @@ def test_attention_list_offers_mark_and_undo():
     assert _open_attention_count(entries) == 2
 
 
+def test_reconciled_attention_entries_sit_in_a_collapsed_section():
+    """Open entries come first; ones marked reconciled sit in a collapsed
+    Reconciled section under them, each still offering Undo."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import _attention_list
+
+    entries = [
+        {"id": "4", "label": "Order 4", "reason": "is refunded", "signature": "sig-4", "reconciled": True},
+        {"id": "5", "label": "Order 5", "reason": "has a refund", "signature": "sig-5"},
+    ]
+    html = to_xml(_attention_list("woocommerce", entries, "en"))
+    open_part, _, reconciled_part = html.partition("<details")
+    assert "attention/5/reconciled" in open_part
+    assert "attention/4/reconciled" not in open_part
+    assert "Reconciled (1)" in reconciled_part
+    assert 'hx-delete="/settings/connectors/woocommerce/attention/4/reconciled"' in reconciled_part
+    assert "<details open" not in html
+
+
 @pytest.mark.asyncio
 async def test_attention_read_failure_shows_no_list():
     from ui.routes import settings_connectors as sc

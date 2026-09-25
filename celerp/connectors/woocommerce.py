@@ -590,7 +590,10 @@ class WooCommerceConnector(ConnectorBase):
         by id and retried first; one that imports drops off, one that still
         fails stays with its current reason, and one WooCommerce no longer
         returns is dropped unless it waits on a change a person has not yet
-        reconciled, which stays on the list saying the order is gone."""
+        reconciled, which stays on the list saying the order is gone. An entry
+        a person marked reconciled stays, with its Undo, while the order in
+        WooCommerce is still the state they reviewed; once it changes the mark
+        goes and the order is imported again as any other."""
         result = SyncResult(entity=SyncEntity.ORDERS)
         carried = {
             str(entry.get("id")): entry for entry in (attention or []) if entry.get("id")
@@ -601,6 +604,12 @@ class WooCommerceConnector(ConnectorBase):
         async def _import(order: dict) -> None:
             order_id = str(order.get("id"))
             processed.add(order_id)
+            entry = carried.get(order_id)
+            if (
+                entry and entry.get("reconciled")
+                and entry.get("signature") == _upsert.woocommerce_reconciliation_signature(order)
+            ):
+                pending[order_id] = entry
             try:
                 result.record(await _upsert.upsert_order_from_woocommerce(ctx.company_id, order))
             except Exception as exc:

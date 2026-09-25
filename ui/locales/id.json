@@ -3175,5 +3175,6 @@
   "connectors.attention_header": "Pesanan yang perlu perhatian",
   "connectors.attention_count": "{n} perlu perhatian",
   "connectors.attention_mark_reconciled": "Tandai sudah direkonsiliasi",
-  "connectors.attention_reconciled": "Ditandai sudah direkonsiliasi. Akan hilang dari daftar ini setelah sinkronisasi berikutnya."
+  "connectors.attention_reconciled": "Ditandai sudah direkonsiliasi. Tetap di sini sampai pesanan berubah di toko.",
+  "connectors.attention_reconciled_header": "Sudah direkonsiliasi ({n})"
 }

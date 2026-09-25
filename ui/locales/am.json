@@ -3175,5 +3175,6 @@
   "connectors.attention_header": "ትኩረት የሚያስፈልጋቸው ትዕዛዞች",
   "connectors.attention_count": "{n} ትኩረት ያስፈልጋቸዋል",
   "connectors.attention_mark_reconciled": "እንደተስማማ ምልክት አድርግ",
-  "connectors.attention_reconciled": "እንደተስማማ ምልክት ተደርጓል። ከሚቀጥለው ማመሳሰል በኋላ ከዚህ ዝርዝር ይወጣል።"
+  "connectors.attention_reconciled": "እንደተስማማ ምልክት ተደርጓል። ትዕዛዙ በመደብሩ ውስጥ እስኪቀየር ድረስ እዚህ ይቆያል።",
+  "connectors.attention_reconciled_header": "የተስማሙ ({n})"
 }

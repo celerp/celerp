@@ -3175,5 +3175,6 @@
   "connectors.attention_header": "Bestellungen, die Aufmerksamkeit brauchen",
   "connectors.attention_count": "{n} brauchen Aufmerksamkeit",
   "connectors.attention_mark_reconciled": "Als abgeglichen markieren",
-  "connectors.attention_reconciled": "Als abgeglichen markiert. Wird nach der nächsten Synchronisierung aus dieser Liste entfernt."
+  "connectors.attention_reconciled": "Als abgeglichen markiert. Bleibt hier, bis sich die Bestellung im Shop ändert.",
+  "connectors.attention_reconciled_header": "Abgeglichen ({n})"
 }

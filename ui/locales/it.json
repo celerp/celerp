@@ -3175,5 +3175,6 @@
   "connectors.attention_header": "Ordini che richiedono attenzione",
   "connectors.attention_count": "{n} richiedono attenzione",
   "connectors.attention_mark_reconciled": "Segna come riconciliato",
-  "connectors.attention_reconciled": "Segnato come riconciliato. Uscirà da questo elenco dopo la prossima sincronizzazione."
+  "connectors.attention_reconciled": "Segnato come riconciliato. Resta qui finché l'ordine non cambia nel negozio.",
+  "connectors.attention_reconciled_header": "Riconciliati ({n})"
 }

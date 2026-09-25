@@ -470,12 +470,21 @@ def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | N
 def _attention_list(platform: str, entries: list[dict], lang: str = "en") -> FT:
     """Records the connector could not import and is holding for a person (an
     order whose customer or product is missing, or a refund to reconcile). The
-    list is kept until a sync produces a new one, so a failed run never hides it."""
+    list is kept until a sync produces a new one, so a failed run never hides it.
+    Orders a person marked reconciled sit in a collapsed section under the open
+    ones, with Undo, until the order changes in the store."""
     if not entries:
         return Span()
+    open_entries = [e for e in entries if not e.get("reconciled")]
+    reconciled = [e for e in entries if e.get("reconciled")]
     return Div(
         P(t("connectors.attention_header", lang), cls="settings-section-title"),
-        Ul(*[_attention_item(platform, e, lang) for e in entries]),
+        Ul(*[_attention_item(platform, e, lang) for e in open_entries]) if open_entries else Span(),
+        Details(
+            Summary(t("connectors.attention_reconciled_header", lang, n=len(reconciled)),
+                    cls="text-muted mt-md"),
+            Ul(*[_attention_item(platform, e, lang) for e in reconciled]),
+        ) if reconciled else Span(),
         cls="connector-attention",
     )
 

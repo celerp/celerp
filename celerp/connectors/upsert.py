@@ -34,6 +34,11 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     return await docs_svc.upsert_order_from_woocommerce(company_id, order)
 
 
+def woocommerce_reconciliation_signature(order: dict) -> str:
+    from celerp_docs import doc_service as docs_svc
+    return docs_svc.woocommerce_reconciliation_signature(order)
+
+
 async def upsert_contact_from_shopify(company_id: str, customer: dict) -> str:
     from celerp_contacts import services as contacts_svc
     return await contacts_svc.upsert_contact_from_shopify(company_id, customer)

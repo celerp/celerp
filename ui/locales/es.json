@@ -3175,5 +3175,6 @@
   "connectors.attention_header": "Pedidos que requieren atención",
   "connectors.attention_count": "{n} requieren atención",
   "connectors.attention_mark_reconciled": "Marcar como conciliado",
-  "connectors.attention_reconciled": "Marcado como conciliado. Saldrá de esta lista tras la próxima sincronización."
+  "connectors.attention_reconciled": "Marcado como conciliado. Permanece aquí hasta que el pedido cambie en la tienda.",
+  "connectors.attention_reconciled_header": "Conciliados ({n})"
 }

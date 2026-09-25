@@ -198,7 +198,7 @@ def _woocommerce_commercial_fingerprint(order: dict) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
-def _woocommerce_reconciliation_signature(order: dict) -> str:
+def woocommerce_reconciliation_signature(order: dict) -> str:
     """Identity of the order state a person reconciles by hand: its commercial
     fingerprint, its status and its refunds. Any later change produces a new
     signature, so the order needs attention again."""
@@ -455,7 +455,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     idem_key = f"woocommerce:order:{order_id}"
     entity_id = f"doc:{idem_key}"
     source_fingerprint = _woocommerce_commercial_fingerprint(order)
-    signature = _woocommerce_reconciliation_signature(order)
+    signature = woocommerce_reconciliation_signature(order)
     wc_status = str(order.get("status") or "pending").lower()
     currency = str(order.get("currency") or "").upper() or None
     stock_reduced_statuses = frozenset({"on-hold", "processing", "completed"})

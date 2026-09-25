@@ -3175,5 +3175,6 @@
   "connectors.attention_header": "Commandes nécessitant une attention",
   "connectors.attention_count": "{n} nécessitent une attention",
   "connectors.attention_mark_reconciled": "Marquer comme rapproché",
-  "connectors.attention_reconciled": "Marqué comme rapproché. Il quittera cette liste après la prochaine synchronisation."
+  "connectors.attention_reconciled": "Marqué comme rapproché. Il reste ici jusqu'à ce que la commande change dans la boutique.",
+  "connectors.attention_reconciled_header": "Rapprochées ({n})"
 }
