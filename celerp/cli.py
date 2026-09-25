@@ -190,10 +190,10 @@ def _needs_ownership_fix(db_url: str) -> bool:
     if not parts:
         return False
     user = parts["user"]
-    sync_url = sync_url(db_url)
+    engine_url = sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
-        engine = create_engine(sync_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
+        engine = create_engine(engine_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
         with engine.connect() as conn:
             result = conn.execute(text(
                 "SELECT count(*) FROM pg_tables "
@@ -220,10 +220,10 @@ def _post_migration_grants(db_url: str) -> None:
     if not parts:
         return
     user = parts["user"]
-    sync_url = sync_url(db_url)
+    engine_url = sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
-        engine = create_engine(sync_url)
+        engine = create_engine(engine_url)
         try:
             with engine.begin() as conn:
                 conn.execute(text(f'GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "{user}";'))
@@ -299,10 +299,10 @@ def _config_to_env(cfg: dict) -> dict:
 
 def _test_db(db_url: str) -> str | None:
     """Try connecting to DB. Returns error string or None on success."""
-    sync_url = sync_url(db_url)
+    engine_url = sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
-        engine = create_engine(sync_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
+        engine = create_engine(engine_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return None
@@ -578,8 +578,8 @@ def _apply_migrations(db_url: str) -> None:
     # there — forward or back — and let alembic upgrade apply the rest.
     # False negatives are safe: the re-applied revision fails with
     # DuplicateColumn, which _run_upgrade_with_auto_stamp catches.
-    sync_url = sync_url(db_url)
-    engine = _sa.create_engine(sync_url, pool_pre_ping=True)
+    engine_url = sync_url(db_url)
+    engine = _sa.create_engine(engine_url, pool_pre_ping=True)
     try:
         inspector = _sa.inspect(engine)
         existing_tables = set(inspector.get_table_names())
@@ -618,7 +618,7 @@ def _apply_migrations(db_url: str) -> None:
                 command.stamp(alembic_cfg, safe, purge=True)
     finally:
         engine.dispose()
-    _run_upgrade_with_auto_stamp(alembic_cfg, engine_url=sync_url)
+    _run_upgrade_with_auto_stamp(alembic_cfg, engine_url=engine_url)
 
 
 def _run_migrations(db_url: str) -> None:
@@ -734,8 +734,8 @@ def _reconcile_after_migrate(db_url: str) -> None:
         set_meta,
     )
 
-    sync_url = sync_url(db_url)
-    engine = _sa.create_engine(sync_url, pool_pre_ping=True)
+    engine_url = sync_url(db_url)
+    engine = _sa.create_engine(engine_url, pool_pre_ping=True)
     try:
         with engine.begin() as conn:
             if get_meta(conn, BACKFILL_VERSION_KEY) == __version__:
@@ -1191,11 +1191,11 @@ def reset_password(email: str, password: str) -> None:
         sys.exit(1)
     ensure_database(cfg)
     db_url = cfg["database"]["url"]
-    sync_url = sync_url(db_url)
+    engine_url = sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
         from celerp.services.auth import hash_password
-        engine = create_engine(sync_url)
+        engine = create_engine(engine_url)
         with engine.begin() as conn:
             row = conn.execute(text("SELECT id, name FROM users WHERE email = :e"), {"e": email}).fetchone()
             if not row:
