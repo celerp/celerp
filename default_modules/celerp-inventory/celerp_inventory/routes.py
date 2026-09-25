@@ -43,7 +43,7 @@ from .services import (
 )
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
-from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility
+from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility, restricted_field_keys
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA, NUMERIC_SCHEMA_TYPES
 from celerp.services.permissions import (
@@ -64,7 +64,7 @@ from celerp.services.pricing import (
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp_inventory.projections import _is_core_key, is_item_available, thumbnail_file_id
+from celerp_inventory.projections import _is_core_key, _is_image_mime, is_item_available, thumbnail_file_id
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -185,7 +185,7 @@ def _recipe_standard_unit_cost(state: dict) -> float | None:
 # is a non-schema mirror of location_name (a denied role must not recover the location
 # through the id it would resolve via /companies/me/locations); the image ids follow the
 # image field (thumbnail), so a role denied the image is not handed a way to fetch it. The rule lives here
-# (one place) and is handed to apply_field_visibility at every call site; the
+# (one place) and is applied by apply_item_visibility at every item read; the
 # visibility service itself holds no inventory field names.
 DERIVED_FIELD_DEPS: dict[str, tuple[str, ...]] = {
     "qty_each": ("quantity", "pieces"),
@@ -193,6 +193,37 @@ DERIVED_FIELD_DEPS: dict[str, tuple[str, ...]] = {
     "thumbnail_file_id": ("thumbnail",),
     "preview_image_id": ("thumbnail",),
 }
+
+
+def apply_item_visibility(
+    items: list[dict], role: str, field_schema: list[dict], can_see_costs: bool,
+    can_author_drafts: bool = False,
+) -> list[dict]:
+    """Strip what the caller may not see from flattened item dicts.
+
+    Field visibility with the companion keys above, plus the image entries of the file
+    lists: a role denied the image field gets the item's other files but none of its
+    images, so no image id or URL reaches it through ``files`` or ``attachments``.
+    """
+    out = apply_field_visibility(
+        items, role, field_schema, can_see_costs,
+        can_author_drafts=can_author_drafts, derived_field_deps=DERIVED_FIELD_DEPS,
+    )
+    if "thumbnail" not in restricted_field_keys(role, field_schema):
+        return out
+    return [
+        {**item, **{
+            key: [f for f in item[key] if not _is_image_file(f)]
+            for key in ("files", "attachments") if isinstance(item.get(key), list)
+        }}
+        for item in out
+    ]
+
+
+def _is_image_file(entry) -> bool:
+    return isinstance(entry, dict) and (
+        _is_image_mime(str(entry.get("mime") or "")) or entry.get("type") == "image"
+    )
 
 
 def flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str, str] | None = None, unit_map: dict[str, dict] | None = None) -> dict:
@@ -1418,10 +1449,8 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     result: dict = {}
     for category, group in by_category.items():
         field_schema = await get_effective_field_schema(session, company_id, category=category)
-        filtered = apply_field_visibility(
-            group, role, field_schema, can_see_costs,
-            can_author_drafts=can_author_drafts,
-            derived_field_deps=DERIVED_FIELD_DEPS,
+        filtered = apply_item_visibility(
+            group, role, field_schema, can_see_costs, can_author_drafts=can_author_drafts,
         )
         for flat in filtered:
             result[flat["id"]] = flat
@@ -1700,10 +1729,9 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
                          unit_map=unit_map)
     field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
-    filtered = apply_field_visibility(
+    filtered = apply_item_visibility(
         [flat], role, field_schema, can_see_costs,
         can_author_drafts=role_has_permission(settings, role, "edit_inventory"),
-        derived_field_deps=DERIVED_FIELD_DEPS,
     )
     result = filtered[0]
     if (str(row.state.get("status") or "").lower() == "sold" and row.state.get("status_doc_id")
@@ -4225,9 +4253,7 @@ async def export_items_csv(
     # landed_price is not a key apply_field_visibility names, so it is dropped here by list name,
     # and a virtual total follows the column it pairs with.
     probe_keys = set(out_cols) | {virtual[c] for c in out_cols if c in virtual}
-    visible = set(apply_field_visibility(
-        [{k: 1 for k in probe_keys}], role, schema, can_see_costs, derived_field_deps=DERIVED_FIELD_DEPS,
-    )[0])
+    visible = set(apply_item_visibility([{k: 1 for k in probe_keys}], role, schema, can_see_costs)[0])
     if not can_see_costs:
         visible -= {price_key(pl["name"]) for pl in price_config[0] if pl.get("name") and is_cost_list_name(pl["name"])}
     out_cols = [c for c in out_cols if c in visible and virtual.get(c, c) in visible]

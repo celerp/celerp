@@ -243,13 +243,18 @@ async def test_image_follows_the_image_field_visibility(client, session):
 
     item = (await client.get(f"/items/{item_id}", headers=viewer)).json()
     assert "thumbnail_file_id" not in item and "preview_image_id" not in item
+    assert [f["id"] for f in _item_files(item)] == [text_file]
+    assert image not in str(item)  # no image id or URL anywhere in the item
     rows = (await client.get("/items", params={"q": "THUMB-VIS"}, headers=viewer)).json()["items"]
     assert rows and all("thumbnail_file_id" not in row for row in rows)
+    assert all(image not in str(row) for row in rows)
     assert (await client.get(f"/items/{item_id}/files/{image}/thumbnail", headers=viewer)).status_code == 404
     assert (await client.get(f"/items/{item_id}/files/{image}", headers=viewer)).status_code == 404
     assert (await client.get(f"/items/{item_id}/files/{text_file}", headers=viewer)).status_code == 200
 
-    assert (await client.get(f"/items/{item_id}", headers=h)).json()["thumbnail_file_id"] == image
+    full = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert full["thumbnail_file_id"] == image
+    assert {f["id"] for f in _item_files(full)} == {image, text_file}
     assert (await client.get(f"/items/{item_id}/files/{image}/thumbnail", headers=h)).status_code == 200
 
 
