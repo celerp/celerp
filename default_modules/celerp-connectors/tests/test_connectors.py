@@ -150,7 +150,7 @@ async def test_sync_products_creates_items(shopify, ctx):
     respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
         return_value=httpx.Response(200, json=SHOPIFY_PRODUCTS)
     )
-    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")):
+    with patch("celerp_inventory.services.upsert_external_product", new=AsyncMock(return_value=("created", "item:resolved"))):
         result = await shopify.sync_products(ctx)
     assert result.ok
     assert result.created == 2
@@ -164,7 +164,7 @@ async def test_sync_products_skips_duplicate(shopify, ctx):
     respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
         return_value=httpx.Response(200, json=SHOPIFY_PRODUCTS)
     )
-    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="noop")):
+    with patch("celerp_inventory.services.upsert_external_product", new=AsyncMock(return_value=("noop", "item:resolved"))):
         result = await shopify.sync_products(ctx)
     assert result.created == 0
     assert result.skipped == 3
@@ -195,14 +195,14 @@ async def test_sync_products_variant_name_includes_variant_title(shopify, ctx):
     )
     captured = []
 
-    async def capture_upsert(_company_id, item):
-        captured.append(item)
-        return True
+    async def capture_upsert(_company_id, **kwargs):
+        captured.append(kwargs)
+        return "created", "item:resolved"
 
-    with patch("celerp.connectors.upsert.upsert_item", new=capture_upsert):
+    with patch("celerp_inventory.services.upsert_external_product", new=capture_upsert):
         await shopify.sync_products(ctx)
     assert len(captured) == 1
-    assert "Large" in captured[0].name
+    assert "Large" in captured[0]["name"]
 
 
 # ── sync_orders ───────────────────────────────────────────────────────────────

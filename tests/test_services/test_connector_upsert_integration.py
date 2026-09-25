@@ -1910,3 +1910,53 @@ async def test_woocommerce_order_missing_from_the_store_waits_on_a_person(use_te
     assert st["woocommerce_reconciled_signature"] is None
     assert await _woo_stock_paused(session, cid, root_id) is False
     assert "reconciled" not in await u.hold_missing_woocommerce_order(str(cid), "802")
+
+
+@pytest.mark.asyncio
+async def test_shopify_import_relinks_a_product_after_disconnect(use_test_session):
+    """Reconnecting a store and importing again gives the same item back its Shopify link."""
+    import httpx
+    import respx
+
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.shopify import ShopifyConnector
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import (
+        detach_external_links_for_platform,
+        external_link_for_state,
+        upsert_external_product,
+    )
+
+    session = use_test_session
+    cid = await _seed_company(session, "ShopifyRelink")
+    _, entity_id = await upsert_external_product(
+        str(cid), platform="shopify", product_id="1", variation_id="10",
+        sku="SHOP-RELINK", name="Widget", sale_price=9.99,
+    )
+    await detach_external_links_for_platform(session, cid, "shopify")
+    await session.commit()
+
+    ctx = ConnectorContext(
+        company_id=str(cid), access_token="shpat_test", store_handle="relink-store.myshopify.com",
+    )
+    with respx.mock:
+        respx.get("https://relink-store.myshopify.com/admin/api/2024-01/products.json").mock(
+            return_value=httpx.Response(200, json={"products": [
+                {"id": 1, "title": "Widget", "images": [], "variants": [
+                    {"id": 10, "sku": "SHOP-RELINK", "title": "Default Title", "price": "9.99"},
+                ]},
+            ]})
+        )
+        result = await ShopifyConnector().sync_products(ctx)
+
+    assert not result.errors
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == cid,
+            Projection.entity_type == "item",
+        ).execution_options(populate_existing=True)
+    )).scalars().all()
+    assert [row.entity_id for row in rows] == [entity_id]
+    link = external_link_for_state(rows[0].state or {}, "shopify")
+    assert link["product_id"] == "1"
+    assert link["variant_id"] == "10"
