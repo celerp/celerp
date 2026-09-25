@@ -44,9 +44,11 @@ from celerp.services.attachments import (
     resolve_preview_image_id,
     store_upload,
 )
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.cost_visibility import restricted_field_keys
+from celerp.services.field_schema import get_effective_field_schema
 from celerp.services.permissions import require_permission
-from celerp_inventory.routes import get_item_projection
+from celerp_inventory.routes import flatten_item, get_item_projection
 
 logger = logging.getLogger(__name__)
 
@@ -571,6 +573,17 @@ async def _record_thumbnail(
         logger.warning("could not record the repaired thumbnail of file %s", match.get("id"))
 
 
+async def _assert_image_visible(session: AsyncSession, company_id, role: str, row: Projection, match: dict) -> None:
+    """An image file follows the image field's visibility for the item's category, the same
+    rule that strips the item's image ids, so a role denied the image cannot fetch it."""
+    if not str(match.get("mime", "")).startswith("image/"):
+        return
+    category = flatten_item(row.state, row.entity_id).get("category")
+    schema = await get_effective_field_schema(session, company_id, category=category)
+    if "thumbnail" in restricted_field_keys(role, schema):
+        raise HTTPException(status_code=404, detail="File not found")
+
+
 @router.get("/{entity_id}/files/{file_id}/thumbnail")
 async def item_file_thumbnail(
     entity_id: str,
@@ -578,6 +591,7 @@ async def item_file_thumbnail(
     company_id=Depends(get_current_company_id),
     _: None = require_permission("view_inventory"),
     user=Depends(get_current_user),
+    role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ):
     """Serve the small JPEG preview of an image file for the item list.
@@ -591,6 +605,7 @@ async def item_file_thumbnail(
     match = _get_item_file(files + atts, file_id)
     if not str(match.get("mime", "")).startswith("image/"):
         raise HTTPException(status_code=404, detail="File is not an image")
+    await _assert_image_visible(session, company_id, role, row, match)
     thumb_url = match.get("thumb_url") or ""
     if thumb_url.startswith(("http://", "https://")):
         return RedirectResponse(thumb_url)
@@ -617,6 +632,7 @@ async def download_item_file(
     file_id: str,
     company_id=Depends(get_current_company_id),
     _: None = require_permission("view_inventory"),
+    role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ):
     from fastapi.responses import FileResponse
@@ -627,6 +643,7 @@ async def download_item_file(
     match = next((f for f in files + atts if f.get("id") == file_id), None)
     if match is None:
         raise HTTPException(status_code=404, detail="File not found")
+    await _assert_image_visible(session, company_id, role, row, match)
     url = match.get("url", "")
     # If stored as an absolute URL (cloud/S3 backend), redirect directly
     if url.startswith("http://") or url.startswith("https://"):

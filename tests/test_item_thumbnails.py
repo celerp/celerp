@@ -216,6 +216,40 @@ async def test_thumbnail_and_download_require_view_inventory(client, session):
 
 
 @pytest.mark.asyncio
+async def test_image_follows_the_image_field_visibility(client, session):
+    """When the Image field is limited to managers, a lower role gets no image id on the item
+    and cannot fetch the image or its thumbnail; other files stay available to it."""
+    h = await _headers(client, "ThumbVisCo", "vis@example.com")
+    viewer = await _user_with_role(client, session, h, "viewer")
+    item_id = await _item(client, h, "THUMB-VIS")
+    image = await _upload(client, h, item_id, _png())
+    r = await client.post(f"/items/{item_id}/files",
+                          files={"file": ("spec.txt", b"spec sheet", "text/plain")}, headers=h)
+    assert r.status_code == 200, r.text
+    text_file = r.json()["id"]
+    await client.post(f"/items/{item_id}/files/{image}/hero", headers=h)
+
+    schema = (await client.get("/companies/me/item-schema", headers=h)).json()
+    fields = schema["fields"] if isinstance(schema, dict) else schema
+    for f in fields:
+        if f["key"] == "thumbnail":
+            f["visible_to_roles"] = ["manager"]
+    r = await client.patch("/companies/me/item-schema", headers=h, json={"fields": fields})
+    assert r.status_code == 200, r.text
+
+    item = (await client.get(f"/items/{item_id}", headers=viewer)).json()
+    assert "thumbnail_file_id" not in item and "preview_image_id" not in item
+    rows = (await client.get("/items", params={"q": "THUMB-VIS"}, headers=viewer)).json()["items"]
+    assert rows and all("thumbnail_file_id" not in row for row in rows)
+    assert (await client.get(f"/items/{item_id}/files/{image}/thumbnail", headers=viewer)).status_code == 404
+    assert (await client.get(f"/items/{item_id}/files/{image}", headers=viewer)).status_code == 404
+    assert (await client.get(f"/items/{item_id}/files/{text_file}", headers=viewer)).status_code == 200
+
+    assert (await client.get(f"/items/{item_id}", headers=h)).json()["thumbnail_file_id"] == image
+    assert (await client.get(f"/items/{item_id}/files/{image}/thumbnail", headers=h)).status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_file_routes_refuse_non_item_projection(client):
     """A document's id is not an item: every item file route answers 404 for it instead of
     reading the document projection as if it were an item."""

@@ -22,6 +22,18 @@ COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
 COST_DERIVED_ITEM_KEYS: frozenset[str] = frozenset({"cost_base", "cost_landed", "landed_contributions"})
 
 
+def restricted_field_keys(role: str, field_schema: list[dict]) -> set[str]:
+    """Schema keys whose visible_to_roles floor sits above the caller's role."""
+    caller_level = ROLE_LEVELS.get(role, 0)
+    return {
+        f["key"]
+        for f in field_schema
+        if f.get("visible_to_roles") and caller_level < min(
+            ROLE_LEVELS.get(r, 0) for r in f["visible_to_roles"]
+        )
+    }
+
+
 def apply_field_visibility(
     items: list[dict], role: str, field_schema: list[dict], can_see_costs: bool,
     can_author_drafts: bool = False,
@@ -49,15 +61,7 @@ def apply_field_visibility(
     hidden source from a value computed off it. The rule is stated once by the
     caller; this service stays generic and holds no field names of its own.
     """
-    caller_level = ROLE_LEVELS.get(role, 0)
-    restricted = {
-        f["key"]
-        for f in field_schema
-        if f.get("visible_to_roles") and caller_level < min(
-            ROLE_LEVELS.get(r, 0) for r in f["visible_to_roles"]
-        )
-    }
-    restricted -= COST_ITEM_KEYS
+    restricted = restricted_field_keys(role, field_schema) - COST_ITEM_KEYS
     cost_hidden = not can_see_costs
     if not restricted and not cost_hidden:
         return items

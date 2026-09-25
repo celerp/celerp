@@ -183,12 +183,15 @@ def _recipe_standard_unit_cost(state: dict) -> float | None:
 # visibility strips them with their source. qty_each is derived from quantity and
 # pieces (a role denied either source cannot recover it from the ratio); location_id
 # is a non-schema mirror of location_name (a denied role must not recover the location
-# through the id it would resolve via /companies/me/locations). The rule lives here
+# through the id it would resolve via /companies/me/locations); the image ids follow the
+# image field (thumbnail), so a role denied the image is not handed a way to fetch it. The rule lives here
 # (one place) and is handed to apply_field_visibility at every call site; the
 # visibility service itself holds no inventory field names.
 DERIVED_FIELD_DEPS: dict[str, tuple[str, ...]] = {
     "qty_each": ("quantity", "pieces"),
     "location_id": ("location_name",),
+    "thumbnail_file_id": ("thumbnail",),
+    "preview_image_id": ("thumbnail",),
 }
 
 
