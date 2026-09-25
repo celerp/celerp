@@ -104,7 +104,7 @@ async def check_and_run_daily_syncs(
                 connector,
                 ctx,
                 direction=direction,
-                full_entities={"products"} if config.connector == "woocommerce" else None,
+                reconcile=True,
             )
         except Exception as exc:
             log.error("daily_scheduler: sync error %s: %s", config.connector, exc)

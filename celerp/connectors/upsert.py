@@ -39,6 +39,16 @@ def woocommerce_reconciliation_signature(order: dict) -> str:
     return docs_svc.woocommerce_reconciliation_signature(order)
 
 
+async def list_imported_woocommerce_order_ids(company_id: str) -> list[str]:
+    from celerp_docs import doc_service as docs_svc
+    return await docs_svc.list_imported_woocommerce_order_ids(company_id)
+
+
+async def hold_missing_woocommerce_order(company_id: str, order_id: str) -> dict | None:
+    from celerp_docs import doc_service as docs_svc
+    return await docs_svc.hold_missing_woocommerce_order(company_id, order_id)
+
+
 async def upsert_contact_from_shopify(company_id: str, customer: dict) -> str:
     from celerp_contacts import services as contacts_svc
     return await contacts_svc.upsert_contact_from_shopify(company_id, customer)

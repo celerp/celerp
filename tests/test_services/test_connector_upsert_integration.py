@@ -1870,3 +1870,43 @@ async def test_woocommerce_order_refunded_when_first_seen_pauses_its_products(us
     assert line.get("catalog_item_id") == root_id
     assert not line.get("item_id")
     assert await _woo_stock_paused(session, cid, root_id) is True
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_order_missing_from_the_store_waits_on_a_person(use_test_session):
+    """An imported order WooCommerce no longer returns is held for a person and
+    never voided: its products pause, a mark on it stays while the order is
+    still missing, and the order restored in the store clears the hold and the
+    mark, so a later deletion needs a person again."""
+    from celerp_connectors.routes import _set_order_reconciled
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooMissingOrder")
+    root_id = await _woo_stocked_product(session, cid, 801, "GONE-SKU")
+    order = _woo_stocked_order(802, 801, "GONE-SKU")
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    assert "802" in await u.list_imported_woocommerce_order_ids(str(cid))
+
+    entry = await u.hold_missing_woocommerce_order(str(cid), "802")
+    assert entry == {
+        "id": "802", "label": "Order 802", "signature": "gone",
+        "reason": "WooCommerce Order 802 no longer exists in the store; reconcile it by hand",
+    }
+    st = await _state(session, cid, "woocommerce:order:802")
+    assert st["status"] != "void"
+    assert st["woocommerce_reconciliation_required"] == entry["reason"]
+    assert await _woo_stock_paused(session, cid, root_id) is True
+
+    await _attention_run(session, cid, [entry])
+    await _set_order_reconciled(session, cid, "802", "gone", None)
+    assert await _woo_stock_paused(session, cid, root_id) is False
+    assert await u.hold_missing_woocommerce_order(str(cid), "802") == {**entry, "reconciled": True}
+    assert await _woo_stock_paused(session, cid, root_id) is False
+
+    await u.upsert_order_from_woocommerce(str(cid), order)
+    st = await _state(session, cid, "woocommerce:order:802")
+    assert st["woocommerce_reconciliation_required"] is None
+    assert st["woocommerce_reconciliation_signature"] is None
+    assert st["woocommerce_reconciled_signature"] is None
+    assert await _woo_stock_paused(session, cid, root_id) is False
+    assert "reconciled" not in await u.hold_missing_woocommerce_order(str(cid), "802")

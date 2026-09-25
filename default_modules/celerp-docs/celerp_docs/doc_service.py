@@ -240,6 +240,11 @@ async def _lock_woocommerce_order(session, cid, order_id: str) -> None:
     )
 
 
+# The source state of an imported order WooCommerce no longer returns (deleted,
+# or moved to the trash). A person reconciles it by hand like any other change.
+WOOCOMMERCE_ORDER_GONE = "gone"
+
+
 async def _woocommerce_order_anchor_ids(session, cid, doc) -> list[str]:
     """The catalog products one WooCommerce order touches, through the unit a
     line is bound to or, on an unbound line, the catalog product it names."""
@@ -313,7 +318,7 @@ async def _record_woocommerce_hold(
     """Record on an imported order the change waiting on a person (``reason``,
     None once nothing waits) and the source state under review (``signature``,
     None once nothing is under review). Only a mark for that same signature
-    reconciles it."""
+    reconciles it, and a mark on the order as missing ends once it is back."""
     import uuid
 
     from celerp.events.engine import emit_event
@@ -324,6 +329,11 @@ async def _record_woocommerce_hold(
         "woocommerce_reconciliation_required": reason,
         "woocommerce_reconciliation_signature": signature,
     }
+    if (
+        signature != WOOCOMMERCE_ORDER_GONE
+        and state.get("woocommerce_reconciled_signature") == WOOCOMMERCE_ORDER_GONE
+    ):
+        wanted["woocommerce_reconciled_signature"] = None
     fields = {
         key: {"old": state.get(key), "new": value}
         for key, value in wanted.items()
@@ -405,6 +415,70 @@ def _woocommerce_order_customer(order: dict) -> dict | None:
         "billing": billing,
         "shipping": shipping,
     }
+
+
+async def list_imported_woocommerce_order_ids(company_id: str) -> list[str]:
+    """WooCommerce order ids imported as Celerp documents that are not void."""
+    import uuid
+
+    from sqlalchemy import func, select
+
+    from celerp.db import SessionLocal
+    from celerp.models.projections import Projection
+
+    prefix = "doc:woocommerce:order:"
+    async with SessionLocal() as session:
+        entity_ids = (await session.execute(
+            select(Projection.entity_id).where(
+                Projection.company_id == uuid.UUID(str(company_id)),
+                Projection.entity_type == "doc",
+                Projection.entity_id.like(f"{prefix}%"),
+                func.coalesce(Projection.state["status"].as_string(), "") != "void",
+            )
+        )).scalars().all()
+    return [entity_id[len(prefix):] for entity_id in entity_ids]
+
+
+async def hold_missing_woocommerce_order(company_id: str, order_id: str) -> dict | None:
+    """An imported order WooCommerce no longer returns waits on a person:
+    Celerp never voids it on its own. Record the hold on the order and pause
+    stock sync for its products, unless a person already reconciled the
+    missing order. Returns the order's attention entry, or None when the order
+    was never imported or is void."""
+    import uuid
+
+    from celerp.db import SessionLocal
+    from celerp.models.projections import Projection
+
+    cid = uuid.UUID(str(company_id))
+    entity_id = f"doc:woocommerce:order:{order_id}"
+    async with SessionLocal() as session:
+        await _lock_woocommerce_order(session, cid, order_id)
+        doc = await session.get(
+            Projection, {"company_id": cid, "entity_id": entity_id},
+            with_for_update=True, populate_existing=True,
+        )
+        if doc is None or doc.entity_type != "doc" or (doc.state or {}).get("status") == "void":
+            return None
+        state = doc.state or {}
+        label = f"Order {state.get('woocommerce_order_number') or order_id}"
+        entry = {
+            "id": str(order_id),
+            "label": label,
+            "reason": f"WooCommerce {label} no longer exists in the store; reconcile it by hand",
+            "signature": WOOCOMMERCE_ORDER_GONE,
+        }
+        if state.get("woocommerce_reconciled_signature") == WOOCOMMERCE_ORDER_GONE:
+            entry["reconciled"] = True
+        else:
+            await _set_woocommerce_order_stock_paused(session, cid, doc, True)
+            await _record_woocommerce_hold(
+                session, cid, doc, reason=entry["reason"],
+                signature=WOOCOMMERCE_ORDER_GONE,
+                wc_status=state.get("woocommerce_status"),
+            )
+        await session.commit()
+    return entry
 
 
 async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
@@ -519,7 +593,11 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             for, so it was put right in Celerp (a payment corrected by hand,
             say): clear the hold and resume stock sync for its products."""
             doc = await _get_doc(session, cid, entity_id, for_update=True)
-            if (doc.state or {}).get("woocommerce_reconciliation_signature") != signature:
+            # An order back in the store (restored from the trash) no longer
+            # waits on the missing-order hold either.
+            if (doc.state or {}).get("woocommerce_reconciliation_signature") not in (
+                signature, WOOCOMMERCE_ORDER_GONE,
+            ):
                 return False
             await _record_woocommerce_hold(
                 session, cid, doc, reason=None, signature=None, wc_status=wc_status,

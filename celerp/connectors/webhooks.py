@@ -122,6 +122,9 @@ async def handle_webhook(
         ctx,
         entity,
         direction=direction,
+        # WooCommerce names only the deleted order; the reconciliation pass
+        # finds every imported order the store no longer returns.
+        reconcile=event.platform == "woocommerce" and normalized_topic == "order.deleted",
         expected_config_id=expected_config_id,
         expected_store_handle=expected_store_handle,
         expected_webhook_secret=expected_webhook_secret,

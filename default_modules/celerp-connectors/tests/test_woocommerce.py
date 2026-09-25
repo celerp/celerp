@@ -221,6 +221,18 @@ async def test_sync_products_incremental(woo, ctx, mock_upsert_item):
 
 
 @pytest.mark.asyncio
+async def test_sync_products_reconcile_pulls_every_product(woo, ctx, mock_upsert_item):
+    """The daily reconciliation pass is a full pull, so deleted products are found."""
+    since = datetime(2026, 1, 15, tzinfo=timezone.utc)
+    with respx.mock:
+        route = respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        await woo.sync_products(ctx, since=since, reconcile=True)
+    assert "modified_after" not in str(route.calls[0].request.url)
+
+
+@pytest.mark.asyncio
 async def test_sync_products_api_error(woo, ctx):
     with respx.mock:
         respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
@@ -309,9 +321,10 @@ def _orders_by_params(pages: dict):
 async def test_sync_orders_retries_carried_attention_by_id(woo, ctx):
     """Entries carried from the previous run are re-fetched by id first. One that
     imports drops off, one that still fails keeps its reason, one WooCommerce no
-    longer returns is dropped unless it waits on an unreconciled change, and an
-    order fetched by id is not imported twice when the incremental page returns
-    it as well."""
+    longer returns is held for a person when it was imported (a mark on its
+    earlier state does not cover the deletion) and dropped when it never was,
+    and an order fetched by id is not imported twice when the incremental page
+    returns it as well."""
     carried = [
         {"id": "7", "label": "Order 7", "reason": "old reason"},
         {"id": "8", "label": "Order 8", "reason": "old reason"},
@@ -327,6 +340,9 @@ async def test_sync_orders_retries_carried_attention_by_id(woo, ctx):
             raise ValueError("still no stock")
         return "created"
 
+    async def _hold(company_id, order_id):
+        return None if order_id == "9" else {"id": order_id, "signature": "gone"}
+
     with respx.mock:
         route = respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(
             side_effect=_orders_by_params({
@@ -334,19 +350,61 @@ async def test_sync_orders_retries_carried_attention_by_id(woo, ctx):
                 "list": [{"id": 7}, {"id": 10}],
             })
         )
-        with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new_callable=AsyncMock, side_effect=_upsert) as up:
+        with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new_callable=AsyncMock, side_effect=_upsert) as up, \
+             patch("celerp.connectors.upsert.hold_missing_woocommerce_order", new_callable=AsyncMock, side_effect=_hold) as hold:
             result = await woo.sync_orders(ctx, attention=carried)
 
     assert route.calls[0].request.url.params["include"] == "7,8,9,11,12"
     assert not result.errors
     assert result.created == 2  # 7 (retried) and 10; 7 is not imported a second time
-    assert [a["id"] for a in result.attention] == ["8", "11"]
+    assert [a["id"] for a in result.attention] == ["8", "11", "12"]
     assert result.attention[0]["reason"] == "still no stock"
-    assert result.attention[1] == {
-        "id": "11", "label": "Order 11", "signature": "s11", "reconciled": False,
-        "reason": "WooCommerce Order 11 no longer exists in the store; reconcile it by hand",
-    }
+    assert result.attention[1:] == [
+        {"id": "11", "signature": "gone"}, {"id": "12", "signature": "gone"},
+    ]
+    assert [c.args[1] for c in hold.await_args_list] == ["9", "11", "12"]
     assert sorted(c.args[1]["id"] for c in up.await_args_list) == [7, 8, 10]
+
+
+@pytest.mark.asyncio
+async def test_sync_orders_reconcile_holds_imported_orders_missing_from_the_store(woo, ctx):
+    """The reconciliation pass checks, by id only, that every imported order
+    not already seen this run still exists; each missing one is held for a
+    person and nothing is imported or voided for it."""
+    async def _hold(company_id, order_id):
+        return {"id": order_id, "signature": "gone"}
+
+    with respx.mock:
+        route = respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(
+            side_effect=_orders_by_params({
+                "include": [{"id": 31}],
+                "list": [{"id": 30}],
+            })
+        )
+        with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new_callable=AsyncMock, return_value="noop") as up, \
+             patch("celerp.connectors.upsert.list_imported_woocommerce_order_ids", new_callable=AsyncMock, return_value=["30", "31", "32"]), \
+             patch("celerp.connectors.upsert.hold_missing_woocommerce_order", new_callable=AsyncMock, side_effect=_hold) as hold:
+            result = await woo.sync_orders(ctx, reconcile=True)
+
+    check = route.calls[1].request.url.params
+    assert check["include"] == "31,32"
+    assert check["_fields"] == "id"
+    assert not result.errors
+    assert result.attention == [{"id": "32", "signature": "gone"}]
+    assert [c.args[1] for c in hold.await_args_list] == ["32"]
+    assert [c.args[1]["id"] for c in up.await_args_list] == [30]
+
+
+@pytest.mark.asyncio
+async def test_sync_orders_without_reconcile_does_not_check_imported_orders(woo, ctx):
+    with respx.mock:
+        route = respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        with patch("celerp.connectors.upsert.list_imported_woocommerce_order_ids", new_callable=AsyncMock) as imported:
+            await woo.sync_orders(ctx)
+    imported.assert_not_awaited()
+    assert len(route.calls) == 1
 
 
 @pytest.mark.asyncio

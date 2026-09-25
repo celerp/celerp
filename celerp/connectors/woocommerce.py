@@ -206,12 +206,18 @@ class WooCommerceConnector(ConnectorBase):
             return f"/products/{product_id}/variations/{variation_id}"
         return f"/products/{product_id}"
 
-    async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
-        """Pull WooCommerce products into Celerp catalog product anchors."""
+    async def sync_products(
+        self, ctx: ConnectorContext, since: datetime | None = None, reconcile: bool = False
+    ) -> SyncResult:
+        """Pull WooCommerce products into Celerp catalog product anchors. The
+        daily ``reconcile`` pass pulls every product, so ones deleted in the
+        store are found."""
         from celerp_inventory.services import upsert_external_product
 
         result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
+        if reconcile:
+            since = None
         full_scan = since is None
         seen_identities: set[tuple[str, str | None]] = set()
         incomplete_parents: set[str] = set()
@@ -580,6 +586,7 @@ class WooCommerceConnector(ConnectorBase):
         ctx: ConnectorContext,
         since: datetime | None = None,
         attention: list[dict] | None = None,
+        reconcile: bool = False,
     ) -> SyncResult:
         """Pull WooCommerce orders -> Celerp documents.
 
@@ -588,12 +595,13 @@ class WooCommerceConnector(ConnectorBase):
         result's attention list for a person, the run still succeeds and the
         watermark advances. Entries carried from the previous run are fetched
         by id and retried first; one that imports drops off, one that still
-        fails stays with its current reason, and one WooCommerce no longer
-        returns is dropped unless it waits on a change a person has not yet
-        reconciled, which stays on the list saying the order is gone. An entry
-        a person marked reconciled stays, with its Undo, while the order in
-        WooCommerce is still the state they reviewed; once it changes the mark
-        goes and the order is imported again as any other."""
+        fails stays with its current reason, and an imported order WooCommerce
+        no longer returns stays on the list, held for a person, saying the
+        order is gone; Celerp never voids it. An entry a person marked
+        reconciled stays, with its Undo, while the order in WooCommerce is
+        still the state they reviewed; once it changes the mark goes and the
+        order is imported again as any other. The daily ``reconcile`` pass
+        also checks that every imported order still exists in the store."""
         result = SyncResult(entity=SyncEntity.ORDERS)
         carried = {
             str(entry.get("id")): entry for entry in (attention or []) if entry.get("id")
@@ -642,13 +650,14 @@ class WooCommerceConnector(ConnectorBase):
                 return result
             for order in retried:
                 await _import(order)
-        for order_id, entry in carried.items():
-            if order_id not in processed and entry.get("signature") and not entry.get("reconciled"):
-                pending[order_id] = {
-                    **entry,
-                    "reason": f"WooCommerce {entry.get('label') or f'order {order_id}'} "
-                              "no longer exists in the store; reconcile it by hand",
-                }
+        async def _hold_missing(order_ids: list[str]) -> None:
+            for order_id in order_ids:
+                processed.add(order_id)
+                entry = await _upsert.hold_missing_woocommerce_order(ctx.company_id, order_id)
+                if entry is not None:
+                    pending[order_id] = entry
+
+        await _hold_missing([order_id for order_id in carried if order_id not in processed])
 
         params: dict = {}
         if since:
@@ -666,6 +675,24 @@ class WooCommerceConnector(ConnectorBase):
             if str(order.get("id")) in processed:
                 continue
             await _import(order)
+
+        if reconcile:
+            unchecked = [
+                order_id
+                for order_id in await _upsert.list_imported_woocommerce_order_ids(ctx.company_id)
+                if order_id not in processed
+            ]
+            for start in range(0, len(unchecked), _PER_PAGE):
+                chunk = unchecked[start:start + _PER_PAGE]
+                try:
+                    present = await self._paginate(
+                        ctx, "/orders", params={"include": ",".join(chunk), "_fields": "id"}
+                    )
+                except (httpx.HTTPStatusError, ValueError) as exc:
+                    result.errors = [f"WooCommerce API error: {exc}"]
+                    break
+                present_ids = {str(order.get("id")) for order in present}
+                await _hold_missing([order_id for order_id in chunk if order_id not in present_ids])
 
         result.attention = list(pending.values())
         log.info(
@@ -876,7 +903,7 @@ class WooCommerceConnector(ConnectorBase):
 
     _WEBHOOK_TOPICS = [
         "product.created", "product.updated", "product.deleted",
-        "order.created", "order.updated",
+        "order.created", "order.updated", "order.deleted",
         "customer.created", "customer.updated",
     ]
 

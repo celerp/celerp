@@ -349,7 +349,7 @@ def test_sync_plan_honours_direction(direction, expected_inbound, expected_outbo
 
 
 @pytest.mark.asyncio
-async def test_scheduler_full_reconciles_woocommerce_products():
+async def test_scheduler_runs_the_reconciliation_pass():
     from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
     from celerp.connectors.base import SyncEntity, SyncResult
 
@@ -366,4 +366,4 @@ async def test_scheduler_full_reconciles_woocommerce_products():
             "co", token_fetcher=AsyncMock(return_value=MagicMock())
         )
 
-    assert run.await_args.kwargs["full_entities"] == {"products"}
+    assert run.await_args.kwargs["reconcile"] is True

@@ -63,13 +63,13 @@ async def run_connector_sync(
     ctx: ConnectorContext,
     direction: SyncDirection,
     *,
-    full_entities: set[str] | None = None,
+    reconcile: bool = False,
 ) -> list[SyncResult]:
-    """Execute one stable connector generation through the audited per-entity runner."""
+    """Execute one stable connector generation through the audited per-entity
+    runner. ``reconcile`` marks the daily reconciliation pass."""
     from celerp.connectors.ownership import lock_connector_operation
     from celerp.db import get_session_ctx
 
-    full_entities = full_entities or set()
     resolved_direction = (
         direction if isinstance(direction, SyncDirection) else SyncDirection(direction)
     )
@@ -89,7 +89,7 @@ async def run_connector_sync(
             ctx,
             entity,
             direction=resolved_direction,
-            use_watermark=entity not in full_entities,
+            reconcile=reconcile,
             expected_config_id=expected_config_id,
             expected_direction=expected_direction,
             expected_store_handle=ctx.store_handle,
@@ -306,12 +306,15 @@ async def run_sync(
     since: datetime | None = None,
     direction: SyncDirection | None = None,
     use_watermark: bool = True,
+    reconcile: bool = False,
     expected_config_id=None,
     expected_direction: SyncDirection | None = None,
     expected_store_handle: str | None = None,
     expected_webhook_secret: str | None = None,
 ) -> SyncResult:
-    """Execute one connector entity sync behind the current ownership/config fence."""
+    """Execute one connector entity sync behind the current ownership/config
+    fence. ``reconcile`` reaches sync methods that take it: the connector
+    decides what its reconciliation pass checks beyond the incremental pull."""
     method_name = _SYNC_METHODS.get(entity)
     if method_name is None:
         raise ValueError(f"Unknown entity: {entity}")
@@ -426,16 +429,16 @@ async def run_sync(
                     )
                     if entity in _OUTBOUND_ENTITIES:
                         result = await sync_method(current_ctx)
-                    elif "attention" in inspect.signature(sync_method).parameters:
-                        result = await sync_method(
-                            current_ctx,
-                            since=since,
-                            attention=await attention_entries(
-                                ctx.company_id, connector.name, entity
-                            ),
-                        )
                     else:
-                        result = await sync_method(current_ctx, since=since)
+                        accepts = inspect.signature(sync_method).parameters
+                        options: dict = {}
+                        if "attention" in accepts:
+                            options["attention"] = await attention_entries(
+                                ctx.company_id, connector.name, entity
+                            )
+                        if reconcile and "reconcile" in accepts:
+                            options["reconcile"] = True
+                        result = await sync_method(current_ctx, since=since, **options)
                 await guard_session.commit()
     except ConnectorStoreChangedError as exc:
         result = SyncResult(entity=entity, direction=effective_direction, errors=[str(exc)])
