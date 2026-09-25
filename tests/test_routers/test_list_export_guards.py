@@ -254,6 +254,32 @@ async def test_doc_sort_orders_by_the_values_the_list_displays(client, session):
 
 
 @pytest.mark.asyncio
+async def test_doc_list_shows_and_sorts_by_older_amount_keys(client, session):
+    """Imported documents may carry their amounts as total_amount and outstanding_balance. The
+    list shows and sorts by those when the current keys are missing; a stored 0 still wins."""
+    tok = await _reg(client)
+    company_id = await _company_id(client, tok)
+    await _seed_docs(session, company_id, {
+        "doc:amt-a": {"total": 20.0, "amount_outstanding": 0, "outstanding_balance": 50.0},
+        "doc:amt-b": {"total": None, "total_amount": 25.0, "outstanding_balance": 5.0},
+        "doc:amt-c": {"total": 50.0, "amount_outstanding": 30.0},
+    })
+    expect = {"total": ["doc:amt-a", "doc:amt-b", "doc:amt-c"],
+              "outstanding": ["doc:amt-a", "doc:amt-b", "doc:amt-c"]}
+    for sort, order in expect.items():
+        for extra in ("", "&unfulfilled_only=1"):
+            r = await client.get(f"/docs?doc_type=invoice&sort={sort}&dir=asc{extra}", headers=_h(tok))
+            assert r.status_code == 200, r.text
+            assert [d["id"] for d in r.json()["items"]] == order, (sort, extra)
+        r = await client.get(f"/docs/export/csv?doc_type=invoice&sort={sort}&dir=asc", headers=_h(tok))
+        assert r.status_code == 200, r.text
+        assert [row["entity_id"] for row in _csv_rows(r.text)] == order, sort
+    items = {d["id"]: d for d in (await client.get("/docs?doc_type=invoice", headers=_h(tok))).json()["items"]}
+    assert items["doc:amt-b"]["total"] == 25.0 and items["doc:amt-b"]["amount_outstanding"] == 5.0
+    assert items["doc:amt-a"]["amount_outstanding"] == 0
+
+
+@pytest.mark.asyncio
 async def test_doc_export_carries_the_issue_date(client):
     tok = await _reg(client)
     doc_id = await _invoice(client, tok, 5.0)

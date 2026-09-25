@@ -752,13 +752,16 @@ def _doc_sort_field(f: DocListFilters) -> str:
 
 
 # Older keys a document may carry a displayed value under (imported documents store their
-# number and dates this way). The list row is filled from them and the sort orders by them,
-# so the order on the page is the order of what the page shows.
+# number, dates and amounts this way). The list row is filled from them when the current key
+# is missing or empty, and the sort orders by them, so the order on the page is the order of
+# what the page shows. A stored 0 is a value, not a gap.
 _DOC_DISPLAY_FALLBACKS = {
     "doc_number": ("ref", "ref_id"),
     "contact_name": ("contact_id", "contact_external_id"),
     "issue_date": ("created_at",),
     "due_date": ("payment_due_date",),
+    "total": ("total_amount",),
+    "amount_outstanding": ("outstanding_balance",),
 }
 
 
@@ -768,15 +771,14 @@ def _doc_sql_order(field: str, descending: bool) -> list:
     per-page queries, so a row on a page boundary can be skipped (or duplicated) by OFFSET."""
     if field == "_updated_at":
         expr = Projection.updated_at
-    elif field in _DOC_NUMERIC_SORT_FIELDS:
-        expr = _sa.cast(_func.nullif(Projection.state[field].as_string(), ""), _sa.Numeric)
-    elif field in _DOC_DISPLAY_FALLBACKS:
-        expr = _func.coalesce(*(
-            _func.nullif(Projection.state[k].as_string(), "")
-            for k in (field, *_DOC_DISPLAY_FALLBACKS[field])
-        ))
     else:
-        expr = Projection.state[field].as_string()
+        values = [
+            _func.nullif(Projection.state[k].as_string(), "")
+            for k in (field, *_DOC_DISPLAY_FALLBACKS.get(field, ()))
+        ]
+        expr = _func.coalesce(*values) if len(values) > 1 else values[0]
+        if field in _DOC_NUMERIC_SORT_FIELDS:
+            expr = _sa.cast(expr, _sa.Numeric)
     if descending:
         return [expr.desc().nulls_last(), Projection.entity_id.desc()]
     return [expr.asc().nulls_first(), Projection.entity_id.asc()]
@@ -787,8 +789,8 @@ def _doc_row(r: Projection) -> dict:
     field filled from its older keys (``_DOC_DISPLAY_FALLBACKS``) when the current key is empty."""
     row = r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None}
     for field, alternates in _DOC_DISPLAY_FALLBACKS.items():
-        if not row.get(field):
-            row[field] = next((row[k] for k in alternates if row.get(k)), row.get(field))
+        if row.get(field) in (None, ""):
+            row[field] = next((row[k] for k in alternates if row.get(k) not in (None, "")), row.get(field))
     return row
 
 
