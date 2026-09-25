@@ -105,9 +105,20 @@ class SyncResult:
 
 
 def store_holds_records(matches: list[bool]) -> bool:
-    """A store holds imported records when it returned some of them and most
-    of those returned are unchanged. One edited record does not disprove it."""
+    """A store holds imported records when most of the sampled records match
+    it, one entry per sampled record, a record the store did not return
+    counting as a mismatch. One edited record does not disprove it."""
     return bool(matches) and sum(matches) * 2 > len(matches)
+
+
+def contact_matches(stored: dict, remote: dict) -> bool:
+    """A store's customer is the imported contact when it has the same email,
+    or the same phone when there is no email, or the same name when there is
+    neither."""
+    for key in ("email", "phone", "name"):
+        if stored.get(key):
+            return str(stored[key]).strip().casefold() == str(remote.get(key) or "").strip().casefold()
+    return False
 
 
 class ConnectorBase(ABC):

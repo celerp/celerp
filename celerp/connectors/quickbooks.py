@@ -32,6 +32,7 @@ from celerp.connectors.base import (
     SyncDirection,
     SyncEntity,
     SyncResult,
+    contact_matches,
     store_holds_records,
 )
 import celerp.connectors.upsert as _upsert
@@ -111,26 +112,41 @@ class QuickBooksConnector(ConnectorBase):
     }
 
     async def same_store(self, ctx: ConnectorContext, records: list[dict]) -> bool:
-        """Invoice ids repeat across companies, so an invoice counts only when
-        its number and total match what was imported."""
-        stored = {
-            str(r["quickbooks_invoice_id"]): r
-            for r in records
-            if str(r.get("quickbooks_invoice_id") or "").isdigit()
-        }
-        if not stored:
-            return False
-        ids = ",".join(f"'{i}'" for i in stored)
+        """Invoice and customer ids repeat across companies, so a sampled
+        invoice counts only when its number and total match what was imported,
+        and a sampled customer only when its contact details do."""
+        def customer_id(record: dict) -> str:
+            return str((record.get("attributes") or {}).get("quickbooks_id") or "")
+
+        async def fetch(entity: str, ids: set[str]) -> dict[str, dict]:
+            ids = {i for i in ids if i.isdigit()}
+            if not ids:
+                return {}
+            quoted = ",".join(f"'{i}'" for i in sorted(ids))
+            return {str(r.get("Id")): r for r in await _query(ctx, f"SELECT * FROM {entity} WHERE Id IN ({quoted})")}
+
+        invoices = await fetch("Invoice", {str(r.get("quickbooks_invoice_id") or "") for r in records})
+        customers = await fetch("Customer", {customer_id(r) for r in records})
         matches = []
-        for invoice in await _query(ctx, f"SELECT * FROM Invoice WHERE Id IN ({ids})"):
-            doc = stored.get(str(invoice.get("Id")))
-            if doc is None:
-                continue
-            ref_id = str(invoice.get("DocNumber") or f"quickbooks-{invoice['Id']}")
-            matches.append(
-                ref_id == doc.get("ref_id")
-                and abs((money(invoice.get("TotalAmt")) or 0.0) - float(doc.get("total") or 0)) < 0.005
-            )
+        for record in records:
+            invoice = invoices.get(str(record.get("quickbooks_invoice_id") or ""))
+            customer = customers.get(customer_id(record))
+            if invoice is not None:
+                ref_id = str(invoice.get("DocNumber") or f"quickbooks-{invoice['Id']}")
+                matches.append(
+                    ref_id == record.get("ref_id")
+                    and abs((money(invoice.get("TotalAmt")) or 0.0) - float(record.get("total") or 0)) < 0.005
+                )
+            elif customer is not None:
+                matches.append(contact_matches(record, {
+                    "name": customer.get("DisplayName") or " ".join(
+                        p for p in (customer.get("GivenName", ""), customer.get("FamilyName", "")) if p
+                    ).strip(),
+                    "email": (customer.get("PrimaryEmailAddr") or {}).get("Address"),
+                    "phone": (customer.get("PrimaryPhone") or {}).get("FreeFormNumber"),
+                }))
+            else:
+                matches.append(False)
         return store_holds_records(matches)
 
     # -- Products (Items in QB) ------------------------------------------------

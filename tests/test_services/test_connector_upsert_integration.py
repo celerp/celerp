@@ -1319,6 +1319,109 @@ async def test_woocommerce_paid_order_with_a_balance_again_goes_to_a_person(use_
 
 
 @pytest.mark.asyncio
+async def test_woocommerce_balance_put_right_in_celerp_releases_the_order(use_test_session):
+    """A paid order held because its balance reopened is released by the next
+    import once the balance is settled again in Celerp: the note goes and
+    stock sync resumes for its products."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from celerp.models.projections import Projection
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+    from celerp_docs.routes import VoidPaymentBody, apply_doc_payment, void_payment
+    from celerp_inventory.services import external_link_for_state, upsert_external_product
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooBalanceFixed")
+    _, root_id = await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="771", variation_id=None,
+        sku="FIXED-SKU", name="Fixed Product", link_fields={"manage_stock": True},
+    )
+    now = datetime.now(timezone.utc)
+    session.add(Projection(
+        company_id=cid, entity_id="item:fixed-lot", entity_type="item",
+        version=1, created_at=now, updated_at=now,
+        state={"sku": "FIXED-SKU", "name": "Fixed Product", "quantity": 2,
+               "status": "available", "sell_by": "piece", "lot": True,
+               "parent_item_id": root_id, "allow_splitting": True},
+    ))
+    await session.commit()
+    order = {
+        "id": 772, "number": "772", "status": "processing", "currency": "USD",
+        "total": "10.00", "total_tax": "0",
+        "line_items": [{
+            "product_id": 771, "variation_id": 0, "sku": "FIXED-SKU",
+            "name": "Fixed Product", "quantity": 1, "total": "10.00", "total_tax": "0",
+        }],
+        "shipping_lines": [], "fee_lines": [],
+    }
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    doc_id = "doc:woocommerce:order:772"
+    await apply_doc_payment(
+        session, cid, doc_id,
+        {"amount": 4.0, "payment_date": "2024-06-01", "currency": "USD",
+         "method": "cash", "reference": "hand-4", "bank_account": "1110"},
+        source="api", actor_id=None, idempotency_key="manual:772", commit=False,
+    )
+    await session.commit()
+    paid = {**order, "date_paid": "2024-06-02T10:00:00",
+            "transaction_id": "txn-772"}
+    assert await u.upsert_order_from_woocommerce(str(cid), paid) == "updated"
+
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:772")
+    hand = next(p for p in st["payments"] if p.get("reference") == "hand-4")
+    await void_payment(
+        doc_id, VoidPaymentBody(payment_index=hand["index"], void_reason="bounced"),
+        company_id=cid, _=None, user=SimpleNamespace(id=None), session=session,
+    )
+    with pytest.raises(WooCommerceReconciliationRequired, match="balance again") as held:
+        await u.upsert_order_from_woocommerce(str(cid), paid)
+
+    async def _paused():
+        session.expire_all()
+        root = await session.get(
+            Projection, {"company_id": cid, "entity_id": root_id}, populate_existing=True,
+        )
+        return external_link_for_state(root.state or {}, "woocommerce").get(
+            "inventory_sync_paused"
+        )
+
+    assert await _paused() is True
+    assert held.value.signature
+
+    await apply_doc_payment(
+        session, cid, doc_id,
+        {"amount": 4.0, "payment_date": "2024-06-03", "currency": "USD",
+         "method": "bank_transfer", "reference": "hand-4-again", "bank_account": "1110"},
+        source="api", actor_id=None, idempotency_key="manual:772:again", commit=False,
+    )
+    await session.commit()
+    assert await u.upsert_order_from_woocommerce(str(cid), paid) == "updated"
+
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:772")
+    assert st["amount_outstanding"] == 0.0
+    assert st.get("woocommerce_reconciliation_required") is None
+    assert st.get("woocommerce_reconciliation_signature") is None
+    assert await _paused() is False
+
+    # The same source state can be held again if the balance reopens once more.
+    st = await _state(session, cid, "woocommerce:order:772")
+    again = next(p for p in st["payments"] if p.get("reference") == "hand-4-again")
+    await void_payment(
+        doc_id, VoidPaymentBody(payment_index=again["index"], void_reason="bounced"),
+        company_id=cid, _=None, user=SimpleNamespace(id=None), session=session,
+    )
+    with pytest.raises(WooCommerceReconciliationRequired, match="balance again"):
+        await u.upsert_order_from_woocommerce(str(cid), paid)
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:772")
+    assert "balance again" in st["woocommerce_reconciliation_required"]
+    assert await _paused() is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("settings, expected", [
     ({"woocommerce_deposit_account": "1200", "stripe_deposit_account": "1055"}, "1200"),
     ({"stripe_deposit_account": "1055"}, "1055"),

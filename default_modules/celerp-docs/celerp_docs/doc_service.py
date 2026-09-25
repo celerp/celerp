@@ -307,11 +307,13 @@ async def _set_woocommerce_order_stock_paused(session, cid, doc, paused: bool) -
 
 
 async def _record_woocommerce_hold(
-    session, cid, doc, *, reason: str | None, signature: str, wc_status: str, idem_key: str,
+    session, cid, doc, *, reason: str | None, signature: str, wc_status: str,
 ) -> bool:
     """Record on an imported order the change waiting on a person (``reason``)
     and the source state they review (``signature``), or clear both once
     nothing waits. Only a mark for that same signature reconciles it."""
+    import uuid
+
     from celerp.events.engine import emit_event
 
     state = doc.state or {}
@@ -330,7 +332,7 @@ async def _record_woocommerce_hold(
             session, company_id=cid, entity_id=doc.entity_id, entity_type="doc",
             event_type="doc.updated", data={"fields_changed": fields},
             actor_id=None, location_id=None, source="connector",
-            idempotency_key=f"{idem_key}:reversal:{signature}", metadata_={},
+            idempotency_key=str(uuid.uuid4()), metadata_={},
         )
     return bool(fields)
 
@@ -505,10 +507,24 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             doc = await _get_doc(session, cid, entity_id, for_update=True)
             await _record_woocommerce_hold(
                 session, cid, doc, reason=reason, signature=signature,
-                wc_status=wc_status, idem_key=idem_key,
+                wc_status=wc_status,
             )
             await session.commit()
             raise WooCommerceReconciliationRequired(reason, signature)
+
+        async def release_resolved_hold() -> bool:
+            """Every check passed for the source state a hold was recorded
+            for, so it was put right in Celerp (a payment corrected by hand,
+            say): clear the hold and resume stock sync for its products."""
+            doc = await _get_doc(session, cid, entity_id, for_update=True)
+            if (doc.state or {}).get("woocommerce_reconciliation_signature") != signature:
+                return False
+            await _record_woocommerce_hold(
+                session, cid, doc, reason=None, signature=signature, wc_status=wc_status,
+            )
+            doc = await _get_doc(session, cid, entity_id, for_update=True)
+            await _set_woocommerce_order_stock_paused(session, cid, doc, False)
+            return True
 
         existing_state = dict(existing.state or {}) if existing is not None else {}
         if existing_state.get("woocommerce_reconciled_signature") == signature:
@@ -978,7 +994,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             )
             if await _record_woocommerce_hold(
                 session, cid, doc, reason=reason, signature=signature,
-                wc_status=wc_status, idem_key=idem_key,
+                wc_status=wc_status,
             ):
                 changed = True
             await session.commit()
@@ -1039,6 +1055,8 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             )
             changed = True
 
+        if await release_resolved_hold():
+            changed = True
         await session.commit()
         if outcome == "created":
             return "created"

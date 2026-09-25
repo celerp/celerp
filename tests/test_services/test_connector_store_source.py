@@ -140,25 +140,92 @@ async def test_an_unreachable_store_is_not_accepted(session):
     assert await _source(session, cid) is None
 
 
-async def test_customers_alone_cannot_be_matched_to_a_store(session):
+_CUSTOMER = {"id": 3, "email": "pat@example.com", "first_name": "Pat", "last_name": "Buyer"}
+_CONTACT = {"name": "Pat Buyer", "email": "pat@example.com", "attributes": {"woocommerce_id": "3"}}
+
+
+@pytest.mark.parametrize("fetched, accepted", [
+    ([_CUSTOMER], True),
+    ([{**_CUSTOMER, "email": "someone@example.com"}], False),
+    ([], False),
+])
+async def test_customers_alone_confirm_the_store_they_came_from(session, fetched, accepted):
+    """With no orders imported, customers show whether a store is the one
+    they came from; a customer the store does not have counts against it."""
     cid = await _company(session)
     session.add(Projection(
         company_id=cid, entity_id="contact:woocommerce:customer:3", entity_type="contact",
-        state={"name": "Buyer"}, version=1, updated_at=datetime.now(timezone.utc),
+        state=_CONTACT, version=1, updated_at=datetime.now(timezone.utc),
     ))
     await session.flush()
-    with pytest.raises(ConnectorStoreChangedError):
-        await bind_connector_store(
-            session, cid, WooCommerceConnector(), _ctx(cid, "https://shop.example")
-        )
+    bind = bind_connector_store(
+        session, cid, WooCommerceConnector(), _ctx(cid, "https://shop.example")
+    )
+    with _store(fetched):
+        if accepted:
+            await bind
+        else:
+            with pytest.raises(ConnectorStoreChangedError, match="does not have them"):
+                await bind
+    assert await _source(session, cid) == ("https://shop.example" if accepted else None)
+
+
+@pytest.mark.parametrize("returned, expected", [(1, False), (10, False), (11, True)])
+async def test_store_must_hold_most_of_the_whole_sample(returned, expected):
+    """Records the store does not return count against it, so a store holding
+    a few of the same order numbers is not taken for the one they came from."""
+    orders = [{**_ORDER_DOC, "woocommerce_order_id": str(i)} for i in range(1, 21)]
+    with _store([{**_ORDER, "id": i} for i in range(1, returned + 1)]):
+        assert await WooCommerceConnector().same_store(
+            _ctx(uuid.uuid4(), "https://s.example"), orders
+        ) is expected
+
+    invoices = [
+        {"quickbooks_invoice_id": str(i), "ref_id": f"10{i}", "total": 50.0} for i in range(1, 21)
+    ]
+    fetched = [{"Id": str(i), "DocNumber": f"10{i}", "TotalAmt": 50} for i in range(1, returned + 1)]
+    with patch("celerp.connectors.quickbooks._query", AsyncMock(return_value=fetched)):
+        ctx = ConnectorContext(company_id="c", access_token="t", store_handle="123")
+        assert await QuickBooksConnector().same_store(ctx, invoices) is expected
+
+
+@pytest.mark.parametrize("stored, fetched, expected", [
+    ({"email": "Pat@Example.com", "name": "P"}, {"email": "pat@example.com"}, True),
+    ({"email": "pat@example.com", "name": "Pat Buyer"}, {**_CUSTOMER, "email": "x@example.com"}, False),
+    ({"phone": "555 0100", "name": "Pat"}, {"billing": {"phone": "555 0100"}}, True),
+    ({"name": "Pat Buyer"}, {"first_name": "Pat", "last_name": "Buyer"}, True),
+    ({"name": "woocommerce:3"}, {}, False),
+])
+async def test_woocommerce_customer_match(stored, fetched, expected):
+    record = {**stored, "attributes": {"woocommerce_id": "3"}}
+    with _store([{"id": 3, **fetched}]):
+        assert await WooCommerceConnector().same_store(
+            _ctx(uuid.uuid4(), "https://s.example"), [record]
+        ) is expected
+
+
+@pytest.mark.parametrize("fetched, expected", [
+    ({"DisplayName": "Pat Buyer", "PrimaryEmailAddr": {"Address": "pat@example.com"}}, True),
+    ({"DisplayName": "Pat Buyer", "PrimaryEmailAddr": {"Address": "x@example.com"}}, False),
+])
+async def test_quickbooks_customer_match(fetched, expected):
+    records = [{"name": "Pat Buyer", "email": "pat@example.com", "attributes": {"quickbooks_id": "6"}},
+               {"name": "No id", "attributes": {}}]
+    query = AsyncMock(return_value=[{"Id": "6", **fetched}])
+    with patch("celerp.connectors.quickbooks._query", query):
+        ctx = ConnectorContext(company_id="c", access_token="t", store_handle="123")
+        assert await QuickBooksConnector().same_store(ctx, records[:1]) is expected
+        assert await QuickBooksConnector().same_store(ctx, records) is False
+    assert query.await_args.args[1] == "SELECT * FROM Customer WHERE Id IN ('6')"
 
 
 @pytest.mark.parametrize("fetched, expected", [
     ([], False),
-    ([_ORDER], True),
-    ([{**_ORDER, "total": "26.00"}], False),
-    ([{**_ORDER, "currency": "EUR"}], False),
-    ([{**_ORDER, "line_items": [{"name": "Blue mug"}, {"name": "Lamp"}]}], False),
+    ([_ORDER], False),
+    ([_ORDER, {**_ORDER, "id": 8}], True),
+    ([{**_ORDER, "total": "26.00"}, {**_ORDER, "id": 8}], False),
+    ([{**_ORDER, "currency": "EUR"}, {**_ORDER, "id": 8}], False),
+    ([{**_ORDER, "line_items": [{"name": "Blue mug"}, {"name": "Lamp"}]}, {**_ORDER, "id": 8}], False),
     ([_ORDER, {**_ORDER, "id": 8}, {**_ORDER, "id": 9, "total": "1.00"}], True),
     ([_ORDER, {**_ORDER, "id": 8, "total": "1.00"}], False),
 ])
@@ -176,9 +243,10 @@ async def test_woocommerce_store_match(fetched, expected):
 ])
 async def test_quickbooks_store_match(fetched, expected):
     records = [{"quickbooks_invoice_id": "4", "ref_id": "1004", "total": 50.0},
+               {"quickbooks_invoice_id": "5", "ref_id": "1005", "total": 5.0},
                {"quickbooks_invoice_id": "x'; drop", "ref_id": "1", "total": 1.0}]
-    query = AsyncMock(return_value=fetched)
+    query = AsyncMock(return_value=[*fetched, {"Id": "5", "DocNumber": "1005", "TotalAmt": 5}])
     with patch("celerp.connectors.quickbooks._query", query):
         ctx = ConnectorContext(company_id="c", access_token="t", store_handle="123")
         assert await QuickBooksConnector().same_store(ctx, records) is expected
-    assert query.await_args.args[1] == "SELECT * FROM Invoice WHERE Id IN ('4')"
+    assert query.await_args.args[1] == "SELECT * FROM Invoice WHERE Id IN ('4','5')"

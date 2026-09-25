@@ -463,32 +463,27 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
     if source is not None and source.store_handle == store_handle:
         return
 
-    imported = sa.or_(
-        Projection.entity_id.like(f"doc:{connector.name}:%"),
-        Projection.entity_id.like(f"contact:{connector.name}:%"),
-    )
-    has_history = await session.scalar(
-        sa.select(Projection.entity_id)
-        .where(Projection.company_id == cid, imported)
-        .limit(1)
-    )
-    if has_history is not None:
-        samples = list((await session.scalars(
+    async def sample(kind: str) -> list[dict]:
+        return list((await session.scalars(
             sa.select(Projection.state)
             .where(
                 Projection.company_id == cid,
-                Projection.entity_id.like(f"doc:{connector.name}:%"),
+                Projection.entity_id.like(f"{kind}:{connector.name}:%"),
             )
             .order_by(Projection.created_at.desc().nulls_last())
             .limit(STORE_PROOF_SAMPLE)
         )).all())
+
+    # Orders and invoices prove the store best; customers do when none exist.
+    samples = await sample("doc") or await sample("contact")
+    if samples:
         origin = f" from {source.store_handle}" if source is not None else ""
         try:
-            confirmed = bool(samples) and await connector.same_store(ctx, samples)
+            confirmed = await connector.same_store(ctx, samples)
         except Exception as exc:
             raise ConnectorStoreChangedError(
                 f"Could not read {store_handle} to confirm this company's "
-                f"{connector.display_name} orders came from it. Try again."
+                f"{connector.display_name} records came from it. Try again."
             ) from exc
         if not confirmed:
             raise ConnectorStoreChangedError(

@@ -29,6 +29,7 @@ from celerp.connectors.base import (
     SyncDirection,
     SyncEntity,
     SyncResult,
+    contact_matches,
     store_holds_records,
 )
 import celerp.connectors.upsert as _upsert
@@ -114,25 +115,45 @@ class WooCommerceConnector(ConnectorBase):
     }
 
     async def same_store(self, ctx: ConnectorContext, records: list[dict]) -> bool:
-        """Order numbers repeat across stores, so an order counts only when its
-        total, currency and item names match what was imported."""
-        stored = {
-            str(r["woocommerce_order_id"]): r for r in records if r.get("woocommerce_order_id")
+        """Order and customer numbers repeat across stores, so a sampled order
+        counts only when its total, currency and item names match what was
+        imported, and a sampled customer only when its contact details do."""
+        def customer_id(record: dict) -> str:
+            return str((record.get("attributes") or {}).get("woocommerce_id") or "")
+
+        order_ids = {str(r["woocommerce_order_id"]) for r in records if r.get("woocommerce_order_id")}
+        customer_ids = {customer_id(r) for r in records} - {""}
+        orders = {
+            str(o.get("id")): o
+            for o in (await self._paginate(ctx, "/orders", params={"include": ",".join(order_ids)}) if order_ids else [])
         }
-        if not stored:
-            return False
-        orders = await self._paginate(ctx, "/orders", params={"include": ",".join(stored)})
+        customers = {
+            str(c.get("id")): c
+            for c in (await self._paginate(ctx, "/customers", params={"include": ",".join(customer_ids)}) if customer_ids else [])
+        }
         matches = []
-        for order in orders:
-            doc = stored.get(str(order.get("id")))
-            if doc is None:
-                continue
-            names = {li.get("name") for li in order.get("line_items", []) if li.get("name")}
-            matches.append(
-                abs((money(order.get("total")) or 0.0) - float(doc.get("total") or 0)) < 0.005
-                and order.get("currency") == doc.get("currency")
-                and names <= {li.get("name") for li in doc.get("line_items") or []}
-            )
+        for record in records:
+            order = orders.get(str(record.get("woocommerce_order_id") or ""))
+            customer = customers.get(customer_id(record))
+            if order is not None:
+                names = {li.get("name") for li in order.get("line_items", []) if li.get("name")}
+                matches.append(
+                    abs((money(order.get("total")) or 0.0) - float(record.get("total") or 0)) < 0.005
+                    and order.get("currency") == record.get("currency")
+                    and names <= {li.get("name") for li in record.get("line_items") or []}
+                )
+            elif customer is not None:
+                billing = customer.get("billing") or {}
+                email = customer.get("email") or billing.get("email")
+                first = customer.get("first_name") or billing.get("first_name") or ""
+                last = customer.get("last_name") or billing.get("last_name") or ""
+                matches.append(contact_matches(record, {
+                    "email": email,
+                    "phone": customer.get("phone") or billing.get("phone"),
+                    "name": " ".join(p for p in (first, last) if p).strip() or email,
+                }))
+            else:
+                matches.append(False)
         return store_holds_records(matches)
 
     # -- Internal helpers ------------------------------------------------------
