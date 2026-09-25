@@ -47,7 +47,8 @@ _FILE_ENTITY_SEG = {"item": "items", "contact": "contacts", "doc": "docs"}
 # File-op label i18n keys, resolved at render time (see event_label). Keyed by the
 # operation suffix; the value is the ``event.file.<op>`` key.
 _FILE_OP_LABELS = {op: f"event.file.{op}" for op in
-                   ("attached", "tagged", "deleted", "description_updated", "hero_set")}
+                   ("attached", "tagged", "deleted", "description_updated", "hero_set",
+                    "thumbnail_set")}
 
 
 def _is_file_event(event_type: str) -> bool:

@@ -1639,6 +1639,7 @@
   "event.file.deleted": "Đã xóa tệp",
   "event.file.description_updated": "Đã cập nhật mô tả tệp",
   "event.file.hero_set": "Đã đặt hình ảnh chính",
+  "event.file.thumbnail_set": "Đã tạo ảnh thu nhỏ",
   "field.contact_name": "Liên hệ",
   "field.contact_company_name": "Liên hệ công ty",
   "field.contact_id": "Liên hệ",

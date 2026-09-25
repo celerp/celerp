@@ -120,3 +120,7 @@ def test_deleted_file_event_has_no_live_link(entity_type):
 def test_item_hero_event_label():
     html = to_xml(activity_table([_file_entry("item.file.hero_set", "item", "item:abc", "f1")], max_display=10))
     assert "Hero image set" in html
+
+def test_item_thumbnail_event_label():
+    html = to_xml(activity_table([_file_entry("item.file.thumbnail_set", "item", "item:abc", "f1")], max_display=10))
+    assert "Thumbnail created" in html

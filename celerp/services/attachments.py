@@ -210,14 +210,35 @@ class S3Backend:
                 ContentType=mime,
             )
 
-        # Construct public URL
+        return self._public_url(key)
+
+    def _public_url(self, key: str) -> str:
         if self._endpoint:
             # MinIO / DO Spaces / R2 custom endpoint
             base = self._endpoint.rstrip("/")
             return f"{base}/{self._bucket}/{key}"
-        else:
-            # AWS S3
-            return f"https://{self._bucket}.s3.amazonaws.com/{key}"
+        # AWS S3
+        return f"https://{self._bucket}.s3.amazonaws.com/{key}"
+
+    async def read(self, company_id: str, url: str, max_bytes: int) -> bytes | None:
+        """Read back an object this backend stored for ``company_id``, by its public URL.
+
+        Only a URL this backend builds for this company's own prefix is read, and it is read
+        through the bucket credentials rather than fetched over the network, so a URL
+        from any other origin or tenant yields None. Objects larger than ``max_bytes``
+        also yield None."""
+        prefix = f"attachments/{company_id}/"
+        base = self._public_url(prefix)
+        name = url[len(base):] if url.startswith(base) else ""
+        if not name or "/" in name or name in (".", ".."):
+            return None
+        async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
+            resp = await client.get_object(Bucket=self._bucket, Key=prefix + name)
+            if int(resp.get("ContentLength") or 0) > max_bytes:
+                return None
+            async with resp["Body"] as stream:
+                data = await stream.read(max_bytes + 1)
+        return data if len(data) <= max_bytes else None
 
 
 # ── Backend factory ───────────────────────────────────────────────────────────
@@ -345,7 +366,7 @@ async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | 
 
     Locally stored uploads that predate thumbnails get one generated on first
     request and written next to the original, so the next request reads it
-    back. Cloud-stored originals cannot be read back here and yield None.
+    back. Cloud-stored originals yield None here; see :func:`repair_remote_thumbnail`.
     """
     if attachment.get("mime") not in _IMAGE_MIMES:
         return None
@@ -364,6 +385,48 @@ async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | 
         return None
     await LocalBackend().store(company_id, thumbnail_id(att_id), data, _THUMB_MIME)
     return data
+
+
+# Remote thumbnail repairs run at most this many at a time per process, so a list page full
+# of old cloud images cannot hold several full-size originals in memory at once. A view
+# past the limit previews from the original and a later view repairs it.
+_MAX_REMOTE_REPAIRS = 2
+_REMOTE_REPAIR_TIMEOUT_S = 15
+_remote_repairs = 0
+
+
+async def repair_remote_thumbnail(company_id: str, attachment: dict) -> str | None:
+    """Make and store the missing list thumbnail of a cloud-stored image; return its URL.
+
+    For images stored in the cloud before thumbnails were recorded. Returns None, storing
+    nothing, when the backend cannot read back what it stored, the original is not this
+    backend's, the read fails or times out, the original is over the upload size limit or
+    does not decode, the thumbnail cannot be stored, or the repair limit is reached.
+    """
+    global _remote_repairs
+    backend = get_backend()
+    read = getattr(backend, "read", None)
+    url = str(attachment.get("url") or "")
+    mime = attachment.get("mime")
+    if read is None or mime not in _IMAGE_MIMES or not url.startswith(("http://", "https://")):
+        return None
+    if _remote_repairs >= _MAX_REMOTE_REPAIRS:
+        return None
+    _remote_repairs += 1
+    att_id = str(attachment.get("id") or "")
+    try:
+        content = await asyncio.wait_for(read(company_id, url, _MAX_FILE_BYTES), _REMOTE_REPAIR_TIMEOUT_S)
+        if content is None:
+            return None
+        thumb = await asyncio.to_thread(make_thumbnail, content, mime)
+        if thumb is None:
+            return None
+        return await backend.store(company_id, thumbnail_id(att_id), thumb, _THUMB_MIME)
+    except Exception:
+        logger.warning("thumbnail repair failed for attachment %s", att_id)
+        return None
+    finally:
+        _remote_repairs -= 1
 
 
 def merge_attachments(existing: list[dict], new_entry: dict) -> list[dict]:

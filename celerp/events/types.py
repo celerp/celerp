@@ -33,6 +33,7 @@ class EventType(StrEnum):
     ITEM_FILE_DELETED = "item.file.deleted"
     ITEM_FILE_DESCRIPTION_UPDATED = "item.file.description_updated"
     ITEM_FILE_HERO_SET = "item.file.hero_set"
+    ITEM_FILE_THUMBNAIL_SET = "item.file.thumbnail_set"
 
     # CRM
     CRM_CONTACT_CREATED = "crm.contact.created"

@@ -401,3 +401,185 @@ async def test_connector_download_records_the_thumbnail_url(monkeypatch):
     )
     assert ok is True
     assert emitted["thumb_url"] == "https://cdn.example.test/c/att-1_thumb"
+
+
+class _CloudBackend:
+    """A cloud-style backend that can read back what it stored, like S3Backend."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.reads = 0
+        self.fail_read = False
+        self.fail_thumb_store = False
+
+    async def store(self, company_id, att_id, content, mime):
+        if self.fail_thumb_store and att_id.endswith("_thumb"):
+            raise RuntimeError("storage unavailable")
+        url = f"https://cdn.example.test/{company_id}/{att_id}"
+        self.objects[url] = content
+        return url
+
+    async def read(self, company_id, url, max_bytes):
+        self.reads += 1
+        if self.fail_read:
+            raise RuntimeError("read failed")
+        return self.objects.get(url)
+
+
+async def _legacy_cloud_image(client, monkeypatch, company: str, data: bytes | None = None):
+    """An item whose cloud-stored image was attached before thumbnails were recorded."""
+    backend = _CloudBackend()
+    monkeypatch.setattr(att_svc, "_backend", backend)
+    h = await _headers(client, company, f"{company.lower()}@example.com")
+    item_id = await _item(client, h, company.upper())
+    backend.fail_thumb_store = True
+    file_id = await _upload(client, h, item_id, _png())
+    backend.fail_thumb_store = False
+    original = next(u for u in backend.objects if u.endswith("/" + file_id))
+    if data is not None:
+        backend.objects[original] = data
+    assert _item_files((await client.get(f"/items/{item_id}", headers=h)).json())[0]["thumb_url"] is None
+    return backend, h, item_id, file_id, original
+
+
+async def _recorded_thumb(client, h, item_id) -> str | None:
+    return _item_files((await client.get(f"/items/{item_id}", headers=h)).json())[0]["thumb_url"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_cloud_image_gets_a_thumbnail_on_first_view(client, monkeypatch):
+    backend, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairCo")
+    r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
+    assert r.status_code in (302, 307), r.text
+    thumb_url = r.headers["location"]
+    assert thumb_url.endswith("/" + att_svc.thumbnail_id(file_id))
+    with Image.open(io.BytesIO(backend.objects[thumb_url])) as im:
+        assert max(im.size) == 160
+    assert await _recorded_thumb(client, h, item_id) == thumb_url
+
+    r2 = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
+    assert r2.headers["location"] == thumb_url
+    assert backend.reads == 1  # the recorded thumbnail is served without reading the original again
+
+
+@pytest.mark.asyncio
+async def test_cloud_repair_falls_back_to_the_original_when_the_read_fails(client, monkeypatch):
+    backend, h, item_id, file_id, original = await _legacy_cloud_image(client, monkeypatch, "RepairReadCo")
+    backend.fail_read = True
+    for expected_reads in (1, 2):
+        r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
+        assert r.headers["location"] == original
+        assert backend.reads == expected_reads  # nothing recorded, so the next view retries
+    assert await _recorded_thumb(client, h, item_id) is None
+
+
+@pytest.mark.asyncio
+async def test_cloud_repair_skips_an_original_that_does_not_decode(client, monkeypatch):
+    backend, h, item_id, file_id, original = await _legacy_cloud_image(
+        client, monkeypatch, "RepairBytesCo", data=b"not an image")
+    r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
+    assert r.headers["location"] == original
+    assert backend.reads == 1
+    assert await _recorded_thumb(client, h, item_id) is None
+    assert not any(u.endswith("_thumb") for u in backend.objects)
+
+
+@pytest.mark.asyncio
+async def test_cloud_repair_falls_back_when_the_thumbnail_cannot_be_stored(client, monkeypatch):
+    backend, h, item_id, file_id, original = await _legacy_cloud_image(client, monkeypatch, "RepairStoreCo")
+    backend.fail_thumb_store = True
+    r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
+    assert r.headers["location"] == original
+    assert backend.reads == 1
+    assert await _recorded_thumb(client, h, item_id) is None
+
+
+@pytest.mark.asyncio
+async def test_cloud_repair_waits_its_turn_past_the_repair_limit(client, monkeypatch):
+    backend, h, item_id, file_id, original = await _legacy_cloud_image(client, monkeypatch, "RepairBusyCo")
+    monkeypatch.setattr(att_svc, "_remote_repairs", att_svc._MAX_REMOTE_REPAIRS)
+    r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
+    assert r.headers["location"] == original
+    assert backend.reads == 0
+
+
+@pytest.mark.asyncio
+async def test_view_only_role_repairs_a_cloud_thumbnail(client, session, monkeypatch):
+    backend, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairViewCo")
+    viewer = await _user_with_role(client, session, h, "viewer")
+    r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=viewer)
+    assert r.headers["location"].endswith("/" + att_svc.thumbnail_id(file_id))
+    assert await _recorded_thumb(client, h, item_id) == r.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_repaired_thumbnail_is_recorded_once_per_file(client, session, monkeypatch):
+    """Views racing on the same file each try to record the same thumbnail; the ledger keeps one."""
+    from celerp_inventory.routes_attachments import _record_thumbnail
+    from sqlalchemy import func, select
+    from celerp.models.ledger import LedgerEntry
+
+    _, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairOnceCo")
+    company_id = await _company_id(client, h)
+    match = {"id": file_id, "filename": "photo.png"}
+    url = f"https://cdn.example.test/{company_id}/{att_svc.thumbnail_id(file_id)}"
+    for _ in range(2):
+        await _record_thumbnail(session, company_id, item_id, match, url, None)
+    count = await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.entity_id == item_id, LedgerEntry.event_type == "item.file.thumbnail_set"))
+    assert count == 1
+    assert await _recorded_thumb(client, h, item_id) == url
+
+
+class _S3Object:
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def read(self, amt=None):
+        return self._data if amt is None else self._data[:amt]
+
+
+class _S3Client:
+    def __init__(self, data: bytes, length: int | None = None) -> None:
+        self.data, self.length, self.keys = data, length, []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get_object(self, Bucket, Key):
+        self.keys.append((Bucket, Key))
+        return {"ContentLength": len(self.data) if self.length is None else self.length,
+                "Body": _S3Object(self.data)}
+
+
+@pytest.mark.asyncio
+async def test_s3_read_back_is_limited_to_its_own_company_prefix(monkeypatch):
+    fake = _S3Client(b"original")
+    monkeypatch.setattr(att_svc, "_s3_client", lambda *a: fake)
+    s3 = att_svc.S3Backend("https://s3.example.test", "bucket", "k", "s")
+    base = "https://s3.example.test/bucket/attachments"
+    assert await s3.read("co1", f"{base}/co1/a1.JPG", 100) == b"original"
+    assert fake.keys == [("bucket", "attachments/co1/a1.JPG")]  # older uploads kept their own suffix
+    for foreign in (f"{base}/co2/a1.png", "https://elsewhere.example.test/bucket/attachments/co1/a1.png",
+                    f"{base}/co1/../co2/a1.png", f"{base}/co1/"):
+        assert await s3.read("co1", foreign, 100) is None
+    assert len(fake.keys) == 1  # nothing outside this company's prefix is ever requested
+
+
+@pytest.mark.asyncio
+async def test_s3_read_back_refuses_an_original_over_the_limit(monkeypatch):
+    s3 = att_svc.S3Backend("", "bucket", "k", "s")
+    url = "https://bucket.s3.amazonaws.com/attachments/co1/a1.png"
+    monkeypatch.setattr(att_svc, "_s3_client", lambda *a: _S3Client(b"x" * 11))
+    assert await s3.read("co1", url, 10) is None
+    monkeypatch.setattr(att_svc, "_s3_client", lambda *a: _S3Client(b"x" * 11, length=0))
+    assert await s3.read("co1", url, 10) is None  # a missing or wrong length still stops at the limit

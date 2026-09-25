@@ -1639,6 +1639,7 @@
   "event.file.deleted": "تمت إزالة الملف",
   "event.file.description_updated": "تم تحديث وصف الملف",
   "event.file.hero_set": "تم تعيين الصورة الرئيسية",
+  "event.file.thumbnail_set": "تم إنشاء الصورة المصغرة",
   "field.contact_name": "اتصال",
   "field.contact_company_name": "شركة الاتصال",
   "field.contact_id": "اتصال",

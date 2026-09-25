@@ -1149,6 +1149,14 @@ class EntityFileHeroSet(BaseModel):
     filename: str | None = None  # captured at emit for the activity log
 
 
+class EntityFileThumbnailSet(BaseModel):
+    entity_id: str
+    entity_type: str  # always "item"
+    file_id: str
+    thumb_url: str  # the list thumbnail made for an image stored before thumbnails were recorded
+    filename: str | None = None  # captured at emit for the activity log
+
+
 EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     # Items
     "item.created": ItemCreated,
@@ -1182,6 +1190,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.file.deleted": EntityFileDeleted,
     "item.file.description_updated": EntityFileDescriptionUpdated,
     "item.file.hero_set": EntityFileHeroSet,
+    "item.file.thumbnail_set": EntityFileThumbnailSet,
 
     # CRM
     "crm.contact.created": CrmContactCreated,
