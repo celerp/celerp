@@ -31,14 +31,21 @@ def resolve_export_cols(cols: str | None, default: list[str], allowed: Iterable[
     return wanted
 
 
+def csv_safe(cell):
+    """Neutralize spreadsheet formula injection: user-authored strings (memos, account and
+    contact names) must never execute when the export is opened in a spreadsheet, so string
+    cells starting with a formula trigger character get a leading single quote."""
+    if isinstance(cell, str) and cell and cell[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + cell
+    return cell
+
+
 def csv_line(cols: list[str], row: dict | None = None) -> str:
-    """One CSV line: the header when ``row`` is None, else ``row`` restricted to ``cols``."""
+    """One CSV line: the header when ``row`` is None, else ``row`` restricted to ``cols``.
+    Every cell goes through `csv_safe`."""
+    cells = cols if row is None else ["" if row.get(c) is None else row.get(c) for c in cols]
     buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore")
-    if row is None:
-        writer.writeheader()
-    else:
-        writer.writerow({c: ("" if row.get(c) is None else row.get(c)) for c in cols})
+    csv.writer(buf).writerow([csv_safe(c) for c in cells])
     return buf.getvalue()
 
 
