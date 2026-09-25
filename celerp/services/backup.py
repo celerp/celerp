@@ -175,16 +175,36 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
     return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
 
 
-def restore_database(dump_bytes: bytes, database_url: str) -> None:
+def restore_database(dump_bytes: bytes, database_url: str, *, clean_schema: bool = False) -> None:
     """Run pg_restore from dump bytes into database_url.
+
+    With `clean_schema` the public schema is dropped and recreated first and the
+    restore runs as one transaction that stops at the first error, so the result
+    is exactly the dump: objects created after it (a new version's tables) are
+    gone too, which `--clean` alone would leave behind.
 
     Raises RuntimeError on failure.
     """
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+    if clean_schema:
+        from sqlalchemy import create_engine, text
+
+        from celerp.db_url import sync_url
+
+        engine = create_engine(sync_url(database_url))
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("DROP SCHEMA public CASCADE"))
+                conn.execute(text("CREATE SCHEMA public"))
+        finally:
+            engine.dispose()
+        mode = ["--single-transaction", "--exit-on-error"]
+    else:
+        mode = ["--clean", "--if-exists"]
     try:
         pg_restore = _find_pg_tool("pg_restore")
         result = subprocess.run(
-            [pg_restore, "--clean", "--if-exists", "--no-password", "--no-privileges", "--no-owner", "-d", pg_url],
+            [pg_restore, *mode, "--no-password", "--no-privileges", "--no-owner", "-d", pg_url],
             input=dump_bytes,
             capture_output=True,
             timeout=600,
@@ -195,6 +215,7 @@ def restore_database(dump_bytes: bytes, database_url: str) -> None:
         raise RuntimeError("pg_restore timed out after 600 seconds") from exc
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
-        # pg_restore returns non-zero for warnings too; only raise on real errors
-        if "ERROR" in stderr.upper():
+        # pg_restore returns non-zero for warnings too; only raise on real errors.
+        # A single-transaction restore that exits non-zero has applied nothing.
+        if clean_schema or "ERROR" in stderr.upper():
             raise RuntimeError(f"pg_restore failed (exit {result.returncode}): {stderr}")

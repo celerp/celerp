@@ -255,6 +255,21 @@ def ensure_cluster(config_dir: Path) -> str:
     return _uri(host, port, _DATABASE)
 
 
+def stop_cluster(config_dir: Path) -> None:
+    """Stop the cluster if it is running (data preserved). The self-updater
+    stops it while pip replaces the PostgreSQL binaries, then `ensure_cluster`
+    starts it again on the installed ones."""
+    pgdata = pgdata_dir(Path(config_dir).resolve())
+    if not (pgdata / "PG_VERSION").exists():
+        return
+    if _is_running(pgdata):
+        _run(
+            [_tool("pg_ctl"), "-D", str(pgdata), "-w", "-t", "30", "-m", "fast", "stop"],
+            "embedded PostgreSQL failed to stop",
+        )
+    _STARTED.discard(pgdata)
+
+
 def wipe(config_dir: Path) -> None:
     """Stop the cluster and delete its data directory (for `init --force`).
 
@@ -267,12 +282,7 @@ def wipe(config_dir: Path) -> None:
     if not pgdata.exists():
         return
     try:
-        if _is_running(pgdata):
-            subprocess.run(
-                [_tool("pg_ctl"), "-D", str(pgdata), "-w", "-t", "30", "-m", "fast", "stop"],
-                capture_output=True, text=True, env=_env(),
-            )
-        _STARTED.discard(pgdata)
+        stop_cluster(config_dir)
     except Exception:
         pass
     if pgdata.exists():

@@ -541,3 +541,19 @@ def test_ensure_connect_identity_persists_pair_in_one_rmw(tmp_path, monkeypatch)
     assert cfg["cloud"]["activation_verifier"] == verifier
     assert mod.ensure_connect_identity() == (iid, verifier)
     assert calls == 1
+
+
+class TestUpdatesSection:
+    """[updates] auto survives a write in both states; absent means on."""
+
+    @pytest.mark.parametrize("auto", [True, False])
+    def test_write_config_roundtrips_auto(self, tmp_path, monkeypatch, auto):
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({"updates": {"auto": auto}, "modules": {"enabled": []}})
+        assert f"auto = {str(auto).lower()}" in cfg_file.read_text()
+        assert mod.read_config()["updates"]["auto"] is auto
+
+    def test_write_config_without_updates_writes_no_section(self, tmp_path, monkeypatch):
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({"modules": {"enabled": []}})
+        assert "[updates]" not in cfg_file.read_text()

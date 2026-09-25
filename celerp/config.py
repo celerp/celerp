@@ -642,6 +642,10 @@ def _write_config_unlocked(cfg: dict) -> None:
         bak = cfg["backup"]
         lines += ["[backup]", f'pg_bin_dir = {_str(bak.get("pg_bin_dir", ""))}', ""]
 
+    if "updates" in cfg:
+        auto = "true" if cfg["updates"].get("auto", True) else "false"
+        lines += ["[updates]", f"auto = {auto}", ""]
+
     if "modules" in cfg:
         enabled = cfg["modules"].get("enabled", [])
         enabled_toml = ", ".join(f'"{m}"' for m in enabled)

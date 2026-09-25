@@ -634,7 +634,7 @@ def test_wait_ready_ui_url_waits_for_api(capsys):
 
     t = threading.Thread(target=_api_listens_later)
     t.start()
-    _wait_ready((FakeProc(), api_port), (FakeProc(), ui_port), timeout=10)
+    assert _wait_ready((FakeProc(), api_port), (FakeProc(), ui_port), timeout=10) is True
     t.join()
     api_srv.close()
     ui_srv.close()
@@ -656,7 +656,7 @@ def test_wait_ready_skips_dead_process(capsys):
         def poll(self):
             return 1
 
-    _wait_ready((DeadProc(), 1), (DeadProc(), 2), timeout=2)
+    assert _wait_ready((DeadProc(), 1), (DeadProc(), 2), timeout=2) is False
     assert "ready" not in capsys.readouterr().out
 
 
