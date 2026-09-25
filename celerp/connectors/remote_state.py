@@ -103,24 +103,33 @@ async def _woocommerce_credential() -> tuple[str, str | None] | None:
     return access_token, store_handle
 
 
-async def _deregister_woocommerce_webhooks(
-    company_id: str,
-    credential: tuple[str, str | None],
-    webhook_ids: list[str],
+async def _remove_woocommerce_webhooks(
+    company_id: str, webhook_ids: list[str], *, force: bool
 ) -> None:
-    try:
-        from celerp.connectors.registry import get as get_connector
+    """Remove every Celerp hook from the store while its credential still
+    exists. Unconfirmed removal fails unless the disconnect is forced."""
+    from celerp.connectors.registry import get as get_connector
+    from celerp.connectors.woocommerce import webhook_delivery_url
 
+    try:
+        credential = await _woocommerce_credential()
+        if credential is None:
+            raise ConnectorRemoteCleanupError("Store credentials were not available.")
         await get_connector("woocommerce").deregister_webhooks(
             ConnectorContext(
                 company_id=str(company_id),
                 access_token=credential[0],
                 store_handle=credential[1],
             ),
+            webhook_delivery_url(),
             webhook_ids,
         )
-    except Exception:
-        log.warning("WooCommerce webhook cleanup failed", exc_info=True)
+    except Exception as exc:
+        if not force:
+            raise ConnectorRemoteCleanupError(
+                "The store's webhooks could not be removed."
+            ) from exc
+        log.warning("WooCommerce webhook cleanup failed during a forced disconnect", exc_info=True)
 
 
 async def revoke_connector_remote_state(
@@ -128,8 +137,11 @@ async def revoke_connector_remote_state(
     connector_name: str,
     *,
     webhook_ids: list[str] | None = None,
+    force: bool = False,
 ) -> None:
-    """Disconnect one connector only if its remote state is unchanged."""
+    """Disconnect one connector only if its remote state is unchanged. Store
+    webhooks are removed first, while the credential still exists; `force`
+    continues when that removal cannot be confirmed."""
     from celerp.gateway.state import relay_http_url, relay_session_headers
 
     connector_name = _safe_connector_name(connector_name)
@@ -137,15 +149,14 @@ async def revoke_connector_remote_state(
     if revision is None:
         return
 
-    credential = None
-    if connector_name == "woocommerce" and webhook_ids:
-        credential = await _woocommerce_credential()
-        if credential is not None:
-            confirmed_revision = await _connection_revision(connector_name)
-            if confirmed_revision != revision:
-                raise ConnectorRemoteStateChangedError(
-                    "The connection changed while disconnecting; retry."
-                )
+    if connector_name == "woocommerce":
+        await _remove_woocommerce_webhooks(
+            str(company_id), list(webhook_ids or []), force=force
+        )
+        if await _connection_revision(connector_name) != revision:
+            raise ConnectorRemoteStateChangedError(
+                "The connection changed while disconnecting; retry."
+            )
 
     headers = {
         **relay_session_headers(),
@@ -171,9 +182,4 @@ async def revoke_connector_remote_state(
     if response.status_code not in (200, 404):
         raise ConnectorRemoteCleanupError(
             f"Connector cleanup returned {response.status_code}."
-        )
-
-    if credential is not None:
-        await _deregister_woocommerce_webhooks(
-            str(company_id), credential, list(webhook_ids or [])
         )

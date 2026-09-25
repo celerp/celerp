@@ -176,8 +176,11 @@ class ConnectorBase(ABC):
         """Register platform webhooks. Returns list of webhook IDs. Override if supported."""
         return []
 
-    async def deregister_webhooks(self, ctx: ConnectorContext, webhook_ids: list[str]) -> None:
-        """Remove registered webhooks. Override if supported."""
+    async def deregister_webhooks(
+        self, ctx: ConnectorContext, webhook_url: str, webhook_ids: list[str]
+    ) -> None:
+        """Remove the known webhooks and any others delivering to `webhook_url`.
+        Override if supported."""
         pass
 
     def webhook_topics_for_direction(self, direction: SyncDirection) -> list[str]:

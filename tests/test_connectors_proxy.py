@@ -194,6 +194,65 @@ async def test_disconnect_keeps_local_owner_when_relay_revoke_fails():
     assert response.status_code == 200
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("redirect", ["", "&redirect=1"])
+async def test_failed_disconnect_offers_disconnect_anyway_with_a_warning(redirect):
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+    from ui.app import app as ui_app
+
+    token = make_test_token(role="owner")
+    revoke = AsyncMock(return_value={"ok": False, "error": "relay_error"})
+    with patch(
+        "ui.api_client.get_company",
+        AsyncMock(return_value={
+            "id": "00000000-0000-0000-0000-000000000002",
+            "settings": {},
+            "current_role": "owner",
+        }),
+    ), patch("ui.api_client.delete_connector_credentials", revoke):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app), base_url="http://ui"
+        ) as client:
+            normal = await client.delete(
+                f"/settings/connectors/woocommerce/disconnect?x=1{redirect}",
+                cookies={"celerp_token": token},
+            )
+            forced = await client.delete(
+                f"/settings/connectors/woocommerce/disconnect?force=1{redirect}",
+                cookies={"celerp_token": token},
+            )
+
+    html = normal.content.decode()
+    assert "Disconnect failed. Nothing was changed" in html
+    assert "Disconnect anyway" in html
+    escaped = redirect.replace("&", "&amp;")
+    assert f'hx-delete="/settings/connectors/woocommerce/disconnect?force=1{escaped}"' in html
+    assert "may keep Celerp webhooks" in html
+    target = (
+        "#connector-disconnect-result-woocommerce" if redirect
+        else "#connector-card-woocommerce"
+    )
+    assert f'hx-target="{target}"' in html
+    assert revoke.await_args_list[0].kwargs == {"force": False}
+    assert revoke.await_args_list[1].kwargs == {"force": True}
+    assert "Disconnect anyway" not in forced.content.decode()
+
+
+def test_connector_detail_shows_disconnect_outcome_under_its_buttons():
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import _connector_detail_body
+
+    html = to_xml(_connector_detail_body(
+        {"id": "woocommerce", "category": "website"}, {}, None
+    ))
+    button = html.split('hx-delete="/settings/connectors/woocommerce/disconnect?redirect=1"')[1]
+    button = button.split(">", 1)[0]
+    assert 'hx-target="#connector-disconnect-result-woocommerce"' in button
+    assert 'hx-swap="innerHTML"' in button
+    assert 'id="connector-disconnect-result-woocommerce"' in html
+
+
 def _card_html(catalog: list[dict], config=None, awaiting=None, category="accounting"):
     from fasthtml.common import to_xml
     from ui.routes.settings_connectors import connectors_tab_content

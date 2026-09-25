@@ -3365,11 +3365,13 @@ async def store_connector_credentials(
         )).json()
 
 
-async def delete_connector_credentials(token: str, platform: str) -> dict:
+async def delete_connector_credentials(token: str, platform: str, *, force: bool = False) -> dict:
     """DELETE /connectors/{platform}/credentials - revoke stored credentials on the
-    relay via the API process. Returns {"ok": True} or {"ok": False, "error": <code>}."""
+    relay via the API process. `force` disconnects even when removing the store's
+    webhooks cannot be confirmed. Returns {"ok": True} or {"ok": False, "error": <code>}."""
+    params = {"force": "true"} if force else None
     async with _api_client(token) as c:
-        return _raise(await c.delete(f"/connectors/{platform}/credentials")).json()
+        return _raise(await c.delete(f"/connectors/{platform}/credentials", params=params)).json()
 
 
 async def set_woocommerce_order_reconciled(

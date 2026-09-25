@@ -400,9 +400,13 @@ async def store_credentials(
     if connector_name == "woocommerce":
         import secrets
 
+        from celerp.connectors.woocommerce import webhook_delivery_url
+
         secret = secrets.token_hex(32)
-        delivery_url = f"{relay_http_url().rstrip('/')}/webhooks/woocommerce/events"
+        delivery_url = webhook_delivery_url()
         try:
+            # Hooks left by an earlier connection carry an old secret.
+            await connector.deregister_webhooks(store_ctx, delivery_url, [])
             webhook_ids = await connector.register_webhooks(
                 store_ctx, delivery_url, secret=secret
             )
@@ -433,9 +437,17 @@ async def revoke_credentials(
     company_id: Annotated[str, Depends(get_current_company_id)],
     _: None = require_permission("manage_integrations"),
     session: AsyncSession = Depends(get_session),
+    force: bool = False,
 ) -> dict:
-    """Disconnect one company-owned connector and clear its local sync state."""
+    """Disconnect one company-owned connector and clear its local sync state.
+
+    A normal disconnect first confirms the store's webhooks are removed. With
+    `force`, it disconnects even when that cannot be confirmed and records
+    that it was forced. Imported records keep their store of origin either way.
+    """
     from celerp.connectors.ownership import (
+        RESET_STATUS_DISCONNECTED,
+        RESET_STATUS_FORCED,
         ConnectorOwnershipAmbiguousError,
         ConnectorOwnershipError,
         connector_release_scope,
@@ -465,7 +477,7 @@ async def revoke_credentials(
 
     try:
         await revoke_connector_remote_state(
-            company_id, connector_name, webhook_ids=webhook_ids,
+            company_id, connector_name, webhook_ids=webhook_ids, force=force,
         )
     except ConnectorRemoteStateChangedError as exc:
         await session.rollback()
@@ -484,7 +496,10 @@ async def revoke_credentials(
             await detach_external_links_for_platform(
                 session, company_id, connector_name
             )
-        await release_connector_ownership(session, company_id, connector_name)
+        await release_connector_ownership(
+            session, company_id, connector_name,
+            status=RESET_STATUS_FORCED if force else RESET_STATUS_DISCONNECTED,
+        )
         await session.commit()
     except Exception as exc:
         await session.rollback()

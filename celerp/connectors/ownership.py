@@ -321,6 +321,8 @@ async def connector_owned_by_company(
 
 RESET_STATUS_DISCONNECTED = "reset"
 RESET_STATUS_DEACTIVATED = "deactivated"
+# Disconnected although removing the store's webhooks was not confirmed.
+RESET_STATUS_FORCED = "forced"
 
 
 async def company_has_connector_claim(
@@ -376,7 +378,8 @@ def record_connector_reset(
     status: str = RESET_STATUS_DISCONNECTED,
 ) -> None:
     """Fence config-less work until this connector is explicitly reconnected.
-    The status records why: an explicit disconnect, or a company deactivation."""
+    The status records why: an explicit disconnect, a forced one, or a company
+    deactivation."""
     from datetime import datetime, timezone
 
     from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
@@ -415,7 +418,8 @@ async def connector_release_scope(
 
 
 async def release_connector_ownership(
-    session: AsyncSession, company_id, connector: str
+    session: AsyncSession, company_id, connector: str, *,
+    status: str = RESET_STATUS_DISCONNECTED,
 ) -> None:
     """Release one company's connector state: its own row plus any legacy
     row with no company, so a disconnect also works while ownership is ambiguous."""
@@ -432,7 +436,7 @@ async def release_connector_ownership(
             OutboundQueue.connector == connector,
         )
     )
-    record_connector_reset(session, company_id, connector)
+    record_connector_reset(session, company_id, connector, status=status)
     for row in mine:
         await session.delete(row)
     await session.flush()

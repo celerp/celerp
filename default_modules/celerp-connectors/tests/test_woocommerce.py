@@ -664,30 +664,51 @@ def test_woocommerce_commercial_fingerprint_detects_financial_change():
 
 
 @pytest.mark.asyncio
-async def test_register_webhooks_rolls_back_partial_creation(woo, ctx):
+async def test_deregister_webhooks_removes_hooks_whose_ids_were_never_saved(woo, ctx):
+    """A hook created while its response was lost is found by where it delivers."""
+    hooks = [
+        {"id": 21, "name": "Celerp order.created", "delivery_url": "https://relay.test/hook"},
+        {"id": 22, "name": "Celerp order.created", "delivery_url": "https://other.test/hook"},
+        {"id": 23, "name": "Shipping app", "delivery_url": "https://relay.test/hook"},
+    ]
     with respx.mock:
-        first = respx.post("https://store.example.com/wp-json/wc/v3/webhooks").mock(
-            side_effect=[
-                httpx.Response(201, json={"id": 11}),
-                httpx.Response(403, json={"message": "read only"}),
-            ]
+        respx.get("https://store.example.com/wp-json/wc/v3/webhooks").mock(
+            return_value=httpx.Response(200, json=hooks)
         )
-        cleanup = respx.delete(
-            "https://store.example.com/wp-json/wc/v3/webhooks/11"
-        ).mock(return_value=httpx.Response(200, json={}))
-        with pytest.raises(httpx.HTTPStatusError):
-            await woo.register_webhooks(ctx, "https://relay.test/hook", secret="s")
-    assert len(first.calls) == 2
-    assert len(cleanup.calls) == 1
+        known = respx.delete("https://store.example.com/wp-json/wc/v3/webhooks/11").mock(
+            return_value=httpx.Response(404)
+        )
+        lost = respx.delete("https://store.example.com/wp-json/wc/v3/webhooks/21").mock(
+            return_value=httpx.Response(200, json={})
+        )
+        await woo.deregister_webhooks(ctx, "https://relay.test/hook", ["11"])
+    assert known.called
+    assert lost.called
 
 
 @pytest.mark.asyncio
-async def test_deregister_webhooks_tolerates_missing_hook(woo, ctx):
+async def test_deregister_webhooks_fails_when_a_hook_cannot_be_removed(woo, ctx):
     with respx.mock:
-        respx.delete("https://store.example.com/wp-json/wc/v3/webhooks/11").mock(
-            return_value=httpx.Response(404)
+        respx.get("https://store.example.com/wp-json/wc/v3/webhooks").mock(
+            return_value=httpx.Response(200, json=[
+                {"id": 21, "name": "Celerp order.created", "delivery_url": "https://relay.test/hook"},
+            ])
         )
-        await woo.deregister_webhooks(ctx, ["11"])
+        respx.delete("https://store.example.com/wp-json/wc/v3/webhooks/21").mock(
+            return_value=httpx.Response(403)
+        )
+        with pytest.raises(RuntimeError, match="cleanup failed"):
+            await woo.deregister_webhooks(ctx, "https://relay.test/hook", [])
+
+
+@pytest.mark.asyncio
+async def test_deregister_webhooks_fails_when_the_store_cannot_list_hooks(woo, ctx):
+    with respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/webhooks").mock(
+            return_value=httpx.Response(401)
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            await woo.deregister_webhooks(ctx, "https://relay.test/hook", ["11"])
 
 
 @pytest.mark.asyncio

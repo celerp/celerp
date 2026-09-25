@@ -565,7 +565,8 @@ def _connector_detail_body(
         cls="btn btn--sm btn--outline btn--danger", style="margin-left:8px;",
         hx_delete=f"/settings/connectors/{cid}/disconnect?redirect=1",
         hx_confirm=t("connectors.disconnect_confirm", lang),
-        hx_swap="none",
+        hx_target=f"#connector-disconnect-result-{cid}",
+        hx_swap="innerHTML",
     )
     config_rows = [_direction_toggle(cid, config.direction if config else "both", lang)]
     if category == ConnectorCategory.ACCOUNTING.value:
@@ -575,6 +576,7 @@ def _connector_detail_body(
 
     return Div(
         Div(sync_btn, disconnect_btn, cls="connector-action-area"),
+        Div(id=f"connector-disconnect-result-{cid}"),
         Div(*config_rows, cls="connector-connected-details"),
         P(t("connectors.status", lang), cls="settings-section-title"),
         _connector_status_view(cid, runs, lang, attention=attention),
@@ -1091,24 +1093,35 @@ def setup_routes(app):
         lang = get_lang(request)
 
         from ui.api_client import delete_connector_credentials
+        force = request.query_params.get("force") == "1"
         try:
-            revoke_result = await delete_connector_credentials(token, platform)
+            revoke_result = await delete_connector_credentials(token, platform, force=force)
         except Exception as exc:
             revoke_result = {"ok": False, "detail": str(exc)}
         if not revoke_result.get("ok"):
             detail = revoke_result.get("detail") or revoke_result.get("error") or "disconnect_failed"
+            # The detail page shows the outcome under its buttons; the overview
+            # replaces the connector's card.
+            if request.query_params.get("redirect"):
+                redirect, target = "&redirect=1", f"#connector-disconnect-result-{platform}"
+                swap, wrapper = "innerHTML", {}
+            else:
+                redirect, target = "", f"#connector-card-{platform}"
+                swap, wrapper = "outerHTML", {"id": f"connector-card-{platform}", "cls": "connector-card"}
             return Div(
                 Span(
-                    t(
-                        "connectors.disconnect_failed",
-                        lang,
-                        detail=detail,
-                        default="Disconnect failed; nothing was changed: {detail}",
-                    ),
+                    t("connectors.disconnect_failed", lang, detail=detail),
                     cls="flash flash--warning",
                 ),
-                id=f"connector-card-{platform}",
-                cls="connector-card",
+                *([] if force else [Button(
+                    t("connectors.disconnect_anyway", lang),
+                    cls="btn btn--danger btn--sm",
+                    hx_delete=f"/settings/connectors/{platform}/disconnect?force=1{redirect}",
+                    hx_target=target,
+                    hx_swap=swap,
+                    hx_confirm=t("connectors.disconnect_anyway_confirm", lang),
+                )]),
+                **wrapper,
             )
 
         if request.query_params.get("redirect"):
