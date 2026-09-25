@@ -381,3 +381,31 @@ def test_summary_bar_says_how_many_documents_are_left_out_of_the_totals():
     assert "2 not in the totals" in to_xml(_summary_bar({"unvalued_count": 2}, lang="en"))
     assert "not in the totals" not in to_xml(_summary_bar({"unvalued_count": 0}, lang="en"))
     assert "3 not in the totals" in to_xml(_summary_bar({"unvalued_count": 3}, doc_type="memo", lang="en"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["", "&overdue_only=1"])
+async def test_doc_export_reads_in_batches_and_only_the_exported_fields(client, session, query):
+    """The document export reads the matching documents a batch at a time and only the fields it
+    writes, on the plain path and on the path whose filters run row by row, and still writes every
+    matching document with its displayed values."""
+    import re
+
+    tok = await _reg(client)
+    company_id = await _company_id(client, tok)
+    await _seed_docs(session, company_id, {
+        f"doc:exp-{i:03d}": {"ref_id": f"INV-{i:03d}", "due_date": "2020-01-01", "total": None, "total_amount": 5.0,
+                             "line_items": [{"description": "x" * 50}]}
+        for i in range(3)
+    })
+    bare_state = re.compile(r"\bprojections\.state\b(?!\s*(?:->|::|\[))")
+    with _sql_spy() as captured:
+        r = await client.get(f"/docs/export/csv?doc_type=invoice{query}", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    rows = _csv_rows(r.text)
+    assert sorted(x["doc_number"] for x in rows) == ["INV-000", "INV-001", "INV-002"]
+    assert {x["total"] for x in rows} == {"5.0"}
+    selects = [s for s in captured if s.lower().lstrip().startswith("select") and "from projections" in s.lower()]
+    assert selects
+    assert not [s for s in selects if not re.search(r"limit \$?\d", s.lower()) and "count(" not in s.lower()]
+    assert not [s for s in selects if bare_state.search(s[:s.lower().find("from projections")])]

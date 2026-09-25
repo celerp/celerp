@@ -804,13 +804,34 @@ def _doc_value(state: dict, field: str):
     return value
 
 
+def _doc_display(state: dict) -> dict:
+    """``state`` with each displayed field filled from its older keys (``_doc_value``)."""
+    return state | {field: _doc_value(state, field) for field in _DOC_DISPLAY_FALLBACKS}
+
+
 def _doc_row(r: Projection) -> dict:
-    """The list row for a document: its state with ``id``, ``_updated_at`` and each displayed
-    field filled from its older keys (``_doc_value``) when the current key is empty."""
-    row = r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None}
-    for field in _DOC_DISPLAY_FALLBACKS:
-        row[field] = _doc_value(row, field)
-    return row
+    """The list row for a document: its displayed state (``_doc_display``) with ``id`` and
+    ``_updated_at``."""
+    return _doc_display(r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None})
+
+
+# The state keys the row-by-row filters of ``_doc_filter`` read, before display fallbacks.
+_DOC_FILTER_KEYS = ("status", "due_date", "fulfillment_status", "return_received_items", "received_items")
+
+
+def _doc_filter(f: DocListFilters, today: str):
+    """The filters that run row by row over displayed rows (``_doc_display``), as one predicate,
+    or None when none is set and every filter is in the SQL WHERE."""
+    checks = []
+    if f.overdue_only:
+        checks.append(lambda x: x.get("due_date") and x["due_date"] < today and x.get("status") not in ("draft", "void"))
+    if f.unfulfilled_only:
+        checks.append(lambda x: x.get("status") not in ("draft", "void", "closed") and x.get("fulfillment_status") != "fulfilled")
+    if f.not_restocked:
+        checks.append(lambda x: x.get("status") not in ("draft", "void") and not (x.get("return_received_items") or []))
+    if f.not_stocked:
+        checks.append(lambda x: x.get("status") not in ("draft", "void") and not (x.get("received_items") or []))
+    return (lambda x: all(c(x) for c in checks)) if checks else None
 
 
 def _doc_base_amounts(state: dict, fields: tuple[str, ...], base_currency: str) -> dict[str, Decimal] | None:
@@ -832,29 +853,17 @@ def _doc_base_amounts(state: dict, fields: tuple[str, ...], base_currency: str) 
 
 async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, *, limit: int | None, offset: int = 0) -> dict:
     """The filtered, sorted document list (newest first unless ``sort``/``dir`` say otherwise):
-    ``{"items", "total"}`` where items carry ``id``. ``limit=None`` returns every matching row
-    (the export); the index passes its page."""
-    today = _date.today().isoformat()
-    sort_field = _doc_sort_field(f)
-    descending = f.dir == "desc"
-    # Every single-field filter is in the SQL WHERE. The multi-field filters below run in
-    # Python over the SQL-ordered rows, so both paths share one ORDER BY.
+    ``{"items", "total"}`` where items carry ``id``. ``limit=None`` returns every matching row;
+    the index passes its page."""
+    # Every single-field filter is in the SQL WHERE. The multi-field filters (``_doc_filter``) run
+    # in Python over the SQL-ordered rows, so both paths share one ORDER BY.
     base_where = _doc_sql_where(company_id, f)
-    order_by = _doc_sql_order(sort_field, descending)
+    order_by = _doc_sql_order(_doc_sort_field(f), f.dir == "desc")
+    keep = _doc_filter(f, _date.today().isoformat())
 
-    needs_python_filter = any([f.overdue_only, f.unfulfilled_only, f.not_restocked, f.not_stocked])
-
-    if needs_python_filter:
+    if keep is not None:
         rows = (await session.execute(select(Projection).where(*base_where).order_by(*order_by))).scalars().all()
-        out = [_doc_row(r) for r in rows]
-        if f.overdue_only:
-            out = [x for x in out if x.get("due_date") and x["due_date"] < today and x.get("status") not in ("draft", "void")]
-        if f.unfulfilled_only:
-            out = [x for x in out if x.get("status") not in ("draft", "void", "closed") and x.get("fulfillment_status") != "fulfilled"]
-        if f.not_restocked:
-            out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("return_received_items") or [])]
-        if f.not_stocked:
-            out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("received_items") or [])]
+        out = [x for x in map(_doc_row, rows) if keep(x)]
         total = len(out)
         if offset:
             out = out[offset:]
@@ -4119,13 +4128,39 @@ async def export_docs_csv(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> StreamingResponse:
-    """The document list as CSV: the same filters and order as the index, every matching row
-    (no page), and the columns the screen asked for via ``cols``."""
+    """The document list as CSV: the same filters, order and displayed values as the index, every
+    matching row (no page), and the columns the screen asked for via ``cols``."""
     out_cols = resolve_export_cols(cols, _DOC_EXPORT_COLS, _DOC_EXPORT_COLS)
-    docs = (await query_docs(session, company_id, filters, limit=None))["items"]
-    rows = (d | {"entity_id": d["id"]} for d in docs)
+    base_where = _doc_sql_where(company_id, filters)
+    order_by = _doc_sql_order(_doc_sort_field(filters), filters.dir == "desc")
+    keep = _doc_filter(filters, _date.today().isoformat())
+    # Read only the state keys the exported columns and the row filters need, never whole documents.
+    fields = {c for c in out_cols if c != "entity_id"} | (set(_DOC_FILTER_KEYS) if keep else set())
+    keys = sorted(fields | {k for field in fields for k in _DOC_DISPLAY_FALLBACKS.get(field, ())})
+
+    async def _rows():
+        # Bounded batches over a total order (``_doc_sql_order`` ends on entity_id), so the whole
+        # set is never buffered and no row is skipped or repeated between batches.
+        batch = 500
+        offset = 0
+        while True:
+            rows = (await session.execute(
+                select(Projection.entity_id, *(Projection.state[k] for k in keys))
+                .where(*base_where)
+                .order_by(*order_by)
+                .offset(offset)
+                .limit(batch)
+            )).all()
+            for entity_id, *values in rows:
+                row = _doc_display({k: v for k, v in zip(keys, values) if v is not None})
+                if keep is None or keep(row):
+                    yield row | {"entity_id": entity_id}
+            if len(rows) < batch:
+                break
+            offset += batch
+
     return StreamingResponse(
-        csv_stream(out_cols, rows),
+        csv_stream(out_cols, _rows()),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=documents.csv"},
     )
