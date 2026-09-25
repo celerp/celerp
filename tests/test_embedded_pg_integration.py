@@ -18,6 +18,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from celerp import embedded_pg
+from celerp.config import sync_db_url
 
 pytestmark = [
     pytest.mark.embedded_pg,
@@ -66,6 +67,11 @@ def config_dir(tmp_path, monkeypatch):
 
 
 def _sync(uri: str) -> str:
+    return sync_db_url(uri)
+
+
+def _libpq(uri: str) -> str:
+    """The URI as the bundled command-line tools take it: no SQLAlchemy driver."""
     return uri.replace("+asyncpg", "")
 
 
@@ -232,14 +238,14 @@ def test_backup_roundtrip_via_bundled_tools(config_dir, monkeypatch):
 
     dump = config_dir / "bk.dump"
     sync = _sync(uri)
-    r = subprocess.run([pg_dump, "-Fc", "-f", str(dump), "-d", sync],
+    r = subprocess.run([pg_dump, "-Fc", "-f", str(dump), "-d", _libpq(uri)],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     engine = create_engine(_db(sync, "postgres"), isolation_level="AUTOCOMMIT")
     with engine.connect() as conn:
         conn.execute(text("CREATE DATABASE bkrestore"))
     engine.dispose()
-    r = subprocess.run([pg_restore, "-d", _db(sync, "bkrestore"), str(dump)],
+    r = subprocess.run([pg_restore, "-d", _db(_libpq(uri), "bkrestore"), str(dump)],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     engine = create_engine(_db(sync, "bkrestore"))

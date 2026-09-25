@@ -147,10 +147,11 @@ import os
 import sqlalchemy as sa
 from pathlib import Path
 
+from celerp.config import sync_db_url
+
 
 def upgrade():
-    url = os.environ["DATABASE_URL"].replace("+asyncpg", "")
-    eng = sa.create_engine(url)
+    eng = sa.create_engine(sync_db_url(os.environ["DATABASE_URL"]))
     try:
         with eng.connect() as c:
             got = c.execute(sa.text("SELECT pg_try_advisory_lock(__KEY__)")).scalar()
