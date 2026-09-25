@@ -3162,5 +3162,18 @@
   "ai.resets_on": "በ{date} ዳግም ይጀምራል",
   "ai.service_unavailable": "Celerp AI ለጊዜው አይገኝም። Connectን ያረጋግጡና እንደገና ይሞክሩ።",
   "ai.untitled_conversation": "ርዕስ የሌለው ውይይት",
-  "ai.uploading": "በመስቀል ላይ..."
+  "ai.uploading": "በመስቀል ላይ...",
+  "connectors.pending_title": "ግንኙነት በሂደት ላይ",
+  "connectors.pending_hint": "የ{name} ፈቃድ ተጀምሯል ነገር ግን አልተጠናቀቀም። ያጠናቅቁት ወይም ይህን ግንኙነት ለመልቀቅ ይሰርዙ።",
+  "connectors.finish": "አጠናቅቅ",
+  "connectors.ambiguous": "ይህ አገናኝ ከአንድ በላይ ኩባንያ ጋር ተያይዟል። ያቋርጡት፣ ከዚያ ሊጠቀምበት ከሚገባው ኩባንያ እንደገና ያገናኙት።",
+  "connectors.other_company": "ከሌላ ኩባንያ ጋር ተገናኝቷል።",
+  "connectors.reconnect_after_deactivation": "ይህ ኩባንያ ሲቦዝን አገናኞች ተቋርጠዋል፦ {names}። ከታች እንደገና ያገናኙ።",
+  "connectors.deposit_label": "ክፍያዎችን የሚያስቀምጡበት",
+  "connectors.deposit_default": "የመስመር ላይ ክፍያዎች ነባሪ",
+  "connectors.deposit_unknown_account": "{code} ንቁ የባንክ ሂሳብ አይደለም።",
+  "connectors.attention_header": "ትኩረት የሚያስፈልጋቸው ትዕዛዞች",
+  "connectors.attention_count": "{n} ትኩረት ያስፈልጋቸዋል",
+  "connectors.attention_mark_reconciled": "እንደተስማማ ምልክት አድርግ",
+  "connectors.attention_reconciled": "እንደተስማማ ምልክት ተደርጓል። ከሚቀጥለው ማመሳሰል በኋላ ከዚህ ዝርዝር ይወጣል።"
 }

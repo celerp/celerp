@@ -695,7 +695,7 @@ def _flatten_company(data: dict) -> dict:
     """Flatten settings sub-fields into top-level for UI convenience."""
     settings = data.get("settings") or {}
     for k in ("currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "vertical", "email",
-              "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account",
+              "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account", "woocommerce_deposit_account",
               "line_item_identifier"):
         if k not in data:
             data[k] = settings.get(k)
@@ -731,7 +731,7 @@ async def patch_company(token: str, data: dict) -> dict:
     """Patch company. Settings sub-fields and dashboard preferences are merged into
     the settings dict; top-level fields (name, slug) are patched directly."""
     _SETTINGS_FIELDS = {"currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "email",
-                        "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account",
+                        "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account", "woocommerce_deposit_account",
                         "line_item_identifier"}
     _DASHBOARD_FIELDS = {"docs_default_preset", "default_per_page"}
     settings_patch = {k: v for k, v in data.items() if k in _SETTINGS_FIELDS}
@@ -2442,6 +2442,16 @@ async def bulk_shopify_sync(token: str, entity_ids: list[str], enable: bool) -> 
         return _raise(await c.post("/items/bulk/shopify-sync", json={"entity_ids": entity_ids, "enable": enable})).json()
 
 
+async def set_connector_item_sync(
+    token: str, platform: str, entity_ids: list[str], enable: bool
+) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(
+            f"/connector-items/{platform}/sync",
+            json={"entity_ids": entity_ids, "enable": enable},
+        )).json()
+
+
 async def bulk_transfer(token: str, entity_ids: list[str], to_location_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/items/bulk/transfer", json={"entity_ids": entity_ids, "to_location_id": to_location_id})).json()
@@ -3362,8 +3372,19 @@ async def delete_connector_credentials(token: str, platform: str) -> dict:
         return _raise(await c.delete(f"/connectors/{platform}/credentials")).json()
 
 
-async def get_connector_access_token(token: str, platform: str) -> dict:
-    """GET /connectors/{platform}/access-token - short-lived relay token via the API
-    process. Returns {access_token, store_handle, ...} or {"error": <code>, "detail": str}."""
+async def set_woocommerce_order_reconciled(
+    token: str, order_id: str, signature: str | None
+) -> dict:
+    """Mark (signature) or unmark (None) a WooCommerce order on the connector's
+    attention list as reconciled by hand. Returns {"entry": <updated entry>}."""
+    path = f"/connectors/woocommerce/orders/{order_id}/reconciled"
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/connectors/{platform}/access-token")).json()
+        if signature is None:
+            return _raise(await c.delete(path)).json()
+        return _raise(await c.post(path, json={"signature": signature})).json()
+
+
+async def start_connector_sync(token: str, platform: str) -> dict:
+    """Start the connector's canonical sync plan in the API process."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/connectors/{platform}/sync-plan")).json()

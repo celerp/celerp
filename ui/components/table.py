@@ -1330,7 +1330,7 @@ def data_table(
         funnel = _filter_funnel_btn(spec["param"], spec["options"], spec.get("selected"),
                                     field_label(f)) if spec else ""
         th_cls = f"col-{key}" + (" colfilter-th" if spec else "")
-        if sort_url:
+        if sort_url and f.get("sortable", True):
             params = {**(extra_params or {}), "sort": key}
             new_dir = "asc" if (sort_key == key and sort_dir == "desc") else "desc"
             params["dir"] = new_dir

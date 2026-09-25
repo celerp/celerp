@@ -83,6 +83,12 @@ class SyncResult:
     updated: int = 0
     skipped: int = 0
     errors: list[str] | None = None
+    # Records the run could not import and that a person must resolve, one
+    # dict per record: {"id", "label", "reason"}. They do not fail the run;
+    # the next run retries them and keeps the ones that still fail. A sync
+    # that tracks attention always returns a list (empty when nothing waits);
+    # None means the run produced no list and the previous one stands.
+    attention: list[dict] | None = None
 
     @property
     def ok(self) -> bool:

@@ -476,6 +476,54 @@ def _write_restore_notice(company_name: str | None, warnings: list[str],
         log.warning("Could not write restore notice: %s", exc)
 
 
+async def _revoke_current_connector_state() -> None:
+    import sqlalchemy as sa
+
+    from celerp.connectors.remote_state import revoke_connector_remote_state
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+
+    async with get_session_ctx() as session:
+        configs = [
+            (
+                str(config.company_id),
+                config.connector,
+                list(config.webhook_ids or []),
+            )
+            for config in (await session.scalars(
+                sa.select(ConnectorConfig)
+            )).all()
+        ]
+
+    for company_id, connector, webhook_ids in configs:
+        await revoke_connector_remote_state(
+            company_id,
+            connector,
+            webhook_ids=webhook_ids,
+        )
+
+
+async def _clear_restored_connector_state(session) -> None:
+    import sqlalchemy as sa
+
+    from celerp.connectors.ownership import record_connector_reset
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+
+    connectors = set((await session.scalars(
+        sa.select(ConnectorConfig.connector)
+    )).all())
+    connectors.update((await session.scalars(
+        sa.select(OutboundQueue.connector)
+    )).all())
+    company_ids = (await session.scalars(sa.select(Company.id))).all()
+    for company_id in company_ids:
+        for connector in connectors:
+            record_connector_reset(session, company_id, connector)
+    await session.execute(sa.delete(OutboundQueue))
+    await session.execute(sa.delete(ConnectorConfig))
+
+
 async def run_import(path: Path):
     """Import from .celerp-backup: safety backup + pg_restore + extract files.
 
@@ -502,17 +550,19 @@ async def run_import(path: Path):
                 return BackupResult(ok=False, size_bytes=0, error="Cannot read database.dump")
             dump_bytes = dump_file.read()
 
-        # Dispose connection pool BEFORE pg_restore so live connections don't
-        # hold locks that block pg_restore from dropping/recreating tables.
-        await _dispose_engine()
+        from celerp.connectors.ownership import connector_maintenance_guard
+        from celerp.db import get_session_ctx
+        from celerp.services.backup_state import writes_paused
 
-        # Run pg_restore in a thread executor — it's a blocking subprocess call.
-        # Running it directly in an async function blocks the uvicorn event loop,
-        # which prevents the response from being sent back and causes HTTPX timeouts.
-        await _run_pg_restore(dump_bytes, settings.database_url)
-
-        # Reconcile schema — run any missing migrations after pg_restore
-        schema_warning = await _reconcile_schema()
+        async with connector_maintenance_guard():
+            await _revoke_current_connector_state()
+            with writes_paused():
+                await _dispose_engine()
+                await _run_pg_restore(dump_bytes, settings.database_url)
+                schema_warning = await _reconcile_schema()
+                async with get_session_ctx() as restored_session:
+                    await _clear_restored_connector_state(restored_session)
+                    await restored_session.commit()
 
         # Extract files outside the tar context (already read dump above)
         await _extract_files(path)

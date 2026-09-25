@@ -32,7 +32,7 @@ def ctx():
 
 @pytest.fixture
 def mock_upsert_item():
-    with patch("celerp.connectors.upsert.upsert_item", new_callable=AsyncMock, return_value="created") as m:
+    with patch("celerp_inventory.services.upsert_external_product", new_callable=AsyncMock, return_value=("created", "item:resolved")) as m:
         yield m
 
 
@@ -140,8 +140,43 @@ async def test_sync_products_imports_variations(woo, ctx, mock_upsert_item):
         )
         result = await woo.sync_products(ctx)
     assert result.created == 2   # two variations; parent not imported as a sellable item
-    idems = {call.args[1].idempotency_key for call in mock_upsert_item.call_args_list}
-    assert idems == {"woocommerce:20:201", "woocommerce:20:202"}
+    identities = {(call.kwargs["product_id"], call.kwargs["variation_id"]) for call in mock_upsert_item.call_args_list}
+    assert identities == {("20", "201"), ("20", "202")}
+
+
+@pytest.mark.asyncio
+async def test_virtual_product_is_service_only_when_woo_does_not_manage_stock(
+    woo, ctx, mock_upsert_item
+):
+    products = [
+        {
+            "id": 50, "name": "Download", "sku": "VIRTUAL-NOSTOCK",
+            "regular_price": "5.00", "virtual": True, "manage_stock": False,
+        },
+        {
+            "id": 51, "name": "Virtual Stocked", "sku": "VIRTUAL-STOCK",
+            "regular_price": "7.00", "virtual": True, "manage_stock": True,
+            "stock_quantity": 3,
+        },
+    ]
+    with patch.object(woo, "_pull_product_files", new=AsyncMock()), respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
+            return_value=httpx.Response(200, json=products)
+        )
+        result = await woo.sync_products(ctx)
+
+    assert result.created == 2
+    calls = {
+        call.kwargs["product_id"]: call.kwargs
+        for call in mock_upsert_item.call_args_list
+    }
+    assert calls["50"]["inventory_type"] == "service"
+    assert calls["50"]["sell_by"] == "service"
+    assert calls["50"]["seed_quantity"] is False
+    assert calls["51"]["inventory_type"] is None
+    assert calls["51"]["sell_by"] is None
+    assert calls["51"]["seed_quantity"] is True
+    assert calls["51"]["quantity"] == 3.0
 
 
 @pytest.mark.asyncio
@@ -155,8 +190,7 @@ async def test_sync_products_fallback_sku(woo, ctx, mock_upsert_item):
         )
         result = await woo.sync_products(ctx)
     assert result.created == 1
-    item_arg = mock_upsert_item.call_args[0][1]
-    assert item_arg.sku == "WC-42"
+    assert mock_upsert_item.call_args.kwargs["sku"] == "WC-42"
 
 
 @pytest.mark.asyncio
@@ -212,18 +246,151 @@ async def test_sync_orders_creates(woo, ctx, mock_upsert_order):
 
 
 @pytest.mark.asyncio
-async def test_sync_orders_error_accumulation(woo, ctx):
-    """All order errors must be captured, not just the first."""
+async def test_sync_orders_failures_become_attention_not_errors(woo, ctx):
+    """An order the import cannot complete is handed to a person, not counted as a
+    sync error: the run succeeds so the watermark can advance, and every failed
+    order appears on the attention list with its reason."""
     with respx.mock:
         respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(
             return_value=httpx.Response(200, json=[
-                {"id": 1}, {"id": 2}, {"id": 3}
+                {"id": 1, "number": "1001"}, {"id": 2, "number": "1002"}, {"id": 3}
             ])
         )
-        with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new_callable=AsyncMock, side_effect=ValueError("boom")):
+        with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new_callable=AsyncMock, side_effect=ValueError("no stock")):
             result = await woo.sync_orders(ctx)
-    assert result.errors is not None
-    assert len(result.errors) == 3
+    assert not result.errors
+    assert [a["id"] for a in result.attention] == ["1", "2", "3"]
+    assert result.attention[0]["label"] == "Order 1001"
+    assert result.attention[2]["label"] == "Order 3"
+    assert all(a["reason"] == "no stock" for a in result.attention)
+
+
+@pytest.mark.asyncio
+async def test_sync_orders_attention_carries_the_reconciliation_signature(woo, ctx):
+    """An order change only a person can reconcile carries the signature they
+    mark; other reasons carry none, and a clean run returns an empty list, which
+    clears the previous one."""
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+
+    async def _upsert(company_id, order):
+        if order["id"] == 1:
+            raise WooCommerceReconciliationRequired("has a refund", "sig-1")
+        raise ValueError("no stock")
+
+    with respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(
+            return_value=httpx.Response(200, json=[{"id": 1}, {"id": 2}])
+        )
+        with patch("celerp.connectors.upsert.upsert_order_from_woocommerce",
+                   new_callable=AsyncMock, side_effect=_upsert):
+            result = await woo.sync_orders(ctx)
+    assert result.attention[0]["signature"] == "sig-1"
+    assert "signature" not in result.attention[1]
+
+    with respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        clean = await woo.sync_orders(ctx)
+    assert clean.attention == []
+
+
+def _orders_by_params(pages: dict):
+    """respx side effect: answer the carried-id fetch and the incremental fetch
+    separately, keyed on whether the request carries an ``include`` list."""
+    def _respond(request):
+        params = dict(request.url.params)
+        key = "include" if "include" in params else "list"
+        return httpx.Response(200, json=pages.get(key, []))
+    return _respond
+
+
+@pytest.mark.asyncio
+async def test_sync_orders_retries_carried_attention_by_id(woo, ctx):
+    """Entries carried from the previous run are re-fetched by id first. One that
+    imports drops off, one that still fails keeps its reason, one WooCommerce no
+    longer returns is dropped, and an order fetched by id is not imported twice
+    when the incremental page returns it as well."""
+    carried = [
+        {"id": "7", "label": "Order 7", "reason": "old reason"},
+        {"id": "8", "label": "Order 8", "reason": "old reason"},
+        {"id": "9", "label": "Order 9", "reason": "gone"},
+    ]
+
+    async def _upsert(company_id, order):
+        if order["id"] == 8:
+            raise ValueError("still no stock")
+        return "created"
+
+    with respx.mock:
+        route = respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(
+            side_effect=_orders_by_params({
+                "include": [{"id": 7}, {"id": 8}],
+                "list": [{"id": 7}, {"id": 10}],
+            })
+        )
+        with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new_callable=AsyncMock, side_effect=_upsert) as up:
+            result = await woo.sync_orders(ctx, attention=carried)
+
+    assert route.calls[0].request.url.params["include"] == "7,8,9"
+    assert not result.errors
+    assert result.created == 2  # 7 (retried) and 10; 7 is not imported a second time
+    assert [a["id"] for a in result.attention] == ["8"]
+    assert result.attention[0]["reason"] == "still no stock"
+    assert sorted(c.args[1]["id"] for c in up.await_args_list) == [7, 8, 10]
+
+
+@pytest.mark.asyncio
+async def test_sync_orders_api_error_on_carried_fetch_keeps_attention(woo, ctx, mock_upsert_order):
+    """A failed run must not lose the attention list it was carrying."""
+    carried = [{"id": "7", "label": "Order 7", "reason": "no stock"}]
+    with respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(
+            return_value=httpx.Response(500, json={"message": "down"})
+        )
+        result = await woo.sync_orders(ctx, attention=carried)
+    assert result.errors and "API error" in result.errors[0]
+    assert result.attention == carried
+    mock_upsert_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_sync_orders_carried_fetch_failing_midway_keeps_retried_outcomes(woo, ctx, monkeypatch):
+    """When a later carried page fails, orders already retried keep their new
+    outcome (resolved ones drop off, a changed one carries its new reason and
+    signature) and only the unfetched ones stay as carried."""
+    from celerp.connectors import woocommerce as woo_mod
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+
+    monkeypatch.setattr(woo_mod, "_PER_PAGE", 1)
+    carried = [
+        {"id": "6", "label": "Order 6", "reason": "no stock"},
+        {"id": "7", "label": "Order 7", "reason": "has a refund", "signature": "old"},
+        {"id": "8", "label": "Order 8", "reason": "no stock"},
+    ]
+
+    def _respond(request):
+        order_id = int(request.url.params["include"])
+        if order_id == 8:
+            return httpx.Response(500, json={"message": "down"})
+        first_page = request.url.params.get("page", "1") == "1"
+        return httpx.Response(200, json=[{"id": order_id}] if first_page else [])
+
+    async def _upsert(company_id, order):
+        if order["id"] == 7:
+            raise WooCommerceReconciliationRequired("has another refund", signature="new")
+        return "updated"
+
+    with respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(side_effect=_respond)
+        with patch("celerp.connectors.upsert.upsert_order_from_woocommerce", new_callable=AsyncMock, side_effect=_upsert):
+            result = await woo.sync_orders(ctx, attention=carried)
+
+    assert result.errors and "API error" in result.errors[0]
+    assert [a["id"] for a in result.attention] == ["7", "8"]
+    assert result.attention[0]["signature"] == "new"
+    assert result.attention[0]["reason"] == "has another refund"
+    assert result.attention[1] == carried[2]
 
 
 @pytest.mark.asyncio
@@ -263,7 +430,198 @@ async def test_sync_contacts_incremental(woo, ctx, mock_upsert_contact):
     assert "modified_after" in str(route.calls[0].request.url)
 
 
+
 # -- sync_inventory_out --
+
+@pytest.mark.asyncio
+async def test_sync_inventory_out_uses_variation_endpoint(woo, ctx):
+    item = {
+        "sku": "V-1", "quantity": 7,
+        "woocommerce_product_id": "20", "woocommerce_variation_id": "201",
+        "external_link": {"product_id": "20", "variation_id": "201", "manage_stock": True},
+    }
+    with patch("celerp.connectors.upsert.list_items_with_external_id", new_callable=AsyncMock, return_value=[item]):
+        with respx.mock:
+            route = respx.put(
+                "https://store.example.com/wp-json/wc/v3/products/20/variations/201"
+            ).mock(return_value=httpx.Response(200, json={}))
+            result = await woo.sync_inventory_out(ctx)
+    assert result.updated == 1
+    assert route.calls[0].request.content == b'{"stock_quantity":7}'
+
+
+@pytest.mark.asyncio
+async def test_sync_inventory_out_refuses_fractional_without_write(woo, ctx):
+    item = {
+        "sku": "F-1", "quantity": 1.5, "woocommerce_product_id": "10",
+        "external_link": {"product_id": "10", "manage_stock": True},
+    }
+    with patch("celerp.connectors.upsert.list_items_with_external_id", new_callable=AsyncMock, return_value=[item]):
+        with respx.mock:
+            route = respx.put("https://store.example.com/wp-json/wc/v3/products/10")
+            result = await woo.sync_inventory_out(ctx)
+    assert result.updated == 0
+    assert result.errors and "fractional stock" in result.errors[0]
+    assert len(route.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_sync_inventory_out_refuses_parent_managed_variation(woo, ctx):
+    item = {
+        "sku": "V-1", "quantity": 3,
+        "woocommerce_product_id": "20", "woocommerce_variation_id": "201",
+        "external_link": {"product_id": "20", "variation_id": "201", "manage_stock": "parent"},
+    }
+    with patch("celerp.connectors.upsert.list_items_with_external_id", new_callable=AsyncMock, return_value=[item]):
+        result = await woo.sync_inventory_out(ctx)
+    assert result.updated == 0
+    assert result.errors and "managed by its parent" in result.errors[0]
+
 
 # -- sync_products_out --
 
+@pytest.mark.asyncio
+async def test_sync_products_out_uses_nested_variation_endpoint(woo, ctx):
+    item = {
+        "sku": "SHIRT-RED", "name": "Shirt - Red", "description": "Red shirt",
+        "sale_price": 19.99, "files": [],
+        "woocommerce_product_id": "20", "woocommerce_variation_id": "201",
+        "external_link": {"product_id": "20", "variation_id": "201", "manage_stock": True},
+    }
+    with patch("celerp.connectors.upsert.list_items_modified_since_last_sync", new_callable=AsyncMock, return_value=[item]):
+        with respx.mock:
+            route = respx.put(
+                "https://store.example.com/wp-json/wc/v3/products/20/variations/201"
+            ).mock(return_value=httpx.Response(200, json={}))
+            result = await woo.sync_products_out(ctx)
+    assert result.updated == 1
+    payload = __import__("json").loads(route.calls[0].request.content)
+    assert payload["sku"] == "SHIRT-RED"
+    assert payload["regular_price"] == "19.99"
+    assert payload["description"] == "Red shirt"
+    assert "name" not in payload
+
+
+@pytest.mark.asyncio
+async def test_sync_products_out_simple_product_includes_core_fields(woo, ctx):
+    item = {
+        "sku": "W-1", "name": "Widget", "description": "Useful",
+        "sale_price": 12.5, "files": [], "woocommerce_product_id": "10",
+        "external_link": {"product_id": "10", "manage_stock": True},
+    }
+    with patch("celerp.connectors.upsert.list_items_modified_since_last_sync", new_callable=AsyncMock, return_value=[item]):
+        with respx.mock:
+            route = respx.put(
+                "https://store.example.com/wp-json/wc/v3/products/10"
+            ).mock(return_value=httpx.Response(200, json={}))
+            result = await woo.sync_products_out(ctx)
+    assert result.updated == 1
+    payload = __import__("json").loads(route.calls[0].request.content)
+    assert payload == {
+        "sku": "W-1", "description": "Useful",
+        "regular_price": "12.5", "name": "Widget",
+    }
+
+
+
+def test_woocommerce_commercial_fingerprint_ignores_status_only_changes():
+    from celerp_docs.doc_service import _woocommerce_commercial_fingerprint
+    base = {
+        "currency": "USD", "status": "processing", "total": "12.00", "total_tax": "2.00",
+        "line_items": [{"product_id": 1, "variation_id": 0, "sku": "A", "quantity": 1, "total": "10.00", "total_tax": "2.00"}],
+        "shipping_lines": [], "fee_lines": [],
+    }
+    changed_status = {**base, "status": "completed"}
+    assert _woocommerce_commercial_fingerprint(base) == _woocommerce_commercial_fingerprint(changed_status)
+
+
+def test_woocommerce_commercial_fingerprint_detects_financial_change():
+    from celerp_docs.doc_service import _woocommerce_commercial_fingerprint
+    base = {
+        "currency": "USD", "total": "10.00", "total_tax": "0",
+        "line_items": [{"product_id": 1, "variation_id": 0, "sku": "A", "quantity": 1, "total": "10.00"}],
+        "shipping_lines": [], "fee_lines": [],
+    }
+    changed = {**base, "total": "11.00"}
+    assert _woocommerce_commercial_fingerprint(base) != _woocommerce_commercial_fingerprint(changed)
+
+
+@pytest.mark.asyncio
+async def test_register_webhooks_rolls_back_partial_creation(woo, ctx):
+    with respx.mock:
+        first = respx.post("https://store.example.com/wp-json/wc/v3/webhooks").mock(
+            side_effect=[
+                httpx.Response(201, json={"id": 11}),
+                httpx.Response(403, json={"message": "read only"}),
+            ]
+        )
+        cleanup = respx.delete(
+            "https://store.example.com/wp-json/wc/v3/webhooks/11"
+        ).mock(return_value=httpx.Response(200, json={}))
+        with pytest.raises(httpx.HTTPStatusError):
+            await woo.register_webhooks(ctx, "https://relay.test/hook", secret="s")
+    assert len(first.calls) == 2
+    assert len(cleanup.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_deregister_webhooks_tolerates_missing_hook(woo, ctx):
+    with respx.mock:
+        respx.delete("https://store.example.com/wp-json/wc/v3/webhooks/11").mock(
+            return_value=httpx.Response(404)
+        )
+        await woo.deregister_webhooks(ctx, ["11"])
+
+
+@pytest.mark.asyncio
+async def test_sync_inventory_identity_out_pushes_only_selected_product(woo, ctx):
+    items = [
+        {
+            "quantity": 2, "woocommerce_product_id": "10",
+            "external_link": {"product_id": "10", "manage_stock": True},
+        },
+        {
+            "quantity": 9, "woocommerce_product_id": "11",
+            "external_link": {"product_id": "11", "manage_stock": True},
+        },
+    ]
+    with patch(
+        "celerp.connectors.upsert.list_items_with_external_id",
+        new_callable=AsyncMock, return_value=items,
+    ):
+        with respx.mock:
+            selected = respx.put(
+                "https://store.example.com/wp-json/wc/v3/products/10"
+            ).mock(return_value=httpx.Response(200, json={}))
+            other = respx.put(
+                "https://store.example.com/wp-json/wc/v3/products/11"
+            ).mock(return_value=httpx.Response(200, json={}))
+            result = await woo.sync_inventory_identity_out(ctx, "10")
+    assert result.updated == 1
+    assert len(selected.calls) == 1
+    assert len(other.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_full_product_sync_runs_missing_link_reconciliation(woo, ctx):
+    reconcile = AsyncMock(return_value=2)
+    with patch.object(woo, "_reconcile_missing_product_links", new=reconcile), respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        result = await woo.sync_products(ctx, since=None)
+
+    reconcile.assert_awaited_once_with(ctx, set(), set())
+    assert result.updated == 2
+
+
+@pytest.mark.asyncio
+async def test_incremental_product_sync_does_not_infer_remote_deletions(woo, ctx):
+    reconcile = AsyncMock(return_value=0)
+    with patch.object(woo, "_reconcile_missing_product_links", new=reconcile), respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
+            return_value=httpx.Response(200, json=[])
+        )
+        await woo.sync_products(ctx, since=datetime.now(timezone.utc))
+
+    reconcile.assert_not_awaited()

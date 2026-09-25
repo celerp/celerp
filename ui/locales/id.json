@@ -3162,5 +3162,18 @@
   "ai.resets_on": "Reset pada {date}",
   "ai.service_unavailable": "Celerp AI sementara tidak tersedia. Periksa Connect dan coba lagi.",
   "ai.untitled_conversation": "Percakapan tanpa judul",
-  "ai.uploading": "Mengunggah..."
+  "ai.uploading": "Mengunggah...",
+  "connectors.pending_title": "Koneksi sedang berlangsung",
+  "connectors.pending_hint": "Otorisasi {name} sudah dimulai tetapi belum selesai. Selesaikan, atau batalkan untuk melepaskan koneksi ini.",
+  "connectors.finish": "Selesaikan",
+  "connectors.ambiguous": "Konektor ini terhubung ke lebih dari satu perusahaan. Putuskan, lalu hubungkan kembali dari perusahaan yang seharusnya menggunakannya.",
+  "connectors.other_company": "Terhubung ke perusahaan lain.",
+  "connectors.reconnect_after_deactivation": "Konektor diputus saat perusahaan ini dinonaktifkan: {names}. Hubungkan kembali di bawah.",
+  "connectors.deposit_label": "Setor pembayaran ke",
+  "connectors.deposit_default": "Default pembayaran online",
+  "connectors.deposit_unknown_account": "{code} bukan rekening bank aktif.",
+  "connectors.attention_header": "Pesanan yang perlu perhatian",
+  "connectors.attention_count": "{n} perlu perhatian",
+  "connectors.attention_mark_reconciled": "Tandai sudah direkonsiliasi",
+  "connectors.attention_reconciled": "Ditandai sudah direkonsiliasi. Akan hilang dari daftar ini setelah sinkronisasi berikutnya."
 }

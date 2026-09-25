@@ -70,6 +70,15 @@ def _sess(projection):
 _ARGS = ("co", "item:1", "sys", "https://x.test/img.jpg", "f.jpg", "product_images", True)
 
 
+@pytest.fixture(autouse=True)
+def _public_url_validation():
+    with patch(
+        "celerp.services.outbound_url.validate_public_base_url",
+        new=AsyncMock(side_effect=lambda url, **_: url),
+    ):
+        yield
+
+
 @pytest.mark.asyncio
 async def test_download_emit_no_projection_returns_false():
     assert await download_and_emit_file(_sess(None), *_ARGS) is False

@@ -3162,5 +3162,18 @@
   "ai.resets_on": "تتم إعادة التعيين في {date}",
   "ai.service_unavailable": "Celerp AI غير متاح مؤقتًا. تحقق من Connect وحاول مرة أخرى.",
   "ai.untitled_conversation": "محادثة بلا عنوان",
-  "ai.uploading": "جارٍ الرفع..."
+  "ai.uploading": "جارٍ الرفع...",
+  "connectors.pending_title": "الاتصال قيد التنفيذ",
+  "connectors.pending_hint": "بدأ تفويض {name} لكنه لم يكتمل. أكمله، أو ألغِ لتحرير هذا الاتصال.",
+  "connectors.finish": "إكمال",
+  "connectors.ambiguous": "هذا الموصّل مرتبط بأكثر من شركة. افصله، ثم أعد توصيله من الشركة التي يجب أن تستخدمه.",
+  "connectors.other_company": "متصل بشركة أخرى.",
+  "connectors.reconnect_after_deactivation": "تم فصل الموصّلات عند إلغاء تفعيل هذه الشركة: {names}. أعد توصيلها أدناه.",
+  "connectors.deposit_label": "إيداع المدفوعات في",
+  "connectors.deposit_default": "الافتراضي للمدفوعات عبر الإنترنت",
+  "connectors.deposit_unknown_account": "{code} ليس حساباً مصرفياً نشطاً.",
+  "connectors.attention_header": "طلبات تحتاج إلى انتباه",
+  "connectors.attention_count": "{n} تحتاج إلى انتباه",
+  "connectors.attention_mark_reconciled": "وضع علامة كمطابق",
+  "connectors.attention_reconciled": "تم وضع علامة كمطابق. سيُزال من هذه القائمة بعد المزامنة التالية."
 }

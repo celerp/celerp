@@ -338,19 +338,12 @@ async def test_share_import_doc_http_404(client):
     """GET /docs/import when sender returns 404 → 404 (lines 206-207)."""
     tok = await _reg(client)
 
-    import httpx
-    mock_response = MagicMock()
-    mock_response.status_code = 404
-    exc = httpx.HTTPStatusError("not found", request=MagicMock(), response=mock_response)
+    response = MagicMock(status_code=404, content=b"", headers={})
 
     with patch("celerp_docs.routes_share._validate_public_src",
                new=AsyncMock(return_value="https://other.celerp.test")), \
-         patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
-        mock_client = AsyncMock()
-        mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(side_effect=exc)
-
+         patch("celerp.services.outbound_url.fetch_public_bytes",
+               new=AsyncMock(return_value=response)):
         r = await client.get(
             "/docs/import?src=https://other.celerp.test&token=fake-token",
             headers=_h(tok),
@@ -363,19 +356,12 @@ async def test_share_import_doc_http_502(client):
     """GET /docs/import when sender returns 5xx → 502 (lines 207-208)."""
     tok = await _reg(client)
 
-    import httpx
-    mock_response = MagicMock()
-    mock_response.status_code = 503
-    exc = httpx.HTTPStatusError("server error", request=MagicMock(), response=mock_response)
+    response = MagicMock(status_code=503, content=b"", headers={})
 
     with patch("celerp_docs.routes_share._validate_public_src",
                new=AsyncMock(return_value="https://other.celerp.test")), \
-         patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
-        mock_client = AsyncMock()
-        mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(side_effect=exc)
-
+         patch("celerp.services.outbound_url.fetch_public_bytes",
+               new=AsyncMock(return_value=response)):
         r = await client.get(
             "/docs/import?src=https://other.celerp.test&token=fake-token",
             headers=_h(tok),
@@ -390,12 +376,8 @@ async def test_share_import_doc_network_error(client):
 
     with patch("celerp_docs.routes_share._validate_public_src",
                new=AsyncMock(return_value="https://other.celerp.test")), \
-         patch("celerp_docs.routes_share.httpx.AsyncClient") as mock_cls:
-        mock_client = AsyncMock()
-        mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(side_effect=ConnectionError("network fail"))
-
+         patch("celerp.services.outbound_url.fetch_public_bytes",
+               new=AsyncMock(side_effect=ConnectionError("network fail"))):
         r = await client.get(
             "/docs/import?src=https://other.celerp.test&token=fake-token",
             headers=_h(tok),

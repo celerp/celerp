@@ -12,6 +12,8 @@ from types import SimpleNamespace
 import pytest
 from fasthtml.common import to_xml
 
+from celerp.models.company import Company
+
 from ui.routes.settings_connectors import (
     _any_in_progress,
     _connector_status_view,
@@ -81,20 +83,54 @@ async def test_entity_runs_returns_latest_per_entity(_db_engine):
 
 
 @pytest.mark.asyncio
-async def test_clear_connector_config_removes_row(_db_engine):
-    """Disconnect's cleanup deletes the ConnectorConfig (stored secret/webhook-ids +
-    direction/frequency) so a later reconnect starts clean."""
-    from ui.routes.settings_connectors import (
-        _clear_connector_config,
-        _ensure_connector_config,
-        _get_connector_config,
+async def test_release_connector_ownership_clears_work_and_resets_cursor(_db_engine):
+    import sqlalchemy as sa
+    from celerp.connectors.ownership import (
+        ConnectorOwnershipError,
+        claim_connector_ownership,
+        lock_connector_operation,
+        release_connector_ownership,
     )
+    from celerp.db import get_session_ctx
+    from celerp.models.company import Company
+    from celerp.models.connector_config import OutboundQueue
+    from celerp.models.sync_run import SyncRun
 
-    cid = f"co-{uuid.uuid4().hex[:10]}"
-    await _ensure_connector_config(cid, "woocommerce", "website")
-    assert await _get_connector_config(cid, "woocommerce") is not None
-    await _clear_connector_config(cid, "woocommerce")
-    assert await _get_connector_config(cid, "woocommerce") is None
+    company_uuid = uuid.uuid4()
+    cid = str(company_uuid)
+    connector = f"release-{uuid.uuid4().hex[:10]}"
+    async with get_session_ctx() as session:
+        session.add(Company(
+            id=company_uuid,
+            name="Connector Release Co",
+            slug=f"connector-release-{company_uuid.hex[:8]}",
+            settings={},
+        ))
+        await session.flush()
+        await claim_connector_ownership(
+            session, cid, connector, default_sync_frequency="realtime"
+        )
+        session.add(OutboundQueue(
+            company_id=cid, connector=connector, entity_type="inventory",
+            entity_id="10", status="pending", retry_count=0,
+        ))
+        await session.flush()
+
+        await release_connector_ownership(session, cid, connector)
+        await session.flush()
+
+        assert await session.scalar(sa.select(sa.func.count()).select_from(OutboundQueue).where(
+            OutboundQueue.company_id == cid,
+            OutboundQueue.connector == connector,
+        )) == 0
+        assert await session.scalar(sa.select(sa.func.count()).select_from(SyncRun).where(
+            SyncRun.company_id == cid,
+            SyncRun.connector == connector,
+            SyncRun.entity == "__connector_reset__",
+        )) == 1
+        with pytest.raises(ConnectorOwnershipError):
+            await lock_connector_operation(session, cid, connector)
+        await session.rollback()
 
 
 def test_entitlement_cta_renders_trial_link():
@@ -130,3 +166,401 @@ def test_is_safe_authorize_url():
     assert is_safe_authorize_url("data:text/html,evil") is False              # non-web scheme
     assert is_safe_authorize_url("https://x/</script><script>evil()</script>") is False  # tag breakout
     assert is_safe_authorize_url("https://x/\x00abc") is False                # control char
+
+
+@pytest.mark.asyncio
+async def test_get_connector_config_adopts_legacy_instance_row(_db_engine):
+    from unittest.mock import patch
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig
+    from ui.routes.settings_connectors import _get_connector_config
+
+    company_uuid = uuid.uuid4()
+    company_id = str(company_uuid)
+    legacy_id = f"inst-{uuid.uuid4().hex[:10]}"
+    try:
+        async with get_session_ctx() as session:
+            session.add(Company(
+                id=company_uuid,
+                name="Legacy Connector Co",
+                slug=f"legacy-connector-{company_uuid.hex[:8]}",
+                settings={},
+            ))
+            session.add(ConnectorConfig(
+                company_id=legacy_id,
+                connector="woocommerce",
+                sync_frequency="realtime",
+            ))
+            await session.commit()
+        with patch("celerp.config.ensure_instance_id", return_value=legacy_id), \
+             patch("celerp.connectors.ownership.ensure_instance_id", return_value=legacy_id):
+            cfg = await _get_connector_config(company_id, "woocommerce")
+            assert cfg is not None
+            assert cfg.company_id == company_id
+            assert await _get_connector_config(company_id, "woocommerce") is not None
+    finally:
+        async with get_session_ctx() as session:
+            await session.execute(
+                sa.delete(ConnectorConfig).where(
+                    ConnectorConfig.company_id.in_([company_id, legacy_id])
+                )
+            )
+            await session.execute(sa.delete(Company).where(Company.id == company_uuid))
+            await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_connector_in_use_elsewhere_is_refused(_db_engine):
+    from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector_ownership
+    from celerp.db import get_session_ctx
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig
+
+    first_company_uuid = uuid.uuid4()
+    second_company_uuid = uuid.uuid4()
+    first_company = str(first_company_uuid)
+    second_company = str(second_company_uuid)
+    connector = f"owner-reject-{uuid.uuid4().hex[:10]}"
+    async with get_session_ctx() as session:
+        session.add_all([
+            Company(
+                id=first_company_uuid,
+                name="Connector Owner A",
+                slug=f"connector-owner-a-{first_company_uuid.hex[:8]}",
+                settings={},
+            ),
+            Company(
+                id=second_company_uuid,
+                name="Connector Owner B",
+                slug=f"connector-owner-b-{second_company_uuid.hex[:8]}",
+                settings={},
+            ),
+            ConnectorConfig(
+                company_id=first_company,
+                connector=connector,
+                direction="both",
+            ),
+        ])
+        await session.flush()
+
+        with pytest.raises(ConnectorOwnershipError):
+            await claim_connector_ownership(session, second_company, connector)
+        assert await claim_connector_ownership(
+            session, first_company, connector
+        ) is not None
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_connector_ownership_merges_legacy_operational_state(_db_engine):
+    import json
+    from unittest.mock import patch
+    import sqlalchemy as sa
+
+    from celerp.connectors.ownership import claim_connector_ownership
+    from celerp.db import get_session_ctx
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig
+
+    company_uuid = uuid.uuid4()
+    company_id = str(company_uuid)
+    legacy_id = f"inst-{uuid.uuid4().hex[:10]}"
+    connector = f"ownership-merge-{uuid.uuid4().hex[:10]}"
+    async with get_session_ctx() as session:
+        session.add_all([
+            Company(
+                id=company_uuid,
+                name="Connector Legacy Merge Co",
+                slug=f"connector-legacy-merge-{company_uuid.hex[:8]}",
+                settings={},
+            ),
+            ConnectorConfig(
+                company_id=company_id, connector=connector,
+                webhook_ids_json=json.dumps(["11"]), webhook_secret=None,
+                direction="inbound",
+            ),
+            ConnectorConfig(
+                company_id=legacy_id, connector=connector,
+                webhook_ids_json=json.dumps(["12"]), webhook_secret="legacy-secret",
+                direction="both",
+            ),
+        ])
+        await session.flush()
+
+        with patch("celerp.connectors.ownership.ensure_instance_id", return_value=legacy_id):
+            row = await claim_connector_ownership(session, company_id, connector)
+            await session.flush()
+            assert row is not None
+
+        rows = (await session.execute(sa.select(ConnectorConfig).where(
+            ConnectorConfig.connector == connector,
+            ConnectorConfig.company_id.in_([company_id, legacy_id]),
+        ))).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].company_id == company_id
+        assert set(rows[0].webhook_ids) == {"11", "12"}
+        assert rows[0].webhook_secret == "legacy-secret"
+        await session.rollback()
+
+
+def test_pending_oauth_connector_exposes_disconnect():
+    from types import SimpleNamespace
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import _connector_card
+
+    card = _connector_card(
+        {
+            "id": "quickbooks",
+            "name": "QuickBooks",
+            "category": "accounting",
+            "auth_type": "oauth",
+            "connected": False,
+            "entities": [],
+        },
+        None,
+        "https://relay.example",
+        "company-1",
+        config=SimpleNamespace(direction="both", sync_frequency="manual"),
+    )
+    html = to_xml(card)
+    assert '/settings/connectors/quickbooks/oauth-redirect' in html
+    assert 'hx-delete="/settings/connectors/quickbooks/disconnect"' in html
+
+
+def test_pending_apikey_connector_exposes_disconnect():
+    from types import SimpleNamespace
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import _connector_card
+
+    card = _connector_card(
+        {
+            "id": "woocommerce",
+            "name": "WooCommerce",
+            "category": "website",
+            "auth_type": "api_key",
+            "connected": False,
+            "entities": [],
+        },
+        None,
+        "https://relay.example",
+        "company-1",
+        config=SimpleNamespace(direction="both", sync_frequency="realtime"),
+    )
+    html = to_xml(card)
+    assert '/settings/connectors/woocommerce/connect-apikey' in html
+    assert 'hx-delete="/settings/connectors/woocommerce/disconnect"' in html
+
+
+@pytest.mark.asyncio
+async def test_needs_plan_keeps_owned_connector_disconnect_visible():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import connectors_tab_content
+
+    config = SimpleNamespace(
+        connector="quickbooks",
+        direction="both",
+        sync_frequency="manual",
+    )
+    with patch(
+        "ui.routes.settings_connectors._fetch_catalog",
+        new=AsyncMock(return_value=([], "plan required", True)),
+    ), patch(
+        "ui.routes.settings_connectors._owned_connector_configs",
+        new=AsyncMock(return_value=[config]),
+    ):
+        html = to_xml(await connectors_tab_content(
+            "en", "token", "accounting", "company-1"
+        ))
+
+    assert "quickbooks" in html.lower()
+    assert 'hx-delete="/settings/connectors/quickbooks/disconnect"' in html
+
+
+async def _company(session, label: str):
+    cid = uuid.uuid4()
+    session.add(Company(id=cid, name=f"{label} Co", slug=f"{label.lower()}-{cid.hex[:8]}", settings={}))
+    await session.flush()
+    return str(cid)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_while_linked_twice_changes_only_this_company(_db_engine):
+    """Disconnecting a connector linked twice changes only this company's own
+    link and records the reset for it."""
+    import sqlalchemy as sa
+    from celerp.connectors.ownership import (
+        OWNERSHIP_AMBIGUOUS,
+        connector_ownership_state,
+        release_connector_ownership,
+    )
+    from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+    from celerp.models.sync_run import SyncRun
+
+    connector = f"amb-{uuid.uuid4().hex[:10]}"
+    async with get_session_ctx() as session:
+        a = await _company(session, "AmbigA")
+        b = await _company(session, "AmbigB")
+        session.add_all([
+            ConnectorConfig(company_id=a, connector=connector),
+            ConnectorConfig(company_id=b, connector=connector),
+        ])
+        await session.flush()
+        assert await connector_ownership_state(session, a, connector) == OWNERSHIP_AMBIGUOUS
+
+        await release_connector_ownership(session, a, connector)
+        await session.flush()
+
+        remaining = (await session.execute(
+            sa.select(ConnectorConfig.company_id).where(ConnectorConfig.connector == connector)
+        )).scalars().all()
+        assert [str(r) for r in remaining] == [b]
+        resets = (await session.execute(
+            sa.select(SyncRun.company_id).where(
+                SyncRun.connector == connector, SyncRun.entity == CONNECTOR_RESET_ENTITY
+            )
+        )).scalars().all()
+        assert resets == [a]
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_connector_release_scope_names_what_a_disconnect_may_touch(_db_engine, monkeypatch):
+    """A company releases its own row plus any unclaimed legacy row, and a
+    company with no row of its own has nothing to release."""
+    from celerp.connectors.ownership import ConnectorOwnershipError, connector_release_scope
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+
+    legacy = f"inst-{uuid.uuid4().hex}"
+    monkeypatch.setattr("celerp.connectors.ownership.ensure_instance_id", lambda: legacy)
+    shared, legacy_only = (f"scope-{uuid.uuid4().hex[:10]}" for _ in range(2))
+    async with get_session_ctx() as session:
+        a = await _company(session, "ScopeA")
+        b = await _company(session, "ScopeB")
+        c = await _company(session, "ScopeC")
+        session.add_all([
+            ConnectorConfig(company_id=a, connector=shared),
+            ConnectorConfig(company_id=b, connector=shared),
+            ConnectorConfig(company_id=a, connector=legacy_only),
+            ConnectorConfig(company_id=legacy, connector=legacy_only),
+        ])
+        await session.flush()
+
+        rows = await connector_release_scope(session, a, shared)
+        assert [str(r.company_id) for r in rows] == [a]
+        rows = await connector_release_scope(session, a, legacy_only)
+        assert sorted(str(r.company_id) for r in rows) == sorted([a, legacy])
+        with pytest.raises(ConnectorOwnershipError):
+            await connector_release_scope(session, c, shared)
+        await session.rollback()
+
+
+def _second_engine():
+    import os
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    engine = create_async_engine(os.environ["DATABASE_URL"], poolclass=NullPool)
+    return engine, async_sessionmaker(bind=engine, expire_on_commit=False)
+
+
+@pytest.mark.asyncio
+async def test_connector_work_shares_the_fence_and_only_ownership_changes_wait(_db_engine, monkeypatch):
+    """Connector work holds the per-connector fence shared, so two syncs on one
+    connector proceed together; an ownership change takes it exclusive and, while
+    work is running, gives up with a busy error instead of stalling."""
+    import asyncio
+    from celerp.connectors.ownership import ConnectorBusyError, lock_connector_key
+
+    if _db_engine.dialect.name == "sqlite":
+        pytest.skip("advisory locks are Postgres-only")
+    monkeypatch.setattr("celerp.connectors.ownership.OWNER_LOCK_TIMEOUT_MS", 300)
+    connector = f"fence-{uuid.uuid4().hex[:10]}"
+    engine, factory = _second_engine()
+    try:
+        async with factory() as work_a, factory() as work_b, factory() as owner:
+            await lock_connector_key(work_a, connector)
+            await asyncio.wait_for(lock_connector_key(work_b, connector), timeout=5)
+            with pytest.raises(ConnectorBusyError):
+                await lock_connector_key(owner, connector, exclusive=True)
+            await owner.rollback()
+            await work_a.rollback()
+            await work_b.rollback()
+            async with factory() as owner_free:
+                await asyncio.wait_for(
+                    lock_connector_key(owner_free, connector, exclusive=True), timeout=5
+                )
+                await owner_free.rollback()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_engine):
+    """A company's imported orders keep the store's own numbers, so a sync
+    against a different store stops before it imports anything; a company with
+    nothing imported yet may move to a new store."""
+    from datetime import datetime, timezone
+
+    import sqlalchemy as sa
+
+    from celerp.connectors.base import ConnectorContext, SyncDirection, SyncEntity, SyncResult
+    from celerp.connectors.sync_runner import run_sync
+    from celerp.db import get_session_ctx
+    from celerp.models.company import Company
+    from celerp.models.projections import Projection
+    from celerp.models.sync_run import SyncRun
+
+    class _Store:
+        name = "woocommerce"
+        direction = SyncDirection.BOTH
+        calls = 0
+
+        async def sync_orders(self, ctx, since=None):
+            type(self).calls += 1
+            return SyncResult(entity=SyncEntity.ORDERS, updated=1)
+
+    cid_uuid = uuid.uuid4()
+    cid = str(cid_uuid)
+    now = datetime.now(timezone.utc)
+    async with get_session_ctx() as session:
+        session.add(Company(
+            id=cid_uuid, name="Store Move", slug=f"store-move-{cid_uuid.hex[:8]}", settings={},
+        ))
+        await session.commit()
+
+    def _ctx(store):
+        return ConnectorContext(company_id=cid, access_token="k:s", store_handle=store)
+
+    try:
+        first = await run_sync(_Store(), _ctx("https://first.example"), "orders", use_watermark=False)
+        assert not first.errors
+        moved = await run_sync(_Store(), _ctx("https://second.example"), "orders", use_watermark=False)
+        assert not moved.errors
+
+        async with get_session_ctx() as session:
+            session.add(Projection(
+                company_id=cid_uuid, entity_id="doc:woocommerce:order:100", entity_type="doc",
+                version=1, created_at=now, updated_at=now, state={"doc_type": "invoice"},
+            ))
+            await session.commit()
+
+        _Store.calls = 0
+        other = await run_sync(_Store(), _ctx("https://third.example"), "orders", use_watermark=False)
+        assert other.errors and "https://second.example" in other.errors[0]
+        assert _Store.calls == 0
+        same = await run_sync(_Store(), _ctx("https://second.example"), "orders", use_watermark=False)
+        assert not same.errors and _Store.calls == 1
+    finally:
+        async with get_session_ctx() as session:
+            await session.execute(sa.delete(SyncRun).where(SyncRun.company_id == cid))
+            await session.execute(sa.delete(Projection).where(Projection.company_id == cid_uuid))
+            await session.execute(sa.delete(Company).where(Company.id == cid_uuid))
+            await session.commit()

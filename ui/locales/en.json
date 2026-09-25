@@ -3162,5 +3162,18 @@
   "ai.scenario_reconcile_label": "Statement reconciliation",
   "ai.scenario_reconcile_user": "📎 Attached: card_statement_june.csv. Reconcile this against our books.",
   "ai.scenario_reconcile_thinking": "Importing 48 statement lines… matching bills and payments…",
-  "ai.scenario_reconcile_reply": "Imported 48 lines. 41 match recorded payments.\n  • 4 lines match unpaid bills: proposed marking them paid\n  • 2 lines have no bill: proposed new bills (Cloud Hosting Ltd, Parking Co)\n  • 1 line is a 0.02 rounding difference: proposed write-off\nEach proposal is a card you confirm or dismiss. Nothing changes until you confirm."
+  "ai.scenario_reconcile_reply": "Imported 48 lines. 41 match recorded payments.\n  • 4 lines match unpaid bills: proposed marking them paid\n  • 2 lines have no bill: proposed new bills (Cloud Hosting Ltd, Parking Co)\n  • 1 line is a 0.02 rounding difference: proposed write-off\nEach proposal is a card you confirm or dismiss. Nothing changes until you confirm.",
+  "connectors.pending_title": "Connection in progress",
+  "connectors.pending_hint": "The {name} authorization was started but not finished. Finish it, or cancel to release this connection.",
+  "connectors.finish": "Finish",
+  "connectors.ambiguous": "This connector is linked to more than one company. Disconnect it, then reconnect it from the company that should use it.",
+  "connectors.other_company": "Connected to another company.",
+  "connectors.reconnect_after_deactivation": "Connectors were disconnected when this company was deactivated: {names}. Reconnect them below.",
+  "connectors.deposit_label": "Deposit payments to",
+  "connectors.deposit_default": "Online payments default",
+  "connectors.deposit_unknown_account": "{code} is not an active bank account.",
+  "connectors.attention_header": "Orders needing attention",
+  "connectors.attention_count": "{n} need attention",
+  "connectors.attention_mark_reconciled": "Mark reconciled",
+  "connectors.attention_reconciled": "Marked reconciled. It leaves this list after the next sync."
 }

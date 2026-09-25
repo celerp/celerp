@@ -3162,5 +3162,18 @@
   "ai.resets_on": "Đặt lại vào {date}",
   "ai.service_unavailable": "Celerp AI tạm thời không khả dụng. Hãy kiểm tra Connect và thử lại.",
   "ai.untitled_conversation": "Cuộc trò chuyện chưa đặt tên",
-  "ai.uploading": "Đang tải lên..."
+  "ai.uploading": "Đang tải lên...",
+  "connectors.pending_title": "Đang kết nối",
+  "connectors.pending_hint": "Việc ủy quyền {name} đã bắt đầu nhưng chưa hoàn tất. Hãy hoàn tất, hoặc hủy để giải phóng kết nối này.",
+  "connectors.finish": "Hoàn tất",
+  "connectors.ambiguous": "Trình kết nối này được liên kết với nhiều hơn một công ty. Hãy ngắt kết nối, rồi kết nối lại từ công ty cần sử dụng nó.",
+  "connectors.other_company": "Đã kết nối với một công ty khác.",
+  "connectors.reconnect_after_deactivation": "Các trình kết nối đã bị ngắt khi công ty này bị vô hiệu hóa: {names}. Hãy kết nối lại bên dưới.",
+  "connectors.deposit_label": "Ghi nhận thanh toán vào",
+  "connectors.deposit_default": "Mặc định của thanh toán trực tuyến",
+  "connectors.deposit_unknown_account": "{code} không phải là tài khoản ngân hàng đang hoạt động.",
+  "connectors.attention_header": "Đơn hàng cần chú ý",
+  "connectors.attention_count": "{n} cần chú ý",
+  "connectors.attention_mark_reconciled": "Đánh dấu đã đối chiếu",
+  "connectors.attention_reconciled": "Đã đánh dấu đối chiếu. Sẽ rời danh sách này sau lần đồng bộ tiếp theo."
 }

@@ -813,3 +813,13 @@ def remove_enabled_module(name: str) -> None:
 
     _update_config(_remove)
 
+
+def sync_engine_url(db_url: str) -> str:
+    """db_url for a synchronous SQLAlchemy engine (Alembic and the CLI's checks),
+    naming psycopg2 as the driver. A bare postgresql:// leaves the driver to
+    SQLAlchemy, whose default moved to psycopg 3 in 2.1, and only psycopg2 is
+    installed. Not for pg_dump or psql, which take a plain libpq URL."""
+    for prefix in ("postgresql+asyncpg://", "postgresql+psycopg2://", "postgresql://"):
+        if db_url.startswith(prefix):
+            return "postgresql+psycopg2://" + db_url[len(prefix):]
+    return db_url

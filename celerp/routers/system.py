@@ -60,7 +60,7 @@ async def restart_server(
 _TRUNCATE_TABLES = [
     "ledger", "projections", "notifications", "import_batches", "sync_runs",
     "doc_share_tokens", "ai_conversations", "ai_messages", "ai_batch_jobs",
-    "connector_configs",
+    "outbound_queue", "connector_configs",
     "accounts", "bank_accounts", "bank_statement_lines",
     "label_templates", "reconciliation_rules", "reconciliation_sessions",
     "marketplace_configs", "session_registry", "user_auth_state",
@@ -75,8 +75,10 @@ async def factory_reset(
 ) -> dict:
     """Wipe all company data and return the system to a fresh-install state."""
     from sqlalchemy import text
+    from celerp.connectors.ownership import lock_connector_maintenance
 
     async with session.begin():
+        await lock_connector_maintenance(session)
         for table in _TRUNCATE_TABLES:
             await session.execute(text(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE"))
         await session.execute(

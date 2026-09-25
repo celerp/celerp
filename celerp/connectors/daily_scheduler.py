@@ -21,23 +21,6 @@ from celerp.models.connector_config import ConnectorConfig
 
 log = logging.getLogger(__name__)
 
-# Outbound entity -> connector method. A connector "supports" an outbound entity when it
-# overrides the base (which raises NotImplementedError); we only dispatch those, so the
-# scheduler never emits a failed run for a push a connector doesn't implement.
-_OUTBOUND_ENTITY_METHODS = {
-    "products_out": "sync_products_out",
-    "invoices_out": "sync_invoices_out",
-    "inventory_out": "sync_inventory_out",
-}
-
-
-def _supported_outbound(connector) -> list[str]:
-    from celerp.connectors.base import ConnectorBase
-    return [
-        entity for entity, method in _OUTBOUND_ENTITY_METHODS.items()
-        if getattr(type(connector), method, None) is not getattr(ConnectorBase, method, None)
-    ]
-
 _CHECK_INTERVAL_SECONDS = 3600  # check every hour
 _MIN_HOURS_BETWEEN_SYNCS = 23
 
@@ -57,7 +40,7 @@ async def check_and_run_daily_syncs(
     """
     from celerp.db import get_session_ctx
     import celerp.connectors as connector_registry
-    from celerp.connectors.sync_runner import run_sync
+    from celerp.connectors.sync_runner import run_connector_sync
 
     now = datetime.now(timezone.utc)
     synced: list[str] = []
@@ -106,19 +89,17 @@ async def check_and_run_daily_syncs(
             log.warning("daily_scheduler: token fetch failed for %s: %s", config.connector, exc)
             continue
 
-        # Sync every supported entity, honouring the configured direction: inbound
-        # entities pull from the platform; outbound (*_out) entities push back the ones
-        # the connector actually implements. run_sync enforces the direction gate too.
         direction = SyncDirection(config.direction)
-        entities = [e.value for e in connector.supported_entities]
-        if direction in (SyncDirection.BOTH, SyncDirection.OUTBOUND):
-            entities += _supported_outbound(connector)
-        entity_results = []
-        for entity in entities:
-            try:
-                entity_results.append(await run_sync(connector, ctx, entity, direction=direction))
-            except Exception as exc:
-                log.error("daily_scheduler: sync error %s/%s: %s", config.connector, entity, exc)
+        try:
+            entity_results = await run_connector_sync(
+                connector,
+                ctx,
+                direction=direction,
+                full_entities={"products"} if config.connector == "woocommerce" else None,
+            )
+        except Exception as exc:
+            log.error("daily_scheduler: sync error %s: %s", config.connector, exc)
+            entity_results = []
 
         # Only mark the connector synced (advancing the daily clock) if at least one
         # entity made progress. On a total failure (e.g. a transient outage) we leave
@@ -128,14 +109,28 @@ async def check_and_run_daily_syncs(
             log.warning("daily_scheduler: all entities failed for %s — will retry when next due", config.connector)
             continue
 
-        synced.append(config.connector)
+        from celerp.connectors.ownership import (
+            ConnectorOwnershipError,
+            lock_connector_operation,
+        )
+
         async with get_session_ctx() as session:
-            await session.execute(
-                sa.update(ConnectorConfig)
-                .where(ConnectorConfig.id == config.id)
-                .values(last_daily_sync_at=now)
-            )
+            try:
+                current = await lock_connector_operation(
+                    session,
+                    company_id,
+                    config.connector,
+                    require_owner=True,
+                )
+            except ConnectorOwnershipError:
+                await session.rollback()
+                continue
+            if current.id != config.id:
+                await session.rollback()
+                continue
+            current.last_daily_sync_at = now
             await session.commit()
+        synced.append(config.connector)
 
     return synced
 
@@ -153,10 +148,13 @@ async def scheduler_loop(company_id: str, token_fetcher: TokenFetcher | None = N
 
 
 async def _distinct_company_ids() -> list[str]:
+    from celerp.config import ensure_instance_id
     from celerp.db import get_session_ctx
+
+    legacy_id = ensure_instance_id()
     async with get_session_ctx() as session:
         rows = await session.execute(sa.select(ConnectorConfig.company_id).distinct())
-        return [r[0] for r in rows]
+        return [str(r[0]) for r in rows if str(r[0]) != legacy_id]
 
 
 async def scheduler_loop_all(token_fetcher: TokenFetcher | None = None) -> None:

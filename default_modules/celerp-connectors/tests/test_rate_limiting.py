@@ -69,3 +69,27 @@ async def test_503_triggers_backoff():
         async with RateLimitedClient(backoff_base=0.01) as client:
             resp = await client.get("https://api.test/items")
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_post_503_is_not_retried():
+    with respx.mock:
+        route = respx.post("https://api.test/items").mock(
+            return_value=httpx.Response(503)
+        )
+        async with RateLimitedClient(backoff_base=0.01) as client:
+            resp = await client.post("https://api.test/items", json={"name": "x"})
+    assert resp.status_code == 503
+    assert route.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_post_ambiguous_transport_error_is_not_retried():
+    with respx.mock:
+        route = respx.post("https://api.test/items").mock(
+            side_effect=httpx.ReadTimeout("ambiguous")
+        )
+        async with RateLimitedClient(backoff_base=0.01) as client:
+            with pytest.raises(httpx.ReadTimeout):
+                await client.post("https://api.test/items", json={"name": "x"})
+    assert route.call_count == 1

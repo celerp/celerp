@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Tests for company soft-delete (deactivate/reactivate)."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from httpx import AsyncClient
 
@@ -159,3 +161,178 @@ async def test_reactivate_endpoint(client: AsyncClient):
     r = await client.post("/companies/me/reactivate", headers=_auth(token))
     assert r.status_code == 200
     assert r.json()["is_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_deactivated_company_blocks_connector_operations(client: AsyncClient, session):
+    from uuid import UUID
+
+    from celerp.connectors.ownership import (
+        ConnectorOwnershipError,
+        lock_connector_operation,
+    )
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig
+
+    token = await _register(client, "connector-owner@deact.test", "Connector Deact")
+    companies = (await client.get(
+        "/auth/my-companies", headers=_auth(token)
+    )).json()["items"]
+    company_id = UUID(companies[0]["company_id"])
+
+    session.add(ConnectorConfig(
+        company_id=str(company_id),
+        connector="woocommerce",
+    ))
+    await session.commit()
+
+    company = await session.get(Company, company_id)
+    company.is_active = False
+    await session.commit()
+
+    with pytest.raises(ConnectorOwnershipError, match="inactive"):
+        await lock_connector_operation(
+            session, str(company_id), "woocommerce", require_owner=True
+        )
+    await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_deactivate_releases_connector_reservation(client: AsyncClient, session):
+    from uuid import UUID
+    from sqlalchemy import select
+
+    from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
+    from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+    from celerp.models.sync_run import SyncRun
+
+    token = await _register(
+        client, "connector-cleanup@deact.test", "Connector Cleanup"
+    )
+    companies = (await client.get(
+        "/auth/my-companies", headers=_auth(token)
+    )).json()["items"]
+    company_id = UUID(companies[0]["company_id"])
+
+    session.add(ConnectorConfig(
+        company_id=str(company_id),
+        connector="woocommerce",
+    ))
+    session.add(OutboundQueue(
+        company_id=str(company_id),
+        connector="woocommerce",
+        entity_type="item",
+        entity_id="item:1",
+    ))
+    await session.commit()
+
+    cleanup = AsyncMock()
+    with patch(
+        "celerp.connectors.remote_state.revoke_connector_remote_state",
+        cleanup,
+    ):
+        response = await client.delete("/companies/me", headers=_auth(token))
+    assert response.status_code == 200
+    cleanup.assert_awaited_once_with(
+        str(company_id), "woocommerce", webhook_ids=[]
+    )
+
+    session.expire_all()
+    assert await session.scalar(
+        select(ConnectorConfig).where(
+            ConnectorConfig.company_id == str(company_id)
+        )
+    ) is None
+    assert await session.scalar(
+        select(OutboundQueue).where(
+            OutboundQueue.company_id == str(company_id)
+        )
+    ) is None
+    reset = await session.scalar(
+        select(SyncRun).where(
+            SyncRun.company_id == str(company_id),
+            SyncRun.connector == "woocommerce",
+            SyncRun.entity == CONNECTOR_RESET_ENTITY,
+        )
+    )
+    assert reset is not None
+    assert reset.status == "deactivated"
+
+
+
+@pytest.mark.asyncio
+async def test_deactivate_fails_closed_when_remote_cleanup_is_ambiguous(
+    client: AsyncClient, session
+):
+    from uuid import UUID
+    from sqlalchemy import select
+
+    from celerp.connectors.remote_state import ConnectorRemoteCleanupError
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig
+
+    token = await _register(
+        client, "connector-cleanup-fails@deact.test", "Connector Cleanup Fails"
+    )
+    companies = (await client.get(
+        "/auth/my-companies", headers=_auth(token)
+    )).json()["items"]
+    company_id = UUID(companies[0]["company_id"])
+    session.add(ConnectorConfig(
+        company_id=str(company_id),
+        connector="woocommerce",
+    ))
+    await session.commit()
+
+    with patch(
+        "celerp.connectors.remote_state.revoke_connector_remote_state",
+        new=AsyncMock(side_effect=ConnectorRemoteCleanupError("unknown")),
+    ):
+        response = await client.delete("/companies/me", headers=_auth(token))
+
+    assert response.status_code == 503
+    session.expire_all()
+    company = await session.get(Company, company_id)
+    assert company is not None and company.is_active is True
+    assert await session.scalar(select(ConnectorConfig).where(
+        ConnectorConfig.company_id == str(company_id),
+        ConnectorConfig.connector == "woocommerce",
+    )) is not None
+
+
+@pytest.mark.asyncio
+async def test_reactivate_names_lost_connectors_without_restoring_them(client: AsyncClient, session):
+    """Reactivation never silently reconnects: the connectors the deactivation
+    released are reported for an explicit reconnect, and no configuration row
+    comes back on its own."""
+    from uuid import UUID
+    from sqlalchemy import select
+
+    from celerp.connectors.ownership import connectors_awaiting_reconnect
+    from celerp.models.connector_config import ConnectorConfig
+
+    token = await _register(client, "reconnect@deact.test", "Reconnect Co")
+    companies = (await client.get("/auth/my-companies", headers=_auth(token))).json()["items"]
+    company_id = UUID(companies[0]["company_id"])
+    session.add(ConnectorConfig(company_id=str(company_id), connector="woocommerce"))
+    await session.commit()
+
+    with patch("celerp.connectors.remote_state.revoke_connector_remote_state", AsyncMock()):
+        assert (await client.delete("/companies/me", headers=_auth(token))).status_code == 200
+
+    session.expire_all()
+    assert await connectors_awaiting_reconnect(session, company_id) == ["woocommerce"]
+
+    r = await client.post("/companies/me/reactivate", headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert r.json()["connectors_to_reconnect"] == ["woocommerce"]
+    session.expire_all()
+    assert await session.scalar(
+        select(ConnectorConfig).where(ConnectorConfig.company_id == str(company_id))
+    ) is None
+    assert await connectors_awaiting_reconnect(session, company_id) == ["woocommerce"]
+
+    # An explicit reconnect clears the prompt.
+    session.add(ConnectorConfig(company_id=str(company_id), connector="woocommerce"))
+    await session.commit()
+    assert await connectors_awaiting_reconnect(session, company_id) == []

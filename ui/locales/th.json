@@ -3162,5 +3162,18 @@
   "ai.resets_on": "รีเซ็ตวันที่ {date}",
   "ai.service_unavailable": "Celerp AI ไม่พร้อมใช้งานชั่วคราว โปรดตรวจสอบ Connect แล้วลองอีกครั้ง",
   "ai.untitled_conversation": "การสนทนาที่ยังไม่มีชื่อ",
-  "ai.uploading": "กำลังอัปโหลด..."
+  "ai.uploading": "กำลังอัปโหลด...",
+  "connectors.pending_title": "กำลังเชื่อมต่อ",
+  "connectors.pending_hint": "การอนุญาต {name} เริ่มแล้วแต่ยังไม่เสร็จ ทำให้เสร็จ หรือยกเลิกเพื่อปล่อยการเชื่อมต่อนี้",
+  "connectors.finish": "ทำให้เสร็จ",
+  "connectors.ambiguous": "ตัวเชื่อมต่อนี้เชื่อมโยงกับมากกว่าหนึ่งบริษัท ตัดการเชื่อมต่อ แล้วเชื่อมต่อใหม่จากบริษัทที่ควรใช้งาน",
+  "connectors.other_company": "เชื่อมต่อกับบริษัทอื่น",
+  "connectors.reconnect_after_deactivation": "ตัวเชื่อมต่อถูกตัดการเชื่อมต่อเมื่อบริษัทนี้ถูกปิดใช้งาน: {names} เชื่อมต่อใหม่ด้านล่าง",
+  "connectors.deposit_label": "บันทึกการชำระเงินเข้า",
+  "connectors.deposit_default": "ค่าเริ่มต้นของการชำระเงินออนไลน์",
+  "connectors.deposit_unknown_account": "{code} ไม่ใช่บัญชีธนาคารที่ใช้งานอยู่",
+  "connectors.attention_header": "คำสั่งซื้อที่ต้องตรวจสอบ",
+  "connectors.attention_count": "{n} รายการต้องตรวจสอบ",
+  "connectors.attention_mark_reconciled": "ทำเครื่องหมายว่ากระทบยอดแล้ว",
+  "connectors.attention_reconciled": "ทำเครื่องหมายว่ากระทบยอดแล้ว จะหายจากรายการนี้หลังการซิงค์ครั้งถัดไป"
 }

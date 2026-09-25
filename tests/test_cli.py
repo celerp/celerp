@@ -397,7 +397,8 @@ def test_migrate_to_head_takes_and_frees_a_real_advisory_lock():
     if not db_url:
         pytest.skip("needs a live database")
     import sqlalchemy as sa
-    from celerp.cli import _migrate_to_head, _sync_url
+    from celerp.cli import _migrate_to_head
+    from celerp.config import sync_engine_url
     from celerp.db import _MIGRATION_LOCK_KEY
 
     with patch("celerp.cli._run_migrations"), \
@@ -405,7 +406,7 @@ def test_migrate_to_head_takes_and_frees_a_real_advisory_lock():
          patch("celerp.cli._reconcile_after_migrate"):
         _migrate_to_head(db_url)
 
-    engine = sa.create_engine(_sync_url(db_url))
+    engine = sa.create_engine(sync_engine_url(db_url))
     with engine.connect() as conn:
         # pg_locks is cluster-wide, so a concurrent xdist worker on another
         # database of the shared test server can hold this same advisory key

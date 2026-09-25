@@ -210,8 +210,10 @@ def _ensure_app_database(host: str, port: int | None) -> None:
     superuser, so none of the external path's sudo/ownership dance applies."""
     from sqlalchemy import create_engine, text
 
+    from celerp.config import sync_engine_url
+
     engine = create_engine(
-        _uri(host, port, "postgres").replace("+asyncpg", ""),
+        sync_engine_url(_uri(host, port, "postgres")),
         isolation_level="AUTOCOMMIT",
     )
     try:

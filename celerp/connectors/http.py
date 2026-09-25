@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
 import httpx
 
@@ -22,10 +23,22 @@ class RateLimitedClient:
         timeout: float = 30.0,
         max_retries: int = _DEFAULT_MAX_RETRIES,
         backoff_base: float = _DEFAULT_BACKOFF_BASE,
+        before_request: Callable[[str], Awaitable[None]] | None = None,
+        public_only: bool = False,
     ) -> None:
-        self._client = httpx.AsyncClient(timeout=timeout)
+        transport = None
+        if public_only:
+            from celerp.services.outbound_url import public_async_transport
+            transport = public_async_transport()
+        self._client = httpx.AsyncClient(
+            timeout=timeout,
+            follow_redirects=False,
+            trust_env=False,
+            transport=transport,
+        )
         self._max_retries = max_retries
         self._backoff_base = backoff_base
+        self._before_request = before_request
 
     async def __aenter__(self) -> "RateLimitedClient":
         return self
@@ -53,18 +66,21 @@ class RateLimitedClient:
     )
 
     async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        retryable = method.upper() != "POST"
         for attempt in range(self._max_retries + 1):
+            if self._before_request is not None:
+                await self._before_request(url)
             try:
                 resp = await self._client.request(method, url, **kwargs)
             except self._RETRY_EXC as exc:
-                if attempt == self._max_retries:
+                if not retryable or attempt == self._max_retries:
                     raise
                 delay = self._backoff_base ** attempt
                 log.info("Transport error (%s), retry %d/%d in %.1fs",
                          type(exc).__name__, attempt + 1, self._max_retries, delay)
                 await asyncio.sleep(delay)
                 continue
-            if resp.status_code not in (429, 503):
+            if resp.status_code not in (429, 503) or not retryable:
                 return resp
             if attempt == self._max_retries:
                 return resp  # Return the 429/503 on final attempt, let caller handle

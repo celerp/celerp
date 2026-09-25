@@ -16,8 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp import __version__
 from celerp.db import get_session
 from celerp.services.auth import (
-    ROLE_LEVELS, get_current_role, get_current_user,
-    is_install_owner, require_install_owner,
+    ROLE_LEVELS,
+    get_current_company_id,
+    get_current_role,
+    get_current_user,
+    is_install_owner,
+    require_install_owner,
 )
 from celerp.services.permissions import require_permission
 from celerp.services.system_health import get_system_health
@@ -1129,41 +1133,39 @@ async def cloud_claim_api(payload: dict) -> dict:
     return {"linked": True, "instance_id": iid}
 
 @settings_router.get("/connectors-catalog", dependencies=[require_permission("manage_integrations")])
-async def connectors_catalog_api() -> dict:
+async def connectors_catalog_api(
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
     """Proxy relay /api/connectors using a fresh relay JWT (API process only)."""
-    import httpx
-    from celerp.config import settings as _s, ensure_instance_id
+    from celerp.config import settings as _s
 
-    iid = ensure_instance_id()
     api_key = _s.gateway_token  # this is the permanent API key, not a JWT
     if not api_key:
         return {"error": "Not connected to relay.", "connectors": []}
 
-    from celerp.gateway.state import (
-        fetch_relay_auth, relay_http_url as _rhu, with_relay_client)
-    relay_base = _rhu()
-
-    async def _catalog(c):
-        jwt, authenticated_iid = await fetch_relay_auth(c, api_key=api_key)
-        return await c.get(
-            f"{relay_base}/api/connectors",
-            params={"instance_id": authenticated_iid or iid},
-            headers={"Authorization": f"Bearer {jwt}"},
-        )
-
-    try:
-        r = await with_relay_client(8.0, _catalog)
-    except httpx.ConnectError:
-        return {"error": f"Cannot reach {relay_base}.", "connectors": []}
-    except httpx.TimeoutException:
-        return {"error": "Relay timed out.", "connectors": []}
-    except Exception as exc:
-        return {"error": str(exc), "connectors": []}
+    r = await _relay_connectors(api_key)
     if isinstance(r, dict):
         return r
 
     if r.status_code == 200:
-        return {"connectors": r.json().get("connectors", [])}
+        from celerp.connectors.ownership import (
+            OWNERSHIP_OWNED,
+            company_has_connector_claim,
+            connector_ownership_state,
+        )
+
+        connectors = r.json().get("connectors", [])
+        for connector in connectors:
+            name = str(connector.get("id") or "")
+            ownership = await connector_ownership_state(session, company_id, name)
+            connector["ownership"] = ownership
+            connector["local_claim"] = await company_has_connector_claim(
+                session, company_id, name
+            )
+            if connector.get("connected") and ownership != OWNERSHIP_OWNED:
+                connector["connected"] = False
+        return {"connectors": connectors}
     if r.status_code == 402:
         # Free accounts reach this page but connectors need a paid plan - show
         # the relay's plain upgrade message, not a bare status code.
@@ -1176,15 +1178,123 @@ async def connectors_catalog_api() -> dict:
     return {"error": f"Relay returned {r.status_code}.", "connectors": []}
 
 
+async def _relay_connectors(api_key: str):
+    """GET the connector catalog. Returns the httpx response, or an error dict
+    shaped like the catalog proxy's reply when it cannot be reached."""
+    import httpx
+    from celerp.config import ensure_instance_id
+    from celerp.gateway.state import (
+        fetch_relay_auth, relay_http_url as _rhu, with_relay_client)
+
+    relay_base = _rhu()
+    iid = ensure_instance_id()
+
+    async def _catalog(c):
+        jwt, authenticated_iid = await fetch_relay_auth(c, api_key=api_key)
+        return await c.get(
+            f"{relay_base}/api/connectors",
+            params={"instance_id": authenticated_iid or iid},
+            headers={"Authorization": f"Bearer {jwt}"},
+        )
+
+    try:
+        return await with_relay_client(8.0, _catalog)
+    except httpx.ConnectError:
+        return {"error": f"Cannot reach {relay_base}.", "connectors": []}
+    except httpx.TimeoutException:
+        return {"error": "Relay timed out.", "connectors": []}
+    except Exception as exc:
+        return {"error": str(exc), "connectors": []}
+
+
+async def _relay_reports_connected(api_key: str, platform: str) -> bool | None:
+    """Whether ``platform`` is currently connected; None when that could not
+    be checked."""
+    r = await _relay_connectors(api_key)
+    if isinstance(r, dict) or r.status_code != 200:
+        return None
+    for connector in r.json().get("connectors", []):
+        if connector.get("id") == platform:
+            return bool(connector.get("connected"))
+    return False
+
+
 @settings_router.get("/connectors/{platform}/authorize-url", dependencies=[require_permission("manage_integrations")])
-async def connector_authorize_url(platform: str, shop: str = "") -> dict:
-    """Get OAuth authorize URL for a connector platform via API process (holds gateway token)."""
+async def connector_authorize_url(
+    platform: str,
+    shop: str = "",
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Get an OAuth authorization URL for a connector."""
     import httpx
     from celerp.config import settings as _s, ensure_instance_id
 
     api_key = _s.gateway_token
     if not api_key:
         return {"error": "Not connected to relay."}
+
+    from celerp.connectors.base import ConnectorCategory, SyncFrequency
+    from celerp.connectors.ownership import (
+        ConnectorOwnershipError,
+        claim_connector_ownership,
+        lock_connector_operation,
+        release_connector_ownership,
+    )
+    from celerp.connectors.registry import get as get_connector
+
+    try:
+        connector = get_connector(platform)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    category = getattr(connector.category, "value", connector.category)
+    default_frequency = (
+        SyncFrequency.REALTIME.value
+        if category == ConnectorCategory.WEBSITE.value
+        else SyncFrequency.MANUAL.value
+    )
+    async def _claim() -> bool:
+        try:
+            _config, created = await claim_connector_ownership(
+                session,
+                company_id,
+                platform,
+                default_sync_frequency=default_frequency,
+                report_created=True,
+            )
+        except ConnectorOwnershipError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return created
+
+    ownership_created = await _claim()
+    if not ownership_created:
+        # This company started an authorization before. A finished connection
+        # must be disconnected first; an unfinished one is replaced by this
+        # attempt. The check runs without the connector lock held, so a sync
+        # in progress is never held up by it.
+        await session.rollback()
+        connected = await _relay_reports_connected(api_key, platform)
+        if connected is None:
+            return {"error": "Could not check the existing connection with the relay."}
+        if connected:
+            return {
+                "error": "Disconnect the existing connector before reconnecting it."
+            }
+        ownership_created = await _claim()
+
+    try:
+        await session.commit()
+        await lock_connector_operation(
+            session, company_id, platform, require_owner=True, exclusive=True
+        )
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception:
+        await session.rollback()
+        return {"error": "Could not save the connector connection state."}
 
     from celerp.gateway.state import (
         fetch_relay_auth, relay_http_url as _rhu, with_relay_client)
@@ -1202,21 +1312,80 @@ async def connector_authorize_url(platform: str, shop: str = "") -> dict:
             headers={"Authorization": f"Bearer {jwt}"},
         )
 
-    try:
-        r = await with_relay_client(8.0, _authorize)
-    except httpx.ConnectError:
-        return {"error": f"Cannot reach relay."}
-    except httpx.TimeoutException:
-        return {"error": "Relay timed out."}
-    except Exception as exc:
-        return {"error": str(exc)}
-    if isinstance(r, dict):
-        return r
+    async def _cancel(c):
+        jwt, _ = await fetch_relay_auth(c, api_key=api_key)
+        return await c.delete(
+            f"{relay_base}/tokens/{platform}",
+            headers={"Authorization": f"Bearer {jwt}"},
+        )
 
-    if r.status_code == 200:
-        return {"authorize_url": r.json().get("authorize_url", "")}
+    async def _cleanup_new_claim() -> bool:
+        try:
+            cancelled = await with_relay_client(8.0, _cancel)
+        except Exception:
+            await session.rollback()
+            return False
+        if (
+            isinstance(cancelled, dict)
+            or cancelled.status_code not in (200, 404)
+        ):
+            await session.rollback()
+            return False
+
+        await session.rollback()
+        try:
+            await release_connector_ownership(session, company_id, platform)
+            await session.commit()
+            return True
+        except Exception:
+            await session.rollback()
+            return False
+
+    async def _failure(message: str) -> dict:
+        cleaned = await _cleanup_new_claim()
+        if ownership_created and not cleaned:
+            return {
+                "error": (
+                    f"{message} The connection could not be cleaned up automatically; "
+                    "disconnect it before retrying."
+                )
+            }
+        return {"error": message}
+
     try:
-        detail = r.json().get("detail", r.text[:120])
+        stale = await with_relay_client(8.0, _cancel)
+        if isinstance(stale, dict) or stale.status_code not in (200, 404):
+            return await _failure("Could not reset the previous connection.")
+        if platform in {"shopify", "woocommerce"}:
+            from celerp_inventory.services import detach_external_links_for_platform
+            await detach_external_links_for_platform(
+                session, company_id, platform
+            )
+        response = await with_relay_client(8.0, _authorize)
+    except httpx.ConnectError:
+        return await _failure("Cannot reach relay.")
+    except httpx.TimeoutException:
+        return await _failure("Relay timed out.")
     except Exception:
-        detail = r.text[:120]
-    return {"error": detail}
+        return await _failure("Connector authorization failed.")
+
+    if isinstance(response, dict):
+        message = str(
+            response.get("error")
+            or response.get("detail")
+            or "Connector authorization failed."
+        )
+        return await _failure(message)
+
+    if response.status_code == 200:
+        authorize_url = response.json().get("authorize_url", "")
+        if authorize_url:
+            await session.commit()
+            return {"authorize_url": authorize_url}
+        return await _failure("Authorization URL was not returned.")
+
+    try:
+        detail = response.json().get("detail", response.text[:120])
+    except Exception:
+        detail = response.text[:120]
+    return await _failure(detail or "Connector authorization failed.")

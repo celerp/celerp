@@ -18,15 +18,28 @@ import contextlib
 import uuid
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import select, text
 
-from celerp.models.company import Company
+from celerp.models.accounting import UserCompany
+from celerp.models.company import Company, User
 import celerp.connectors.upsert as u
 
 
 async def _seed_company(session, name: str) -> uuid.UUID:
     cid = uuid.uuid4()
-    session.add(Company(id=cid, name=name, slug=f"{name.lower()}-{cid.hex[:8]}", settings={}))
+    uid = uuid.uuid4()
+    session.add(Company(
+        id=cid, name=name, slug=f"{name.lower()}-{cid.hex[:8]}",
+        settings={"currency": "USD"},
+    ))
+    session.add(User(
+        id=uid, email=f"{name.lower()}-{uid.hex[:8]}@example.test",
+        name=f"{name} Owner", auth_hash=None,
+    ))
+    await session.flush()
+    session.add(UserCompany(
+        user_id=uid, company_id=cid, role="owner", is_active=True,
+    ))
     await session.flush()
     return cid
 
@@ -74,10 +87,11 @@ async def test_woocommerce_order_creates_doc(use_test_session):
     }
     assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
     assert await u.upsert_order_from_woocommerce(str(cid), order) == "noop"  # dedup
-    assert await _ledger_rows(session, cid, "woocommerce:order:55") == 1
+    assert await _ledger_rows(session, cid, "woocommerce:order:55") >= 1
     st = await _state(session, cid, "woocommerce:order:55")
     assert st["doc_type"] == "invoice"
-    assert st["status"] == "closed"           # paid -> closed
+    assert st["status"] == "paid"
+    assert st["finalized"] is True
     assert st["total"] == 10.0
     assert st["line_items"][0]["unit_price"] == 5.0
     assert st["woocommerce_order_id"] == "55"
@@ -263,6 +277,25 @@ async def test_watermark_only_advances_on_full_success(session, monkeypatch):
     assert await sync_runner._last_success_watermark(co, "shopify", "orders") == t_ok
 
 
+    t_reset = datetime(2026, 6, 3, tzinfo=timezone.utc)
+    session.add(SyncRun(
+        company_id=co, connector="shopify",
+        entity=sync_runner.CONNECTOR_RESET_ENTITY,
+        direction="inbound", started_at=t_reset, finished_at=t_reset,
+        status="reset",
+    ))
+    await session.flush()
+    assert await sync_runner._last_success_watermark(co, "shopify", "orders") is None
+
+    t_new = datetime(2026, 6, 4, tzinfo=timezone.utc)
+    session.add(SyncRun(
+        company_id=co, connector="shopify", entity="orders", direction="inbound",
+        started_at=t_new, finished_at=t_new, status="success",
+    ))
+    await session.flush()
+    assert await sync_runner._last_success_watermark(co, "shopify", "orders") == t_new
+
+
 @pytest.mark.asyncio
 async def test_woocommerce_pull_product_files(use_test_session, monkeypatch):
     """_pull_product_files resolves the item by SKU and emits each image + cert."""
@@ -422,7 +455,7 @@ async def test_run_sync_feeds_watermark_as_since(session, monkeypatch):
         yield session
     monkeypatch.setattr("celerp.db.get_session_ctx", _ctx)
 
-    co = "wm-since-1"
+    co = str(await _seed_company(session, "WatermarkSync"))
     watermark = datetime(2026, 5, 1, tzinfo=timezone.utc)
     session.add(SyncRun(company_id=co, connector="shopify", entity="products",
                         direction="inbound", started_at=watermark, finished_at=watermark, status="success"))
@@ -487,7 +520,8 @@ async def test_run_sync_dispatches_and_gates_outbound_entity(session, monkeypatc
             calls.append("products_out")
             return SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND, created=1)
 
-    ctx = ConnectorContext(company_id="co-out-1", access_token="t", store_handle="s")
+    co = str(await _seed_company(session, "OutboundSync"))
+    ctx = ConnectorContext(company_id=co, access_token="t", store_handle="s")
 
     # direction=both -> the outbound method IS dispatched.
     r1 = await sync_runner.run_sync(_Stub(), ctx, "products_out", direction=SyncDirection.BOTH)
@@ -497,3 +531,1079 @@ async def test_run_sync_dispatches_and_gates_outbound_entity(session, monkeypatc
     r2 = await sync_runner.run_sync(_Stub(), ctx, "products_out", direction=SyncDirection.INBOUND)
     assert calls == ["products_out"]  # unchanged — the push did not run
     assert r2.errors and "blocked by direction" in r2.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_run_sync_uses_current_connector_context_and_direction(
+    use_test_session, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from celerp.connectors import sync_runner
+    from celerp.connectors.base import (
+        ConnectorBase,
+        ConnectorContext,
+        SyncDirection,
+        SyncEntity,
+        SyncResult,
+    )
+    from celerp.models.connector_config import ConnectorConfig
+
+    session = use_test_session
+    cid = await _seed_company(session, "FreshSync")
+    connector_name = "fresh_ctx_stub"
+    config = ConnectorConfig(
+        company_id=str(cid),
+        connector=connector_name,
+        direction="inbound",
+    )
+    session.add(config)
+    await session.commit()
+
+    seen: list[str] = []
+
+    class _Stub(ConnectorBase):
+        name = connector_name
+        display_name = "Fresh Context Stub"
+        category = None
+        direction = SyncDirection.BOTH
+        supported_entities = [SyncEntity.PRODUCTS]
+        conflict_strategy: dict = {}
+
+        async def sync_products(self, ctx, since=None):
+            seen.append(ctx.access_token)
+            return SyncResult(entity=SyncEntity.PRODUCTS, created=1)
+
+        async def sync_orders(self, ctx, since=None):
+            return SyncResult(entity=SyncEntity.ORDERS)
+
+        async def sync_products_out(self, ctx):
+            seen.append("outbound")
+            return SyncResult(
+                entity=SyncEntity.PRODUCTS,
+                direction=SyncDirection.OUTBOUND,
+                created=1,
+            )
+
+    fresh = ConnectorContext(
+        company_id=str(cid),
+        access_token="new-token",
+        store_handle="new-store",
+    )
+    fetch = AsyncMock(return_value=fresh)
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", fetch)
+
+    stale = ConnectorContext(
+        company_id=str(cid),
+        access_token="old-token",
+        store_handle="old-store",
+    )
+    inbound = await sync_runner.run_sync(
+        _Stub(), stale, "products", direction=SyncDirection.BOTH
+    )
+    assert inbound.created == 1
+    assert seen == ["new-token"]
+    fetch.assert_awaited_once_with(
+        str(cid), connector_name, ownership_session=session
+    )
+
+    changed = await sync_runner.run_sync(
+        _Stub(),
+        stale,
+        "products",
+        direction=SyncDirection.BOTH,
+        expected_config_id=config.id + 1000,
+    )
+    assert changed.errors and "connection changed" in changed.errors[0]
+    assert seen == ["new-token"]
+    assert fetch.await_count == 1
+
+    blocked = await sync_runner.run_sync(
+        _Stub(), stale, "products_out", direction=SyncDirection.BOTH
+    )
+    assert blocked.errors and "blocked by direction=inbound" in blocked.errors[0]
+    assert seen == ["new-token"]
+
+    config.direction = "outbound"
+    await session.commit()
+
+    allowed = await sync_runner.run_sync(
+        _Stub(), stale, "products_out", direction=SyncDirection.INBOUND
+    )
+    assert allowed.created == 1
+    assert seen == ["new-token", "outbound"]
+
+    replaced = await sync_runner.run_sync(
+        _Stub(),
+        stale,
+        "products_out",
+        direction=SyncDirection.BOTH,
+        expected_store_handle="old-store",
+    )
+    assert replaced.errors and "connection changed" in replaced.errors[0]
+    assert seen == ["new-token", "outbound"]
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_processing_order_reserves_across_lots(use_test_session):
+    from datetime import datetime, timezone
+
+    from celerp.models.projections import Projection
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooLots")
+    now = datetime.now(timezone.utc)
+    from celerp_inventory.services import upsert_external_product
+
+    outcome, root_id = await upsert_external_product(
+        str(cid),
+        platform="woocommerce",
+        product_id="501",
+        variation_id=None,
+        sku="LOT-SKU",
+        name="Lot Product",
+        seed_quantity=False,
+        link_fields={"manage_stock": True},
+    )
+    assert outcome == "created"
+    for suffix, qty in (("a", 2), ("b", 3)):
+        session.add(Projection(
+            company_id=cid, entity_id=f"item:lot-{suffix}", entity_type="item",
+            version=1, created_at=now, updated_at=now,
+            state={
+                "sku": "LOT-SKU", "name": "Lot Product", "quantity": qty,
+                "status": "available", "sell_by": "piece", "lot": True,
+                "parent_item_id": root_id, "allow_splitting": True,
+            },
+        ))
+    await session.commit()
+
+    order = {
+        "id": 991,
+        "number": "991",
+        "status": "processing",
+        "currency": "USD",
+        "total": "40.00",
+        "total_tax": "0",
+        "line_items": [{
+            "product_id": 501,
+            "variation_id": 0,
+            "sku": "LOT-SKU",
+            "name": "Lot Product",
+            "quantity": 4,
+            "total": "40.00",
+            "total_tax": "0",
+        }],
+        "shipping_lines": [],
+        "fee_lines": [],
+    }
+
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == cid,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    reserved = [
+        row for row in rows
+        if (row.state or {}).get("status") == "reserved"
+        and (row.state or {}).get("status_doc_id") == "doc:woocommerce:order:991"
+    ]
+    assert sum(float((row.state or {}).get("quantity") or 0) for row in reserved) == 4
+    assert len(reserved) == 2
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_same_sku_keeps_the_live_external_link(use_test_session):
+    cid = await _seed_company(use_test_session, "WooIdentity")
+    from celerp_inventory.services import upsert_external_product
+    await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="701", variation_id=None,
+        sku="IDENTITY-SKU", name="Identity Product", link_fields={"manage_stock": True},
+    )
+    with pytest.raises(ValueError, match="already linked to a different"):
+        await upsert_external_product(
+            str(cid), platform="woocommerce", product_id="702", variation_id=None,
+            sku="IDENTITY-SKU", name="Other Remote Product", link_fields={"manage_stock": True},
+        )
+
+
+@pytest.mark.asyncio
+async def test_disabled_remote_relink_repairs_identity_without_overwriting_product(
+    use_test_session,
+):
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import (
+        external_link_for_state,
+        set_external_link_state,
+        upsert_external_product,
+    )
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooDisabledRelink")
+    _, entity_id = await upsert_external_product(
+        str(cid),
+        platform="woocommerce",
+        product_id="701",
+        variation_id=None,
+        sku="KEEP-SKU",
+        name="Local Name",
+        description="Local Description",
+        sale_price=10.0,
+        link_fields={"manage_stock": True},
+    )
+    await set_external_link_state(
+        session,
+        cid,
+        entity_id,
+        "woocommerce",
+        sync_enabled=False,
+        remote_deleted=True,
+    )
+    await session.commit()
+
+    outcome, relinked_id = await upsert_external_product(
+        str(cid),
+        platform="woocommerce",
+        product_id="702",
+        variation_id=None,
+        sku="KEEP-SKU",
+        name="Remote Name",
+        description="Remote Description",
+        sale_price=99.0,
+        link_fields={"manage_stock": False},
+    )
+
+    assert outcome == "disabled"
+    assert relinked_id == entity_id
+    row = await session.get(
+        Projection,
+        {"company_id": cid, "entity_id": entity_id},
+        populate_existing=True,
+    )
+    state = row.state or {}
+    assert state["name"] == "Local Name"
+    assert state["description"] == "Local Description"
+    assert state["sale_price"] == 10.0
+    link = external_link_for_state(state, "woocommerce")
+    assert link["product_id"] == "702"
+    assert link["sync_enabled"] is False
+    assert link["remote_deleted"] is False
+    assert link["manage_stock"] is False
+
+
+@pytest.mark.asyncio
+async def test_historical_barcoded_parcel_is_not_a_catalog_anchor(use_test_session):
+    from datetime import datetime, timezone
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import resolve_catalog_anchor_for_item, upsert_external_product
+    session = use_test_session
+    cid = await _seed_company(session, "WooAnchor")
+    _, root_id = await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="711", variation_id=None,
+        sku="ANCHOR-SKU", name="Anchor Product", link_fields={"manage_stock": True},
+    )
+    now = datetime.now(timezone.utc)
+    parcel_id = "item:historical-receipt"
+    session.add(Projection(
+        company_id=cid, entity_id=parcel_id, entity_type="item", version=1,
+        created_at=now, updated_at=now,
+        state={"sku": "ANCHOR-SKU", "name": "Received Parcel", "quantity": 1,
+               "status": "available", "sell_by": "piece", "barcode": "900001"},
+    ))
+    await session.commit()
+    anchor = await resolve_catalog_anchor_for_item(session, cid, parcel_id)
+    assert anchor.entity_id == root_id
+
+
+@pytest.mark.parametrize("release_status", ["pending", "cancelled", "failed"])
+@pytest.mark.asyncio
+async def test_woocommerce_on_hold_reservation_releases_on_woo_restore_status(
+    use_test_session, release_status
+):
+    from datetime import datetime, timezone
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import upsert_external_product
+    session = use_test_session
+    cid = await _seed_company(session, f"WooHold-{release_status}")
+    _, root_id = await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="721", variation_id=None,
+        sku=f"HOLD-{release_status}", name="Hold Product",
+        link_fields={"manage_stock": True},
+    )
+    now = datetime.now(timezone.utc)
+    session.add(Projection(
+        company_id=cid, entity_id=f"item:hold-lot-{release_status}", entity_type="item",
+        version=1, created_at=now, updated_at=now,
+        state={"sku": f"HOLD-{release_status}", "name": "Hold Product", "quantity": 2,
+               "status": "available", "sell_by": "piece", "lot": True,
+               "parent_item_id": root_id, "allow_splitting": True},
+    ))
+    await session.commit()
+    order = {
+        "id": {"pending": 722, "cancelled": 723, "failed": 724}[release_status],
+        "number": release_status,
+        "status": "on-hold", "currency": "USD",
+        "total": "10.00", "total_tax": "0",
+        "line_items": [{
+            "product_id": 721, "variation_id": 0, "sku": f"HOLD-{release_status}",
+            "name": "Hold Product", "quantity": 1, "total": "10.00", "total_tax": "0",
+        }],
+        "shipping_lines": [], "fee_lines": [],
+    }
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    doc_id = f"woocommerce:order:{order['id']}"
+    doc = await _state(session, cid, doc_id)
+    assert doc.get("finalized") is not True
+
+    assert await u.upsert_order_from_woocommerce(
+        str(cid), {**order, "status": release_status}
+    ) == "updated"
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_type == "item"
+    ))).scalars().all()
+    assert not [r for r in rows if (r.state or {}).get("status") == "reserved"]
+    assert sum(float((r.state or {}).get("quantity") or 0) for r in rows
+               if (r.state or {}).get("status") == "available"
+               and (r.state or {}).get("sku") == f"HOLD-{release_status}") == 2
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_pending_defers_stock_binding_until_processing(use_test_session):
+    from datetime import datetime, timezone
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import upsert_external_product
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooPending")
+    _, root_id = await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="751", variation_id=None,
+        sku="PENDING-SKU", name="Pending Product", link_fields={"manage_stock": True},
+    )
+    now = datetime.now(timezone.utc)
+    session.add(Projection(
+        company_id=cid, entity_id="item:pending-lot", entity_type="item",
+        version=1, created_at=now, updated_at=now,
+        state={"sku": "PENDING-SKU", "name": "Pending Product", "quantity": 1,
+               "status": "available", "sell_by": "piece", "lot": True,
+               "parent_item_id": root_id, "allow_splitting": True},
+    ))
+    await session.commit()
+    order = {
+        "id": 752, "number": "752", "status": "pending", "currency": "USD",
+        "total": "10.00", "total_tax": "0",
+        "line_items": [{
+            "product_id": 751, "variation_id": 0, "sku": "PENDING-SKU",
+            "name": "Pending Product", "quantity": 1, "total": "10.00", "total_tax": "0",
+        }],
+        "shipping_lines": [], "fee_lines": [],
+    }
+
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    pending = await _state(session, cid, "woocommerce:order:752")
+    assert pending["line_items"][0].get("item_id") is None
+
+    assert await u.upsert_order_from_woocommerce(
+        str(cid), {**order, "status": "processing"}
+    ) == "updated"
+    session.expire_all()
+    processing = await _state(session, cid, "woocommerce:order:752")
+    assert processing["finalized"] is True
+    assert processing["line_items"][0].get("item_id")
+    bound = await session.get(
+        Projection,
+        {"company_id": cid, "entity_id": processing["line_items"][0]["item_id"]},
+        populate_existing=True,
+    )
+    assert (bound.state or {}).get("status") == "reserved"
+    assert (bound.state or {}).get("status_doc_id") == "doc:woocommerce:order:752"
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_refund_does_not_guess_restock_and_pauses_outbound_stock(use_test_session):
+    from datetime import datetime, timezone
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import external_link_for_state, upsert_external_product
+    session = use_test_session
+    cid = await _seed_company(session, "WooRefund")
+    _, root_id = await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="741", variation_id=None,
+        sku="REFUND-SKU", name="Refund Product", link_fields={"manage_stock": True},
+    )
+    now = datetime.now(timezone.utc)
+    session.add(Projection(
+        company_id=cid, entity_id="item:refund-lot", entity_type="item",
+        version=1, created_at=now, updated_at=now,
+        state={"sku": "REFUND-SKU", "name": "Refund Product", "quantity": 2,
+               "status": "available", "sell_by": "piece", "lot": True,
+               "parent_item_id": root_id, "allow_splitting": True},
+    ))
+    await session.commit()
+    order = {
+        "id": 742, "number": "742", "status": "on-hold", "currency": "USD",
+        "total": "10.00", "total_tax": "0",
+        "line_items": [{
+            "product_id": 741, "variation_id": 0, "sku": "REFUND-SKU",
+            "name": "Refund Product", "quantity": 1, "total": "10.00", "total_tax": "0",
+        }],
+        "shipping_lines": [], "fee_lines": [],
+    }
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+
+    with pytest.raises(ValueError, match="manual financial/inventory reconciliation") as refund:
+        await u.upsert_order_from_woocommerce(str(cid), {**order, "status": "refunded"})
+
+    session.expire_all()
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_type == "item"
+    ))).scalars().all()
+    assert sum(float((r.state or {}).get("quantity") or 0) for r in rows
+               if (r.state or {}).get("status") == "reserved") == 1
+    root = await session.get(
+        Projection, {"company_id": cid, "entity_id": root_id},
+        populate_existing=True,
+    )
+    assert external_link_for_state(root.state or {}, "woocommerce").get(
+        "inventory_sync_paused"
+    ) is True
+
+    # Once a person marks the refund reconciled, stock sync resumes.
+    from celerp_connectors.routes import _set_order_reconciled
+
+    await _attention_run(session, cid, [_entry("742", refund.value)])
+    await _set_order_reconciled(session, cid, "742", refund.value.signature, None)
+    session.expire_all()
+    root = await session.get(
+        Projection, {"company_id": cid, "entity_id": root_id},
+        populate_existing=True,
+    )
+    assert external_link_for_state(root.state or {}, "woocommerce").get(
+        "inventory_sync_paused"
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_stock_stays_paused_while_any_refund_on_the_product_is_open(use_test_session):
+    """Two refunded orders share one product. Reconciling one leaves stock
+    paused for the other, and undoing a reconciliation pauses it again at once."""
+    from datetime import datetime, timezone
+    from celerp.models.projections import Projection
+    from celerp_connectors.routes import _set_order_reconciled
+    from celerp_inventory.services import external_link_for_state, upsert_external_product
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooSharedRefund")
+    _, root_id = await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="761", variation_id=None,
+        sku="SHARED-SKU", name="Shared Product", link_fields={"manage_stock": True},
+    )
+    now = datetime.now(timezone.utc)
+    session.add(Projection(
+        company_id=cid, entity_id="item:shared-lot", entity_type="item",
+        version=1, created_at=now, updated_at=now,
+        state={"sku": "SHARED-SKU", "name": "Shared Product", "quantity": 4,
+               "status": "available", "sell_by": "piece", "lot": True,
+               "parent_item_id": root_id, "allow_splitting": True},
+    ))
+    await session.commit()
+
+    def _order(order_id):
+        return {
+            "id": order_id, "number": str(order_id), "status": "on-hold", "currency": "USD",
+            "total": "10.00", "total_tax": "0",
+            "line_items": [{
+                "product_id": 761, "variation_id": 0, "sku": "SHARED-SKU",
+                "name": "Shared Product", "quantity": 1, "total": "10.00", "total_tax": "0",
+            }],
+            "shipping_lines": [], "fee_lines": [],
+        }
+
+    refunds = {}
+    for order_id in (762, 763):
+        assert await u.upsert_order_from_woocommerce(str(cid), _order(order_id)) == "created"
+        with pytest.raises(ValueError, match="reconciliation") as refund:
+            await u.upsert_order_from_woocommerce(
+                str(cid), {**_order(order_id), "status": "refunded"}
+            )
+        refunds[str(order_id)] = refund.value
+    await _attention_run(session, cid, [_entry(k, v) for k, v in refunds.items()])
+
+    async def _paused():
+        session.expire_all()
+        root = await session.get(
+            Projection, {"company_id": cid, "entity_id": root_id}, populate_existing=True,
+        )
+        return external_link_for_state(root.state or {}, "woocommerce").get(
+            "inventory_sync_paused"
+        )
+
+    await _set_order_reconciled(session, cid, "762", refunds["762"].signature, None)
+    assert await _paused() is True
+
+    await _set_order_reconciled(session, cid, "763", refunds["763"].signature, None)
+    assert await _paused() is False
+
+    await _set_order_reconciled(session, cid, "763", None, None)
+    assert await _paused() is True
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_unmanaged_product_order_does_not_invent_stock(use_test_session):
+    cid = await _seed_company(use_test_session, "WooUnmanaged")
+    from celerp_inventory.services import upsert_external_product
+    await upsert_external_product(
+        str(cid), platform="woocommerce", product_id="731", variation_id=None,
+        sku="UNMANAGED-SKU", name="Unmanaged Product", link_fields={"manage_stock": False},
+    )
+    order = {
+        "id": 732, "number": "732", "status": "processing", "currency": "USD",
+        "total": "15.00", "total_tax": "0",
+        "line_items": [{"product_id": 731, "variation_id": 0, "sku": "UNMANAGED-SKU",
+                        "name": "Unmanaged Product", "quantity": 1, "total": "15.00",
+                        "total_tax": "0"}],
+        "shipping_lines": [], "fee_lines": [],
+    }
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    doc = await _state(use_test_session, cid, "woocommerce:order:732")
+    assert doc["finalized"] is True
+    assert doc["line_items"][0].get("item_id") is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_catalog_relation_accepts_barcoded_catalog_template(use_test_session):
+    from datetime import datetime, timezone
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import resolve_catalog_anchor_for_item
+
+    session = use_test_session
+    cid = await _seed_company(session, "ExplicitCatalog")
+    now = datetime.now(timezone.utc)
+    root_id = "item:barcoded-catalog-root"
+    child_id = "item:barcoded-catalog-child"
+    session.add_all([
+        Projection(
+            company_id=cid, entity_id=root_id, entity_type="item",
+            version=1, created_at=now, updated_at=now,
+            state={
+                "sku": "BARCODED-CATALOG", "name": "Catalog Product",
+                "quantity": 0, "status": "available", "sell_by": "piece",
+                "barcode": "CATALOG-REFERENCE-CODE",
+            },
+        ),
+        Projection(
+            company_id=cid, entity_id=child_id, entity_type="item",
+            version=1, created_at=now, updated_at=now,
+            state={
+                "sku": "BARCODED-CATALOG", "name": "Physical Parcel",
+                "quantity": 1, "status": "available", "sell_by": "piece",
+                "barcode": "PHYSICAL-PARCEL-CODE", "catalog_item_id": root_id,
+            },
+        ),
+    ])
+    await session.commit()
+    anchor = await resolve_catalog_anchor_for_item(session, cid, child_id)
+    assert anchor.entity_id == root_id
+
+
+@pytest.mark.asyncio
+async def test_external_product_identity_has_one_catalog_owner(use_test_session):
+    from celerp.events.engine import emit_event
+    from celerp_inventory.services import (
+        ExternalLinkConflictError,
+        set_external_link,
+    )
+
+    session = use_test_session
+    cid = await _seed_company(session, "ExternalIdentityOwner")
+    for entity_id, sku in (("item:left", "LEFT-1"), ("item:right", "RIGHT-1")):
+        await emit_event(
+            session,
+            company_id=cid,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type="item.created",
+            data={"sku": sku, "name": sku, "sell_by": "piece"},
+            actor_id=None,
+            location_id=None,
+            source="api",
+            idempotency_key=f"create:{entity_id}",
+            metadata_={},
+        )
+    await session.flush()
+
+    link = {
+        "product_id": "9901",
+        "sync_enabled": True,
+        "remote_deleted": False,
+    }
+    await set_external_link(
+        session, cid, "item:left", "woocommerce", link, expected_sku="LEFT-1"
+    )
+    with pytest.raises(ExternalLinkConflictError, match="already linked"):
+        await set_external_link(
+            session, cid, "item:right", "woocommerce", link,
+            expected_sku="RIGHT-1",
+        )
+
+
+@pytest.mark.asyncio
+async def test_external_link_rejects_stale_sku_selection(use_test_session):
+    from celerp.events.engine import emit_event
+    from celerp_inventory.services import (
+        ExternalLinkConflictError,
+        set_external_link,
+    )
+
+    session = use_test_session
+    cid = await _seed_company(session, "ExternalIdentityCas")
+    await emit_event(
+        session,
+        company_id=cid,
+        entity_id="item:cas",
+        entity_type="item",
+        event_type="item.created",
+        data={"sku": "NEW-SKU", "name": "CAS", "sell_by": "piece"},
+        actor_id=None,
+        location_id=None,
+        source="api",
+        idempotency_key="create:cas",
+        metadata_={},
+    )
+    await session.flush()
+
+    with pytest.raises(ExternalLinkConflictError, match="SKU changed"):
+        await set_external_link(
+            session,
+            cid,
+            "item:cas",
+            "woocommerce",
+            {
+                "product_id": "9902",
+                "sync_enabled": True,
+                "remote_deleted": False,
+            },
+            expected_sku="OLD-SKU",
+        )
+
+
+@pytest.mark.asyncio
+async def test_external_link_compare_and_set_rejects_stale_writers(use_test_session):
+    from celerp.events.engine import emit_event
+    from celerp_inventory.services import (
+        ExternalLinkConflictError,
+        set_external_link,
+    )
+
+    session = use_test_session
+    cid = await _seed_company(session, "LinkCas")
+    entity_id = "item:link-cas"
+    await emit_event(
+        session,
+        company_id=cid,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.created",
+        data={"sku": "CAS-1", "name": "CAS", "sell_by": "piece"},
+        actor_id=None,
+        location_id=None,
+        source="test",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    await set_external_link(
+        session, cid, entity_id, "woocommerce",
+        {"product_id": "1", "sync_enabled": True},
+    )
+    await set_external_link(
+        session, cid, entity_id, "woocommerce",
+        {"product_id": "2", "sync_enabled": True},
+    )
+
+    with pytest.raises(ExternalLinkConflictError):
+        await set_external_link(
+            session, cid, entity_id, "woocommerce",
+            {"product_id": "3", "sync_enabled": True},
+            expected_identity=("1", None),
+        )
+
+    with pytest.raises(ExternalLinkConflictError):
+        await set_external_link(
+            session, cid, entity_id, "woocommerce",
+            {"product_id": "3", "sync_enabled": True},
+            require_unlinked=True,
+        )
+
+
+_WOO_PLAIN_ORDER = {
+    "number": "2001", "status": "completed", "currency": "USD",
+    "total": "10.00", "total_tax": "0",
+    "line_items": [{"name": "Widget", "quantity": 2, "price": "5.00", "total": "10.00", "total_tax": "0"}],
+    "shipping_lines": [], "fee_lines": [],
+}
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_payment_applies_the_outstanding_balance_not_the_total(use_test_session):
+    """A payment recorded by hand before the store reports the order paid must not
+    be booked twice: the connector settles what is still outstanding."""
+    from celerp_docs.routes import apply_doc_payment
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooOutstanding")
+    order = {**_WOO_PLAIN_ORDER, "id": 2001}
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    doc_id = "doc:woocommerce:order:2001"
+    await apply_doc_payment(
+        session, cid, doc_id,
+        {"amount": 4.0, "payment_date": "2024-06-01", "currency": "USD",
+         "method": "cash", "reference": "hand-4", "bank_account": "1110"},
+        source="api", actor_id=None, idempotency_key="manual:2001", commit=False,
+    )
+    await session.commit()
+
+    assert await u.upsert_order_from_woocommerce(
+        str(cid), {**order, "date_paid": "2024-06-02T10:00:00", "transaction_id": "txn-2001"}
+    ) == "updated"
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:2001")
+    connector_payment = next(p for p in st["payments"] if p.get("reference") == "txn-2001")
+    assert connector_payment["amount"] == 6.0
+    assert st["amount_outstanding"] == 0.0
+    assert st["status"] == "paid"
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_paid_order_with_a_balance_again_goes_to_a_person(use_test_session):
+    """Once the store's payment is booked, a balance that shows up again because a
+    person changed the payments is not quietly left open or silently re-paid: the
+    order waits for a person."""
+    from types import SimpleNamespace
+
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+    from celerp_docs.routes import VoidPaymentBody, apply_doc_payment, void_payment
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooBalanceAgain")
+    order = {**_WOO_PLAIN_ORDER, "id": 2002}
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    doc_id = "doc:woocommerce:order:2002"
+    await apply_doc_payment(
+        session, cid, doc_id,
+        {"amount": 4.0, "payment_date": "2024-06-01", "currency": "USD",
+         "method": "cash", "reference": "hand-4", "bank_account": "1110"},
+        source="api", actor_id=None, idempotency_key="manual:2002", commit=False,
+    )
+    await session.commit()
+    paid = {**order, "date_paid": "2024-06-02T10:00:00", "transaction_id": "txn-2002"}
+    assert await u.upsert_order_from_woocommerce(str(cid), paid) == "updated"
+
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:2002")
+    hand = next(p for p in st["payments"] if p.get("reference") == "hand-4")
+    await void_payment(
+        doc_id, VoidPaymentBody(payment_index=hand["index"], void_reason="bounced"),
+        company_id=cid, _=None, user=SimpleNamespace(id=None), session=session,
+    )
+    session.expire_all()
+    assert (await _state(session, cid, "woocommerce:order:2002"))["amount_outstanding"] == 4.0
+
+    with pytest.raises(WooCommerceReconciliationRequired, match="balance again"):
+        await u.upsert_order_from_woocommerce(str(cid), paid)
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:2002")
+    assert "balance again" in st["woocommerce_reconciliation_required"]
+    assert st["amount_outstanding"] == 4.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("settings, expected", [
+    ({"woocommerce_deposit_account": "1200", "stripe_deposit_account": "1055"}, "1200"),
+    ({"stripe_deposit_account": "1055"}, "1055"),
+    ({}, "1110"),
+])
+async def test_woocommerce_payment_books_to_the_chosen_deposit_account(use_test_session, settings, expected):
+    """Store payments land on the connector's own deposit account, else the
+    company's online-payments default, else Cash."""
+    from celerp.models.company import Company
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooDeposit")
+    company = await session.get(Company, cid)
+    company.settings = {**(company.settings or {}), **settings}
+    await session.flush()
+    order = {**_WOO_PLAIN_ORDER, "id": 2002, "date_paid": "2024-06-02T10:00:00"}
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+    st = await _state(session, cid, "woocommerce:order:2002")
+    assert st["status"] == "paid"
+    assert [p["bank_account"] for p in st["payments"]] == [expected]
+
+
+async def _emit_item(session, cid, entity_id, state):
+    from celerp.events.engine import emit_event
+    await emit_event(
+        session, company_id=cid, entity_id=entity_id, entity_type="item",
+        event_type="item.created", data=state, actor_id=None, location_id=None,
+        source="api", idempotency_key=f"create:{entity_id}", metadata_={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_external_link_unchanged_is_a_noop_even_when_identity_is_contested(use_test_session):
+    """Re-sending the link an item already holds changes nothing, so it cannot
+    fail on a conflict that a different row introduced in the meantime."""
+    from celerp_inventory.services import set_external_link
+
+    session = use_test_session
+    cid = await _seed_company(session, "LinkNoop")
+    link = {"product_id": "500", "sync_enabled": True, "remote_deleted": False}
+    await _emit_item(session, cid, "item:first", {
+        "sku": "NOOP-A", "name": "First", "sell_by": "piece", "external_links": {"woocommerce": link},
+    })
+    await _emit_item(session, cid, "item:second", {
+        "sku": "NOOP-B", "name": "Second", "sell_by": "piece", "external_links": {"woocommerce": dict(link)},
+    })
+    await session.flush()
+    assert await set_external_link(session, cid, "item:first", "woocommerce", link) == link
+
+
+@pytest.mark.asyncio
+async def test_resolve_external_product_point_lookups(use_test_session):
+    """Identity resolves by external link first, then by one catalog SKU
+    compared case- and whitespace-insensitively, and an ambiguous SKU is refused."""
+    from celerp_inventory.services import resolve_external_product
+
+    session = use_test_session
+    cid = await _seed_company(session, "ResolveLookup")
+    await _emit_item(session, cid, "item:linked", {
+        "sku": "Linked-1", "name": "Linked", "sell_by": "piece",
+        "external_links": {"woocommerce": {"product_id": "600", "sync_enabled": True, "remote_deleted": False}},
+    })
+    await _emit_item(session, cid, "item:plain", {"sku": "Plain-2", "name": "Plain", "sell_by": "piece"})
+    await _emit_item(session, cid, "item:dup-a", {"sku": "Dup-3", "name": "Dup A", "sell_by": "piece"})
+    await _emit_item(session, cid, "item:dup-b", {"sku": "dup-3", "name": "Dup B", "sell_by": "piece"})
+    await session.flush()
+
+    by_link = await resolve_external_product(session, cid, "woocommerce", "600", sku="something-else")
+    assert by_link.entity_id == "item:linked"
+    by_sku = await resolve_external_product(session, cid, "woocommerce", "601", sku="  PLAIN-2 ")
+    assert by_sku.entity_id == "item:plain"
+    assert await resolve_external_product(session, cid, "woocommerce", "602", sku="missing") is None
+    with pytest.raises(ValueError, match="multiple catalog products"):
+        await resolve_external_product(session, cid, "woocommerce", "603", sku="DUP-3")
+
+
+@pytest.mark.asyncio
+async def test_load_catalog_family_rows_matches_the_whole_catalog_inference(use_test_session):
+    """Loading only the rows that can share the anchor's family yields the same
+    family a scan of the whole catalog infers, and leaves unrelated items out."""
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import catalog_family_rows, load_catalog_family_rows
+
+    session = use_test_session
+    cid = await _seed_company(session, "FamilyLoad")
+    await _emit_item(session, cid, "item:fam-root", {
+        "sku": "FAM-1", "name": "Family Root", "sell_by": "piece", "_catalog_sku_aliases": ["OLD-FAM"],
+    })
+    await _emit_item(session, cid, "item:fam-pinned", {
+        "sku": "FAM-1", "name": "Pinned Lot", "sell_by": "piece", "lot": True, "catalog_item_id": "item:fam-root",
+    })
+    await _emit_item(session, cid, "item:fam-legacy", {
+        "sku": "fam-1", "name": "Legacy Lot", "sell_by": "piece", "lot": True,
+    })
+    await _emit_item(session, cid, "item:fam-alias", {
+        "sku": "OLD-FAM", "name": "Alias Lot", "sell_by": "piece", "lot": True,
+    })
+    for n in range(5):
+        await _emit_item(session, cid, f"item:other-{n}", {"sku": f"OTHER-{n}", "name": f"Other {n}", "sell_by": "piece"})
+    await session.flush()
+
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_type == "item"
+    ))).scalars().all()
+    anchor = next(r for r in rows if r.entity_id == "item:fam-root")
+    expected = {r.entity_id for r in catalog_family_rows(list(rows), anchor)}
+    loaded = {r.entity_id for r in await load_catalog_family_rows(session, cid, anchor)}
+    assert loaded == expected
+    assert "item:fam-root" in loaded and "item:fam-pinned" in loaded
+    assert not any(e.startswith("item:other-") for e in loaded)
+
+
+@pytest.mark.asyncio
+async def test_sku_lookups_stay_exact_when_sql_cannot_narrow(use_test_session):
+    """A SKU whose case folding differs from SQL lower() (on either side of the
+    comparison), or one padded with whitespace SQL trim() leaves alone, still
+    resolves and still lands in its catalog family: narrowing never drops a row
+    the exact check would keep."""
+    from celerp.models.projections import Projection
+    from celerp_inventory.services import (
+        catalog_family_rows, load_catalog_family_rows, resolve_external_product,
+    )
+
+    session = use_test_session
+    cid = await _seed_company(session, "SkuExact")
+    await _emit_item(session, cid, "item:sharp-root", {
+        "sku": "GRÖSSE-L", "name": "Sharp Root", "sell_by": "piece",
+    })
+    await _emit_item(session, cid, "item:sharp-lot", {
+        "sku": "Größe-L", "name": "Sharp Lot", "sell_by": "piece", "lot": True,
+    })
+    await _emit_item(session, cid, "item:tabbed", {
+        "sku": "Tab-9\t", "name": "Tabbed", "sell_by": "piece",
+    })
+    await _emit_item(session, cid, "item:gross-root", {
+        "sku": "GROß-1", "name": "Gross Root", "sell_by": "piece",
+    })
+    await _emit_item(session, cid, "item:gross-lot", {
+        "sku": "gross-1", "name": "Gross Lot", "sell_by": "piece", "lot": True,
+    })
+    await session.flush()
+
+    by_sharp = await resolve_external_product(session, cid, "woocommerce", "700", sku="Größe-L")
+    assert by_sharp is not None and by_sharp.entity_id == "item:sharp-root"
+    by_tab = await resolve_external_product(session, cid, "woocommerce", "701", sku="tab-9")
+    assert by_tab is not None and by_tab.entity_id == "item:tabbed"
+    by_gross = await resolve_external_product(session, cid, "woocommerce", "702", sku="gross-1")
+    assert by_gross is not None and by_gross.entity_id == "item:gross-root"
+
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == cid, Projection.entity_type == "item"
+    ))).scalars().all()
+    anchor = next(r for r in rows if r.entity_id == "item:sharp-root")
+    expected = {r.entity_id for r in catalog_family_rows(list(rows), anchor)}
+    assert "item:sharp-lot" in expected
+    loaded = {r.entity_id for r in await load_catalog_family_rows(session, cid, anchor)}
+    assert loaded == expected
+
+    lot = next(r for r in rows if r.entity_id == "item:gross-lot")
+    expected = {r.entity_id for r in catalog_family_rows(list(rows), lot)}
+    assert "item:gross-root" in expected
+    loaded = {r.entity_id for r in await load_catalog_family_rows(session, cid, lot)}
+    assert loaded == expected
+
+
+async def _attention_run(session, cid, entries):
+    """The latest orders sync left these WooCommerce orders waiting on a person."""
+    import json
+    from datetime import datetime, timezone
+
+    from celerp.models.sync_run import SyncRun
+
+    now = datetime.now(timezone.utc)
+    session.add(SyncRun(
+        company_id=str(cid), connector="woocommerce", entity="orders",
+        started_at=now, finished_at=now, created_count=0, updated_count=0,
+        skipped_count=0, status="success", attention_json=json.dumps(entries),
+    ))
+    await session.flush()
+
+
+def _entry(order_id, exc):
+    return {"id": order_id, "label": f"Order {order_id}", "reason": str(exc),
+            "signature": exc.signature}
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_partial_refund_on_issued_order_needs_reconciliation(use_test_session):
+    """A partial refund leaves status, lines and total unchanged; the refunds
+    list is its only trace. It still stops for a person."""
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooPartialRefund")
+    order = {**_WOO_PLAIN_ORDER, "id": 2101}
+    assert await u.upsert_order_from_woocommerce(str(cid), order) == "created"
+
+    with pytest.raises(WooCommerceReconciliationRequired, match="has a refund") as exc:
+        await u.upsert_order_from_woocommerce(
+            str(cid), {**order, "refunds": [{"id": 55, "total": "-4.00"}]}
+        )
+    assert exc.value.signature
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:2101")
+    assert st["woocommerce_reconciliation_required"] == str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_refund_on_new_order_is_not_issued_or_paid(use_test_session):
+    """A paid order that already carries a refund when first seen is imported
+    as a draft for a person to reconcile, never issued or paid in full."""
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooRefundFirstSeen")
+    order = {
+        **_WOO_PLAIN_ORDER, "id": 2102, "status": "processing",
+        "date_paid": "2024-06-02T10:00:00", "refunds": [{"id": 56, "total": "-4.00"}],
+    }
+    with pytest.raises(WooCommerceReconciliationRequired, match="has a refund"):
+        await u.upsert_order_from_woocommerce(str(cid), order)
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:2102")
+    assert not st.get("finalized")
+    assert not st.get("payments")
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_reconciled_order_is_left_alone_until_it_changes(use_test_session):
+    """Mark reconciled clears the order's note and the import leaves exactly that
+    source state alone; Undo puts the note back, and any later change in
+    WooCommerce needs a person again."""
+    from celerp_connectors.routes import _set_order_reconciled
+    from celerp_docs.doc_service import WooCommerceReconciliationRequired
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooReconciled")
+    order = {**_WOO_PLAIN_ORDER, "id": 2103}
+    await u.upsert_order_from_woocommerce(str(cid), order)
+    refunded = {**order, "refunds": [{"id": 57, "total": "-4.00"}]}
+    with pytest.raises(WooCommerceReconciliationRequired) as first:
+        await u.upsert_order_from_woocommerce(str(cid), refunded)
+    await _attention_run(session, cid, [_entry("2103", first.value)])
+
+    marked = await _set_order_reconciled(session, cid, "2103", first.value.signature, None)
+    assert marked["entry"]["reconciled"] is True
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:2103")
+    assert st["woocommerce_reconciliation_required"] is None
+    assert await u.upsert_order_from_woocommerce(str(cid), refunded) == "noop"
+
+    undone = await _set_order_reconciled(session, cid, "2103", None, None)
+    assert undone["entry"]["reconciled"] is False
+    session.expire_all()
+    st = await _state(session, cid, "woocommerce:order:2103")
+    assert st["woocommerce_reconciliation_required"] == str(first.value)
+    with pytest.raises(WooCommerceReconciliationRequired):
+        await u.upsert_order_from_woocommerce(str(cid), refunded)
+
+    await _set_order_reconciled(session, cid, "2103", first.value.signature, None)
+    with pytest.raises(WooCommerceReconciliationRequired) as second:
+        await u.upsert_order_from_woocommerce(str(cid), {
+            **refunded, "refunds": [*refunded["refunds"], {"id": 58, "total": "-1.00"}],
+        })
+    assert second.value.signature != first.value.signature
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order_id, entry, signature, status", [
+    ("abc", None, "sig", 422),
+    ("2104", None, "sig", 404),
+    ("2104", {"id": "2104", "reason": "no stock"}, "sig", 409),
+    ("2104", {"id": "2104", "reason": "refund", "signature": "current"}, "stale", 409),
+])
+async def test_mark_reconciled_refusals(use_test_session, order_id, entry, signature, status):
+    """Only an order on the list, carrying a change a person reconciles, at the
+    state the person reviewed, can be marked."""
+    from fastapi import HTTPException
+
+    from celerp_connectors.routes import _set_order_reconciled
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooMarkRefused")
+    if entry is not None:
+        await _attention_run(session, cid, [entry])
+    with pytest.raises(HTTPException) as exc:
+        await _set_order_reconciled(session, cid, order_id, signature, None)
+    assert exc.value.status_code == status

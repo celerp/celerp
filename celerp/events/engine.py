@@ -190,6 +190,11 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
                 session, kwargs.get("company_id"), doc_type, line_set
             )
 
+    if kwargs.get("event_type") in {"shop.sync.enabled", "shop.sync.disabled"}:
+        from celerp.connectors.ownership import lock_connector_key
+
+        await lock_connector_key(session, "shopify")
+
     entry = LedgerEntry(**kwargs)
 
     try:
@@ -217,7 +222,24 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
         original.was_deduped = True
         return original
 
+    previous_item_state = None
+    if entry.entity_type == "item":
+        from copy import deepcopy
+        previous = await session.get(
+            Projection, (entry.company_id, entry.entity_id)
+        )
+        if previous is not None and previous.entity_type == "item":
+            previous_item_state = deepcopy(previous.state or {})
+
     await ProjectionEngine.apply_event(session, entry)
+
+    # Durable connector work is recorded in the same transaction as the item event.
+    # No network I/O occurs here; the worker re-reads current state before sending.
+    if entry.entity_type == "item":
+        from celerp.connectors.outbound_queue import enqueue_item_change
+        await enqueue_item_change(
+            session, entry, previous_state=previous_item_state
+        )
 
     # Notify listeners (LISTEN/NOTIFY) that an event landed.
     try:

@@ -3162,5 +3162,18 @@
   "ai.resets_on": "{date}にリセット",
   "ai.service_unavailable": "Celerp AIは一時的に利用できません。Connectを確認して、もう一度お試しください。",
   "ai.untitled_conversation": "無題の会話",
-  "ai.uploading": "アップロード中..."
+  "ai.uploading": "アップロード中...",
+  "connectors.pending_title": "接続を処理中",
+  "connectors.pending_hint": "{name} の認可が開始されましたが完了していません。完了するか、キャンセルしてこの接続を解放してください。",
+  "connectors.finish": "完了する",
+  "connectors.ambiguous": "このコネクタは複数の会社に関連付けられています。切断してから、使用すべき会社から再接続してください。",
+  "connectors.other_company": "別の会社に接続されています。",
+  "connectors.reconnect_after_deactivation": "この会社の無効化時にコネクタが切断されました: {names}。下から再接続してください。",
+  "connectors.deposit_label": "支払いの入金先",
+  "connectors.deposit_default": "オンライン決済の既定",
+  "connectors.deposit_unknown_account": "{code} は有効な銀行口座ではありません。",
+  "connectors.attention_header": "対応が必要な注文",
+  "connectors.attention_count": "{n} 件が対応待ち",
+  "connectors.attention_mark_reconciled": "照合済みにする",
+  "connectors.attention_reconciled": "照合済みにしました。次回の同期後にこの一覧から外れます。"
 }

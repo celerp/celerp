@@ -30,6 +30,8 @@ async def test_fetch_context_builds_ctx_from_relay():
     with patch("celerp.gateway.state.get_session_token", return_value="tok"), \
          patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"), \
          patch("celerp.gateway.state.relay_session_headers", return_value={}), \
+         patch("celerp.connectors.ownership.connector_owned_by_company",
+               new=AsyncMock(return_value=True)), \
          respx.mock:
         respx.get("https://relay.test/tokens/shopify/access-token").mock(
             return_value=httpx.Response(200, json={"access_token": "shpat_x", "store_handle": "s.myshopify.com"}))
@@ -46,6 +48,8 @@ async def test_fetch_context_none_on_relay_error():
     with patch("celerp.gateway.state.get_session_token", return_value="tok"), \
          patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"), \
          patch("celerp.gateway.state.relay_session_headers", return_value={}), \
+         patch("celerp.connectors.ownership.connector_owned_by_company",
+               new=AsyncMock(return_value=True)), \
          respx.mock:
         respx.get("https://relay.test/tokens/shopify/access-token").mock(return_value=httpx.Response(404))
         assert await fetch_context("co-1", "shopify") is None
@@ -120,18 +124,57 @@ async def test_scheduler_reconciles_realtime_config():
     cm.__aenter__ = AsyncMock(return_value=sess)
     cm.__aexit__ = AsyncMock(return_value=False)
 
-    run_sync_mock = AsyncMock()
+    from celerp.connectors.base import SyncEntity, SyncResult
+    run_sync_mock = AsyncMock(
+        return_value=[SyncResult(entity=SyncEntity.PRODUCTS, created=1)]
+    )
+    lock = AsyncMock(return_value=config)
     with patch("celerp.db.get_session_ctx", return_value=cm), \
-         patch("celerp.connectors.sync_runner.run_sync", new=run_sync_mock):
+         patch("celerp.connectors.sync_runner.run_connector_sync", new=run_sync_mock), \
+         patch("celerp.connectors.ownership.lock_connector_operation", new=lock):
         synced = await check_and_run_daily_syncs("co-1", token_fetcher=AsyncMock(return_value=MagicMock()))
 
     assert "shopify" in synced                # realtime connector was reconciled
     # Regression for the "outbound never dispatched" bug: a direction=both connector
     # must dispatch BOTH inbound entities AND the outbound (*_out) ones it implements.
     # (Asserting await_count >= 1 — the old check — passed even when outbound was dead.)
-    entities_run = {call.args[2] for call in run_sync_mock.await_args_list}
-    assert {"products", "orders", "contacts"} <= entities_run   # inbound
-    assert "products_out" in entities_run                        # outbound (Shopify pushes products)
+    run_sync_mock.assert_awaited_once()
+    connector, _ctx = run_sync_mock.await_args.args
+    direction = run_sync_mock.await_args.kwargs["direction"]
+    from celerp.connectors.sync_runner import sync_plan
+    entities_run = set(sync_plan(connector, direction))
+    assert {"products", "orders", "contacts"} <= entities_run
+    assert "products_out" in entities_run
+    lock.assert_awaited_once_with(
+        sess, "co-1", "shopify", require_owner=True
+    )
+    assert config.last_daily_sync_at is not None
+
+
+@pytest.mark.asyncio
+async def test_scheduler_does_not_stamp_reconnected_generation():
+    from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
+    from celerp.connectors.base import SyncEntity, SyncResult
+
+    config = _sched_config()
+    cm = _sched_session(config)
+    replacement = MagicMock(id=8)
+    replacement.last_daily_sync_at = None
+    run_sync_mock = AsyncMock(
+        return_value=[SyncResult(entity=SyncEntity.PRODUCTS, created=1)]
+    )
+    with patch("celerp.db.get_session_ctx", return_value=cm), \
+         patch("celerp.connectors.sync_runner.run_connector_sync", new=run_sync_mock), \
+         patch(
+             "celerp.connectors.ownership.lock_connector_operation",
+             new=AsyncMock(return_value=replacement),
+         ):
+        synced = await check_and_run_daily_syncs(
+            "co-1", token_fetcher=AsyncMock(return_value=MagicMock())
+        )
+
+    assert synced == []
+    assert replacement.last_daily_sync_at is None
 
 
 def _sched_config(**over):
@@ -148,6 +191,7 @@ def _sched_session(config):
     sess = MagicMock()
     sess.execute = AsyncMock(return_value=[(config,)])
     sess.commit = AsyncMock()
+    sess.rollback = AsyncMock()
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=sess)
     cm.__aexit__ = AsyncMock(return_value=False)
@@ -161,7 +205,7 @@ async def test_scheduler_skips_recently_synced():
     cm = _sched_session(_sched_config(last_daily_sync_at=recent))
     run = AsyncMock()
     with patch("celerp.db.get_session_ctx", return_value=cm), \
-         patch("celerp.connectors.sync_runner.run_sync", new=run):
+         patch("celerp.connectors.sync_runner.run_connector_sync", new=run):
         synced = await check_and_run_daily_syncs("co", token_fetcher=AsyncMock())
     assert synced == [] and run.await_count == 0
 
@@ -212,11 +256,12 @@ async def test_scheduler_skips_on_token_fetch_error():
 async def test_distinct_company_ids():
     from celerp.connectors.daily_scheduler import _distinct_company_ids
     sess = MagicMock()
-    sess.execute = AsyncMock(return_value=[("co-1",), ("co-2",)])
+    sess.execute = AsyncMock(return_value=[("co-1",), ("legacy-iid",), ("co-2",)])
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=sess)
     cm.__aexit__ = AsyncMock(return_value=False)
-    with patch("celerp.db.get_session_ctx", return_value=cm):
+    with patch("celerp.db.get_session_ctx", return_value=cm), \
+         patch("celerp.config.ensure_instance_id", return_value="legacy-iid"):
         assert await _distinct_company_ids() == ["co-1", "co-2"]
 
 
@@ -264,6 +309,41 @@ def test_supported_outbound_entities_are_detected(connector, expected):
     (not `sync_inventory_out`), so it was classified as the inbound 'inventory' entity
     and never ran — this would have caught that (shopify would return {'products_out'})."""
     import celerp.connectors as registry
-    from celerp.connectors.daily_scheduler import _supported_outbound
+    from celerp.connectors.sync_runner import supported_outbound
 
-    assert set(_supported_outbound(registry.get(connector))) == expected
+    assert set(supported_outbound(registry.get(connector))) == expected
+
+
+@pytest.mark.parametrize("direction,expected_inbound,expected_outbound", [
+    ("inbound", True, False),
+    ("outbound", False, True),
+    ("both", True, True),
+])
+def test_sync_plan_honours_direction(direction, expected_inbound, expected_outbound):
+    import celerp.connectors as registry
+    from celerp.connectors.base import SyncDirection
+    from celerp.connectors.sync_runner import sync_plan
+    plan = sync_plan(registry.get("woocommerce"), SyncDirection(direction))
+    assert ("products" in plan) is expected_inbound
+    assert ("inventory_out" in plan) is expected_outbound
+
+
+@pytest.mark.asyncio
+async def test_scheduler_full_reconciles_woocommerce_products():
+    from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
+    from celerp.connectors.base import SyncEntity, SyncResult
+
+    config = _sched_config(connector="woocommerce")
+    cm = _sched_session(config)
+    run = AsyncMock(return_value=[SyncResult(entity=SyncEntity.PRODUCTS, created=0)])
+    with patch("celerp.db.get_session_ctx", return_value=cm), \
+         patch("celerp.connectors.sync_runner.run_connector_sync", new=run), \
+         patch(
+             "celerp.connectors.ownership.lock_connector_operation",
+             new=AsyncMock(return_value=config),
+         ):
+        await check_and_run_daily_syncs(
+            "co", token_fetcher=AsyncMock(return_value=MagicMock())
+        )
+
+    assert run.await_args.kwargs["full_entities"] == {"products"}

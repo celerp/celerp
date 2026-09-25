@@ -27,6 +27,7 @@ class SyncRun(Base):
     updated_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
     skipped_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
     errors_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
+    attention_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     status: Mapped[str] = mapped_column(sa.String(16), nullable=False)  # success | partial | failed
 
     @property
@@ -34,3 +35,10 @@ class SyncRun(Base):
         if not self.errors_json:
             return []
         return json.loads(self.errors_json)
+
+    @property
+    def attention(self) -> list[dict]:
+        """Records still waiting on a person after this run (see SyncResult.attention)."""
+        if not self.attention_json:
+            return []
+        return json.loads(self.attention_json)

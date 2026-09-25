@@ -1,0 +1,527 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: BUSL-1.1
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import pytest
+import sqlalchemy as sa
+
+from celerp.connectors.outbound_queue import enqueue_item_change, process_outbound_queue_once
+from celerp.models.company import Company
+from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+from celerp.models.ledger import LedgerEntry
+from celerp.models.projections import Projection
+
+
+async def _purge_committed(*companies: uuid.UUID, legacy_key: str | None = None) -> None:
+    """Delete what a test committed outside the per-test rollback, so later
+    tests on the same worker see only their own companies."""
+    from celerp.db import get_session_ctx
+    keys = [str(c) for c in companies] + ([legacy_key] if legacy_key else [])
+    async with get_session_ctx() as cleanup:
+        for model in (OutboundQueue, ConnectorConfig):
+            await cleanup.execute(sa.delete(model).where(model.company_id.in_(keys)))
+        await cleanup.execute(sa.delete(Company).where(Company.id.in_(companies)))
+        await cleanup.commit()
+
+
+@pytest.mark.asyncio
+async def test_local_linked_item_change_enqueues_woocommerce_stock(session):
+    company_id = uuid.uuid4()
+    session.add(Company(
+        id=company_id,
+        name="Queue Test",
+        slug=f"queue-test-{company_id.hex[:8]}",
+        settings={},
+    ))
+    session.add(ConnectorConfig(
+        company_id=str(company_id), connector="woocommerce", direction="both"
+    ))
+    item_id = "item:q"
+    now = datetime.now(timezone.utc)
+    session.add(Projection(
+        company_id=company_id,
+        entity_id=item_id,
+        entity_type="item",
+        version=1,
+        created_at=now,
+        updated_at=now,
+        state={
+            "sku": "Q-1",
+            "quantity": 4,
+            "status": "available",
+            "external_links": {
+                "woocommerce": {
+                    "product_id": "17",
+                    "sync_enabled": True,
+                    "manage_stock": True,
+                }
+            },
+        },
+    ))
+    await session.flush()
+    entry = LedgerEntry(
+        company_id=company_id,
+        entity_id=item_id,
+        entity_type="item",
+        event_type="item.quantity.adjusted",
+        data={"old_quantity": 3, "new_quantity": 4},
+        source="ui",
+        idempotency_key=f"t-{uuid.uuid4()}",
+    )
+    await enqueue_item_change(session, entry)
+    await session.flush()
+    queued = (await session.execute(
+        sa.select(OutboundQueue).where(OutboundQueue.company_id == str(company_id))
+    )).scalars().all()
+    assert len(queued) == 1
+    assert queued[0].connector == "woocommerce"
+    assert queued[0].entity_id == "17"
+
+
+@pytest.mark.asyncio
+async def test_connector_origin_item_change_does_not_requeue(session):
+    company_id = uuid.uuid4()
+    entry = LedgerEntry(
+        company_id=company_id,
+        entity_id="item:x",
+        entity_type="item",
+        event_type="item.updated",
+        data={"fields_changed": {}},
+        source="connector",
+        idempotency_key=f"t-{uuid.uuid4()}",
+    )
+    await enqueue_item_change(session, entry)
+    queued = (await session.execute(
+        sa.select(OutboundQueue).where(OutboundQueue.company_id == str(company_id))
+    )).scalars().all()
+    assert queued == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_connector_adoption_uses_explicit_owner_in_multi_company_db(monkeypatch):
+    from celerp.connectors.outbound_queue import adopt_legacy_connector_configs
+    from celerp.db import get_session_ctx
+
+    owner_id = uuid.uuid4()
+    other_id = uuid.uuid4()
+    legacy_id = f"inst-{uuid.uuid4().hex[:10]}"
+    connector = f"legacy-owner-{uuid.uuid4().hex[:10]}"
+    try:
+        async with get_session_ctx() as seed:
+            seed.add_all([
+                Company(id=owner_id, name="Owner", slug=f"owner-{owner_id.hex[:8]}", settings={}),
+                Company(id=other_id, name="Other", slug=f"other-{other_id.hex[:8]}", settings={}),
+                ConnectorConfig(
+                    company_id=str(owner_id), connector=connector,
+                    webhook_ids_json='["1"]', webhook_secret=None,
+                ),
+                ConnectorConfig(
+                    company_id=legacy_id, connector=connector,
+                    webhook_ids_json='["2"]', webhook_secret="legacy-secret",
+                ),
+            ])
+            await seed.commit()
+
+        monkeypatch.setattr("celerp.config.ensure_instance_id", lambda: legacy_id)
+        monkeypatch.setattr("celerp.connectors.ownership.ensure_instance_id", lambda: legacy_id)
+        await adopt_legacy_connector_configs()
+
+        async with get_session_ctx() as check:
+            rows = (await check.execute(sa.select(ConnectorConfig).where(
+                ConnectorConfig.connector == connector
+            ))).scalars().all()
+            assert len(rows) == 1
+            assert rows[0].company_id == str(owner_id)
+            assert set(rows[0].webhook_ids) == {"1", "2"}
+            assert rows[0].webhook_secret == "legacy-secret"
+    finally:
+        await _purge_committed(owner_id, other_id, legacy_key=legacy_id)
+
+
+@pytest.mark.asyncio
+async def test_connector_ui_enable_enqueues_current_woocommerce_identity(session):
+    company_id = uuid.uuid4()
+    session.add(Company(
+        id=company_id,
+        name="Queue UI Test",
+        slug=f"queue-ui-{company_id.hex[:8]}",
+        settings={},
+    ))
+    session.add(ConnectorConfig(
+        company_id=str(company_id), connector="woocommerce", direction="both"
+    ))
+    now = datetime.now(timezone.utc)
+    session.add(Projection(
+        company_id=company_id,
+        entity_id="item:ui-link",
+        entity_type="item",
+        version=1,
+        created_at=now,
+        updated_at=now,
+        state={
+            "sku": "UI-1",
+            "quantity": 2,
+            "status": "available",
+            "external_links": {
+                "woocommerce": {
+                    "product_id": "88",
+                    "sync_enabled": True,
+                    "manage_stock": True,
+                }
+            },
+        },
+    ))
+    await session.flush()
+    entry = LedgerEntry(
+        company_id=company_id,
+        entity_id="item:ui-link",
+        entity_type="item",
+        event_type="item.updated",
+        data={"fields_changed": {}},
+        source="connector_ui",
+        idempotency_key=f"t-{uuid.uuid4()}",
+    )
+    await enqueue_item_change(
+        session,
+        entry,
+        previous_state={
+            "sku": "UI-1",
+            "external_links": {
+                "woocommerce": {
+                    "product_id": "88",
+                    "sync_enabled": False,
+                }
+            },
+        },
+    )
+    await session.flush()
+    queued = (await session.execute(
+        sa.select(OutboundQueue).where(
+            OutboundQueue.company_id == str(company_id),
+            OutboundQueue.entity_id == "88",
+        )
+    )).scalars().all()
+    assert len(queued) == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_sku_change_invalidates_old_and_new_woocommerce_families(session):
+    company_id = uuid.uuid4()
+    session.add(Company(
+        id=company_id,
+        name="Queue Legacy SKU Test",
+        slug=f"queue-legacy-{company_id.hex[:8]}",
+        settings={},
+    ))
+    session.add(ConnectorConfig(
+        company_id=str(company_id), connector="woocommerce", direction="both"
+    ))
+    now = datetime.now(timezone.utc)
+    session.add_all([
+        Projection(
+            company_id=company_id,
+            entity_id="item:old-anchor",
+            entity_type="item",
+            version=1,
+            created_at=now,
+            updated_at=now,
+            state={
+                "sku": "OLD-SKU",
+                "quantity": 0,
+                "status": "available",
+                "external_links": {
+                    "woocommerce": {"product_id": "10", "sync_enabled": True}
+                },
+            },
+        ),
+        Projection(
+            company_id=company_id,
+            entity_id="item:new-anchor",
+            entity_type="item",
+            version=1,
+            created_at=now,
+            updated_at=now,
+            state={
+                "sku": "NEW-SKU",
+                "quantity": 0,
+                "status": "available",
+                "external_links": {
+                    "woocommerce": {"product_id": "20", "sync_enabled": True}
+                },
+            },
+        ),
+        Projection(
+            company_id=company_id,
+            entity_id="item:legacy-child",
+            entity_type="item",
+            version=2,
+            created_at=now,
+            updated_at=now,
+            state={
+                "sku": "NEW-SKU",
+                "quantity": 2,
+                "status": "available",
+            },
+        ),
+    ])
+    await session.flush()
+    entry = LedgerEntry(
+        company_id=company_id,
+        entity_id="item:legacy-child",
+        entity_type="item",
+        event_type="item.updated",
+        data={"sku": "NEW-SKU"},
+        source="api",
+        idempotency_key=f"t-{uuid.uuid4()}",
+    )
+    await enqueue_item_change(
+        session,
+        entry,
+        previous_state={
+            "sku": "OLD-SKU",
+            "quantity": 2,
+            "status": "available",
+        },
+    )
+    await session.flush()
+
+    identities = set((await session.execute(
+        sa.select(OutboundQueue.entity_id).where(
+            OutboundQueue.company_id == str(company_id)
+        )
+    )).scalars().all())
+    assert identities == {"10", "20"}
+
+
+@pytest.mark.asyncio
+async def test_explicit_catalog_child_change_enqueues_anchor_identity(session):
+    company_id = uuid.uuid4()
+    session.add(Company(
+        id=company_id,
+        name="Queue Family Test",
+        slug=f"queue-family-{company_id.hex[:8]}",
+        settings={},
+    ))
+    session.add(ConnectorConfig(
+        company_id=str(company_id), connector="woocommerce", direction="both"
+    ))
+    now = datetime.now(timezone.utc)
+    anchor_id = "item:anchor"
+    child_id = "item:child"
+    session.add_all([
+        Projection(
+            company_id=company_id,
+            entity_id=anchor_id,
+            entity_type="item",
+            version=1,
+            created_at=now,
+            updated_at=now,
+            state={
+                "sku": "FAMILY",
+                "quantity": 0,
+                "status": "available",
+                "external_links": {
+                    "woocommerce": {"product_id": "10", "sync_enabled": True}
+                },
+            },
+        ),
+        Projection(
+            company_id=company_id,
+            entity_id=child_id,
+            entity_type="item",
+            version=1,
+            created_at=now,
+            updated_at=now,
+            state={
+                "sku": "FAMILY",
+                "quantity": 2,
+                "status": "available",
+                "catalog_item_id": anchor_id,
+            },
+        ),
+    ])
+    await session.flush()
+    entry = LedgerEntry(
+        company_id=company_id,
+        entity_id=child_id,
+        entity_type="item",
+        event_type="item.quantity.adjusted",
+        data={"new_quantity": 2},
+        source="api",
+        idempotency_key=f"t-{uuid.uuid4()}",
+    )
+    await enqueue_item_change(session, entry)
+    await session.flush()
+    identities = set((await session.execute(
+        sa.select(OutboundQueue.entity_id).where(
+            OutboundQueue.company_id == str(company_id)
+        )
+    )).scalars().all())
+    assert identities == {"10"}
+
+@pytest.mark.asyncio
+async def test_identity_backoff_applies_to_newer_rows():
+    from celerp.db import get_session_ctx
+
+    company_id = uuid.uuid4()
+    deadline = datetime.now(timezone.utc) + timedelta(minutes=5)
+    try:
+        async with get_session_ctx() as seed:
+            seed.add(Company(
+                id=company_id,
+                name="Backoff Co",
+                slug=f"backoff-{company_id.hex[:8]}",
+                settings={},
+            ))
+            seed.add(ConnectorConfig(
+                company_id=str(company_id),
+                connector="woocommerce",
+                direction="both",
+            ))
+            seed.add_all([
+                OutboundQueue(
+                    company_id=str(company_id),
+                    connector="woocommerce",
+                    entity_type="inventory",
+                    entity_id="77",
+                    status="pending",
+                    retry_count=3,
+                    next_retry_at=deadline,
+                ),
+                OutboundQueue(
+                    company_id=str(company_id),
+                    connector="woocommerce",
+                    entity_type="inventory",
+                    entity_id="77",
+                    status="pending",
+                    retry_count=0,
+                    next_retry_at=None,
+                ),
+            ])
+            await seed.commit()
+
+        await process_outbound_queue_once()
+
+        async with get_session_ctx() as check:
+            rows = (await check.execute(
+                sa.select(OutboundQueue).where(
+                    OutboundQueue.company_id == str(company_id),
+                    OutboundQueue.entity_id == "77",
+                )
+            )).scalars().all()
+            assert len(rows) == 1
+            assert rows[0].next_retry_at is not None
+            assert rows[0].next_retry_at >= deadline
+            assert rows[0].retry_count == 3
+    finally:
+        await _purge_committed(company_id)
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_connector_ownership_fails_closed(session, monkeypatch):
+    from celerp.connectors.ownership import (
+        ConnectorOwnershipAmbiguousError,
+        lock_connector_operation,
+    )
+
+    legacy_id = f"inst-{uuid.uuid4().hex}"
+    monkeypatch.setattr(
+        "celerp.connectors.ownership.ensure_instance_id",
+        lambda: legacy_id,
+    )
+    first_company_uuid = uuid.uuid4()
+    second_company_uuid = uuid.uuid4()
+    first_company = str(first_company_uuid)
+    second_company = str(second_company_uuid)
+    connector = f"ambiguous-{uuid.uuid4().hex[:8]}"
+    session.add_all([
+        Company(
+            id=first_company_uuid,
+            name="Ambiguous Connector A",
+            slug=f"ambiguous-a-{first_company_uuid.hex[:8]}",
+            settings={},
+        ),
+        Company(
+            id=second_company_uuid,
+            name="Ambiguous Connector B",
+            slug=f"ambiguous-b-{second_company_uuid.hex[:8]}",
+            settings={},
+        ),
+        ConnectorConfig(company_id=first_company, connector=connector),
+        ConnectorConfig(company_id=second_company, connector=connector),
+    ])
+    await session.flush()
+    with pytest.raises(ConnectorOwnershipAmbiguousError):
+        await lock_connector_operation(
+            session, first_company, connector, require_owner=True
+        )
+
+
+@pytest.mark.asyncio
+async def test_legacy_sku_lookup_is_case_insensitive_in_database(session):
+    company_id = uuid.uuid4()
+    session.add(Company(
+        id=company_id,
+        name="Queue Legacy Case Test",
+        slug=f"queue-case-{company_id.hex[:8]}",
+        settings={},
+    ))
+    session.add(ConnectorConfig(
+        company_id=str(company_id), connector="woocommerce", direction="both"
+    ))
+    now = datetime.now(timezone.utc)
+    session.add_all([
+        Projection(
+            company_id=company_id,
+            entity_id="item:case-anchor",
+            entity_type="item",
+            version=1,
+            created_at=now,
+            updated_at=now,
+            state={
+                "sku": "MiXeD-SKU",
+                "quantity": 0,
+                "status": "available",
+                "external_links": {
+                    "woocommerce": {"product_id": "30", "sync_enabled": True}
+                },
+            },
+        ),
+        Projection(
+            company_id=company_id,
+            entity_id="item:case-child",
+            entity_type="item",
+            version=1,
+            created_at=now,
+            updated_at=now,
+            state={
+                "sku": "MIXED-SKU",
+                "barcode": "CASE-CHILD-1",
+                "quantity": 1,
+                "status": "available",
+            },
+        ),
+    ])
+    await session.flush()
+
+    entry = LedgerEntry(
+        company_id=company_id,
+        entity_id="item:case-child",
+        entity_type="item",
+        event_type="item.quantity.adjusted",
+        data={"new_quantity": 1},
+        source="api",
+        idempotency_key=f"t-{uuid.uuid4()}",
+    )
+    await enqueue_item_change(session, entry)
+    await session.flush()
+
+    identities = set((await session.execute(
+        sa.select(OutboundQueue.entity_id).where(
+            OutboundQueue.company_id == str(company_id)
+        )
+    )).scalars().all())
+    assert identities == {"30"}

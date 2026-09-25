@@ -3162,5 +3162,18 @@
   "ai.resets_on": "Redefine em {date}",
   "ai.service_unavailable": "O Celerp AI está temporariamente indisponível. Verifique o Connect e tente novamente.",
   "ai.untitled_conversation": "Conversa sem título",
-  "ai.uploading": "Enviando..."
+  "ai.uploading": "Enviando...",
+  "connectors.pending_title": "Conexão em andamento",
+  "connectors.pending_hint": "A autorização de {name} foi iniciada mas não concluída. Conclua-a, ou cancele para liberar esta conexão.",
+  "connectors.finish": "Concluir",
+  "connectors.ambiguous": "Este conector está vinculado a mais de uma empresa. Desconecte-o e reconecte-o a partir da empresa que deve usá-lo.",
+  "connectors.other_company": "Conectado a outra empresa.",
+  "connectors.reconnect_after_deactivation": "Os conectores foram desconectados quando esta empresa foi desativada: {names}. Reconecte-os abaixo.",
+  "connectors.deposit_label": "Depositar pagamentos em",
+  "connectors.deposit_default": "Padrão dos pagamentos online",
+  "connectors.deposit_unknown_account": "{code} não é uma conta bancária ativa.",
+  "connectors.attention_header": "Pedidos que precisam de atenção",
+  "connectors.attention_count": "{n} precisam de atenção",
+  "connectors.attention_mark_reconciled": "Marcar como conciliado",
+  "connectors.attention_reconciled": "Marcado como conciliado. Sai desta lista após a próxima sincronização."
 }
