@@ -253,6 +253,7 @@ class TestItemFileThumbnailSet:
 
     def test_unknown_file_id_changes_nothing(self):
         state = _file_attached(_base_state(), "f1")
+        state["attachments"] = None  # older states can hold an explicit null here
         state = self._set(state, file_id="missing")
         assert state["files"][0]["thumb_url"] is None
 

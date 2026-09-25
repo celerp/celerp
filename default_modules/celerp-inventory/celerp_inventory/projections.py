@@ -503,7 +503,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current["preview_image_id"] = hero["id"] if hero else None
     elif event_type == "item.file.thumbnail_set":
         # The thumbnail route previews legacy attachments too, so the file can be in either list.
-        for f in current.get("files", []) + current.get("attachments", []):
+        for f in (current.get("files") or []) + (current.get("attachments") or []):
             if f.get("id") == data["file_id"]:
                 f["thumb_url"] = data["thumb_url"]
     else:

@@ -31,6 +31,7 @@ import asyncio
 import io
 import logging
 import mimetypes
+import time
 import uuid
 from pathlib import Path
 from typing import Literal, Protocol
@@ -388,9 +389,10 @@ async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | 
 
 
 # Remote thumbnail repairs run at most this many at a time per process, so a list page full
-# of old cloud images cannot hold several full-size originals in memory at once. A view
-# past the limit previews from the original and a later view repairs it.
+# of old cloud images cannot hold several full-size originals in memory at once. Further
+# views wait their turn; one that waits too long previews from the original instead.
 _MAX_REMOTE_REPAIRS = 2
+_REMOTE_REPAIR_WAIT_S = 60
 _REMOTE_REPAIR_TIMEOUT_S = 15
 _remote_repairs = 0
 
@@ -401,7 +403,7 @@ async def repair_remote_thumbnail(company_id: str, attachment: dict) -> str | No
     For images stored in the cloud before thumbnails were recorded. Returns None, storing
     nothing, when the backend cannot read back what it stored, the original is not this
     backend's, the read fails or times out, the original is over the upload size limit or
-    does not decode, the thumbnail cannot be stored, or the repair limit is reached.
+    does not decode, the thumbnail cannot be stored, or no repair slot frees up in time.
     """
     global _remote_repairs
     backend = get_backend()
@@ -410,8 +412,11 @@ async def repair_remote_thumbnail(company_id: str, attachment: dict) -> str | No
     mime = attachment.get("mime")
     if read is None or mime not in _IMAGE_MIMES or not url.startswith(("http://", "https://")):
         return None
-    if _remote_repairs >= _MAX_REMOTE_REPAIRS:
-        return None
+    deadline = time.monotonic() + _REMOTE_REPAIR_WAIT_S
+    while _remote_repairs >= _MAX_REMOTE_REPAIRS:
+        if time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(0.25)
     _remote_repairs += 1
     att_id = str(attachment.get("id") or "")
     try:

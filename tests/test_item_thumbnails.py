@@ -6,6 +6,7 @@ served per company, and surfaced on every item as thumbnail_file_id."""
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 
@@ -495,9 +496,27 @@ async def test_cloud_repair_falls_back_when_the_thumbnail_cannot_be_stored(clien
 
 
 @pytest.mark.asyncio
-async def test_cloud_repair_waits_its_turn_past_the_repair_limit(client, monkeypatch):
-    backend, h, item_id, file_id, original = await _legacy_cloud_image(client, monkeypatch, "RepairBusyCo")
+async def test_cloud_repair_waits_for_a_free_slot(client, monkeypatch):
+    """A view past the repair limit waits for a slot rather than loading the full original."""
+    backend, h, item_id, file_id, _ = await _legacy_cloud_image(client, monkeypatch, "RepairBusyCo")
     monkeypatch.setattr(att_svc, "_remote_repairs", att_svc._MAX_REMOTE_REPAIRS)
+
+    async def _finish_other_repair():
+        await asyncio.sleep(0.3)
+        att_svc._remote_repairs -= 1
+
+    freeing = asyncio.create_task(_finish_other_repair())
+    r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
+    await freeing
+    assert r.headers["location"].endswith("/" + att_svc.thumbnail_id(file_id))
+    assert backend.reads == 1
+
+
+@pytest.mark.asyncio
+async def test_cloud_repair_falls_back_when_no_slot_frees_up(client, monkeypatch):
+    backend, h, item_id, file_id, original = await _legacy_cloud_image(client, monkeypatch, "RepairFullCo")
+    monkeypatch.setattr(att_svc, "_remote_repairs", att_svc._MAX_REMOTE_REPAIRS)
+    monkeypatch.setattr(att_svc, "_REMOTE_REPAIR_WAIT_S", 0.3)
     r = await client.get(f"/items/{item_id}/files/{file_id}/thumbnail", headers=h)
     assert r.headers["location"] == original
     assert backend.reads == 0
