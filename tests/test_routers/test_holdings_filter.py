@@ -173,3 +173,28 @@ async def test_return_items_rejects_goods_not_on_hand(client, session):
     # Untouched: still out with the customer at full quantity.
     item = (await client.get("/items/{}".format(item_id), headers=_h(token))).json()
     assert item["status"] == "memo_out" and item["quantity"] == 2.0
+
+
+async def _revoke_documents(client, token: str) -> None:
+    r = await client.patch("/companies/me/role-permissions", headers=_h(token),
+                           json={"perm_key": "view_documents", "role_key": "owner", "granted": False})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_holdings_and_sold_figures_need_document_access(client, session):
+    token = await _register(client)
+    location_id = await _create_location(client, token)
+    supplier = "contact:supNoDocs"
+    await _consign_in_received(client, token, location_id, supplier, "CIN-NODOC-1", cost_price=250.0)
+    await _revoke_documents(client, token)
+
+    for params in ({"consigned_from": supplier}, {"on_memo_to": "contact:custNoDocs"}):
+        assert (await client.get("/items", headers=_h(token), params=params)).status_code == 403
+        assert (await client.get("/items/valuation", headers=_h(token), params=params)).status_code == 403
+        assert (await client.get("/items/export/csv", headers=_h(token), params=params)).status_code == 403
+
+    sold = await client.get("/items", headers=_h(token), params={"status": "sold"})
+    assert sold.status_code == 200, sold.text
+    assert "sold_total" not in sold.json()
+    assert all("sold_price" not in i for i in sold.json()["items"])

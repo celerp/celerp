@@ -802,6 +802,15 @@ async def query_items(
     # celerp_inventory.search). The projection set is read once here and reused:
     # the holdings/sold scopes below need the raw rows and their state, and the
     # flatten runs over that same snapshot rather than issuing a second full load.
+    company = await session.get(Company, company_id)
+    settings = (company.settings if company else {}) or {}
+    # Memo/consignment membership and sold prices come from documents, so they follow the
+    # document permission: a contact scope is refused without it, and a sold row carries
+    # no price.
+    can_see_docs = role_has_permission(settings, role, "view_documents")
+    holding_scoped = bool(f.on_memo_to or f.consigned_from)
+    if holding_scoped:
+        assert_role_permission(settings, role, "view_documents")
     rows = await load_item_rows(session, company_id)
     result = await flatten_item_rows(session, company_id, rows)
 
@@ -823,7 +832,6 @@ async def query_items(
     # Membership is derived from that contact's docs (celerp.services.holdings), and is
     # authoritative: it narrows result on its own. The per-item scope value (quoted memo
     # price / consignment cost) is attached after cost-visibility gating, below.
-    holding_scoped = bool(f.on_memo_to or f.consigned_from)
     scope_value: dict[str, float] = {}
     if holding_scoped:
         from celerp.services.holdings import consignment_holdings, memo_holdings
@@ -855,7 +863,7 @@ async def query_items(
     # the document that sold it (status_doc_id). A realized sale price is not a cost, so
     # (like the memo value below) it is not gated by view_inventory_costs. Computed here
     # over the loaded rows; attached to the result dicts after visibility rebuild.
-    sold_scoped = "sold" in (status_set or {str(f.status).lower()} if f.status else set())
+    sold_scoped = can_see_docs and "sold" in (status_set or {str(f.status).lower()} if f.status else set())
     sold_price: dict[str, float | None] = {}
     if sold_scoped:
         from celerp.services.holdings import sold_prices
@@ -900,8 +908,6 @@ async def query_items(
     # effective schema is resolved PER the item's category, mirroring the detail
     # endpoint, so a category-scoped restriction is honored and a null/unresolved
     # category falls back to the base item schema (identical disclosure to detail).
-    company = await session.get(Company, company_id)
-    settings = (company.settings if company else {}) or {}
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
     # Per-category strip + searchable field sets are the shared visibility phase
     # (single-sourced in celerp_inventory.search). item_field_sets drives the q-search
@@ -1082,6 +1088,7 @@ async def get_valuation(
 
     holding_scope: set[str] | None = None
     if on_memo_to or consigned_from:
+        assert_role_permission(settings, role, "view_documents")
         from celerp.services.holdings import consignment_holdings, memo_holdings
         items_state = [(r.entity_id, r.state) for r in rows]
         scope_doc_type = "memo" if on_memo_to else "consignment_in"
