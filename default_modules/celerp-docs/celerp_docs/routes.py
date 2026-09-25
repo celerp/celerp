@@ -2830,6 +2830,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
     _cn_company = await session.get(Company, company_id)
     _cn_base_currency = (_cn_company.settings.get("currency", "USD") if _cn_company else "USD")
     _cn_rate = float(_require_doc_rate_http(cn, _cn_base_currency))
+    _require_doc_rate_http(inv, _cn_base_currency)
 
     # Both sides get allocated indices so their identity fields never
     # collide with skip-allocated payments on either doc.
@@ -3838,6 +3839,22 @@ async def delete_doc_note(
     return {"event_id": entry.id}
 
 
+def _import_auto_je_kind(data: dict) -> str | None:
+    """Accounting operation an imported snapshot would post, or None."""
+    status = str(data.get("status") or "draft")
+    total = float(data.get("total", 0) or 0)
+    if status in ("void", "draft", "converted", "expired") or total <= 0:
+        return None
+    doc_type = str(data.get("doc_type") or "")
+    if doc_type == "invoice" and status in ("sent", "final", "partial", "paid", "awaiting_payment"):
+        return "invoice"
+    if doc_type == "purchase_order" and status in ("received", "partially_received", "final"):
+        return "purchase_order"
+    if doc_type == "bill" and status in ("awaiting_payment", "partial", "paid", "final"):
+        return "bill"
+    return None
+
+
 @router.post("/import")
 async def import_doc(
     body: DocImportRecord,
@@ -3870,6 +3887,11 @@ async def import_doc(
             f"Use PATCH to update or lifecycle endpoints to advance its state.",
         )
 
+    _imp_company = await session.get(Company, company_id)
+    _imp_base_currency = (_imp_company.settings.get("currency", "USD") if _imp_company else "USD")
+    if _import_auto_je_kind(body.data) is not None:
+        _require_doc_rate_http(body.data, _imp_base_currency)
+
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -3884,11 +3906,11 @@ async def import_doc(
         metadata_={"source_ts": body.source_ts} if body.source_ts else {},
     )
 
-    # Post-import auto-JE hook: if the imported doc is already in a final state, create JEs
-    if body.event_type == "doc.created":
-        _imp_company = await session.get(Company, company_id)
-        _imp_base_currency = (_imp_company.settings.get("currency", "USD") if _imp_company else "USD")
-        await _import_auto_je(session, company_id, user.id, body.entity_id, body.data, base_currency=_imp_base_currency)
+    # The event type is doc.created by the guard above. Drafts return immediately.
+    await _import_auto_je(
+        session, company_id, user.id, body.entity_id, body.data,
+        base_currency=_imp_base_currency,
+    )
 
     await session.commit()
     return {"event_id": entry.id, "id": entry.entity_id, "idempotency_hit": False}
@@ -3933,40 +3955,31 @@ def _doc_import_fields_changed(state: dict, incoming: dict) -> dict[str, dict]:
 
 
 async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id: str, data: dict, base_currency: str = "USD") -> None:
-    """Create finalization JEs for imported docs that arrive in a non-draft state.
+    """Create the accounting entry implied by an imported non-draft snapshot.
 
-    IMPORTANT: We never synthesize payment JEs from snapshot imports.
-    - The finalization JE (Dr AR / Cr Revenue) is correct to create from a snapshot:
-      it records historical revenue and the accounts receivable balance accurately.
-    - A payment JE requires a real payment_date and bank_account. Importers who have
-      payment history must emit explicit doc.payment.received events (Option A import).
-    - The doc projection reflects amount_paid / amount_outstanding from the snapshot
-      payload directly, so the UI shows correct paid/partial/unpaid status without
-      requiring a synthetic accounting entry.
-
-    Uses doc-scoped idempotency keys - safe to call multiple times.
+    Payment entries are never synthesized from snapshot totals because their bank
+    account and settlement date/rate are separate facts that the snapshot cannot supply.
     """
-    doc_type = data.get("doc_type", "")
-    status = data.get("status", "draft")
+    kind = _import_auto_je_kind(data)
+    if kind is None:
+        return
     total = float(data.get("total", 0) or 0)
 
-    if status in ("void", "draft", "converted", "expired") or total <= 0:
-        return
-
-    if doc_type == "invoice" and status in ("sent", "final", "partial", "paid", "awaiting_payment"):
+    if kind == "invoice":
         await auto_je.create_for_doc_finalized(
-            session, company_id=company_id, user_id=user_id, doc_id=entity_id, doc=data, base_currency=base_currency,
+            session, company_id=company_id, user_id=user_id, doc_id=entity_id,
+            doc=data, base_currency=base_currency,
         )
-
-    elif doc_type == "purchase_order" and status in ("received", "partially_received", "final"):
+    elif kind == "purchase_order":
         await auto_je.create_for_po_received(
-            session, company_id=company_id, user_id=user_id, po_id=entity_id, doc=data, total=total, base_currency=base_currency,
+            session, company_id=company_id, user_id=user_id, po_id=entity_id,
+            doc=data, total=total, base_currency=base_currency,
             receive_date=data.get("issue_date"),
         )
-
-    elif doc_type == "bill" and status in ("awaiting_payment", "partial", "paid", "final"):
+    elif kind == "bill":
         await auto_je.create_for_bill_conversion(
-            session, company_id=company_id, user_id=user_id, doc_id=entity_id, doc=data, base_currency=base_currency,
+            session, company_id=company_id, user_id=user_id, doc_id=entity_id,
+            doc=data, base_currency=base_currency,
         )
 
 
@@ -4066,15 +4079,7 @@ async def batch_import_docs(
             skipped_existing += 1
             continue
         try:
-            _status = rec.data.get("status", "draft")
-            _type = rec.data.get("doc_type", "")
-            _total = float(rec.data.get("total", 0) or 0)
-            _posts = _total > 0 and (
-                (_type == "invoice" and _status in ("sent", "final", "partial", "paid", "awaiting_payment"))
-                or (_type == "purchase_order" and _status in ("received", "partially_received", "final"))
-                or (_type == "bill" and _status in ("awaiting_payment", "partial", "paid", "final"))
-            )
-            if _posts:
+            if _import_auto_je_kind(rec.data) is not None:
                 _require_doc_rate_http(rec.data, _batch_base_currency)
             entry = await emit_event(
                 session,

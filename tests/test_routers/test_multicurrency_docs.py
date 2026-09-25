@@ -491,3 +491,73 @@ async def test_batch_import_rejects_posting_foreign_doc_without_rate_before_emit
     assert r.status_code == 200
     assert r.json()["errors"]
     assert (await client.get("/docs/doc:fx-import-no-rate", headers=_auth(token))).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_single_import_rejects_posting_foreign_doc_without_rate_before_emit(client):
+    token = await _register(client)
+    h = _auth(token)
+    await _set_base_currency(client, h, "THB")
+    entity_id = f"doc:fx-single-{uuid.uuid4().hex[:8]}"
+    r = await client.post("/docs/import", headers=h, json={
+        "entity_id": entity_id,
+        "event_type": "doc.created",
+        "data": {
+            "doc_type": "invoice", "status": "final", "currency": "USD",
+            "total": 100.0, "amount_outstanding": 100.0,
+            "line_items": [{"name": "X", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
+        },
+        "idempotency_key": f"test:fx-single:{uuid.uuid4().hex}",
+        "source": "test",
+    })
+    assert r.status_code == 422, r.text
+    assert "exchange rate" in r.text.lower()
+    assert (await client.get(f"/docs/{entity_id}", headers=h)).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_credit_note_application_refuses_target_invoice_with_unknown_rate(client, session):
+    from celerp.events.engine import emit_event
+    from celerp.models.projections import Projection
+
+    token = await _register(client)
+    h = _auth(token)
+    await _set_base_currency(client, h, "THB")
+
+    inv_id = (await _make_invoice(client, h, "USD", None)).json()["id"]
+    inv_row = (await session.execute(
+        select(Projection).where(Projection.entity_id == inv_id)
+    )).scalar_one()
+    company_id = inv_row.company_id
+    await emit_event(
+        session, company_id=company_id, entity_id=inv_id, entity_type="doc",
+        event_type="doc.finalized", data={}, actor_id=None, location_id=None,
+        source="test", idempotency_key=f"legacy-final:{uuid.uuid4().hex}", metadata_={},
+    )
+
+    cn_id = f"doc:cn-{uuid.uuid4().hex[:8]}"
+    await emit_event(
+        session, company_id=company_id, entity_id=cn_id, entity_type="doc",
+        event_type="doc.created",
+        data={
+            "doc_type": "credit_note", "status": "final", "contact_id": "contact:1",
+            "currency": "USD", "conversion_rate": 35.0,
+            "total": 25.0, "amount_outstanding": 25.0,
+            "line_items": [{"name": "Credit", "quantity": 1, "unit_price": 25.0, "line_total": 25.0}],
+        },
+        actor_id=None, location_id=None, source="test",
+        idempotency_key=f"legacy-cn:{uuid.uuid4().hex}", metadata_={},
+    )
+    await session.commit()
+
+    r = await client.post(
+        f"/docs/{cn_id}/apply-to-invoice",
+        headers=h,
+        json={"target_doc_id": inv_id, "amount": 10.0},
+    )
+    assert r.status_code == 422, r.text
+    assert "exchange rate" in r.text.lower()
+    inv = (await client.get(f"/docs/{inv_id}", headers=h)).json()
+    cn = (await client.get(f"/docs/{cn_id}", headers=h)).json()
+    assert not inv.get("payments")
+    assert not cn.get("payments")

@@ -59,7 +59,7 @@ ALL_CHECKS = [
 async def _check_missing_jes(
     session: AsyncSession, company_id, user_id, *, fix: bool,
 ) -> dict:
-    """Find docs that should have JEs but don't."""
+    """Find documents whose expected accounting entry is missing."""
     docs = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
@@ -67,7 +67,6 @@ async def _check_missing_jes(
         )
     )).scalars().all()
 
-    # Build set of existing JE idempotency keys for fast lookup
     existing_keys = set((await session.execute(
         select(LedgerEntry.idempotency_key).where(
             LedgerEntry.company_id == company_id,
@@ -75,8 +74,37 @@ async def _check_missing_jes(
         )
     )).scalars().all())
 
-    missing = []
+    from celerp.models.company import Company
+    from celerp.services.money import checked_exchange_rate, require_doc_rate
+
+    company = await session.get(Company, company_id)
+    base_currency = (company.settings.get("currency", "USD") if company else "USD")
+    missing: list[dict] = []
     fixed = 0
+
+    def _rate_problem(state: dict, payment: dict | None = None) -> str | None:
+        try:
+            require_doc_rate(state, base_currency)
+        except ValueError as exc:
+            return f"{exc}. Set the document exchange rate to continue."
+        if payment is None:
+            return None
+        raw = payment.get("conversion_rate")
+        if raw in (None, ""):
+            return None
+        try:
+            settlement_rate = checked_exchange_rate(raw)
+        except ValueError as exc:
+            return f"Payment exchange rate {exc}. Correct the payment rate to continue."
+        payment_currency = str(
+            payment.get("currency") or state.get("currency") or base_currency
+        ).upper()
+        if payment_currency == str(base_currency).upper() and settlement_rate != 1:
+            return (
+                f"{base_currency} is the company currency, so this payment must convert at 1. "
+                "Correct the payment rate to continue."
+            )
+        return None
 
     for doc in docs:
         state = doc.state
@@ -89,71 +117,98 @@ async def _check_missing_jes(
             continue
 
         if doc_type == "invoice":
-            # Check finalization JE
             fin_key = je_idempotency_key(entity_id, "invoice.finalized", "c")
             if fin_key not in existing_keys:
-                missing.append({"doc_id": entity_id, "trigger": "finalize", "total": total})
-                if fix:
+                problem = _rate_problem(state)
+                detail = {"doc_id": entity_id, "trigger": "finalize", "total": total}
+                if problem:
+                    detail["blocked_reason"] = problem
+                missing.append(detail)
+                if fix and not problem:
                     await _emit_finalize_je(session, company_id, user_id, entity_id, state)
                     existing_keys.add(fin_key)
                     fixed += 1
 
-            # Check payment JEs: one per recorded ACTIVE bank payment, keyed by
-            # that payment's own index (the key auto_je actually mints).
-            # Credit-note settlements are excluded: their entries are keyed
-            # cn.applied and never touch a bank account.
-            _bank_pays = [p for p in (state.get("payments") or [])
-                          if p.get("status") == "active"
-                          and p.get("method") not in ("credit_note", "applied")]
-            # Docs compacted by pre-tombstone deletions renumbered their index
-            # fields while minted keys kept the originals. When at least as
-            # many pay keys exist as bank payments EVER recorded (voided and
-            # tombstoned ones minted keys too), every payment is covered under
-            # some historical index - repairing by today's fields would
-            # double-post, so the doc is treated as healthy.
-            _bank_all = [p for p in (state.get("payments") or [])
-                         if p.get("method") not in ("credit_note", "applied")]
-            _pay_key_prefix = f"je:{entity_id}:invoice.paid:"
-            _minted = sum(1 for k in existing_keys
-                          if k.startswith(_pay_key_prefix) and k.endswith(":c"))
-            if _minted < len(_bank_all):
-                for pay in _bank_pays:
-                    _idx = pay.get("index", 0)
-                    pay_key = je_idempotency_key(entity_id, f"invoice.paid:{_idx}", "c")
-                    if pay_key not in existing_keys:
-                        missing.append({"doc_id": entity_id, "trigger": "payment",
-                                        "amount": pay.get("amount"), "payment_index": _idx})
-                        if fix:
-                            await _emit_payment_je(session, company_id, user_id, entity_id,
-                                                   float(pay.get("amount") or 0), state,
-                                                   payment_index=_idx,
-                                                   payment=pay)
-                            existing_keys.add(pay_key)
-                            fixed += 1
-            elif not _bank_pays and not (state.get("payments") or []):
-                # Imported paid docs carry amount_paid with no payments rows;
-                # the cash leg is repaired as a single aggregate entry.
+            bank_pays = [
+                p for p in (state.get("payments") or [])
+                if p.get("status") == "active"
+                and p.get("method") not in ("credit_note", "applied")
+            ]
+            bank_all = [
+                p for p in (state.get("payments") or [])
+                if p.get("method") not in ("credit_note", "applied")
+            ]
+            pay_key_prefix = f"je:{entity_id}:invoice.paid:"
+            minted = sum(
+                1 for key in existing_keys
+                if key.startswith(pay_key_prefix) and key.endswith(":c")
+            )
+            if minted < len(bank_all):
+                for pay in bank_pays:
+                    idx = pay.get("index", 0)
+                    pay_key = je_idempotency_key(entity_id, f"invoice.paid:{idx}", "c")
+                    if pay_key in existing_keys:
+                        continue
+                    problem = _rate_problem(state, pay)
+                    detail = {
+                        "doc_id": entity_id,
+                        "trigger": "payment",
+                        "amount": pay.get("amount"),
+                        "payment_index": idx,
+                    }
+                    if problem:
+                        detail["blocked_reason"] = problem
+                    missing.append(detail)
+                    if fix and not problem:
+                        await _emit_payment_je(
+                            session, company_id, user_id, entity_id,
+                            float(pay.get("amount") or 0), state,
+                            payment_index=idx, payment=pay,
+                        )
+                        existing_keys.add(pay_key)
+                        fixed += 1
+            elif not bank_pays and not (state.get("payments") or []):
                 amount_paid = float(state.get("amount_paid", 0) or 0)
                 agg_key = je_idempotency_key(entity_id, "invoice.paid:0", "c")
                 if amount_paid > 0 and agg_key not in existing_keys:
-                    missing.append({"doc_id": entity_id, "trigger": "payment",
-                                    "amount": amount_paid, "payment_index": 0})
-                    if fix:
-                        await _emit_payment_je(session, company_id, user_id, entity_id,
-                                               amount_paid, state, payment_index=0)
+                    problem = _rate_problem(state)
+                    detail = {
+                        "doc_id": entity_id,
+                        "trigger": "payment",
+                        "amount": amount_paid,
+                        "payment_index": 0,
+                    }
+                    if problem:
+                        detail["blocked_reason"] = problem
+                    missing.append(detail)
+                    if fix and not problem:
+                        await _emit_payment_je(
+                            session, company_id, user_id, entity_id,
+                            amount_paid, state, payment_index=0,
+                        )
                         existing_keys.add(agg_key)
                         fixed += 1
 
-        elif doc_type == "purchase_order" and status not in ("draft",):
+        elif doc_type == "purchase_order" and status != "draft":
             rcv_key = je_idempotency_key(entity_id, "po.received", "c")
             if rcv_key not in existing_keys:
-                missing.append({"doc_id": entity_id, "trigger": "po_received", "total": total})
-                if fix:
+                problem = _rate_problem(state)
+                detail = {"doc_id": entity_id, "trigger": "po_received", "total": total}
+                if problem:
+                    detail["blocked_reason"] = problem
+                missing.append(detail)
+                if fix and not problem:
                     await _emit_po_received_je(session, company_id, user_id, entity_id, state)
                     existing_keys.add(rcv_key)
                     fixed += 1
 
-    return {"check": "missing_jes", "found": len(missing), "fixed": fixed, "auto_fixable": True, "details": missing[:50]}
+    return {
+        "check": "missing_jes",
+        "found": len(missing),
+        "fixed": fixed,
+        "auto_fixable": not any(detail.get("blocked_reason") for detail in missing),
+        "details": missing[:50],
+    }
 
 
 async def _check_duplicate_jes(

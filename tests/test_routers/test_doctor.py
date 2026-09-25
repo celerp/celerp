@@ -1000,3 +1000,31 @@ async def test_all_checks_have_auto_fixable_field(client, session):
     for result in r.json()["results"]:
         assert "auto_fixable" in result, f"check {result['check']} missing auto_fixable field"
         assert isinstance(result["auto_fixable"], bool)
+
+
+@pytest.mark.asyncio
+async def test_doctor_reports_missing_foreign_rate_as_blocked_instead_of_posting(client, session):
+    token = await _register(client)
+    r = await client.patch(
+        "/companies/me", headers=_h(token), json={"settings": {"currency": "THB"}})
+    assert r.status_code == 200, r.text
+
+    entity_id = f"doc:legacy-fx-{uuid.uuid4().hex[:8]}"
+    await _emit_legacy_doc_event(
+        client, session, token, entity_id, "doc.created",
+        {
+            "doc_type": "invoice", "status": "final", "currency": "USD",
+            "total": 100.0, "amount_outstanding": 100.0,
+            "line_items": [{"name": "X", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
+        },
+    )
+
+    r = await client.post(
+        "/admin/doctor?fix=true&checks=missing_jes", headers=_h(token))
+    assert r.status_code == 200, r.text
+    finding = r.json()["results"][0]
+    assert finding["fixed"] == 0
+    assert finding["auto_fixable"] is False
+    detail = next(d for d in finding["details"] if d["doc_id"] == entity_id)
+    assert "rate" in detail["blocked_reason"].lower()
+    assert "set the document exchange rate" in detail["blocked_reason"].lower()
