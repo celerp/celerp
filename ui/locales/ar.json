@@ -371,6 +371,7 @@
   "chip.archived": "مؤرشف",
   "chip.available": "متاح",
   "chip.billed": "مُفوتر",
+  "chip.not_in_totals": "{n} غير مشمولة في الإجماليات (بدون سعر صرف أو مبلغ)",
   "chip.cost": "التكلفة",
   "chip.expired": "منتهي الصلاحية",
   "chip.invoices": "الفواتير",

@@ -9852,17 +9852,22 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
 
 
 def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None, lang: str = "en") -> FT:
+    # Totals leave out documents that cannot be valued in the company currency; say how many.
+    unvalued = summary.get("unvalued_count") or 0
+    unvalued_chip = Span(t("chip.not_in_totals", lang, n=unvalued), cls="val-chip val-chip--alert") if unvalued else None
     # Only show invoice-specific metrics when viewing invoices or all types
     if doc_type and doc_type != "invoice":
         count = summary.get(f"{doc_type}_count", summary.get("total_count", 0))
         return Div(
             Span(t("documents.doc_type_count", type=doc_type.replace('_', ' ').title(), count=count), cls="val-chip"),
+            unvalued_chip,
             cls="valuation-bar",
         )
     return Div(
         Span(f"{t('chip.ar', lang)}: {fmt_money(float(summary.get('ar_outstanding', 0) or 0), currency)}", cls="val-chip val-chip--alert"),
         Span(f"{t('chip.billed', lang)}: {fmt_money(float(summary.get('ar_total', 0) or 0), currency)}", cls="val-chip"),
         Span(f"{t('chip.invoices', lang)}: {summary.get('invoice_count', 0)}", cls="val-chip"),
+        unvalued_chip,
         cls="valuation-bar",
     )
 

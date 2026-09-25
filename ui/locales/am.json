@@ -374,6 +374,7 @@
   "chip.archived": "ማህደር የተደረገ",
   "chip.available": "የሚገኝ",
   "chip.billed": "ክፍያ ተጠይቋል",
+  "chip.not_in_totals": "{n} በድምሩ ውስጥ አልተካተቱም (ምንዛሪ ተመን ወይም መጠን የለም)",
   "chip.cost": "ወጪ ዋጋ",
   "chip.expired": "ጊዜው አልፏል",
   "chip.invoices": "የሽያጭ ደረሰኞች",

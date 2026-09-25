@@ -1000,7 +1000,7 @@ class TestCompanySwitcher:
 _COMPANY = {"name": "Test Corp", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01", "current_role": "owner", "settings": {}}
 _VALUATION = {"item_count": 10, "active_item_count": 8, "total_cost": 5000.0, "total_retail": 8000.0,
               "total_wholesale": 6000.0, "cost_total": 5000.0, "retail_total": 8000.0, "wholesale_total": 6000.0}
-_DOC_SUMMARY = {"ar_outstanding": 100.0, "ar_total": 500.0, "ar_gross": 500.0, "invoice_count": 3}
+_DOC_SUMMARY = {"ar_outstanding": 100.0, "ar_total": 500.0, "invoice_count": 3}
 _COMPANIES = [{"company_id": "c1", "company_name": "Test Corp", "role": "admin"}]
 _CONTACTS = [{"entity_id": "ct:1", "name": "Alice", "phone": "555", "email": "a@b.c",
               "tax_id": "T1", "credit_limit": 1000, "contact_type": "customer"}]
@@ -3532,7 +3532,7 @@ class TestCollapsibleSidebar:
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
-            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -3551,7 +3551,7 @@ class TestCollapsibleSidebar:
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
-            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -3565,7 +3565,7 @@ class TestCollapsibleSidebar:
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
-            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -3578,7 +3578,7 @@ class TestCollapsibleSidebar:
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
-            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -3608,7 +3608,7 @@ class TestCollapsibleSidebar:
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
-            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -3775,7 +3775,7 @@ class TestGlobalSearch:
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
-            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_total": 0})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
         ):

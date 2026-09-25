@@ -399,6 +399,7 @@
   "chip.archived": "Archived",
   "chip.available": "Available",
   "chip.billed": "Billed",
+  "chip.not_in_totals": "{n} not in the totals (no exchange rate or amount)",
   "chip.cost": "Cost",
   "chip.expired": "Expired",
   "chip.invoices": "Invoices",

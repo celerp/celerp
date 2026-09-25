@@ -371,6 +371,7 @@
   "chip.archived": "アーカイブ",
   "chip.available": "在庫あり",
   "chip.billed": "請求済み",
+  "chip.not_in_totals": "合計に含まれない {n} 件 (為替レートまたは金額なし)",
   "chip.cost": "原価",
   "chip.expired": "期限切れ",
   "chip.invoices": "請求書",

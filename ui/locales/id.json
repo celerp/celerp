@@ -371,6 +371,7 @@
   "chip.archived": "Diarsipkan",
   "chip.available": "Tersedia",
   "chip.billed": "Ditagih",
+  "chip.not_in_totals": "{n} tidak termasuk total (tanpa kurs atau jumlah)",
   "chip.cost": "Biaya",
   "chip.expired": "Kedaluwarsa",
   "chip.invoices": "Faktur",

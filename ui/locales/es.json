@@ -371,6 +371,7 @@
   "chip.archived": "Archivado",
   "chip.available": "Disponible",
   "chip.billed": "Facturado",
+  "chip.not_in_totals": "{n} fuera de los totales (sin tipo de cambio o importe)",
   "chip.cost": "Costo",
   "chip.expired": "Expirado",
   "chip.invoices": "Facturas",

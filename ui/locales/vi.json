@@ -371,6 +371,7 @@
   "chip.archived": "Đã lưu trữ",
   "chip.available": "Có sẵn",
   "chip.billed": "Đã xuất hóa đơn",
+  "chip.not_in_totals": "{n} không tính vào tổng (chưa có tỷ giá hoặc số tiền)",
   "chip.cost": "Chi phí",
   "chip.expired": "Hết hạn",
   "chip.invoices": "Hóa đơn",

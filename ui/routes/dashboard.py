@@ -593,7 +593,6 @@ def _kpi_values(kpis: dict, valuation: dict, doc_summary: dict,
 
     ar_outstanding = float(sales.get("ar_outstanding", doc_summary.get("ar_outstanding", 0)) or 0)
     ar_overdue = float(sales.get("ar_overdue", 0) or 0)
-    ar_total = float(doc_summary.get("ar_gross", 0) or 0)
     invoices_outstanding = int(sales.get("invoices_outstanding", 0) or 0)
     revenue_mtd = float(sales.get("revenue_mtd", 0) or 0)
     revenue_ytd = float(sales.get("revenue_ytd", 0) or 0)

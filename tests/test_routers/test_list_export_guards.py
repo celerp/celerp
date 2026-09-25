@@ -331,3 +331,53 @@ async def test_list_summary_skips_a_text_total(client, session):
     assert r.status_code == 200, r.text
     assert r.json()["total_count"] == 2
     assert r.json()["total_value"] == 12.5
+
+
+async def test_doc_summary_totals_are_in_the_company_currency(client, session):
+    """Summary totals convert each invoice at its rate, read older amount keys, and leave out
+    (and count) an invoice whose rate is unknown instead of adding it at face value."""
+    from celerp.models.company import Company
+
+    tok = await _reg(client)
+    company_id = await _company_id(client, tok)
+    base = ((await session.get(Company, company_id)).settings or {}).get("currency", "USD")
+    foreign = "EUR" if base != "EUR" else "GBP"
+    await _seed_docs(session, company_id, {
+        f"doc:{uuid.uuid4()}": {"currency": base, "total": 100.0, "amount_outstanding": 100.0},
+        f"doc:{uuid.uuid4()}": {"currency": foreign, "conversion_rate": 2, "total": 10.0, "amount_outstanding": 10.0},
+        f"doc:{uuid.uuid4()}": {"currency": foreign, "total": 1000.0, "amount_outstanding": 1000.0},
+        f"doc:{uuid.uuid4()}": {"currency": base, "total": None, "total_amount": 7.0,
+                                "outstanding_balance": 7.0},
+    })
+
+    r = await client.get("/docs/summary", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ar_total"] == 127.0
+    assert body["ar_outstanding"] == 127.0
+    assert body["unvalued_count"] == 1
+    assert body["invoice_count"] == 4
+
+
+async def test_doc_summary_counts_a_text_amount_as_unvalued(client, session):
+    """An invoice whose total is text is counted without a value, not added as 0 or failing."""
+    tok = await _reg(client)
+    company_id = await _company_id(client, tok)
+    await _seed_docs(session, company_id, {
+        f"doc:{uuid.uuid4()}": {"total": "N/A"},
+        f"doc:{uuid.uuid4()}": {"total": 5.0},
+    })
+
+    r = await client.get("/docs/summary", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    assert r.json()["ar_total"] == 5.0
+    assert r.json()["unvalued_count"] == 1
+
+
+def test_summary_bar_says_how_many_documents_are_left_out_of_the_totals():
+    from fasthtml.common import to_xml
+    from ui.routes.documents import _summary_bar
+
+    assert "2 not in the totals" in to_xml(_summary_bar({"unvalued_count": 2}, lang="en"))
+    assert "not in the totals" not in to_xml(_summary_bar({"unvalued_count": 0}, lang="en"))
+    assert "3 not in the totals" in to_xml(_summary_bar({"unvalued_count": 3}, doc_type="memo", lang="en"))

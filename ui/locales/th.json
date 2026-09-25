@@ -371,6 +371,7 @@
   "chip.archived": "เก็บถาวร",
   "chip.available": "มีสินค้า",
   "chip.billed": "วางบิลแล้ว",
+  "chip.not_in_totals": "{n} รายการไม่รวมในยอดรวม (ไม่มีอัตราแลกเปลี่ยนหรือจำนวนเงิน)",
   "chip.cost": "ต้นทุน",
   "chip.expired": "หมดอายุ",
   "chip.invoices": "ใบแจ้งหนี้",

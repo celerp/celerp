@@ -10,6 +10,7 @@ import math
 import uuid
 from dataclasses import dataclass, replace as _dc_replace
 from datetime import datetime, timezone, date as _date
+from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
@@ -39,7 +40,7 @@ from celerp.services.permissions import assert_role_permission, get_current_comp
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
-from celerp.services.money import checked_exchange_rate, round_money, round_rate, to_decimal, to_stored_float
+from celerp.services.money import checked_exchange_rate, doc_rate, round_money, round_rate, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.output.document_context import prepare_document_output
@@ -794,14 +795,39 @@ def _doc_sql_order(field: str, descending: bool) -> list:
     return [expr.asc().nulls_first(), Projection.entity_id.asc()]
 
 
+def _doc_value(state: dict, field: str):
+    """The value a document shows for ``field``: the field itself, else its first non-empty older
+    key (``_DOC_DISPLAY_FALLBACKS``)."""
+    value = state.get(field)
+    if value in (None, ""):
+        value = next((state[k] for k in _DOC_DISPLAY_FALLBACKS.get(field, ()) if state.get(k) not in (None, "")), value)
+    return value
+
+
 def _doc_row(r: Projection) -> dict:
     """The list row for a document: its state with ``id``, ``_updated_at`` and each displayed
-    field filled from its older keys (``_DOC_DISPLAY_FALLBACKS``) when the current key is empty."""
+    field filled from its older keys (``_doc_value``) when the current key is empty."""
     row = r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None}
-    for field, alternates in _DOC_DISPLAY_FALLBACKS.items():
-        if row.get(field) in (None, ""):
-            row[field] = next((row[k] for k in alternates if row.get(k) not in (None, "")), row.get(field))
+    for field in _DOC_DISPLAY_FALLBACKS:
+        row[field] = _doc_value(row, field)
     return row
+
+
+def _doc_base_amounts(state: dict, fields: tuple[str, ...], base_currency: str) -> dict[str, Decimal] | None:
+    """``fields`` of a document (``_doc_value``; missing is 0) in the company currency, each
+    rounded at its precision, or None when the document cannot be valued there: its exchange
+    rate is unknown or invalid (``doc_rate``), or an amount is not a number. None is never
+    counted as 0 or at a rate of 1."""
+    try:
+        rate = doc_rate(state, base_currency)
+        if rate is None:
+            return None
+        amounts = {f: to_decimal(_doc_value(state, f) or 0) for f in fields}
+    except (ArithmeticError, TypeError, ValueError):
+        return None
+    if not all(a.is_finite() for a in amounts.values()):
+        return None
+    return {f: round_money(a * rate, base_currency) for f, a in amounts.items()}
 
 
 async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, *, limit: int | None, offset: int = 0) -> dict:
@@ -872,71 +898,78 @@ async def get_doc_summary(
 ) -> dict:
     """Counts and totals for the document list, over the same filters as list_docs (type, search,
     contact, ids, date window) so the cards over a filtered list count the rows the list shows.
-    The status filters are ignored: the cards split the filtered set by status."""
+    The status filters are ignored: the cards split the filtered set by status.
+
+    Totals are in the company currency (``_doc_base_amounts``). A document that cannot be valued
+    there is left out of every total and counted in ``unvalued_count``."""
     today = _date.today().isoformat()
+    company = await session.get(Company, company_id)
+    base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
     summary_where = _doc_sql_where(company_id, _dc_replace(filters, status=None, status_in=None, exclude_status=None, all_issued=False))
     rows = (await session.execute(select(Projection).where(*summary_where))).scalars().all()
-    ar_gross = ar_paid = ar_outstanding = 0.0
+    totals = dict.fromkeys((
+        "ar_gross", "ar_paid", "ar_outstanding", "awaiting_payment", "overdue", "paid", "sent",
+        "draft", "void", "memo", "unfulfilled",
+    ), Decimal(0))
     count_by_status: dict[str, int] = {}
     invoice_count = 0
     _AWAITING_STATUSES = {"final", "sent", "awaiting_payment", "partial"}
     awaiting_payment_count = 0
-    awaiting_payment_total = 0.0
     overdue_count = 0
-    overdue_total = 0.0
     paid_count = 0
-    paid_total = 0.0
-    sent_total = 0.0
-    draft_total = 0.0
-    void_total = 0.0
-    memo_total = 0.0
     unfulfilled_count = 0
-    unfulfilled_total = 0.0
     not_restocked_count = 0
     not_stocked_count = 0
-    converted_to_memo_count = 0
-    converted_to_invoice_count = 0
+    unvalued_count = 0
+
+    def add(key: str, amounts: dict[str, Decimal] | None, field: str) -> None:
+        if amounts is not None:
+            totals[key] += amounts[field]
+
     for row in rows:
         state = row.state
         st = state.get("status", "")
         count_by_status[st] = count_by_status.get(st, 0) + 1
         dt = state.get("doc_type")
         if dt == "invoice":
-            total_ = float(state.get("total", 0) or 0)
-            outstanding_ = float(state.get("amount_outstanding", 0) or 0)
-            paid_ = float(state.get("amount_paid", 0) or 0)
+            amounts = _doc_base_amounts(state, ("total", "amount_outstanding", "amount_paid"), base_currency)
+            if amounts is None:
+                unvalued_count += 1
             if st == "draft":
-                draft_total += total_
+                add("draft", amounts, "total")
                 continue
             if st == "void":
-                void_total += total_
+                add("void", amounts, "total")
                 continue
             invoice_count += 1
-            ar_gross += total_
-            ar_paid += paid_
-            ar_outstanding += outstanding_
+            add("ar_gross", amounts, "total")
+            add("ar_paid", amounts, "amount_paid")
+            add("ar_outstanding", amounts, "amount_outstanding")
             if state.get("fulfillment_status") != "fulfilled":
                 unfulfilled_count += 1
-                unfulfilled_total += total_
+                add("unfulfilled", amounts, "total")
             if st in _AWAITING_STATUSES:
                 awaiting_payment_count += 1
-                awaiting_payment_total += outstanding_
-                due = state.get("due_date") or ""
+                add("awaiting_payment", amounts, "amount_outstanding")
+                due = _doc_value(state, "due_date") or ""
                 if due and due < today:
                     overdue_count += 1
-                    overdue_total += outstanding_
+                    add("overdue", amounts, "amount_outstanding")
                 if st == "sent":
-                    sent_total += outstanding_
+                    add("sent", amounts, "amount_outstanding")
             elif st == "paid":
                 paid_count += 1
-                paid_total += total_
+                add("paid", amounts, "total")
         else:
             if st in ("void", "draft"):
                 continue
             if dt == "memo":
-                memo_total += float(state.get("total", 0) or 0)
+                amounts = _doc_base_amounts(state, ("total",), base_currency)
+                if amounts is None:
+                    unvalued_count += 1
+                add("memo", amounts, "total")
             if dt in ("memo", "consignment_in"):
-                due = state.get("due_date") or ""
+                due = _doc_value(state, "due_date") or ""
                 if due and due < today:
                     overdue_count += 1
             if dt == "credit_note":
@@ -945,12 +978,7 @@ async def get_doc_summary(
             if dt == "bill":
                 if not (state.get("received_items") or []):
                     not_stocked_count += 1
-            if dt == "list" and st == "converted":
-                ctt = state.get("converted_to_type") or ""
-                if ctt == "memo":
-                    converted_to_memo_count += 1
-                elif ctt == "invoice":
-                    converted_to_invoice_count += 1
+    money = {k: to_stored_float(round_money(v, base_currency)) for k, v in totals.items()}
     draft_count = count_by_status.get("draft", 0)
     total_rows = sum(count_by_status.values())
     live_count = total_rows - draft_count
@@ -960,27 +988,26 @@ async def get_doc_summary(
         "draft_count": draft_count,
         "non_void_count": sum(v for k, v in count_by_status.items() if k not in ("void", "draft")),
         "all_issued_count": all_issued_count,
-        "all_issued_total": ar_gross,
+        "all_issued_total": money["ar_gross"],
         "awaiting_payment_count": awaiting_payment_count,
-        "awaiting_payment_total": awaiting_payment_total,
+        "awaiting_payment_total": money["awaiting_payment"],
         "overdue_count": overdue_count,
-        "overdue_total": overdue_total,
+        "overdue_total": money["overdue"],
         "paid_count": paid_count,
-        "paid_total": paid_total,
-        "sent_total": sent_total,
-        "draft_total": draft_total,
-        "void_total": void_total,
-        "ar_total": ar_gross,
-        "ar_paid": ar_paid,
-        "ar_outstanding": ar_outstanding,
+        "paid_total": money["paid"],
+        "sent_total": money["sent"],
+        "draft_total": money["draft"],
+        "void_total": money["void"],
+        "ar_total": money["ar_gross"],
+        "ar_paid": money["ar_paid"],
+        "ar_outstanding": money["ar_outstanding"],
         "invoice_count": invoice_count,
         "unfulfilled_count": unfulfilled_count,
-        "unfulfilled_total": unfulfilled_total,
+        "unfulfilled_total": money["unfulfilled"],
         "not_restocked_count": not_restocked_count,
         "not_stocked_count": not_stocked_count,
-        "converted_to_memo_count": converted_to_memo_count,
-        "converted_to_invoice_count": converted_to_invoice_count,
-        "memo_all_total": memo_total,
+        "unvalued_count": unvalued_count,
+        "memo_all_total": money["memo"],
         "count_by_status": count_by_status,
     }
 
