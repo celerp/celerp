@@ -115,6 +115,26 @@ def test_consignment_excludes_item_from_a_different_supplier():
     assert consignment_holdings(items, docs, "USD") == {}
 
 
+def test_consignment_follows_lots_split_or_transformed_from_a_received_item():
+    items = [
+        ("item:1", {"consignment_flag": "in", "cost_total": 300.0}),
+        ("item:2", {"consignment_flag": "in", "cost_total": 100.0, "split_from": "item:1"}),
+        ("item:3", {"consignment_flag": "in", "cost_total": 50.0, "transformed_from": "item:2"}),
+        ("item:4", {"consignment_flag": "in", "cost_total": 70.0, "split_from": "item:OTHER"}),
+    ]
+    docs = [("doc:C", {"received_item_ids": ["item:1"]})]
+    assert consignment_holdings(items, docs, "USD") == {"item:1": 300.0, "item:2": 100.0, "item:3": 50.0}
+
+
+def test_consignment_ancestry_stops_on_a_loop():
+    items = [
+        ("item:1", {"consignment_flag": "in", "cost_total": 10.0, "split_from": "item:2"}),
+        ("item:2", {"consignment_flag": "in", "cost_total": 20.0, "split_from": "item:1"}),
+    ]
+    docs = [("doc:C", {"received_item_ids": ["item:9"]})]
+    assert consignment_holdings(items, docs, "USD") == {}
+
+
 # --- sold price (realized per-unit sale price of a sold item) ----------------
 
 def test_sold_price_is_selling_line_unit_price():

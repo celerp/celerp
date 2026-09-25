@@ -10,8 +10,9 @@ Three mirror-image questions, answered as pure reads over existing projection st
   the memo LINE charges per unit (``_LineIndex``) times the quantity still out, NOT the
   item's catalog price.
 - What do we currently hold on consignment FROM a supplier? Items with
-  ``consignment_flag == "in"`` created by one of that supplier's ``consignment_in``
-  docs (tracked on the doc as ``received_item_ids``). Valued at cost.
+  ``consignment_flag == "in"`` received on one of that supplier's ``consignment_in``
+  docs (tracked on the doc as ``received_item_ids``), or split or transformed from such
+  an item. Valued at cost.
 - What did a sold item actually sell for? The per-unit price on its selling
   document's line (``sold_prices``).
 
@@ -159,20 +160,33 @@ def consignment_holdings(
     ``items``: (entity_id, state) for the company's items.
     ``consignment_docs``: (entity_id, state) for that supplier's issued consignment_in docs.
 
-    An item is still held when it was created by one of those docs (its id is in the
-    doc's ``received_item_ids``) and it still carries ``consignment_flag == "in"``
-    (the flag clears when the goods are fully returned to the supplier). Value is the
+    An item is still held when it came from one of those docs and it still carries
+    ``consignment_flag == "in"`` (the flag clears when the goods are fully returned to
+    the supplier). It came from a doc when its own id, or the id of any lot it was split
+    or transformed from (``split_from`` / ``transformed_from``, followed back to the
+    received lot), is in the doc's ``received_item_ids``. Value is the
     item's ``cost_total``, which already tracks remaining quantity after partial returns,
     else cost_price x quantity, else None.
     """
     received: set[str] = set()
     for _doc_id, state in consignment_docs:
-        received.update((state or {}).get("received_item_ids") or [])
+        received.update(str(i) for i in (state or {}).get("received_item_ids") or [])
+    items = [(str(item_id), state or {}) for item_id, state in items]
+    by_id = dict(items)
+
+    def came_from_received(item_id: str) -> bool:
+        seen: set[str] = set()
+        while item_id and item_id not in seen:
+            if item_id in received:
+                return True
+            seen.add(item_id)
+            state = by_id.get(item_id) or {}
+            item_id = str(state.get("split_from") or state.get("transformed_from") or "")
+        return False
 
     out: dict[str, float | None] = {}
     for item_id, state in items:
-        state = state or {}
-        if item_id not in received or state.get("consignment_flag") != "in":
+        if state.get("consignment_flag") != "in" or not came_from_received(item_id):
             continue
         cost = _dec(state.get("cost_total"))
         if cost is None:
