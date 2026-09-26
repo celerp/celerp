@@ -152,6 +152,44 @@ async def _try_sync_existing_entitlement() -> None:
             "Cloud startup reconciliation failed (non-fatal): %s", exc)
 
 
+
+async def _verify_runtime_dependencies() -> None:
+    """Validate later startup seams without starting external/background work."""
+    from celerp.gateway.bootstrap import associate_partner_deployment
+    from celerp.gateway import ensure_running, has_active_share
+    from celerp.services import backup_scheduler
+    from celerp.ai.batch import fail_interrupted_jobs
+    from celerp.ai.cleanup import run_cleanup_loop
+    from celerp.services.session_tracker import run_jti_cleanup_loop
+    from celerp.connectors.outbound_queue import (
+        adopt_legacy_connector_configs,
+        outbound_queue_loop,
+    )
+    from celerp.connectors.daily_scheduler import scheduler_loop_all
+    from celerp.connectors.relay_token import fetch_context as connector_token_fetcher
+    from celerp.services.reorder import reorder_alert_loop
+    from celerp.services.update import update_loop
+
+    # Keep imports live so packaging/signature regressions surface in verification.
+    _ = (
+        associate_partner_deployment,
+        ensure_running,
+        backup_scheduler.start,
+        fail_interrupted_jobs,
+        run_cleanup_loop,
+        run_jti_cleanup_loop,
+        outbound_queue_loop,
+        scheduler_loop_all,
+        connector_token_fetcher,
+        reorder_alert_loop,
+        update_loop,
+    )
+    if settings.gateway_token and not settings.celerp_public_url:
+        await has_active_share()
+    # This is local DB maintenance only; it is covered by the pre-update dump.
+    await adopt_legacy_connector_configs()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     update_verify = _os.environ.get(_runtime.UPDATE_VERIFY_ENV) == "1"
@@ -201,7 +239,8 @@ async def lifespan(_app: FastAPI):
             async with lifecycle_engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
             if update_verify:
-                # Verification proves DB/module startup without running hooks or workers.
+                # Verification proves DB/module/runtime startup without external work.
+                await _verify_runtime_dependencies()
                 yield
                 return
             # Allow modules to backfill data for existing companies (e.g. seed
@@ -242,6 +281,7 @@ async def lifespan(_app: FastAPI):
                     "Demoted-module notification skipped (non-fatal)", exc_info=True)
 
     if update_verify:
+        await _verify_runtime_dependencies()
         yield
         return
 
@@ -303,31 +343,37 @@ async def lifespan(_app: FastAPI):
     # A partner-packaged install with an unconsumed deployment credential
     # associates with its partner through the explicit relay seam before the
     # gateway starts. No-op for a direct install or one already associated.
-    from celerp.gateway.bootstrap import associate_partner_deployment
-    await associate_partner_deployment()
+    try:
+        from celerp.gateway.bootstrap import associate_partner_deployment
+        await associate_partner_deployment()
+    except Exception:
+        logging.getLogger(__name__).exception("Deployment association failed (non-fatal)")
 
     # Bring up the relay tunnel per the lazy free-tier lifecycle (3.1). A token-holder
     # is past first activation and never re-enters it. Paid instances (public_url set)
     # keep the tunnel always-on; a free instance opens it at boot only when it already
     # has a live share to serve, and otherwise stays down until a share is created.
-    if settings.gateway_token:
-        from celerp.gateway import ensure_running, has_active_share
-        if settings.celerp_public_url or await has_active_share():
-            ensure_running()
-        # Authenticated activation is the canonical durable reconciliation path.
-        # It is bounded, idempotent for established credentials, and runs in the
-        # background so tunnel startup is never delayed.
-        asyncio.create_task(_try_sync_existing_entitlement())
-    else:
-        # Auto-activate: probe relay for an existing subscription (silent, no-op on failure)
-        asyncio.create_task(_try_auto_activate())
+    try:
+        if settings.gateway_token:
+            from celerp.gateway import ensure_running, has_active_share
+            if settings.celerp_public_url or await has_active_share():
+                ensure_running()
+            # Authenticated activation is the canonical durable reconciliation path.
+            asyncio.create_task(_try_sync_existing_entitlement())
+        else:
+            asyncio.create_task(_try_auto_activate())
+    except Exception:
+        logging.getLogger(__name__).exception("Gateway startup failed (non-fatal)")
 
     # Start backup scheduler - paid tiers only (public_url is the paid signal;
     # a free instance is not entitled to backups at all).
     if settings.celerp_public_url and settings.backup_encryption_key and settings.backup_enabled:
-        from celerp.services import backup_scheduler
-        backup_scheduler.start()
-        log.debug("Backup scheduler started")
+        try:
+            from celerp.services import backup_scheduler
+            backup_scheduler.start()
+            log.debug("Backup scheduler started")
+        except Exception:
+            logging.getLogger(__name__).exception("Backup scheduler startup failed (non-fatal)")
 
     # AI batch jobs cannot survive a restart: mark any left pending or running
     # as failed so their owners are told to resend instead of waiting forever.
@@ -358,7 +404,10 @@ async def lifespan(_app: FastAPI):
         adopt_legacy_connector_configs,
         outbound_queue_loop,
     )
-    await adopt_legacy_connector_configs()
+    try:
+        await adopt_legacy_connector_configs()
+    except Exception:
+        logging.getLogger(__name__).exception("Connector startup reconciliation failed (non-fatal)")
     outbound_connector_task = asyncio.create_task(outbound_queue_loop())
 
     # Connector reconciliation scheduler: a daily incremental sync per connector,

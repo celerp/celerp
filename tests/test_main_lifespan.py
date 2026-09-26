@@ -120,9 +120,14 @@ async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
 
     fire = AsyncMock()
     associate = AsyncMock()
+    adopt = AsyncMock()
     monkeypatch.setattr("celerp.modules.slots.fire_lifecycle", fire)
     monkeypatch.setattr("celerp.gateway.bootstrap.associate_partner_deployment", associate)
+    monkeypatch.setattr("celerp.connectors.outbound_queue.adopt_legacy_connector_configs", adopt)
 
+    saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
+    settings.gateway_token = ""
+    settings.celerp_public_url = None
     slots.clear()
     try:
         with _mock_db():
@@ -130,6 +135,9 @@ async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
                 pass
     finally:
         slots.clear()
+        settings.gateway_token = saved_token
+        settings.celerp_public_url = saved_public
 
     fire.assert_not_awaited()
     associate.assert_not_awaited()
+    adopt.assert_awaited_once()
