@@ -105,6 +105,7 @@ async def test_modules_ready_commit_guarded(monkeypatch):
 async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
     import celerp.main as main_mod
     from celerp import runtime
+    from celerp.config import settings
     from celerp.modules import slots
 
     monkeypatch.setenv(runtime.UPDATE_VERIFY_ENV, "1")
