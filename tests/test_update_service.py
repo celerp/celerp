@@ -357,3 +357,10 @@ def test_stuck_step_fails_instead_of_waiting(monkeypatch):
 def test_failed_step_reports_its_output():
     with pytest.raises(update.UpdateError, match="step broke"):
         update._step("-c", "import sys; sys.exit('step broke')")
+
+
+def test_step_output_outside_the_legacy_code_page_survives(monkeypatch):
+    """pip prints characters such as a greater-or-equal sign; a child whose
+    output defaults to a narrow code page (Windows) must not fail on them."""
+    monkeypatch.setenv("PYTHONIOENCODING", "ascii")
+    assert update._step("-c", "print('\\u2265 2.0')").strip() == "≥ 2.0"

@@ -170,11 +170,8 @@ def available_update(timeout: float = CHECK_TIMEOUT_SECONDS) -> str | None:
     timeout raises UpdateError, so callers say "could not check", never guess.
     """
     try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", "--dry-run", "--quiet",
-             "--disable-pip-version-check", "--report", "-", "celerp"],
-            capture_output=True, text=True, timeout=timeout,
-        )
+        result = _python("-m", "pip", "install", "--upgrade", "--dry-run", "--quiet",
+                         "--disable-pip-version-check", "--report", "-", "celerp", timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         log.warning("update check failed: %s", exc)
         raise UpdateError("could not reach the package index") from exc
@@ -556,12 +553,20 @@ def reconcile(steps: Steps) -> tuple[dict | None, tuple]:
 # ── Real steps ────────────────────────────────────────────────────────────────
 
 
+def _python(*args: str, env: dict | None = None, timeout: float) -> subprocess.CompletedProcess:
+    """Run this interpreter with args, its output read as UTF-8. The child is told
+    to write UTF-8 too: on Windows its piped output otherwise uses the legacy
+    code page, and pip fails on the first character outside it."""
+    env = {**(os.environ if env is None else env), "PYTHONIOENCODING": "utf-8"}
+    return subprocess.run([sys.executable, *args], env=env, capture_output=True,
+                          encoding="utf-8", errors="replace", timeout=timeout)
+
+
 def _step(*args: str, env: dict | None = None) -> str:
     """Run `python <args>` as one update step; any failure, or no end within
     STEP_TIMEOUT_SECONDS, raises UpdateError so the update is undone."""
     try:
-        result = subprocess.run([sys.executable, *args], env=env, capture_output=True, text=True,
-                                timeout=STEP_TIMEOUT_SECONDS)
+        result = _python(*args, env=env, timeout=STEP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
         raise UpdateError(f"{' '.join(args[:3])} did not finish within {STEP_TIMEOUT_SECONDS // 60} minutes") from exc
     if result.returncode != 0:
