@@ -109,6 +109,17 @@ def watch_supervisor_pipe() -> None:
 
     def _watch() -> None:
         try:
+            if os.name == "nt":
+                # A blocked read on a Windows pipe stalls every other call that
+                # touches the handle, so poll it instead of reading it.
+                import _winapi
+                import msvcrt
+                import time
+
+                handle = msvcrt.get_osfhandle(0)
+                while True:
+                    _winapi.PeekNamedPipe(handle, 0)
+                    time.sleep(1)
             while os.read(0, 1):
                 pass
         except OSError:
