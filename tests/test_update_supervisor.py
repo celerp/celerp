@@ -54,7 +54,7 @@ def _run_supervisor(tmp_path, *, sentinel_text=None, run_update=None, reconcile=
     events: list[str] = []
     spawned: list[_Proc] = []
 
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env, **kwargs):
         name = "api" if any("celerp.main" in s for s in cmd) else "ui"
         first_api = name == "api" and not any(p.name == "api" for p in spawned)
         proc = _Proc(name, dead=first_api)
