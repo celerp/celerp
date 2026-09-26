@@ -259,8 +259,10 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
 
+  # Each OS runs the scenarios as two halves in parallel (--group); every scenario
+  # lands in exactly one half, including any added later.
   update-e2e:
-    name: Self-update end to end (${{ matrix.os }})
+    name: Self-update end to end (${{ matrix.os }}, ${{ matrix.group }}/2)
     needs: update-changes
     if: needs.update-changes.outputs.run == 'true'
     runs-on: ${{ matrix.os }}
@@ -269,18 +271,19 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-26, windows-latest]
+        group: [1, 2]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Build, install and update
-        run: python -u scripts/e2e_update.py --work "${{ runner.temp }}/e2e" --keep
+        run: python -u scripts/e2e_update.py --group ${{ matrix.group }}/2 --work "${{ runner.temp }}/e2e" --keep
       - name: Keep the logs
         if: failure() || cancelled()
         uses: actions/upload-artifact@v7
         with:
-          name: update-e2e-${{ matrix.os }}
+          name: update-e2e-${{ matrix.os }}-${{ matrix.group }}
           path: ${{ runner.temp }}/e2e/runs/*/*.log
           if-no-files-found: ignore
 
