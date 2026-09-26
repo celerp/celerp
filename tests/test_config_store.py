@@ -77,7 +77,7 @@ def test_merge_failure_preserves_prior_file(tmp_path, monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("disk full")
 
-    monkeypatch.setattr(config_store.json, "dump", _boom)
+    monkeypatch.setattr(config_store.os, "replace", _boom)
 
     ok = config_store.merge_packaged_config({
         "db_mode": "external",
@@ -87,6 +87,7 @@ def test_merge_failure_preserves_prior_file(tmp_path, monkeypatch):
     assert ok is False
     reread = json.loads(config_path.read_text())
     assert reread == prior
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["celerp-config.json"]
 
 
 def test_merge_empty_updates_is_noop_success(tmp_path, monkeypatch):

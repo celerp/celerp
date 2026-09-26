@@ -651,28 +651,8 @@ def _write_config_unlocked(cfg: dict) -> None:
         enabled_toml = ", ".join(_str(m) for m in enabled)
         lines += ["[modules]", f"enabled = [{enabled_toml}]", ""]
 
-    # Crash-safe replacement: fsync a 0600 temp inode, then atomically swap it
-    # over config.toml. Readers see either the complete old file or complete new
-    # file, never torn contents from concurrent workers.
-    import uuid as _uuid
-    data = "\n".join(lines)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{_uuid.uuid4().hex}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-        from celerp import config_store as _config_store
-        _config_store._fsync_dir(str(path.parent))
-    except Exception:
-        try:
-            if tmp.exists():
-                tmp.unlink()
-        except OSError:
-            pass
-        raise
+    from celerp import config_store as _config_store
+    _config_store.atomic_write_text(str(path), "\n".join(lines))
 
 
 def _config_lock():
