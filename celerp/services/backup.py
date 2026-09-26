@@ -176,16 +176,7 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
     return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
 
 
-def restore_database(dump_bytes: bytes, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
-    """Run pg_restore from dump bytes into database_url.
-
-    With `clean_schema` the public schema is dropped and recreated first and the
-    restore runs as one transaction that stops at the first error, so the result
-    is exactly the dump: objects created after it (a new version's tables) are
-    gone too, which `--clean` alone would leave behind.
-
-    Raises RuntimeError on failure.
-    """
+def _restore_database(source: bytes | Path, database_url: str, *, clean_schema: bool, runner=None) -> None:
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
     if clean_schema:
         from sqlalchemy import create_engine, text
@@ -202,22 +193,37 @@ def restore_database(dump_bytes: bytes, database_url: str, *, clean_schema: bool
         mode = ["--single-transaction", "--exit-on-error"]
     else:
         mode = ["--clean", "--if-exists"]
+
     runner = runner or subprocess.run
+    command = [*_restore_command(database_url, mode)]
+    kwargs = {"capture_output": True, "timeout": 600}
+    if isinstance(source, Path):
+        command.append(str(source))
+    else:
+        kwargs["input"] = source
     try:
-        pg_restore = _find_pg_tool("pg_restore")
-        result = runner(
-            [pg_restore, *mode, "--no-password", "--no-privileges", "--no-owner", "-d", pg_url],
-            input=dump_bytes,
-            capture_output=True,
-            timeout=600,
-        )
+        result = runner(command, **kwargs)
     except FileNotFoundError as exc:
         raise RuntimeError("pg_restore not found in PATH") from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("pg_restore timed out after 600 seconds") from exc
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
-        # pg_restore returns non-zero for warnings too; only raise on real errors.
-        # A single-transaction restore that exits non-zero has applied nothing.
         if clean_schema or "ERROR" in stderr.upper():
             raise RuntimeError(f"pg_restore failed (exit {result.returncode}): {stderr}")
+
+
+def _restore_command(database_url: str, mode: list[str]) -> list[str]:
+    pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+    pg_restore = _find_pg_tool("pg_restore")
+    return [pg_restore, *mode, "--no-password", "--no-privileges", "--no-owner", "-d", pg_url]
+
+
+def restore_database(dump_bytes: bytes, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
+    """Restore a dump supplied in memory."""
+    _restore_database(dump_bytes, database_url, clean_schema=clean_schema, runner=runner)
+
+
+def restore_database_file(dump_path: Path, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
+    """Restore directly from an existing dump file."""
+    _restore_database(Path(dump_path), database_url, clean_schema=clean_schema, runner=runner)

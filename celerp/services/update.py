@@ -606,9 +606,8 @@ import subprocess
 import sys
 import threading
 
-stdin_path, *command = sys.argv[1:]
-child_input = open(stdin_path, "rb") if stdin_path else subprocess.DEVNULL
-spawn = {"stdin": child_input}
+command = sys.argv[1:]
+spawn = {"stdin": subprocess.DEVNULL}
 if os.name == "nt":
     spawn["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
 else:
@@ -647,76 +646,49 @@ def _watch_parent():
     os._exit(125)
 
 threading.Thread(target=_watch_parent, name="update-parent-watch", daemon=True).start()
-code = child.wait()
-if child_input is not subprocess.DEVNULL:
-    child_input.close()
-raise SystemExit(code)
+raise SystemExit(child.wait())
 """
 
 
-def _bound_run(command, *, env: dict | None = None, input: bytes | None = None,
-               capture_output: bool = False, timeout: float) -> subprocess.CompletedProcess:
+def _bound_run(command, *, env: dict | None = None, capture_output: bool = False,
+               timeout: float) -> subprocess.CompletedProcess:
     """Run a command whose process tree cannot outlive this supervisor."""
     env = dict(os.environ if env is None else env)
-    input_path = ""
-    if input is not None:
-        fd, input_path = tempfile.mkstemp(prefix=".celerp-update-", suffix=".stdin")
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(
+            [sys.executable, "-S", "-c", _PARENT_BOUND_RUNNER, *map(str, command)],
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=out if capture_output else None,
+            stderr=err if capture_output else None,
+        )
         try:
-            os.chmod(input_path, 0o600)
-            with os.fdopen(fd, "wb") as f:
-                f.write(input)
-        except Exception:
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            if proc.stdin and not proc.stdin.closed:
+                proc.stdin.close()
             try:
-                os.close(fd)
-            except OSError:
-                pass
-            try:
-                os.unlink(input_path)
-            except OSError:
-                pass
-            raise
-    try:
-        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
-            proc = subprocess.Popen(
-                [sys.executable, "-c", _PARENT_BOUND_RUNNER, input_path, *map(str, command)],
-                env=env,
-                stdin=subprocess.PIPE,
-                stdout=out if capture_output else None,
-                stderr=err if capture_output else None,
-            )
-            try:
-                code = proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired as exc:
-                if proc.stdin and not proc.stdin.closed:
-                    proc.stdin.close()
-                try:
-                    proc.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
-                if capture_output:
-                    out.seek(0); err.seek(0)
-                    stdout, stderr = out.read(), err.read()
-                else:
-                    stdout = stderr = None
-                raise subprocess.TimeoutExpired(
-                    command, timeout, output=stdout, stderr=stderr
-                ) from exc
-            finally:
-                if proc.stdin and not proc.stdin.closed:
-                    proc.stdin.close()
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
             if capture_output:
                 out.seek(0); err.seek(0)
                 stdout, stderr = out.read(), err.read()
             else:
                 stdout = stderr = None
-            return subprocess.CompletedProcess(command, code, stdout, stderr)
-    finally:
-        if input_path:
-            try:
-                os.unlink(input_path)
-            except OSError:
-                pass
+            raise subprocess.TimeoutExpired(
+                command, timeout, output=stdout, stderr=stderr
+            ) from exc
+        finally:
+            if proc.stdin and not proc.stdin.closed:
+                proc.stdin.close()
+        if capture_output:
+            out.seek(0); err.seek(0)
+            stdout, stderr = out.read(), err.read()
+        else:
+            stdout = stderr = None
+        return subprocess.CompletedProcess(command, code, stdout, stderr)
 
 
 def _bound_python(*args: str, env: dict | None = None, timeout: float) -> subprocess.CompletedProcess:
@@ -730,7 +702,6 @@ def _bound_python(*args: str, env: dict | None = None, timeout: float) -> subpro
         (result.stdout or b"").decode("utf-8", errors="replace"),
         (result.stderr or b"").decode("utf-8", errors="replace"),
     )
-
 
 def _python(*args: str, env: dict | None = None, timeout: float) -> subprocess.CompletedProcess:
     """Run this interpreter with args, its output read as UTF-8. The child is told
@@ -857,8 +828,8 @@ class SupervisorSteps(Steps):
             _terminate(proc)
 
     def restore(self, path: Path) -> None:
-        self._backup.restore_database(
-            path.read_bytes(), self.db_url, clean_schema=True, runner=_bound_run
+        self._backup.restore_database_file(
+            path, self.db_url, clean_schema=True, runner=_bound_run
         )
 
     def stop_cluster(self) -> None:
