@@ -460,7 +460,7 @@ jobs:
         shell: bash
         run: |
           targets=""
-          if stat="$(git diff --numstat "${{ github.event.pull_request.base.sha }}" HEAD)" && [ -n "$stat" ] \
+          if stat="$(git diff --no-renames --numstat "${{ github.event.pull_request.base.sha }}" HEAD)" && [ -n "$stat" ] \
             && ! cut -f3- <<<"$stat" | grep -qvE '^(celerp|ui|default_modules|tests|docs)/' \
             && ! grep -q $'^-\t-\t' <<<"$stat"; then
             targets="dmg:arm64 zip:arm64"
