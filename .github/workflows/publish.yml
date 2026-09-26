@@ -62,7 +62,7 @@ jobs:
           path: dist/
       - name: Fresh install and update from the current release
         shell: bash
-        run: python scripts/e2e_update.py --release-wheel dist/*.whl --work "${{ runner.temp }}/e2e" --keep
+        run: python -u scripts/e2e_update.py --release-wheel dist/*.whl --work "${{ runner.temp }}/e2e" --keep
       - name: Keep the logs
         if: failure()
         uses: actions/upload-artifact@v4

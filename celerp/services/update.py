@@ -39,6 +39,7 @@ _UPDATE_PREFIX = "update "
 _MIN_PIP = Version("22.2")  # first release with `install --dry-run --report`
 CHECK_TIMEOUT_SECONDS = 120
 VERIFY_TIMEOUT_SECONDS = 120
+STEP_TIMEOUT_SECONDS = 1800  # pip or a migration that has not finished by now is stuck, not slow
 WINDOW_START_HOUR = 3
 WINDOW_END_HOUR = 5
 
@@ -555,13 +556,21 @@ def reconcile(steps: Steps) -> tuple[dict | None, tuple]:
 # ── Real steps ────────────────────────────────────────────────────────────────
 
 
-def _pip(*args: str) -> None:
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", *args, "--disable-pip-version-check"],
-        capture_output=True, text=True,
-    )
+def _step(*args: str, env: dict | None = None) -> str:
+    """Run `python <args>` as one update step; any failure, or no end within
+    STEP_TIMEOUT_SECONDS, raises UpdateError so the update is undone."""
+    try:
+        result = subprocess.run([sys.executable, *args], env=env, capture_output=True, text=True,
+                                timeout=STEP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as exc:
+        raise UpdateError(f"{' '.join(args[:3])} did not finish within {STEP_TIMEOUT_SECONDS // 60} minutes") from exc
     if result.returncode != 0:
-        raise UpdateError((result.stderr or result.stdout).strip()[-800:] or f"pip exit {result.returncode}")
+        raise UpdateError((result.stderr or result.stdout).strip()[-800:] or f"exit {result.returncode}")
+    return result.stdout
+
+
+def _pip(*args: str) -> str:
+    return _step("-m", "pip", *args, "--disable-pip-version-check")
 
 
 def _terminate(proc: subprocess.Popen) -> None:
@@ -617,11 +626,7 @@ class SupervisorSteps(Steps):
         return self.cfg["database"]["url"]
 
     def freeze(self, path: Path) -> None:
-        result = subprocess.run([sys.executable, "-m", "pip", "freeze", "--disable-pip-version-check"],
-                                capture_output=True, text=True)
-        if result.returncode != 0:
-            raise UpdateError(result.stderr.strip()[-800:])
-        path.write_text(result.stdout, encoding="utf-8")
+        path.write_text(_pip("freeze"), encoding="utf-8")
 
     def dump(self, path: Path) -> None:
         data = self._backup.dump_database(self.db_url)
@@ -646,12 +651,7 @@ class SupervisorSteps(Steps):
         _pip("install", "-r", str(path))
 
     def migrate(self) -> None:
-        result = subprocess.run(
-            [sys.executable, "-m", "celerp", "migrate", "--db-url", self.db_url],
-            env=self.env, capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            raise UpdateError((result.stderr or result.stdout).strip()[-800:])
+        _step("-m", "celerp", "migrate", "--db-url", self.db_url, env=self.env)
 
     def verify(self, target: str) -> tuple:
         """Start the new API alone and require it healthy on the target

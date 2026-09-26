@@ -83,8 +83,12 @@ def check(cond: bool, what: str) -> None:
     print(f"    ok  {what}")
 
 
-def run(cmd: list, **kw) -> subprocess.CompletedProcess:
-    result = subprocess.run([str(c) for c in cmd], capture_output=True, text=True, **kw)
+def run(cmd: list, timeout: float = 900, **kw) -> subprocess.CompletedProcess:
+    """Run a command to completion; a hang fails the scenario, naming the command."""
+    try:
+        result = subprocess.run([str(c) for c in cmd], capture_output=True, text=True, timeout=timeout, **kw)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{' '.join(map(str, cmd))} did not finish within {timeout:.0f}s") from exc
     if result.returncode != 0:
         raise RuntimeError(f"{' '.join(map(str, cmd))} exited {result.returncode}:\n"
                            f"{result.stdout[-2000:]}\n{result.stderr[-2000:]}")

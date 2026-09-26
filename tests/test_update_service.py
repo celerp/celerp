@@ -344,3 +344,16 @@ def test_available_update_raises_when_it_cannot_tell(monkeypatch, kwargs):
     _pip_report(monkeypatch, **kwargs)
     with pytest.raises(update.UpdateError):
         update.available_update()
+
+
+def test_stuck_step_fails_instead_of_waiting(monkeypatch):
+    """A step that never ends (a stalled pip or migration) raises UpdateError,
+    which every step of run_update turns into the undo path above."""
+    monkeypatch.setattr(update, "STEP_TIMEOUT_SECONDS", 1)
+    with pytest.raises(update.UpdateError, match="did not finish"):
+        update._step("-c", "import time; time.sleep(60)")
+
+
+def test_failed_step_reports_its_output():
+    with pytest.raises(update.UpdateError, match="step broke"):
+        update._step("-c", "import sys; sys.exit('step broke')")
