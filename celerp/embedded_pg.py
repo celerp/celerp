@@ -338,10 +338,19 @@ def _force_stop_postmaster(pgdata: Path) -> None:
         import psutil
 
         proc = psutil.Process(pid)
+        cmdline = proc.cmdline()
+        try:
+            d_index = cmdline.index("-D")
+            process_pgdata = Path(cmdline[d_index + 1]).resolve()
+        except (ValueError, IndexError, OSError):
+            return
+        if "postgres" not in proc.name().lower() or process_pgdata != pgdata.resolve():
+            return
         proc.terminate()
         try:
             proc.wait(3)
         except psutil.TimeoutExpired:
             proc.kill()
+            proc.wait(3)
     except Exception:
         pass

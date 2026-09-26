@@ -181,6 +181,21 @@ def test_env_sets_icu_data_when_bundled(monkeypatch):
     assert _REAL_ENV().get("ICU_DATA") == os.environ.get("ICU_DATA")
 
 
+def test_force_stop_refuses_pid_for_another_process(tmp_path, monkeypatch):
+    pgdata = tmp_path / "pgdata"
+    pgdata.mkdir()
+    (pgdata / "postmaster.pid").write_text("123\n")
+
+    class Other:
+        def name(self): return "python"
+        def cmdline(self): return ["python", "-D", str(pgdata)]
+        def terminate(self): raise AssertionError("unrelated process was terminated")
+
+    import psutil
+    monkeypatch.setattr(psutil, "Process", lambda pid: Other())
+    embedded_pg._force_stop_postmaster(pgdata)
+
+
 def test_tool_that_leaves_a_process_running_returns():
     """pg_ctl start leaves the server running with pg_ctl's handles; the call
     returns when pg_ctl does, not when the server exits."""
