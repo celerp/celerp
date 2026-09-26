@@ -10853,6 +10853,20 @@ class TestWebAccessPlansAd:
         assert "account-gate-host" in r.text
 
     @pytest.mark.asyncio
+    async def test_claim_notice_shows_on_the_page_once(self, ui_client):
+        """A known claim notice renders its translated copy; an unknown code
+        in the address shows nothing."""
+        with self._mocks(tier="cloud", public_url="https://abc.celerp.com"):
+            r = await ui_client.get("/settings/cloud?notice=shopify_store_not_linked",
+                                    cookies=_authed(role="admin"))
+            assert r.status_code == 200
+            assert "Your Shopify store was not connected" in r.text
+            r = await ui_client.get("/settings/cloud?notice=<b>made-up</b>",
+                                    cookies=_authed(role="admin"))
+        assert "made-up" not in r.text
+        assert "Your Shopify store was not connected" not in r.text
+
+    @pytest.mark.asyncio
     async def test_paid_tier_no_free_tier_note_shows_backup_card(self, ui_client):
         with self._mocks(tier="cloud", public_url="https://abc.celerp.com"):
             r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
@@ -17869,6 +17883,36 @@ class TestCelerpAccountSurface:
                                      cookies=_authed())
         assert r.status_code == 204
         assert r.headers["hx-redirect"] == "/settings/cloud"
+
+    @pytest.mark.asyncio
+    async def test_claim_connected_carries_a_known_notice_to_the_page(self, ui_client):
+        with patch("ui.api_client.cloud_claim",
+                   new=AsyncMock(return_value={"connected": True, "instance_id": "i-1",
+                                               "notice": "shopify_store_not_linked"})):
+            r = await ui_client.post("/settings/cloud-claim",
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
+                                     cookies=_authed())
+        assert r.status_code == 204
+        assert r.headers["hx-redirect"] == "/settings/cloud?notice=shopify_store_not_linked"
+        with patch("ui.api_client.cloud_claim",
+                   new=AsyncMock(return_value={"connected": True, "instance_id": "i-1",
+                                               "notice": "something_new"})):
+            r = await ui_client.post("/settings/cloud-claim",
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
+                                     cookies=_authed())
+        assert r.headers["hx-redirect"] == "/settings/cloud"
+
+    @pytest.mark.asyncio
+    async def test_claim_linked_shows_the_notice_with_the_handover(self, ui_client):
+        with patch("ui.api_client.cloud_claim",
+                   new=AsyncMock(return_value={"linked": True, "instance_id": "i-1",
+                                               "notice": "shopify_store_not_linked"})):
+            r = await ui_client.post("/settings/cloud-claim",
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"Subscription linked" in r.content
+        assert b"Your Shopify store was not connected" in r.content
 
     @pytest.mark.asyncio
     async def test_claim_timeout_explains_the_link_state(self, ui_client):

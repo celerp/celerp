@@ -2707,6 +2707,7 @@
   "settings.incorrect_code_attempts": "Incorrect code. {n} attempts left.",
   "settings.code_expired": "Code expired or too many wrong attempts. Request a new code.",
   "settings.subscription_linked_info": "Subscription linked. Click Connect to finish activating.",
+  "settings.shopify_store_not_linked": "Your Shopify store was not connected because Celerp is already connected to a different Shopify store. To use this store instead, disconnect the current one in Settings and connect again.",
   "settings.link_timed_out": "This is taking longer than expected and timed out before the relay confirmed the link. Your subscription may already have moved to this computer. Restart Celerp or try again. If it keeps failing, this computer's connection to the relay is slow.",
   "settings.otp_sent_hint": "We sent a 6-digit code to {email}. Enter it below:",
   "settings.claim_email_hint": "If you subscribed on the website and the payment isn't linking automatically, enter the email address you used at checkout:",

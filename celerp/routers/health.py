@@ -948,12 +948,16 @@ async def _activate_after_claim(
         "public_url": data.get("public_url") or "", "instance_id": iid,
     }
 
+
+_CLAIM_FAILED = "Celerp could not complete this request. Try again in a few minutes."
+
+
 @settings_router.post("/cloud-send-otp", dependencies=[Depends(require_install_owner)])
 async def cloud_send_otp_api(payload: dict) -> dict:
     import httpx
     from celerp.config import activation_challenge, ensure_connect_identity
     from celerp.gateway.state import (
-        RelayCredentialError, fetch_relay_auth,
+        RelayCredentialError, fetch_relay_auth, relay_error_detail,
         relay_http_url as _rhu, with_relay_client)
     from celerp.services.cloud_entitlement import stored_api_key
 
@@ -1005,11 +1009,8 @@ async def cloud_send_otp_api(payload: dict) -> dict:
         except Exception:
             pass
         return out
-    try:
-        detail = r.json().get("detail", r.text[:80])
-    except Exception:
-        detail = r.text[:80]
-    return {"error": str(detail), "status_code": r.status_code, "instance_id": iid}
+    return {"error": relay_error_detail(r, _CLAIM_FAILED), "status_code": r.status_code,
+            "instance_id": iid}
 
 @settings_router.post("/cloud-claim", dependencies=[Depends(require_install_owner)])
 async def cloud_claim_api(payload: dict) -> dict:
@@ -1018,7 +1019,7 @@ async def cloud_claim_api(payload: dict) -> dict:
         activation_challenge, ensure_connect_identity,
         set_cloud_disconnected, settings as _s)
     from celerp.gateway.state import (
-        RelayCredentialError, fetch_relay_auth,
+        RelayCredentialError, fetch_relay_auth, relay_error_detail,
         relay_http_url as _rhu, with_relay_client)
     from celerp.services.cloud_entitlement import stored_api_key
 
@@ -1099,7 +1100,7 @@ async def cloud_claim_api(payload: dict) -> dict:
             detail = ""
         if detail == "otp_required":
             return {"otp_required": True, "instance_id": iid}
-        return {"error": r.text[:80], "instance_id": iid}
+        return {"error": relay_error_detail(r, _CLAIM_FAILED), "instance_id": iid}
     if r.status_code == 404:
         return {
             "error": "No subscription or free account found for that email. "
@@ -1109,7 +1110,7 @@ async def cloud_claim_api(payload: dict) -> dict:
     if r.status_code == 403:
         return {"error": "Email does not match the selected subscription.", "instance_id": iid}
     if r.status_code != 200:
-        return {"error": r.text[:80], "instance_id": iid}
+        return {"error": relay_error_detail(r, _CLAIM_FAILED), "instance_id": iid}
 
     data = r.json()
     if data.get("requires_selection"):
@@ -1128,9 +1129,10 @@ async def cloud_claim_api(payload: dict) -> dict:
         iid, relay_base, verifier,
         keep_disconnected=(intent == "account" and was_disconnected),
     )
-    if connected:
-        return connected
-    return {"linked": True, "instance_id": iid}
+    result = connected or {"linked": True, "instance_id": iid}
+    if data.get("notice"):
+        result["notice"] = data["notice"]
+    return result
 
 @settings_router.get("/connectors-catalog", dependencies=[require_permission("manage_integrations")])
 async def connectors_catalog_api(

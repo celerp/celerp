@@ -2584,6 +2584,7 @@
   "settings.incorrect_code_attempts": "Código incorrecto. Quedan {n} intentos.",
   "settings.code_expired": "El código ha caducado o se han realizado demasiados intentos incorrectos. Solicita un nuevo código.",
   "settings.subscription_linked_info": "Suscripción vinculada. Haz clic en «Conectar» para finalizar la activación.",
+  "settings.shopify_store_not_linked": "Tu tienda de Shopify no se conectó porque Celerp ya está conectado a otra tienda de Shopify. Para usar esta tienda, desconecta la actual en Configuración y vuelve a conectar.",
   "settings.link_timed_out": "Esto está tardando más de lo esperado y se agotó el tiempo antes de que el relay confirmara la vinculación. Es posible que tu suscripción ya se haya movido a este equipo. Reinicia Celerp o inténtalo de nuevo. Si sigue fallando, la conexión de este equipo con el relay es lenta.",
   "settings.otp_sent_hint": "Hemos enviado un código de 6 dígitos a {email}. Introdúcelo a continuación:",
   "settings.claim_email_hint": "Si te has suscrito en la página web y el pago no se vincula automáticamente, introduce la dirección de correo electrónico que utilizaste al realizar el pago:",

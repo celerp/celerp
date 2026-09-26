@@ -511,9 +511,67 @@ async def test_cloud_claim_success_activates_immediately(client):
             json={"email": "test@example.com", "otp_code": "123456"})
     assert r.status_code == 200
     assert r.json()["connected"] is True
+    assert "notice" not in r.json()
     assert calls[-1][1]["json"]["activation_verifier"] == "claim-verifier"
     assert "Authorization" not in calls[-1][1].get("headers", {})
     assert applied.await_args.kwargs["expected_verifier"] == "claim-verifier"
+
+@pytest.mark.asyncio
+async def test_cloud_claim_passes_the_relay_notice_through(client):
+    token = await _register(client, "claim-notice")
+    claim_resp = MagicMock()
+    claim_resp.status_code = 200
+    claim_resp.json.return_value = {"tier": "cloud", "status": "active",
+                                    "notice": "shopify_store_not_linked"}
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        patch("celerp.services.cloud_entitlement.stored_api_key",
+              new=AsyncMock(return_value="")),
+        patch("celerp.config.ensure_connect_identity",
+              return_value=("claim-iid", "claim-verifier")),
+        patch("celerp.routers.health._activate_after_claim",
+              new=AsyncMock(return_value=None)),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
+            return_value=claim_resp)
+        r = await client.post(
+            "/settings/cloud-claim", headers=_h(token),
+            json={"email": "test@example.com", "otp_code": "123456"})
+    assert r.json() == {"linked": True, "instance_id": "claim-iid",
+                        "notice": "shopify_store_not_linked"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,body,expected", [
+    (409, {"detail": "This Celerp is already connected to a different Shopify store."},
+     "This Celerp is already connected to a different Shopify store."),
+    (400, {"detail": "Billing provider conflict. Use current provider or contact support."},
+     "Billing provider conflict. Use current provider or contact support."),
+    (502, None, "Celerp could not complete this request. Try again in a few minutes."),
+    (409, {"detail": {"code": "x"}},
+     "Celerp could not complete this request. Try again in a few minutes."),
+])
+async def test_cloud_claim_errors_show_the_relay_message(client, status, body, expected):
+    """A failed claim shows the relay's own sentence, never a clipped raw body."""
+    token = await _register(client, f"claim-err-{status}")
+    resp = MagicMock()
+    resp.status_code = status
+    resp.text = "<html>" + "x" * 200
+    if body is None:
+        resp.json.side_effect = ValueError("not json")
+    else:
+        resp.json.return_value = body
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        patch("celerp.services.cloud_entitlement.stored_api_key",
+              new=AsyncMock(return_value="")),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=resp)
+        r = await client.post(
+            "/settings/cloud-claim", headers=_h(token),
+            json={"email": "test@example.com", "otp_code": "123456"})
+    assert r.json()["error"] == expected
+
 
 @pytest.mark.asyncio
 async def test_cloud_claim_otp_invalid(client):
