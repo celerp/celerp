@@ -517,8 +517,19 @@ print(json.dumps(found))
         return json.loads(out)
 
     def postmasters(self) -> int:
-        return sum(1 for p in self.processes()
-                   if "postgres" in p["name"].lower() and "postgres" not in p["parent"].lower())
+        """PostgreSQL servers running on this install's clusters, by the PID in
+        each postmaster.pid. The process list cannot show the server's command
+        line on Windows, so it is not searched for them."""
+        pids = [f.read_text().split()[0] for f in self.config.rglob("postmaster.pid")]
+        return int(self.py(r"""
+import sys, psutil
+def serving(pid):
+    try:
+        return "postgres" in psutil.Process(int(pid)).name().lower()
+    except psutil.Error:
+        return False
+print(sum(1 for pid in sys.argv[1:] if serving(pid)))
+""", *pids))
 
     # ── the app, as the owner ──
 
@@ -617,7 +628,7 @@ def stop_and_check_clean(inst: Install) -> None:
     inst.stop()
     time.sleep(2)
     left = inst.processes()
-    check(not left, f"no processes left behind ({left})")
+    check(not left and inst.postmasters() == 0, f"no processes left behind ({left})")
 
 
 def failed_update(work: Path, wheels, name: str, variant: str, outcome: str) -> None:
@@ -854,6 +865,8 @@ def main() -> int:
     parser.add_argument("--work", type=Path)
     parser.add_argument("--keep", action="store_true", help="keep the work directory")
     args = parser.parse_args()
+    for stream in (sys.stdout, sys.stderr):  # app messages carry marks a Windows code page lacks
+        stream.reconfigure(encoding="utf-8", errors="replace")
 
     work = (args.work or Path(tempfile.mkdtemp(prefix="celerp-e2e-"))).resolve()
     work.mkdir(parents=True, exist_ok=True)
