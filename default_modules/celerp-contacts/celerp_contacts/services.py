@@ -64,17 +64,40 @@ async def _emit_contact(company_id: str, idem_key: str, data: dict) -> str:
         return outcome
 
 
+def _woocommerce_address_text(address: dict | None) -> str | None:
+    """Flatten a WooCommerce billing/shipping address into the CRM's address field."""
+    address = address or {}
+    locality = ", ".join(
+        str(v).strip() for v in (
+            address.get("city"), address.get("state"), address.get("postcode")
+        ) if str(v or "").strip()
+    )
+    parts = [
+        address.get("company"),
+        address.get("address_1"),
+        address.get("address_2"),
+        locality,
+        address.get("country"),
+    ]
+    text = "\n".join(str(v).strip() for v in parts if str(v or "").strip())
+    return text or None
+
+
 async def upsert_contact_from_woocommerce(company_id: str, customer: dict) -> str:
-    """Create/update a CRM contact from a WooCommerce customer dict. Idempotency: woocommerce:customer:{id}."""
+    """Create/update a WooCommerce customer with complete billing/shipping details."""
     idem_key = f"woocommerce:customer:{customer['id']}"
     billing = customer.get("billing") or {}
-    name = " ".join(
-        p for p in (customer.get("first_name", ""), customer.get("last_name", "")) if p
-    ).strip() or customer.get("email") or f"woocommerce:{customer['id']}"
+    shipping = customer.get("shipping") or {}
+    first = customer.get("first_name") or billing.get("first_name") or ""
+    last = customer.get("last_name") or billing.get("last_name") or ""
+    email = customer.get("email") or billing.get("email")
+    name = " ".join(p for p in (first, last) if p).strip() or email or f"woocommerce:{customer['id']}"
     data = {
         "name": name,
-        "email": customer.get("email"),
-        "phone": billing.get("phone"),
+        "email": email,
+        "phone": customer.get("phone") or billing.get("phone"),
+        "billing_address": _woocommerce_address_text(billing),
+        "shipping_address": _woocommerce_address_text(shipping) or _woocommerce_address_text(billing),
         "attributes": {
             "woocommerce_id": str(customer["id"]),
             "city": billing.get("city"),

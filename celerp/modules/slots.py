@@ -10,6 +10,7 @@ Defined slots
 nav                Sidebar navigation entry
 settings_tab       Tab in the /settings page
 bulk_action        Action in the inventory bulk toolbar
+catalog_channel    Compact external-channel state in the inventory catalog
 item_action        Button in the item detail actions panel
 doc_action         Button in the document detail actions panel
 dashboard_widget   Widget on the dashboard page

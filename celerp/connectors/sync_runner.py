@@ -3,6 +3,7 @@
 """Sync runner - wraps connector sync calls with audit trail recording."""
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,7 @@ from celerp.connectors.base import (
     SyncResult,
     entity_allowed,
 )
+from celerp.connectors.ownership import ConnectorStoreChangedError
 from celerp.models.sync_run import SyncRun
 
 log = logging.getLogger(__name__)
@@ -29,6 +31,92 @@ _SYNC_METHODS = {
     "inventory_out": "sync_inventory_out",
 }
 _OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out"}
+CONNECTOR_RESET_ENTITY = "__connector_reset__"
+_OUTBOUND_ENTITY_METHODS = {
+    "products_out": "sync_products_out",
+    "invoices_out": "sync_invoices_out",
+    "inventory_out": "sync_inventory_out",
+}
+
+
+def supported_outbound(connector: ConnectorBase) -> list[str]:
+    """Outbound entities implemented by this connector, in stable dispatch order."""
+    return [
+        entity for entity, method in _OUTBOUND_ENTITY_METHODS.items()
+        if getattr(type(connector), method, None) is not getattr(ConnectorBase, method, None)
+    ]
+
+
+def sync_plan(connector: ConnectorBase, direction: SyncDirection) -> list[str]:
+    """One direction-aware plan shared by connect, manual, and reconciliation paths."""
+    direction = direction if isinstance(direction, SyncDirection) else SyncDirection(direction)
+    plan: list[str] = []
+    if direction in (SyncDirection.INBOUND, SyncDirection.BOTH):
+        plan.extend(e.value for e in connector.supported_entities)
+    if direction in (SyncDirection.OUTBOUND, SyncDirection.BOTH):
+        plan.extend(supported_outbound(connector))
+    return plan
+
+
+async def run_connector_sync(
+    connector: ConnectorBase,
+    ctx: ConnectorContext,
+    direction: SyncDirection,
+    *,
+    reconcile: bool = False,
+) -> list[SyncResult]:
+    """Execute one stable connector generation through the audited per-entity
+    runner. ``reconcile`` marks the daily reconciliation pass."""
+    from celerp.connectors.ownership import lock_connector_operation
+    from celerp.db import get_session_ctx
+
+    resolved_direction = (
+        direction if isinstance(direction, SyncDirection) else SyncDirection(direction)
+    )
+    async with get_session_ctx() as guard_session:
+        config = await lock_connector_operation(
+            guard_session, ctx.company_id, connector.name
+        )
+        if config is not None:
+            resolved_direction = SyncDirection(config.direction)
+        expected_config_id = config.id if config is not None else None
+        expected_direction = resolved_direction if config is not None else None
+        await guard_session.commit()
+
+    return [
+        await run_sync(
+            connector,
+            ctx,
+            entity,
+            direction=resolved_direction,
+            reconcile=reconcile,
+            expected_config_id=expected_config_id,
+            expected_direction=expected_direction,
+            expected_store_handle=ctx.store_handle,
+        )
+        for entity in sync_plan(connector, resolved_direction)
+    ]
+
+
+def _since_reset(company_id: str, connector: str):
+    """Conditions selecting this connector's runs since its last reset: a
+    disconnect or reconnect starts the history over."""
+    import sqlalchemy as sa
+
+    reset_at = (
+        sa.select(sa.func.max(SyncRun.started_at))
+        .where(
+            SyncRun.company_id == company_id,
+            SyncRun.connector == connector,
+            SyncRun.entity == CONNECTOR_RESET_ENTITY,
+        )
+        .scalar_subquery()
+    )
+    return [
+        SyncRun.company_id == company_id,
+        SyncRun.connector == connector,
+        sa.or_(reset_at.is_(None), SyncRun.started_at > reset_at),
+    ]
 
 
 async def _last_success_watermark(company_id: str, connector: str, entity: str):
@@ -47,8 +135,7 @@ async def _last_success_watermark(company_id: str, connector: str, entity: str):
         async with get_session_ctx() as session:
             return await session.scalar(
                 sa.select(sa.func.max(SyncRun.started_at)).where(
-                    SyncRun.company_id == company_id,
-                    SyncRun.connector == connector,
+                    *_since_reset(company_id, connector),
                     SyncRun.entity == entity,
                     SyncRun.status == "success",
                 )
@@ -58,6 +145,72 @@ async def _last_success_watermark(company_id: str, connector: str, entity: str):
         # keys) — but say so rather than silently widening every sync.
         log.warning("Could not read sync watermark for %s.%s: %s — full pull", connector, entity, exc)
         return None
+
+
+async def _attention_run(
+    session, company_id: str, connector: str, entity: str, *, for_update: bool = False
+):
+    """The run holding the current attention list for one entity: the latest
+    finished run since the last reset whose sync returned a list. A run that
+    stopped before its sync produced one (a failed fetch, a guard, a crash)
+    records none, so it never replaces the list."""
+    import sqlalchemy as sa
+
+    query = (
+        sa.select(SyncRun)
+        .where(
+            *_since_reset(company_id, connector),
+            SyncRun.entity == entity,
+            SyncRun.finished_at.is_not(None),
+            SyncRun.attention_json.is_not(None),
+        )
+        .order_by(SyncRun.started_at.desc(), SyncRun.id.desc())
+        .limit(1)
+    )
+    return await session.scalar(query.with_for_update() if for_update else query)
+
+
+async def attention_entries(
+    company_id: str, connector: str, entity: str | None = None
+) -> list[dict]:
+    """Records still waiting on a person, for one entity or (entity None) the
+    whole connector. Read errors propagate: a sync that cannot read the list
+    must fail rather than start an empty one."""
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+
+    async with get_session_ctx() as session:
+        entities = [entity] if entity is not None else (await session.scalars(
+            sa.select(SyncRun.entity).distinct().where(
+                *_since_reset(company_id, connector),
+                SyncRun.attention_json.is_not(None),
+            )
+        )).all()
+        entries: list[dict] = []
+        for name in entities:
+            run = await _attention_run(session, company_id, connector, name)
+            if run is not None:
+                entries.extend(run.attention)
+        return entries
+
+
+async def update_attention_entry(
+    session, company_id: str, connector: str, entity: str, record_id: str, update
+) -> dict | None:
+    """Apply ``update`` to one entry of the current attention list and save the
+    list in the caller's transaction. Returns the updated entry, or None when
+    the record is not on the list. ``update`` may raise to refuse the change."""
+    run = await _attention_run(session, company_id, connector, entity, for_update=True)
+    if run is None:
+        return None
+    entries = run.attention
+    entry = next((e for e in entries if str(e.get("id")) == str(record_id)), None)
+    if entry is None:
+        return None
+    update(entry)
+    run.attention_json = json.dumps(entries)
+    return entry
 
 
 # Concurrency guard: a still-unfinished run older than this is treated as dead (the
@@ -78,6 +231,12 @@ async def _begin_run(company_id: str, connector: str, entity: str, direction_str
 
     try:
         async with get_session_ctx() as session:
+            # Serialize check+insert itself. Without this lock, two workers can both
+            # observe no running row and each insert one.
+            await session.execute(
+                sa.text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                {"k": f"sync-run:{company_id}:{connector}:{entity}"},
+            )
             existing = await session.scalar(
                 sa.select(SyncRun.id)
                 .where(
@@ -115,6 +274,7 @@ async def _finish_run(run_id, company_id, connector, entity, result, started_at,
 
     direction_str = result.direction.value if hasattr(result.direction, "value") else str(result.direction)
     errors_json = json.dumps(result.errors) if result.errors else None
+    attention_json = json.dumps(result.attention) if result.attention is not None else None
     try:
         async with get_session_ctx() as session:
             if run_id is not None:
@@ -122,7 +282,8 @@ async def _finish_run(run_id, company_id, connector, entity, result, started_at,
                     sa.update(SyncRun).where(SyncRun.id == run_id).values(
                         direction=direction_str, finished_at=finished_at,
                         created_count=result.created, updated_count=result.updated,
-                        skipped_count=result.skipped, errors_json=errors_json, status=status,
+                        skipped_count=result.skipped, errors_json=errors_json,
+                        attention_json=attention_json, status=status,
                     )
                 )
             else:
@@ -130,7 +291,8 @@ async def _finish_run(run_id, company_id, connector, entity, result, started_at,
                     company_id=company_id, connector=connector, entity=entity,
                     direction=direction_str, started_at=started_at, finished_at=finished_at,
                     created_count=result.created, updated_count=result.updated,
-                    skipped_count=result.skipped, errors_json=errors_json, status=status,
+                    skipped_count=result.skipped, errors_json=errors_json,
+                    attention_json=attention_json, status=status,
                 ))
             await session.commit()
     except Exception as exc:
@@ -143,25 +305,16 @@ async def run_sync(
     entity: str,
     since: datetime | None = None,
     direction: SyncDirection | None = None,
+    use_watermark: bool = True,
+    reconcile: bool = False,
+    expected_config_id=None,
+    expected_direction: SyncDirection | None = None,
+    expected_store_handle: str | None = None,
+    expected_webhook_secret: str | None = None,
 ) -> SyncResult:
-    """Execute a sync operation and record a SyncRun audit entry.
-
-    If ``direction`` is provided, checks whether ``entity`` is allowed
-    for that direction before running. Returns a failed SyncResult if blocked.
-    """
-    # Direction gate
-    if direction and not entity_allowed(entity, direction):
-        try:
-            entity_enum = SyncEntity(entity)
-        except ValueError:
-            entity_enum = entity  # unknown entity, pass through
-        direction_enum = direction if isinstance(direction, SyncDirection) else SyncDirection(direction)
-        return SyncResult(
-            entity=entity_enum,
-            direction=direction_enum,
-            errors=[f"{entity} sync blocked by direction={direction.value}"],
-        )
-
+    """Execute one connector entity sync behind the current ownership/config
+    fence. ``reconcile`` reaches sync methods that take it: the connector
+    decides what its reconciliation pass checks beyond the incremental pull."""
     method_name = _SYNC_METHODS.get(entity)
     if method_name is None:
         raise ValueError(f"Unknown entity: {entity}")
@@ -170,40 +323,135 @@ async def run_sync(
     if sync_method is None:
         raise ValueError(f"{connector.name} has no method {method_name}")
 
+    effective_direction = (
+        direction
+        if isinstance(direction, SyncDirection)
+        else SyncDirection(direction)
+        if direction is not None
+        else connector.direction
+    )
     started_at = datetime.now(timezone.utc)
-    intended_direction = direction if isinstance(direction, SyncDirection) else connector.direction
-    direction_str = intended_direction.value if hasattr(intended_direction, "value") else str(intended_direction)
-
-    # Mark this entity's sync as in progress (and refuse to start a second concurrent
-    # run for the same entity). The UI polls these rows for live status.
-    run_id = await _begin_run(ctx.company_id, connector.name, entity, direction_str, started_at)
+    run_id = await _begin_run(
+        ctx.company_id,
+        connector.name,
+        entity,
+        effective_direction.value,
+        started_at,
+    )
     if run_id == _BUSY:
         return SyncResult(
             entity=entity,
-            direction=intended_direction,
+            direction=effective_direction,
             errors=[f"{entity} sync already in progress"],
         )
 
-    # Incremental by default: pull only what changed since the last successful run
-    # for this entity. Idempotency keys make any overlap dup-safe.
-    if since is None and entity not in _OUTBOUND_ENTITIES:
-        since = await _last_success_watermark(ctx.company_id, connector.name, entity)
-
     try:
-        if entity in _OUTBOUND_ENTITIES:
-            result = await sync_method(ctx)
-        else:
-            result = await sync_method(ctx, since=since)
+        from celerp.connectors.ownership import bind_connector_store, lock_connector_operation
+        from celerp.connectors.relay_token import fetch_context
+        from celerp.db import get_session_ctx
+
+        async with get_session_ctx() as guard_session:
+            config = await lock_connector_operation(
+                guard_session, ctx.company_id, connector.name
+            )
+            if config is not None:
+                effective_direction = SyncDirection(config.direction)
+
+            connection_changed = (
+                (
+                    expected_config_id is not None
+                    and (config is None or config.id != expected_config_id)
+                )
+                or (
+                    expected_direction is not None
+                    and effective_direction != expected_direction
+                )
+                or (
+                    expected_webhook_secret is not None
+                    and (
+                        config is None
+                        or config.webhook_secret != expected_webhook_secret
+                    )
+                )
+            )
+            if connection_changed:
+                result = SyncResult(
+                    entity=entity,
+                    direction=effective_direction,
+                    errors=["connector connection changed while sync plan was running"],
+                )
+            elif not entity_allowed(entity, effective_direction):
+                try:
+                    entity_enum = SyncEntity(entity)
+                except ValueError:
+                    entity_enum = entity
+                result = SyncResult(
+                    entity=entity_enum,
+                    direction=effective_direction,
+                    errors=[
+                        f"{entity} sync blocked by direction={effective_direction.value}"
+                    ],
+                )
+            else:
+                if (
+                    since is None
+                    and entity not in _OUTBOUND_ENTITIES
+                    and use_watermark
+                ):
+                    since = await _last_success_watermark(
+                        ctx.company_id, connector.name, entity
+                    )
+
+                current_ctx = ctx
+                if config is not None:
+                    current_ctx = await fetch_context(
+                        ctx.company_id,
+                        connector.name,
+                        ownership_session=guard_session,
+                    )
+                    if current_ctx is None:
+                        raise RuntimeError(
+                            "connector credentials are temporarily unavailable"
+                        )
+
+                if (
+                    expected_store_handle is not None
+                    and current_ctx.store_handle != expected_store_handle
+                ):
+                    result = SyncResult(
+                        entity=entity,
+                        direction=effective_direction,
+                        errors=["connector connection changed while sync plan was running"],
+                    )
+                else:
+                    await bind_connector_store(
+                        guard_session, ctx.company_id, connector, current_ctx
+                    )
+                    if entity in _OUTBOUND_ENTITIES:
+                        result = await sync_method(current_ctx)
+                    else:
+                        accepts = inspect.signature(sync_method).parameters
+                        options: dict = {}
+                        if "attention" in accepts:
+                            options["attention"] = await attention_entries(
+                                ctx.company_id, connector.name, entity
+                            )
+                        if reconcile and "reconcile" in accepts:
+                            options["reconcile"] = True
+                        result = await sync_method(current_ctx, since=since, **options)
+                await guard_session.commit()
+    except ConnectorStoreChangedError as exc:
+        result = SyncResult(entity=entity, direction=effective_direction, errors=[str(exc)])
     except NotImplementedError:
         result = SyncResult(
             entity=entity,
-            direction=connector.direction,
+            direction=effective_direction,
             errors=[f"{connector.name} does not support {entity} sync"],
         )
     except Exception as exc:
         result = SyncResult(
             entity=entity,
-            direction=connector.direction,
+            direction=effective_direction,
             errors=[f"Unexpected error: {exc}"],
         )
 
@@ -216,12 +464,26 @@ async def run_sync(
     else:
         status = "success"
 
-    await _finish_run(run_id, ctx.company_id, connector.name, entity, result, started_at, finished_at, status)
+    await _finish_run(
+        run_id,
+        ctx.company_id,
+        connector.name,
+        entity,
+        result,
+        started_at,
+        finished_at,
+        status,
+    )
 
     log.info(
         "sync_run %s.%s company=%s status=%s created=%d updated=%d skipped=%d errors=%d",
-        connector.name, entity, ctx.company_id, status,
-        result.created, result.updated, result.skipped,
+        connector.name,
+        entity,
+        ctx.company_id,
+        status,
+        result.created,
+        result.updated,
+        result.skipped,
         len(result.errors or []),
     )
 

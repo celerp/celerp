@@ -7,6 +7,7 @@ import os
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
 import pytest
 import respx
 import httpx
@@ -18,6 +19,12 @@ from celerp.connectors.base import SyncEntity
 @pytest.fixture
 def shopify():
     return ShopifyConnector()
+
+
+@pytest.fixture
+def mock_upsert_item():
+    with patch("celerp_inventory.services.upsert_external_product", new_callable=AsyncMock, return_value=("created", "item:resolved")) as m:
+        yield m
 
 
 # -- Pagination helper --
@@ -82,8 +89,7 @@ async def test_sync_products_keeps_zero_price(shopify, ctx_shopify, mock_upsert_
             ]})
         )
         await shopify.sync_products(ctx_shopify)
-    item = mock_upsert_item.call_args_list[0][0][1]
-    assert item.sale_price == 0.0
+    assert mock_upsert_item.call_args_list[0].kwargs["sale_price"] == 0.0
 
 
 @pytest.mark.asyncio
@@ -98,8 +104,7 @@ async def test_sync_products_missing_price_is_none(shopify, ctx_shopify, mock_up
             ]})
         )
         await shopify.sync_products(ctx_shopify)
-    item = mock_upsert_item.call_args_list[0][0][1]
-    assert item.sale_price is None
+    assert mock_upsert_item.call_args_list[0].kwargs["sale_price"] is None
 
 
 @pytest.mark.asyncio
@@ -118,11 +123,43 @@ async def test_sync_products_variant_naming(shopify, ctx_shopify, mock_upsert_it
     assert result.created == 2
     calls = mock_upsert_item.call_args_list
     # First variant: has named variant
-    item1 = calls[0][0][1]  # second positional arg
-    assert "Red / Large" in item1.name
+    assert "Red / Large" in calls[0].kwargs["name"]
     # Second variant: default title, should use product name only
-    item2 = calls[1][0][1]
-    assert item2.name == "T-Shirt"
+    assert calls[1].kwargs["name"] == "T-Shirt"
+
+
+@pytest.mark.asyncio
+async def test_sync_products_links_the_variant_and_pulls_images_by_item(shopify, ctx_shopify, mock_upsert_item):
+    with respx.mock, patch.object(ShopifyConnector, "_pull_product_images", new_callable=AsyncMock) as pull:
+        respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
+            return_value=httpx.Response(200, json={"products": [
+                {"id": 1, "title": "Widget", "images": [{"src": "https://i.test/a.jpg", "position": 1}], "variants": [
+                    {"id": 10, "sku": "WDG-001", "title": "Default Title", "price": "9.99",
+                     "inventory_quantity": 5, "inventory_management": "shopify"},
+                ]}
+            ]})
+        )
+        await shopify.sync_products(ctx_shopify)
+    kwargs = mock_upsert_item.call_args.kwargs
+    assert (kwargs["platform"], kwargs["product_id"], kwargs["variation_id"]) == ("shopify", "1", "10")
+    assert kwargs["seed_quantity"] is True
+    assert pull.await_args.args[2] == "item:resolved"
+
+
+@pytest.mark.asyncio
+async def test_sync_products_skips_images_for_a_product_with_sync_turned_off(shopify, ctx_shopify, mock_upsert_item):
+    mock_upsert_item.return_value = ("disabled", "item:resolved")
+    with respx.mock, patch.object(ShopifyConnector, "_pull_product_images", new_callable=AsyncMock) as pull:
+        respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
+            return_value=httpx.Response(200, json={"products": [
+                {"id": 1, "title": "Widget", "images": [{"src": "https://i.test/a.jpg"}], "variants": [
+                    {"id": 10, "sku": "WDG-001", "title": "Default Title", "price": "9.99"},
+                ]}
+            ]})
+        )
+        result = await shopify.sync_products(ctx_shopify)
+    assert result.skipped == 1
+    pull.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -41,6 +41,7 @@ from celerp.services.permissions import (
 )
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 from celerp.services.terms import terms_templates
+from celerp.services.business_time import business_timezone
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -348,6 +349,11 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
                 detail="Role permissions are set through the permissions matrix, not company settings",
             )
         merged = {**(company.settings or {}), **payload.settings}
+        if "timezone" in payload.settings:
+            try:
+                business_timezone(payload.settings.get("timezone"))
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         # Price config must pass the same gate as the dedicated endpoints: the read
         # path trusts stored config, so no door may store what the validator rejects.
         if "price_lists" in payload.settings or "base_price_list" in payload.settings:
@@ -2281,17 +2287,77 @@ async def deactivate_company(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Soft-delete the current company. Sets is_active=False. Admin only.
+    """Soft-delete the current company and disconnect its external connectors.
 
-    Does not delete any data. All records (ledger, documents, users) are preserved.
-    Use POST /me/reactivate to restore.
+    Business records are preserved. Its connectors are disconnected so they
+    can be connected again later.
     """
     import time as _time
     import re as _re2
-    company = await session.get(Company, company_id)
+    import sqlalchemy as sa
+    from celerp.connectors.ownership import (
+        RESET_STATUS_DEACTIVATED,
+        lock_connector_maintenance,
+        record_connector_reset,
+    )
+    from celerp.connectors.remote_state import (
+        ConnectorRemoteCleanupError,
+        revoke_connector_remote_state,
+    )
+    from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+
+    await lock_connector_maintenance(session)
+    company = await session.get(
+        Company, company_id, with_for_update=True, populate_existing=True
+    )
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
+    company_id_str = str(company_id)
+    configs = list((await session.scalars(
+        sa.select(ConnectorConfig)
+        .where(ConnectorConfig.company_id == company_id_str)
+        .with_for_update()
+    )).all())
+    for config in configs:
+        connector_name = config.connector
+        webhook_ids = list(config.webhook_ids or [])
+        try:
+            await revoke_connector_remote_state(
+                company_id_str,
+                connector_name,
+                webhook_ids=webhook_ids,
+            )
+        except ConnectorRemoteCleanupError as exc:
+            await session.rollback()
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Could not disconnect {connector_name}; "
+                    "the company was not deactivated."
+                ),
+            ) from exc
+
     company.is_active = False
+    connectors = {config.connector for config in configs}
+    connectors.update((await session.scalars(
+        sa.select(OutboundQueue.connector).where(
+            OutboundQueue.company_id == company_id_str
+        )
+    )).all())
+    for connector in connectors:
+        record_connector_reset(
+            session, company_id_str, connector, status=RESET_STATUS_DEACTIVATED
+        )
+    await session.execute(
+        sa.delete(OutboundQueue).where(
+            OutboundQueue.company_id == company_id_str
+        )
+    )
+    await session.execute(
+        sa.delete(ConnectorConfig).where(
+            ConnectorConfig.company_id == company_id_str
+        )
+    )
     # Free the slug so the user can re-create a company with the same name later.
     # Strip any previous deactivated suffix first (idempotent), then append new one.
     base_slug = _re2.sub(r"-deactivated-\d+$", "", company.slug)
@@ -2305,16 +2371,26 @@ async def reactivate_company(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Reactivate a previously deactivated company. Admin only."""
+    """Reactivate a previously deactivated company. Admin only.
+
+    Connectors disconnected by the deactivation stay disconnected; their names
+    are returned so the caller can prompt for an explicit reconnect."""
     import re as _re2
+    from celerp.connectors.ownership import connectors_awaiting_reconnect
     company = await session.get(Company, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     company.is_active = True
     # Restore slug to its original form (strip deactivated suffix).
     company.slug = _re2.sub(r"-deactivated-\d+$", "", company.slug)
+    reconnect = await connectors_awaiting_reconnect(session, company_id)
     await session.commit()
-    return {"ok": True, "company_id": str(company_id), "is_active": True}
+    return {
+        "ok": True,
+        "company_id": str(company_id),
+        "is_active": True,
+        "connectors_to_reconnect": reconnect,
+    }
 
 
 # ---------------------------------------------------------------------------

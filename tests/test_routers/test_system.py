@@ -122,6 +122,9 @@ def _reset_session(real):
         def __init__(self) -> None:
             self.recorded_sql: list[str] = []
 
+        def get_bind(self):
+            return real.get_bind()
+
         # Auth reads delegate straight to the real seeded session.
         def get(self, *a, **k):
             return real.get(*a, **k)

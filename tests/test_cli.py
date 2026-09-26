@@ -398,7 +398,7 @@ def test_migrate_to_head_takes_and_frees_a_real_advisory_lock():
         pytest.skip("needs a live database")
     import sqlalchemy as sa
     from celerp.cli import _migrate_to_head
-    from celerp.config import sync_db_url
+    from celerp.db_url import sync_url as sync_db_url
     from celerp.db import _MIGRATION_LOCK_KEY
 
     with patch("celerp.cli._run_migrations"), \
@@ -771,7 +771,7 @@ def test_config_to_env_reports_headless_launch_channel(valid_cfg, monkeypatch):
 def test_sync_db_url_names_the_psycopg2_driver():
     """A synchronous engine URL names its driver: a bare postgresql:// leaves the driver to
     SQLAlchemy's default, which is psycopg (v3) from 2.1 on, and only psycopg2 is installed."""
-    from celerp.config import sync_db_url
+    from celerp.db_url import sync_url as sync_db_url
 
     assert sync_db_url("postgresql+asyncpg://u:p@h:5432/db") == "postgresql+psycopg2://u:p@h:5432/db"
     assert sync_db_url("postgresql://u:p@h:5432/db") == "postgresql+psycopg2://u:p@h:5432/db"

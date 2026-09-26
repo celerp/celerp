@@ -412,20 +412,6 @@ def _ensure_slots() -> None:
             register(slot, contrib)
 
 
-@pytest.fixture
-def fake_dns(monkeypatch):
-    """Resolve host names for outbound fetches from a fixed table instead of the network."""
-    def _install(addresses: dict[str, list[str]]) -> None:
-        async def _resolve(host):
-            if host[0].isdigit():
-                return [host]
-            if host not in addresses:
-                raise OSError("unknown host")
-            return addresses[host]
-        monkeypatch.setattr("celerp.services.public_fetch._resolve", _resolve)
-    return _install
-
-
 @pytest.fixture(autouse=True)
 def _reset_hot_path_caches():
     """Bust the in-process nonce and drain caches before each test.
@@ -461,14 +447,13 @@ def _reset_gateway_state():
     # setter for commercial context rejects a non-newer version, so restore its
     # global directly rather than through set_commercial_context.
     _flags, _ctx = _gw.get_feature_flags(), _gw.get_commercial_context()
-    # The subscription tier a connect or claim records is read by /settings/cloud-status.
     _sub = _gw.get_subscription_state()
     yield
     _gw.set_instance_id(_iid)
     _gw.set_session_token(_tok)
     _gw.set_feature_flags(_flags)
-    _gw._commercial_context = _ctx
     _gw.set_subscription_state(*_sub)
+    _gw._commercial_context = _ctx
     # Gateway-lifecycle globals: a test that patches asyncio.create_task while the
     # real ensure_running() runs leaves celerp.gateway._run_task a MagicMock (and
     # can leave a stray client). A later test's gateway shutdown() would then await

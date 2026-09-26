@@ -25,11 +25,22 @@ pytestmark = pytest.mark.asyncio
 
 
 def _cid() -> str:
-    return f"co-{uuid.uuid4().hex[:12]}"
+    return str(uuid.uuid4())
+
+
+@pytest.fixture(autouse=True)
+def _active_company_guard(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "celerp.connectors.ownership._lock_active_company",
+        AsyncMock(return_value=None),
+    )
 
 
 class _Stub:
     name = "stub_lifecycle"
+    store_scoped_ids = False
     direction = SyncDirection.BOTH
 
     def __init__(self, on_run=None, boom=False):
@@ -101,3 +112,153 @@ async def test_failure_records_failed_status(_db_engine):
     rows = await _rows(cid)
     assert len(rows) == 1
     assert rows[0].status == "failed" and rows[0].finished_at is not None
+
+
+class _AttentionStub:
+    """A connector whose sync takes carried attention and returns a new list."""
+    name = "stub_attention"
+    store_scoped_ids = False
+    direction = SyncDirection.BOTH
+
+    def __init__(self, returns):
+        self._returns = list(returns)
+        self.received = []
+
+    async def sync_orders(self, ctx, since=None, attention=None):
+        self.received.append(attention)
+        return SyncResult(entity=SyncEntity.ORDERS, created=1, attention=self._returns.pop(0))
+
+
+async def test_attention_is_persisted_and_carried_to_the_next_run(_db_engine):
+    """Orders waiting on a person ride along on the run row, reach the next run
+    as its carried list, and the run itself still succeeds so the watermark can
+    advance; a run that clears them leaves no attention behind."""
+    cid = _cid()
+    waiting = [{"id": "7", "label": "Order 7", "reason": "no stock"}]
+    stub = _AttentionStub([waiting, []])
+    ctx = ConnectorContext(company_id=cid, access_token="t")
+
+    first = await run_sync(stub, ctx, "orders")
+    assert not first.errors
+    rows = await _rows(cid)
+    assert len(rows) == 1 and rows[0].status == "success"
+    assert rows[0].attention == waiting
+
+    second = await run_sync(stub, ctx, "orders")
+    assert not second.errors
+    assert stub.received == [[], waiting]
+    latest = max(await _rows(cid), key=lambda r: r.started_at)
+    assert latest.status == "success" and latest.attention == []
+
+
+class _FlakyAttentionStub(_AttentionStub):
+    """Like _AttentionStub, but a ``RuntimeError`` in the returns list is raised,
+    the way a transport error escapes a connector's sync."""
+
+    async def sync_orders(self, ctx, since=None, attention=None):
+        self.received.append(attention)
+        value = self._returns.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return SyncResult(entity=SyncEntity.ORDERS, created=1, attention=value)
+
+
+async def test_a_run_that_produces_no_list_keeps_the_previous_one(_db_engine):
+    """A run stopped by the ownership guard, or by an error escaping the sync,
+    returns no list; the orders already waiting stay on the list and reach the
+    next run instead of being forgotten."""
+    from celerp.connectors.sync_runner import attention_entries
+
+    cid = _cid()
+    waiting = [{"id": "7", "label": "Order 7", "reason": "no stock"}]
+    stub = _FlakyAttentionStub([waiting, RuntimeError("connection refused"), []])
+    ctx = ConnectorContext(company_id=cid, access_token="t")
+
+    await run_sync(stub, ctx, "orders")
+    guarded = await run_sync(stub, ctx, "orders", expected_config_id=uuid.uuid4())
+    assert guarded.errors and "connection changed" in guarded.errors[0]
+    crashed = await run_sync(stub, ctx, "orders")
+    assert crashed.errors and "connection refused" in crashed.errors[0]
+    assert await attention_entries(cid, stub.name, "orders") == waiting
+    assert await attention_entries(cid, stub.name) == waiting
+
+    await run_sync(stub, ctx, "orders")
+    assert stub.received == [[], waiting, waiting]
+    assert await attention_entries(cid, stub.name) == []
+
+
+async def test_attention_read_failure_fails_the_run(_db_engine, monkeypatch):
+    """A sync that cannot read the list fails without calling the connector, so
+    it never replaces the list with an empty one."""
+    from unittest.mock import AsyncMock
+
+    from celerp.connectors.sync_runner import attention_entries
+
+    cid = _cid()
+    waiting = [{"id": "7", "label": "Order 7", "reason": "no stock"}]
+    stub = _AttentionStub([waiting])
+    ctx = ConnectorContext(company_id=cid, access_token="t")
+    await run_sync(stub, ctx, "orders")
+
+    monkeypatch.setattr(
+        "celerp.connectors.sync_runner.attention_entries",
+        AsyncMock(side_effect=RuntimeError("database unavailable")),
+    )
+    failed = await run_sync(stub, ctx, "orders")
+
+    assert failed.errors and "database unavailable" in failed.errors[0]
+    assert stub.received == [[]]
+    assert await attention_entries(cid, stub.name, "orders") == waiting
+
+
+async def test_a_reset_starts_the_attention_list_over(_db_engine):
+    """Disconnect or reconnect records a reset; entries from before it are no
+    longer shown or carried (the run's carried list comes from the same reader)."""
+    from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY, attention_entries
+
+    cid = _cid()
+    stub = _AttentionStub([[{"id": "7", "label": "Order 7", "reason": "no stock"}]])
+    ctx = ConnectorContext(company_id=cid, access_token="t")
+    await run_sync(stub, ctx, "orders")
+    assert await attention_entries(cid, stub.name, "orders")
+    async with get_session_ctx() as s:
+        s.add(SyncRun(
+            company_id=cid, connector=stub.name, entity=CONNECTOR_RESET_ENTITY,
+            started_at=datetime.now(timezone.utc), finished_at=datetime.now(timezone.utc),
+            created_count=0, updated_count=0, skipped_count=0, status="success",
+        ))
+        await s.commit()
+
+    assert await attention_entries(cid, stub.name) == []
+    assert await attention_entries(cid, stub.name, "orders") == []
+
+
+async def test_update_attention_entry_edits_the_current_list(_db_engine):
+    """One entry of the current list changes in the caller's transaction; an
+    unknown id changes nothing, and an update that raises saves nothing."""
+    from celerp.connectors.sync_runner import attention_entries, update_attention_entry
+
+    cid = _cid()
+    waiting = [
+        {"id": "7", "label": "Order 7", "reason": "refund"},
+        {"id": "8", "label": "Order 8", "reason": "no stock"},
+    ]
+    stub = _AttentionStub([waiting])
+    await run_sync(stub, ConnectorContext(company_id=cid, access_token="t"), "orders")
+
+    def _mark(entry):
+        entry["reconciled"] = True
+
+    def _refuse(entry):
+        raise ValueError("refused")
+
+    async with get_session_ctx() as s:
+        assert await update_attention_entry(s, cid, stub.name, "orders", "9", _mark) is None
+        with pytest.raises(ValueError):
+            await update_attention_entry(s, cid, stub.name, "orders", "8", _refuse)
+        await s.rollback()
+    async with get_session_ctx() as s:
+        entry = await update_attention_entry(s, cid, stub.name, "orders", "7", _mark)
+        await s.commit()
+    assert entry == {**waiting[0], "reconciled": True}
+    assert await attention_entries(cid, stub.name, "orders") == [entry, waiting[1]]

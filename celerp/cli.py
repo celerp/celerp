@@ -15,7 +15,8 @@ from pathlib import Path
 
 import click
 
-from celerp.config import sync_db_url as _sync_url, config_path as _config_path, read_config as _read_config, write_config as _write_config, resolve_install_order as _resolve_install_order, set_enabled_modules as _set_enabled_modules
+from celerp.config import config_path as _config_path, read_config as _read_config, write_config as _write_config, resolve_install_order as _resolve_install_order, set_enabled_modules as _set_enabled_modules
+from celerp.db_url import sync_url as _sync_url
 from celerp.services.auth import MIN_PASSWORD_LENGTH, validate_password
 
 # ── Config helpers ────────────────────────────────────────────────────────────

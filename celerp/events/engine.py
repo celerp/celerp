@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select, text
@@ -14,6 +14,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.document_lines import assert_document_item_uniqueness
+from celerp.services.business_time import business_timezone
 
 
 def apply_event(state: dict, event: LedgerEntry) -> dict:
@@ -51,15 +52,30 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
         lock_date = date.fromisoformat(lock_date_str)
     except (ValueError, TypeError):
         return
-    # Determine the effective date of this event
     event_date_str = data.get("ts") or data.get("issue_date") or data.get("date")
     if event_date_str:
         try:
-            event_date = date.fromisoformat(str(event_date_str)[:10])
+            raw = str(event_date_str)
+            if "T" not in raw:
+                event_date = date.fromisoformat(raw[:10])
+            else:
+                instant = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if instant.tzinfo is None or instant.utcoffset() is None:
+                    event_date = date.fromisoformat(raw[:10])
+                else:
+                    try:
+                        zone = business_timezone((company.settings or {}).get("timezone"))
+                    except ValueError as exc:
+                        raise HTTPException(status_code=422, detail=str(exc)) from exc
+                    event_date = instant.astimezone(zone).date()
         except (ValueError, TypeError):
-            return  # Can't parse - don't block
+            return
     else:
-        event_date = date.today()
+        try:
+            zone = business_timezone((company.settings or {}).get("timezone"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        event_date = datetime.now(timezone.utc).astimezone(zone).date()
     if event_date <= lock_date:
         raise HTTPException(
             status_code=422,
@@ -190,6 +206,11 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
                 session, kwargs.get("company_id"), doc_type, line_set
             )
 
+    if kwargs.get("event_type") in {"shop.sync.enabled", "shop.sync.disabled"}:
+        from celerp.connectors.ownership import lock_connector_key
+
+        await lock_connector_key(session, "shopify")
+
     entry = LedgerEntry(**kwargs)
 
     try:
@@ -217,7 +238,24 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
         original.was_deduped = True
         return original
 
+    previous_item_state = None
+    if entry.entity_type == "item":
+        from copy import deepcopy
+        previous = await session.get(
+            Projection, (entry.company_id, entry.entity_id)
+        )
+        if previous is not None and previous.entity_type == "item":
+            previous_item_state = deepcopy(previous.state or {})
+
     await ProjectionEngine.apply_event(session, entry)
+
+    # Durable connector work is recorded in the same transaction as the item event.
+    # No network I/O occurs here; the worker re-reads current state before sending.
+    if entry.entity_type == "item":
+        from celerp.connectors.outbound_queue import enqueue_item_change
+        await enqueue_item_change(
+            session, entry, previous_state=previous_item_state
+        )
 
     # Notify listeners (LISTEN/NOTIFY) that an event landed.
     try:

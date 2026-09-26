@@ -37,7 +37,9 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 _PAYABLE_TYPES = frozenset({"invoice", "proforma"})
 # GL account online payments clear to; overridable per company. Cash is seeded on
 # every chart of accounts, so it's a safe default until a company picks one.
-_DEFAULT_DEPOSIT_ACCOUNT = "1110"
+DEFAULT_DEPOSIT_ACCOUNT = "1110"
+ONLINE_DEPOSIT_ACCOUNT_KEY = "stripe_deposit_account"
+WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY = "woocommerce_deposit_account"
 
 
 async def _doc_for_token(session: AsyncSession, token: str, *, require_active: bool = True):
@@ -71,9 +73,19 @@ async def _company_owner_id(session: AsyncSession, company_id):
     )).scalars().first()
 
 
-async def _deposit_account(session: AsyncSession, company_id) -> str:
+async def deposit_account(
+    session: AsyncSession, company_id, *, override_key: str | None = None
+) -> str:
+    """GL account a received online payment clears to: the channel's own
+    setting when one is chosen, else the company's online-payments default,
+    else Cash."""
     company = await session.get(Company, company_id)
-    return ((company.settings or {}).get("stripe_deposit_account") if company else None) or _DEFAULT_DEPOSIT_ACCOUNT
+    settings = (company.settings or {}) if company else {}
+    return (
+        (settings.get(override_key) if override_key else None)
+        or settings.get(ONLINE_DEPOSIT_ACCOUNT_KEY)
+        or DEFAULT_DEPOSIT_ACCOUNT
+    )
 
 
 async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
@@ -93,7 +105,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     amount = amount_minor / (10 ** currency_dp(currency))
     from celerp_docs.routes import apply_doc_payment
     body = {"amount": amount, "payment_date": datetime.date.today().isoformat(),
-            "currency": currency.upper(), "bank_account": await _deposit_account(session, company_id),
+            "currency": currency.upper(), "bank_account": await deposit_account(session, company_id),
             "method": "stripe", "reference": reference}
     try:
         entry, _amount = await apply_doc_payment(

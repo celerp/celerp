@@ -17,8 +17,10 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event
+from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services import auto_je
+from celerp.services.business_time import business_date_at
 from celerp.services.pick import PickResult
 from celerp.services.units import is_non_stock_line
 
@@ -57,11 +59,21 @@ async def execute_fulfill(
     supplied, this fails before emitting a single event rather than minting a
     barcodeless child.
     """
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
     fulfilled_items: list[dict] = []
-    total_cogs = 0.0
+    total_cogs = sum(p.pick_qty * p.cost_price for p in pick_result.picks)
     cid = _to_uuid(company_id)
     uid = _to_uuid(user_id)
+
+    # Resolve accounting time only when this fulfillment will actually post COGS.
+    # Do it before barcode allocation or event emission so an invalid configured
+    # timezone cannot leave any fulfillment side effect behind.
+    fulfillment_date = None
+    if doc_type not in _NO_COGS_DOC_TYPES and total_cogs > 0:
+        company = await session.get(Company, cid)
+        company_timezone = (company.settings or {}).get("timezone") if company else None
+        fulfillment_date = business_date_at(now_dt, company_timezone)
 
     # Allocate every split child's barcode up front, under the caller's lock, and
     # fail clearly before any event is emitted if the allocator is missing.
@@ -171,8 +183,6 @@ async def execute_fulfill(
                 "fulfilled_at": now,
             })
 
-        total_cogs += pick.pick_qty * pick.cost_price
-
     # Non-stock lines (service or freight charge): auto-mark fulfilled (no physical pick).
     # Detected by sell_by being a service unit OR the referenced item being a non-stock type.
     for line in doc_state.get("line_items", []):
@@ -240,11 +250,10 @@ async def execute_fulfill(
     # Memo COGS is recognized when the memo converts to an invoice.
     je_cogs = 0.0 if doc_type in _NO_COGS_DOC_TYPES else total_cogs
     if je_cogs > 0:
-        from datetime import date as _date
         await auto_je.create_for_doc_fulfilled(
             session, company_id=cid, user_id=uid,
             doc_id=doc_entity_id, total_cogs=je_cogs,
-            ts=_date.today().isoformat(),
+            ts=fulfillment_date,
         )
 
     return {

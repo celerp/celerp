@@ -11,11 +11,11 @@ import logging
 import mimetypes
 import uuid
 from datetime import datetime, timezone
-
-from celerp.services.attachments import MAX_FILE_BYTES
-from celerp.services.public_fetch import fetch_public
+from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+_MAX_REMOTE_FILE_BYTES = 50 * 1024 * 1024
 
 _CERT_TAGS = ("certificates", "spec_sheets", "safety_docs")
 _PRODUCT_IMAGE_TAG = "product_images"
@@ -97,13 +97,23 @@ async def download_and_emit_file(
         return False  # already have this URL
 
     try:
-        content, content_type = await fetch_public(
-            url, max_bytes=MAX_FILE_BYTES, timeout=30, schemes=("http", "https"))
+        from celerp.services.outbound_url import fetch_public_bytes
+
+        resp = await fetch_public_bytes(
+            url,
+            max_bytes=_MAX_REMOTE_FILE_BYTES,
+            timeout=30,
+            max_redirects=3,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"remote server returned {resp.status_code}")
+        content = resp.content
+        content_type = resp.headers.get("content-type", "").split(";")[0].strip()
+        if not content_type:
+            content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     except Exception as exc:
         log.warning("connector: failed to download %s: %s", url, exc)
         return False
-    if not content_type:
-        content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
     import io
     upload = UploadFile(

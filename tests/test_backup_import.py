@@ -24,6 +24,146 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _isolate_restored_connector_cleanup(monkeypatch):
+    from celerp.services import backup_import
+
+    original = backup_import._clear_restored_connector_state
+
+    async def _noop(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        backup_import,
+        "_clear_restored_connector_state",
+        _noop,
+        raising=False,
+    )
+    return original
+
+
+@pytest.mark.asyncio
+async def test_current_connector_state_is_revoked_before_restore(session, monkeypatch):
+    import uuid
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig
+    from celerp.services import backup_import
+
+    company_id = uuid.uuid4()
+    session.add(Company(
+        id=company_id,
+        name="Current Connector Co",
+        slug=f"current-connector-{company_id.hex[:8]}",
+        settings={},
+    ))
+    session.add(ConnectorConfig(
+        company_id=str(company_id),
+        connector="woocommerce",
+        webhook_ids_json='["11"]',
+    ))
+    await session.flush()
+
+    @asynccontextmanager
+    async def _shared_session_ctx():
+        yield session
+
+    revoke = AsyncMock()
+    monkeypatch.setattr(
+        "celerp.connectors.remote_state.revoke_connector_remote_state",
+        revoke,
+    )
+    monkeypatch.setattr(
+        "celerp.db.get_session_ctx",
+        _shared_session_ctx,
+    )
+    await backup_import._revoke_current_connector_state()
+
+    revoke.assert_awaited_once_with(
+        str(company_id), "woocommerce", webhook_ids=["11"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_connector_maintenance_guard_uses_session_advisory_lock(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from celerp.connectors.ownership import connector_maintenance_guard
+
+    session = MagicMock()
+    session.get_bind.return_value = SimpleNamespace(
+        dialect=SimpleNamespace(name="postgresql")
+    )
+    session.execute = AsyncMock()
+    session.rollback = AsyncMock()
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=session)
+    cm.__aexit__ = AsyncMock(return_value=False)
+
+    monkeypatch.setattr("celerp.db.LifecycleSessionLocal", lambda: cm)
+
+    async with connector_maintenance_guard():
+        assert session.execute.await_count == 1
+
+    sql = [str(call.args[0]) for call in session.execute.await_args_list]
+    assert "pg_advisory_lock" in sql[0]
+    assert "pg_advisory_unlock" in sql[1]
+    session.rollback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_restored_connector_cleanup_fences_stale_context(
+    session, _isolate_restored_connector_cleanup
+):
+    import uuid
+
+    from sqlalchemy import select
+
+    from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+    from celerp.models.sync_run import SyncRun
+
+    company_id = uuid.uuid4()
+    session.add(Company(
+        id=company_id,
+        name="Restored Connector Co",
+        slug=f"restored-connector-{company_id.hex[:8]}",
+        settings={},
+    ))
+    session.add(ConnectorConfig(
+        company_id=str(company_id),
+        connector="woocommerce",
+    ))
+    session.add(OutboundQueue(
+        company_id=str(company_id),
+        connector="woocommerce",
+        entity_type="item",
+        entity_id="item:restore",
+    ))
+    await session.flush()
+
+    await _isolate_restored_connector_cleanup(session)
+    await session.flush()
+
+    assert await session.scalar(select(ConnectorConfig).where(
+        ConnectorConfig.company_id == str(company_id)
+    )) is None
+    assert await session.scalar(select(OutboundQueue).where(
+        OutboundQueue.company_id == str(company_id)
+    )) is None
+    reset = await session.scalar(select(SyncRun).where(
+        SyncRun.company_id == str(company_id),
+        SyncRun.connector == "woocommerce",
+        SyncRun.entity == CONNECTOR_RESET_ENTITY,
+    ))
+    assert reset is not None
+    assert reset.status == "reset"
+
+
 def _make_archive(
     company_name: str = "Test",
     version: str | None = None,

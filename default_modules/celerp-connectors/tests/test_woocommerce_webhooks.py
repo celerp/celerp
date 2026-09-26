@@ -40,6 +40,32 @@ async def test_register_webhooks_sets_secret_and_returns_ids():
     assert sent["delivery_url"] == "https://pub.test/connectors/woocommerce/webhook"
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_register_webhooks_includes_order_deletion():
+    ctx = ConnectorContext(company_id="co", access_token="k:s", store_handle="https://shop.test")
+    route = respx.post("https://shop.test/wp-json/wc/v3/webhooks").mock(
+        return_value=httpx.Response(201, json={"id": 7}))
+    await WooCommerceConnector().register_webhooks(
+        ctx, "https://pub.test/connectors/woocommerce/webhook", secret="topsecret")
+    topics = [__import__("json").loads(call.request.content)["topic"] for call in route.calls]
+    assert "order.deleted" in topics
+
+
+@pytest.mark.asyncio
+async def test_order_deletion_webhook_runs_the_reconciliation_pass():
+    """WooCommerce names only the deleted order, so the delivery runs the
+    orders sync with its reconciliation pass; other order topics do not."""
+    from celerp.connectors.webhooks import WebhookEvent, handle_webhook
+
+    ctx = ConnectorContext(company_id="co", access_token="k:s", store_handle="https://shop.test")
+    with patch("celerp.connectors.webhooks.run_sync", new=AsyncMock()) as run:
+        await handle_webhook(WebhookEvent(platform="woocommerce", topic="order.deleted"), ctx)
+        await handle_webhook(WebhookEvent(platform="woocommerce", topic="order.updated"), ctx)
+    assert [c.args[2] for c in run.await_args_list] == ["orders", "orders"]
+    assert [c.kwargs["reconcile"] for c in run.await_args_list] == [True, False]
+
+
 # ── receiver dispatch ────────────────────────────────────────────────────────
 
 def _mock_session_ctx(configs):

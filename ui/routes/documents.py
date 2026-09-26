@@ -255,38 +255,9 @@ def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
 
 
 def _consolidate_sales_lots(items: list[dict], company_settings: dict) -> list[dict]:
-    """For a forward sales doc, collapse multiple physical lots of the same SKU into a
-    single option when the product is splittable (fungible): the option binds to the
-    pick-order-first lot (FIFO/FEFO/LIFO per the effective method) and shows aggregate
-    on-hand, so selling by SKU/description no longer forces a lot chooser and fulfillment
-    draws it down by the right method. Non-splittable SKUs (serialized/unique) keep one
-    option PER lot so the user picks the exact physical item. First-appearance order.
-    """
-    from celerp.services.pick import _sorted_inventory, resolve_pick_method
-    by_sku: dict[str, list[dict]] = {}
-    order: list[str] = []
-    for it in items:
-        sku = str(it.get("sku") or "")
-        if sku not in by_sku:
-            by_sku[sku] = []
-            order.append(sku)
-        by_sku[sku].append(it)
-    out: list[dict] = []
-    for sku in order:
-        group = by_sku[sku]
-        if len(group) == 1 or not all(splitting_allowed(g) for g in group):
-            out.extend(group)  # unique / non-splittable -> keep each lot (labeled)
-            continue
-        method = resolve_pick_method(group[0], company_settings)
-        sorted_lots = _sorted_inventory(group, method)
-        stocked = [g for g in sorted_lots if float(g.get("quantity") or 0) > 0]
-        # Bind the pick-first lot WITH stock; a lot-only product's catalog row sits at qty 0, and
-        # binding that empty row makes fulfillment reject the line despite in-stock sibling lots.
-        # Fall back to the pick-first row only when every lot is empty (genuine out of stock).
-        rep = dict((stocked or sorted_lots)[0])
-        rep["quantity"] = sum(float(g.get("quantity") or 0) for g in group)  # aggregate on-hand
-        out.append(rep)
-    return out
+    """Compatibility wrapper around the canonical sales-lot selection primitive."""
+    from celerp.services.pick import consolidate_sales_lots
+    return consolidate_sales_lots(items, company_settings)
 
 
 def _enrich_doc_files(doc: dict) -> list[dict]:

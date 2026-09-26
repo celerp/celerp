@@ -11,6 +11,7 @@ Uses the standard test client + register pattern from conftest.
 from __future__ import annotations
 
 import os
+import shutil
 import uuid
 from pathlib import Path
 from unittest.mock import patch
@@ -410,14 +411,19 @@ class TestModuleProvenanceAndDelete:
             assert (module_dir / "acme-widgets").exists()
 
     @pytest.mark.asyncio
-    async def test_delete_default_module_refused(self, client):
+    async def test_delete_default_module_refused(self, client, tmp_path):
+        # Runs against a copy: pointed at the real default_modules, a locally
+        # edited default would stop matching the lock and really be deleted.
         token = await _register(client)
-        default_modules = Path(__file__).parent.parent.parent / "default_modules"
-        with patch.dict(os.environ, {"MODULE_DIR": str(default_modules)}):
+        src = Path(__file__).parent.parent.parent / "default_modules" / "celerp-labels"
+        module_dir = tmp_path / "modules"
+        shutil.copytree(src, module_dir / "celerp-labels",
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
             r = await client.post(
                 "/companies/me/modules/celerp-labels/delete", headers=_h(token))
         assert r.status_code in (409, 422), r.text
-        assert (default_modules / "celerp-labels").exists()
+        assert (module_dir / "celerp-labels").exists()
 
     @pytest.mark.asyncio
     async def test_delete_enabled_module_refused(self, client, tmp_path):

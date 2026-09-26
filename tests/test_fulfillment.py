@@ -3382,3 +3382,271 @@ async def test_double_void_unvoid_cycle_restores_original_economics(client, sess
                for e in live.get("entries", [])}
     assert by_acct.get("5100") == (110.0, 0.0), (
         f"the live JE must carry the ORIGINAL COGS of 110, got {by_acct.get('5100')}")
+
+@pytest.mark.asyncio
+async def test_live_fulfillment_business_date_controls_lock_and_adjustment(
+    client, session, auth, _setup_ids, monkeypatch
+):
+    from datetime import timezone
+    from celerp.models.projections import Projection
+    import celerp_docs.routes as doc_routes
+
+    cid = _setup_ids["company_id"]
+    sku = f"BIZDATE-{uuid.uuid4().hex[:6]}"
+    lot_a = await _create_item(client, auth, sku, 2, cost_price=10.0)
+    lot_b = await _create_item(client, auth, sku, 3, cost_price=30.0)
+    await _create_item(client, auth, sku, 3, cost_price=50.0)
+
+    doc1 = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 5, "unit_price": 50.0, "entity_id": lot_a},
+    ])
+    doc2 = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 3, "unit_price": 50.0, "entity_id": lot_b},
+    ])
+    assert (await client.post(
+        f"/docs/{doc2}/fulfill-lines", headers=auth["headers"],
+        json={"line_entity_ids": [lot_b]},
+    )).status_code == 200
+
+    company = await session.get(Company, cid)
+    company.settings = {**(company.settings or {}), "timezone": "Asia/Bangkok", "lock_date": "2026-09-24"}
+    await session.commit()
+
+    fixed = datetime(2026, 9, 24, 17, 30, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed if tz is not None else fixed.replace(tzinfo=None)
+
+    monkeypatch.setattr(doc_routes, "datetime", FixedDateTime)
+
+    r = await client.post(
+        f"/docs/{doc1}/fulfill-lines", headers=auth["headers"],
+        json={"line_entity_ids": [lot_a]},
+    )
+    assert r.status_code == 200, r.text
+
+    session.expire_all()
+    adj = await session.get(
+        Projection,
+        {"company_id": cid, "entity_id": f"je:auto:{doc1}:cogs-adj:fulfill-0:l0"},
+    )
+    assert adj is not None and adj.state.get("status") == "posted"
+    assert adj.state.get("ts") == "2026-09-25"
+
+
+@pytest.mark.asyncio
+async def test_split_fulfillment_period_lock_uses_company_timezone(
+    client, session, auth, _setup_ids, monkeypatch
+):
+    from datetime import date, timezone
+    import celerp.events.engine as event_engine
+    import celerp_docs.routes as doc_routes
+
+    cid = _setup_ids["company_id"]
+    sku = f"BIZSPLIT-{uuid.uuid4().hex[:6]}"
+    lot = await _create_item(client, auth, sku, 5, cost_price=10.0)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 3, "unit_price": 50.0, "entity_id": lot},
+    ])
+
+    company = await session.get(Company, cid)
+    company.settings = {**(company.settings or {}), "timezone": "Asia/Bangkok", "lock_date": "2026-09-24"}
+    await session.commit()
+
+    fixed = datetime(2026, 9, 24, 17, 30, tzinfo=timezone.utc)
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed if tz is not None else fixed.replace(tzinfo=None)
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 9, 24)
+
+    monkeypatch.setattr(doc_routes, "datetime", FixedDateTime)
+    monkeypatch.setattr(event_engine, "datetime", FixedDateTime)
+    monkeypatch.setattr(event_engine, "date", FixedDate)
+
+    r = await client.post(
+        f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+        json={"line_entity_ids": [lot]},
+    )
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_invoice_cross_lot_revert_voids_true_up_and_refulfill_posts_new_cycle(
+    client, session, auth, _setup_ids
+):
+    from celerp.models.projections import Projection
+
+    cid = _setup_ids["company_id"]
+    sku = f"REVSPAN-{uuid.uuid4().hex[:6]}"
+    lot_a = await _create_item(client, auth, sku, 2, cost_price=10.0)
+    lot_b = await _create_item(client, auth, sku, 3, cost_price=30.0)
+    lot_c = await _create_item(client, auth, sku, 3, cost_price=50.0)
+
+    doc1 = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 5, "unit_price": 50.0, "entity_id": lot_a},
+    ])
+    doc2 = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 3, "unit_price": 50.0, "entity_id": lot_b},
+    ])
+    assert (await client.post(f"/docs/{doc2}/fulfill-lines", headers=auth["headers"],
+                              json={"line_entity_ids": [lot_b]})).status_code == 200
+    assert (await client.post(f"/docs/{doc1}/fulfill-lines", headers=auth["headers"],
+                              json={"line_entity_ids": [lot_a]})).status_code == 200
+
+    adj0_id = f"je:auto:{doc1}:cogs-adj:fulfill-0:l0"
+    session.expire_all()
+    adj0 = await session.get(Projection, {"company_id": cid, "entity_id": adj0_id})
+    assert adj0 is not None and adj0.state.get("status") == "posted"
+
+    rr = await client.post(f"/docs/{doc1}/revert-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [lot_a]})
+    assert rr.status_code == 200, rr.text
+    assert rr.json()["fulfillment_status"] == "unfulfilled"
+    assert set(rr.json()["reverted"]) == {lot_a, lot_c}
+    for eid in (lot_a, lot_c):
+        assert (await client.get(f"/items/{eid}", headers=auth["headers"])).json()["status"] == "available"
+
+    session.expire_all()
+    adj0 = await session.get(Projection, {"company_id": cid, "entity_id": adj0_id})
+    assert adj0.state.get("status") == "void"
+    assert (await _je_net(client, auth["headers"])).get("5100") == 200.0
+
+    rf = await client.post(f"/docs/{doc1}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [lot_a]})
+    assert rf.status_code == 200, rf.text
+    session.expire_all()
+    adj1 = await session.get(
+        Projection,
+        {"company_id": cid, "entity_id": f"je:auto:{doc1}:cogs-adj:fulfill-1:l0"},
+    )
+    assert adj1 is not None and adj1.state.get("status") == "posted"
+    assert (await _je_net(client, auth["headers"])).get("5100") == 260.0
+
+
+@pytest.mark.asyncio
+async def test_reserve_shipped_cross_lot_invoice_covers_complete_allocation(client, auth):
+    sku = f"RESVSPAN-{uuid.uuid4().hex[:6]}"
+    lot_a = await _create_item(client, auth, sku, 2, cost_price=10.0)
+    lot_b = await _create_item(client, auth, sku, 3, cost_price=10.0)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 5, "unit_price": 50.0, "entity_id": lot_a},
+    ])
+
+    shipped = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                                json={"line_entity_ids": [lot_a]})
+    assert shipped.status_code == 200, shipped.text
+
+    reserved = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
+                                 json={"line_entity_ids": [lot_a], "new_status": "reserved"})
+    assert reserved.status_code == 200, reserved.text
+    assert set(reserved.json()["reserved"]) == {lot_a, lot_b}
+    for eid in (lot_a, lot_b):
+        item = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+        assert item["status"] == "reserved"
+        assert item["status_doc_id"] == doc_id
+
+    released = await client.post(f"/docs/{doc_id}/reserve-lines", headers=auth["headers"],
+                                 json={"line_entity_ids": [lot_a], "new_status": "available"})
+    assert released.status_code == 200, released.text
+    assert set(released.json()["reserved"]) == {lot_a, lot_b}
+    for eid in (lot_a, lot_b):
+        item = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+        assert item["status"] == "available"
+        assert not item.get("status_doc_id")
+
+
+
+async def _two_bound_lots_invoice(client, auth):
+    """Lots A 2 at 10, B 3 at 30, C 3 at 50 of one splittable SKU, and a finalized
+    invoice whose line 0 takes 5 bound to A and line 1 takes 3 bound to B."""
+    sku = f"TWOBOUND-{uuid.uuid4().hex[:6]}"
+    lot_a = await _create_item(client, auth, sku, 2, cost_price=10.0)
+    lot_b = await _create_item(client, auth, sku, 3, cost_price=30.0)
+    lot_c = await _create_item(client, auth, sku, 3, cost_price=50.0)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 5, "unit_price": 50.0, "entity_id": lot_a},
+        {"sku": sku, "name": sku, "quantity": 3, "unit_price": 50.0, "entity_id": lot_b},
+    ])
+    return doc_id, lot_a, lot_b, lot_c
+
+
+@pytest.mark.asyncio
+async def test_finalize_cogs_keeps_another_lines_bound_lot_for_that_line(client, session, auth, _setup_ids):
+    """Line 0 spans past lot A. Lot B belongs to line 1, so line 0 draws its
+    shortfall from C: COGS is 2*10 + 3*50 for line 0 plus 3*30 for line 1 = 260,
+    never lot B counted for both lines (200)."""
+    await _two_bound_lots_invoice(client, auth)
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 260.0, nets
+    assert nets.get("1130-P") == -260.0, nets
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batches", [["a", "b"], ["b", "a"], ["a"], ["b"]], ids=[
+    "one-call-doc-order", "one-call-reverse-order", "line-0-then-line-1", "line-1-then-line-0"])
+async def test_fulfill_two_same_sku_bound_lots_draws_each_lot_once(
+    client, session, auth, _setup_ids, batches
+):
+    """Whatever the call pattern, the two lines draw A, B and C exactly once each:
+    every lot ends sold, the fulfilled cost matches the 260 recognized at finalize,
+    and no adjustment is posted."""
+    doc_id, lot_a, lot_b, lot_c = await _two_bound_lots_invoice(client, auth)
+    ids = {"a": lot_a, "b": lot_b}
+    if len(batches) == 2:
+        calls = [[ids[k] for k in batches]]
+    else:
+        first = batches[0]
+        calls = [[ids[first]], [ids["b" if first == "a" else "a"]]]
+    for call in calls:
+        r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                              json={"line_entity_ids": call})
+        assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "fulfilled"
+
+    for eid in (lot_a, lot_b, lot_c):
+        item = (await client.get(f"/items/{eid}", headers=auth["headers"])).json()
+        assert item["status"] == "sold", item
+
+    led = (await client.get(f"/ledger?entity_id={lot_b}", headers=auth["headers"])).json()["items"]
+    assert sum(1 for e in led if e.get("event_type") == "item.fulfilled") == 1
+
+    nets = await _je_net(client, auth["headers"])
+    assert nets.get("5100") == 260.0, nets
+
+
+@pytest.mark.asyncio
+async def test_reversing_adjustments_leaves_similarly_named_documents_alone(client, session, auth, _setup_ids):
+    """Document ids are free text on import, so an id containing _ or % must match
+    only its own fulfillment adjustments."""
+    from celerp.models.projections import Projection
+    from celerp.services import auto_je
+
+    cid = _setup_ids["company_id"]
+    uid = _setup_ids["user_id"]
+    for doc_id in ("doc:IMP-A_", "doc:IMP-AB", "doc:IMP-%", "doc:IMP-XY"):
+        await auto_je.create_for_doc_cogs_adjustment(
+            session, company_id=cid, user_id=uid, doc_id=doc_id, delta=5.0,
+            cycle_tag="fulfill-0:l0", doc_number=doc_id,
+        )
+    await session.commit()
+
+    for doc_id in ("doc:IMP-A_", "doc:IMP-%"):
+        await auto_je.void_for_doc_cogs_adjustments(
+            session, company_id=cid, user_id=uid, doc_id=doc_id, line_indices={0})
+    await session.commit()
+
+    session.expire_all()
+    status = {}
+    for doc_id in ("doc:IMP-A_", "doc:IMP-AB", "doc:IMP-%", "doc:IMP-XY"):
+        je = await session.get(Projection, {"company_id": cid, "entity_id": f"je:auto:{doc_id}:cogs-adj:fulfill-0:l0"})
+        status[doc_id] = je.state.get("status")
+    assert status == {"doc:IMP-A_": "void", "doc:IMP-AB": "posted",
+                      "doc:IMP-%": "void", "doc:IMP-XY": "posted"}

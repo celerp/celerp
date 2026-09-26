@@ -36,7 +36,7 @@ _CORE_ITEM_KEYS: frozenset[str] = frozenset({
     # identity / system
     "id", "entity_id", "company_id", "sku", "name", "barcode", "gtin", "rfid_epc",
     "category", "status",
-    "created_at", "updated_at", "location_id", "location_name", "idempotency_key",
+    "created_at", "updated_at", "location_id", "location_name", "idempotency_key", "external_links",
     # quantities / measures  (NOTE: `pieces` is intentionally NOT core — it lives under attributes)
     "quantity", "sell_by", "unit", "weight", "weight_unit", "gross_weight", "gross_weight_unit",
     "reserved_quantity", "quantity_fulfilled",
@@ -53,7 +53,8 @@ _CORE_ITEM_KEYS: frozenset[str] = frozenset({
     "short_description", "description", "notes", "hs_code", "batch_no",
     # relationships / lifecycle markers
     "parent_id", "parent_sku", "children", "child_skus", "merged_into", "split_from",
-    "transformed_from", "transformed_into", "fulfilled_for_docs",
+    "transformed_from", "transformed_into", "fulfilled_for_docs", "catalog_item_id",
+    "_catalog_sku_aliases",
     "status_doc_id", "status_doc_number",
     # manufactured-lot identity: a produced lot links to its product and its run, and flags itself
     "parent_item_id", "manufacturing_order_id", "lot",
@@ -257,6 +258,26 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current = _sync_expiry_from_attributes(current)
         _recompute_cost(current)
     elif event_type == "item.updated":
+        sku_change = data["fields_changed"].get("sku")
+        if sku_change and (
+            str(current.get("status") or "").lower() != "merged"
+            and not any((
+                current.get("catalog_item_id"),
+                current.get("lot"),
+                current.get("parent_item_id"),
+                current.get("split_from"),
+                current.get("transformed_from"),
+            ))
+        ):
+            old_sku = str(current.get("sku") or "").strip()
+            new_sku = str(sku_change.get("new") or "").strip()
+            if old_sku and old_sku.casefold() != new_sku.casefold():
+                aliases = list(current.get("_catalog_sku_aliases") or [])
+                seen = {str(value).strip().casefold() for value in aliases}
+                if old_sku.casefold() not in seen:
+                    aliases.append(old_sku)
+                    current["_catalog_sku_aliases"] = aliases
+
         for field, change in data["fields_changed"].items():
             if field == "pieces":
                 # pieces always lives in attributes["pieces"] — never at top-level

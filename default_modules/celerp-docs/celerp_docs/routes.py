@@ -29,6 +29,8 @@ from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
+from celerp.services.pick import doc_bound_lots
+from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
 from celerp.services.document_lines import line_item_id
@@ -1820,8 +1822,15 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/finalize")
-async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def _finalize_doc_impl(
+    entity_id: str,
+    company_id: str,
+    user,
+    session: AsyncSession,
+    *,
+    commit: bool = True,
+) -> dict:
+    """Finalize with caller-owned transaction support for domain integrations."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     # A closed memo is terminal, settled paperwork; finalize maps closed->final in the
     # reducer, silently stripping the terminal status and its close metadata. Refuse under
@@ -1829,6 +1838,8 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
     _reject_if_closed(row.state, "finalize it")
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Cannot finalize void document")
+    if row.state.get("finalized"):
+        return {"event_id": None, "already_finalized": True}
     if not (row.state.get("line_items") or []):
         raise HTTPException(status_code=422, detail="Add at least one line item before finalizing this document.")
 
@@ -1921,8 +1932,20 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
         user_id=_user_id,
         doc_type=doc_type,
     )
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"event_id": entry.id}
+
+
+@router.post("/{entity_id}/finalize")
+async def finalize_doc(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("finalize_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await _finalize_doc_impl(entity_id, company_id, user, session, commit=True)
 
 
 @router.post("/{entity_id}/void")
@@ -2336,7 +2359,7 @@ async def _alloc_payment_index(session, company_id, payments: list,
 
 async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                             *, source: str, actor_id, idempotency_key: str,
-                            clamp_overshoot: bool = False):
+                            clamp_overshoot: bool = False, commit: bool = True):
     """Record a payment against a doc: guard, emit doc.payment.received, post the cash
     JE, fire the payment lifecycle hook. Shared by the manual route and online payment
     so a Stripe payment lands identically to a hand-entered one. Commits per success and
@@ -2448,8 +2471,10 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         "on_doc_payment", session=session, company_id=company_id, user_id=actor_id,
         doc_id=entity_id, doc=doc_state, amount=amount, bank_account_code=bank_code,
     )
-    # Commit so this recorder's write is visible to the next holder of the row lock.
-    await session.commit()
+    # Interactive/online callers commit here; domain integrations may compose this
+    # payment atomically with finalize/fulfillment and commit the enclosing transaction.
+    if commit:
+        await session.commit()
     # Return the applied amount (post-clamp) alongside the event so callers report
     # and decrement off what actually landed under the row lock, not a stale pre-read.
     return entry, amount
@@ -3132,7 +3157,10 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     # actually holds. Allocate the whole batch in one locked call AFTER validation so
     # concurrent receipts mint distinct barcodes; the lock is held until this request
     # commits. The DB unique index is the backstop, not the normal mechanism.
-    from celerp_inventory.services import allocate_internal_codes
+    from celerp_inventory.services import (
+        allocate_internal_codes,
+        resolve_catalog_anchor_for_item,
+    )
 
     def _creates_parcel(it) -> bool:
         return not (it.item_id and not is_inbound) and it.receive_as == "stock"
@@ -3168,10 +3196,23 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
 
             # Template: prefer existing item by item_id, fall back to SKU match.
             template_state: dict = {}
+            catalog_item_id: str | None = None
             if it.item_id:
                 tmpl_row = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
                 if tmpl_row:
                     template_state = tmpl_row.state
+                    if tmpl_row.entity_type == "item":
+                        try:
+                            catalog_item_id = (
+                                await resolve_catalog_anchor_for_item(
+                                    session, company_id, tmpl_row.entity_id
+                                )
+                            ).entity_id
+                        except ValueError:
+                            # A historical physical row may not have a resolvable
+                            # catalog family. Keep receiving safe without asserting
+                            # a false product relation.
+                            catalog_item_id = None
             if not template_state:
                 template_state = next(
                     (r.state for r in all_item_rows
@@ -3201,6 +3242,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 "allow_splitting", "pick_method", "gtin",
             )
             item_data: dict = {k: sku_ref[k] for k in _INHERIT if k in sku_ref and sku_ref[k] is not None}
+            if catalog_item_id:
+                item_data["catalog_item_id"] = catalog_item_id
             # Copy dynamic category-specific attributes (measurements, shape/cut, etc.)
             if sku_ref.get("attributes"):
                 item_data["attributes"] = dict(sku_ref["attributes"])
@@ -5698,7 +5741,7 @@ async def _validate_revert_entity_ids_subset(
         li.get("entity_id") or li.get("item_id") or ""
         for li in doc_state.get("line_items", [])
     } - {""}
-    if doc_state.get("doc_type") == "memo":
+    if doc_state.get("doc_type") in {"memo", "invoice"}:
         doc_eids |= {p.entity_id for p in await _memo_allocation_items(session, company_id, entity_id)}
     foreign = set(line_entity_ids) - doc_eids
     if foreign:
@@ -5708,7 +5751,41 @@ async def _validate_revert_entity_ids_subset(
         )
 
 
-async def _plan_span_draws(session, company_id, primary_proj, needed: float, exclude: set, owner_entity_id: str = ""):
+async def _lock_item_sku_lots(
+    session, company_id, item_ids: list[str] | set[str],
+) -> dict[str, Projection]:
+    """Lock selected items and every same-SKU lot in one deterministic batch."""
+    ids = {eid for eid in item_ids if eid}
+    if not ids:
+        return {}
+    seeds = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "item",
+        Projection.entity_id.in_(ids),
+    ))).scalars().all()
+    skus = {str(row.state.get("sku") or "").strip() for row in seeds}
+    skus.discard("")
+    clauses = [Projection.entity_id.in_(ids)]
+    if skus:
+        clauses.append(Projection.state["sku"].as_string().in_(sorted(skus)))
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+            _sa.or_(*clauses),
+        ).order_by(Projection.entity_id).with_for_update().execution_options(populate_existing=True)
+    )).scalars().all()
+    locked = {row.entity_id: row for row in rows}
+    for eid in ids:
+        if eid not in locked:
+            raise HTTPException(status_code=409, detail="Inventory changed; retry.")
+    return locked
+
+
+async def _plan_span_draws(
+    session, company_id, primary_proj, needed: float, exclude: set,
+    owner_entity_id: str = "", locked_lots: dict[str, Projection] | None = None,
+):
     """Plan a cross-lot draw of ``needed`` units for a splittable SKU.
 
     Consumes the line's bound (primary) lot first - so the doc line's own parcel is
@@ -5730,8 +5807,9 @@ async def _plan_span_draws(session, company_id, primary_proj, needed: float, exc
     company = await session.get(Company, company_id)
     company_settings = (company.settings or {}) if company else {}
     method = resolve_pick_method(primary_proj.state, company_settings)
-    rows = (await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
+    rows = list((locked_lots or await _lock_item_sku_lots(
+        session, company_id, {primary_proj.entity_id}
+    )).values())
     lots = [r for r in rows
             if str(r.state.get("sku") or "").strip() == sku
             and ((r.state.get("status") or "available") == "available"
@@ -5830,14 +5908,14 @@ async def _apply_split_plan(
     return remap
 
 
-@router.post("/{entity_id}/fulfill-lines")
-async def fulfill_lines(
+async def _fulfill_lines_impl(
     entity_id: str,
     body: FulfillLinesRequest,
-    company_id: str = Depends(get_current_company_id),
-    _: None = require_permission("fulfill_documents"),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    company_id: str,
+    user,
+    session: AsyncSession,
+    *,
+    commit: bool = True,
 ) -> dict:
     """Fulfill specific line items by entity_id. Valid for memo and invoice docs only.
 
@@ -5881,9 +5959,13 @@ async def fulfill_lines(
     split_plan: dict[str, dict] = {}  # parent_eid -> child measures (partial draws)
     fetched: dict[str, Projection] = {}
     span_consumed: set[str] = set()  # extra lots pulled in by cross-lot spanning
-    fulfilled_line_eids: set[str] = set()  # accepted stock lines, by pre-remap line eid
-    for item_eid in body.line_entity_ids:
-        item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
+    fulfillment_line_index: dict[str, int] = {}
+    _locked_lots = await _lock_item_sku_lots(session, company_id, set(body.line_entity_ids))
+    # Lines are drawn in document order and a lot bound to another line is never a
+    # spanning sibling (doc_bound_lots), matching the allocation finalize recognized.
+    _bound_lots = doc_bound_lots(state.get("line_items", []))
+    for item_eid in sorted(body.line_entity_ids, key=lambda e: line_index_by_eid.get(e, len(line_index_by_eid))):
+        item_proj = _locked_lots.get(item_eid)
         if item_proj is None:
             errors.append(f"{item_eid}: item not found")
             continue
@@ -5914,16 +5996,17 @@ async def fulfill_lines(
             if splitting_allowed(item_proj.state):
                 _draws = await _plan_span_draws(
                     session, company_id, item_proj, line_qty,
-                    exclude=set(to_fulfill) | span_consumed,
-                    owner_entity_id=entity_id,
+                    exclude=set(to_fulfill) | span_consumed | (_bound_lots - {item_eid}),
+                    owner_entity_id=entity_id, locked_lots=_locked_lots,
                 )
                 if _draws is not None:
-                    fulfilled_line_eids.add(item_eid)
                     for _lot, _take, _full in _draws:
                         _leid = _lot.entity_id
                         fetched[_leid] = _lot
                         to_fulfill.append(_leid)
                         span_consumed.add(_leid)
+                        if item_eid in line_index_by_eid:
+                            fulfillment_line_index[_leid] = line_index_by_eid[item_eid]
                         if not _full:
                             _lsb = _lot.state.get("sell_by")
                             split_plan[_leid] = {
@@ -5964,7 +6047,8 @@ async def fulfill_lines(
                 continue
         fetched[item_eid] = item_proj
         to_fulfill.append(item_eid)
-        fulfilled_line_eids.add(item_eid)
+        if item_eid in line_index_by_eid:
+            fulfillment_line_index[item_eid] = line_index_by_eid[item_eid]
         # Partial draw of a splittable parcel: split off the invoiced amount as a child
         # and fulfill that; the mother keeps the remainder. A full or over-invoiced line
         # takes the whole parcel and plans no carve.
@@ -5982,9 +6066,17 @@ async def fulfill_lines(
     if not to_fulfill and not service_eids:
         raise HTTPException(status_code=422, detail="No fulfillable items in the provided line_entity_ids")
 
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
     cid = uuid.UUID(str(company_id))
     uid = user.id
+    company = await session.get(Company, company_id)
+    company_settings = (company.settings or {}) if company else {}
+    fulfillment_date = (
+        business_date_at(now_dt, company_settings.get("timezone"))
+        if (doc_type == "invoice" and to_fulfill) or company_settings.get("lock_date")
+        else now_dt.date().isoformat()
+    )
 
     # Split partial draws: carve the invoiced amount off each parcel as a child,
     # retarget fulfillment to the child, and rewrite the doc line to reference it.
@@ -5995,17 +6087,21 @@ async def fulfill_lines(
         )
         for parent_eid, (child_eid, _child_sku) in remap.items():
             to_fulfill[to_fulfill.index(parent_eid)] = child_eid
+            if parent_eid in fulfillment_line_index:
+                fulfillment_line_index[child_eid] = fulfillment_line_index.pop(parent_eid)
             del fetched[parent_eid]
 
     total_cogs = 0.0
+    actual_cogs_by_line: dict[int, float] = {}
     for item_eid in to_fulfill:
         item_proj = fetched[item_eid]
         qty = float(item_proj.state.get("quantity", 0))
         cost_total = item_proj.state.get("cost_total")
-        if cost_total is not None:
-            total_cogs += float(cost_total)
-        else:
-            total_cogs += float(item_proj.state.get("cost_price") or 0) * float(item_proj.state.get("quantity") or 0)
+        item_cogs = float(cost_total) if cost_total is not None else float(item_proj.state.get("cost_price") or 0) * qty
+        total_cogs += item_cogs
+        _line_idx = fulfillment_line_index.get(item_eid)
+        if _line_idx is not None:
+            actual_cogs_by_line[_line_idx] = actual_cogs_by_line.get(_line_idx, 0.0) + item_cogs
         await emit_event(
             session,
             company_id=cid,
@@ -6018,46 +6114,30 @@ async def fulfill_lines(
                 "quantity_fulfilled": qty,
                 "fulfilled_by": str(uid),
                 "doc_type": doc_type,
+                "ts": fulfillment_date,
             },
             actor_id=uid,
             location_id=None,
             source="fulfillment",
             idempotency_key=str(uuid.uuid4()),
-            metadata_={"doc_id": entity_id},
+            metadata_={"doc_id": entity_id, "line_index": _line_idx},
         )
 
-    # True up recognized COGS against reality: the finalize JE recognized each line at
-    # the lots it expected to draw; the lots actually drawn just now can cost more or
-    # less (a sibling lot was sold in between, costs changed). The difference for the
-    # lines fulfilled here posts as one adjustment JE dated to this fulfillment. Docs
-    # whose finalize JE carries no allocation snapshot have no recognized basis and
-    # get no adjustment.
+    # True up recognized COGS one document line at a time so partial reversal is exact.
     if doc_type == "invoice" and to_fulfill:
         _recognized_allocs = await auto_je.recognized_cogs_allocations(session, company_id, entity_id)
         if _recognized_allocs is not None:
-            _batch_indices = sorted({
-                line_index_by_eid[_eid] for _eid in fulfilled_line_eids if _eid in line_index_by_eid
-            })
-            _recognized = sum(
-                float((_recognized_allocs.get(str(_idx)) or {}).get("amount") or 0)
-                for _idx in _batch_indices
-            )
-            _delta = round(total_cogs - _recognized, 2)
-            if abs(_delta) > 0.005:
-                # The JE identity carries the batch's line indexes: lines of one
-                # cycle can be fulfilled in separate calls, and each batch's delta
-                # must post on its own JE. Retrying the same batch dedups on the
-                # idempotency key; a different batch is a different key.
-                _batch_tag = "l" + "-".join(str(_idx) for _idx in _batch_indices)
+            _cycle = int(state.get("fulfill_cycle") or 0)
+            for _idx in sorted(actual_cogs_by_line):
+                _recognized = float((_recognized_allocs.get(str(_idx)) or {}).get("amount") or 0)
+                _delta = round(actual_cogs_by_line[_idx] - _recognized, 2)
+                if abs(_delta) <= 0.005:
+                    continue
                 await auto_je.create_for_doc_cogs_adjustment(
-                    session,
-                    company_id=cid,
-                    user_id=uid,
-                    doc_id=entity_id,
-                    delta=_delta,
-                    cycle_tag=f"fulfill-{int(state.get('revert_count') or 0)}:{_batch_tag}",
+                    session, company_id=cid, user_id=uid, doc_id=entity_id,
+                    delta=_delta, cycle_tag=f"fulfill-{_cycle}:l{_idx}",
                     doc_number=state.get("doc_number") or state.get("ref_id") or entity_id,
-                    ts=now,
+                    ts=fulfillment_date,
                 )
 
     # Optimistically compute doc fulfillment_status. Service lines count as fulfilled (they are
@@ -6085,6 +6165,7 @@ async def fulfill_lines(
             "fulfilled_at": now,
             "strategy": "per_line",
             "total_cogs": total_cogs,
+            "ts": fulfillment_date,
         }
     else:
         doc_fulfillment_status = "partial"
@@ -6099,6 +6180,7 @@ async def fulfill_lines(
             "fulfilled_by": str(uid),
             "fulfilled_at": now,
             "strategy": "per_line",
+            "ts": fulfillment_date,
         }
 
     await emit_event(
@@ -6115,9 +6197,74 @@ async def fulfill_lines(
         metadata_={},
     )
 
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"fulfillment_status": doc_fulfillment_status, "fulfilled": to_fulfill}
 
+
+@router.post("/{entity_id}/fulfill-lines")
+async def fulfill_lines(
+    entity_id: str,
+    body: FulfillLinesRequest,
+    company_id: str = Depends(get_current_company_id),
+    _: None = require_permission("fulfill_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await _fulfill_lines_impl(entity_id, body, company_id, user, session, commit=True)
+
+
+async def _fulfilled_line_index(
+    session, company_id, doc_id: str, doc_state: dict, item: Projection,
+) -> int | None:
+    for idx, line in enumerate(doc_state.get("line_items", [])):
+        if (line.get("entity_id") or line.get("item_id")) == item.entity_id:
+            return idx
+    from celerp.models.ledger import LedgerEntry
+    rows = (await session.execute(
+        select(LedgerEntry).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id == item.entity_id,
+            LedgerEntry.event_type == "item.fulfilled",
+        ).order_by(LedgerEntry.id.desc())
+    )).scalars().all()
+    for event in rows:
+        if (event.data or {}).get("source_doc_id") != doc_id:
+            continue
+        idx = (event.metadata_ or {}).get("line_index")
+        if isinstance(idx, int):
+            return idx
+        break
+    sku = str((item.state or {}).get("sku") or "").strip()
+    matches = [idx for idx, line in enumerate(doc_state.get("line_items", []))
+               if str(line.get("sku") or "").strip() == sku]
+    return matches[0] if len(matches) == 1 else None
+
+
+async def _expand_invoice_line_allocations(
+    session, company_id, doc_id: str, doc_state: dict,
+    item_ids: list[str], fetched: dict[str, Projection],
+) -> set[int]:
+    requested_indices: set[int] = set()
+    for item_eid in list(item_ids):
+        idx = await _fulfilled_line_index(session, company_id, doc_id, doc_state, fetched[item_eid])
+        if idx is None:
+            raise HTTPException(status_code=409, detail="Cannot safely identify the invoice line for this legacy fulfillment.")
+        requested_indices.add(idx)
+    requested_skus = {
+        str((doc_state.get("line_items") or [])[idx].get("sku") or "").strip()
+        for idx in requested_indices if 0 <= idx < len(doc_state.get("line_items") or [])
+    }
+    for item in await _memo_allocation_items(session, company_id, doc_id):
+        idx = await _fulfilled_line_index(session, company_id, doc_id, doc_state, item)
+        if idx is None:
+            if item.entity_id not in item_ids and str((item.state or {}).get("sku") or "").strip() in requested_skus:
+                raise HTTPException(status_code=409, detail="Cannot safely identify every lot in this legacy invoice fulfillment.")
+            continue
+        if idx in requested_indices and item.entity_id not in fetched:
+            fetched[item.entity_id] = item
+            item_ids.append(item.entity_id)
+    return requested_indices
 
 async def _reverse_whole_lines(
     session,
@@ -6139,6 +6286,27 @@ async def _reverse_whole_lines(
     Shared by revert-lines (Set as available on sold/memo lines) and reserve-lines
     (Set as reserved on a line this doc already shipped: reverse, then reserve).
     """
+    reversed_line_indices: set[int] = set()
+    if doc_type == "invoice" and to_revert:
+        reversed_line_indices = await _expand_invoice_line_allocations(
+            session, company_id, entity_id, state, to_revert, fetched
+        )
+    now_dt = datetime.now(timezone.utc)
+    company = await session.get(Company, company_id)
+    settings = (company.settings or {}) if company else {}
+    reversal_date = (
+        business_date_at(now_dt, settings.get("timezone"))
+        if doc_type == "invoice" or settings.get("lock_date")
+        else now_dt.date().isoformat()
+    )
+    if reversed_line_indices:
+        try:
+            await auto_je.void_for_doc_cogs_adjustments(
+                session, company_id=cid, user_id=uid, doc_id=entity_id,
+                line_indices=reversed_line_indices,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     for item_eid in to_revert:
         item_proj = fetched[item_eid]
         qty = float(item_proj.state.get("quantity", 0))
@@ -6155,6 +6323,7 @@ async def _reverse_whole_lines(
                 "reversed_by": str(uid),
                 "reason": "per_line_revert",
                 "doc_type": doc_type,
+                "ts": reversal_date,
             },
             actor_id=uid,
             location_id=None,
@@ -6185,6 +6354,7 @@ async def _reverse_whole_lines(
         "reversed_items": reverted_brief,
         "reversed_by": str(uid),
         "reason": "per_line_revert",
+        "ts": reversal_date,
     }
     if returned_brief:
         # Part-returned lots: named separately from whole-line reverts, because the line
@@ -6254,8 +6424,9 @@ async def revert_lines(
     # item_eid -> quantity coming back, for lines where only part of the lot returned.
     partial_plan: dict[str, float] = {}
     fetched: dict[str, Projection] = {}
+    _locked_lots = await _lock_item_sku_lots(session, company_id, set(body.line_entity_ids))
     for item_eid in body.line_entity_ids:
-        item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
+        item_proj = _locked_lots.get(item_eid)
         if item_proj is None:
             errors.append(f"{item_eid}: item not found")
             continue
@@ -6340,7 +6511,7 @@ async def revert_lines(
     }
 
 
-async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user, session) -> dict:
+async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user, session, *, commit: bool = True) -> dict:
     """Set selected lines to ``reserved`` or ``available`` (ledger-neutral for available lines).
 
     All-or-nothing: every selected line is pre-validated first; if any line fails its guard the
@@ -6376,9 +6547,10 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
     blocked: list[str] = []  # 409: partial reserve of a non-splittable parcel
     split_plan: dict[str, dict] = {}  # parent_eid -> child measures (partial reserves)
     projs: dict[str, Projection] = {}
-    to_unship: dict[str, Projection] = {}  # sold by THIS doc: reverse the sale, then reserve
+    to_unship: dict[str, Projection] = {}
+    _locked_lots = await _lock_item_sku_lots(session, row.company_id, set(line_entity_ids))
     for eid in line_entity_ids:
-        proj = await session.get(Projection, {"company_id": row.company_id, "entity_id": eid})
+        proj = _locked_lots.get(eid)
         if proj is None:
             errors.append(f"{eid}: item not found")
             continue
@@ -6426,14 +6598,22 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
         raise HTTPException(status_code=422, detail={"errors": errors})
 
     cid = uuid.UUID(str(row.company_id))
+    reserve_eids = list(line_entity_ids)
+    if new_status == "available" and state.get("doc_type") == "invoice":
+        await _expand_invoice_line_allocations(
+            session, row.company_id, entity_id, state, reserve_eids, projs
+        )
     if to_unship:
         # Take the shipped goods back into stock before reserving them - the reversal and the
         # reserve share this transaction, so a failure commits neither.
+        to_unship_ids = list(to_unship)
         await _reverse_whole_lines(
             session, company_id=row.company_id, cid=cid, uid=user.id, entity_id=entity_id,
-            state=state, doc_type=state.get("doc_type", ""), to_revert=list(to_unship),
+            state=state, doc_type=state.get("doc_type", ""), to_revert=to_unship_ids,
             fetched=to_unship,
         )
+        reserve_eids.extend(eid for eid in to_unship_ids if eid not in reserve_eids)
+        projs.update(to_unship)
     # Carve the invoiced portion off each partial parcel and reserve the child instead of
     # the mother; the mother keeps its remainder available.
     remap: dict[str, tuple[str, str]] = {}
@@ -6444,7 +6624,7 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
         )
     doc_number = state.get("doc_number") or state.get("ref_id") or ""
     reserved_eids: list[str] = []
-    for eid in line_entity_ids:
+    for eid in reserve_eids:
         target_eid = remap[eid][0] if eid in remap else eid
         reserved_eids.append(target_eid)
         # Reserve stamps this doc as owner (source_doc_id present); release omits it so
@@ -6460,7 +6640,8 @@ async def _reserve_lines_impl(row, entity_id, new_status, line_entity_ids, user,
             idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
         )
 
-    await session.commit()
+    if commit:
+        await session.commit()
     return {"new_status": new_status, "reserved": reserved_eids}
 
 

@@ -80,3 +80,12 @@ def mock_upsert_invoice_xero():
 def mock_upsert_contact_xero():
     with patch("celerp.connectors.upsert.upsert_contact_from_xero", new_callable=AsyncMock, return_value="created") as m:
         yield m
+
+
+@pytest.fixture(autouse=True)
+def _public_woocommerce_test_urls():
+    with patch(
+        "celerp.connectors.woocommerce.validate_public_base_url",
+        new=AsyncMock(side_effect=lambda value, **_kwargs: value.rstrip("/")),
+    ):
+        yield

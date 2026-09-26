@@ -18,13 +18,13 @@ See celerp-cloud/SHARE_ACCEPT_FLOW.md for full spec and all failure states.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import uuid as _uuid
 from datetime import date as _date, datetime, time as _time, timedelta, timezone
 from urllib.parse import urlencode
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
@@ -39,7 +39,7 @@ from celerp.models.share import DocShareToken, is_active as share_is_active
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
-from celerp.services.public_fetch import PublicFetchError, check_public_url, fetch_public
+from celerp.services.outbound_url import validate_public_base_url
 from celerp.output.doc_print import (
     IMPORTABLE_DOC_TYPES, INVOICE_LAYOUT_DOC_TYPES,
     render_doc_print_html,
@@ -104,15 +104,10 @@ def _share_url(token: str) -> str:
 # ---------------------------------------------------------------------------
 
 async def _validate_public_src(src: str) -> str:
-    """Return a cleaned https base URL, or raise 400 if it is not a public host.
-
-    The recipient's instance fetches this URL server-side.
-    """
-    cleaned = (src or "").rstrip("/")
     try:
-        return await check_public_url(cleaned)
-    except PublicFetchError as exc:
-        raise HTTPException(status_code=400, detail=f"Sender URL {exc}")
+        return await validate_public_base_url(src)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 async def _read_body_capped(request: Request, limit: int) -> bytes:
@@ -683,6 +678,7 @@ async def import_shared_doc(
     src: str = Query(..., description="Sender's Celerp public URL"),
     token: str = Query(..., description="Share token from sender"),
     company_id: _uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -695,14 +691,31 @@ async def import_shared_doc(
     fetch_url = f"{src_clean}/share/{token}/bundle"
 
     try:
-        body, _ = await fetch_public(fetch_url, max_bytes=_MAX_BUNDLE_BYTES, timeout=_FETCH_TIMEOUT)
-        bundle = json.loads(body)
-    except PublicFetchError as exc:
-        raise HTTPException(status_code=502, detail=f"Sender's instance could not be read: {exc}")
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            raise HTTPException(status_code=404, detail="Share link not found on sender's instance")
-        raise HTTPException(status_code=502, detail=f"Sender's instance returned {exc.response.status_code}")
+        from celerp.services.outbound_url import (
+            PublicFetchTooLarge,
+            fetch_public_bytes,
+        )
+
+        r = await fetch_public_bytes(
+            fetch_url,
+            max_bytes=_MAX_BUNDLE_BYTES,
+            timeout=_FETCH_TIMEOUT,
+        )
+        if r.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail="Share link not found on sender's instance",
+            )
+        if r.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Sender's instance returned {r.status_code}",
+            )
+        bundle = json.loads(r.content)
+    except PublicFetchTooLarge as exc:
+        raise HTTPException(status_code=413, detail="Bundle too large") from exc
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(status_code=502, detail="Could not reach sender's Celerp instance")
 
@@ -713,6 +726,7 @@ async def import_shared_doc(
 async def import_bundle_upload(
     request: Request,
     company_id: _uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -777,7 +791,7 @@ async def _import_bundle(
     entity_id = f"doc:rcv:{_uuid.uuid4().hex[:12]}"
     idem_key = f"share:{token}:{company_id}" if token else f"bundle:{_uuid.uuid4().hex}"
 
-    await emit_event(
+    entry = await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
@@ -794,5 +808,5 @@ async def _import_bundle(
 
     return Response(
         status_code=302,
-        headers={"Location": f"/docs/{entity_id}"},
+        headers={"Location": f"/docs/{entry.entity_id}"},
     )

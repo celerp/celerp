@@ -495,3 +495,17 @@ async def test_rename_category_updates_display_name(client):
     dn = (await client.get("/companies/me/category-display-names", headers=headers)).json()
     assert dn.get("after_rename") == "After Rename"
     assert "before_rename" not in dn
+
+@pytest.mark.asyncio
+async def test_company_settings_reject_invalid_timezone(client):
+    headers = await _headers(client)
+    r = await client.patch(
+        "/companies/me",
+        json={"settings": {"timezone": "Synthetic/Invalid"}},
+        headers=headers,
+    )
+    assert r.status_code == 422, r.text
+    me = await client.get("/companies/me", headers=headers)
+    assert me.status_code == 200
+    assert (me.json().get("settings") or {}).get("timezone") != "Synthetic/Invalid"
+
