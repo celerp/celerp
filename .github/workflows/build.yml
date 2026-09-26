@@ -124,7 +124,7 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # full history + tags so setuptools-scm can derive the version
 
@@ -136,11 +136,11 @@ jobs:
         shell: bash
         run: echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CELERP=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 9
 
@@ -257,7 +257,7 @@ jobs:
       - name: Cache pg-tools (macOS)
         if: matrix.os == 'macos-latest'
         id: pg-tools-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: electron/pg-tools
           key: pg-tools-${{ runner.os }}-pg${{ env.PG_VERSION }}-ossl${{ env.OPENSSL_VERSION }}-${{ hashFiles('electron/scripts/build-pg-tools.sh') }}
@@ -275,7 +275,7 @@ jobs:
       - name: Cache pg-tools (Windows)
         if: matrix.os == 'windows-latest'
         id: pg-tools-win-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: electron/pg-tools/win
           key: pg-tools-win-${{ env.PG_WIN_VERSION }}-${{ env.PG_WIN_SHA256 }}
@@ -308,7 +308,7 @@ jobs:
       - name: Cache pg-tools (Linux)
         if: matrix.os == 'ubuntu-latest'
         id: pg-tools-linux-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: electron/pg-tools/linux
           key: pg-tools-linux-${{ env.PG_VERSION }}-ossl${{ env.OPENSSL_VERSION }}-${{ hashFiles('electron/scripts/build-pg-tools-linux.sh') }}
@@ -795,7 +795,7 @@ jobs:
 
       - name: Upload artifacts (dev builds only)
         if: "!startsWith(github.ref, 'refs/tags/v')"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.os }}
           path: |
@@ -810,7 +810,7 @@ jobs:
         # manually dispatched feature branches stay as downloadable workflow
         # artifacts only (above), so they never overwrite the dev channel.
         if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.ref_name == 'develop' }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: dev-latest
           name: "Dev Build (latest)"
@@ -834,8 +834,8 @@ jobs:
     if: ${{ success() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Pin package version from tag
