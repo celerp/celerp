@@ -343,37 +343,31 @@ async def lifespan(_app: FastAPI):
     # A partner-packaged install with an unconsumed deployment credential
     # associates with its partner through the explicit relay seam before the
     # gateway starts. No-op for a direct install or one already associated.
-    try:
-        from celerp.gateway.bootstrap import associate_partner_deployment
-        await associate_partner_deployment()
-    except Exception:
-        logging.getLogger(__name__).exception("Deployment association failed (non-fatal)")
+    from celerp.gateway.bootstrap import associate_partner_deployment
+    await associate_partner_deployment()
 
     # Bring up the relay tunnel per the lazy free-tier lifecycle (3.1). A token-holder
     # is past first activation and never re-enters it. Paid instances (public_url set)
     # keep the tunnel always-on; a free instance opens it at boot only when it already
     # has a live share to serve, and otherwise stays down until a share is created.
-    try:
-        if settings.gateway_token:
-            from celerp.gateway import ensure_running, has_active_share
-            if settings.celerp_public_url or await has_active_share():
-                ensure_running()
-            # Authenticated activation is the canonical durable reconciliation path.
-            asyncio.create_task(_try_sync_existing_entitlement())
-        else:
-            asyncio.create_task(_try_auto_activate())
-    except Exception:
-        logging.getLogger(__name__).exception("Gateway startup failed (non-fatal)")
+    if settings.gateway_token:
+        from celerp.gateway import ensure_running, has_active_share
+        if settings.celerp_public_url or await has_active_share():
+            ensure_running()
+        # Authenticated activation is the canonical durable reconciliation path.
+        # It is bounded, idempotent for established credentials, and runs in the
+        # background so tunnel startup is never delayed.
+        asyncio.create_task(_try_sync_existing_entitlement())
+    else:
+        # Auto-activate: probe relay for an existing subscription (silent, no-op on failure)
+        asyncio.create_task(_try_auto_activate())
 
     # Start backup scheduler - paid tiers only (public_url is the paid signal;
     # a free instance is not entitled to backups at all).
     if settings.celerp_public_url and settings.backup_encryption_key and settings.backup_enabled:
-        try:
-            from celerp.services import backup_scheduler
-            backup_scheduler.start()
-            log.debug("Backup scheduler started")
-        except Exception:
-            logging.getLogger(__name__).exception("Backup scheduler startup failed (non-fatal)")
+        from celerp.services import backup_scheduler
+        backup_scheduler.start()
+        log.debug("Backup scheduler started")
 
     # AI batch jobs cannot survive a restart: mark any left pending or running
     # as failed so their owners are told to resend instead of waiting forever.
