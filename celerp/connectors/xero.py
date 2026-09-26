@@ -17,6 +17,8 @@ API version: Xero Accounting API v2 (https://api.xero.com/api.xro/2.0)
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from datetime import datetime
 from typing import Any
@@ -43,6 +45,19 @@ _PAGE_SIZE = 100
 def _api_base() -> str:
     from celerp.gateway.state import relay_http_url
     return f"{relay_http_url()}/connectors/xero/api"
+
+
+# Longer than the relay's own 30s timeout for Xero, so the relay normally
+# settles the outcome of a call before the desktop gives up on it.
+_RELAY_TIMEOUT_S = 45.0
+
+
+def _idempotency_key(company_id: Any, doc_id: Any, payload: dict) -> str:
+    """The same invoice push always sends the same key, across retries and sync
+    runs, so Xero creates it once; a changed invoice gets a new key."""
+    body = json.dumps({"company": str(company_id), "doc": str(doc_id), "payload": payload},
+                      sort_keys=True, default=str)
+    return hashlib.sha256(body.encode()).hexdigest()
 
 
 def _headers() -> dict[str, str]:
@@ -85,7 +100,7 @@ class XeroConnector(ConnectorBase):
         headers = _headers()
         if since:
             headers["If-Modified-Since"] = since.strftime("%a, %d %b %Y %H:%M:%S GMT")
-        async with RateLimitedClient() as client:
+        async with RateLimitedClient(timeout=_RELAY_TIMEOUT_S) as client:
             while True:
                 params = {"page": page, "pageSize": _PAGE_SIZE} if paginated else None
                 resp = await client.get(f"{_api_base()}{path}", headers=headers, params=params)
@@ -224,7 +239,7 @@ class XeroConnector(ConnectorBase):
             result.errors = [f"Failed to load invoices: {exc}"]
             return result
 
-        async with RateLimitedClient() as client:
+        async with RateLimitedClient(timeout=_RELAY_TIMEOUT_S) as client:
             for inv in invoices:
                 try:
                     line_items = [
@@ -247,7 +262,11 @@ class XeroConnector(ConnectorBase):
                     }
                     resp = await client.put(
                         f"{_api_base()}/Invoices",
-                        headers=_headers(),
+                        headers={
+                            **_headers(),
+                            "Idempotency-Key": _idempotency_key(
+                                ctx.company_id, inv.get("entity_id") or inv.get("ref_id"), payload),
+                        },
                         json=payload,
                     )
                     resp.raise_for_status()
