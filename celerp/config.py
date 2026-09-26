@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
+import json
 import os
 import platform
 import sys
@@ -536,7 +537,9 @@ def _write_config_unlocked(cfg: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
 
-    _str = lambda v: f'"{v}"'
+    # A JSON string is a valid TOML basic string: quotes, backslashes (Windows
+    # paths) and control characters come out escaped.
+    _str = lambda v: json.dumps(str(v), ensure_ascii=False)
 
     if "database" in cfg:
         db = cfg["database"]
@@ -586,12 +589,9 @@ def _write_config_unlocked(cfg: dict) -> None:
         # already-validated envelope, so a partner-managed install presents its
         # partner identity across an offline restart instead of defaulting to
         # celerp_direct. Emitted only when set (a direct install that has never
-        # cached one carries no key); serialised through the JSON string encoder
-        # so embedded quotes survive the TOML round-trip.
+        # cached one carries no key).
         if cloud.get("commercial_context_json"):
-            import json as _json
-            lines.append(
-                f"commercial_context_json = {_json.dumps(cloud['commercial_context_json'])}")
+            lines.append(f'commercial_context_json = {_str(cloud["commercial_context_json"])}')
         # Deployment credential survives every [cloud] write until the relay
         # accepts it: emitted only while non-empty, and the association marker
         # only once set. A direct install carries neither key. Without this, the
@@ -648,7 +648,7 @@ def _write_config_unlocked(cfg: dict) -> None:
 
     if "modules" in cfg:
         enabled = cfg["modules"].get("enabled", [])
-        enabled_toml = ", ".join(f'"{m}"' for m in enabled)
+        enabled_toml = ", ".join(_str(m) for m in enabled)
         lines += ["[modules]", f"enabled = [{enabled_toml}]", ""]
 
     # Crash-safe replacement: fsync a 0600 temp inode, then atomically swap it
@@ -659,7 +659,7 @@ def _write_config_unlocked(cfg: dict) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{_uuid.uuid4().hex}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
