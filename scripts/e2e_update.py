@@ -500,12 +500,15 @@ import json, os, sys, psutil
 root = sys.argv[1]
 found = []
 for p in psutil.process_iter(["pid", "ppid", "name", "cmdline"]):
-    if p.info["pid"] == os.getpid():
+    if p.info["pid"] in (os.getpid(), os.getppid()):  # this scan (and its venv launcher)
         continue
     try:
         line = " ".join(p.info["cmdline"] or [])
         if root in line:
-            parent = psutil.Process(p.info["ppid"]).name() if p.info["ppid"] else ""
+            try:  # on Windows the server's parent (cmd.exe from pg_ctl) has exited
+                parent = psutil.Process(p.info["ppid"]).name() if p.info["ppid"] else ""
+            except psutil.NoSuchProcess:
+                parent = ""
             found.append({"pid": p.info["pid"], "name": p.info["name"], "parent": parent, "cmd": line[:200]})
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         pass
@@ -606,7 +609,8 @@ def after_update_checks(inst: Install, outcome: str, target: str) -> None:
     check(dump.exists() and dump.stat().st_size > 0, "pre-update database dump kept")
     if not WINDOWS:
         check((dump.stat().st_mode & 0o777) == 0o600, "dump is readable by its owner only")
-    check(inst.postmasters() == 1, "exactly one PostgreSQL server running")
+    servers = inst.postmasters()
+    check(servers == 1, f"exactly one PostgreSQL server running ({servers})")
 
 
 def stop_and_check_clean(inst: Install) -> None:
