@@ -857,9 +857,18 @@ def _init_external(cfg: dict, *, force: bool, db_url: str | None, purge_dirs: li
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
+def _utf8_output() -> None:
+    """Write output as UTF-8. On Windows, output sent to a file or a service log
+    otherwise uses the legacy code page, and printing a check mark fails."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 @click.group()
 def main() -> None:
     """Celerp ERP — self-hosted business management."""
+    _utf8_output()
 
 
 @main.command()

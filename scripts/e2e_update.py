@@ -702,6 +702,11 @@ def e5(work, wheels):
 def e6(work, wheels):
     """The oldest supported pre-updater release: upgraded by pip once, as its
     users do, then updated from the app."""
+    if os.name == "nt":
+        # 2.5.0's own init waits on the PostgreSQL it starts and never returns on
+        # Windows, so there is no working 2.5.0 install there to upgrade.
+        print("    --  skipped: 2.5.0 cannot finish init on Windows")
+        return
     inst = Install(work, "E6")
     try:
         inst.create_as_existing("celerp==2.5.0")

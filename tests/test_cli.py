@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
@@ -777,3 +778,17 @@ def test_sync_db_url_names_the_psycopg2_driver():
     assert sync_db_url("postgresql://u:p@h:5432/db") == "postgresql+psycopg2://u:p@h:5432/db"
     assert sync_db_url("postgresql+psycopg2://u:p@h/db") == "postgresql+psycopg2://u:p@h/db"
     assert sync_db_url("sqlite+aiosqlite:///x.db") == "sqlite+aiosqlite:///x.db"
+
+
+def test_output_sent_to_a_legacy_code_page_file_still_prints(monkeypatch):
+    """Windows gives output sent to a file the legacy code page; the CLI's
+    check marks must still print there."""
+    from celerp.cli import _utf8_output
+
+    raw = io.BytesIO()
+    legacy = io.TextIOWrapper(raw, encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", legacy)
+    _utf8_output()
+    print("✓ ready")
+    legacy.flush()
+    assert raw.getvalue().decode("utf-8") == "✓ ready\n"
