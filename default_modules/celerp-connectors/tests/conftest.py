@@ -34,10 +34,18 @@ def ctx_quickbooks():
 def ctx_xero():
     return ConnectorContext(
         company_id="test-co",
-        access_token="xero_test_token",
+        access_token="",
         store_handle="tenant-abc",
-        extra={"tenant_id": "tenant-abc"},
     )
+
+
+@pytest.fixture
+def xero_relay():
+    """Point Xero calls at a test relay; yields the Xero API base on it."""
+    with patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"), \
+         patch("celerp.gateway.state.relay_session_headers",
+               return_value={"X-Session-Token": "sess-1", "X-Instance-ID": "inst-1"}):
+        yield "https://relay.test/connectors/xero/api"
 
 
 @pytest.fixture

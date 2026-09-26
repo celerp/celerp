@@ -16,7 +16,7 @@ _DEFAULT_BACKOFF_BASE = 2.0
 
 
 class RateLimitedClient:
-    """httpx.AsyncClient wrapper with automatic 429/503 backoff and retry."""
+    """httpx.AsyncClient wrapper with automatic backoff and retry."""
 
     def __init__(
         self,
@@ -65,8 +65,14 @@ class RateLimitedClient:
         httpx.PoolTimeout, httpx.RemoteProtocolError,
     )
 
+    # Statuses worth retrying. A GET also retries a gateway failure (502/504),
+    # which a relay in front of the platform returns for a transport error.
+    _RETRY_STATUS = (429, 503)
+    _GET_RETRY_STATUS = (429, 502, 503, 504)
+
     async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
         retryable = method.upper() != "POST"
+        retry_status = self._GET_RETRY_STATUS if method.upper() == "GET" else self._RETRY_STATUS
         for attempt in range(self._max_retries + 1):
             if self._before_request is not None:
                 await self._before_request(url)
@@ -80,10 +86,10 @@ class RateLimitedClient:
                          type(exc).__name__, attempt + 1, self._max_retries, delay)
                 await asyncio.sleep(delay)
                 continue
-            if resp.status_code not in (429, 503) or not retryable:
+            if resp.status_code not in retry_status or not retryable:
                 return resp
             if attempt == self._max_retries:
-                return resp  # Return the 429/503 on final attempt, let caller handle
+                return resp  # Return the last retryable status, let caller handle
             retry_after = resp.headers.get("Retry-After")
             if retry_after:
                 try:
@@ -92,6 +98,6 @@ class RateLimitedClient:
                     delay = self._backoff_base ** attempt
             else:
                 delay = self._backoff_base ** attempt
-            log.info("Rate limited (%d), retry %d/%d in %.1fs", resp.status_code, attempt + 1, self._max_retries, delay)
+            log.info("Retryable status (%d), retry %d/%d in %.1fs", resp.status_code, attempt + 1, self._max_retries, delay)
             await asyncio.sleep(delay)
         return resp  # unreachable but satisfies type checker

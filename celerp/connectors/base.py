@@ -70,7 +70,7 @@ def entity_allowed(entity: str, direction: SyncDirection) -> bool:
 class ConnectorContext:
     """Runtime context injected per sync call. Never stored on the connector."""
     company_id: str
-    access_token: str          # short-lived token from relay service
+    access_token: str          # short-lived token from relay service; empty for connectors whose calls go through the relay
     store_handle: str | None = None   # e.g. Shopify myshopify domain
     extra: dict[str, Any] | None = None
 
