@@ -177,7 +177,6 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
 
 
 def _restore_database(source: bytes | Path, database_url: str, *, clean_schema: bool, runner=None) -> None:
-    pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
     if clean_schema:
         from sqlalchemy import create_engine, text
 
@@ -195,13 +194,13 @@ def _restore_database(source: bytes | Path, database_url: str, *, clean_schema: 
         mode = ["--clean", "--if-exists"]
 
     runner = runner or subprocess.run
-    command = [*_restore_command(database_url, mode)]
     kwargs = {"capture_output": True, "timeout": 600}
-    if isinstance(source, Path):
-        command.append(str(source))
-    else:
-        kwargs["input"] = source
     try:
+        command = _restore_command(database_url, mode)
+        if isinstance(source, Path):
+            command.append(str(source))
+        else:
+            kwargs["input"] = source
         result = runner(command, **kwargs)
     except FileNotFoundError as exc:
         raise RuntimeError("pg_restore not found in PATH") from exc
