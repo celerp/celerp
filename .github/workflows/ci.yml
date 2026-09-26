@@ -234,11 +234,60 @@ jobs:
       - name: Fail if the committed constraints are stale
         run: git diff --exit-code constraints.txt
 
+  # A pip install updating itself from the app, end to end, on every OS the bundled
+  # PostgreSQL ships for: real wheels built from this tree, fresh venvs, `celerp
+  # start` as the supervisor, updates requested through the API (a good release, a
+  # failed install, a failed migration, a release that fails its health check, a
+  # supervisor killed mid-update, and more). Runs when the update path or the
+  # dependency set changes, and on every push to main.
+  update-changes:
+    name: Update path changed
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.diff.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD | grep -qE '^(celerp/(cli|config|embedded_pg|main)\.py|celerp/services/(update|backup)\.py|celerp/routers/(system|health)\.py|celerp/migrations/env\.py|pyproject\.toml|constraints\.txt|scripts/(e2e_update|pin_release_deps)\.py|\.github/workflows/ci\.yml)$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  update-e2e:
+    name: Self-update end to end (${{ matrix.os }})
+    needs: update-changes
+    if: needs.update-changes.outputs.run == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build, install and update
+        run: python scripts/e2e_update.py --work "${{ runner.temp }}/e2e" --keep
+      - name: Keep the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-e2e-${{ matrix.os }}
+          path: ${{ runner.temp }}/e2e/runs/*/*.log
+          if-no-files-found: ignore
+
   # Aggregator: the single required status check. Branch protection should require "Test"
   # (this job), which passes only when every unit, browser, electron, AND lockfile job passed.
   test:
     name: Test
-    needs: [shard, browser, embedded, electron, lockfile, constraints]
+    needs: [shard, browser, embedded, electron, lockfile, constraints, update-changes, update-e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -268,4 +317,12 @@ jobs:
             echo "constraints.txt is stale (result: ${{ needs.constraints.result }})"
             exit 1
           fi
-          echo "All unit, browser, embedded, electron, lockfile, and constraints checks passed."
+          if [ "${{ needs.update-changes.result }}" != "success" ]; then
+            echo "Could not tell whether the update path changed (result: ${{ needs.update-changes.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.update-e2e.result }}" != "success" ] && [ "${{ needs.update-e2e.result }}" != "skipped" ]; then
+            echo "Self-update end to end failed (result: ${{ needs.update-e2e.result }})"
+            exit 1
+          fi
+          echo "All unit, browser, embedded, electron, lockfile, constraints, and self-update checks passed."
