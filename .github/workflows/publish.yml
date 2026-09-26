@@ -9,11 +9,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # setuptools-scm needs full history
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -35,7 +35,7 @@ jobs:
           python scripts/pin_release_deps.py
           SETUPTOOLS_SCM_PRETEND_VERSION=$TAG python -m build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -52,11 +52,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-26, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -65,7 +65,7 @@ jobs:
         run: python -u scripts/e2e_update.py --release-wheel dist/*.whl --work "${{ runner.temp }}/e2e" --keep
       - name: Keep the logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-e2e-${{ matrix.os }}
           path: ${{ runner.temp }}/e2e/runs/*/*.log
@@ -82,10 +82,10 @@ jobs:
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -120,7 +120,7 @@ jobs:
     permissions:
       id-token: write  # Required for PyPI trusted publishing
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
