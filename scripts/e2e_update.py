@@ -286,6 +286,8 @@ def build_wheels(work: Path, names: set[str]) -> dict[str, Path]:
         "health_fail": [lambda t: _add_marker_migration(t, fail=False), _break_startup],
         "good_pg": [lambda t: _add_marker_migration(t, fail=False)],
     }
+    if _pg_pin(src) is None:  # E7 is skipped where celerp-postgres is not pinned
+        names = names - {"good_pg"}
     dirs = {}
     for name in sorted(names):
         out = work / "wheels" / name
