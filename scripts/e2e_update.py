@@ -52,6 +52,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -605,12 +606,18 @@ def request_update(inst: Install, expect_target: str) -> float:
 
 
 def wait_result(inst: Install, healthy_on: str, since: float) -> dict:
+    """The result of the update requested at `since`, once Celerp serves
+    `healthy_on`. A result on any other version fails at once, with the result."""
     deadline = time.time() + UPDATE_TIMEOUT
     while time.time() < deadline:
         state = inst.state()
         result = state.get("last_result") or {}
-        if not state.get("in_progress") and result and inst.version() == healthy_on:
-            inst.wait_healthy(healthy_on, timeout=120)
+        if (not state.get("in_progress") and result
+                and datetime.fromisoformat(result["at"]).timestamp() >= since - 1):
+            try:
+                inst.wait_healthy(healthy_on, timeout=120)
+            except Failed as exc:
+                raise Failed(f"{exc}; update result {result}") from None
             print(f"    --  click to healthy: {time.time() - since:.0f}s")
             return result
         time.sleep(2)

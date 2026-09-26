@@ -276,7 +276,7 @@ jobs:
       - name: Build, install and update
         run: python -u scripts/e2e_update.py --work "${{ runner.temp }}/e2e" --keep
       - name: Keep the logs
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: update-e2e-${{ matrix.os }}
