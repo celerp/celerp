@@ -421,7 +421,10 @@ class Install:
             os.killpg(self.proc.pid, signal.SIGKILL)
         self.proc.wait()
 
-    def stop(self) -> None:
+    def stop(self, *, group: bool = False) -> None:
+        """SIGTERM to the supervisor alone, so the checks see that it stops what
+        it started. `group` signals the whole process group instead, as Ctrl+C
+        in a terminal or a service manager does."""
         if self.proc is None or self.proc.poll() is not None:
             return
         if WINDOWS:
@@ -431,7 +434,10 @@ class Install:
             self.py("from pathlib import Path; import sys; from celerp import embedded_pg; "
                     "embedded_pg.stop_cluster(Path(sys.argv[1]))", str(self.config))
         else:
-            self.proc.send_signal(signal.SIGTERM)
+            if group:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            else:
+                self.proc.send_signal(signal.SIGTERM)
             try:
                 self.proc.wait(timeout=60)
             except subprocess.TimeoutExpired:
@@ -691,7 +697,9 @@ def e6(work, wheels):
         inst.start(expect_version="2.5.0")
         inst.register()
         inst.seed()
-        inst.stop()
+        # 2.5.0 only handles SIGTERM once its startup banner is out, which it can
+        # still be waiting on here; its users stop it with Ctrl+C or a service.
+        inst.stop(group=True)
         inst.pip("install", "-q", f"celerp=={VERSIONS['base']}")
         inst.start(expect_version=VERSIONS["base"])
         inst.owner = inst.login("owner@example.com")
