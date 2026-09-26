@@ -404,10 +404,7 @@ async def lifespan(_app: FastAPI):
         adopt_legacy_connector_configs,
         outbound_queue_loop,
     )
-    try:
-        await adopt_legacy_connector_configs()
-    except Exception:
-        logging.getLogger(__name__).exception("Connector startup reconciliation failed (non-fatal)")
+    await adopt_legacy_connector_configs()
     outbound_connector_task = asyncio.create_task(outbound_queue_loop())
 
     # Connector reconciliation scheduler: a daily incremental sync per connector,
