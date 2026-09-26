@@ -76,7 +76,7 @@ _DEAL ={"entity_id": "deal:1", "name": "Big Sale", "stage": "lead", "value": 100
 _VALUATION = {"item_count": 100, "active_item_count": 95, "cost_total": 50000,
               "retail_total": 200000, "wholesale_total": 120000,
               "category_counts": {"Parcel": 50, "Single": 30, "Pair": 15, "Set": 5}}
-_DOC_SUMMARY = {"ar_outstanding": 25000, "ar_gross": 100000}
+_DOC_SUMMARY = {"ar_outstanding": 25000, "ar_total": 100000}
 _ACTIVITY = {"activities": [
     {"ts": "2026-02-25T10:00:00Z", "event_type": "document.invoice.created",
      "entity_id": "doc:inv1", "summary": "Invoice INV2026001 created", "actor": "admin"},
@@ -1219,7 +1219,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_csv_export_empty(self, ui):
-        with _Patches({"ui.api_client.export_items_csv": AsyncMock(return_value=b"name,sku\n")}):
+        with _Patches({**_inventory_mocks(), "ui.api_client.export_items_csv": AsyncMock(return_value=b"name,sku\n")}):
             r = await ui.get("/inventory/export/csv", cookies=_c())
         assert r.status_code == 200
 

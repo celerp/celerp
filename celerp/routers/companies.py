@@ -2102,15 +2102,6 @@ async def module_licenses() -> dict:
     return {"licensed": licensed}
 
 
-def _relay_error_detail(resp, fallback: str) -> str:
-    """The relay's own error message when it sent one, else the fallback."""
-    try:
-        d = resp.json().get("detail")
-        return d if isinstance(d, str) and d else fallback
-    except Exception:
-        return fallback
-
-
 class _MarketplaceDownloadBody(BaseModel):
     slug: str
 
@@ -2174,6 +2165,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
 
     import httpx
 
+    from celerp.gateway.state import relay_error_detail
     from celerp.modules.importer import MAX_ARCHIVE_BYTES
 
     url, jwt = await _relay_creds()
@@ -2186,7 +2178,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
             if m.status_code != 200:
                 raise HTTPException(
                     status_code=404 if m.status_code == 404 else 502,
-                    detail=_relay_error_detail(m, "This module is not available."))
+                    detail=relay_error_detail(m, "This module is not available."))
             meta = _json_dict(m)
             if not meta:
                 raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
@@ -2206,7 +2198,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
             if r.status_code != 200:
                 raise HTTPException(
                     status_code=r.status_code,
-                    detail=_relay_error_detail(r, "The relay refused the download."))
+                    detail=relay_error_detail(r, "The relay refused the download."))
             token = str(_json_dict(r).get("token") or "")
             if not token:
                 raise HTTPException(status_code=502, detail="The relay sent an invalid response.")
@@ -2215,7 +2207,7 @@ async def marketplace_download(body: _MarketplaceDownloadBody) -> dict:
             if d.status_code != 200:
                 raise HTTPException(
                     status_code=502,
-                    detail=_relay_error_detail(d, "The module download failed. Try again."))
+                    detail=relay_error_detail(d, "The module download failed. Try again."))
             data = d.content
     except HTTPException:
         raise

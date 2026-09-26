@@ -24,7 +24,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.projections import Projection
-from celerp.services.cost_visibility import apply_field_visibility
 from celerp.services.field_schema import get_effective_field_schema
 from celerp.services.permissions import role_has_permission
 from celerp.services.pricing import get_price_config
@@ -33,7 +32,7 @@ from celerp.services.units import get_company_units
 from .routes import (
     _DEFAULT_NUMERIC_FIELDS,
     _DEFAULT_TEXT_FIELDS,
-    DERIVED_FIELD_DEPS,
+    apply_item_visibility,
     flatten_item,
     query_match_reasons,
     searchable_field_sets,
@@ -138,10 +137,8 @@ async def strip_field_visibility(
         # missing the key still carries the real-or-default value for a role that
         # may see it. A restricted role has the key removed by the strip below.
         r.setdefault("inventory_type", "stocked")
-        stripped.append(apply_field_visibility(
-            [r], role, fs, can_see_costs,
-            can_author_drafts=can_author_drafts,
-            derived_field_deps=DERIVED_FIELD_DEPS,
+        stripped.append(apply_item_visibility(
+            [r], role, fs, can_see_costs, can_author_drafts=can_author_drafts,
         )[0])
     return stripped, item_field_sets
 

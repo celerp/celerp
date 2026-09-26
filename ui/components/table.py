@@ -1194,15 +1194,16 @@ def display_cell(
         return Td(inner, id=_cell_id, cls=f"cell cell--{cell_type}{_x}", data_col=field)
 
     if cell_type == "image":
-        # Drag-drop zone: dropping a file POSTs to the attachment endpoint.
-        # A hidden file input allows click-to-upload as fallback.
+        # Drop zone: the hidden file input carries both click-to-pick and dropped
+        # files (the shell's drop handler assigns them to it) to the thumbnail upload.
         return Td(
             inner,
             Input(
                 type="file",
+                name="file",
                 accept="image/*",
                 cls="cell-image-input",
-                hx_post=f"/api/items/{entity_id}/attachments",
+                hx_post=f"/api/items/{entity_id}/thumbnail",
                 hx_encoding="multipart/form-data",
                 hx_target=f"#img-cell-{entity_id.replace(':', '-')}",
                 hx_swap="outerHTML",
@@ -1495,6 +1496,18 @@ def data_table(
     }});
   }}
 
+  // One source for the export link's column list: the columns the table shows, in order.
+  window.celerpSyncExportCols = function(t) {{
+    var keys = Array.from(t.querySelectorAll('thead th[data-key]'))
+      .filter(function(th) {{ return th.style.display !== 'none'; }})
+      .map(function(th) {{ return th.dataset.key; }});
+    document.querySelectorAll('a[href*="/inventory/export/csv"]').forEach(function(a) {{
+      var url = new URL(a.getAttribute('href'), window.location.origin);
+      url.searchParams.set('cols', keys.join(','));
+      a.setAttribute('href', url.pathname + url.search);
+    }});
+  }};
+
   // Apply visibility — accept optional live table so post-swap calls use the new DOM node
   function applyVis(liveTable) {{
     liveTable = liveTable || table;
@@ -1513,6 +1526,7 @@ def data_table(
         if (td) td.style.display = show ? '' : 'none';
       }});
     }});
+    window.celerpSyncExportCols(liveTable);
     localStorage.setItem(PAGE_KEY, JSON.stringify(prefs));
   }}
   applyVis();
@@ -1659,6 +1673,7 @@ def data_table(
       var newOrder = Array.from(thead_tr.querySelectorAll('th[data-key]')).map(function(h){{return h.dataset.key;}});
       try {{ localStorage.setItem(ORDER_KEY, JSON.stringify(newOrder)); }} catch(e) {{}}
       document.dispatchEvent(new CustomEvent('celerp:col-reorder', {{detail: {{order: newOrder}}}}));
+      window.celerpSyncExportCols(table);
       dragKey = null;
     }});
   }});

@@ -238,6 +238,75 @@ async def test_docs_csv_export(client):
     assert r4.status_code == 200
 
 
+@pytest.mark.asyncio
+async def test_export_docs_csv_ignores_pagination(client):
+    """The export takes the list's filters and ignores its pagination: every row the
+    filtered list holds is exported, whatever limit and offset the page carried."""
+    tok = await _reg(client)
+    await _doc(client, tok, doc_type="invoice", total=10, issue_date="2026-01-05")
+    await _doc(client, tok, doc_type="invoice", total=20, issue_date="2026-03-05")
+    await _doc(client, tok, doc_type="invoice", total=30, issue_date="2026-03-20")
+
+    page = await client.get("/docs?date_from=2026-03-01&limit=1&offset=0", headers=_h(tok))
+    assert page.status_code == 200
+    assert len(page.json()["items"]) == 1 and page.json()["total"] == 2
+
+    r = await client.get("/docs/export/csv?date_from=2026-03-01&limit=1&offset=1", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    rows = [l for l in r.text.strip().splitlines() if l][1:]
+    assert len(rows) == 2, rows
+    assert "2026-01-05" not in r.text
+    # Screen order: newest issue date first.
+    assert [row.split(",")[6] for row in rows] == ["30.0", "20.0"]
+
+
+@pytest.mark.asyncio
+async def test_export_docs_csv_applies_date_and_card_filters(client):
+    """Every filter the document list understands narrows the export the same way: the
+    All issued card, a status set, and a contact scope each export exactly their rows."""
+    tok = await _reg(client)
+    draft = await _doc(client, tok, doc_type="invoice", total=10)
+    final = await _doc(client, tok, doc_type="invoice", total=20, status="final")
+    other = await _doc(client, tok, doc_type="invoice", total=30, status="final", contact_id="c:2")
+
+    def _ids(text: str) -> set[str]:
+        return {l.split(",")[0] for l in text.strip().splitlines()[1:] if l}
+
+    r_issued = await client.get("/docs/export/csv?all_issued=1", headers=_h(tok))
+    assert r_issued.status_code == 200
+    assert _ids(r_issued.text) == {final, other}
+
+    r_status_in = await client.get("/docs/export/csv?status_in=draft", headers=_h(tok))
+    assert r_status_in.status_code == 200
+    assert _ids(r_status_in.text) == {draft}
+
+    r_contact = await client.get("/docs/export/csv?contact_id=c:2&all_issued=1", headers=_h(tok))
+    assert r_contact.status_code == 200
+    assert _ids(r_contact.text) == {other}
+
+    r_excl = await client.get("/docs/export/csv?exclude_status=draft", headers=_h(tok))
+    assert r_excl.status_code == 200
+    assert _ids(r_excl.text) == {final, other}
+
+
+@pytest.mark.asyncio
+async def test_export_docs_csv_columns_follow_cols_param(client):
+    """cols= picks and orders the exported columns; a column the export does not know
+    is rejected with a message naming it, never silently dropped."""
+    tok = await _reg(client)
+    await _doc(client, tok, doc_type="invoice", total=42)
+
+    r = await client.get("/docs/export/csv?cols=total,doc_number", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    lines = r.text.strip().splitlines()
+    assert lines[0] == "total,doc_number"
+    assert lines[1].startswith("42.0,"), lines[1]
+
+    r_bad = await client.get("/docs/export/csv?cols=doc_number,bogus_col", headers=_h(tok))
+    assert r_bad.status_code == 422
+    assert "bogus_col" in r_bad.json()["detail"]
+
+
 # ===========================================================================
 # routers/reports.py gaps
 # ===========================================================================

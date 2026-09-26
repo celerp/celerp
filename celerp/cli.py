@@ -16,7 +16,7 @@ from pathlib import Path
 import click
 
 from celerp.config import config_path as _config_path, read_config as _read_config, write_config as _write_config, resolve_install_order as _resolve_install_order, set_enabled_modules as _set_enabled_modules
-from celerp.db_url import sync_url as sync_engine_url
+from celerp.db_url import sync_url as _sync_url
 from celerp.services.auth import MIN_PASSWORD_LENGTH, validate_password
 
 # ── Config helpers ────────────────────────────────────────────────────────────
@@ -190,7 +190,7 @@ def _needs_ownership_fix(db_url: str) -> bool:
     if not parts:
         return False
     user = parts["user"]
-    sync_url = sync_engine_url(db_url)
+    sync_url = _sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
         engine = create_engine(sync_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
@@ -220,7 +220,7 @@ def _post_migration_grants(db_url: str) -> None:
     if not parts:
         return
     user = parts["user"]
-    sync_url = sync_engine_url(db_url)
+    sync_url = _sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
         engine = create_engine(sync_url)
@@ -299,7 +299,7 @@ def _config_to_env(cfg: dict) -> dict:
 
 def _test_db(db_url: str) -> str | None:
     """Try connecting to DB. Returns error string or None on success."""
-    sync_url = sync_engine_url(db_url)
+    sync_url = _sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
         engine = create_engine(sync_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
@@ -578,7 +578,7 @@ def _apply_migrations(db_url: str) -> None:
     # there — forward or back — and let alembic upgrade apply the rest.
     # False negatives are safe: the re-applied revision fails with
     # DuplicateColumn, which _run_upgrade_with_auto_stamp catches.
-    sync_url = sync_engine_url(db_url)
+    sync_url = _sync_url(db_url)
     engine = _sa.create_engine(sync_url, pool_pre_ping=True)
     try:
         inspector = _sa.inspect(engine)
@@ -641,7 +641,7 @@ def _stamped_revision(db_url: str) -> str | None:
     from alembic.runtime.migration import MigrationContext
     from sqlalchemy import create_engine
 
-    engine = create_engine(sync_engine_url(db_url), pool_pre_ping=True)
+    engine = create_engine(_sync_url(db_url), pool_pre_ping=True)
     try:
         with engine.connect() as conn:
             return MigrationContext.configure(conn).get_current_revision()
@@ -667,7 +667,7 @@ def _migration_lock(db_url: str):
 
     from celerp.db import _MIGRATION_LOCK_KEY
 
-    engine = create_engine(sync_engine_url(db_url), pool_pre_ping=True).execution_options(
+    engine = create_engine(_sync_url(db_url), pool_pre_ping=True).execution_options(
         isolation_level="AUTOCOMMIT"
     )
     try:
@@ -734,7 +734,7 @@ def _reconcile_after_migrate(db_url: str) -> None:
         set_meta,
     )
 
-    sync_url = sync_engine_url(db_url)
+    sync_url = _sync_url(db_url)
     engine = _sa.create_engine(sync_url, pool_pre_ping=True)
     try:
         with engine.begin() as conn:
@@ -1191,7 +1191,7 @@ def reset_password(email: str, password: str) -> None:
         sys.exit(1)
     ensure_database(cfg)
     db_url = cfg["database"]["url"]
-    sync_url = sync_engine_url(db_url)
+    sync_url = _sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
         from celerp.services.auth import hash_password

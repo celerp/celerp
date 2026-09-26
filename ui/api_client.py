@@ -1186,13 +1186,16 @@ async def upload_attachment(token: str, entity_id: str, file) -> dict:
         )).json()
 
 
-async def upload_item_file(token: str, entity_id: str, file) -> dict:
+async def upload_item_file(token: str, entity_id: str, file, *, as_hero: bool = False) -> dict:
+    """Attach ``file`` to an item; ``as_hero`` makes an image the item's preview even when it
+    already has one."""
     async with _bulk_api_client(token) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "upload")
         content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
         return _raise(await c.post(
             f"/items/{entity_id}/files",
+            params={"as_hero": "true"} if as_hero else None,
             files={"file": (filename, content, content_type)},
         )).json()
 
@@ -1291,12 +1294,10 @@ async def get_doc(token: str, entity_id: str) -> dict:
         return _raise(await c.get(f"/docs/{entity_id}")).json()
 
 
-async def get_doc_summary(token: str, doc_type: str = "") -> dict:
-    params = {}
-    if doc_type:
-        params["doc_type"] = doc_type
+async def get_doc_summary(token: str, params: dict | None = None) -> dict:
+    """Document counts and totals; ``params`` are the list filters the cards summarise."""
     async with _api_client(token) as c:
-        return _raise(await c.get("/docs/summary", params=params)).json()
+        return _raise(await c.get("/docs/summary", params=params or {})).json()
 
 
 async def _wrap_fields_changed(c, get_path: str, data: dict) -> dict:
@@ -2067,9 +2068,10 @@ async def get_list(token: str, entity_id: str) -> dict:
         return _raise(await c.get(f"/lists/{entity_id}")).json()
 
 
-async def get_list_summary(token: str) -> dict:
+async def get_list_summary(token: str, params: dict | None = None) -> dict:
+    """List status counts; ``params`` are the index filters the cards summarise."""
     async with _api_client(token) as c:
-        return _raise(await c.get("/lists/summary")).json()
+        return _raise(await c.get("/lists/summary", params=params or {})).json()
 
 
 async def create_list(token: str, data: dict) -> dict:
@@ -2654,6 +2656,12 @@ async def download_doc_file(token: str, entity_id: str, file_id: str) -> httpx.R
 async def download_item_file(token: str, entity_id: str, file_id: str) -> httpx.Response:
     async with _bulk_api_client(token) as c:
         return _raise(await c.get(f"/items/{entity_id}/files/{file_id}"))
+
+
+async def get_item_thumbnail(token: str, entity_id: str, file_id: str) -> httpx.Response:
+    """Fetch the list thumbnail bytes; a cloud-stored preview is followed to its URL."""
+    async with _bulk_api_client(token) as c:
+        return _raise(await c.get(f"/items/{entity_id}/files/{file_id}/thumbnail", follow_redirects=True))
 
 
 async def patch_location(token: str, location_id: str, data: dict) -> dict:

@@ -22,6 +22,7 @@ On delete:
 from __future__ import annotations
 
 import io
+import logging
 import uuid
 import zipfile
 from pathlib import Path as _Path
@@ -36,17 +37,31 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.attachments import (
     AttachmentType,
+    check_file_size,
+    get_or_create_thumbnail,
+    local_attachment_url_path,
     merge_attachments,
     remove_attachment,
     resolve_preview_image_id,
     store_upload,
 )
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.cost_visibility import restricted_field_keys
+from celerp.services.field_schema import get_effective_field_schema
 from celerp.services.permissions import require_permission
+from celerp_inventory.routes import flatten_item, get_item_projection
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 _VALID_TYPES: set[str] = {"image", "video", "certificate", "view_360"}
+
+# A bulk ZIP is checked against these before anything is extracted: every entry's
+# size is read from the archive directory, and extraction never produces more
+# than an entry declares.
+_BULK_MAX_ENTRIES = 5000
+_BULK_MAX_UNPACKED = 2 * 1024 * 1024 * 1024  # 2 GB
 
 
 async def _patch_item_attachments(
@@ -94,9 +109,7 @@ async def upload_attachment(
     if attachment_type is not None and attachment_type not in _VALID_TYPES:
         raise HTTPException(status_code=422, detail=f"Invalid attachment_type: {attachment_type!r}")
 
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
 
     try:
         att = await store_upload(
@@ -126,9 +139,7 @@ async def delete_attachment(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     """Remove one attachment from an item."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
 
     existing: list[dict] = row.state.get("attachments") or []
     updated = remove_attachment(existing, att_id)
@@ -152,9 +163,7 @@ async def set_preview_image(
     The referenced attachment must exist and have type == "image".
     Returns {"preview_image_id": att_id}.
     """
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
 
     attachments: list[dict] = row.state.get("attachments") or []
     target = next((a for a in attachments if a["id"] == att_id), None)
@@ -236,9 +245,21 @@ async def bulk_attach_files(
     import mimetypes as _mt
     from starlette.datastructures import Headers as _Headers
 
-    content = await file.read()
-    if not zipfile.is_zipfile(io.BytesIO(content)):
+    if not zipfile.is_zipfile(file.file):
         raise HTTPException(status_code=422, detail="Uploaded file is not a valid ZIP archive")
+    file.file.seek(0)
+    zf = zipfile.ZipFile(file.file)
+    entries = [info for info in zf.infolist() if not info.is_dir()]
+    if len(entries) > _BULK_MAX_ENTRIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The ZIP holds {len(entries)} files; split it into archives of at most {_BULK_MAX_ENTRIES}",
+        )
+    if sum(info.file_size for info in entries) > _BULK_MAX_UNPACKED:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The ZIP unpacks to more than {_BULK_MAX_UNPACKED // 1024 ** 3} GB; split it into smaller archives",
+        )
 
     rows = (
         await session.execute(
@@ -260,12 +281,13 @@ async def bulk_attach_files(
     # Track which SKUs have already had a hero assigned in this batch
     hero_assigned: set[str] = set()
 
-    with zipfile.ZipFile(io.BytesIO(content)) as zf:
-        for name in sorted(zf.namelist()):  # sorted for deterministic hero selection
+    with zf:
+        for info in sorted(entries, key=lambda i: i.filename):  # sorted for deterministic hero selection
+            name = info.filename
             # Check the BASENAME, not the full ZIP path, so nested junk like
             # sub/.DS_Store is skipped too (the full name doesn't start with '.') — F5.
             base = _Path(name).name
-            if name.endswith("/") or base.startswith("__") or base.startswith("."):
+            if base.startswith("__") or base.startswith("."):
                 continue
 
             stem = _Path(name).stem
@@ -290,7 +312,8 @@ async def bulk_attach_files(
                 continue
 
             try:
-                raw = zf.read(name)
+                check_file_size(info.file_size)  # before anything is decompressed
+                raw = zf.read(info)
                 guessed_mime = _mt.guess_type(name)[0] or "application/octet-stream"
                 upload = UploadFile(
                     file=io.BytesIO(raw),
@@ -370,26 +393,25 @@ async def upload_item_file(
     entity_id: str,
     file: UploadFile = File(...),
     document_tag: str | None = None,
+    as_hero: bool = False,
     company_id=Depends(get_current_company_id),
     _: None = require_permission("edit_inventory"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Upload a file and attach it to an item via item.file.attached event."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    """Upload a file and attach it to an item via item.file.attached event. An image becomes the
+    hero when the item has none yet, or when ``as_hero`` asks for it to replace the current one."""
+    row = await get_item_projection(session, company_id, entity_id)
 
     try:
         meta = await store_upload(company_id, file)
     except ValueError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
 
-    # First image uploaded → auto-set as hero if no hero exists
     existing_files: list[dict] = row.state.get("files", [])
     has_hero = any(f.get("is_hero") for f in existing_files)
     _is_image = meta.get("mime", "").startswith("image/")
-    is_hero = (not has_hero) and _is_image
+    is_hero = _is_image and (as_hero or not has_hero)
     # The upload area implies the type: an image attached to an inventory item is a product image, so
     # tag it as such by default (untagged-image uploads otherwise show up untagged everywhere).
     if document_tag is None and _is_image:
@@ -435,9 +457,7 @@ async def tag_item_file(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
     f = _get_item_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -467,9 +487,7 @@ async def update_item_file_description(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
     f = _get_item_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -499,9 +517,7 @@ async def set_item_file_hero(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Mark a file as the hero (featured) image. Must be an image MIME type."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
     target = _get_item_file(row.state.get("files", []), file_id)
     if not target.get("mime", "").startswith("image/"):
         raise HTTPException(status_code=422, detail="Hero can only be set on an image file")
@@ -531,9 +547,7 @@ async def delete_item_file(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
     f = _get_item_file(row.state.get("files", []), file_id)
     await emit_event(
         session,
@@ -551,31 +565,74 @@ async def delete_item_file(
     await session.commit()
 
 
+async def _assert_image_visible(session: AsyncSession, company_id, role: str, row: Projection, match: dict) -> None:
+    """An image file follows the image field's visibility for the item's category, the same
+    rule that strips the item's image ids, so a role denied the image cannot fetch it."""
+    if not str(match.get("mime", "")).startswith("image/"):
+        return
+    category = flatten_item(row.state, row.entity_id).get("category")
+    schema = await get_effective_field_schema(session, company_id, category=category)
+    if "thumbnail" in restricted_field_keys(role, schema):
+        raise HTTPException(status_code=404, detail="File not found")
+
+
+@router.get("/{entity_id}/files/{file_id}/thumbnail")
+async def item_file_thumbnail(
+    entity_id: str,
+    file_id: str,
+    company_id=Depends(get_current_company_id),
+    _: None = require_permission("view_inventory"),
+    role: str = Depends(get_current_role),
+    session: AsyncSession = Depends(get_session),
+):
+    """Serve the small JPEG preview of an image file for the item list.
+
+    The preview comes from storage under the id derived from the file; an image stored
+    before thumbnails existed gets one made on first view. Until that succeeds there is
+    no preview: the full original is never sent in its place."""
+    from fastapi.responses import Response
+    row = await get_item_projection(session, company_id, entity_id)
+    files = row.state.get("files") or []
+    atts = row.state.get("attachments") or []
+    match = _get_item_file(files + atts, file_id)
+    if not str(match.get("mime", "")).startswith("image/"):
+        raise HTTPException(status_code=404, detail="File is not an image")
+    await _assert_image_visible(session, company_id, role, row, match)
+    data = await get_or_create_thumbnail(str(company_id), match)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Thumbnail unavailable")
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
 @router.get("/{entity_id}/files/{file_id}")
 async def download_item_file(
     entity_id: str,
     file_id: str,
     company_id=Depends(get_current_company_id),
+    _: None = require_permission("view_inventory"),
+    role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ):
     from fastapi.responses import FileResponse
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row is None:
-        raise HTTPException(status_code=404, detail="Item not found")
+    row = await get_item_projection(session, company_id, entity_id)
     # Check new files first, fall back to old attachments
     files = row.state.get("files") or []
     atts = row.state.get("attachments") or []
     match = next((f for f in files + atts if f.get("id") == file_id), None)
     if match is None:
         raise HTTPException(status_code=404, detail="File not found")
+    await _assert_image_visible(session, company_id, role, row, match)
     url = match.get("url", "")
     # If stored as an absolute URL (cloud/S3 backend), redirect directly
     if url.startswith("http://") or url.startswith("https://"):
         from fastapi.responses import RedirectResponse as _Redir
         return _Redir(url)
-    from celerp.config import settings as _settings
-    dest = _settings.data_dir / url.lstrip("/")
-    if not dest.exists():
+    dest = local_attachment_url_path(str(company_id), url)
+    if dest is None:
         raise HTTPException(status_code=404, detail="File missing from disk")
     return FileResponse(
         path=str(dest),

@@ -108,6 +108,18 @@ def _is_image_mime(mime: str) -> bool:
     return mime.startswith("image/")
 
 
+def thumbnail_file_id(state: dict) -> str | None:
+    """Id of the image file the list thumbnail shows: the hero, else the first image."""
+    images = [
+        f for f in (state.get("files") or []) + (state.get("attachments") or [])
+        if _is_image_mime(str(f.get("mime") or ""))
+    ]
+    preview = state.get("preview_image_id")
+    if preview and any(f.get("id") == preview for f in images):
+        return preview
+    return images[0].get("id") if images else None
+
+
 def _maybe_migrate_attachments(current: dict) -> None:
     """Lazily migrate item.state["attachments"] (old format) to item.state["files"].
 

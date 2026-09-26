@@ -129,7 +129,7 @@ class TestListCRUD:
         # search by customer name
         r = await client.get("/lists?q=sakura", headers=_h(token))
         assert r.json()["total"] == 1
-        assert r.json()["items"][0]["customer_name"] == "Sakura Gems"
+        assert r.json()["items"][0]["customer"] == "Sakura Gems"
 
         # search by ref_id
         r = await client.get(f"/lists?q={ref}", headers=_h(token))
@@ -563,7 +563,7 @@ class TestListExportCSV:
         assert len(lines) == 2  # header + 1 data row
         header = lines[0]
         assert "id" in header
-        assert "customer_name" in header
+        assert "customer" in header.split(",")
         assert "CSV Corp" in lines[1]
 
     @pytest.mark.asyncio
@@ -682,6 +682,22 @@ class TestListTotalsRecalc:
         assert detail["subtotal"] == 10000
         assert detail["discount_amount"] == 1000
         assert detail["total"] == 9000
+
+    @pytest.mark.asyncio
+    async def test_patch_non_numeric_discount_is_rejected(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, line_items=[
+            {"name": "X", "quantity": 1, "unit_price": 10000, "line_total": 10000},
+        ], discount=500, tax=0)
+
+        r = await client.patch(f"/lists/{eid}", headers=_h(token), json={
+            "fields_changed": {"discount": {"old": 500, "new": "ten"}},
+        })
+        assert r.status_code == 422
+
+        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        assert detail["discount_amount"] == 500
+        assert detail["total"] == 9500
 
 
 @pytest.mark.asyncio

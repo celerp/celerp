@@ -27,7 +27,11 @@ Backend selection: driven by celerp.config.settings.storage_backend.
 
 from __future__ import annotations
 
+import asyncio
+import io
+import logging
 import mimetypes
+import time
 import uuid
 from pathlib import Path
 from typing import Literal, Protocol
@@ -80,7 +84,22 @@ def _stored_extension(mime: str) -> str:
     return _MIME_EXTENSIONS.get(mime, "")
 
 
-_MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
+MAX_FILE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
+def check_file_size(size: int) -> None:
+    """ValueError when a file of *size* bytes is over the attachment limit."""
+    if size > MAX_FILE_BYTES:
+        raise ValueError(f"File exceeds {MAX_FILE_BYTES // 1024 // 1024} MB limit")
+
+# Longest side of the JPEG list thumbnail derived from every image upload.
+_THUMB_MAX_SIDE = 160
+# Largest image (in pixels) a thumbnail is decoded from; bigger uploads keep their original and
+# get no preview, so one oversized upload can never pin the process on decoding it.
+_MAX_IMAGE_PIXELS = 40_000_000
+_THUMB_MIME = "image/jpeg"
+
+logger = logging.getLogger(__name__)
 
 
 def infer_attachment_type(mime: str) -> AttachmentType:
@@ -103,6 +122,14 @@ class StorageBackend(Protocol):
         mime: str,
     ) -> str:
         """Persist content and return the public URL."""
+        ...
+
+    async def read(self, company_id: str, url: str, max_bytes: int) -> bytes | None:
+        """Content this backend stored for ``company_id`` at ``url``, or None."""
+        ...
+
+    async def read_stored(self, company_id: str, stored_id: str, mime: str, max_bytes: int) -> bytes | None:
+        """Content this backend stored for ``company_id`` under ``stored_id``, or None."""
         ...
 
 
@@ -129,9 +156,33 @@ class LocalBackend:
         mime: str,
     ) -> str:
         dest_name = f"{att_id}{_stored_extension(mime)}"
-        dest = self._company_dir(company_id) / dest_name
+        root = self._company_dir(company_id).resolve()
+        dest = (root / dest_name).resolve() if _is_plain_name(att_id) else None
+        if dest is None or dest.parent != root:
+            raise ValueError(f"Invalid attachment id: {att_id!r}")
         dest.write_bytes(content)
         return f"/static/attachments/{company_id}/{dest_name}"
+
+    async def read(self, company_id: str, url: str, max_bytes: int) -> bytes | None:
+        """Read back a file this backend stored for ``company_id``, by its stored URL.
+
+        Any other URL, a missing file, or one larger than ``max_bytes`` yields None."""
+        return _read_local(local_attachment_url_path(company_id, url), max_bytes)
+
+    async def read_stored(self, company_id: str, stored_id: str, mime: str, max_bytes: int) -> bytes | None:
+        """Read back the file stored under ``stored_id``, or None when there is none."""
+        return _read_local(local_attachment_path(company_id, stored_id + _stored_extension(mime)), max_bytes)
+
+
+def _read_local(path: Path | None, max_bytes: int) -> bytes | None:
+    if path is None or path.stat().st_size > max_bytes:
+        return None
+    return path.read_bytes()
+
+
+def _is_plain_name(name: str) -> bool:
+    """A single file name: no separator of either platform and no dot reference."""
+    return bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name
 
 
 def local_attachment_path(company_id: str, filename: str) -> Path | None:
@@ -143,7 +194,7 @@ def local_attachment_path(company_id: str, filename: str) -> Path | None:
     caller serves a 404 rather than another tenant's file. This owns the
     on-disk layout shared with :class:`LocalBackend`.
     """
-    if not filename or filename in (".", "..") or "/" in filename or "\\" in filename:
+    if not _is_plain_name(filename):
         return None
     from celerp.config import settings  # lazy: settings not ready at import time
     root = (settings.data_dir / "static" / "attachments" / str(company_id)).resolve()
@@ -151,6 +202,18 @@ def local_attachment_path(company_id: str, filename: str) -> Path | None:
     if target.parent != root or not target.is_file():
         return None
     return target
+
+
+def local_attachment_url_path(company_id: str, url: str) -> Path | None:
+    """On-disk path of a locally stored attachment, from the URL recorded for it.
+
+    Only a URL inside this company's own attachment folder resolves; any other
+    URL yields None, so a stored URL can never point a read at another file."""
+    prefix = f"static/attachments/{company_id}/"
+    rel = str(url or "").lstrip("/")
+    if not rel.startswith(prefix):
+        return None
+    return local_attachment_path(company_id, rel[len(prefix):])
 
 
 # ── S3Backend ─────────────────────────────────────────────────────────────────
@@ -188,6 +251,8 @@ class S3Backend:
         content: bytes,
         mime: str,
     ) -> str:
+        if not _is_plain_name(att_id):
+            raise ValueError(f"Invalid attachment id: {att_id!r}")
         key = f"attachments/{company_id}/{att_id}{_stored_extension(mime)}"
 
         async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
@@ -198,14 +263,43 @@ class S3Backend:
                 ContentType=mime,
             )
 
-        # Construct public URL
+        return self._public_url(key)
+
+    def _public_url(self, key: str) -> str:
         if self._endpoint:
             # MinIO / DO Spaces / R2 custom endpoint
             base = self._endpoint.rstrip("/")
             return f"{base}/{self._bucket}/{key}"
-        else:
-            # AWS S3
-            return f"https://{self._bucket}.s3.amazonaws.com/{key}"
+        # AWS S3
+        return f"https://{self._bucket}.s3.amazonaws.com/{key}"
+
+    async def read(self, company_id: str, url: str, max_bytes: int) -> bytes | None:
+        """Read back an object this backend stored for ``company_id``, by its public URL.
+
+        Any other URL, or an object larger than ``max_bytes``, yields None."""
+        base = self._public_url(f"attachments/{company_id}/")
+        name = url[len(base):] if url.startswith(base) else ""
+        return await self._read_name(company_id, name, max_bytes)
+
+    async def read_stored(self, company_id: str, stored_id: str, mime: str, max_bytes: int) -> bytes | None:
+        """Read back the object stored under ``stored_id``, or None when there is none."""
+        return await self._read_name(company_id, stored_id + _stored_extension(mime), max_bytes)
+
+    async def _read_name(self, company_id: str, name: str, max_bytes: int) -> bytes | None:
+        if not _is_plain_name(name):
+            return None
+        async with _s3_client(self._endpoint, self._access_key, self._secret_key) as client:
+            try:
+                resp = await client.get_object(Bucket=self._bucket, Key=f"attachments/{company_id}/{name}")
+            except Exception as exc:
+                if getattr(exc, "response", {}).get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+                    return None
+                raise
+            if int(resp.get("ContentLength") or 0) > max_bytes:
+                return None
+            async with resp["Body"] as stream:
+                data = await stream.read(max_bytes + 1)
+        return data if len(data) <= max_bytes else None
 
 
 # ── Backend factory ───────────────────────────────────────────────────────────
@@ -244,8 +338,7 @@ async def store_upload(
     Callers pass attachment_type="view_360" for 360 images uploaded as image/jpeg.
     """
     content = await file.read()
-    if len(content) > _MAX_FILE_BYTES:
-        raise ValueError(f"File exceeds {_MAX_FILE_BYTES // 1024 // 1024} MB limit")
+    check_file_size(len(content))
 
     mime = file.content_type or (
         mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
@@ -259,7 +352,7 @@ async def store_upload(
 
     url = await get_backend().store(company_id, att_id, content, mime)
 
-    return {
+    meta = {
         "id": att_id,
         "type": att_type,
         "filename": filename,
@@ -267,6 +360,121 @@ async def store_upload(
         "size": len(content),
         "mime": mime,
     }
+    # The preview is best effort: the original is stored and returned whatever happens to
+    # the thumbnail, so a failed derivative never turns a completed upload into an error.
+    thumb = await asyncio.to_thread(make_thumbnail, content, mime)
+    if thumb is not None:
+        try:
+            await get_backend().store(company_id, thumbnail_id(att_id), thumb, _THUMB_MIME)
+        except Exception:
+            logger.warning("thumbnail store failed for attachment %s", att_id)
+    return meta
+
+
+def thumbnail_id(att_id: str) -> str:
+    """Storage id of the list thumbnail derived from attachment ``att_id``."""
+    return f"{att_id}_thumb"
+
+
+def make_thumbnail(content: bytes, mime: str) -> bytes | None:
+    """Return a JPEG thumbnail (longest side ``_THUMB_MAX_SIDE``) or None.
+
+    None for non-image mimes, for images above ``_MAX_IMAGE_PIXELS`` and for bytes
+    Pillow cannot decode: the original upload is kept either way and the list simply
+    shows no preview. Pillow decodes synchronously; callers on the event loop run this
+    in a thread.
+    """
+    if mime not in _IMAGE_MIMES:
+        return None
+    from PIL import Image, ImageOps
+
+    try:
+        with Image.open(io.BytesIO(content)) as im:
+            if im.width * im.height > _MAX_IMAGE_PIXELS:
+                logger.warning("thumbnail skipped: %sx%s image exceeds the pixel limit", im.width, im.height)
+                return None
+            # JPEG decodes straight to a reduced size; other formats ignore the hint.
+            im.draft("RGB", (_THUMB_MAX_SIDE, _THUMB_MAX_SIDE))
+            im.load()
+            # Honour the camera orientation tag so a portrait photo previews upright.
+            im = ImageOps.exif_transpose(im) or im
+            if im.mode in ("RGBA", "LA", "P"):
+                rgba = im.convert("RGBA")
+                flat = Image.new("RGB", rgba.size, (255, 255, 255))
+                flat.paste(rgba, mask=rgba.getchannel("A"))
+                im = flat
+            elif im.mode != "RGB":
+                im = im.convert("RGB")
+            im.thumbnail((_THUMB_MAX_SIDE, _THUMB_MAX_SIDE))
+            out = io.BytesIO()
+            im.save(out, format="JPEG", quality=82, optimize=True)
+            return out.getvalue()
+    except Exception:
+        logger.warning("thumbnail generation failed for %s upload", mime)
+        return None
+
+
+# Thumbnails are made on request at most this many at a time per process, so a list page full
+# of older images cannot hold several full-size originals in memory at once. Further views
+# wait their turn; one that waits too long gets no preview this time.
+_MAX_THUMBNAIL_JOBS = 2
+_THUMBNAIL_JOB_WAIT_S = 60
+_ORIGINAL_READ_TIMEOUT_S = 15
+_thumbnail_jobs = 0
+
+
+def _backend_holding(url: str) -> StorageBackend:
+    """The backend that stored the file at ``url``: cloud URLs belong to the configured
+    backend, anything else to the local attachment folder."""
+    return get_backend() if url.startswith(("http://", "https://")) else LocalBackend()
+
+
+async def get_or_create_thumbnail(company_id: str, attachment: dict) -> bytes | None:
+    """Return the list thumbnail bytes of a stored image attachment, or None.
+
+    The thumbnail is read from the backend that holds the original, under the id derived
+    from the attachment, so no recorded URL is ever followed. An image stored before
+    thumbnails existed gets one made from its original and stored on first request.
+    None, storing nothing, when the file is not an image, its original is not this
+    company's, the read fails or times out, the original does not decode, the thumbnail
+    cannot be stored, or no slot frees up in time. Views never change the item.
+    """
+    global _thumbnail_jobs
+    att_id = str(attachment.get("id") or "")
+    mime = attachment.get("mime")
+    if mime not in _IMAGE_MIMES or not _is_plain_name(att_id):
+        return None
+    backend = _backend_holding(str(attachment.get("url") or ""))
+    try:
+        existing = await backend.read_stored(company_id, thumbnail_id(att_id), _THUMB_MIME, MAX_FILE_BYTES)
+    except Exception:
+        logger.warning("thumbnail read failed for attachment %s", att_id)
+        return None
+    if existing is not None:
+        return existing
+    deadline = time.monotonic() + _THUMBNAIL_JOB_WAIT_S
+    while _thumbnail_jobs >= _MAX_THUMBNAIL_JOBS:
+        if time.monotonic() >= deadline:
+            return None
+        await asyncio.sleep(0.25)
+    _thumbnail_jobs += 1
+    try:
+        content = await asyncio.wait_for(
+            backend.read(company_id, str(attachment.get("url") or ""), MAX_FILE_BYTES),
+            _ORIGINAL_READ_TIMEOUT_S,
+        )
+        if content is None:
+            return None
+        thumb = await asyncio.to_thread(make_thumbnail, content, mime)
+        if thumb is None:
+            return None
+        await backend.store(company_id, thumbnail_id(att_id), thumb, _THUMB_MIME)
+        return thumb
+    except Exception:
+        logger.warning("thumbnail generation failed for attachment %s", att_id)
+        return None
+    finally:
+        _thumbnail_jobs -= 1
 
 
 def merge_attachments(existing: list[dict], new_entry: dict) -> list[dict]:

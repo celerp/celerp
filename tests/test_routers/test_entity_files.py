@@ -317,6 +317,65 @@ async def test_doc_file_download_resolves_data_dir(client):
         "GET /docs/{{entity_id}}/files/{{file_id}} route may be missing or broken."
     )
     assert r.content == fake_img
+
+
+async def _entity_with_file(client, h: dict, kind: str) -> tuple[str, str]:
+    """Create an entity of ``kind`` with one uploaded file; return (download path, entity id)."""
+    if kind == "contact":
+        r = await client.post("/crm/contacts", json={"name": "PathCo"}, headers=h)
+        base = f"/crm/contacts/{r.json()['id']}"
+    elif kind == "doc":
+        base = f"/docs/{await _create_draft_doc(client, h)}"
+    else:
+        r = await client.post(
+            "/items",
+            json={"status": "available", "sku": "PATH-1", "name": "Path item", "quantity": 1, "sell_by": "piece"},
+            headers=h,
+        )
+        base = f"/items/{r.json()['id']}"
+    r = await client.post(f"{base}/files", files={"file": ("a.pdf", _SMALL_PDF, "application/pdf")}, headers=h)
+    assert r.status_code == 200, r.text
+    return f"{base}/files/{r.json()['id']}", base.rsplit("/", 1)[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["contact", "doc", "item"])
+@pytest.mark.parametrize("planted", [
+    "/static/attachments/{other}/secret.pdf",
+    "/static/attachments/{cid}/../{other}/secret.pdf",
+    "/static/attachments/{cid}/../../../secret.pdf",
+    "/{other}/secret.pdf",
+])
+async def test_file_download_serves_only_the_companys_own_folder(client, session, kind, planted):
+    """A download reads only from the company's own attachments folder, whatever URL the
+    file entry carries; anything else is not found."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from celerp.config import settings
+    from celerp.models.projections import Projection
+
+    h = await _headers(client)
+    company_id = h["X-Company-Id"]
+    path, entity_id = await _entity_with_file(client, h, kind)
+    root = settings.data_dir / "static" / "attachments"
+    (root / "other-co").mkdir(parents=True, exist_ok=True)
+    (root / "other-co" / "secret.pdf").write_bytes(b"secret")
+    (settings.data_dir / "secret.pdf").write_bytes(b"secret")
+
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    state = dict(row.state)
+    files = [dict(f) for f in state["files"]]
+    files[0]["url"] = planted.format(other="other-co", cid=company_id)
+    state["files"] = files
+    row.state = state
+    flag_modified(row, "state")
+    await session.commit()
+
+    r = await client.get(path, headers=h)
+    assert r.status_code == 404
+    assert r.content != b"secret"
+
+
 # ── Item image auto-tagging ─────────────────────────────────────────────────────
 
 _SMALL_PNG = (b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06'

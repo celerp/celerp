@@ -214,6 +214,7 @@
     "documents.description_placeholder",
     "enum.inventory_type.service",
     "enum.vertical_tag.saas",
+    "field.label.thumbnail",
     "field.total",
     "file_tag.photos",
     "inv.u0001f4c1",

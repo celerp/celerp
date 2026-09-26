@@ -269,6 +269,43 @@ async def test_list_export_csv_streams(client):
         "Offending statements:\n" + "\n".join(full))
 
 
+@pytest.mark.asyncio
+async def test_export_lists_csv_matches_index_filters(client):
+    """The export narrows by every index filter (date window, status card, customer id search),
+    ignores limit/offset, keeps the index order, and still never reads a whole state row."""
+    t = await _register(client)
+    a = await _quotation(client, t, ref_id="EXP-A")
+    r = await client.post("/lists", headers=_h(t),
+                          json={"list_type": "quotation", "ref_id": "EXP-B", "customer_id": "cust:zebra-unique"})
+    assert r.status_code == 200, r.text
+
+    def _refs(text: str) -> list[str]:
+        return [l.split(",")[1] for l in text.strip().splitlines()[1:] if l]
+
+    with _sql_spy() as sql:
+        r_all = await client.get("/lists/export/csv?status=draft&limit=1&offset=1", headers=_h(t))
+    assert r_all.status_code == 200, r_all.text
+    assert _refs(r_all.text) == ["EXP-B", "EXP-A"], r_all.text
+    assert not _full_state_reads(sql)
+
+    r_window = await client.get("/lists/export/csv?date_from=2999-01-01", headers=_h(t))
+    assert r_window.status_code == 200
+    assert _refs(r_window.text) == []
+
+    r_cust = await client.get("/lists/export/csv?q=zebra-unique", headers=_h(t))
+    assert r_cust.status_code == 200
+    assert _refs(r_cust.text) == ["EXP-B"]
+
+    r_issued = await client.get("/lists/export/csv?all_issued=1", headers=_h(t))
+    assert r_issued.status_code == 200
+    assert _refs(r_issued.text) == []
+
+    r_bad = await client.get("/lists/export/csv?cols=ref_id,bogus_col", headers=_h(t))
+    assert r_bad.status_code == 422
+    assert "bogus_col" in r_bad.json()["detail"]
+    assert a
+
+
 # ── GET /lists/{id}/page : new bounded paged read ──────────────────────────────
 
 @pytest.mark.asyncio
@@ -408,3 +445,62 @@ async def test_line_page_patch_recomputes_totals_from_full_array(client):
     assert r.status_code == 200, r.text
     total = float((await _state(client, t, q)).get("total") or 0)
     assert total == pytest.approx(80.0), f"total {total} must sum the full array (80), not the page (40)"
+
+
+async def _emit_list_event(session, list_id: str, event_type: str, data: dict) -> None:
+    import uuid as _uuid
+    from sqlalchemy import select
+    from celerp.events.engine import emit_event
+    from celerp.models.company import Company
+
+    cid = (await session.execute(select(Company))).scalars().first().id
+    await emit_event(
+        session, company_id=cid, entity_id=list_id, entity_type="list", event_type=event_type, data=data,
+        actor_id=None, location_id=None, source="test", idempotency_key=str(_uuid.uuid4()), metadata_={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_converted_card_and_filter_agree_on_a_reopened_list(client, session):
+    """A converted list that was reopened still names what it was converted to, but it is no
+    longer converted: the card does not count it, and the list and export the card opens do
+    not show it either."""
+    t = await _register(client)
+    kept = await _quotation(client, t, ref_id="CONV-KEPT")
+    reopened = await _quotation(client, t, ref_id="CONV-REOPENED")
+    for list_id in (kept, reopened):
+        await _emit_list_event(session, list_id, "list.closed", {
+            "result": "converted", "converted_to": f"doc:for-{list_id}", "converted_to_type": "memo"})
+    await _emit_list_event(session, reopened, "list.reopened", {})
+
+    summary = (await client.get("/lists/summary", headers=_h(t))).json()
+    assert summary["converted_to_memo_count"] == 1
+
+    rows = (await client.get("/lists?converted_to_type=memo", headers=_h(t))).json()
+    assert [r["ref_id"] for r in rows["items"]] == ["CONV-KEPT"]
+    assert rows["total"] == 1
+
+    csv = (await client.get("/lists/export/csv?converted_to_type=memo", headers=_h(t))).text
+    assert [l.split(",")[1] for l in csv.strip().splitlines()[1:]] == ["CONV-KEPT"]
+
+
+@pytest.mark.asyncio
+async def test_list_csv_carries_the_customer_and_date_the_index_shows(client, session):
+    """A list with only a receiver shows the receiver as its customer, and a list with an issue
+    date is dated by it. The index row, the search and the CSV line all carry those same values."""
+    t = await _register(client)
+    list_id = await _quotation(client, t, ref_id="SHOWN-1")
+    await _emit_list_event(session, list_id, "list.patched",
+                           {"customer_name": "", "receiver": "Harbour Receiving", "issue_date": "2026-03-04"})
+
+    rows = (await client.get("/lists?q=harbour", headers=_h(t))).json()["items"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["customer"] == "Harbour Receiving"
+    assert row["date"] == "2026-03-04"
+
+    csv = (await client.get("/lists/export/csv?q=harbour", headers=_h(t))).text.strip().splitlines()
+    header = csv[0].split(",")
+    line = dict(zip(header, csv[1].split(",")))
+    assert line["customer"] == row["customer"]
+    assert line["date"] == row["date"]

@@ -106,3 +106,26 @@ async def test_gtin_rfid_epc_csv_round_trip(client):
     assert row.get("gtin") == gtin, f"export row must carry the stored gtin; got {row.get('gtin')!r}"
     assert row.get("rfid_epc") == epc, \
         f"export row must carry the stored rfid_epc; got {row.get('rfid_epc')!r}"
+
+
+@pytest.mark.asyncio
+async def test_item_export_cells_never_run_as_spreadsheet_formulas(client):
+    """A value that starts like a formula is written as text, so opening the export in a
+    spreadsheet shows it rather than running it."""
+    token = await _token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    sku = f"IDS-F-{uuid.uuid4().hex[:6]}"
+    await _create_item(client, headers, sku=sku, name='=HYPERLINK("http://example.test","x")',
+                       description="@SUM(A1)")
+
+    r = await client.get("/items/export/csv", params={"cols": "sku,name,description"}, headers=headers)
+    assert r.status_code == 200, r.text
+    rows = [row for row in csv.DictReader(io.StringIO(r.text)) if row["sku"] == sku]
+    assert rows == [{"sku": sku, "name": '\'=HYPERLINK("http://example.test","x")', "description": "'@SUM(A1)"}]
+
+
+def test_csv_line_guards_the_header_too():
+    from celerp.services.csv_export import csv_line
+
+    assert csv_line(["=cmd", "ok"]) == "'=cmd,ok\r\n"
+    assert csv_line(["a", "b"], {"a": "-1+1", "b": 5}) == "'-1+1,5\r\n"

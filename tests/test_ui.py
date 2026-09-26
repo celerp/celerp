@@ -22,6 +22,7 @@ Patching rules:
 from __future__ import annotations
 
 import base64
+import html
 import json
 import os
 import pathlib
@@ -999,7 +1000,7 @@ class TestCompanySwitcher:
 _COMPANY = {"name": "Test Corp", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01", "current_role": "owner", "settings": {}}
 _VALUATION = {"item_count": 10, "active_item_count": 8, "total_cost": 5000.0, "total_retail": 8000.0,
               "total_wholesale": 6000.0, "cost_total": 5000.0, "retail_total": 8000.0, "wholesale_total": 6000.0}
-_DOC_SUMMARY = {"ar_outstanding": 100.0, "ar_total": 500.0, "ar_gross": 500.0, "invoice_count": 3}
+_DOC_SUMMARY = {"ar_outstanding": 100.0, "ar_total": 500.0, "invoice_count": 3}
 _COMPANIES = [{"company_id": "c1", "company_name": "Test Corp", "role": "admin"}]
 _CONTACTS = [{"entity_id": "ct:1", "name": "Alice", "phone": "555", "email": "a@b.c",
               "tax_id": "T1", "credit_limit": 1000, "contact_type": "customer"}]
@@ -1213,6 +1214,26 @@ class TestInventoryPage:
         _pre, _post = body.split("cell-gc-123-status", 1)
         avail_cell = _pre.rsplit("<td", 1)[1] + _post.split("</td>", 1)[0]
         assert "badge--available" in avail_cell and "/docs/" not in avail_cell
+
+    @pytest.mark.asyncio
+    async def test_sold_view_total_card_shows_money(self, ui_client):
+        """The sold view's Total card carries the money total of the whole filtered set,
+        and names how many sold rows have no recorded price."""
+        sold = {**_ITEM, "entity_id": "gc:200", "status": "sold", "sold_price": 4200.0}
+        resp = {"items": [sold], "total": 1, "sold_total": 4200.0, "sold_total_missing": 2}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value=resp)),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            r = await ui_client.get("/inventory?status=sold", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        card = html.split('class="status-cards"', 1)[1].split("</div>", 1)[0]
+        assert 'status-card-total' in card, "Total card must carry the money total"
+        assert "4,200.00" in card
+        assert "2 without a price" in card
 
     @pytest.mark.asyncio
     async def test_inventory_on_memo_scope_shows_quoted_value(self, ui_client):
@@ -3511,7 +3532,7 @@ class TestCollapsibleSidebar:
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
-            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -3530,7 +3551,7 @@ class TestCollapsibleSidebar:
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
-            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -3544,7 +3565,7 @@ class TestCollapsibleSidebar:
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
-            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -3557,7 +3578,7 @@ class TestCollapsibleSidebar:
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
-            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -3587,7 +3608,7 @@ class TestCollapsibleSidebar:
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
-            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -3754,7 +3775,7 @@ class TestGlobalSearch:
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
-            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_total": 0})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
         ):
@@ -3889,6 +3910,61 @@ class TestCSVExport:
             r = await ui_client.get("/inventory/export/csv", cookies=_authed())
         assert r.status_code == 200
         assert b"sku" in r.content or b"attachment" in r.headers.get("content-disposition", "").encode()
+
+    @pytest.mark.asyncio
+    async def test_export_link_encodes_full_state(self, ui_client):
+        """Export what you see: the inventory Export link carries the page's whole filter,
+        sort and column state, and each export route forwards that state to the API with
+        the pagination stripped."""
+        with (
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0, "category_counts": {}})),
+        ):
+            r = await ui_client.get(
+                "/inventory?status=sold&category=Rings&q=ruby&sort=name&dir=asc&cols=name,sku&page=2",
+                cookies=_authed())
+        assert r.status_code == 200
+        href = re.search(r'href="(/inventory/export/csv[^"]*)"', r.text)
+        assert href, "Export CSV link missing"
+        link = html.unescape(href.group(1))
+        for part in ("status=sold", "category=Rings", "q=ruby", "sort=name", "dir=asc", "cols=name%2Csku"):
+            assert part in link, link
+        assert "page=" not in link
+
+        items_mock = AsyncMock(return_value=b"name,sku\n")
+        with patch("ui.api_client.export_items_csv", items_mock):
+            r = await ui_client.get(
+                "/inventory/export/csv?status=sold&category=Rings&q=ruby&sort=name&dir=asc&cols=name,sku&page=3&per_page=25",
+                cookies=_authed())
+        assert r.status_code == 200
+        params = items_mock.call_args.args[1]
+        assert params == {"status": "sold", "category": "Rings", "q": "ruby", "sort": "name",
+                          "dir": "asc", "cols": "name,sku"}, params
+
+        async def _stream():
+            yield b"entity_id\n"
+
+        docs_mock = AsyncMock(return_value=(_stream(), {}))
+        with patch("ui.api_client.export_docs_csv", docs_mock):
+            r = await ui_client.get(
+                "/docs/export/csv?type=invoice&status_in=paid,partial&contact_id=c:9&preset=custom"
+                "&from=2026-01-01&to=2026-02-01&page=2&per_page=25&sort=total&dir=asc",
+                cookies=_authed())
+        assert r.status_code == 200
+        params = docs_mock.call_args.args[1]
+        assert params == {"doc_type": "invoice", "status_in": "paid,partial", "contact_id": "c:9",
+                          "date_from": "2026-01-01", "date_to": "2026-02-01",
+                          "sort": "total", "dir": "asc"}, params
+
+        lists_mock = AsyncMock(return_value=(_stream(), {}))
+        with patch("ui.api_client.export_lists_csv", lists_mock):
+            r = await ui_client.get(
+                "/lists/export/csv?type=quotation&preset=custom&from=2026-01-01&to=2026-02-01&page=2",
+                cookies=_authed())
+        assert r.status_code == 200
+        params = lists_mock.call_args.args[1]
+        assert params == {"list_type": "quotation", "all_issued": "1",
+                          "date_from": "2026-01-01", "date_to": "2026-02-01"}, params
 
     @pytest.mark.asyncio
     async def test_docs_export_csv_returns_csv(self, ui_client):
@@ -10777,6 +10853,20 @@ class TestWebAccessPlansAd:
         assert "account-gate-host" in r.text
 
     @pytest.mark.asyncio
+    async def test_claim_notice_shows_on_the_page_once(self, ui_client):
+        """A known claim notice renders its translated copy; an unknown code
+        in the address shows nothing."""
+        with self._mocks(tier="cloud", public_url="https://abc.celerp.com"):
+            r = await ui_client.get("/settings/cloud?notice=shopify_store_not_linked",
+                                    cookies=_authed(role="admin"))
+            assert r.status_code == 200
+            assert "Your Shopify store was not connected" in r.text
+            r = await ui_client.get("/settings/cloud?notice=<b>made-up</b>",
+                                    cookies=_authed(role="admin"))
+        assert "made-up" not in r.text
+        assert "Your Shopify store was not connected" not in r.text
+
+    @pytest.mark.asyncio
     async def test_paid_tier_no_free_tier_note_shows_backup_card(self, ui_client):
         with self._mocks(tier="cloud", public_url="https://abc.celerp.com"):
             r = await ui_client.get("/settings/cloud", cookies=_authed(role="admin"))
@@ -13637,8 +13727,8 @@ class TestDocumentsOverhaul:
         """GET /docs?type=invoice passes doc_type to get_doc_summary."""
         captured = {}
         original_summary = AsyncMock(return_value=_DOC_SUMMARY)
-        async def _capture_summary(token, doc_type=""):
-            captured["doc_type"] = doc_type
+        async def _capture_summary(token, params=None):
+            captured["doc_type"] = (params or {}).get("doc_type")
             return await original_summary(token)
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -14420,11 +14510,11 @@ class TestBugFixesBatch25Mar:
 
     def test_list_items_sku_filter(self):
         """API list_items route accepts sku param for exact matching."""
-        import inspect
-        from celerp_inventory.routes import list_items
-        sig = inspect.signature(list_items)
-        assert "sku" in sig.parameters
-        assert "barcode" in sig.parameters
+        from dataclasses import fields
+        from celerp_inventory.routes import ItemListFilters
+        names = {f.name for f in fields(ItemListFilters)}
+        assert "sku" in names
+        assert "barcode" in names
 
     def test_catalog_lookup_tries_barcode(self):
         """Catalog lookup should try barcode match between SKU and general search."""
@@ -17795,6 +17885,36 @@ class TestCelerpAccountSurface:
         assert r.headers["hx-redirect"] == "/settings/cloud"
 
     @pytest.mark.asyncio
+    async def test_claim_connected_carries_a_known_notice_to_the_page(self, ui_client):
+        with patch("ui.api_client.cloud_claim",
+                   new=AsyncMock(return_value={"connected": True, "instance_id": "i-1",
+                                               "notice": "shopify_store_not_linked"})):
+            r = await ui_client.post("/settings/cloud-claim",
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
+                                     cookies=_authed())
+        assert r.status_code == 204
+        assert r.headers["hx-redirect"] == "/settings/cloud?notice=shopify_store_not_linked"
+        with patch("ui.api_client.cloud_claim",
+                   new=AsyncMock(return_value={"connected": True, "instance_id": "i-1",
+                                               "notice": "something_new"})):
+            r = await ui_client.post("/settings/cloud-claim",
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
+                                     cookies=_authed())
+        assert r.headers["hx-redirect"] == "/settings/cloud"
+
+    @pytest.mark.asyncio
+    async def test_claim_linked_shows_the_notice_with_the_handover(self, ui_client):
+        with patch("ui.api_client.cloud_claim",
+                   new=AsyncMock(return_value={"linked": True, "instance_id": "i-1",
+                                               "notice": "shopify_store_not_linked"})):
+            r = await ui_client.post("/settings/cloud-claim",
+                                     data={"claim_email": "o@shop.example", "otp_code": "123456"},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert b"Subscription linked" in r.content
+        assert b"Your Shopify store was not connected" in r.content
+
+    @pytest.mark.asyncio
     async def test_claim_timeout_explains_the_link_state(self, ui_client):
         """A claim that hits the UI deadline is explained in link terms (the
         link may already be done; restart or retry), never with the generic
@@ -20275,3 +20395,174 @@ class TestCommercialPartnerManagedInvariant:
         detail = {"instance_id": "inst-1", "limit": 100, "tier": "ai"}
         html = to_xml(_quota_exceeded_card(detail, user_bubble="", lang="en"))
         assert "/subscribe/topup" not in html
+
+
+class TestInventoryThumbnailColumn:
+    """The inventory list's thumbnail column: rendered from the item's
+    thumbnail_file_id, and refreshed in place after a drop or click upload."""
+
+    _SCHEMA_WITH_THUMB = [
+        {"key": "thumbnail", "label": "Image", "type": "image", "editable": True,
+         "label_key": "field.label.thumbnail", "show_in_table": False},
+        *_SCHEMA,
+    ]
+
+    def _patches(self, items):
+        import contextlib
+        stack = contextlib.ExitStack()
+        for cm in (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=self._SCHEMA_WITH_THUMB)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": items, "total": len(items)})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+        ):
+            stack.enter_context(cm)
+        return stack
+
+    @pytest.mark.asyncio
+    async def test_inventory_list_thumbnail_column_renders(self, ui_client):
+        with_image = {**_ITEM, "thumbnail_file_id": "f-1"}
+        without = {**_ITEM, "entity_id": "gc:456", "name": "Bare", "thumbnail_file_id": None}
+        with self._patches([with_image, without]):
+            r = await ui_client.get(
+                "/inventory/content?cols=thumbnail,name",
+                cookies=_authed(),
+                headers={"HX-Request": "true"},
+            )
+        assert r.status_code == 200, r.text[:500]
+        html = r.text
+        assert 'src="/items/gc:123/files/f-1/thumbnail"' in html
+        assert 'class="cell-thumbnail"' in html and 'loading="lazy"' in html
+        assert 'id="img-cell-gc-456"' in html and "cell-image-empty" in html
+        assert 'hx-post="/api/items/gc:123/thumbnail"' in html
+        assert "/attachments" not in html
+
+    @pytest.mark.asyncio
+    async def test_list_thumbnail_upload_returns_cell(self, ui_client):
+        with (
+            patch("ui.api_client.upload_item_file", new=AsyncMock(return_value={"id": "f-9"})) as up,
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "thumbnail_file_id": "f-9"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/thumbnail",
+                files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200, r.text[:500]
+        assert up.await_count == 1
+        assert 'id="img-cell-gc-123"' in r.text
+        assert 'src="/items/gc:123/files/f-9/thumbnail"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_list_thumbnail_upload_error_keeps_cell_with_message(self, ui_client):
+        from ui.api_client import APIError
+        with (
+            patch("ui.api_client.upload_item_file", new=AsyncMock(side_effect=APIError(413, "File exceeds 50 MB limit"))),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "thumbnail_file_id": None})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/thumbnail",
+                files={"file": ("big.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert 'id="img-cell-gc-123"' in r.text
+        assert "File exceeds 50 MB limit" in r.text
+
+    @pytest.mark.asyncio
+    async def test_list_thumbnail_upload_is_hero_and_follows_role(self, ui_client):
+        """A drop into the cell asks the API to make the image the preview, and the returned
+        cell is a drop target only for a role that may edit inventory."""
+        up = AsyncMock(return_value={"id": "f-9"})
+        with (
+            patch("ui.api_client.upload_item_file", new=up),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "thumbnail_file_id": "f-9"})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            owner = await ui_client.post(
+                "/api/items/gc:123/thumbnail",
+                files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+                cookies=_authed(),
+            )
+            viewer = await ui_client.post(
+                "/api/items/gc:123/thumbnail",
+                files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+                cookies=_authed(role="viewer"),
+            )
+        assert up.call_args.kwargs.get("as_hero") is True
+        assert owner.status_code == 200 and 'hx-post="/api/items/gc:123/thumbnail"' in owner.text
+        assert viewer.status_code == 200 and 'id="cell-gc-123-thumbnail"' in viewer.text
+        assert "hx-post" not in viewer.text and 'src="/items/gc:123/files/f-9/thumbnail"' in viewer.text
+
+    @pytest.mark.asyncio
+    async def test_list_thumbnail_upload_failure_returns_a_cell(self, ui_client):
+        """When the item cannot be re-read the response is still the image cell carrying
+        the message, so the swap keeps the row's shape."""
+        from ui.api_client import APIError
+        with (
+            patch("ui.api_client.upload_item_file", new=AsyncMock(return_value={"id": "f-9"})),
+            patch("ui.api_client.get_item", new=AsyncMock(side_effect=APIError(404, "Item not found"))),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/thumbnail",
+                files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+                cookies=_authed(), headers={"HX-Request": "true"},
+            )
+        assert r.status_code == 200
+        assert r.text.lstrip().startswith("<td"), r.text[:200]
+        assert 'class="cell-error"' in r.text and "Item not found" in r.text
+        assert "hx-post" not in r.text
+
+
+class TestReviewedListRoutes:
+    @pytest.mark.asyncio
+    async def test_page_parameter_is_guarded(self, ui_client):
+        """A page value that is not a positive integer is page 1, never a server error."""
+        with (
+            patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={})),
+        ):
+            for path in ("/docs?type=invoice&page=abc", "/docs?type=invoice&page=-3",
+                         "/docs/search?type=invoice&page=abc", "/lists?type=quotation&page=abc",
+                         "/lists/search?type=quotation&page=x"):
+                r = await ui_client.get(path, cookies=_authed())
+                assert r.status_code == 200, (path, r.status_code)
+
+    @pytest.mark.asyncio
+    async def test_export_failures_are_error_responses_not_downloads(self, ui_client):
+        """A refused or invalid export answers with the API's status and message as text,
+        never a downloaded CSV that says error."""
+        from ui.api_client import APIError
+        err = AsyncMock(side_effect=APIError(422, "Unknown export column(s): bogus"))
+        with (
+            patch("ui.api_client.export_items_csv", new=err),
+            patch("ui.api_client.export_docs_csv", new=err),
+            patch("ui.api_client.export_lists_csv", new=err),
+        ):
+            for path in ("/inventory/export/csv?cols=bogus", "/docs/export/csv?type=invoice",
+                         "/lists/export/csv?type=quotation"):
+                r = await ui_client.get(path, cookies=_authed())
+                assert r.status_code == 422, (path, r.status_code)
+                assert "content-disposition" not in {k.lower() for k in r.headers}, path
+                assert r.headers["content-type"].startswith("text/plain"), path
+                assert "bogus" in r.text
+
+    @pytest.mark.asyncio
+    async def test_inventory_export_never_sends_image_columns(self, ui_client):
+        """The image column is a list-only preview: it is dropped from the export whether
+        the URL names the columns or the saved preference does."""
+        from ui.routes.inventory import _export_columns
+        meta = ([{"key": "sku", "type": "text"}, {"key": "name", "type": "text"},
+                 {"key": "thumbnail", "type": "image"}], {}, {"": ["thumbnail", "sku", "name"]}, {}, [], [], {})
+        with patch("ui.routes.inventory._load_inventory_view_metadata", new=AsyncMock(return_value=meta)):
+            assert await _export_columns("tok", {"cols": ["thumbnail", "name", "sku"]}) == ["name", "sku"]
+            resolved = await _export_columns("tok", {})
+        assert "thumbnail" not in resolved and "sku" in resolved and "name" in resolved

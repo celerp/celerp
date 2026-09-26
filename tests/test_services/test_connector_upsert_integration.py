@@ -103,7 +103,7 @@ async def test_quickbooks_invoice_creates_doc(use_test_session):
     cid = await _seed_company(session, "QbInv")
     inv = {
         "Id": "77", "DocNumber": "INV-77", "Balance": 0,
-        "TotalAmt": 30.0,
+        "TotalAmt": 30.0, "CurrencyRef": {"value": "USD"}, "ExchangeRate": 35.5,
         "Line": [
             {"DetailType": "SalesItemLineDetail", "Amount": 30.0, "Description": "Service",
              "SalesItemLineDetail": {"Qty": 3, "UnitPrice": 10.0}},
@@ -116,6 +116,7 @@ async def test_quickbooks_invoice_creates_doc(use_test_session):
     assert len(st["line_items"]) == 1         # subtotal row skipped
     assert st["line_items"][0]["quantity"] == 3.0
     assert st["quickbooks_invoice_id"] == "77"
+    assert st["conversion_rate"] == 35.5
 
 
 @pytest.mark.asyncio
@@ -181,7 +182,7 @@ async def test_xero_invoice_creates_doc(use_test_session):
     cid = await _seed_company(session, "XeroInv")
     inv = {
         "InvoiceID": "abc-123", "InvoiceNumber": "X-1", "Status": "AUTHORISED",
-        "Total": 42.0, "AmountDue": 42.0,
+        "Total": 42.0, "AmountDue": 42.0, "CurrencyCode": "USD", "CurrencyRate": 0.025,
         "LineItems": [{"Description": "Item", "Quantity": 1, "UnitAmount": 42.0, "LineAmount": 42.0}],
     }
     assert await u.upsert_invoice_from_xero(str(cid), inv) == "created"
@@ -189,6 +190,7 @@ async def test_xero_invoice_creates_doc(use_test_session):
     assert st["status"] == "open"             # AUTHORISED (not PAID) -> open
     assert st["amount_outstanding"] == 42.0
     assert st["xero_invoice_id"] == "abc-123"
+    assert st["conversion_rate"] == 40.0
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal
 
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
 
 
 def _recalc_list_totals(state: dict) -> dict:
@@ -19,19 +19,15 @@ def _recalc_list_totals(state: dict) -> dict:
     items = state.get("line_items", [])
 
     def _li_amount(i: dict):
-        # An explicit line_total wins (it may be a per-line discount below quantity*unit_price);
-        # otherwise fall back to quantity*unit_price so a priced line still contributes.
-        lt = i.get("line_total")
-        if lt not in (None, ""):
-            return to_decimal(lt or 0)
-        return to_decimal(i.get("quantity", 0) or 0) * to_decimal(i.get("unit_price", 0) or 0)
+        return document_line_amount(i, currency) or to_decimal(0)
 
     subtotal = round_money(sum((_li_amount(i) for i in items), to_decimal(0)), currency)
     state["subtotal"] = to_stored_float(subtotal)
 
-    discount = to_decimal(state.get("discount", 0) or 0)
-    discount_type = state.get("discount_type", "flat")
-    discount_amount = round_money(subtotal * discount / 100 if discount_type == "percentage" else discount, currency)
+    # Always from the inputs: the stored discount_amount is this function's own previous output.
+    discount_amount = discount_from_inputs(state, subtotal, currency)
+    if discount_amount is None:
+        raise ValueError("Discount must be a number")
     state["discount_amount"] = to_stored_float(discount_amount)
 
     taxable = subtotal - discount_amount

@@ -131,6 +131,76 @@ async def test_items_export_csv_filters(client):
     assert len(lines) == 1  # header only
 
 
+@pytest.mark.asyncio
+async def test_export_items_csv_uses_list_pipeline(client):
+    """The export is the inventory list without its page: the same status default (sold and
+    archived hidden), the same search grammar (comma = OR), the same skus filter and the same
+    sort, with limit/offset ignored."""
+    tok = await _reg(client)
+    await _item(client, tok, name="Beta Gadget", sku="PIPE-B", category="Gadgets")
+    await _item(client, tok, name="Alpha Gadget", sku="PIPE-A", category="Gadgets")
+    sold = await _item(client, tok, name="Gone Gadget", sku="PIPE-S", category="Gadgets")
+    r = await client.post(f"/items/{sold}/status", headers=_h(tok), json={"new_status": "sold"})
+    assert r.status_code == 200, r.text
+
+    def _skus(text: str) -> list[str]:
+        reader = _csv_reader(text)
+        return [row["sku"] for row in reader]
+
+    r_default = await client.get("/items/export/csv?category=Gadgets&sort=name&dir=asc&limit=1&offset=1", headers=_h(tok))
+    assert r_default.status_code == 200, r_default.text
+    assert _skus(r_default.text) == ["PIPE-A", "PIPE-B"]
+
+    r_sold = await client.get("/items/export/csv?category=Gadgets&status=sold", headers=_h(tok))
+    assert r_sold.status_code == 200
+    assert _skus(r_sold.text) == ["PIPE-S"]
+
+    r_or = await client.get("/items/export/csv?q=PIPE-A,PIPE-B&sort=name&dir=desc", headers=_h(tok))
+    assert r_or.status_code == 200
+    assert _skus(r_or.text) == ["PIPE-B", "PIPE-A"]
+
+    r_skus = await client.get("/items/export/csv?skus=PIPE-A", headers=_h(tok))
+    assert r_skus.status_code == 200
+    assert _skus(r_skus.text) == ["PIPE-A"]
+
+
+async def _grant_export(client, admin_token: str, role: str = "viewer") -> None:
+    """Give a role import_export_data so the export's column stripping can be exercised
+    on a role that still lacks the cost permissions."""
+    r = await client.patch(
+        "/companies/me/role-permissions",
+        json={"perm_key": "import_export_data", "role_key": role, "granted": True},
+        headers=_h(admin_token),
+    )
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_export_items_csv_respects_visible_columns_and_visibility(client, session):
+    """cols= exports exactly the columns the screen shows, in order; an unknown column is a
+    422 naming it; a column the role may not see is left out."""
+    admin = await _reg(client)
+    viewer = await _user_with_role(client, session, admin, "viewer")
+    await _grant_export(client, admin)
+    await _item(client, admin, name="ColWidget", sku="COL-1", cost_price=50.0, quantity=3)
+
+    r = await client.get("/items/export/csv?cols=sku,name,cost_price", headers=_h(admin))
+    assert r.status_code == 200, r.text
+    lines = r.text.strip().splitlines()
+    assert lines[0] == "sku,name,cost_price"
+    assert lines[1] == "COL-1,ColWidget,50.0"
+
+    r_bad = await client.get("/items/export/csv?cols=sku,no_such_column", headers=_h(admin))
+    assert r_bad.status_code == 422
+    assert "no_such_column" in r_bad.json()["detail"]
+
+    r_viewer = await client.get("/items/export/csv?cols=sku,name,cost_price", headers=_h(viewer))
+    assert r_viewer.status_code == 200, r_viewer.text
+    v_lines = r_viewer.text.strip().splitlines()
+    assert v_lines[0] == "sku,name"
+    assert "50.0" not in r_viewer.text
+
+
 # ---------------------------------------------------------------------------
 # Export CSV — UTC timestamp contract
 # ---------------------------------------------------------------------------
@@ -235,6 +305,7 @@ async def test_export_csv_strips_cost_price_for_role_without_permission(client, 
     while present for the admin who set them."""
     admin = await _reg(client)
     viewer = await _user_with_role(client, session, admin, "viewer")
+    await _grant_export(client, admin)
     await _item(client, admin, name="CostWidget", sku="CW-1",
                 cost_price=50.0, wholesale_price=75.0, quantity=4)
 
@@ -273,6 +344,7 @@ async def test_export_csv_strips_landed_cost_column_for_role_without_permission(
     await session.commit()
 
     viewer = await _user_with_role(client, session, admin, "viewer")
+    await _grant_export(client, admin)
     await _item(client, admin, name="LandedWidget", sku="LW-1",
                 cost_price=50.0, landed_price=62.0, quantity=4)
 
@@ -351,3 +423,27 @@ async def test_list_items_search_case_insensitive(client):
     r = await client.get("/items?q=casesensitivetest", headers=h)
     assert r.status_code == 200
     assert any(i.get("name") == "CaseSensitiveTest" for i in r.json()["items"])
+
+
+@pytest.mark.asyncio
+async def test_export_items_csv_accepts_category_attribute_in_all_view(client):
+    """With no category filter the All view's column manager offers every category's
+    attribute columns, so the export accepts them too and fills them from the item."""
+    tok = await _reg(client)
+    r = await client.patch("/companies/me", headers=_h(tok), json={"settings": {"category_schemas": {
+        "Stones": [{"key": "grade", "label": "Grade", "type": "select", "options": ["A", "B"],
+                    "editable": True, "required": False}],
+    }}})
+    assert r.status_code == 200, r.text
+    r = await client.post("/items", headers=_h(tok), json={
+        "status": "available", "sku": "STONE-1", "name": "Graded", "sell_by": "piece", "quantity": 1,
+        "category": "Stones", "attributes": {"grade": "A"},
+    })
+    assert r.status_code == 200, r.text
+
+    r = await client.get("/items/export/csv?cols=sku,grade&skus=STONE-1", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    assert r.text.strip().splitlines() == ["sku,grade", "STONE-1,A"], r.text
+
+    r = await client.get("/items/export/csv?cols=sku,thumbnail&skus=STONE-1", headers=_h(tok))
+    assert r.status_code == 422 and "thumbnail" in r.json()["detail"], r.text

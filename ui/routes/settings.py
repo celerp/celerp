@@ -2090,14 +2090,17 @@ def setup_routes(app):
         if err := data.get("error"):
             return _cloud_relay_unconnected(iid, error=err)
 
+        notice = data.get("notice")
+        notice = notice if notice in _CLAIM_NOTICES else None
         if data.get("connected"):
             # Same as cloud_activate: connecting changes the whole page, reload it.
-            return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud"})
+            target = f"/settings/cloud?notice={notice}" if notice else "/settings/cloud"
+            return Response(status_code=204, headers={"HX-Redirect": target})
 
         # The account link is complete. If bounded activation was not
         # confirmed inline, Connect (or restart) safely redeems the same durable
         # proof; there is no background mutation to poll.
-        return _cloud_link_handover(iid)
+        return _cloud_link_handover(iid, notice=claim_notice_text(notice))
 
     @app.post("/settings/cloud-disconnect")
     async def cloud_disconnect(request: Request):
@@ -3668,10 +3671,20 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
 
 
 
-def _cloud_link_handover(iid: str) -> FT:
+# Relay claim notices the app knows how to explain, keyed to their copy.
+_CLAIM_NOTICES = {"shopify_store_not_linked": "settings.shopify_store_not_linked"}
+
+
+def claim_notice_text(code: str | None, lang: str | None = None) -> str | None:
+    """Translated copy for a known claim notice code, else None."""
+    key = _CLAIM_NOTICES.get(code or "")
+    return t(key, lang) if key else None
+
+
+def _cloud_link_handover(iid: str, notice: str | None = None) -> FT:
     """Linked, activation not confirmed: the Connect button finishes it on demand."""
     return _cloud_relay_unconnected(
-        iid, info=t("settings.subscription_linked_info"), show_email_form=False,
+        iid, error=notice, info=t("settings.subscription_linked_info"), show_email_form=False,
     )
 
 

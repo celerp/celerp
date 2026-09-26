@@ -20,6 +20,7 @@ from urllib.parse import urlencode
 from fasthtml.common import *
 from starlette.responses import PlainTextResponse, RedirectResponse, StreamingResponse
 
+from celerp.services.csv_export import csv_safe
 from celerp.services.money import round_money, to_decimal
 from ui.api_client import APIError
 from ui.components.table import fmt_money
@@ -83,15 +84,6 @@ def action_bar(print_path: str, csv_path: str, params) -> FT:
         ),
         cls="page-actions flex-row gap-sm ml-auto",
     )
-
-
-def csv_safe(cell):
-    """Neutralize spreadsheet formula injection: user-authored strings (memos, account and
-    contact names) must never execute when the export is opened in a spreadsheet, so string
-    cells starting with a formula trigger character get a leading single quote."""
-    if isinstance(cell, str) and cell and cell[0] in ("=", "+", "-", "@", "\t", "\r"):
-        return "'" + cell
-    return cell
 
 
 def csv_row(writer, cells: list) -> None:

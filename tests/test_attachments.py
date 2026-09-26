@@ -476,3 +476,72 @@ async def test_bulk_skips_directories(client: AsyncClient, small_png: bytes):
     report = resp.json().get("report", [])
     assert all(r["file"] != "subdir/" for r in report)
     assert resp.json()["matched"] == 1
+
+
+def _deflated_zip(files: dict[str, bytes]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return buf.getvalue()
+
+
+async def _item_files(client: AsyncClient, token: str, item_id: str) -> list:
+    r = await client.get(f"/items/{item_id}", headers=_h(token))
+    return r.json().get("files") or []
+
+
+@pytest.mark.asyncio
+async def test_bulk_refuses_an_oversized_file_without_unpacking_it(
+    client: AsyncClient, small_png: bytes, monkeypatch
+):
+    token = await _token(client)
+    big_id = await _seed_item(client, token, "BULK-BIG")
+    ok_id = await _seed_item(client, token, "BULK-OK")
+    zip_data = _deflated_zip({"BULK-BIG.png": b"\0" * (51 * 1024 * 1024), "BULK-OK.png": small_png})
+
+    opened: list[str] = []
+    real_open = zipfile.ZipFile.open
+
+    def spy_open(self, name, *args, **kwargs):
+        opened.append(getattr(name, "filename", name))
+        return real_open(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", spy_open)
+    resp = await client.post(
+        "/items/attachments/bulk",
+        files={"file": ("batch.zip", zip_data, "application/zip")},
+        headers=_h(token),
+    )
+    assert resp.status_code == 200
+    by_file = {r["file"]: r for r in resp.json()["report"]}
+    assert by_file["BULK-BIG.png"]["status"] == "error"
+    assert "MB limit" in by_file["BULK-BIG.png"]["detail"]
+    assert by_file["BULK-OK.png"]["status"] == "ok"
+    assert "BULK-BIG.png" not in opened
+    assert await _item_files(client, token, big_id) == []
+    assert len(await _item_files(client, token, ok_id)) == 1
+
+
+@pytest.mark.parametrize(
+    "limit, value, message",
+    [("_BULK_MAX_UNPACKED", 100, "unpacks to more than"), ("_BULK_MAX_ENTRIES", 1, "holds 2 files")],
+)
+@pytest.mark.asyncio
+async def test_bulk_refuses_an_archive_over_the_limits_before_attaching_anything(
+    client: AsyncClient, monkeypatch, limit: str, value: int, message: str
+):
+    from celerp_inventory import routes_attachments
+
+    monkeypatch.setattr(routes_attachments, limit, value, raising=False)
+    token = await _token(client)
+    item_id = await _seed_item(client, token, "BULK-CAP")
+    zip_data = _deflated_zip({"BULK-CAP.pdf": b"%PDF-1.0\n" + b"x" * 200, "BULK-CAP-img-2.pdf": b"%PDF-1.0\n"})
+    resp = await client.post(
+        "/items/attachments/bulk",
+        files={"file": ("batch.zip", zip_data, "application/zip")},
+        headers=_h(token),
+    )
+    assert resp.status_code == 422
+    assert message in resp.json()["detail"]
+    assert await _item_files(client, token, item_id) == []

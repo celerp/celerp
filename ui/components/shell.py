@@ -540,37 +540,42 @@ document.addEventListener('htmx:sendError', function(e) {
 });
 
 /* ── Image cell drag-and-drop ─────────────────────────────────────────── */
-function initImageDropZones(root) {
-  root.querySelectorAll('.cell--droppable').forEach(function(cell) {
-    cell.addEventListener('click', function() {
-      var input = document.getElementById('img-input-' + cell.dataset.entityId.replace(/:/g, '-'));
-      if (input) input.click();
-    });
-    ['dragover', 'dragenter'].forEach(function(ev) {
-      cell.addEventListener(ev, function(e) { e.preventDefault(); cell.classList.add('cell--drag-over'); });
-    });
-    ['dragleave', 'drop'].forEach(function(ev) {
-      cell.addEventListener(ev, function(e) {
-        e.preventDefault();
-        cell.classList.remove('cell--drag-over');
-        if (ev === 'drop' && e.dataTransfer.files.length) {
-          var entityId = cell.dataset.entityId;
-          var safeId = entityId.replace(/:/g, '-');
-          var fd = new FormData();
-          fd.append('file', e.dataTransfer.files[0]);
-          htmx.ajax('POST', '/api/items/' + entityId + '/attachments', {
-            target: '#img-cell-' + safeId,
-            swap: 'outerHTML',
-            values: fd,
-          });
-        }
-      });
-    });
-  });
+/* Delegated at the document so cells rendered later by htmx swaps need no
+   re-initialisation. Click opens the cell's hidden file input; a drop hands the
+   dropped file to that same input, so both paths upload through its hx-post. */
+function imageDropCell(e) {
+  var cell = e.target.closest ? e.target.closest('.cell--droppable') : null;
+  return cell;
 }
-initImageDropZones(document);
-document.addEventListener('htmx:afterSwap', function(e) {
-  initImageDropZones(e.detail.elt);
+function imageDropInput(cell) {
+  return document.getElementById('img-input-' + cell.dataset.entityId.replace(/:/g, '-'));
+}
+document.addEventListener('click', function(e) {
+  var cell = imageDropCell(e);
+  if (!cell || e.target.tagName === 'INPUT') return;
+  var input = imageDropInput(cell);
+  if (input) input.click();
+});
+['dragover', 'dragenter'].forEach(function(ev) {
+  document.addEventListener(ev, function(e) {
+    var cell = imageDropCell(e);
+    if (!cell) return;
+    e.preventDefault();
+    cell.classList.add('cell--drag-over');
+  });
+});
+['dragleave', 'drop'].forEach(function(ev) {
+  document.addEventListener(ev, function(e) {
+    var cell = imageDropCell(e);
+    if (!cell) return;
+    e.preventDefault();
+    cell.classList.remove('cell--drag-over');
+    var input = imageDropInput(cell);
+    if (ev === 'drop' && input && e.dataTransfer && e.dataTransfer.files.length) {
+      input.files = e.dataTransfer.files;
+      input.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+  });
 });
 """
 

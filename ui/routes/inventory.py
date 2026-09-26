@@ -757,12 +757,14 @@ def _base_state(p: dict, include_page: bool = False) -> dict:
     return state
 
 
-def _holdings_scope_banner(p: dict, holdings_total: float | None, currency: str | None) -> FT:
+def _holdings_scope_banner(p: dict, holdings_total: float | None, currency: str | None,
+                           holdings_missing: int = 0) -> FT:
     """Banner for the contact-scoped holdings views, with a way back to all inventory.
 
     Under a scope the Value column is not the catalog price: for memo it is the price the
     customer was quoted, for consignment it is what the goods cost us. Say so, so the
-    figure is never read as a list price.
+    figure is never read as a list price. Items with no resolvable value are left out of
+    the total, and the banner says how many.
     """
     from ui.components.table import fmt_money
 
@@ -773,8 +775,10 @@ def _holdings_scope_banner(p: dict, holdings_total: float | None, currency: str 
         label, basis = t("inventory.memo_scope_label"), t("inventory.memo_scope_basis")
     else:
         label, basis = t("inventory.consign_scope_label"), t("inventory.consign_scope_basis")
-    total_el = (Span(fmt_money(holdings_total, currency), cls="holdings-scope-total")
-                if holdings_total is not None else "")
+    total_text = fmt_money(holdings_total, currency) if holdings_total is not None else ""
+    if total_text and holdings_missing:
+        total_text += " (" + t("inventory.sold_without_price", n=holdings_missing) + ")"
+    total_el = Span(total_text, cls="holdings-scope-total") if total_text else ""
     return Div(
         Div(Span(label, cls="holdings-scope-label"), total_el, cls="holdings-scope-heading"),
         Div(basis, cls="holdings-scope-basis"),
@@ -867,6 +871,26 @@ async def _load_inventory_view_metadata(token: str) -> tuple:
         await _load_inventory_static_metadata(token)
     )
     return (schema, cat_schemas, col_prefs, company, locations, units, cat_labels)
+
+
+async def _export_columns(token: str, p: dict) -> list[str]:
+    """The columns the export carries for state ``p``: the URL's ``cols`` when given, else the
+    saved column preference for the view (else the schema defaults) plus the derived money
+    column of an active holdings or sold scope. Image columns are list-only previews and never
+    export. Raises `APIError` like the metadata load."""
+    schema, cat_schemas, col_prefs, _company, _locations, _units, _cat_labels = (
+        await _load_inventory_view_metadata(token)
+    )
+    active_cat = p.get("category", "")
+    eff_schema = _effective_schema(schema, cat_schemas, active_cat)
+    cols = list(p.get("cols") or []) or _resolve_visible_cols(eff_schema, col_prefs, active_cat, [])
+    if not p.get("cols"):
+        if p.get("on_memo_to") or p.get("consigned_from"):
+            cols.append("holding_value")
+        if "sold" in {s.strip().lower() for s in str(p.get("status") or "").split(",") if s.strip()}:
+            cols.append("sold_price")
+    image_keys = {fld["key"] for fld in eff_schema if fld.get("type") == "image"}
+    return [c for c in cols if c not in image_keys]
 
 
 async def _render_inventory_fragment(
@@ -993,6 +1017,10 @@ async def _inventory_content(
         list_total = items_resp.get("total", len(items))
         # Present only under a contact holdings scope: the value of the whole scoped set.
         holdings_total = items_resp.get("value_total")
+        holdings_missing = int(items_resp.get("value_total_missing") or 0)
+        # Present only on the sold view: realized value of the whole filtered set.
+        sold_total = items_resp.get("sold_total")
+        sold_total_missing = int(items_resp.get("sold_total_missing") or 0)
         attribute_facets = items_resp.get("attribute_facets", {})
     except APIError as e:
         # 401 belongs to the caller's auth handler; every other read failure gets
@@ -1088,11 +1116,13 @@ async def _inventory_content(
     total_items = valuation.get("item_count", 0)
 
     return Div(
-        _holdings_scope_banner(p, holdings_total, currency),
+        _holdings_scope_banner(p, holdings_total, currency, holdings_missing),
         _category_tabs(category_counts, p, total_scoped=total_scoped, label_map=category_label_map),
         _inventory_type_tabs(p),
         _valuation_bar(valuation, currency, lang, status=p.get("status", "")),
-        _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p, lang=lang),
+        _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p, lang=lang,
+                                sold_total=sold_total, sold_total_missing=sold_total_missing,
+                                currency=currency),
         _bulk_toolbar(locations, p, total_items, settings=_settings, role=role,
                       connected_connectors=connected_connectors),
         Div(
@@ -1113,6 +1143,7 @@ async def _inventory_content(
             auto_hide_empty=False,
             cell_renderers=_inventory_cell_renderers(
                 eff_schema, unit_names, units_map, category_label_map, currency=currency,
+                can_edit_images=role_has_permission(_cs, role, "edit_inventory"),
                 catalog_channels=catalog_channels,
                 channel_query=urlencode(_base_state(p_with_cols)), settings=_settings, role=role,
             ),
@@ -1246,7 +1277,7 @@ def setup_routes(app):
                 ),
                 A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary") if _can_import_export else "",
                 Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _can_edit_inventory else "",
-                A(t("btn.export_csv", lang), href="/inventory/export/csv", cls="btn btn--secondary") if _can_import_export else "",
+                A(t("btn.export_csv", lang), href="/inventory/export/csv?" + urlencode(_base_state(p)), cls="btn btn--secondary") if _can_import_export else "",
                 A(t("inv.customize_fields"), href="/settings/inventory?tab=category-library", cls="btn btn--ghost btn--sm") if _can_import_export else "",
             ),
             content,
@@ -1332,22 +1363,19 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
+        # The export carries the whole list state (every filter, the sort, the visible
+        # columns) and never the page: it is the list the user is looking at, in full.
         p = _parse_params(request)
-        params: dict = {}
-        if p["q"]:
-            params["q"] = p["q"]
-        if p["status"]:
-            params["status"] = p["status"]
-        if p["category"]:
-            params["category"] = p["category"]
-        if p.get("inventory_type"):
-            params["inventory_type"] = p["inventory_type"]
+        params = _base_state(p)
+        params.pop("per_page", None)
         try:
+            params["cols"] = ",".join(await _export_columns(token, p))
             data = await api.export_items_csv(token, params)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            data = b"error\n" + e.detail.encode()
+            # A failed export is an error page, never a downloaded file that says "error".
+            return Response(content=str(e.detail), status_code=e.status, media_type="text/plain")
         return Response(
             content=data,
             media_type="text/csv",
@@ -1773,7 +1801,7 @@ def setup_routes(app):
         # Include conventional key patterns (e.g. "retail_price" for "Retail")
         pl_conventional = {price_key(n) for n in pl_names}
         pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
-        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS and not f.get("virtual")]
+        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS and f.get("key") not in _LIST_ONLY_KEYS and not f.get("virtual")]
         pricing_fields = [f for f in schema if f.get("key") in pricing_keys]
 
         active_tab = request.query_params.get("tab", "details")
@@ -2899,7 +2927,7 @@ function celerpPrintLabel(entityId, templateId) {
         pl_names = {pl.get("name", "") for pl in price_lists}
         pl_conventional = {price_key(n) for n in pl_names}
         pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
-        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS and not f.get("virtual")]
+        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS and f.get("key") not in _LIST_ONLY_KEYS and not f.get("virtual")]
         right = [f for f in detail_fields if f.get("key") not in _ITEM_CORE_KEYS]
         currency = None
         try:
@@ -4670,12 +4698,53 @@ function celerpPrintLabel(entityId, templateId) {
             headers={"Content-Disposition": f'inline; filename="{filename}"'},
         )
 
-    # ── Legacy attachment upload (redirects to new files endpoint) ────────────
+    # ── List thumbnail column: upload into the cell, serve the preview ─────────
 
-    @app.post("/api/items/{entity_id}/attachments")
-    async def item_upload_attachment_legacy(request: Request, entity_id: str):
-        """Deprecated: use /api/items/{entity_id}/files instead."""
-        return Response("", status_code=308, headers={"Location": f"/api/items/{entity_id}/files"})
+    @app.post("/api/items/{entity_id}/thumbnail")
+    async def item_upload_thumbnail(request: Request, entity_id: str):
+        """Drop or pick an image in the list image cell; returns the re-rendered cell."""
+        token = _token(request)
+        if not token:
+            return _thumbnail_cell_error(entity_id, t("error.unauthorized"))
+        form = await request.form()
+        file = form.get("file")
+        error = None
+        if file is None:
+            error = t("msg.no_file_provided")
+        else:
+            try:
+                # A drop into the cell is a request to show this image, so it becomes the
+                # preview even when the item already has one.
+                await api.upload_item_file(token, entity_id, file, as_hero=True)
+            except APIError as e:
+                error = str(e.detail)
+        try:
+            item = await api.get_item(token, entity_id)
+            settings = (await api.get_company(token)).get("settings") or {}
+        except APIError as e:
+            return _thumbnail_cell_error(entity_id, str(e.detail))
+        editable = role_has_permission(settings, _get_role(request), "edit_inventory")
+        cell = _thumbnail_cell(entity_id, item, editable=editable)
+        if error:
+            return Td(*cell.children, P(error, cls="cell-error"), **cell.attrs)
+        return cell
+
+    @app.get("/items/{entity_id}/files/{file_id}/thumbnail")
+    async def item_file_thumbnail(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            resp = await api.get_item_thumbnail(token, entity_id, file_id)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return Response(str(e.detail), status_code=e.status)
+        return Response(
+            content=resp.content,
+            media_type=resp.headers.get("content-type", "image/jpeg"),
+            headers={"Cache-Control": resp.headers.get("cache-control", "private, max-age=86400")},
+        )
 
     @app.delete("/api/items/{entity_id}")
     async def item_delete(request: Request, entity_id: str):
@@ -5117,12 +5186,15 @@ def _vertical_status_card_defs(vertical: str) -> list[tuple[str, str, str]]:
     return _VERTICAL_STATUS_CARDS.get(vertical, _DEFAULT_STATUS_CARDS)
 
 
-def _inventory_status_cards(count_by_status: dict, active_status: str, vertical: str = "", p: dict | None = None, lang: str = "en") -> FT:
+def _inventory_status_cards(count_by_status: dict, active_status: str, vertical: str = "", p: dict | None = None, lang: str = "en",
+                            sold_total: float | None = None, sold_total_missing: int = 0, currency: str | None = None) -> FT:
     """Status cards driven by backend count_by_status dict (scoped to active category/status filter).
 
     When a specific status filter is active (sold/archived/etc.), shows a single
     'All' card with the total count for that filtered view instead of the
     available/reserved breakdown (which would all be 0 and is meaningless).
+    On the sold view that card also carries the realized money total of the
+    whole filtered set (sold_total) and says how many rows have no price.
     """
     # Strip skus/q: clicking a status card is a catalog navigation action and should
     # clear any transient item-specific filters (post-split/merge result views etc.)
@@ -5134,8 +5206,13 @@ def _inventory_status_cards(count_by_status: dict, active_status: str, vertical:
     _HIDDEN = {"sold", "archived", "merged", "expired", "disposed"}
     if active_status and active_status not in ("", "all"):
         total = sum(count_by_status.values())
-        cards = [{"label": t("chip.total", lang), "count": total, "status": active_status, "color": "gray"}]
-        return status_cards(cards, base_url, active_status)
+        label = t("chip.total", lang)
+        if sold_total is not None and sold_total_missing:
+            label += " (" + t("inventory.sold_without_price", lang, n=sold_total_missing) + ")"
+        card = {"label": label, "count": total, "status": active_status, "color": "gray"}
+        if sold_total is not None:
+            card["total"] = sold_total
+        return status_cards([card], base_url, active_status, currency=currency)
 
     _CARD_DEFS = _vertical_status_card_defs(vertical)
     cards = [
@@ -5280,6 +5357,10 @@ def _inventory_type_tabs(p: dict) -> FT:
 _PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "gross_weight": "gross_weight_unit", "purchase_unit": "purchase_conversion_factor"}
 # Derived from _PAIRED_TABLE — secondary fields already rendered inside paired cells; exclude from standalone rows
 _PAIRED_SECONDARY_KEYS: frozenset[str] = frozenset(_PAIRED_TABLE.values())
+
+# Built-in fields that exist only as list columns: the item detail page has its
+# own files section, so the thumbnail column never renders there.
+_LIST_ONLY_KEYS: frozenset[str] = frozenset({"thumbnail"})
 # Core item fields shown in the left (core details) panel on the detail page — single definition
 _ITEM_CORE_KEYS: frozenset[str] = frozenset({
     "sku", "name", "status", "category", "quantity", "pieces", "weight", "weight_unit",
@@ -5323,7 +5404,7 @@ def _render_virtual_total_cell(entity_id: str, field: str, unit_price: float | N
     )
 
 
-def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None, currency: str | None = None, catalog_channels: list[dict] | None = None, channel_query: str = "", settings: dict | None = None, role: str = "owner") -> dict:
+def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None, currency: str | None = None, can_edit_images: bool = False, catalog_channels: list[dict] | None = None, channel_query: str = "", settings: dict | None = None, role: str = "owner") -> dict:
     """Build cell_renderers dict for paired/triple columns.
 
     Handles:
@@ -5611,7 +5692,28 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                 return renderer
             renderers[_rk] = _make_reorder()
 
+    if "thumbnail" in schema_keys:
+        renderers["thumbnail"] = lambda entity_id, row: _thumbnail_cell(entity_id, row, can_edit_images)
+
     return renderers
+
+
+def _thumbnail_cell(entity_id: str, item: dict, editable: bool) -> FT:
+    """List image cell: the item's hero (or first) image thumbnail, or a drop target."""
+    from ui.components.table import display_cell
+    fid = item.get("thumbnail_file_id")
+    return display_cell(
+        entity_id=entity_id, field="thumbnail",
+        value=f"/items/{entity_id}/files/{fid}/thumbnail" if fid else "",
+        cell_type="image", editable=editable,
+    )
+
+
+def _thumbnail_cell_error(entity_id: str, message: str) -> FT:
+    """The image cell with ``message`` in place of a preview, so a failed upload swaps a
+    cell for a cell and the row keeps its shape."""
+    cell = _thumbnail_cell(entity_id, {}, editable=False)
+    return Td(P(message, cls="cell-error"), **cell.attrs)
 
 
 async def _inject_reorder_hints(token: str, item: dict) -> None:
@@ -5741,6 +5843,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         if (td) td.style.display = show ? '' : 'none';
       }});
     }});
+    window.celerpSyncExportCols(table);
   }}
 
   // Sync checkboxes in menu to match localStorage
@@ -5782,6 +5885,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         if (td) tr.appendChild(td);
       }});
     }});
+    window.celerpSyncExportCols(table);
   }}
 
   // Mirror the picker label order to match a given key array (picker is source of truth)

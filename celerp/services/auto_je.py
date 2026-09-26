@@ -18,7 +18,7 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.line_measures import splitting_allowed
-from celerp.services.money import round_money, to_base, to_decimal, to_stored_float
+from celerp.services.money import checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.pick import doc_bound_lots, plan_lot_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line
 from sqlalchemy import select as _select
@@ -259,7 +259,7 @@ async def compute_doc_cogs(
 
 async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict, base_currency: str = "USD", span_lots: bool = False) -> None:
     currency = doc.get("currency", "USD")
-    rate = _Dec(str(doc.get("conversion_rate") or 1))
+    rate = require_doc_rate(doc, base_currency)
     total_d = round_money(doc.get("total", 0), currency)
     tax_d = round_money(doc.get("tax", 0), currency)
     revenue_d = round_money(total_d - tax_d, currency)
@@ -323,8 +323,8 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     one would post a fabricated exchange difference, so a caller that omits either raises
     TypeError at call time instead.
     """
-    ledger_amount = to_base(float(amount), doc_rate or 1, base_currency)
-    bank_amount = to_base(float(amount), settlement_rate or 1, base_currency)
+    ledger_amount = to_base(float(amount), checked_exchange_rate(doc_rate), base_currency)
+    bank_amount = to_base(float(amount), checked_exchange_rate(settlement_rate), base_currency)
     paid_key = str(payment_index)
     if doc_type in ("bill", "purchase_order"):
         entries = [
@@ -369,8 +369,8 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         at any other rate would leave the difference behind in the accounts the payment
         touched, on a document that is back to unpaid.
     """
-    ledger_amount = to_base(float(amount), doc_rate or 1, base_currency)
-    bank_amount = to_base(float(amount), settlement_rate or 1, base_currency)
+    ledger_amount = to_base(float(amount), checked_exchange_rate(doc_rate), base_currency)
+    bank_amount = to_base(float(amount), checked_exchange_rate(settlement_rate), base_currency)
     void_key = f"void_{payment_index}"
     if doc_type in ("bill", "purchase_order"):
         entries = [
@@ -404,14 +404,14 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
     )
 
 
-async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, cn_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float = 1.0) -> None:
+async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, cn_id: str, amount: float, payment_index: int = 0, payment_date: str | None = None, base_currency: str = "USD", conversion_rate: float) -> None:
     """Create JE for credit note application: AR-to-AR transfer.
 
     payment_index disambiguates repeated applications (void + re-apply) to the same CN-invoice pair.
     base_currency: company base currency for JE conversion.
     conversion_rate: doc-to-base-currency rate (1.0 for base currency docs).
     """
-    rate = _Dec(str(conversion_rate or 1))
+    rate = checked_exchange_rate(conversion_rate)
     base_amount = to_base(float(amount), rate, base_currency)
     app_key = f"cn_apply_{cn_id}:{payment_index}"
     await _emit_auto_posted_je(
@@ -453,7 +453,7 @@ async def create_for_po_received(
         "asset": "1210",
     }.get(purchase_kind, _INVENTORY_ACCT)
 
-    rate = _Dec(str((doc or {}).get("conversion_rate") or 1))
+    rate = require_doc_rate(doc or {}, base_currency)
     base_total = to_base(float(total), rate, base_currency)
 
     # suffix=None means "first receive" - use fixed key for backward compat with doctor/duplicate checks
@@ -571,7 +571,7 @@ async def create_for_bill_conversion(
     """
     total = float(doc.get("total", 0) or 0)
     currency = doc.get("currency", "USD")
-    rate = _Dec(str(doc.get("conversion_rate") or 1))
+    rate = require_doc_rate(doc, base_currency)
     line_items = doc.get("line_items", [])
     debit_entries: list[dict] = []
     tax_total_d = _Dec(0)

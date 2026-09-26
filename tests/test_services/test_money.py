@@ -12,6 +12,11 @@ from celerp.services.money import (
     RATE_EXTRA_DP,
     checked_exchange_rate,
     currency_dp,
+    discount_from_inputs,
+    doc_rate,
+    document_discount_amount,
+    document_line_amount,
+    require_doc_rate,
     rate_dp,
     round_exchange_rate,
     round_money,
@@ -230,6 +235,11 @@ def test_checked_exchange_rate_returns_the_rate_at_the_ceiling():
     assert checked_exchange_rate(1) == 1
 
 
+def test_checked_exchange_rate_refuses_a_positive_rate_that_rounds_to_zero():
+    with pytest.raises(ValueError, match="greater than zero"):
+        checked_exchange_rate("0.0000000000004")
+
+
 @pytest.mark.parametrize("bad", [0, 0.0, "0", -1, -0.5, "-35", float("nan"), float("inf")])
 def test_checked_exchange_rate_refuses_a_rate_that_is_not_a_rate(bad):
     """Zero, negative and non-finite are wrong answers, not slow paths.
@@ -300,3 +310,53 @@ def test_reconciliation_property_random_realistic():
     for t, q in itertools.product(totals, qtys):
         up = unit_price_from_total(t, q, "USD")
         assert round_money(up * to_decimal(q), "USD") == round_money(t, "USD"), f"{t}/{q} -> {up}"
+
+
+# ---------------------------------------------------------------------------
+# doc_rate
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("doc,expected", [
+    ({"currency": "THB"}, Decimal(1)),
+    ({}, Decimal(1)),
+    ({"currency": "thb", "conversion_rate": 1}, Decimal(1)),
+    ({"currency": "USD", "conversion_rate": "35.5"}, Decimal("35.5")),
+    ({"currency": "USD"}, None),
+    ({"currency": "USD", "conversion_rate": ""}, None),
+])
+def test_doc_rate_converts_into_the_books_currency_or_is_unknown(doc, expected):
+    assert doc_rate(doc, "THB") == expected
+
+
+@pytest.mark.parametrize("doc", [
+    {"currency": "THB", "conversion_rate": 35},
+    {"currency": "USD", "conversion_rate": 0},
+    {"currency": "USD", "conversion_rate": -2},
+    {"currency": "USD", "conversion_rate": "abc"},
+])
+def test_doc_rate_refuses_a_rate_that_cannot_be_right(doc):
+    with pytest.raises(ValueError):
+        doc_rate(doc, "THB")
+
+
+def test_require_doc_rate_refuses_unknown_foreign_rate():
+    with pytest.raises(ValueError, match="conversion rate is required"):
+        require_doc_rate({"currency": "USD"}, "THB")
+
+
+def test_document_line_amount_reconstructs_legacy_line_discount():
+    assert document_line_amount({"quantity": 10, "unit_price": 10, "discount_pct": 10}, "USD") == Decimal("90.00")
+
+
+def test_document_discount_amount_reconstructs_legacy_percentage_header():
+    assert document_discount_amount({"discount": 10, "discount_type": "percentage"}, Decimal("300"), "USD") == Decimal("30.00")
+
+
+def test_discount_from_inputs_ignores_a_stale_stored_amount():
+    doc = {"discount": 10, "discount_type": "percentage", "discount_amount": 5}
+    assert discount_from_inputs(doc, Decimal("300"), "USD") == Decimal("30.00")
+    assert document_discount_amount(doc, Decimal("300"), "USD") == Decimal("5.00")
+
+
+def test_discount_from_inputs_is_none_for_a_non_numeric_discount():
+    assert discount_from_inputs({"discount": "ten"}, Decimal("300"), "USD") is None

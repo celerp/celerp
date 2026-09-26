@@ -3,10 +3,9 @@
 
 from __future__ import annotations
 
-import csv
-import io
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from decimal import Decimal, InvalidOperation
@@ -44,7 +43,8 @@ from .services import (
 )
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
-from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility
+from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility, restricted_field_keys
+from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA, NUMERIC_SCHEMA_TYPES
 from celerp.services.permissions import (
     assert_role_permission,
@@ -63,7 +63,8 @@ from celerp.services.pricing import (
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.line_measures import splitting_allowed
-from celerp_inventory.projections import _is_core_key, is_item_available
+from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp_inventory.projections import _is_core_key, _is_image_mime, is_item_available, thumbnail_file_id
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -185,13 +186,47 @@ def _recipe_standard_unit_cost(state: dict) -> float | None:
 # visibility strips them with their source. qty_each is derived from quantity and
 # pieces (a role denied either source cannot recover it from the ratio); location_id
 # is a non-schema mirror of location_name (a denied role must not recover the location
-# through the id it would resolve via /companies/me/locations). The rule lives here
-# (one place) and is handed to apply_field_visibility at every call site; the
+# through the id it would resolve via /companies/me/locations); the image ids follow the
+# image field (thumbnail), so a role denied the image is not handed a way to fetch it. The rule lives here
+# (one place) and is applied by apply_item_visibility at every item read; the
 # visibility service itself holds no inventory field names.
 DERIVED_FIELD_DEPS: dict[str, tuple[str, ...]] = {
     "qty_each": ("quantity", "pieces"),
     "location_id": ("location_name",),
+    "thumbnail_file_id": ("thumbnail",),
+    "preview_image_id": ("thumbnail",),
 }
+
+
+def apply_item_visibility(
+    items: list[dict], role: str, field_schema: list[dict], can_see_costs: bool,
+    can_author_drafts: bool = False,
+) -> list[dict]:
+    """Strip what the caller may not see from flattened item dicts.
+
+    Field visibility with the companion keys above, plus the image entries of the file
+    lists: a role denied the image field gets the item's other files but none of its
+    images, so no image id or URL reaches it through ``files`` or ``attachments``.
+    """
+    out = apply_field_visibility(
+        items, role, field_schema, can_see_costs,
+        can_author_drafts=can_author_drafts, derived_field_deps=DERIVED_FIELD_DEPS,
+    )
+    if "thumbnail" not in restricted_field_keys(role, field_schema):
+        return out
+    return [
+        {**item, **{
+            key: [f for f in item[key] if not _is_image_file(f)]
+            for key in ("files", "attachments") if isinstance(item.get(key), list)
+        }}
+        for item in out
+    ]
+
+
+def _is_image_file(entry) -> bool:
+    return isinstance(entry, dict) and (
+        _is_image_mime(str(entry.get("mime") or "")) or entry.get("type") == "image"
+    )
 
 
 def flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None, price_config: tuple[list[dict], str, str] | None = None, unit_map: dict[str, dict] | None = None) -> dict:
@@ -204,6 +239,7 @@ def flatten_item(state: dict, entity_id: str, location_id: str | None = None, lo
     flat = dict(state)
     flat.pop("_catalog_sku_aliases", None)
     flat["id"] = entity_id
+    flat["thumbnail_file_id"] = thumbnail_file_id(state)
     attrs = flat.pop("attributes", None) or {}
     for k, v in attrs.items():
         if k not in flat:
@@ -753,47 +789,45 @@ def item_matches_query(record: dict, q: str) -> bool:
     return query_match_reasons(record, q) is not None
 
 
-@router.get("", openapi_extra={"x-celerp-agent": True})
-async def list_items(
-    request: Request,
-    company_id=Depends(get_current_company_id),
-    _: None = require_permission("view_inventory"),
-    session: AsyncSession = Depends(get_session),
-    role: str = Depends(get_current_role),
-    limit: int = 50,
-    offset: int = 0,
-    q: str | None = None,
-    sku: str | None = None,
-    skus: str | None = None,  # comma-separated exact SKU list
-    barcode: str | None = None,
-    gtin: str | None = None,
-    rfid_epc: str | None = None,
-    status: str | None = None,
-    category: str | None = None,
-    inventory_type: str | None = None,
-    location_id: str | None = None,
-    source: str | None = None,
-    filter: str | None = None,
-    on_memo_to: str | None = None,
-    consigned_from: str | None = None,
-    sort: str | None = None,
-    dir: str = "desc",
-) -> dict:
-    """List items with optional filters.
+@dataclass
+class ItemListFilters:
+    """The item list's filters, shared by the list and its CSV export so both see one set."""
+    q: str | None = None
+    sku: str | None = None
+    skus: str | None = None  # comma-separated exact SKU list
+    barcode: str | None = None
+    gtin: str | None = None
+    rfid_epc: str | None = None
+    status: str | None = None
+    category: str | None = None
+    inventory_type: str | None = None
+    location_id: str | None = None
+    source: str | None = None
+    filter: str | None = None
+    on_memo_to: str | None = None
+    consigned_from: str | None = None
+    sort: str | None = None
+    dir: str = "desc"
 
-    status: exact status to show (e.g. "sold", "archived", "available").
-            Pass "all" to skip status filtering entirely.
-            Default (None): exclude sold + archived from results.
-    category: exact category to filter on.
-    filter: semantic filter. "low_stock" keeps only items at or below their
-            reorder point (see celerp.services.reorder.is_below_reorder).
-    on_memo_to: customer contact_id. Scope to items currently out on memo to that
-            customer, valued (holding_value) at the price they were quoted.
-    consigned_from: supplier contact_id. Scope to items currently held on
-            consignment from that supplier, valued (holding_value) at cost.
-            When a contact scope is active the response also carries value_total,
-            the sum of holding_value over the whole scoped set (pre-pagination).
-    """
+
+def _attr_filters(request: Request) -> list[tuple[str, set[str]]]:
+    """Category-attribute column filters: ?attr.<key>=v1,v2 keeps items whose (flattened)
+    attribute value is in the chosen set. Multiple attribute filters AND together."""
+    out: list[tuple[str, set[str]]] = []
+    for qk, qv in request.query_params.multi_items():
+        if not qk.startswith("attr.") or not qv:
+            continue
+        wanted = {x.strip() for x in qv.split(",") if x.strip()}
+        if wanted:
+            out.append((qk[len("attr."):], wanted))
+    return out
+
+
+async def query_items(
+    session: AsyncSession, company_id, role: str, f: ItemListFilters, attr_filters: list[tuple[str, set[str]]],
+) -> dict:
+    """The filtered, ordered item set for ``f`` with its facets and totals, before pagination.
+    Shared by list_items (which pages ``items``) and the CSV export (which never does)."""
     from celerp.services.reorder import is_below_reorder
     from celerp.models.company import Company
     from .search import (
@@ -807,20 +841,30 @@ async def list_items(
     # celerp_inventory.search). The projection set is read once here and reused:
     # the holdings/sold scopes below need the raw rows and their state, and the
     # flatten runs over that same snapshot rather than issuing a second full load.
+    company = await session.get(Company, company_id)
+    settings = (company.settings if company else {}) or {}
+    # Memo/consignment membership and sold prices come from documents, so they follow the
+    # document permission: a contact scope is refused without it, and a sold row carries
+    # no price.
+    can_see_docs = role_has_permission(settings, role, "view_documents")
+    base_currency = settings.get("currency") or "USD"
+    holding_scoped = bool(f.on_memo_to or f.consigned_from)
+    if holding_scoped:
+        assert_role_permission(settings, role, "view_documents")
     rows = await load_item_rows(session, company_id)
     result = await flatten_item_rows(session, company_id, rows)
 
     # Status filtering: default excludes hidden statuses; "all" skips filtering; "archived" expands
     # to include merged/expired; a comma-separated value matches any (column-filter multi-select).
-    status_set = {s.strip().lower() for s in status.split(",") if s.strip()} if (status and "," in status) else None
-    if status == "all":
+    status_set = {s.strip().lower() for s in f.status.split(",") if s.strip()} if (f.status and "," in f.status) else None
+    if f.status == "all":
         pass  # no filter
     elif status_set:
         result = [r for r in result if str(r.get("status") or "").lower() in status_set]
-    elif status == "archived":
+    elif f.status == "archived":
         result = [r for r in result if str(r.get("status") or "").lower() in _ARCHIVED_GROUP]
-    elif status:
-        result = [r for r in result if str(r.get("status") or "").lower() == status.lower()]
+    elif f.status:
+        result = [r for r in result if str(r.get("status") or "").lower() == f.status.lower()]
     else:
         result = [r for r in result if str(r.get("status") or "").lower() not in _HIDDEN_STATUSES]
 
@@ -828,13 +872,12 @@ async def list_items(
     # Membership is derived from that contact's docs (celerp.services.holdings), and is
     # authoritative: it narrows result on its own. The per-item scope value (quoted memo
     # price / consignment cost) is attached after cost-visibility gating, below.
-    holding_scoped = bool(on_memo_to or consigned_from)
-    scope_value: dict[str, float] = {}
+    scope_value: dict[str, float | None] = {}
     if holding_scoped:
         from celerp.services.holdings import consignment_holdings, memo_holdings
         items_state = [(r.entity_id, r.state) for r in rows]
-        scope_doc_type = "memo" if on_memo_to else "consignment_in"
-        scope_contact = on_memo_to or consigned_from
+        scope_doc_type = "memo" if f.on_memo_to else "consignment_in"
+        scope_contact = f.on_memo_to or f.consigned_from
         scope_docs = (
             await session.execute(
                 select(Projection).where(
@@ -851,8 +894,8 @@ async def list_items(
             if str((d.state or {}).get("status") or "").lower() not in ("draft", "void")
         ]
         scope_value = (
-            memo_holdings(items_state, issued) if on_memo_to
-            else consignment_holdings(items_state, issued)
+            memo_holdings(items_state, issued, base_currency) if f.on_memo_to
+            else consignment_holdings(items_state, issued, base_currency)
         )
         result = [r for r in result if r.get("id") in scope_value]
 
@@ -860,7 +903,7 @@ async def list_items(
     # the document that sold it (status_doc_id). A realized sale price is not a cost, so
     # (like the memo value below) it is not gated by view_inventory_costs. Computed here
     # over the loaded rows; attached to the result dicts after visibility rebuild.
-    sold_scoped = "sold" in (status_set or {str(status).lower()} if status else set())
+    sold_scoped = can_see_docs and "sold" in (status_set or {str(f.status).lower()} if f.status else set())
     sold_price: dict[str, float | None] = {}
     if sold_scoped:
         from celerp.services.holdings import sold_prices
@@ -882,12 +925,18 @@ async def list_items(
             sold_price = sold_prices(
                 [(r.entity_id, r.state) for r in sold_rows],
                 [(d.entity_id, d.state) for d in sold_docs],
+                base_currency,
             )
 
-    # Explicit external_links are authoritative; legacy idempotency keys remain readable.
-    if source:
+    # Connector source: items linked to a platform encode it in the idempotency key
+    # (e.g. "shopify:123:456"). Powers the connector detail "View N synced products" link.
+    # idempotency_key is never a schema field, so it carries no visible_to_roles floor and
+    # is safe to filter here; category/inventory_type/location_id ARE schema fields a role
+    # may be denied, so their filters run after apply_field_visibility (below) to avoid a
+    # membership oracle.
+    if f.source:
         from celerp_inventory.services import external_link_for_state
-        _platform = source.strip().lower()
+        _platform = f.source.strip().lower()
         result = [r for r in result if external_link_for_state(r, _platform)]
 
     # Apply visible_to_roles filtering from the effective field schema BEFORE any
@@ -901,8 +950,6 @@ async def list_items(
     # effective schema is resolved PER the item's category, mirroring the detail
     # endpoint, so a category-scoped restriction is honored and a null/unresolved
     # category falls back to the base item schema (identical disclosure to detail).
-    company = await session.get(Company, company_id)
-    settings = (company.settings if company else {}) or {}
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
     # Per-category strip + searchable field sets are the shared visibility phase
     # (single-sourced in celerp_inventory.search). item_field_sets drives the q-search
@@ -915,14 +962,14 @@ async def list_items(
     # they filter over the visibility-stripped dicts: a denied role sees the key absent
     # (None), the value never matches, and membership cannot disclose the hidden value -
     # the same oracle closure applied to q, attr.*, and low_stock above.
-    if category:
-        cats = {c.strip() for c in category.split(",") if c.strip()}
+    if f.category:
+        cats = {c.strip() for c in f.category.split(",") if c.strip()}
         result = [r for r in result if str(r.get("category") or "") in cats]
-    if inventory_type:
-        types = {it.strip() for it in inventory_type.split(",") if it.strip()}
+    if f.inventory_type:
+        types = {it.strip() for it in f.inventory_type.split(",") if it.strip()}
         result = [r for r in result if "inventory_type" in r and r.get("inventory_type") in types]
-    if location_id:
-        locs = {loc.strip() for loc in location_id.split(",") if loc.strip()}
+    if f.location_id:
+        locs = {loc.strip() for loc in f.location_id.split(",") if loc.strip()}
         result = [r for r in result if str(r.get("location_id") or "") in locs]
 
     # Distinct attribute values for the column-filter funnels, over the status/category/type/location
@@ -942,38 +989,32 @@ async def list_items(
                 s.add(str(aval))
     attribute_facets = {k: sorted(s) for k, s in facet_sets.items() if s}
 
-    # Category-attribute column filters: ?attr.<key>=v1,v2 keeps items whose (flattened) attribute
-    # value is in the chosen set. Multiple attribute filters AND together.
-    for qk, qv in request.query_params.multi_items():
-        if not qk.startswith("attr.") or not qv:
-            continue
-        akey = qk[len("attr."):]
-        wanted = {x.strip() for x in qv.split(",") if x.strip()}
-        if wanted:
-            result = [r for r in result if str(r.get(akey) if r.get(akey) is not None else "") in wanted]
+    # Category-attribute column filters AND together (see _attr_filters).
+    for akey, wanted in attr_filters:
+        result = [r for r in result if str(r.get(akey) if r.get(akey) is not None else "") in wanted]
 
-    if sku:
-        result = [r for r in result if str(r.get("sku", "")) == sku]
+    if f.sku:
+        result = [r for r in result if str(r.get("sku", "")) == f.sku]
 
-    if skus:
-        sku_set = {s.strip() for s in skus.split(",") if s.strip()}
+    if f.skus:
+        sku_set = {s.strip() for s in f.skus.split(",") if s.strip()}
         result = [r for r in result if str(r.get("sku", "")) in sku_set]
 
-    if barcode:
-        result = [r for r in result if str(r.get("barcode", "")) == barcode]
+    if f.barcode:
+        result = [r for r in result if str(r.get("barcode", "")) == f.barcode]
 
-    if gtin:
-        result = [r for r in result if str(r.get("gtin", "")) == gtin]
+    if f.gtin:
+        result = [r for r in result if str(r.get("gtin", "")) == f.gtin]
 
-    if rfid_epc:
+    if f.rfid_epc:
         # EPC is stored normalized (upper-cased); normalize the filter so a lower-case
         # query matches the stored value.
-        _epc = normalize_rfid_epc(rfid_epc)
+        _epc = normalize_rfid_epc(f.rfid_epc)
         result = [r for r in result if str(r.get("rfid_epc", "")) == _epc]
 
     # Semantic "low stock" filter: at or below reorder point (backs the dashboard
     # cards' /inventory?filter=low_stock link and the reorder alert action_url).
-    if filter == "low_stock":
+    if f.filter == "low_stock":
         # Drafts are not stock: an unfinished item must not raise a reorder alarm.
         # Guarded on a visible quantity: is_below_reorder reads quantity defaulting a
         # missing value to 0, so a stripped (role-hidden) quantity would falsely include
@@ -983,28 +1024,27 @@ async def list_items(
                   if "quantity" in r and is_below_reorder(r)
                   and str(r.get("status") or "").lower() != "draft"]
 
-    if q:
+    if f.q:
         # Shared q-filter + q_match attachment (single-sourced in celerp_inventory.search):
         # comma = OR groups, & = AND terms, lo-hi = numeric range, bare number =
         # numeric-exact OR text, else text substring. Each item is matched against its own
         # category's numeric/text field sets, so a number-typed category field resolves and
         # a text-typed one is not coerced. Reasons are computed over the visibility-filtered
         # dict, so every cited field is one the role may see; no post-filter is needed.
-        result = apply_query_match(result, q, item_field_sets)
+        result = apply_query_match(result, f.q, item_field_sets)
 
     # Attach the per-item scope value AFTER visibility (so it survives any dict rebuild).
     # The consignment value is cost, so it is gated by view_inventory_costs exactly like
     # every other cost figure; the memo value is a quoted sale price and is not gated.
-    gate_cost = bool(consigned_from) and not can_see_costs
+    gate_cost = bool(f.consigned_from) and not can_see_costs
     if holding_scoped:
         for r in result:
-            r["holding_value"] = None if gate_cost else scope_value.get(r.get("id"), 0.0)
+            r["holding_value"] = None if gate_cost else scope_value.get(r.get("id"))
 
-    # Attach the realized sale price to each sold row (ungated: a sale price is not a cost).
-    if sold_scoped:
-        for r in result:
-            if str(r.get("status") or "").lower() == "sold":
-                r["sold_price"] = sold_price.get(r.get("id"))
+    # Attach the realized sale price to each sold row (not a cost, so not cost-gated).
+    sold_result = [r for r in result if str(r.get("status") or "").lower() == "sold"] if sold_scoped else []
+    for r in sold_result:
+        r["sold_price"] = sold_price.get(r.get("id"))
 
     # Ordering (FEFO / user column sort / default) is single-sourced in
     # celerp_inventory.search so the list and the global-search bar stay in
@@ -1012,23 +1052,61 @@ async def list_items(
     apply_item_order(
         result,
         inventory_method=(company.settings or {}).get("inventory_method") if company else None,
-        sort=sort,
-        direction=dir,
-        status=status,
+        sort=f.sort,
+        direction=f.dir,
+        status=f.status,
     )
 
-    total = len(result)
-    page_items = result[offset: offset + limit]
     from celerp_inventory.services import build_channel_states
     _channel_states = build_channel_states(rows)
-    for _item in page_items:
+    for _item in result:
         _item["_channel_state"] = _channel_states.get(_item.get("id"), {})
-    resp: dict = {"items": page_items, "total": total,
-                  "attribute_facets": attribute_facets}
+
+    resp: dict = {"items": result, "total": len(result), "attribute_facets": attribute_facets}
     if holding_scoped and not gate_cost:
         # Total over the whole scoped set (post-filter, pre-pagination) so the contact
-        # card reads it directly and reconciles with the list at the same value basis.
-        resp["value_total"] = round(sum(float(scope_value.get(r.get("id"), 0.0)) for r in result), 2)
+        # card reads it directly and reconciles with the list at the same value basis; items
+        # with no resolvable value are counted, never estimated.
+        from celerp.services.holdings import value_total
+        resp["value_total"], resp["value_total_missing"] = value_total(
+            (scope_value.get(r.get("id")) for r in result), base_currency)
+    if sold_scoped:
+        # Realized value over the WHOLE filtered set (pre-pagination) so the sold view's
+        # Total card reads the same figure on every page; rows without a resolvable
+        # selling line are counted so the UI can say how many the total leaves out.
+        from celerp.services.holdings import sold_value_total
+        resp["sold_total"], resp["sold_total_missing"] = sold_value_total(sold_result, sold_price, base_currency)
+    return resp
+
+
+@router.get("", openapi_extra={"x-celerp-agent": True})
+async def list_items(
+    request: Request,
+    company_id=Depends(get_current_company_id),
+    _: None = require_permission("view_inventory"),
+    session: AsyncSession = Depends(get_session),
+    role: str = Depends(get_current_role),
+    filters: ItemListFilters = Depends(),
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """List items with optional filters.
+
+    status: exact status to show (e.g. "sold", "archived", "available").
+            Pass "all" to skip status filtering entirely.
+            Default (None): exclude sold + archived from results.
+    category: exact category to filter on.
+    filter: semantic filter. "low_stock" keeps only items at or below their
+            reorder point (see celerp.services.reorder.is_below_reorder).
+    on_memo_to: customer contact_id. Scope to items currently out on memo to that
+            customer, valued (holding_value) at the price they were quoted.
+    consigned_from: supplier contact_id. Scope to items currently held on
+            consignment from that supplier, valued (holding_value) at cost.
+            When a contact scope is active the response also carries value_total,
+            the sum of holding_value over the whole scoped set (pre-pagination).
+    """
+    resp = await query_items(session, company_id, role, filters, _attr_filters(request))
+    resp["items"] = resp["items"][offset: offset + limit]
     return resp
 
 
@@ -1060,6 +1138,7 @@ async def get_valuation(
 
     holding_scope: set[str] | None = None
     if on_memo_to or consigned_from:
+        assert_role_permission(settings, role, "view_documents")
         from celerp.services.holdings import consignment_holdings, memo_holdings
         items_state = [(r.entity_id, r.state) for r in rows]
         scope_doc_type = "memo" if on_memo_to else "consignment_in"
@@ -1079,8 +1158,8 @@ async def get_valuation(
             if str((d.state or {}).get("status") or "").lower() not in ("draft", "void")
         ]
         scope_value = (
-            memo_holdings(items_state, issued) if on_memo_to
-            else consignment_holdings(items_state, issued)
+            memo_holdings(items_state, issued, settings.get("currency") or "USD") if on_memo_to
+            else consignment_holdings(items_state, issued, settings.get("currency") or "USD")
         )
         holding_scope = set(scope_value.keys())
 
@@ -1101,8 +1180,9 @@ async def get_valuation(
         row_status = str(state.get("status") or "").lower()
         row_cat = str(state.get("category") or state.get("item_type") or "").strip()
 
-        # Exclude consignment_in items: they are borrowed, not owned -- exclude from all valuation
-        if row.consignment_flag == "in" or state.get("consignment_flag") == "in":
+        # Consigned-in goods are borrowed, not owned, so they stay out of stock value. Under a
+        # holdings scope the scope alone decides membership, so the cards count what the list shows.
+        if holding_scope is None and (row.consignment_flag == "in" or state.get("consignment_flag") == "in"):
             continue
 
         # Exclude non-stocked and service items from valuation (only stocked items have physical value)
@@ -1379,10 +1459,8 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     result: dict = {}
     for category, group in by_category.items():
         field_schema = await get_effective_field_schema(session, company_id, category=category)
-        filtered = apply_field_visibility(
-            group, role, field_schema, can_see_costs,
-            can_author_drafts=can_author_drafts,
-            derived_field_deps=DERIVED_FIELD_DEPS,
+        filtered = apply_item_visibility(
+            group, role, field_schema, can_see_costs, can_author_drafts=can_author_drafts,
         )
         for flat in filtered:
             result[flat["id"]] = flat
@@ -1661,18 +1739,19 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
                          unit_map=unit_map)
     field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
-    filtered = apply_field_visibility(
+    filtered = apply_item_visibility(
         [flat], role, field_schema, can_see_costs,
         can_author_drafts=role_has_permission(settings, role, "edit_inventory"),
-        derived_field_deps=DERIVED_FIELD_DEPS,
     )
     result = filtered[0]
-    if str(row.state.get("status") or "").lower() == "sold" and row.state.get("status_doc_id"):
+    if (str(row.state.get("status") or "").lower() == "sold" and row.state.get("status_doc_id")
+            and role_has_permission(settings, role, "view_documents")):
         from celerp.services.holdings import sold_prices
         sold_doc = await session.get(Projection, {"company_id": company_id, "entity_id": str(row.state["status_doc_id"])})
         if sold_doc is not None:
             result["sold_price"] = sold_prices(
                 [(row.entity_id, row.state)], [(sold_doc.entity_id, sold_doc.state)],
+                settings.get("currency") or "USD",
             ).get(row.entity_id)
     return result
 
@@ -1893,7 +1972,7 @@ def _validate_rfid_epc(rfid_epc) -> None:
         raise HTTPException(status_code=422, detail=str(e))
 
 
-async def _get_item_projection(session: AsyncSession, company_id, entity_id: str) -> Projection:
+async def get_item_projection(session: AsyncSession, company_id, entity_id: str) -> Projection:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "item":
         raise HTTPException(status_code=404, detail="Item not found")
@@ -2135,7 +2214,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # CURRENT status is draft, anyone with edit_inventory finishes authoring the
     # item freely; the status is re-read here on every patch, so an edit landing
     # after another user commits the item is gated like any available item.
-    _proj = await _get_item_projection(session, company_id, entity_id)
+    _proj = await get_item_projection(session, company_id, entity_id)
     _is_draft = str((_proj.state or {}).get("status") or "").lower() == "draft"
     # Cost fields are gated by set_inventory_prices, not by the schema role floor:
     # a granted operator edits cost, an ungranted manager still cannot.
@@ -3996,7 +4075,7 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
     # (edit_inventory) authors its cost while it is still a draft - the same carve-out
     # patch_item applies, so the pricing tab's Cost card works for the person entering
     # the item. Sell prices stay gated, and the gate re-arms once the item is available.
-    _proj = await _get_item_projection(session, company_id, entity_id)
+    _proj = await get_item_projection(session, company_id, entity_id)
     _is_draft = str((_proj.state or {}).get("status") or "").lower() == "draft"
     if not (is_cost_price_type(payload.price_type) and draft_cost_carveout(_is_draft, role, settings)):
         if not role_has_permission(settings, role, "set_inventory_prices"):
@@ -4253,118 +4332,102 @@ async def undo_import_batch(
 # CSV export
 # ---------------------------------------------------------------------------
 
-@router.get("/export/csv")
+def _fmt_ts(val) -> str:
+    """Ensure timestamps are ISO 8601 UTC with Z suffix."""
+    if not val:
+        return ""
+    s = str(val).strip()
+    if not s:
+        return ""
+    if s.endswith("Z"):
+        return s
+    if s.endswith("+00:00"):
+        return s[:-6] + "Z"
+    return s.rstrip() + "Z"
+
+
+@router.get(
+    "/export/csv",
+    dependencies=[require_permission("view_inventory"), require_permission("import_export_data")],
+)
 async def export_items_csv(
+    request: Request,
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
     role: str = Depends(get_current_role),
     settings: dict = Depends(get_current_company_settings),
-    q: str | None = None,
-    category: str | None = None,
-    status: str | None = None,
+    filters: ItemListFilters = Depends(),
+    cols: str | None = None,
 ) -> StreamingResponse:
+    """The item list as CSV: the list's filters and order, every matching row (pagination never
+    applies) and, via ``cols``, the columns the screen shows in the order it shows them."""
     from celerp.services.field_schema import get_effective_field_schema
 
-    stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
-    rows = (await session.execute(stmt)).scalars().all()
     price_config = await get_price_config(session, company_id)
-    items = [flatten_item(r.state, r.entity_id, created_at=r.created_at, updated_at=r.updated_at, price_config=price_config) for r in rows]
-
-    # Strip fields the requesting role may not see, per the item's category schema, exactly
-    # as the list and detail endpoints do. Without this the export is a cost-visibility
-    # bypass: cost_price/cost_total and any visible_to_roles-restricted column leak verbatim
-    # to a role denied them in every other surface.
     can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
-    can_author_drafts = role_has_permission(settings, role, "edit_inventory")
-    _schema_cache: dict[str | None, list[dict]] = {}
-
-    async def _category_schema(cat: str | None) -> list[dict]:
-        if cat not in _schema_cache:
-            _schema_cache[cat] = await get_effective_field_schema(session, company_id, category=cat)
-        return _schema_cache[cat]
-
-    _stripped: list[dict] = []
-    for it in items:
-        fs = await _category_schema(it.get("category"))
-        _stripped.append(apply_field_visibility(
-            [it], role, fs, can_see_costs,
-            can_author_drafts=can_author_drafts,
-            derived_field_deps=DERIVED_FIELD_DEPS,
-        )[0])
-    items = _stripped
-    if q:
-        ql = q.lower()
-        def _csv_matches(it: dict) -> bool:
-            if ql in str(it.get("name", "")).lower():
-                return True
-            if ql in str(it.get("sku", "")).lower():
-                return True
-            if ql in str(it.get("barcode", "")).lower():
-                return True
-            if ql in str(it.get("description", "")).lower():
-                return True
-            if ql in str(it.get("category", "")).lower():
-                return True
-            for v in (it.get("attributes") or {}).values():
-                if ql in str(v).lower():
-                    return True
-            return False
-        items = [it for it in items if _csv_matches(it)]
-    if category:
-        items = [it for it in items if it.get("category") == category]
-    if status:
-        items = [it for it in items if it.get("status") == status]
-
-    # Build price columns dynamically from the price config fetched above. Cost-list
-    # columns (cost, landed, ...) are dropped entirely for a role without view_inventory_costs:
-    # apply_field_visibility strips cost_price/cost_total from the row dicts, but a landed
-    # cost list serialises under landed_price, which is not a stripped key, so the column
-    # itself must be excluded here or landed cost leaks through the header.
-    price_cols = [
-        price_key(pl["name"])
-        for pl in price_config[0]
-        if pl.get("name") and (can_see_costs or not is_cost_list_name(pl["name"]))
+    # The column universe: the default export set, the effective schema (the filtered category's
+    # when exactly one is selected, else the base item schema plus every category's fields, as
+    # the All view's column manager offers them) and the derived money columns.
+    single_cat = filters.category if filters.category and "," not in filters.category else None
+    schema = await get_effective_field_schema(session, company_id, category=single_cat)
+    category_fields: list[dict] = [] if single_cat else [
+        fld for fields in (settings.get("category_schemas") or {}).values() for fld in fields
     ]
+    price_cols = [price_key(pl["name"]) for pl in price_config[0] if pl.get("name")]
+    default_cols = ["id", "sku", "name", "category", "quantity", "status"] + price_cols + [
+        "weight", "weight_unit", "pieces", "sell_by", "barcode", "gtin", "rfid_epc", "hs_code",
+        "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
+        "created_at", "updated_at",
+    ]
+    virtual = {fld["key"]: fld["paired_with"] for fld in schema if fld.get("virtual") and fld.get("paired_with")}
+    # Image fields are list-only previews with no CSV representation.
+    allowed = set(default_cols) | {
+        fld["key"] for fld in schema + category_fields if fld.get("type") != "image"
+    } | {"holding_value", "sold_price"}
+    # The columns are settled before the rows are fetched, so an unknown column costs no query.
+    out_cols = resolve_export_cols(cols, default_cols, allowed)
+    listed = await query_items(session, company_id, role, filters, _attr_filters(request))
 
-    _COLS = ["id", "sku", "name", "category", "quantity", "status"] + price_cols + ["weight", "weight_unit", "pieces", "sell_by", "barcode", "gtin", "rfid_epc", "hs_code", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor", "created_at", "updated_at"]
-
-    def _fmt_ts(val) -> str:
-        """Ensure timestamps are ISO 8601 UTC with Z suffix."""
-        if not val:
-            return ""
-        s = str(val).strip()
-        if not s:
-            return ""
-        # Already has Z or +00:00 — normalise to Z
-        if s.endswith("Z"):
-            return s
-        if s.endswith("+00:00"):
-            return s[:-6] + "Z"
-        # No timezone info — assume UTC, append Z
-        return s.rstrip() + "Z"
+    # A column the role may not see leaves the header, not just the cells: the rows were already
+    # stripped by the list pipeline, so this keeps the header honest. A cost-list column such as
+    # landed_price is not a key apply_field_visibility names, so it is dropped here by list name,
+    # and a virtual total follows the column it pairs with.
+    probe_keys = set(out_cols) | {virtual[c] for c in out_cols if c in virtual}
+    visible = set(apply_item_visibility([{k: 1 for k in probe_keys}], role, schema, can_see_costs)[0])
+    if not can_see_costs:
+        visible -= {price_key(pl["name"]) for pl in price_config[0] if pl.get("name") and is_cost_list_name(pl["name"])}
+    out_cols = [c for c in out_cols if c in visible and virtual.get(c, c) in visible]
 
     unit_map = build_unit_map(await _get_company_units(session, company_id))
+    currency = settings.get("currency") or "USD"
 
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=_COLS, extrasaction="ignore")
-    writer.writeheader()
-    for it in items:
-        row = {c: it.get(c, "") for c in _COLS}
-        # The measure the sell unit already IS derives from quantity: the stored
-        # companion field is absent on fresh items and can go stale after sales.
-        # Matches the inventory table's derived weight/pieces columns.
-        sell_by = it.get("sell_by")
-        if is_weight_unit(sell_by, unit_map):
-            row["weight"] = it.get("quantity", "")
-            row["weight_unit"] = sell_by
-        elif is_pieces_unit(sell_by, unit_map):
-            row["pieces"] = it.get("quantity", "")
-        row["created_at"] = _fmt_ts(it.get("created_at"))
-        row["updated_at"] = _fmt_ts(it.get("updated_at"))
-        writer.writerow(row)
-    output.seek(0)
+    def _rows():
+        for it in listed["items"]:
+            row = dict(it)
+            # A virtual total the row does not carry is what the table shows: the stored cost_total
+            # for the cost total, else the price times the quantity, at the currency's precision.
+            for total_key, price_col in virtual.items():
+                if total_key in row:
+                    continue
+                if total_key == "cost_price_total" and row.get("cost_total") not in (None, ""):
+                    row[total_key] = row["cost_total"]
+                elif row.get(price_col) not in (None, ""):
+                    row[total_key] = to_stored_float(round_money(
+                        to_decimal(row[price_col]) * to_decimal(row.get("quantity") or 0), currency))
+            # The measure the sell unit already IS derives from quantity: the stored companion
+            # field is absent on fresh items and can go stale after sales. Matches the table.
+            sell_by = row.get("sell_by")
+            if is_weight_unit(sell_by, unit_map):
+                row["weight"] = row.get("quantity", "")
+                row["weight_unit"] = sell_by
+            elif is_pieces_unit(sell_by, unit_map):
+                row["pieces"] = row.get("quantity", "")
+            row["created_at"] = _fmt_ts(row.get("created_at"))
+            row["updated_at"] = _fmt_ts(row.get("updated_at"))
+            yield row
+
     return StreamingResponse(
-        iter([output.getvalue()]),
+        csv_stream(out_cols, _rows()),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=items.csv"},
     )

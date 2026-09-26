@@ -14,7 +14,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 from celerp.config_store import merge_packaged_config
-from ui.components.shell import base_shell, page_header, page_title
+from ui.components.shell import base_shell, flash, page_header, page_title
 from ui.i18n import t, get_lang
 from ui.config import get_role as _get_role
 
@@ -22,6 +22,7 @@ from ui.routes.settings import (
     _check_permission,
     _token,
     _cloud_relay_tab,
+    claim_notice_text,
     PAID_TIERS,
 )
 from ui.routes.settings_general import _section_breadcrumb
@@ -951,6 +952,8 @@ def setup_routes(app):
                 catalog = {}
 
         tab = request.query_params.get("tab", "status")
+        notice = claim_notice_text(request.query_params.get("notice"), lang)
+        notice_flash = [flash(notice, kind="warning")] if notice else []
         if not gw_ok:
             from celerp.config import ensure_instance_id
             iid = ensure_instance_id()
@@ -962,6 +965,7 @@ def setup_routes(app):
             return await base_shell(
                 _section_breadcrumb(t("settings_cloud.web_access", lang)),
                 page_header(t("settings_cloud.web_access", lang)),
+                *notice_flash,
                 *([_unconnected_cloud_tabs(tab, lang=lang)] if can_claim else []),
                 content,
                 title=page_title("settings_cloud.web_access"),
@@ -1021,6 +1025,7 @@ def setup_routes(app):
         return await base_shell(
             _section_breadcrumb(t("settings_cloud.web_access", lang)),
             page_header(t("settings_cloud.web_access", lang)),
+            *notice_flash,
             _cloud_tabs(tab, has_team_features=has_team, lang=lang),
             content,
             title=page_title("settings_cloud.web_access"),

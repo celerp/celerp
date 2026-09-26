@@ -24,7 +24,7 @@ from celerp.modules.migrations_runner import (
     run_migration_phase,
     run_module_migrations,
 )
-from celerp.db_url import sync_url as sync_engine_url
+from celerp.db_url import sync_url as sync_db_url
 from celerp.db import _MIGRATION_LOCK_KEY
 
 
@@ -50,7 +50,7 @@ def _make_module(base: Path, name: str, migrations: dict[str, str], *,
 
 
 def _sync_url() -> str:
-    return sync_engine_url(os.environ["DATABASE_URL"])
+    return sync_db_url(os.environ["DATABASE_URL"])
 
 
 # Guarded: creates acme_equipment(id, name) only if absent.
@@ -147,11 +147,11 @@ import os
 import sqlalchemy as sa
 from pathlib import Path
 
-from celerp.db_url import sync_url as sync_engine_url
+from celerp.db_url import sync_url as sync_db_url
 
 
 def upgrade():
-    eng = sa.create_engine(sync_engine_url(os.environ["DATABASE_URL"]))
+    eng = sa.create_engine(sync_db_url(os.environ["DATABASE_URL"]))
     try:
         with eng.connect() as c:
             got = c.execute(sa.text("SELECT pg_try_advisory_lock(__KEY__)")).scalar()

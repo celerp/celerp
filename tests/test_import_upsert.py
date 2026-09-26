@@ -568,3 +568,35 @@ async def test_import_none_fieldnames_shows_error(client):
     assert r.status_code == 200
     body = r.text
     assert "unexpected error" not in body.lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_type", ["item.created", "item.snapshot"])
+@pytest.mark.parametrize("field,value", [
+    ("cost_base", 1.0),
+    ("cost_landed", 500.0),
+    ("landed_contributions", {"bill:x::freight": 50.0}),
+    ("reserved_quantity", 5),
+    ("fulfilled_for_docs", ["doc:x"]),
+    ("status_doc_id", "doc:x"),
+])
+async def test_import_refuses_fields_the_app_manages(client, session, event_type, field, value):
+    """Cost components, reservations and document links are kept by the app. An imported row that
+    sets one is refused with a message naming it, and no item is created."""
+    _, _, token = await _setup(session)
+    headers = {"Authorization": f"Bearer {token}"}
+    entity_id = f"item:managed-{uuid.uuid4().hex[:8]}"
+    record = {
+        "entity_id": entity_id,
+        "event_type": event_type,
+        "data": {"sku": f"MG-{uuid.uuid4().hex[:6]}", "name": "Managed", "quantity": 10,
+                 "sell_by": "piece", field: value},
+        "source": "csv_import",
+        "idempotency_key": f"csv:item:{entity_id}",
+    }
+    r = await client.post("/items/import/batch", headers=headers, json={"records": [record]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["created"] == 0
+    assert any(field in e for e in body["errors"]), body["errors"]
+    assert (await client.get(f"/items/{entity_id}", headers=headers)).status_code == 404
