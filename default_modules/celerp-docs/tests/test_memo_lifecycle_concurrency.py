@@ -990,3 +990,93 @@ async def test_multi_doc_lock_is_ordered(_db_engine):
             "lock order (same B3 defect as _get_docs_for_update)")
     finally:
         await _cleanup(factory, company_id, user_id)
+
+@pytest.mark.asyncio
+async def test_concurrent_invoice_fulfillment_cannot_double_claim_shared_lot(_db_engine, monkeypatch):
+    from celerp_docs.routes import FulfillLinesRequest, finalize_doc, fulfill_lines
+    import celerp_docs.routes as doc_routes
+
+    factory = _factory(_db_engine)
+    company_id, user_id, user = await _seed_company(factory)
+    try:
+        sku = f"FULRACE-{uuid.uuid4().hex[:6]}"
+        lot_a = await _seed_item(factory, company_id, user, sku=sku, name=sku, qty=2, barcode=_barcode())
+        lot_b = await _seed_item(factory, company_id, user, sku=sku, name=sku, qty=3, barcode=_barcode())
+
+        async def _invoice(ref_id: str, item_id: str, qty: float) -> str:
+            doc_id = f"doc:{ref_id}-{uuid.uuid4().hex[:8]}"
+            line = {
+                "entity_id": item_id, "sku": sku, "name": sku, "quantity": qty,
+                "unit_price": 50.0, "sell_by": "piece", "line_total": qty * 50.0,
+            }
+            async with factory() as s:
+                await emit_event(
+                    s, company_id=company_id, entity_id=doc_id, entity_type="doc",
+                    event_type="doc.created",
+                    data={
+                        "doc_type": "invoice", "status": "draft", "ref_id": ref_id,
+                        "line_items": [line], "subtotal": qty * 50.0,
+                        "total": qty * 50.0, "amount_outstanding": qty * 50.0,
+                        "currency": "USD",
+                    },
+                    actor_id=user.id, location_id=None, source="test",
+                    idempotency_key=str(uuid.uuid4()), metadata_={},
+                )
+                await s.commit()
+            async with factory() as s:
+                await finalize_doc(doc_id, company_id=company_id, _=None, user=user, session=s)
+            return doc_id
+
+        span_doc = await _invoice("RACE-SPAN", lot_a, 5)
+        bound_doc = await _invoice("RACE-BOUND", lot_b, 3)
+
+        original_lock = doc_routes._lock_item_sku_lots
+        ready = asyncio.Event()
+        guard = asyncio.Lock()
+        arrivals = 0
+
+        async def synchronized_lock(session, cid, item_ids):
+            nonlocal arrivals
+            async with guard:
+                arrivals += 1
+                if arrivals == 2:
+                    ready.set()
+            await asyncio.wait_for(ready.wait(), timeout=5)
+            return await original_lock(session, cid, item_ids)
+
+        monkeypatch.setattr(doc_routes, "_lock_item_sku_lots", synchronized_lock)
+        outcomes: dict[str, object] = {}
+        s1, s2 = factory(), factory()
+
+        async def _run(name, session, doc_id, item_id):
+            try:
+                outcomes[name] = await fulfill_lines(
+                    doc_id, FulfillLinesRequest(line_entity_ids=[item_id]),
+                    company_id=company_id, _=None, user=user, session=session,
+                )
+            except Exception as exc:
+                outcomes[name] = exc
+                await session.rollback()
+
+        try:
+            await _race(
+                _run("span", s1, span_doc, lot_a),
+                _run("bound", s2, bound_doc, lot_b),
+            )
+        finally:
+            await s1.close()
+            await s2.close()
+
+        winners = [name for name, value in outcomes.items() if not isinstance(value, Exception)]
+        assert len(winners) == 1, outcomes
+        loser = outcomes["bound" if winners[0] == "span" else "span"]
+        assert isinstance(loser, HTTPException) and loser.status_code in (409, 422), outcomes
+
+        async with factory() as s:
+            b = await s.get(Projection, {"company_id": company_id, "entity_id": lot_b})
+            assert b is not None
+            assert b.state.get("status") == "sold"
+            assert b.state.get("status_doc_id") == (span_doc if winners[0] == "span" else bound_doc)
+    finally:
+        await _cleanup(factory, company_id, user_id)
+

@@ -11,7 +11,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from celerp.config import sync_engine_url
+from celerp.db_url import sync_url as sync_engine_url
 from celerp.models.base import Base
 
 # Register all models with Base.metadata by importing them.

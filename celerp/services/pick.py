@@ -116,6 +116,15 @@ def consolidate_sales_lots(items: list[dict], company_settings: dict) -> list[di
         out.append(rep)
     return out
 
+def doc_bound_lots(line_items: list[dict]) -> set[str]:
+    """The lots a document's lines reference directly.
+
+    A lot bound by one line is that line's stock: it is never drawn as another
+    line's spanning sibling, so one physical lot cannot satisfy two lines and a
+    document allocates the same way whatever order its lines are processed in.
+    """
+    return {str(line_item_id(li)) for li in line_items if line_item_id(li)}
+
 def plan_lot_draws(
     primary: dict,
     needed: float,

@@ -24,7 +24,7 @@ from celerp.modules.migrations_runner import (
     run_migration_phase,
     run_module_migrations,
 )
-from celerp.config import sync_engine_url
+from celerp.db_url import sync_url as sync_engine_url
 from celerp.db import _MIGRATION_LOCK_KEY
 
 
@@ -147,7 +147,7 @@ import os
 import sqlalchemy as sa
 from pathlib import Path
 
-from celerp.config import sync_engine_url
+from celerp.db_url import sync_url as sync_engine_url
 
 
 def upgrade():

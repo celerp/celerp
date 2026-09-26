@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from celerp import embedded_pg
-from celerp.config import sync_engine_url
+from celerp.db_url import sync_url as sync_engine_url
 
 pytestmark = [
     pytest.mark.embedded_pg,
