@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -20,44 +19,10 @@ from ui.routes.settings import _check_permission, _token
 from ui.security import is_safe_authorize_url
 
 from celerp.connectors.base import ConnectorCategory, SyncFrequency
+from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY, attention_entries
 from celerp.services.background import spawn_background
 
 log = logging.getLogger(__name__)
-
-
-async def _register_woocommerce_webhooks(
-    iid: str, store_url: str, consumer_key: str, consumer_secret: str
-) -> None:
-    """Best-effort: subscribe the WooCommerce store to webhooks delivered to the
-    relay, which forwards them to this instance over the gateway. Persists the
-    signing secret so the instance can verify each delivery locally. Never raises
-    into the connect flow; the scheduled reconciliation backstops any miss."""
-    import json
-    import secrets as _secrets
-
-    import sqlalchemy as sa
-
-    from celerp.connectors.base import ConnectorContext
-    from celerp.connectors.woocommerce import WooCommerceConnector
-    from celerp.db import get_session_ctx
-    from celerp.models.connector_config import ConnectorConfig
-    from ui.config import RELAY_URL
-
-    delivery_url = f"{RELAY_URL.rstrip('/')}/webhooks/woocommerce/events"
-    secret = _secrets.token_hex(32)
-    ctx = ConnectorContext(
-        company_id=str(iid),
-        access_token=f"{consumer_key}:{consumer_secret}",
-        store_handle=store_url,
-    )
-    ids = await WooCommerceConnector().register_webhooks(ctx, delivery_url, secret=secret)
-    async with get_session_ctx() as session:
-        await session.execute(
-            sa.update(ConnectorConfig)
-            .where(ConnectorConfig.company_id == iid, ConnectorConfig.connector == "woocommerce")
-            .values(webhook_secret=secret, webhook_ids_json=json.dumps(ids) if ids else None)
-        )
-        await session.commit()
 
 
 def _store_url_error(store_url: str, platform: str) -> str | None:
@@ -120,10 +85,11 @@ def _sync_status_label(status: str) -> str:
     return t(key) if key else (status or "")
 
 
-def _last_sync_info(run) -> FT:
+def _last_sync_info(run, attention: int = 0) -> FT:
     """Compact summary of the latest SyncRun, or a 'never synced' note. Uses the shared
     relative_time() formatter and thousands-separated counts for consistency with the
-    rest of the app."""
+    rest of the app. ``attention`` counts records still waiting on a person, which
+    may have been left by an earlier run."""
     if run is None:
         return Span(t("connectors.never_synced", default="Never synced"), cls="connector-sync-info")
     if run.finished_at is None:
@@ -138,10 +104,10 @@ def _last_sync_info(run) -> FT:
         "failed": "connector-sync-info--err",
     }.get(run.status, "")
     counts = f"+{run.created_count:,} ~{run.updated_count:,}"
-    return Span(
-        f"{relative_time(finished.isoformat())} · {_sync_status_label(run.status)} · {counts}",
-        cls=f"connector-sync-info {status_cls}",
-    )
+    parts = [relative_time(finished.isoformat()), _sync_status_label(run.status), counts]
+    if attention:
+        parts.append(t("connectors.attention_count", n=attention))
+    return Span(" · ".join(parts), cls=f"connector-sync-info {status_cls}")
 
 
 def _direction_toggle(cid: str, current: str, lang: str = "en") -> FT:
@@ -193,16 +159,6 @@ def _frequency_select(cid: str, current: str, lang: str = "en") -> FT:
     )
 
 
-async def _fetch_access_token(platform: str, token: str) -> dict:
-    """Fetch a short-lived access token via the API process proxy (which holds the
-    relay session - the UI process has none). Raises RuntimeError on failure."""
-    from ui.api_client import get_connector_access_token
-    data = await get_connector_access_token(token, platform)
-    if data.get("error"):
-        raise RuntimeError(data.get("detail") or data["error"])
-    return data
-
-
 async def _fetch_catalog(relay_url: str, instance_id: str, token: str = "") -> tuple[list[dict], str, bool]:
     """Fetch connector catalog via API process proxy (which holds the gateway token).
     Returns (connectors, error_detail, needs_plan) - error_detail is "" on
@@ -225,7 +181,10 @@ async def _get_last_runs(company_id: str) -> dict[str, object]:
         async with get_session_ctx() as session:
             rows = await session.execute(
                 sa.select(SyncRun)
-                .where(SyncRun.company_id == company_id)
+                .where(
+                    SyncRun.company_id == company_id,
+                    SyncRun.entity != CONNECTOR_RESET_ENTITY,
+                )
                 .order_by(SyncRun.started_at.desc())
             )
             seen: set[str] = set()
@@ -238,103 +197,112 @@ async def _get_last_runs(company_id: str) -> dict[str, object]:
     return result
 
 
-async def _get_connector_config(company_id: str, connector: str):
-    """Return ConnectorConfig or None."""
-    from celerp.db import get_session_ctx
-    from celerp.models.connector_config import ConnectorConfig
-    import sqlalchemy as sa
-
+async def _attention(company_id: str, platform: str) -> list[dict]:
+    """Records waiting on a person for one connector. The page still renders
+    when the list cannot be read; the failure is logged."""
     try:
-        async with get_session_ctx() as session:
-            result = await session.execute(
-                sa.select(ConnectorConfig).where(
-                    ConnectorConfig.company_id == company_id,
-                    ConnectorConfig.connector == connector,
-                )
-            )
-            row = result.first()
-            return row[0] if row else None
+        return await attention_entries(company_id, platform)
     except Exception:
+        log.warning("could not read the attention list for %s", platform, exc_info=True)
+        return []
+
+
+def _open_attention_count(entries: list[dict]) -> int:
+    """Entries not yet marked reconciled."""
+    return sum(1 for e in entries if not e.get("reconciled"))
+
+
+def _request_company_id(request: Request) -> str:
+    """Return the API-verified company id cached by the permission gate."""
+    company = getattr(request.state, "auth_company", None)
+    company_id = company.get("id") if isinstance(company, dict) else None
+    if not company_id:
+        raise RuntimeError("Current company is unavailable")
+    return str(company_id)
+
+
+async def _get_connector_config(company_id: str, connector: str):
+    """Return company-owned state, adopting a lone legacy row safely."""
+    import sqlalchemy as sa
+    from celerp.config import ensure_instance_id
+    from celerp.connectors.ownership import ConnectorOwnershipError, claim_connector_ownership
+    from celerp.db import get_session_ctx
+    from celerp.models.company import Company
+    from celerp.models.connector_config import ConnectorConfig
+
+    async with get_session_ctx() as session:
+        row = await session.scalar(
+            sa.select(ConnectorConfig).where(
+                ConnectorConfig.company_id == str(company_id),
+                ConnectorConfig.connector == connector,
+            ).limit(1)
+        )
+        if row is not None:
+            return row
+
+        legacy_id = ensure_instance_id()
+        companies = (await session.execute(sa.select(Company.id).limit(2))).scalars().all()
+        if (
+            legacy_id != str(company_id)
+            and len(companies) == 1
+            and str(companies[0]) == str(company_id)
+        ):
+            try:
+                row = await claim_connector_ownership(
+                    session, company_id, connector, create=False
+                )
+                await session.commit()
+                return row
+            except ConnectorOwnershipError:
+                await session.rollback()
         return None
 
 
-async def _ensure_connector_config(company_id: str, connector: str, category: str):
-    """Get or create ConnectorConfig with sensible defaults."""
-    from celerp.db import get_session_ctx
-    from celerp.models.connector_config import ConnectorConfig
-    import sqlalchemy as sa
-
-    config = await _get_connector_config(company_id, connector)
-    if config:
-        return config
-
-    default_freq = _DEFAULT_FREQUENCY.get(category, SyncFrequency.MANUAL).value
-    config = ConnectorConfig(
-        company_id=company_id,
-        connector=connector,
-        sync_frequency=default_freq,
-    )
-    try:
-        async with get_session_ctx() as session:
-            session.add(config)
-            await session.commit()
-            await session.refresh(config)
-    except Exception:
-        config = await _get_connector_config(company_id, connector)
-    return config
-
-
-async def _clear_connector_config(company_id: str, connector: str) -> None:
-    """Delete a connector's ConnectorConfig (clears the stored webhook secret/ids and
-    direction/frequency) so a later reconnect starts clean. Best-effort."""
-    import sqlalchemy as sa
-
-    from celerp.db import get_session_ctx
-    from celerp.models.connector_config import ConnectorConfig
-
-    try:
-        async with get_session_ctx() as session:
-            await session.execute(
-                sa.delete(ConnectorConfig).where(
-                    ConnectorConfig.company_id == company_id,
-                    ConnectorConfig.connector == connector,
-                )
-            )
-            await session.commit()
-    except Exception:
-        log.warning("failed to clear ConnectorConfig (%s)", connector, exc_info=True)
-
-
-async def _kickoff_connector_sync(iid: str, platform: str, token: str) -> None:
-    """Fetch the live token and start a background sync of all supported entities.
-    Raises on setup failure (bad token, unknown connector); per-entity errors are captured
-    in each SyncRun. Shared by 'Sync now' and auto-sync-on-connect."""
-    from celerp.connectors.base import ConnectorContext
+def _local_connector_entry(platform: str) -> dict:
+    """Build display metadata for a locally known connector."""
     from celerp.connectors.registry import get as get_connector
-    from celerp.connectors.sync_runner import run_sync
 
     connector = get_connector(platform)
-    token_data = await _fetch_access_token(platform, token)
-    ctx = ConnectorContext(
-        company_id=iid,
-        access_token=token_data["access_token"],
-        store_handle=token_data.get("store_handle"),
-    )
-
-    async def _do_sync():
-        for entity_enum in connector.supported_entities:
-            try:
-                await run_sync(connector, ctx, entity_enum.value)
-            except Exception as exc:
-                log.warning("connector sync %s/%s failed: %s", platform, entity_enum.value, exc)
-
-    spawn_background(_do_sync())
+    category = getattr(connector.category, "value", connector.category)
+    return {
+        "id": platform,
+        "name": connector.display_name,
+        "category": category,
+        "auth_type": "api_key" if platform == "woocommerce" else "oauth",
+        "connected": False,
+        "entities": [
+            getattr(entity, "value", entity)
+            for entity in connector.supported_entities
+        ],
+    }
 
 
-async def _autosync_once(iid: str, platform: str, token: str) -> None:
+async def _owned_connector_configs(company_id: str) -> list:
+    """Return connector configuration rows owned by the current company."""
+    import sqlalchemy as sa
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+
+    async with get_session_ctx() as session:
+        return list((await session.execute(
+            sa.select(ConnectorConfig).where(
+                ConnectorConfig.company_id == str(company_id)
+            )
+        )).scalars().all())
+
+
+async def _kickoff_connector_sync(company_id: str, platform: str, token: str) -> None:
+    """Start the connector's canonical sync plan in the API process."""
+    from ui.api_client import start_connector_sync
+    result = await start_connector_sync(token, platform)
+    if not result.get("ok"):
+        raise RuntimeError(result.get("detail") or "Could not start connector sync")
+
+
+async def _autosync_once(company_id: str, platform: str, token: str) -> None:
     """Best-effort background sync kickoff that never raises into a render path."""
     try:
-        await _kickoff_connector_sync(iid, platform, token)
+        await _kickoff_connector_sync(company_id, platform, token)
     except Exception:
         log.warning("auto-sync on first view failed (non-fatal) for %s", platform, exc_info=True)
 
@@ -403,7 +371,11 @@ async def _entity_runs(company_id: str, connector: str) -> dict:
         async with get_session_ctx() as session:
             rows = await session.execute(
                 sa.select(SyncRun)
-                .where(SyncRun.company_id == company_id, SyncRun.connector == connector)
+                .where(
+                    SyncRun.company_id == company_id,
+                    SyncRun.connector == connector,
+                    SyncRun.entity != CONNECTOR_RESET_ENTITY,
+                )
                 .order_by(SyncRun.started_at.desc())
             )
             for (run,) in rows:
@@ -466,7 +438,61 @@ def _entity_status_table(runs: dict, lang: str = "en") -> FT:
     )
 
 
-def _connector_status_view(platform: str, runs: dict, lang: str = "en", force_poll: bool = False) -> FT:
+def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | None = None) -> FT:
+    """One record waiting on a person. A change only a person can reconcile
+    (it carries a signature) offers Mark reconciled, and Undo once marked.
+    ``error`` explains why the last Mark or Undo did not apply."""
+    record_id = str(entry.get("id", ""))
+    item_id = f"connector-attention-{platform}-{record_id}"
+    action = Span()
+    if entry.get("signature"):
+        url = f"/settings/connectors/{platform}/attention/{record_id}/reconciled"
+        common = {"hx_target": f"#{item_id}", "hx_swap": "outerHTML"}
+        if entry.get("reconciled"):
+            action = Span(
+                " ", Em(t("connectors.attention_reconciled", lang)), " ",
+                Button(t("btn.undo", lang), cls="btn btn--xs btn--outline",
+                       hx_delete=url, **common),
+            )
+        else:
+            action = Span(" ", Button(
+                t("connectors.attention_mark_reconciled", lang),
+                cls="btn btn--xs btn--outline", hx_post=url,
+                hx_vals=hx_vals({"signature": entry["signature"]}), **common,
+            ))
+    from ui.components.shell import flash
+    return Li(
+        Strong(str(entry.get("label", record_id))), ": ", str(entry.get("reason", "")),
+        action, flash(error) if error else Span(), id=item_id,
+    )
+
+
+def _attention_list(platform: str, entries: list[dict], lang: str = "en") -> FT:
+    """Records the connector could not import and is holding for a person (an
+    order whose customer or product is missing, or a refund to reconcile). The
+    list is kept until a sync produces a new one, so a failed run never hides it.
+    Orders a person marked reconciled sit in a collapsed section under the open
+    ones, with Undo, until the order changes in the store."""
+    if not entries:
+        return Span()
+    open_entries = [e for e in entries if not e.get("reconciled")]
+    reconciled = [e for e in entries if e.get("reconciled")]
+    return Div(
+        P(t("connectors.attention_header", lang), cls="settings-section-title"),
+        Ul(*[_attention_item(platform, e, lang) for e in open_entries]) if open_entries else Span(),
+        Details(
+            Summary(t("connectors.attention_reconciled_header", lang, n=len(reconciled)),
+                    cls="text-muted mt-md"),
+            Ul(*[_attention_item(platform, e, lang) for e in reconciled]),
+        ) if reconciled else Span(),
+        cls="connector-attention",
+    )
+
+
+def _connector_status_view(
+    platform: str, runs: dict, lang: str = "en", force_poll: bool = False,
+    attention: list[dict] = (),
+) -> FT:
     """Status table wrapped in a self-re-triggering container. While a sync is in progress
     (or force_poll, right after kicking one off) the fragment re-fetches itself every 2s
     via the one-shot `load delay` idiom - fine here because the polled endpoint is the
@@ -481,6 +507,7 @@ def _connector_status_view(platform: str, runs: dict, lang: str = "en", force_po
                  "hx_trigger": "load delay:2s", "hx_swap": "outerHTML"}
     return Div(
         _entity_status_table(runs, lang),
+        _attention_list(platform, list(attention), lang),
         id=f"connector-status-{platform}",
         cls="connector-status-view",
         **{"aria-live": "polite"},
@@ -488,9 +515,39 @@ def _connector_status_view(platform: str, runs: dict, lang: str = "en", force_po
     )
 
 
-def _connector_detail_body(c: dict, runs: dict, config, lang: str = "en") -> FT:
+def _deposit_select_row(cid: str, current: str, bank_accounts: list[dict], lang: str = "en") -> FT:
+    """Which account payments recorded from this store's orders are booked to.
+    Blank keeps the company's online-payments default; the searchable list is
+    the same active bank accounts the payments settings page offers."""
+    from ui.components.table import searchable_select
+
+    options = [("", t("connectors.deposit_default", lang))] + [
+        (ba.get("chart_account_code", ""),
+         f"{ba.get('chart_account_code', '')} - {ba.get('bank_name', '')}")
+        for ba in bank_accounts
+    ] + [("__new__", t("acct.add_bank_account", lang))]
+    return Div(
+        Span(t("connectors.deposit_label", lang) + ": ", cls="connector-label"),
+        searchable_select(
+            "woocommerce_deposit_account", options, value=current,
+            aria_label=t("connectors.deposit_label", lang),
+            hx_post=f"/settings/connectors/{cid}/deposit-account",
+            hx_trigger="change",
+            hx_target=f"#connector-deposit-{cid}",
+            hx_swap="outerHTML",
+        ),
+        id=f"connector-deposit-{cid}",
+        cls="connector-deposit-select",
+    )
+
+
+def _connector_detail_body(
+    c: dict, runs: dict, config, lang: str = "en", deposit: dict | None = None,
+    attention: list[dict] = (),
+) -> FT:
     """The reusable detail body (header actions + config + live status table). Used by the
-    full-page detail route."""
+    full-page detail route. ``deposit`` ({"current", "bank_accounts"}) renders the
+    payment deposit account row for stores whose orders record payments."""
     cid = c["id"]
     category = c.get("category", "website")
     frequency = config.sync_frequency if config else _DEFAULT_FREQUENCY.get(category, SyncFrequency.MANUAL).value
@@ -508,20 +565,44 @@ def _connector_detail_body(c: dict, runs: dict, config, lang: str = "en") -> FT:
         cls="btn btn--sm btn--outline btn--danger", style="margin-left:8px;",
         hx_delete=f"/settings/connectors/{cid}/disconnect?redirect=1",
         hx_confirm=t("connectors.disconnect_confirm", lang),
-        hx_swap="none",
+        hx_target=f"#connector-disconnect-result-{cid}",
+        hx_swap="innerHTML",
     )
     config_rows = [_direction_toggle(cid, config.direction if config else "both", lang)]
     if category == ConnectorCategory.ACCOUNTING.value:
         config_rows.append(_frequency_select(cid, frequency, lang))
+    if deposit is not None:
+        config_rows.append(_deposit_select_row(cid, deposit["current"], deposit["bank_accounts"], lang))
 
     return Div(
         Div(sync_btn, disconnect_btn, cls="connector-action-area"),
+        Div(id=f"connector-disconnect-result-{cid}"),
         Div(*config_rows, cls="connector-connected-details"),
         P(t("connectors.status", lang), cls="settings-section-title"),
-        _connector_status_view(cid, runs, lang),
+        _connector_status_view(cid, runs, lang, attention=attention),
         P(A(t("connectors.view_synced"), href=f"/inventory?source={cid}",
             cls="btn btn--sm btn--outline"), cls="connector-synced-link"),
         cls="settings-card",
+    )
+
+
+def _disconnect_failed(
+    result: dict, lang: str, *, force: bool, retry: str, target: str, swap: str, **wrapper,
+) -> FT:
+    """The outcome of a disconnect that changed nothing. Unless it was already
+    forced, it offers to disconnect anyway, with a warning."""
+    detail = result.get("detail") or result.get("error") or "disconnect_failed"
+    return Div(
+        Span(t("connectors.disconnect_failed", lang, detail=detail), cls="flash flash--warning"),
+        *([] if force else [Button(
+            t("connectors.disconnect_anyway", lang),
+            cls="btn btn--danger btn--sm",
+            hx_delete=retry,
+            hx_target=target,
+            hx_swap=swap,
+            hx_confirm=t("connectors.disconnect_anyway_confirm", lang),
+        )]),
+        **wrapper,
     )
 
 
@@ -532,10 +613,18 @@ def _connector_card(
     instance_id: str,
     config=None,
     lang: str = "en",
+    attention: int = 0,
 ) -> FT:
     cid = c["id"]
     coming_soon = c.get("status") == "coming-soon"
     connected = c.get("connected", False)
+    ownership = c.get("ownership")
+    ambiguous = ownership == "ambiguous"
+    # An authorization this company started that never finished.
+    pending = (
+        config is not None and not connected and not ambiguous
+        and c.get("auth_type") == "oauth"
+    )
     icon = _CONNECTOR_ICONS.get(cid, "🔌")
     category = c.get("category", "website")
     name = c.get("name", cid)
@@ -547,6 +636,8 @@ def _connector_card(
     # ── Status badge ──────────────────────────────────────────────────────────
     if connected:
         status_badge = Span("● " + t("connectors.connected", lang), cls="connector-badge connector-badge--connected")
+    elif pending:
+        status_badge = Span("◐ " + t("connectors.pending_title", lang), cls="connector-badge connector-badge--idle")
     elif coming_soon:
         status_badge = Span(t("connectors.coming_soon", lang), cls="connector-badge connector-badge--soon")
     else:
@@ -568,7 +659,7 @@ def _connector_card(
     # ── Connected details ─────────────────────────────────────────────────────
     connected_details = Span()
     if connected:
-        sync_info = _last_sync_info(last_run)
+        sync_info = _last_sync_info(last_run, attention)
         dir_row = _direction_toggle(cid, config.direction if config else "both", lang)
         freq_row = _frequency_select(cid, frequency, lang) if category == ConnectorCategory.ACCOUNTING.value else Span()
         connected_details = Div(
@@ -606,43 +697,100 @@ def _connector_card(
             ),
             cls="connector-action-area",
         )
+    elif ownership == "unassigned":
+        action_area = Div(
+            P(
+                t("connectors.unassigned" if c.get("can_reset") else "connectors.unassigned_ask_owner", lang),
+                cls="flash flash--warning",
+            ),
+            *([Button(
+                t("connectors.reset", lang),
+                cls="btn btn--sm btn--outline btn--danger",
+                hx_delete=f"/settings/connectors/{cid}/reset",
+                hx_target=f"#connector-card-{cid}",
+                hx_swap="outerHTML",
+                hx_confirm=t("connectors.reset_confirm", lang),
+            )] if c.get("can_reset") else []),
+            cls="connector-action-area",
+        )
+    elif ambiguous:
+        action_area = Div(
+            P(t("connectors.ambiguous", lang), cls="flash flash--warning"),
+            *([Button(
+                t("connectors.disconnect", lang),
+                cls="btn btn--sm btn--outline btn--danger",
+                hx_delete=f"/settings/connectors/{cid}/disconnect",
+                hx_target=f"#connector-card-{cid}",
+                hx_swap="outerHTML",
+                hx_confirm=t("connectors.disconnect_confirm", lang),
+            )] if c.get("local_claim") else []),
+            cls="connector-action-area",
+        )
     elif c.get("auth_type") == "oauth":
+        # Shopify needs the shop domain on every authorize; the other OAuth
+        # connectors authorize from the button alone.
+        connect_label = t("connectors.finish", lang) if pending else t("connectors.connect", lang)
         if cid == "shopify":
-            # Shopify needs the shop domain first
+            connect = Form(
+                Input(
+                    name="shop",
+                    placeholder=t("connectors.shop_url_placeholder", lang),
+                    cls="input input--sm",
+                    style="flex:1;min-width:220px;",
+                ),
+                Button(
+                    connect_label,
+                    type="submit",
+                    cls="btn btn--sm btn--primary",
+                    style="margin-left:8px;white-space:nowrap;",
+                ),
+                hx_get=f"/settings/connectors/{cid}/oauth-redirect",
+                hx_target=f"#connector-card-{cid}",
+                hx_swap="outerHTML",
+                style="display:flex;align-items:center;gap:4px;",
+            )
+        else:
+            connect = Button(
+                connect_label,
+                cls="btn btn--sm btn--primary",
+                hx_get=f"/settings/connectors/{cid}/oauth-redirect",
+                hx_target=f"#connector-card-{cid}",
+                hx_swap="outerHTML",
+            )
+        if pending:
             action_area = Div(
-                Form(
-                    Input(
-                        name="shop",
-                        placeholder=t("connectors.shop_url_placeholder", lang),
-                        cls="input input--sm",
-                        style="flex:1;min-width:220px;",
-                    ),
-                    Button(
-                        t("connectors.connect", lang),
-                        type="submit",
-                        cls="btn btn--sm btn--primary",
-                        style="margin-left:8px;white-space:nowrap;",
-                    ),
-                    hx_get=f"/settings/connectors/{cid}/oauth-redirect",
+                P(t("connectors.pending_hint", lang, name=name), cls="flash flash--info"),
+                connect,
+                Button(
+                    t("btn.cancel", lang),
+                    cls="btn btn--sm btn--outline",
+                    style="margin-left:8px;",
+                    hx_delete=f"/settings/connectors/{cid}/disconnect",
                     hx_target=f"#connector-card-{cid}",
                     hx_swap="outerHTML",
-                    style="display:flex;align-items:center;gap:4px;",
                 ),
                 cls="connector-action-area",
             )
         else:
             action_area = Div(
-                Button(
-                    t("connectors.connect", lang),
-                    cls="btn btn--sm btn--primary",
-                    hx_get=f"/settings/connectors/{cid}/oauth-redirect",
-                    hx_target=f"#connector-card-{cid}",
-                    hx_swap="outerHTML",
-                ),
+                *([P(t("connectors.other_company", lang), cls="settings-hint")]
+                  if ownership == "other" else []),
+                connect,
                 cls="connector-action-area",
             )
     else:
         # API key auth (WooCommerce)
+        disconnect = (
+            Button(
+                t("connectors.disconnect", lang),
+                cls="btn btn--sm btn--outline btn--danger",
+                hx_delete=f"/settings/connectors/{cid}/disconnect",
+                hx_target=f"#connector-card-{cid}",
+                hx_swap="outerHTML",
+                hx_confirm=t("connectors.disconnect_confirm", lang),
+            )
+            if config is not None else None
+        )
         action_area = Div(
             Form(
                 Input(name="store_url", placeholder="https://mystore.com",
@@ -658,6 +806,7 @@ def _connector_card(
                 hx_swap="outerHTML",
                 style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;",
             ),
+            *([disconnect] if disconnect is not None else []),
             cls="connector-action-area",
         )
 
@@ -711,22 +860,66 @@ def _entitlement_cta(lang: str = "en") -> FT:
     )
 
 
-async def connectors_tab_content(lang: str, token: str, category: str) -> FT:
+async def _awaiting_reconnect(company_id: str) -> list[str]:
+    """Connectors this company lost when it was deactivated and has not reconnected."""
+    from celerp.connectors.ownership import connectors_awaiting_reconnect
+    from celerp.db import get_session_ctx
+
+    try:
+        async with get_session_ctx() as session:
+            return await connectors_awaiting_reconnect(session, company_id)
+    except Exception:
+        return []
+
+
+def _reconnect_banner(names: list[str], lang: str = "en") -> FT:
+    return P(
+        t("connectors.reconnect_after_deactivation", lang, names=", ".join(names)),
+        cls="flash flash--warning",
+    )
+
+
+async def _deposit_context(token: str) -> dict:
+    """Current deposit-account choice plus the active bank accounts to pick from."""
+    from ui.api_client import get_bank_accounts, get_company
+
+    company = await get_company(token)
+    banks = await get_bank_accounts(token)
+    return {
+        "current": str(company.get("woocommerce_deposit_account") or ""),
+        "bank_accounts": list(banks.get("items", [])),
+    }
+
+
+async def connectors_tab_content(lang: str, token: str, category: str, company_id: str) -> FT:
     """Render one connectors tab: the catalog entries of a single category
     ("website" or "accounting" - each has its own tab on the Web Access page)."""
-    from celerp.config import ensure_instance_id
     from ui.config import RELAY_URL
 
     relay_url = RELAY_URL
-    iid = ensure_instance_id()
-
-    catalog, fetch_err, needs_plan = await _fetch_catalog(relay_url, iid, token=token)
+    catalog, fetch_err, needs_plan = await _fetch_catalog(relay_url, company_id, token=token)
 
     if not catalog:
         if needs_plan:
-            # Free account: the relay's 402 is an entitlement gate, not a
-            # network problem - show the trial CTA, same as the authorize path.
-            return Div(_entitlement_cta(lang), cls="settings-card")
+            owned_cards = []
+            for config in await _owned_connector_configs(company_id):
+                try:
+                    entry = _local_connector_entry(config.connector)
+                except KeyError:
+                    continue
+                if entry["category"] != category:
+                    continue
+                owned_cards.append(
+                    _connector_card(
+                        entry,
+                        None,
+                        relay_url,
+                        company_id,
+                        config=config,
+                        lang=lang,
+                    )
+                )
+            return Div(_entitlement_cta(lang), *owned_cards, cls="settings-card")
         return Div(
             P(fetch_err or t("connectors.fetch_error", lang,
                 default="Could not load connectors from relay. Check your connection."),
@@ -741,14 +934,15 @@ async def connectors_tab_content(lang: str, token: str, category: str) -> FT:
             cls="settings-card",
         )
 
-    last_runs = await _get_last_runs(iid)
+    last_runs = await _get_last_runs(company_id)
 
-    # Load configs for all connected connectors
     configs: dict[str, object] = {}
     for c in catalog:
-        if c.get("connected"):
-            cfg = await _ensure_connector_config(iid, c["id"], c.get("category", "website"))
+        cfg = await _get_connector_config(company_id, c["id"])
+        if cfg is not None:
             configs[c["id"]] = cfg
+        elif c.get("connected"):
+            c["connected"] = False
 
     # Auto-sync a freshly connected store that has never synced (e.g. just returned from
     # OAuth) so the merchant's data appears without a manual step - the activation moment.
@@ -756,16 +950,24 @@ async def connectors_tab_content(lang: str, token: str, category: str) -> FT:
     # re-render, and once any run exists this branch no longer fires.
     for c in catalog:
         if c.get("connected") and last_runs.get(c["id"]) is None:
-            spawn_background(_autosync_once(iid, c["id"], token))
+            spawn_background(_autosync_once(company_id, c["id"], token))
 
     # The tab label already names the category, so the cards render directly.
+    attention = {
+        c["id"]: _open_attention_count(await _attention(company_id, c["id"]))
+        for c in catalog if c.get("connected")
+    }
     cards = [
-        _connector_card(c, last_runs.get(c["id"]), relay_url, iid,
-                      config=configs.get(c["id"]), lang=lang)
+        _connector_card(c, last_runs.get(c["id"]), relay_url, company_id,
+                      config=configs.get(c["id"]), lang=lang,
+                      attention=attention.get(c["id"], 0))
         for c in catalog
     ]
+    names = {c["id"]: c.get("name", c["id"]) for c in catalog}
+    lost = [names[cid] for cid in await _awaiting_reconnect(company_id) if cid in names]
 
     return Div(
+        *([_reconnect_banner(lost, lang)] if lost else []),
         *cards,
         cls="settings-card",
     )
@@ -826,14 +1028,15 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.config import ensure_instance_id
+        from celerp.connectors.ownership import (
+            ConnectorOwnershipError,
+            lock_connector_operation,
+        )
         from celerp.db import get_session_ctx
-        from celerp.models.connector_config import ConnectorConfig
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
-        import sqlalchemy as sa
 
-        iid = ensure_instance_id()
+        company_id = _request_company_id(request)
         lang = get_lang(request)
         form = await request.form()
         frequency = form.get("sync_frequency", "manual")
@@ -842,22 +1045,26 @@ def setup_routes(app):
             frequency = "manual"
 
         async with get_session_ctx() as session:
-            await session.execute(
-                sa.update(ConnectorConfig)
-                .where(
-                    ConnectorConfig.company_id == iid,
-                    ConnectorConfig.connector == platform,
+            try:
+                config = await lock_connector_operation(
+                    session, company_id, platform, require_owner=True
                 )
-                .values(sync_frequency=frequency)
-            )
+            except ConnectorOwnershipError as exc:
+                await session.rollback()
+                return Span(str(exc), cls="flash flash--warning")
+            config.sync_frequency = frequency
             await session.commit()
 
-        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
-        c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
-        last_runs = await _get_last_runs(iid)
-        config = await _get_connector_config(iid, platform)
-        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid,
-                              config=config, lang=lang)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
+        c_data = next(
+            (c for c in catalog if c["id"] == platform),
+            _local_connector_entry(platform),
+        )
+        last_runs = await _get_last_runs(company_id)
+        config = await _get_connector_config(company_id, platform)
+        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id,
+                              config=config, lang=lang,
+                              attention=_open_attention_count(await _attention(company_id, platform)))
 
     @app.post("/settings/connectors/{platform}/direction")
     async def connector_set_direction(request: Request, platform: str):
@@ -870,14 +1077,15 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.config import ensure_instance_id
+        from celerp.connectors.ownership import (
+            ConnectorOwnershipError,
+            lock_connector_operation,
+        )
         from celerp.db import get_session_ctx
-        from celerp.models.connector_config import ConnectorConfig
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
-        import sqlalchemy as sa
 
-        iid = ensure_instance_id()
+        company_id = _request_company_id(request)
         lang = get_lang(request)
         form = await request.form()
         direction = form.get("direction", "both")
@@ -885,22 +1093,23 @@ def setup_routes(app):
             direction = "both"
 
         async with get_session_ctx() as session:
-            await session.execute(
-                sa.update(ConnectorConfig)
-                .where(
-                    ConnectorConfig.company_id == iid,
-                    ConnectorConfig.connector == platform,
+            try:
+                config = await lock_connector_operation(
+                    session, company_id, platform, require_owner=True
                 )
-                .values(direction=direction)
-            )
+            except ConnectorOwnershipError as exc:
+                await session.rollback()
+                return Span(str(exc), cls="flash flash--warning")
+            config.direction = direction
             await session.commit()
 
-        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
-        last_runs = await _get_last_runs(iid)
-        config = await _get_connector_config(iid, platform)
-        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid,
-                              config=config, lang=lang)
+        last_runs = await _get_last_runs(company_id)
+        config = await _get_connector_config(company_id, platform)
+        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id,
+                              config=config, lang=lang,
+                              attention=_open_attention_count(await _attention(company_id, platform)))
 
     @app.delete("/settings/connectors/{platform}/disconnect")
     async def connector_disconnect(request: Request, platform: str):
@@ -913,36 +1122,78 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.config import ensure_instance_id
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
 
-        iid = ensure_instance_id()
+        company_id = _request_company_id(request)
         lang = get_lang(request)
 
-        # Revoke on the relay via the API process proxy (which holds the relay session).
         from ui.api_client import delete_connector_credentials
+        force = request.query_params.get("force") == "1"
         try:
-            await delete_connector_credentials(token, platform)
+            revoke_result = await delete_connector_credentials(token, platform, force=force)
         except Exception as exc:
-            return Div(
-                Span(f"✗ {exc}", cls="flash flash--warning"),
-                id=f"connector-card-{platform}",
-                cls="connector-card",
+            revoke_result = {"ok": False, "detail": str(exc)}
+        if not revoke_result.get("ok"):
+            # The detail page shows the outcome under its buttons; the overview
+            # replaces the connector's card.
+            if request.query_params.get("redirect"):
+                return _disconnect_failed(
+                    revoke_result, lang, force=force,
+                    retry=f"/settings/connectors/{platform}/disconnect?force=1&redirect=1",
+                    target=f"#connector-disconnect-result-{platform}", swap="innerHTML",
+                )
+            return _disconnect_failed(
+                revoke_result, lang, force=force,
+                retry=f"/settings/connectors/{platform}/disconnect?force=1",
+                target=f"#connector-card-{platform}", swap="outerHTML",
+                id=f"connector-card-{platform}", cls="connector-card",
             )
-
-        # Clear local connector state so a later reconnect starts clean.
-        await _clear_connector_config(iid, platform)
 
         if request.query_params.get("redirect"):
             # Disconnected from the full-page detail view -> return to the overview tab.
             from starlette.responses import Response
             return Response(status_code=204, headers={"HX-Redirect": "/settings/cloud?tab=website"})
 
-        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
-        last_runs = await _get_last_runs(iid)
-        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid, lang=lang)
+        last_runs = await _get_last_runs(company_id)
+        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id, lang=lang)
+
+    @app.delete("/settings/connectors/{platform}/reset")
+    async def connector_reset(request: Request, platform: str):
+        """HTMX: reset a connection no company owns, for the whole installation."""
+        token = _token(request)
+        if not token:
+            return Span(t("error.unauthorized"), cls="flash flash--warning")
+        if (r := await _check_permission(request, "manage_integrations")):
+            return r
+        if (err := _validate_platform(platform)):
+            return err
+
+        from ui.api_client import reset_unassigned_connector
+        from ui.config import RELAY_URL
+        from ui.i18n import get_lang
+
+        company_id = _request_company_id(request)
+        lang = get_lang(request)
+        force = request.query_params.get("force") == "1"
+        try:
+            result = await reset_unassigned_connector(token, platform, force=force)
+        except Exception as exc:
+            result = {"ok": False, "detail": str(exc)}
+        if not result.get("ok"):
+            return _disconnect_failed(
+                result, lang, force=force,
+                retry=f"/settings/connectors/{platform}/reset?force=1",
+                target=f"#connector-card-{platform}", swap="outerHTML",
+                id=f"connector-card-{platform}", cls="connector-card",
+            )
+
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
+        c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
+        last_runs = await _get_last_runs(company_id)
+        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id, lang=lang)
 
     @app.post("/settings/connectors/{platform}/sync")
     async def connector_sync_now(request: Request, platform: str):
@@ -957,20 +1208,20 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.config import ensure_instance_id
-
-        iid = ensure_instance_id()
+    
+        company_id = _request_company_id(request)
         lang = get_lang(request)
 
         try:
-            await _kickoff_connector_sync(iid, platform, token)
+            await _kickoff_connector_sync(company_id, platform, token)
         except Exception as exc:
             return Span(f"✗ {exc}", cls="flash flash--warning")
 
         # Force the first poll so the view picks up the in-progress rows the background
         # task is writing.
-        runs = await _entity_runs(iid, platform)
-        return _connector_status_view(platform, runs, lang, force_poll=True)
+        runs = await _entity_runs(company_id, platform)
+        return _connector_status_view(platform, runs, lang, force_poll=True,
+                                      attention=await _attention(company_id, platform))
 
     @app.get("/settings/connectors/{platform}/status")
     async def connector_status(request: Request, platform: str):
@@ -985,12 +1236,12 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.config import ensure_instance_id
-
-        iid = ensure_instance_id()
+    
+        company_id = _request_company_id(request)
         lang = get_lang(request)
-        runs = await _entity_runs(iid, platform)
-        view = _connector_status_view(platform, runs, lang)
+        runs = await _entity_runs(company_id, platform)
+        view = _connector_status_view(platform, runs, lang,
+                                      attention=await _attention(company_id, platform))
         polling = request.query_params.get("polling") == "1"
         if polling and runs and not _any_in_progress(runs):
             ok = _overall_status(runs) != "failed"
@@ -1001,6 +1252,80 @@ def setup_routes(app):
                 headers=toast_header(msg, "success" if ok else "error"),
             )
         return view
+
+    @app.post("/settings/connectors/{platform}/deposit-account")
+    async def connector_set_deposit_account(request: Request, platform: str):
+        """HTMX: choose the account payments from this store's orders are booked to."""
+        token = _token(request)
+        if not token:
+            return Span(t("error.unauthorized"), cls="flash flash--warning")
+        if (r := await _check_permission(request, "manage_integrations")):
+            return r
+        if platform != "woocommerce":
+            return Span(t("connectors.unknown_connector", platform=platform), cls="flash flash--warning")
+
+        from starlette.responses import Response
+        from ui.api_client import APIError, patch_company
+        from ui.components.shell import flash
+
+        lang = get_lang(request)
+        form = await request.form()
+        code = str(form.get("woocommerce_deposit_account", "")).strip()
+        if code == "__new__":
+            return Response(status_code=204, headers={"HX-Redirect": "/settings/accounting/bank-accounts/new"})
+
+        deposit = await _deposit_context(token)
+        known = {ba.get("chart_account_code") for ba in deposit["bank_accounts"]}
+        if code and code not in known:
+            return Div(
+                flash(t("connectors.deposit_unknown_account", lang, code=code)),
+                _deposit_select_row(platform, deposit["current"], deposit["bank_accounts"], lang),
+                id=f"connector-deposit-{platform}",
+            )
+        try:
+            await patch_company(token, {"woocommerce_deposit_account": code})
+        except APIError as exc:
+            return Div(
+                flash(str(exc.detail)),
+                _deposit_select_row(platform, deposit["current"], deposit["bank_accounts"], lang),
+                id=f"connector-deposit-{platform}",
+            )
+        return Div(
+            flash(t("flash.saved", lang), "success"),
+            _deposit_select_row(platform, code, deposit["bank_accounts"], lang),
+            id=f"connector-deposit-{platform}",
+        )
+
+    async def _set_reconciled(request: Request, platform: str, record_id: str, mark: bool):
+        """HTMX: mark or unmark one attention entry as reconciled by hand, then
+        re-render it. Only WooCommerce orders carry this action."""
+        token = _token(request)
+        if not token:
+            return Span(t("error.unauthorized"), cls="flash flash--warning")
+        if (r := await _check_permission(request, "manage_integrations")):
+            return r
+        if platform != "woocommerce":
+            return Span(t("connectors.unknown_connector", platform=platform), cls="flash flash--warning")
+
+        from ui.api_client import APIError, set_woocommerce_order_reconciled
+
+        lang = get_lang(request)
+        signature = str((await request.form()).get("signature", "")).strip() if mark else None
+        try:
+            result = await set_woocommerce_order_reconciled(token, record_id, signature)
+        except APIError as exc:
+            entries = await _attention(_request_company_id(request), platform)
+            entry = next((e for e in entries if str(e.get("id")) == record_id), {"id": record_id})
+            return _attention_item(platform, entry, lang, error=str(exc.detail))
+        return _attention_item(platform, result["entry"], lang)
+
+    @app.post("/settings/connectors/{platform}/attention/{record_id}/reconciled")
+    async def connector_mark_reconciled(request: Request, platform: str, record_id: str):
+        return await _set_reconciled(request, platform, record_id, mark=True)
+
+    @app.delete("/settings/connectors/{platform}/attention/{record_id}/reconciled")
+    async def connector_unmark_reconciled(request: Request, platform: str, record_id: str):
+        return await _set_reconciled(request, platform, record_id, mark=False)
 
     @app.get("/settings/connectors/{platform}")
     async def connector_detail_page(request: Request, platform: str):
@@ -1016,18 +1341,18 @@ def setup_routes(app):
         if _validate_platform(platform) is not None:
             return RedirectResponse("/settings/cloud?tab=website", status_code=302)
 
-        from celerp.config import ensure_instance_id
         from ui.components.shell import base_shell, page_header
         from ui.components.table import breadcrumbs
         from ui.config import RELAY_URL
 
-        iid = ensure_instance_id()
+        company_id = _request_company_id(request)
         lang = get_lang(request)
-        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c = next((x for x in catalog if x["id"] == platform),
                  {"id": platform, "name": platform.title(), "category": "website"})
-        config = await _get_connector_config(iid, platform)
-        runs = await _entity_runs(iid, platform)
+        config = await _get_connector_config(company_id, platform)
+        runs = await _entity_runs(company_id, platform)
+        deposit = await _deposit_context(token) if platform == "woocommerce" else None
         icon = _CONNECTOR_ICONS.get(platform, "🔌")
         name = c.get("name", platform.title())
         return await base_shell(
@@ -1037,7 +1362,8 @@ def setup_routes(app):
                 A(t("connectors.back_to_connectors", lang), href=f"/settings/cloud?tab={c.get('category', 'website')}",
                   cls="btn btn--secondary btn--sm"),
             ),
-            _connector_detail_body(c, runs, config, lang),
+            _connector_detail_body(c, runs, config, lang, deposit=deposit,
+                                   attention=await _attention(company_id, platform)),
             title=f"{name} - Celerp",
             nav_active="settings",
             request=request,
@@ -1054,11 +1380,10 @@ def setup_routes(app):
         if (err := _validate_platform(platform)):
             return err
 
-        from celerp.config import ensure_instance_id
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
 
-        iid = ensure_instance_id()
+        company_id = _request_company_id(request)
         lang = get_lang(request)
         form = await request.form()
         # Canonicalise (no trailing slash) so the stored handle matches the store
@@ -1089,7 +1414,7 @@ def setup_routes(app):
         # session (the UI process has none). The proxy probes the store first, so a
         # bad key/secret/URL fails here with a clear message instead of silently
         # failing on the first background sync.
-        from ui.api_client import store_connector_credentials
+        from ui.api_client import delete_connector_credentials, store_connector_credentials
         try:
             result = await store_connector_credentials(
                 token, platform, consumer_key, consumer_secret, store_url)
@@ -1108,6 +1433,8 @@ def setup_routes(app):
                 msg = t("connectors.no_subscription", lang)
             elif err in ("store_rejected", "store_unreachable"):
                 msg = t("connectors.connect_check_failed", lang, detail=detail)
+            elif err in ("already_connected", "store_changed") and detail:
+                msg = detail
             else:
                 msg = t("connectors.connect_failed", lang)
             return Div(
@@ -1117,25 +1444,27 @@ def setup_routes(app):
             )
 
         # Create connector config with defaults
-        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
-        config = await _ensure_connector_config(iid, platform, c_data.get("category", "website"))
-
-        # Subscribe WooCommerce to real-time webhooks (best-effort; the scheduled
-        # reconciliation backstops it). Never block the connect on it.
-        if platform == "woocommerce":
-            try:
-                await _register_woocommerce_webhooks(iid, store_url, consumer_key, consumer_secret)
-            except Exception:
-                log.warning("woocommerce webhook registration failed (non-fatal)", exc_info=True)
+        config = await _get_connector_config(company_id, platform)
+        if config is None:
+            return Div(
+                Span(
+                    t("connectors.connect_failed", lang),
+                    cls="flash flash--warning",
+                ),
+                id=f"connector-card-{platform}",
+                cls="connector-card",
+            )
 
         # Auto-sync on connect so the merchant's data appears without a manual step
         # (the activation moment). Best-effort: a failure here doesn't block the connect.
         try:
-            await _kickoff_connector_sync(iid, platform, token)
+            await _kickoff_connector_sync(company_id, platform, token)
         except Exception:
             log.warning("auto-sync on connect failed (non-fatal) for %s", platform, exc_info=True)
 
-        last_runs = await _get_last_runs(iid)
-        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid,
-                              config=config, lang=lang)
+        last_runs = await _get_last_runs(company_id)
+        return _connector_card(c_data, last_runs.get(platform), RELAY_URL, company_id,
+                              config=config, lang=lang,
+                              attention=_open_attention_count(await _attention(company_id, platform)))

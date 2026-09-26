@@ -722,7 +722,11 @@ class GatewayClient:
                 # not a specific company — per-company store routing isn't modelled.)
                 if want and _shop_key(ctx.store_handle) != want:
                     continue
-                await handle_webhook(event, ctx)
+                await handle_webhook(
+                    event,
+                    ctx,
+                    expected_store_handle=ctx.store_handle,
+                )
         except Exception as exc:
             log.warning("shopify webhook handling failed (topic=%s): %s", topic, exc)
 

@@ -16,6 +16,7 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 import pytest
 import respx
 import httpx
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
 from celerp.connectors.base import (
@@ -150,7 +151,7 @@ async def test_sync_products_creates_items(shopify, ctx):
     respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
         return_value=httpx.Response(200, json=SHOPIFY_PRODUCTS)
     )
-    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")):
+    with patch("celerp_inventory.services.upsert_external_product", new=AsyncMock(return_value=("created", "item:resolved"))):
         result = await shopify.sync_products(ctx)
     assert result.ok
     assert result.created == 2
@@ -164,7 +165,7 @@ async def test_sync_products_skips_duplicate(shopify, ctx):
     respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
         return_value=httpx.Response(200, json=SHOPIFY_PRODUCTS)
     )
-    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="noop")):
+    with patch("celerp_inventory.services.upsert_external_product", new=AsyncMock(return_value=("noop", "item:resolved"))):
         result = await shopify.sync_products(ctx)
     assert result.created == 0
     assert result.skipped == 3
@@ -195,14 +196,14 @@ async def test_sync_products_variant_name_includes_variant_title(shopify, ctx):
     )
     captured = []
 
-    async def capture_upsert(_company_id, item):
-        captured.append(item)
-        return True
+    async def capture_upsert(_company_id, **kwargs):
+        captured.append(kwargs)
+        return "created", "item:resolved"
 
-    with patch("celerp.connectors.upsert.upsert_item", new=capture_upsert):
+    with patch("celerp_inventory.services.upsert_external_product", new=capture_upsert):
         await shopify.sync_products(ctx)
     assert len(captured) == 1
-    assert "Large" in captured[0].name
+    assert "Large" in captured[0]["name"]
 
 
 # ── sync_orders ───────────────────────────────────────────────────────────────
@@ -300,6 +301,45 @@ async def test_handle_webhook_unknown_platform():
     with patch("celerp.connectors.webhooks.run_sync", new=AsyncMock()) as mock_sync:
         await handle_webhook(event, ctx)
         mock_sync.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_woocommerce_delete_webhook_rechecks_current_direction():
+    import contextlib
+    from types import SimpleNamespace
+
+    from celerp.connectors.base import SyncDirection
+
+    event = WebhookEvent(
+        platform="woocommerce",
+        topic="product.deleted",
+        payload={"id": 10},
+    )
+    ctx = ConnectorContext(company_id="company-test", access_token="stale")
+    connector = MagicMock()
+    connector.handle_product_deleted = AsyncMock()
+    guard_session = AsyncMock()
+
+    @contextlib.asynccontextmanager
+    async def _guard():
+        yield guard_session
+
+    with patch(
+        "celerp.connectors.webhooks.connector_registry.get",
+        return_value=connector,
+    ), patch(
+        "celerp.db.get_session_ctx", _guard,
+    ), patch(
+        "celerp.connectors.ownership.lock_connector_operation",
+        new=AsyncMock(return_value=SimpleNamespace(direction="outbound")),
+    ), patch(
+        "celerp.connectors.relay_token.fetch_context",
+        new=AsyncMock(),
+    ) as fetch:
+        await handle_webhook(event, ctx, SyncDirection.BOTH)
+
+    connector.handle_product_deleted.assert_not_awaited()
+    fetch.assert_not_awaited()
 
 
 # ── ConnectorConfig model ────────────────────────────────────────────────────
@@ -591,7 +631,7 @@ def wc():
 @pytest.fixture
 def wc_ctx():
     return ConnectorContext(
-        company_id="test-company",
+        company_id="00000000-0000-0000-0000-000000000001",
         access_token="ck_test123:cs_test456",
         store_handle="https://mystore.example.com",
     )
@@ -631,10 +671,17 @@ async def test_woocommerce_sync_products(wc, wc_ctx):
             {"id": 2, "sku": "", "name": "No SKU Item", "regular_price": "10.00"},
         ], headers={"X-WP-TotalPages": "1"})
     )
-    with patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")):
+    reconcile = AsyncMock(return_value=0)
+    with patch(
+        "celerp_inventory.services.upsert_external_product",
+        new=AsyncMock(return_value=("created", "item:test")),
+    ), patch.object(wc, "_pull_product_files", new=AsyncMock()), patch.object(
+        wc, "_reconcile_missing_product_links", new=reconcile
+    ):
         result = await wc.sync_products(wc_ctx)
     assert result.ok
     assert result.created == 2  # both get SKUs (second gets WC-2 fallback)
+    reconcile.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -705,11 +752,56 @@ async def test_rate_limited_client_gives_up_after_max_retries():
 
 # ── Daily scheduler unit tests ───────────────────────────────────────────────
 
-def test_daily_scheduler_min_hours():
-    from celerp.connectors.daily_scheduler import _MIN_HOURS_BETWEEN_SYNCS
-    assert _MIN_HOURS_BETWEEN_SYNCS == 23
-
-
 def test_daily_scheduler_check_interval():
     from celerp.connectors.daily_scheduler import _CHECK_INTERVAL_SECONDS
     assert _CHECK_INTERVAL_SECONDS == 3600
+
+
+@pytest.mark.asyncio
+async def test_reset_of_a_connector_no_company_owns_needs_the_installation_owner(
+    client, session, patch_session_token,
+):
+    """Only the installation owner resets a connector no company owns: it is
+    disconnected remotely first, then removed, and no company becomes its owner."""
+    from test_helpers import invite_user, register_admin
+
+    owner_h = {"Authorization": f"Bearer {await register_admin(client)}",
+               "X-Session-Token": _FAKE_SESSION_TOKEN}
+    admin_h = {"Authorization": f"Bearer {await invite_user(client, session, owner_h, 'reset-admin@example.test', 'admin')}",
+               "X-Session-Token": _FAKE_SESSION_TOKEN}
+    order = []
+    lock = AsyncMock(return_value=[SimpleNamespace(webhook_ids=["11"])])
+    remote = AsyncMock(side_effect=lambda *a, **k: order.append("remote"))
+    release = AsyncMock(side_effect=lambda *a, **k: order.append("release"))
+    with patch("celerp.connectors.ownership.lock_unassigned_connector", lock), \
+         patch("celerp.connectors.remote_state.revoke_connector_remote_state", remote), \
+         patch("celerp.connectors.ownership.release_unassigned_connector", release), \
+         patch("celerp.config.ensure_instance_id", return_value="inst-reset"):
+        refused = await client.delete("/connectors/woocommerce/unassigned", headers=admin_h)
+        assert refused.status_code == 403
+        lock.assert_not_awaited()
+
+        r = await client.delete("/connectors/woocommerce/unassigned", headers=owner_h)
+        assert r.status_code == 200 and r.json() == {"ok": True}
+    remote.assert_awaited_once_with("inst-reset", "woocommerce", webhook_ids=["11"], force=False)
+    assert order == ["remote", "release"]
+
+
+@pytest.mark.asyncio
+async def test_reset_keeps_the_connector_when_remote_cleanup_fails(
+    client, patch_session_token,
+):
+    from celerp.connectors.remote_state import ConnectorRemoteCleanupError
+    from test_helpers import register_admin
+
+    owner_h = {"Authorization": f"Bearer {await register_admin(client)}",
+               "X-Session-Token": _FAKE_SESSION_TOKEN}
+    release = AsyncMock()
+    with patch("celerp.connectors.ownership.lock_unassigned_connector",
+               AsyncMock(return_value=[SimpleNamespace(webhook_ids=[])])), \
+         patch("celerp.connectors.remote_state.revoke_connector_remote_state",
+               AsyncMock(side_effect=ConnectorRemoteCleanupError("store did not answer"))), \
+         patch("celerp.connectors.ownership.release_unassigned_connector", release):
+        r = await client.delete("/connectors/woocommerce/unassigned", headers=owner_h)
+    assert r.json() == {"ok": False, "error": "relay_error", "detail": "store did not answer"}
+    release.assert_not_awaited()

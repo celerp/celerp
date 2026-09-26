@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from celerp import embedded_pg
-from celerp.db_url import sync_url
+from celerp.db_url import sync_url as sync_engine_url
 
 pytestmark = [
     pytest.mark.embedded_pg,
@@ -66,16 +66,12 @@ def config_dir(tmp_path, monkeypatch):
         shutil.rmtree(base, ignore_errors=True)
 
 
-def _sync(uri: str) -> str:
-    return sync_url(uri)
-
-
 def test_ensure_cluster_boots_and_creates_app_db(config_dir):
     uri = embedded_pg.ensure_cluster(config_dir)
     assert uri.startswith("postgresql+asyncpg://")
     assert "/celerp?" in uri  # the app database, over a unix socket
     assert ":5432" not in uri  # never a hardcoded TCP port
-    engine = create_engine(_sync(uri))
+    engine = create_engine(sync_engine_url(uri))
     try:
         with engine.connect() as conn:
             assert conn.execute(text("SELECT current_database()")).scalar() == "celerp"
@@ -92,7 +88,7 @@ def test_uri_is_stable_across_reboots(config_dir):
 
 def test_data_survives_restart(config_dir):
     uri = embedded_pg.ensure_cluster(config_dir)
-    engine = create_engine(_sync(uri))
+    engine = create_engine(sync_engine_url(uri))
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE persist_probe (id int)"))
         conn.execute(text("INSERT INTO persist_probe VALUES (42)"))
@@ -100,7 +96,7 @@ def test_data_survives_restart(config_dir):
 
     # Boot again (fresh handle) and confirm the row is still there.
     uri2 = embedded_pg.ensure_cluster(config_dir)
-    engine2 = create_engine(_sync(uri2))
+    engine2 = create_engine(sync_engine_url(uri2))
     try:
         with engine2.connect() as conn:
             assert conn.execute(text("SELECT id FROM persist_probe")).scalar() == 42
@@ -110,7 +106,7 @@ def test_data_survives_restart(config_dir):
 
 def test_wipe_removes_pgdata_and_data(config_dir):
     uri = embedded_pg.ensure_cluster(config_dir)
-    engine = create_engine(_sync(uri))
+    engine = create_engine(sync_engine_url(uri))
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE gone_after_wipe (id int)"))
     engine.dispose()
@@ -120,7 +116,7 @@ def test_wipe_removes_pgdata_and_data(config_dir):
 
     # Re-boot: a fresh cluster, so the table is gone.
     uri2 = embedded_pg.ensure_cluster(config_dir)
-    engine2 = create_engine(_sync(uri2))
+    engine2 = create_engine(sync_engine_url(uri2))
     try:
         with engine2.connect() as conn:
             present = conn.execute(text(
@@ -166,7 +162,7 @@ def test_crash_recovery(config_dir):
     import time
 
     uri = embedded_pg.ensure_cluster(config_dir)
-    engine = create_engine(_sync(uri))
+    engine = create_engine(sync_engine_url(uri))
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE crashkeep (v int)"))
         conn.execute(text("INSERT INTO crashkeep VALUES (7)"))
@@ -177,7 +173,7 @@ def test_crash_recovery(config_dir):
     time.sleep(1)
 
     uri2 = embedded_pg.ensure_cluster(config_dir)  # must recover, not raise
-    engine2 = create_engine(_sync(uri2))
+    engine2 = create_engine(sync_engine_url(uri2))
     try:
         with engine2.connect() as conn:
             assert conn.execute(text("SELECT v FROM crashkeep")).scalar() == 7
@@ -211,7 +207,7 @@ def test_backup_roundtrip_via_bundled_tools(config_dir, monkeypatch):
     import subprocess
 
     uri = embedded_pg.ensure_cluster(config_dir)
-    engine = create_engine(_sync(uri))
+    engine = create_engine(sync_engine_url(uri))
     with engine.begin() as conn:
         conn.execute(text("CREATE TABLE bk (v text)"))
         conn.execute(text("INSERT INTO bk VALUES ('roundtrip')"))
@@ -236,14 +232,14 @@ def test_backup_roundtrip_via_bundled_tools(config_dir, monkeypatch):
     r = subprocess.run([pg_dump, "-Fc", "-f", str(dump), "-d", libpq],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    engine = create_engine(_sync(_db(libpq, "postgres")), isolation_level="AUTOCOMMIT")
+    engine = create_engine(sync_engine_url(_db(libpq, "postgres")), isolation_level="AUTOCOMMIT")
     with engine.connect() as conn:
         conn.execute(text("CREATE DATABASE bkrestore"))
     engine.dispose()
     r = subprocess.run([pg_restore, "-d", _db(libpq, "bkrestore"), str(dump)],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    engine = create_engine(_sync(_db(libpq, "bkrestore")))
+    engine = create_engine(sync_engine_url(_db(libpq, "bkrestore")))
     try:
         with engine.connect() as conn:
             assert conn.execute(text("SELECT v FROM bk")).scalar() == "roundtrip"
@@ -273,7 +269,7 @@ def test_init_embedded_writes_marker_and_boots(config_dir):
     assert cfg["database"]["url"].startswith("postgresql+asyncpg://")
     assert cfg["backup"]["pg_bin_dir"] == embedded_pg.bin_dir()
     # The stored URI actually connects.
-    engine = create_engine(_sync(cfg["database"]["url"]))
+    engine = create_engine(sync_engine_url(cfg["database"]["url"]))
     try:
         with engine.connect() as conn:
             assert conn.execute(text("SELECT 1")).scalar() == 1

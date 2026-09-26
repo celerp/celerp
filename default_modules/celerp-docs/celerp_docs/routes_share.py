@@ -19,15 +19,12 @@ See celerp-cloud/SHARE_ACCEPT_FLOW.md for full spec and all failure states.
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import secrets
-import socket
 import uuid as _uuid
 from datetime import date as _date, datetime, time as _time, timedelta, timezone
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
@@ -42,6 +39,7 @@ from celerp.models.share import DocShareToken, is_active as share_is_active
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
+from celerp.services.outbound_url import validate_public_base_url
 from celerp.output.doc_print import (
     IMPORTABLE_DOC_TYPES, INVOICE_LAYOUT_DOC_TYPES,
     render_doc_print_html,
@@ -105,34 +103,11 @@ def _share_url(token: str) -> str:
 # Untrusted-input guards (SSRF, size caps, field whitelist + money recompute)
 # ---------------------------------------------------------------------------
 
-def _blocked_ip(addr: str) -> bool:
-    try:
-        ip = ipaddress.ip_address(addr)
-    except ValueError:
-        return True
-    return (ip.is_private or ip.is_loopback or ip.is_link_local
-            or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
-
-
 async def _validate_public_src(src: str) -> str:
-    """Return a cleaned https base URL, or raise if it is not a safe public host.
-
-    The recipient's instance fetches this URL server-side, so an unvalidated `src`
-    is an SSRF vector — require https and reject any host that resolves to a
-    private, loopback, link-local, or reserved address.
-    """
-    cleaned = (src or "").rstrip("/")
-    parsed = urlparse(cleaned)
-    if parsed.scheme != "https" or not parsed.hostname:
-        raise HTTPException(status_code=400, detail="Sender URL must be https")
     try:
-        infos = await asyncio.get_running_loop().getaddrinfo(
-            parsed.hostname, parsed.port or 443, proto=socket.IPPROTO_TCP)
-    except socket.gaierror:
-        raise HTTPException(status_code=400, detail="Sender URL could not be resolved")
-    if any(_blocked_ip(info[4][0]) for info in infos):
-        raise HTTPException(status_code=400, detail="Sender URL is not a public address")
-    return cleaned
+        return await validate_public_base_url(src)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 async def _read_body_capped(request: Request, limit: int) -> bytes:
@@ -703,6 +678,7 @@ async def import_shared_doc(
     src: str = Query(..., description="Sender's Celerp public URL"),
     token: str = Query(..., description="Share token from sender"),
     company_id: _uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -715,18 +691,31 @@ async def import_shared_doc(
     fetch_url = f"{src_clean}/share/{token}/bundle"
 
     try:
-        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, follow_redirects=False) as client:
-            r = await client.get(fetch_url)
-            r.raise_for_status()
-            if len(r.content) > _MAX_BUNDLE_BYTES:
-                raise HTTPException(status_code=413, detail="Bundle too large")
-            bundle = json.loads(r.content)
+        from celerp.services.outbound_url import (
+            PublicFetchTooLarge,
+            fetch_public_bytes,
+        )
+
+        r = await fetch_public_bytes(
+            fetch_url,
+            max_bytes=_MAX_BUNDLE_BYTES,
+            timeout=_FETCH_TIMEOUT,
+        )
+        if r.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail="Share link not found on sender's instance",
+            )
+        if r.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Sender's instance returned {r.status_code}",
+            )
+        bundle = json.loads(r.content)
+    except PublicFetchTooLarge as exc:
+        raise HTTPException(status_code=413, detail="Bundle too large") from exc
     except HTTPException:
         raise
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            raise HTTPException(status_code=404, detail="Share link not found on sender's instance")
-        raise HTTPException(status_code=502, detail=f"Sender's instance returned {exc.response.status_code}")
     except Exception:
         raise HTTPException(status_code=502, detail="Could not reach sender's Celerp instance")
 
@@ -737,6 +726,7 @@ async def import_shared_doc(
 async def import_bundle_upload(
     request: Request,
     company_id: _uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
@@ -801,7 +791,7 @@ async def _import_bundle(
     entity_id = f"doc:rcv:{_uuid.uuid4().hex[:12]}"
     idem_key = f"share:{token}:{company_id}" if token else f"bundle:{_uuid.uuid4().hex}"
 
-    await emit_event(
+    entry = await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
@@ -818,5 +808,5 @@ async def _import_bundle(
 
     return Response(
         status_code=302,
-        headers={"Location": f"/docs/{entity_id}"},
+        headers={"Location": f"/docs/{entry.entity_id}"},
     )

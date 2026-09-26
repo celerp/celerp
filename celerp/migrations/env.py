@@ -11,7 +11,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from celerp.db_url import sync_url
+from celerp.db_url import sync_url as sync_engine_url
 from celerp.models.base import Base
 
 # Register all models with Base.metadata by importing them.
@@ -47,7 +47,7 @@ target_metadata = Base.metadata
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/celerp")
 
-_sync_url = sync_url(DATABASE_URL)
+_sync_url = sync_engine_url(DATABASE_URL)
 
 
 def run_migrations_offline() -> None:

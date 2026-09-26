@@ -57,6 +57,7 @@ def _headers(ctx: ConnectorContext) -> dict[str, str]:
 class ShopifyConnector(ConnectorBase):
     name = "shopify"
     display_name = "Shopify"
+    store_scoped_ids = False  # Shopify ids are unique across all stores
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
     category = ConnectorCategory.WEBSITE
     direction = SyncDirection.BOTH
@@ -88,16 +89,16 @@ class ShopifyConnector(ConnectorBase):
 
     async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """
-        Pull Shopify products -> Celerp items (one item per variant).
+        Pull Shopify products into Celerp catalog product anchors (one per variant).
 
         Mapping:
           product.title + variant.title -> item.name
           variant.sku                   -> item.sku  (skipped if blank)
           variant.price                 -> item.sale_price
-          variant.inventory_quantity    -> item.quantity (informational; not authoritative)
-          product.id:variant.id         -> idempotency_key
+          variant.inventory_quantity    -> item.quantity (seeded once, for tracked variants)
+          product.id + variant.id       -> the item's Shopify link
         """
-        from celerp_inventory.routes import ItemCreate
+        from celerp_inventory.services import upsert_external_product
 
         result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
@@ -120,25 +121,28 @@ class ShopifyConnector(ConnectorBase):
                 if variant_title and variant_title.lower() != "default title":
                     name = f"{name} - {variant_title}"
 
-                idempotency_key = f"shopify:{product['id']}:{variant['id']}"
-
-                item = ItemCreate(
-                    sku=sku,
-                    name=name,
-                    sell_by="piece",
-                    sale_price=money(variant.get("price")),
-                    quantity=float(variant.get("inventory_quantity") or 0),
-                    idempotency_key=idempotency_key,
-                )
-
                 try:
-                    result.record(await _upsert.upsert_item(ctx.company_id, item))
+                    outcome, entity_id = await upsert_external_product(
+                        ctx.company_id,
+                        platform="shopify",
+                        product_id=str(product["id"]),
+                        variation_id=str(variant["id"]),
+                        sku=sku,
+                        name=name,
+                        sale_price=money(variant.get("price")),
+                        quantity=float(variant.get("inventory_quantity") or 0),
+                        seed_quantity=variant.get("inventory_management") == "shopify",
+                        sell_by="piece",
+                    )
                 except Exception as exc:
                     errors.append(f"SKU {sku}: {exc}")
                     continue
+                result.record(outcome)
+                if outcome == "disabled":
+                    continue
                 # Pull product images after upsert (idempotent, best-effort)
                 try:
-                    await self._pull_product_images(ctx, product, sku)
+                    await self._pull_product_images(ctx, product, entity_id)
                 except Exception as img_exc:
                     log.warning("shopify image pull failed for SKU %s: %s", sku, img_exc)
 
@@ -149,39 +153,23 @@ class ShopifyConnector(ConnectorBase):
         )
         return result
 
-    async def _pull_product_images(self, ctx: ConnectorContext, product: dict[str, Any], sku: str) -> None:
-        """Pull images from a Shopify product and store as item files."""
+    async def _pull_product_images(self, ctx: ConnectorContext, product: dict[str, Any], entity_id: str) -> None:
+        """Pull images from a Shopify product and store them as the item's files."""
         from celerp.db import get_session_ctx as get_async_session
-        from celerp.models.projections import Projection
         from celerp.connectors.images import download_and_emit_file
-        from sqlalchemy import select
 
         images: list[dict] = product.get("images", [])
-
-        import uuid as _uuid
-
-        from sqlalchemy import func
+        if not images:
+            return
 
         async with get_async_session() as session:
-            # Resolve the item by SKU with a single DB-side, case-insensitive
-            # query that returns just the matching row.
-            row = (await session.execute(
-                select(Projection).where(
-                    Projection.company_id == _uuid.UUID(str(ctx.company_id)),
-                    Projection.entity_type == "item",
-                    func.lower(Projection.state["sku"].as_string()) == sku.strip().lower(),
-                ).limit(1)
-            )).scalar_one_or_none()
-            if row is None:
-                return
-
             for img in sorted(images, key=lambda x: x.get("position", 99)):
                 src = img.get("src")
                 if not src:
                     continue
                 fname = img.get("alt") or f"product-{img.get('id', '')}.jpg"
                 await download_and_emit_file(
-                    session, ctx.company_id, row.entity_id,
+                    session, ctx.company_id, entity_id,
                     "system", src, fname, "product_images", is_hero=(img.get("position", 99) == 1)
                 )
             await session.commit()

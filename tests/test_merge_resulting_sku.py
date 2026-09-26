@@ -90,3 +90,18 @@ async def test_merged_into_sku_matches_custom(client):
     rows = (await client.get("/ledger", params={"entity_id": a, "limit": 100}, headers=h)).json()["items"]
     dea = [e for e in rows if e["event_type"] == "item.source_deactivated"]
     assert dea and dea[0]["data"]["merged_into_sku"] == "NEWSKU"
+
+
+@pytest.mark.asyncio
+async def test_merge_target_must_be_one_of_sources(client):
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    a = await _seed(client, h, "MERGE-A")
+    b = await _seed(client, h, "MERGE-B")
+    outsider = await _seed(client, h, "MERGE-X")
+
+    r = await client.post(
+        "/items/merge",
+        json={"source_entity_ids": [a, b], "target_sku_from": outsider},
+        headers=h,
+    )
+    assert r.status_code == 422, r.text

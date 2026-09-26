@@ -34,6 +34,21 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     return await docs_svc.upsert_order_from_woocommerce(company_id, order)
 
 
+def woocommerce_reconciliation_signature(order: dict) -> str:
+    from celerp_docs import doc_service as docs_svc
+    return docs_svc.woocommerce_reconciliation_signature(order)
+
+
+async def list_imported_woocommerce_order_ids(company_id: str) -> list[str]:
+    from celerp_docs import doc_service as docs_svc
+    return await docs_svc.list_imported_woocommerce_order_ids(company_id)
+
+
+async def hold_missing_woocommerce_order(company_id: str, order_id: str) -> dict | None:
+    from celerp_docs import doc_service as docs_svc
+    return await docs_svc.hold_missing_woocommerce_order(company_id, order_id)
+
+
 async def upsert_contact_from_shopify(company_id: str, customer: dict) -> str:
     from celerp_contacts import services as contacts_svc
     return await contacts_svc.upsert_contact_from_shopify(company_id, customer)
@@ -59,6 +74,15 @@ async def upsert_contact_from_woocommerce(company_id: str, customer: dict) -> st
 async def list_items_with_external_id(company_id: str, platform: str) -> list:
     from celerp_inventory import services as items_svc
     return await items_svc.list_items_with_external_id(company_id, platform=platform)
+
+
+async def list_item_for_external_identity(
+    company_id: str, platform: str, product_id: str, variation_id: str | None
+) -> list:
+    from celerp_inventory import services as items_svc
+    return await items_svc.list_item_for_external_identity(
+        company_id, platform, product_id, variation_id
+    )
 
 
 async def list_items_modified_since_last_sync(company_id: str, platform: str) -> list:

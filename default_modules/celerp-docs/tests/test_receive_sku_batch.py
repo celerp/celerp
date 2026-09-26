@@ -69,5 +69,6 @@ async def test_receiving_same_sku_twice_makes_distinct_barcoded_parcels(client):
     barcodes = [p.get("barcode") for p in parcels]
     assert all(b for b in barcodes), f"received parcels must be barcoded: {barcodes}"
     assert len(set(barcodes)) == 2, f"barcodes must be distinct: {barcodes}"
+    assert all(p.get("catalog_item_id") == goods for p in parcels)
     # Quantities are the two independent lots (no merge across the shared sku).
     assert sorted(float(p["quantity"]) for p in parcels) == [3.0, 5.0]

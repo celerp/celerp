@@ -83,6 +83,12 @@ class SyncResult:
     updated: int = 0
     skipped: int = 0
     errors: list[str] | None = None
+    # Records the run could not import and that a person must resolve, one
+    # dict per record: {"id", "label", "reason"}. They do not fail the run;
+    # the next run retries them and keeps the ones that still fail. A sync
+    # that tracks attention always returns a list (empty when nothing waits);
+    # None means the run produced no list and the previous one stands.
+    attention: list[dict] | None = None
 
     @property
     def ok(self) -> bool:
@@ -98,6 +104,23 @@ class SyncResult:
             self.skipped += 1
 
 
+def store_holds_records(matches: list[bool]) -> bool:
+    """A store holds imported records when most of the sampled records match
+    it, one entry per sampled record, a record the store did not return
+    counting as a mismatch. One edited record does not disprove it."""
+    return bool(matches) and sum(matches) * 2 > len(matches)
+
+
+def contact_matches(stored: dict, remote: dict) -> bool:
+    """A store's customer is the imported contact when it has the same email,
+    or the same phone when there is no email, or the same name when there is
+    neither."""
+    for key in ("email", "phone", "name"):
+        if stored.get(key):
+            return str(stored[key]).strip().casefold() == str(remote.get(key) or "").strip().casefold()
+    return False
+
+
 class ConnectorBase(ABC):
     """Abstract base for all platform connectors (inbound + outbound)."""
 
@@ -107,6 +130,15 @@ class ConnectorBase(ABC):
     direction: SyncDirection
     category: ConnectorCategory
     conflict_strategy: dict[str, str]
+
+    # Order and customer numbers are only unique within one store, so imported
+    # records are tied to the store they came from (see bind_connector_store).
+    store_scoped_ids: bool = True
+
+    async def same_store(self, ctx: ConnectorContext, records: list[dict]) -> bool:
+        """True when the store in ctx still holds most of these imported
+        document states. Connectors that cannot tell return False."""
+        return False
 
     @abstractmethod
     async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
@@ -144,8 +176,11 @@ class ConnectorBase(ABC):
         """Register platform webhooks. Returns list of webhook IDs. Override if supported."""
         return []
 
-    async def deregister_webhooks(self, ctx: ConnectorContext, webhook_ids: list[str]) -> None:
-        """Remove registered webhooks. Override if supported."""
+    async def deregister_webhooks(
+        self, ctx: ConnectorContext, webhook_url: str, webhook_ids: list[str]
+    ) -> None:
+        """Remove the known webhooks and any others delivering to `webhook_url`.
+        Override if supported."""
         pass
 
     def webhook_topics_for_direction(self, direction: SyncDirection) -> list[str]:

@@ -53,6 +53,7 @@ def _headers(ctx: ConnectorContext) -> dict[str, str]:
 class XeroConnector(ConnectorBase):
     name = "xero"
     display_name = "Xero"
+    store_scoped_ids = False  # Xero ids are unique across all organisations
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
     category = ConnectorCategory.ACCOUNTING
     direction = SyncDirection.BOTH

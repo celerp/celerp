@@ -35,6 +35,13 @@ async def _reg(client) -> str:
     return r.json()["access_token"]
 
 
+def _ids(tok: str) -> tuple[uuid.UUID, uuid.UUID]:
+    """The registering company and user, read from its own token."""
+    from celerp.services.auth import decode_access_token
+    claims = decode_access_token(tok)
+    return uuid.UUID(str(claims["company_id"])), uuid.UUID(str(claims["sub"]))
+
+
 def _h(tok: str) -> dict:
     return {"Authorization": f"Bearer {tok}"}
 
@@ -682,15 +689,12 @@ async def test_extended_journal_leaves_a_fulfilment_cost_posting_as_no_items(cli
     `no_items`, not `untied`: tie-checking a cost posting against sale-price lines
     would flag every fulfilled sale as an entry whose figures did not tie."""
     from celerp.services.auto_je import create_for_doc_fulfilled
-    from celerp.models.company import Company, User
-    from sqlalchemy import select as _select
 
     tok = await _reg(client)
     # Finalized, so the document is still in the books: this proves the entry reads
     # `no_items` on its own merits, not `no_document` because the doc had gone.
     doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 60.0)])
-    company_id = (await session.execute(_select(Company.id))).scalars().first()
-    user_id = (await session.execute(_select(User.id))).scalars().first()
+    company_id, user_id = _ids(tok)
     await create_for_doc_fulfilled(session, company_id=company_id, user_id=user_id,
                                    doc_id=doc, total_cogs=42.0, ts="2026-02-02")
     await session.commit()
@@ -2044,12 +2048,10 @@ async def test_an_entry_posted_before_per_line_currency_still_reads_back(client,
     """Stored events are immutable, so an entry recorded when the currency and
     rate belonged to the whole entry has to render now. Its lines inherit it."""
     from celerp.events.engine import emit_event
-    from celerp.models.company import Company
-    from sqlalchemy import select as _select
 
     tok = await _reg(client)
     await _thb(client, tok)
-    company_id = (await session.execute(_select(Company.id))).scalars().first()
+    company_id, _ = _ids(tok)
     je_id = f"je:manual:{uuid.uuid4().hex}"
     await emit_event(
         session,

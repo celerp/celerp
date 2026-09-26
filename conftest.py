@@ -447,10 +447,12 @@ def _reset_gateway_state():
     # setter for commercial context rejects a non-newer version, so restore its
     # global directly rather than through set_commercial_context.
     _flags, _ctx = _gw.get_feature_flags(), _gw.get_commercial_context()
+    _sub = _gw.get_subscription_state()
     yield
     _gw.set_instance_id(_iid)
     _gw.set_session_token(_tok)
     _gw.set_feature_flags(_flags)
+    _gw.set_subscription_state(*_sub)
     _gw._commercial_context = _ctx
     # Gateway-lifecycle globals: a test that patches asyncio.create_task while the
     # real ensure_running() runs leaves celerp.gateway._run_task a MagicMock (and
