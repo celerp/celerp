@@ -5,6 +5,9 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
+import time
 
 import pytest
 
@@ -79,3 +82,23 @@ def test_release_env_for_another_release_drops_the_running_one(tmp_path):
     env = runtime.release_env(new, runtime.release_env(old, {}))
     assert env["PYTHONPATH"] == str(new)
     assert "PYTHONPATH" not in runtime.base_env(runtime.release_env(old, {}))
+
+
+def test_supervised_process_exits_when_parent_pipe_closes():
+    env = os.environ.copy()
+    env[runtime.SUPERVISOR_PIPE_ENV] = "1"
+    code = (
+        "from celerp import runtime; import time; "
+        "runtime.watch_supervisor_pipe(); time.sleep(30)"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE, env=env)
+    try:
+        time.sleep(0.1)
+        assert proc.poll() is None
+        assert proc.stdin is not None
+        proc.stdin.close()
+        assert proc.wait(timeout=5) == 1
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()

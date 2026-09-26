@@ -24,6 +24,7 @@ from pathlib import Path
 from packaging.version import InvalidVersion, Version
 
 PKG_ROOT_ENV = "CELERP_PKG_ROOT"  # set in every process running a release directory
+SUPERVISOR_PIPE_ENV = "CELERP_SUPERVISOR_PIPE"
 _PARTIAL = ".partial"
 
 
@@ -91,6 +92,29 @@ def prune(keep: set[str]) -> None:
     for path in root.iterdir() if root.is_dir() else ():
         if path.is_dir() and path.name not in keep:
             shutil.rmtree(path, ignore_errors=True)
+
+
+def watch_supervisor_pipe() -> None:
+    """Exit a supervised server when the process that launched it disappears.
+
+    celerp start gives each API/UI child an anonymous stdin pipe whose write
+    end exists only in the supervisor. EOF therefore means the supervisor died,
+    including a hard kill, without PID files or platform-specific process APIs.
+    """
+    if os.environ.get(SUPERVISOR_PIPE_ENV) != "1":
+        return
+
+    import threading
+
+    def _watch() -> None:
+        try:
+            while os.read(0, 1):
+                pass
+        except OSError:
+            pass
+        os._exit(1)
+
+    threading.Thread(target=_watch, name="supervisor-watch", daemon=True).start()
 
 
 def base_env(env: dict | None = None) -> dict:

@@ -1126,10 +1126,15 @@ def _wait_ready(api: tuple, ui: tuple, timeout: float = 180.0) -> bool:
 
 
 def _spawn_server(app: str, host: str, env: dict, port: int) -> subprocess.Popen:
+    from celerp import runtime
+
+    child_env = dict(env)
+    child_env[runtime.SUPERVISOR_PIPE_ENV] = "1"
     return subprocess.Popen(
         [sys.executable, "-m", "uvicorn", app, "--host", host, "--port", str(port),
          "--timeout-graceful-shutdown", "3"],
-        env=env,
+        env=child_env,
+        stdin=subprocess.PIPE,
     )
 
 

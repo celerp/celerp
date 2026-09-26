@@ -482,7 +482,7 @@ def test_start_respawns_api_on_sentinel(tmp_path):
         def terminate(self): pass
         def wait(self): pass
 
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env, **kwargs):
         spawn_calls.append(list(cmd))
         if _is_api_cmd(cmd):
             api_n = sum(1 for c in spawn_calls if _is_api_cmd(c))
@@ -542,7 +542,7 @@ def test_start_exits_without_sentinel(tmp_path):
         def terminate(self): pass
         def wait(self): pass
 
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env, **kwargs):
         spawn_calls.append(list(cmd))
         return _Proc(dead=True, code=1) if _is_api_cmd(cmd) else _Proc()
 
@@ -561,6 +561,19 @@ def test_start_exits_without_sentinel(tmp_path):
     assert exc.value.code == 1
     assert len([c for c in spawn_calls if _is_api_cmd(c)]) == 1, "No respawn without sentinel"
 
+
+def test_spawn_server_gives_children_a_supervisor_lifetime_pipe():
+    from celerp import runtime
+    from celerp.cli import _spawn_server
+
+    env = {"EXAMPLE": "1"}
+    with patch("celerp.cli.subprocess.Popen") as popen:
+        _spawn_server("celerp.main:app", "127.0.0.1", env, 8000)
+
+    kwargs = popen.call_args.kwargs
+    assert kwargs["stdin"] is subprocess.PIPE
+    assert kwargs["env"][runtime.SUPERVISOR_PIPE_ENV] == "1"
+    assert runtime.SUPERVISOR_PIPE_ENV not in env
 
 # ── celerp init --force purges files (#160) ──────────────────────────────────
 

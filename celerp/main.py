@@ -12,7 +12,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from celerp import __version__
+from celerp import __version__, runtime as _runtime
+_runtime.watch_supervisor_pipe()
 from celerp.db import engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import CodeConflictError
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config

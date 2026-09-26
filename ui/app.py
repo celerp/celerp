@@ -15,6 +15,8 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
+from celerp import runtime as _runtime
+_runtime.watch_supervisor_pipe()
 from celerp.config import settings
 
 # Set log level from settings (LOG_LEVEL env var, default INFO).
