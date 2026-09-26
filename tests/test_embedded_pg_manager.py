@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,7 +28,9 @@ def _ok(*a, **k):
 
 
 def _fail(*a, **k):
-    return subprocess.CompletedProcess(a, 1, stdout="boom-out", stderr="boom-err")
+    k["stdout"].write("boom-out")
+    k["stderr"].write("boom-err")
+    return subprocess.CompletedProcess(a, 1)
 
 
 @pytest.fixture(autouse=True)
@@ -149,3 +153,19 @@ def test_env_sets_icu_data_when_bundled(monkeypatch):
     monkeypatch.setitem(_sys.modules, "celerp_postgres", FakeCPNone)
     # No bundled data (glibc/mac/win wheels): ambient env passes through untouched.
     assert _REAL_ENV().get("ICU_DATA") == os.environ.get("ICU_DATA")
+
+
+def test_tool_that_leaves_a_process_running_returns():
+    """pg_ctl start leaves the server running with pg_ctl's handles; the call
+    returns when pg_ctl does, not when the server exits."""
+    leave_running = ("import subprocess, sys; "
+                     "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'])")
+    began = time.monotonic()
+    embedded_pg._run([sys.executable, "-c", leave_running], "start")
+    assert time.monotonic() - began < 10
+
+
+def test_tool_that_never_returns_fails_the_step(tmp_path, monkeypatch):
+    monkeypatch.setattr(embedded_pg, "_TOOL_TIMEOUT", 1)
+    with pytest.raises(RuntimeError, match="did not finish within 1s"):
+        embedded_pg._run([sys.executable, "-c", "import time; time.sleep(30)"], "stuck")

@@ -24,6 +24,7 @@ import hashlib
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 # Name of the application database created inside the embedded cluster. The
@@ -121,8 +122,33 @@ def _win_port(pgdata: Path) -> int:
     return port
 
 
+# pg_ctl waits up to 60s itself; this bounds a tool that never returns.
+_TOOL_TIMEOUT = 180
+
+
+def _exec(cmd: list[str], cwd: str | None = None) -> subprocess.CompletedProcess:
+    """Run a PostgreSQL tool, output through files rather than pipes.
+
+    `pg_ctl start` leaves the server running, and on Windows the server
+    inherits whatever handles pg_ctl had. A pipe it inherits never reaches
+    end-of-file, so reading pg_ctl's output would wait for as long as the
+    server runs."""
+    with tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as out, \
+            tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as err:
+        try:
+            r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                               env=_env(), cwd=cwd, timeout=_TOOL_TIMEOUT)
+            code = r.returncode
+        except subprocess.TimeoutExpired:
+            code = -1
+            err.write(f"\ndid not finish within {_TOOL_TIMEOUT}s")
+        out.seek(0)
+        err.seek(0)
+        return subprocess.CompletedProcess(cmd, code, out.read(), err.read())
+
+
 def _run(cmd: list[str], fail_hint: str, cwd: str | None = None) -> subprocess.CompletedProcess:
-    r = subprocess.run(cmd, capture_output=True, text=True, env=_env(), cwd=cwd)
+    r = _exec(cmd, cwd=cwd)
     if r.returncode:
         raise RuntimeError(
             f"{fail_hint} (rc={r.returncode})\n"
@@ -132,11 +158,7 @@ def _run(cmd: list[str], fail_hint: str, cwd: str | None = None) -> subprocess.C
 
 
 def _is_running(pgdata: Path) -> bool:
-    r = subprocess.run(
-        [_tool("pg_ctl"), "status", "-D", str(pgdata)],
-        capture_output=True, text=True, env=_env(),
-    )
-    return r.returncode == 0
+    return _exec([_tool("pg_ctl"), "status", "-D", str(pgdata)]).returncode == 0
 
 
 def _initdb(pgdata: Path) -> None:
@@ -191,10 +213,7 @@ def _start(pgdata: Path) -> tuple[str, int | None]:
 def _stop_all() -> None:
     """atexit: stop every postmaster this process started (data preserved)."""
     for pgdata in list(_STARTED):
-        subprocess.run(
-            [_tool("pg_ctl"), "-D", str(pgdata), "-w", "-t", "30", "-m", "fast", "stop"],
-            capture_output=True, text=True, env=_env(),
-        )
+        _exec([_tool("pg_ctl"), "-D", str(pgdata), "-w", "-t", "30", "-m", "fast", "stop"])
         _STARTED.discard(pgdata)
 
 
