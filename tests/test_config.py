@@ -541,3 +541,37 @@ def test_ensure_connect_identity_persists_pair_in_one_rmw(tmp_path, monkeypatch)
     assert cfg["cloud"]["activation_verifier"] == verifier
     assert mod.ensure_connect_identity() == (iid, verifier)
     assert calls == 1
+
+
+class TestUpdatesSection:
+    """[updates] auto survives a write in both states; absent means on."""
+
+    @pytest.mark.parametrize("auto", [True, False])
+    def test_write_config_roundtrips_auto(self, tmp_path, monkeypatch, auto):
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({"updates": {"auto": auto}, "modules": {"enabled": []}})
+        assert f"auto = {str(auto).lower()}" in cfg_file.read_text()
+        assert mod.read_config()["updates"]["auto"] is auto
+
+    def test_write_config_without_updates_writes_no_section(self, tmp_path, monkeypatch):
+        mod, cfg_file = _reload_config(tmp_path, monkeypatch)
+        mod.write_config({"modules": {"enabled": []}})
+        assert "[updates]" not in cfg_file.read_text()
+
+
+def test_write_config_roundtrips_windows_paths_and_quotes(tmp_path, monkeypatch):
+    """Backslashes and quotes in values come back exactly as written."""
+    mod, _ = _reload_config(tmp_path, monkeypatch)
+    cfg = {
+        "database": {"url": "postgresql://u:p@127.0.0.1:5432/celerp", "embedded": True},
+        "backup": {"pg_bin_dir": "C:\\Users\\Owner\\AppData\\celerp_postgres\\bin"},
+        "storage": {"backend": "local", "s3_endpoint": "", "s3_bucket": 'say "hi"',
+                    "s3_access_key": "", "s3_secret_key": "caf\u00e9"},
+        "modules": {"enabled": ["celerp-inventory"]},
+    }
+    mod.write_config(cfg)
+    back = mod.read_config()
+    assert back["backup"]["pg_bin_dir"] == cfg["backup"]["pg_bin_dir"]
+    assert back["storage"]["s3_bucket"] == 'say "hi"'
+    assert back["storage"]["s3_secret_key"] == "caf\u00e9"
+    assert back["modules"]["enabled"] == ["celerp-inventory"]

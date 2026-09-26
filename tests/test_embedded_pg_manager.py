@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import os
 import subprocess
-from pathlib import Path
+import sys
+import time
 from unittest.mock import patch
 
 import pytest
@@ -26,7 +27,9 @@ def _ok(*a, **k):
 
 
 def _fail(*a, **k):
-    return subprocess.CompletedProcess(a, 1, stdout="boom-out", stderr="boom-err")
+    k["stdout"].write("boom-out")
+    k["stderr"].write("boom-err")
+    return subprocess.CompletedProcess(a, 1)
 
 
 @pytest.fixture(autouse=True)
@@ -82,6 +85,33 @@ def test_start_registers_atexit_stop(tmp_path):
         embedded_pg._start(tmp_path)
     assert tmp_path in embedded_pg._STARTED
     mreg.assert_called_once_with(embedded_pg._stop_all)
+
+
+@pytest.mark.parametrize("own", [False, True])
+def test_ensure_cluster_takes_over_a_running_cluster_only_when_owning(tmp_path, own):
+    """A cluster left running by a crashed server is stopped at exit by the
+    next server (own=True); other commands leave it running."""
+    pgdata = embedded_pg.pgdata_dir(tmp_path.resolve())
+    pgdata.mkdir(parents=True)
+    (pgdata / "PG_VERSION").write_text("17")
+    with patch.object(embedded_pg, "_is_running", return_value=True), \
+         patch.object(embedded_pg, "_ensure_app_database"), \
+         patch("subprocess.run", side_effect=_ok), \
+         patch("atexit.register") as mreg:
+        embedded_pg.ensure_cluster(tmp_path, own=own)
+    assert (pgdata in embedded_pg._STARTED) is own
+    assert mreg.called is own
+
+
+def test_atexit_force_stops_when_pg_ctl_stop_fails(tmp_path):
+    embedded_pg._STARTED.add(tmp_path)
+    failed = subprocess.CompletedProcess(["pg_ctl"], 1, stdout="", stderr="stop failed")
+    with patch.object(embedded_pg, "_exec", return_value=failed), \
+         patch.object(embedded_pg, "_force_stop_postmaster") as force:
+        embedded_pg._stop_all()
+
+    force.assert_called_once_with(tmp_path)
+    assert tmp_path not in embedded_pg._STARTED
 
 
 def test_start_failure_surfaces_server_log(tmp_path):
@@ -149,3 +179,34 @@ def test_env_sets_icu_data_when_bundled(monkeypatch):
     monkeypatch.setitem(_sys.modules, "celerp_postgres", FakeCPNone)
     # No bundled data (glibc/mac/win wheels): ambient env passes through untouched.
     assert _REAL_ENV().get("ICU_DATA") == os.environ.get("ICU_DATA")
+
+
+def test_force_stop_refuses_pid_for_another_process(tmp_path, monkeypatch):
+    pgdata = tmp_path / "pgdata"
+    pgdata.mkdir()
+    (pgdata / "postmaster.pid").write_text("123\n")
+
+    class Other:
+        def name(self): return "python"
+        def cmdline(self): return ["python", "-D", str(pgdata)]
+        def terminate(self): raise AssertionError("unrelated process was terminated")
+
+    import psutil
+    monkeypatch.setattr(psutil, "Process", lambda pid: Other())
+    embedded_pg._force_stop_postmaster(pgdata)
+
+
+def test_tool_that_leaves_a_process_running_returns():
+    """pg_ctl start leaves the server running with pg_ctl's handles; the call
+    returns when pg_ctl does, not when the server exits."""
+    leave_running = ("import subprocess, sys; "
+                     "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'])")
+    began = time.monotonic()
+    embedded_pg._run([sys.executable, "-c", leave_running], "start")
+    assert time.monotonic() - began < 10
+
+
+def test_tool_that_never_returns_fails_the_step(tmp_path, monkeypatch):
+    monkeypatch.setattr(embedded_pg, "_TOOL_TIMEOUT", 1)
+    with pytest.raises(RuntimeError, match="did not finish within 1s"):
+        embedded_pg._run([sys.executable, "-c", "import time; time.sleep(30)"], "stuck")

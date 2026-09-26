@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 import sys
@@ -451,6 +452,29 @@ def test_start_migrates_before_launching(tmp_path, valid_cfg):
     assert "spawn" in order
 
 
+def test_start_locks_before_owning_embedded_database(valid_cfg):
+    """A losing second start must not adopt and then stop the live server's
+    embedded PostgreSQL when it fails the installation-wide lock."""
+    from celerp.cli import _start
+
+    order = []
+    release = lambda: order.append("unlock")
+
+    with patch(
+        "celerp.cli._hold_update_lock",
+        side_effect=lambda what: order.append("lock") or release,
+    ), patch(
+        "celerp.cli.ensure_database",
+        side_effect=lambda cfg, own=False: order.append(("database", own)),
+    ), patch(
+        "celerp.cli._supervise",
+        side_effect=lambda cfg, held: order.append("supervise"),
+    ):
+        _start(valid_cfg)
+
+    assert order == ["lock", ("database", True), "supervise", "unlock"]
+
+
 # ── _start sentinel-based respawn ────────────────────────────────────────────
 
 def _is_api_cmd(cmd):
@@ -463,7 +487,6 @@ def test_start_respawns_api_on_sentinel(tmp_path):
     from celerp.cli import _start
 
     sentinel_path = tmp_path / ".restart_requested"
-    sentinel_path.touch()
 
     cfg = {
         "server": {"api_port": 8000, "ui_port": 8080},
@@ -482,11 +505,14 @@ def test_start_respawns_api_on_sentinel(tmp_path):
         def terminate(self): pass
         def wait(self): pass
 
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env, **kwargs):
         spawn_calls.append(list(cmd))
         if _is_api_cmd(cmd):
             api_n = sum(1 for c in spawn_calls if _is_api_cmd(c))
-            return _Proc(dead=True, code=0) if api_n == 1 else _Proc()
+            if api_n == 1:
+                sentinel_path.touch()  # the running API asks for a restart
+                return _Proc(dead=True, code=0)
+            return _Proc()
         return _Proc()
 
     sleep_calls = [0]
@@ -539,7 +565,7 @@ def test_start_exits_without_sentinel(tmp_path):
         def terminate(self): pass
         def wait(self): pass
 
-    def fake_popen(cmd, env):
+    def fake_popen(cmd, env, **kwargs):
         spawn_calls.append(list(cmd))
         return _Proc(dead=True, code=1) if _is_api_cmd(cmd) else _Proc()
 
@@ -557,6 +583,32 @@ def test_start_exits_without_sentinel(tmp_path):
 
     assert exc.value.code == 1
     assert len([c for c in spawn_calls if _is_api_cmd(c)]) == 1, "No respawn without sentinel"
+
+
+def test_spawn_server_gives_children_a_supervisor_lifetime_pipe():
+    from celerp import runtime
+    from celerp.cli import _spawn_server
+
+    env = {"EXAMPLE": "1"}
+    with patch("celerp.cli.subprocess.Popen") as popen:
+        _spawn_server("celerp.main:app", "127.0.0.1", env, 8000)
+
+    kwargs = popen.call_args.kwargs
+    assert kwargs["stdin"] is subprocess.PIPE
+    assert kwargs["env"][runtime.SUPERVISOR_PIPE_ENV] == "1"
+    assert runtime.SUPERVISOR_PIPE_ENV not in env
+
+
+def test_update_verification_servers_bind_only_to_loopback(valid_cfg):
+    from celerp.cli import _update_steps
+
+    with patch("celerp.cli._spawn_server") as spawn:
+        steps = _update_steps(valid_cfg)
+        steps._spawn_api({}, 8000)
+        steps._spawn_ui({}, 8080)
+
+    assert spawn.call_args_list[0].args[:2] == ("celerp.main:app", "127.0.0.1")
+    assert spawn.call_args_list[1].args[:2] == ("ui.app:app", "127.0.0.1")
 
 
 # ── celerp init --force purges files (#160) ──────────────────────────────────
@@ -634,7 +686,7 @@ def test_wait_ready_ui_url_waits_for_api(capsys):
 
     t = threading.Thread(target=_api_listens_later)
     t.start()
-    _wait_ready((FakeProc(), api_port), (FakeProc(), ui_port), timeout=10)
+    assert _wait_ready((FakeProc(), api_port), (FakeProc(), ui_port), timeout=10) is True
     t.join()
     api_srv.close()
     ui_srv.close()
@@ -656,7 +708,7 @@ def test_wait_ready_skips_dead_process(capsys):
         def poll(self):
             return 1
 
-    _wait_ready((DeadProc(), 1), (DeadProc(), 2), timeout=2)
+    assert _wait_ready((DeadProc(), 1), (DeadProc(), 2), timeout=2) is False
     assert "ready" not in capsys.readouterr().out
 
 
@@ -777,3 +829,18 @@ def test_sync_db_url_names_the_psycopg2_driver():
     assert sync_db_url("postgresql://u:p@h:5432/db") == "postgresql+psycopg2://u:p@h:5432/db"
     assert sync_db_url("postgresql+psycopg2://u:p@h/db") == "postgresql+psycopg2://u:p@h/db"
     assert sync_db_url("sqlite+aiosqlite:///x.db") == "sqlite+aiosqlite:///x.db"
+
+
+def test_output_sent_to_a_legacy_code_page_file_still_prints(monkeypatch):
+    """Windows gives output sent to a file the legacy code page; the CLI's
+    check marks must still print there."""
+    from celerp.cli import _utf8_output
+
+    raw = io.BytesIO()
+    legacy = io.TextIOWrapper(raw, encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", legacy)
+    _utf8_output()
+    print("✓ ready")
+    legacy.flush()
+    assert raw.getvalue().decode("utf-8") == "✓ ready\n"
+

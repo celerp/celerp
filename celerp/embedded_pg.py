@@ -23,7 +23,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
-import sys
+import tempfile
 from pathlib import Path
 
 # Name of the application database created inside the embedded cluster. The
@@ -31,7 +31,7 @@ from pathlib import Path
 # locally, so no role/password provisioning (and no sudo) is needed.
 _DATABASE = "celerp"
 
-# pg_ctl handles we started in this process, stopped again at exit so no
+# Clusters this process started or took over, stopped again at exit so no
 # postmaster outlives `celerp start` (its SIGTERM handler exits via sys.exit,
 # which runs atexit hooks).
 _STARTED: set[Path] = set()
@@ -121,8 +121,33 @@ def _win_port(pgdata: Path) -> int:
     return port
 
 
+# pg_ctl waits up to 60s itself; this bounds a tool that never returns.
+_TOOL_TIMEOUT = 180
+
+
+def _exec(cmd: list[str], cwd: str | None = None) -> subprocess.CompletedProcess:
+    """Run a PostgreSQL tool, output through files rather than pipes.
+
+    `pg_ctl start` leaves the server running, and on Windows the server
+    inherits whatever handles pg_ctl had. A pipe it inherits never reaches
+    end-of-file, so reading pg_ctl's output would wait for as long as the
+    server runs."""
+    with tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as out, \
+            tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as err:
+        try:
+            r = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                               env=_env(), cwd=cwd, timeout=_TOOL_TIMEOUT)
+            code = r.returncode
+        except subprocess.TimeoutExpired:
+            code = -1
+            err.write(f"\ndid not finish within {_TOOL_TIMEOUT}s")
+        out.seek(0)
+        err.seek(0)
+        return subprocess.CompletedProcess(cmd, code, out.read(), err.read())
+
+
 def _run(cmd: list[str], fail_hint: str, cwd: str | None = None) -> subprocess.CompletedProcess:
-    r = subprocess.run(cmd, capture_output=True, text=True, env=_env(), cwd=cwd)
+    r = _exec(cmd, cwd=cwd)
     if r.returncode:
         raise RuntimeError(
             f"{fail_hint} (rc={r.returncode})\n"
@@ -132,11 +157,7 @@ def _run(cmd: list[str], fail_hint: str, cwd: str | None = None) -> subprocess.C
 
 
 def _is_running(pgdata: Path) -> bool:
-    r = subprocess.run(
-        [_tool("pg_ctl"), "status", "-D", str(pgdata)],
-        capture_output=True, text=True, env=_env(),
-    )
-    return r.returncode == 0
+    return _exec([_tool("pg_ctl"), "status", "-D", str(pgdata)]).returncode == 0
 
 
 def _initdb(pgdata: Path) -> None:
@@ -179,22 +200,30 @@ def _start(pgdata: Path) -> tuple[str, int | None]:
         except RuntimeError as e:
             tail = log.read_text()[-1200:] if log.exists() else "-"
             raise RuntimeError(f"{e}\nSERVERLOG: {tail}") from None
-        if pgdata not in _STARTED:
-            _STARTED.add(pgdata)
-            if not _STARTED - {pgdata}:  # first cluster this process started
-                import atexit
-
-                atexit.register(_stop_all)
+        _own(pgdata)
     return host, port
+
+
+def _own(pgdata: Path) -> None:
+    """Stop the postmaster at `pgdata` when this process exits."""
+    if pgdata not in _STARTED:
+        _STARTED.add(pgdata)
+        if not _STARTED - {pgdata}:  # first cluster this process owns
+            import atexit
+
+            atexit.register(_stop_all)
 
 
 def _stop_all() -> None:
     """atexit: stop every postmaster this process started (data preserved)."""
     for pgdata in list(_STARTED):
-        subprocess.run(
-            [_tool("pg_ctl"), "-D", str(pgdata), "-w", "-t", "30", "-m", "fast", "stop"],
-            capture_output=True, text=True, env=_env(),
+        result = _exec(
+            [_tool("pg_ctl"), "-D", str(pgdata), "-w", "-t", "30", "-m", "fast", "stop"]
         )
+        if result.returncode:
+            # Shutdown is best-effort at interpreter exit, but ownership must not
+            # be forgotten while the postmaster is still alive.
+            _force_stop_postmaster(pgdata)
         _STARTED.discard(pgdata)
 
 
@@ -230,12 +259,14 @@ def _ensure_app_database(host: str, port: int | None) -> None:
 # ── public lifecycle ──────────────────────────────────────────────────────────
 
 
-def ensure_cluster(config_dir: Path) -> str:
+def ensure_cluster(config_dir: Path, *, own: bool = False) -> str:
     """Boot the embedded cluster (initdb on first run, start if stopped) and
     ensure the app database exists. Returns an asyncpg connection URI.
 
     Idempotent: safe to call from every DB-touching CLI command. Postgres itself
-    recovers stale postmaster.pid files from crashed processes on start.
+    recovers stale postmaster.pid files from crashed processes on start. `own`
+    stops the cluster at exit even when it was already running, so the server
+    process takes over one left behind by a server that crashed.
     """
     config_dir = Path(config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -251,8 +282,25 @@ def ensure_cluster(config_dir: Path) -> str:
         # create directory ...: File exists").
         _initdb(pgdata)
     host, port = _start(pgdata)
+    if own:
+        _own(pgdata)
     _ensure_app_database(host, port)
     return _uri(host, port, _DATABASE)
+
+
+def stop_cluster(config_dir: Path) -> None:
+    """Stop the cluster if it is running (data preserved). The self-updater
+    stops it while pip replaces the PostgreSQL binaries, then `ensure_cluster`
+    starts it again on the installed ones."""
+    pgdata = pgdata_dir(Path(config_dir).resolve())
+    if not (pgdata / "PG_VERSION").exists():
+        return
+    if _is_running(pgdata):
+        _run(
+            [_tool("pg_ctl"), "-D", str(pgdata), "-w", "-t", "30", "-m", "fast", "stop"],
+            "embedded PostgreSQL failed to stop",
+        )
+    _STARTED.discard(pgdata)
 
 
 def wipe(config_dir: Path) -> None:
@@ -267,12 +315,7 @@ def wipe(config_dir: Path) -> None:
     if not pgdata.exists():
         return
     try:
-        if _is_running(pgdata):
-            subprocess.run(
-                [_tool("pg_ctl"), "-D", str(pgdata), "-w", "-t", "30", "-m", "fast", "stop"],
-                capture_output=True, text=True, env=_env(),
-            )
-        _STARTED.discard(pgdata)
+        stop_cluster(config_dir)
     except Exception:
         pass
     if pgdata.exists():
@@ -295,10 +338,19 @@ def _force_stop_postmaster(pgdata: Path) -> None:
         import psutil
 
         proc = psutil.Process(pid)
+        cmdline = proc.cmdline()
+        try:
+            d_index = cmdline.index("-D")
+            process_pgdata = Path(cmdline[d_index + 1]).resolve()
+        except (ValueError, IndexError, OSError):
+            return
+        if "postgres" not in proc.name().lower() or process_pgdata != pgdata.resolve():
+            return
         proc.terminate()
         try:
             proc.wait(3)
         except psutil.TimeoutExpired:
             proc.kill()
+            proc.wait(3)
     except Exception:
         pass

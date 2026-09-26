@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 
@@ -55,12 +56,12 @@ def _read_lock_token(lock_path: str) -> bytes | None:
         return None
 
 
-def _acquire_lock(lock_path: str):
+def _acquire_lock(lock_path: str, budget: float = _LOCK_BUDGET_S):
     """Acquire the config lock by exclusive create, returning (fd, token), or
-    None when the budget expires while another writer holds it. The token is the
-    exact bytes written into the lock; the caller passes it to _release_lock so
-    only the electing writer ever removes this lock."""
-    deadline = time.monotonic() + _LOCK_BUDGET_S
+    None when `budget` seconds expire while another writer holds it. The token
+    is the exact bytes written into the lock; the caller passes it to
+    _release_lock so only the electing writer ever removes this lock."""
+    deadline = time.monotonic() + budget
     while True:
         try:
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -76,16 +77,17 @@ def _acquire_lock(lock_path: str):
             if age > _LOCK_STALE_S:
                 # Abandoned lock: re-read the token immediately before removing
                 # and unlink only that same stale token, so a faster successor
-                # that already replaced the lock is never deleted. Then loop
-                # back to the exclusive create, which stays the only way to win.
+                # that already replaced the lock is never deleted. Then retry
+                # the exclusive create, which stays the only way to win; a lock
+                # that cannot be removed still ends at the deadline.
                 stale_token = _read_lock_token(lock_path)
                 if stale_token is not None:
                     try:
                         if _read_lock_token(lock_path) == stale_token:
                             os.unlink(lock_path)
+                            continue
                     except OSError:
                         pass
-                continue
             if time.monotonic() >= deadline:
                 return None
             time.sleep(_LOCK_RETRY_S)
@@ -103,6 +105,39 @@ def _release_lock(fd: int, lock_path: str, token: bytes) -> None:
             os.unlink(lock_path)
     except OSError:
         pass
+
+
+def hold_lock(lock_path: str, budget: float = _LOCK_BUDGET_S):
+    """Acquire the lock at `lock_path` for as long as the caller needs it,
+    beyond _LOCK_STALE_S: a background thread refreshes its mtime while this
+    owner's token is still in it. Returns the function that releases it, or
+    None when another owner held it for all of `budget` seconds. An owner that
+    dies without releasing stops refreshing, so its lock goes stale."""
+    acquired = _acquire_lock(lock_path, budget)
+    if acquired is None:
+        return None
+    fd, token = acquired
+    stop = threading.Event()
+
+    def _refresh() -> None:
+        while not stop.wait(_LOCK_STALE_S / 3):
+            if _read_lock_token(lock_path) != token:
+                return
+            try:
+                os.utime(lock_path)
+            except OSError:
+                pass
+
+    refresher = threading.Thread(target=_refresh, name="lock-refresh", daemon=True)
+    refresher.start()
+
+    def release() -> None:
+        if not stop.is_set():
+            stop.set()
+            refresher.join()
+            _release_lock(fd, lock_path, token)
+
+    return release
 
 
 def _fsync_dir(dir_path: str) -> None:
@@ -128,6 +163,30 @@ def _fsync_dir(dir_path: str) -> None:
             pass
 
 
+def atomic_write_text(path: str, data: str) -> None:
+    """Replace `path` with `data` crash-safely: a unique 0600 temp file is
+    written and fsync'd, swapped in with os.replace, and the directory fsync'd.
+    Readers see the complete old or the complete new file, never a torn one; the
+    result is mode 0600 whatever the prior mode or umask. On failure the temp
+    file is removed, the old file is untouched, and the error is raised."""
+    tmp_path = os.path.join(os.path.dirname(path) or ".",
+                            f".{os.path.basename(path)}.{uuid.uuid4().hex}.tmp")
+    fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise
+    _fsync_dir(os.path.dirname(path) or ".")
+
+
 def merge_packaged_config(updates: dict) -> bool:
     """Merge every key in `updates` into Electron's celerp-config.json in one
     atomic write, forcing mode 0600 so the co-resident secrets (external_db_url,
@@ -138,12 +197,10 @@ def merge_packaged_config(updates: dict) -> bool:
     A no-op returning False in dev/server mode where CELERP_DATA_DIR is unset.
     The whole read-merge-write runs under the cross-process lock so a concurrent
     Electron writer never races: the existing config is re-read inside the lock,
-    every key is merged, the result is written to a unique temp file created
-    0600, fsync'd, then os.replace swaps it in (os.replace adopts the temp inode,
-    so the target's mode becomes 0600 regardless of the prior mode or the process
-    umask). Any failure logs the keys and exception (never the values), removes
-    the temp file, and leaves the prior config on disk untouched, so a multi-key
-    save either lands in full or not at all. The lock is always released.
+    every key is merged, and the result replaces the file via atomic_write_text
+    (mode 0600). Any failure logs the keys and exception (never the values) and
+    leaves the prior config on disk untouched, so a multi-key save either lands
+    in full or not at all. The lock is always released.
     """
     if not updates:
         return True
@@ -158,7 +215,6 @@ def merge_packaged_config(updates: dict) -> bool:
                     sorted(updates.keys()), _LOCK_BUDGET_S)
         return False
     lock_fd, lock_token = acquired
-    tmp_path = f"{config_path}.{uuid.uuid4().hex}.tmp"
     try:
         existing: dict = {}
         if os.path.exists(config_path):
@@ -167,22 +223,11 @@ def merge_packaged_config(updates: dict) -> bool:
             if isinstance(loaded, dict):
                 existing = loaded
         existing.update(updates)
-        fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            json.dump(existing, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, config_path)
-        _fsync_dir(data_dir)
+        atomic_write_text(config_path, json.dumps(existing, indent=2))
         log.debug("Config: %s persisted.", sorted(updates.keys()))
         return True
     except Exception as exc:
         log.warning("Config: failed to persist %s: %s", sorted(updates.keys()), exc)
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except OSError:
-            pass
         return False
     finally:
         _release_lock(lock_fd, lock_path, lock_token)

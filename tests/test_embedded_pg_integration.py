@@ -302,3 +302,72 @@ def test_ensure_database_refreshes_embedded_uri(config_dir):
     ensure_database(ext)
     assert ext["database"]["url"] == "postgresql+asyncpg://u:p@h/db"
     assert "backup" not in ext
+
+
+# ── Self-update primitives (stop for package replacement, exact restore) ──────
+
+def test_stop_cluster_stops_and_ensure_restarts_with_data(config_dir):
+    uri = embedded_pg.ensure_cluster(config_dir)
+    engine = create_engine(_sync(uri))
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE stop_probe (id int)"))
+        conn.execute(text("INSERT INTO stop_probe VALUES (7)"))
+    engine.dispose()
+
+    embedded_pg.stop_cluster(config_dir)
+    pgdata = embedded_pg.pgdata_dir(config_dir.resolve())
+    assert not embedded_pg._is_running(pgdata)
+    embedded_pg.stop_cluster(config_dir)  # already stopped: no error
+
+    engine = create_engine(_sync(embedded_pg.ensure_cluster(config_dir)))
+    try:
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT id FROM stop_probe")).scalar() == 7
+    finally:
+        engine.dispose()
+
+
+def test_clean_schema_restore_returns_database_to_the_dump(config_dir, monkeypatch):
+    """What an update rollback relies on: after the restore the database is the
+    dump exactly, including removal of tables created after it."""
+    from celerp.config import settings
+    from celerp.services import backup
+
+    monkeypatch.setattr(settings, "pg_bin_dir", embedded_pg.bin_dir())
+    uri = embedded_pg.ensure_cluster(config_dir)
+    engine = create_engine(_sync(uri))
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE kept (v text)"))
+        conn.execute(text("INSERT INTO kept VALUES ('before')"))
+    dump = backup.dump_database(uri)
+
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE added_later (id int)"))
+        conn.execute(text("ALTER TABLE kept ADD COLUMN extra int"))
+        conn.execute(text("INSERT INTO kept VALUES ('after', 1)"))
+    engine.dispose()
+
+    backup.restore_database(dump, uri, clean_schema=True)
+
+    engine = create_engine(_sync(uri))
+    try:
+        with engine.connect() as conn:
+            tables = set(conn.execute(text(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")).scalars())
+            assert tables == {"kept"}
+            assert conn.execute(text("SELECT array_agg(v) FROM kept")).scalar() == ["before"]
+            cols = set(conn.execute(text(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'kept'")).scalars())
+            assert cols == {"v"}
+    finally:
+        engine.dispose()
+
+
+def test_clean_schema_restore_of_bad_dump_raises(config_dir, monkeypatch):
+    from celerp.config import settings
+    from celerp.services import backup
+
+    monkeypatch.setattr(settings, "pg_bin_dir", embedded_pg.bin_dir())
+    uri = embedded_pg.ensure_cluster(config_dir)
+    with pytest.raises(RuntimeError, match="pg_restore failed"):
+        backup.restore_database(b"not a dump", uri, clean_schema=True)

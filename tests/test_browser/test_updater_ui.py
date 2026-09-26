@@ -36,9 +36,9 @@ def test_update_card_renders_in_notifications_panel(page, ui_server):
 
 
 def test_update_card_pypi_mode_screenshot(page, ui_server):
-    """Screenshot: PyPI mode (no window.celerp). Shows version from /health."""
+    """Screenshot: pip install mode (no window.celerp)."""
     # window.celerp is not defined in the browser test context (not Electron)
-    # so the card should enter the PyPI path automatically.
+    # so the card should enter the pip path automatically.
     page.goto(f"{ui_server}/", wait_until="domcontentloaded")
     page.locator(".notif-bell-btn").click()
     page.wait_for_selector("#notif-panel", state="visible")
@@ -46,7 +46,7 @@ def test_update_card_pypi_mode_screenshot(page, ui_server):
     page.wait_for_timeout(2000)
 
     # Panel must be present (implicit assertion via the wait above); capture is opt-in.
-    assert page.locator("#update-status-card").count() == 1, "update card missing in PyPI mode"
+    assert page.locator("#update-status-card").count() == 1, "update card missing in pip mode"
     _capture(page, "pypi-mode")
 
 
@@ -121,87 +121,108 @@ def test_update_card_check_btn_present(page, ui_server):
     assert btn.count() == 1, "Check for updates button not found"
 
 
-def test_source_build_shows_no_update(page, ui_server):
-    """A source/editable install reports bare '0.0.0' and must read as a dev build.
+def _status(**over):
+    """An update status as GET /system/update returns it."""
+    s = {
+        "current": "1.0.0", "latest": "1.1.0", "check_error": "",
+        "checked_at": "2026-09-26T03:00:00+00:00", "can_install": True, "reason": "",
+        "auto": True, "installing": None, "last_result": None,
+    }
+    s.update(over)
+    return s
 
-    Package metadata for a non-released checkout reports '0.0.0' (no '+dev' local
-    segment), so without the fix the PyPI path treats it as a real install, compares
-    against the latest release, and shows 'Update available: v2.0.0' on a machine that
-    cannot be updated with pip. The card must instead recognise it as a source build.
-    """
-    # Stub /health to the version a source checkout reports, and PyPI to a newer
-    # release, so a real update would be offered if the dev build were not detected.
+
+def _open_card(page, ui_server, status, *, check_status=None):
+    """Serve `status` from the update proxy, open the panel and wait for the card."""
+    import json
+
     page.route(
-        "**/health",
+        "**/system/update",
         lambda route: route.fulfill(
-            status=200, content_type="application/json", body='{"version": "0.0.0"}'
-        ),
-    )
-    page.route(
-        "**/pypi.org/pypi/celerp/json",
-        lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body='{"info": {"version": "2.0.0"}}',
-        ),
-    )
-
-    page.goto(f"{ui_server}/", wait_until="domcontentloaded")
-    page.locator(".notif-bell-btn").click()
-    page.wait_for_selector("#notif-panel", state="visible")
-    page.wait_for_timeout(1000)
-
-    version = page.locator(".update-card__version").text_content()
-    state = page.locator(".update-card__state").text_content()
-    release = page.locator(".update-card__release").text_content()
-    assert version == "Development build", f"expected dev-build label, got {version!r}"
-    assert "Update available" not in (state or ""), (
-        f"a source build must not be offered a PyPI update, got state {state!r}"
-    )
-    # The latest published release is shown for reference so the developer can see
-    # whether newer releases landed since their build - informational, not an offer.
-    assert release == "Latest release: v2.0.0", (
-        f"expected the latest release line, got {release!r}"
-    )
-
-
-def test_check_button_refreshes_latest_release(page, ui_server):
-    """Pressing Check for updates re-fetches and refreshes the latest-release line.
-
-    A developer who leaves the panel open and presses Check after a new release is
-    cut must see the line update, not a stale value from the initial load.
-    """
-    latest = {"v": "2.0.0"}
-    page.route(
-        "**/health",
-        lambda route: route.fulfill(
-            status=200, content_type="application/json", body='{"version": "0.0.0"}'
-        ),
+            status=200, content_type="application/json", body=json.dumps(status)),
     )
     page.route(
-        "**/pypi.org/pypi/celerp/json",
+        "**/system/update/check",
         lambda route: route.fulfill(
-            status=200,
-            content_type="application/json",
-            body='{"info": {"version": "%s"}}' % latest["v"],
-        ),
+            status=200, content_type="application/json",
+            body=json.dumps(check_status or status)),
     )
-
     page.goto(f"{ui_server}/", wait_until="domcontentloaded")
     page.locator(".notif-bell-btn").click()
     page.wait_for_selector("#notif-panel", state="visible")
     page.wait_for_function(
-        "() => document.querySelector('.update-card__release')"
-        " && document.querySelector('.update-card__release').textContent === 'Latest release: v2.0.0'"
-    )
+        "() => document.querySelector('.update-card__version').textContent === 'v1.0.0'")
 
-    # A new release is cut; pressing Check must pick it up.
-    latest["v"] = "2.1.0"
+
+def test_owner_can_install_and_choose_nightly_updates(page, ui_server):
+    _open_card(page, ui_server, _status())
+    assert page.locator(".update-card__state").text_content() == "Update available: v1.1.0"
+    assert page.locator(".update-card__restart-btn").is_visible()
+    assert page.locator(".update-card__auto").is_visible()
+    assert page.locator(".update-card__auto-input").is_checked()
+    assert not page.locator(".update-card__upgrade-cmd").is_visible()
+    _capture(page, "owner-update-available")
+
+
+def test_member_sees_the_update_but_cannot_install(page, ui_server):
+    _open_card(page, ui_server, _status(can_install=False, reason="administrator"))
+    assert page.locator(".update-card__state").text_content() == "Update available: v1.1.0"
+    assert not page.locator(".update-card__restart-btn").is_visible()
+    assert not page.locator(".update-card__auto").is_visible()
+    assert not page.locator(".update-card__check-btn").is_visible()
+    assert not page.locator(".update-card__upgrade-cmd").is_visible()
+    assert page.locator(".update-card__release").text_content() == (
+        "Your administrator can install this update.")
+    _capture(page, "member-update-available")
+
+
+def test_unsupervised_install_shows_the_pip_command(page, ui_server):
+    _open_card(page, ui_server, _status(can_install=False, reason="unsupervised"))
+    assert not page.locator(".update-card__restart-btn").is_visible()
+    assert page.locator(".update-card__upgrade-cmd").is_visible()
+    assert "celerp start" in page.locator(".update-card__release").text_content()
+
+
+def test_install_without_pip_route_shows_only_the_reason(page, ui_server):
+    _open_card(page, ui_server, _status(can_install=False, reason="container"))
+    assert not page.locator(".update-card__upgrade-cmd").is_visible()
+    assert page.locator(".update-card__release").text_content() == (
+        "Update this container by pulling the new image.")
+
+
+def test_failed_update_is_reported_while_still_on_offer(page, ui_server):
+    failed = {"ok": False, "outcome": "rolled_back", "from": "1.0.0", "to": "1.1.0",
+              "reason": "install failed", "at": "x", "notified": True}
+    _open_card(page, ui_server, _status(last_result=failed))
+    assert page.locator(".update-card__release").text_content() == (
+        "Could not update to v1.1.0: install failed. Your data was not changed.")
+
+
+def test_not_checked_yet_is_not_shown_as_up_to_date(page, ui_server):
+    _open_card(page, ui_server, _status(latest=None, checked_at=None))
+    assert page.locator(".update-card__state").text_content() == "Not checked yet"
+
+
+def test_check_button_asks_the_server(page, ui_server):
+    _open_card(page, ui_server, _status(latest=None),
+               check_status=_status(latest="1.2.0"))
     page.locator(".update-card__check-btn").click()
     page.wait_for_function(
-        "() => document.querySelector('.update-card__release')"
-        " && document.querySelector('.update-card__release').textContent === 'Latest release: v2.1.0'"
-    )
+        "() => document.querySelector('.update-card__state').textContent"
+        " === 'Update available: v1.2.0'")
+
+
+def test_card_reads_the_real_status_without_contacting_pypi(page, ui_server):
+    """Unstubbed: the card is fed by this install's API, never by the browser."""
+    requests: list[str] = []
+    page.on("request", lambda req: requests.append(req.url))
+    page.goto(f"{ui_server}/", wait_until="domcontentloaded")
+    page.locator(".notif-bell-btn").click()
+    page.wait_for_selector("#notif-panel", state="visible")
+    page.wait_for_function(
+        "() => document.querySelector('.update-card__version').textContent.startsWith('v')")
+    assert any(u.endswith("/system/update") for u in requests)
+    assert not [u for u in requests if "pypi.org" in u]
 
 
 def test_bell_badge_counts_downloaded_update(page, ui_server):

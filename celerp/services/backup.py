@@ -131,15 +131,16 @@ def _parse_key(b64_key: str) -> bytes:
     return key
 
 
-def dump_database(database_url: str) -> bytes:
+def dump_database(database_url: str, *, runner=None) -> bytes:
     """Run pg_dump against database_url and return raw dump bytes.
 
     Raises RuntimeError if pg_dump fails or is not found.
     """
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+    runner = runner or subprocess.run
     try:
         pg_dump = _find_pg_tool("pg_dump")
-        result = subprocess.run(
+        result = runner(
             [pg_dump, "--format=custom", "--no-password", pg_url],
             capture_output=True,
             timeout=300,
@@ -175,26 +176,53 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
     return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
 
 
-def restore_database(dump_bytes: bytes, database_url: str) -> None:
-    """Run pg_restore from dump bytes into database_url.
+def _restore_database(source: bytes | Path, database_url: str, *, clean_schema: bool, runner=None) -> None:
+    if clean_schema:
+        from sqlalchemy import create_engine, text
 
-    Raises RuntimeError on failure.
-    """
-    pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+        from celerp.db_url import sync_url
+
+        engine = create_engine(sync_url(database_url))
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("DROP SCHEMA public CASCADE"))
+                conn.execute(text("CREATE SCHEMA public"))
+        finally:
+            engine.dispose()
+        mode = ["--single-transaction", "--exit-on-error"]
+    else:
+        mode = ["--clean", "--if-exists"]
+
+    runner = runner or subprocess.run
+    kwargs = {"capture_output": True, "timeout": 600}
     try:
-        pg_restore = _find_pg_tool("pg_restore")
-        result = subprocess.run(
-            [pg_restore, "--clean", "--if-exists", "--no-password", "--no-privileges", "--no-owner", "-d", pg_url],
-            input=dump_bytes,
-            capture_output=True,
-            timeout=600,
-        )
+        command = _restore_command(database_url, mode)
+        if isinstance(source, Path):
+            command.append(str(source))
+        else:
+            kwargs["input"] = source
+        result = runner(command, **kwargs)
     except FileNotFoundError as exc:
         raise RuntimeError("pg_restore not found in PATH") from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("pg_restore timed out after 600 seconds") from exc
     if result.returncode != 0:
         stderr = result.stderr.decode(errors="replace").strip()
-        # pg_restore returns non-zero for warnings too; only raise on real errors
-        if "ERROR" in stderr.upper():
+        if clean_schema or "ERROR" in stderr.upper():
             raise RuntimeError(f"pg_restore failed (exit {result.returncode}): {stderr}")
+
+
+def _restore_command(database_url: str, mode: list[str]) -> list[str]:
+    pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+    pg_restore = _find_pg_tool("pg_restore")
+    return [pg_restore, *mode, "--no-password", "--no-privileges", "--no-owner", "-d", pg_url]
+
+
+def restore_database(dump_bytes: bytes, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
+    """Restore a dump supplied in memory."""
+    _restore_database(dump_bytes, database_url, clean_schema=clean_schema, runner=runner)
+
+
+def restore_database_file(dump_path: Path, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
+    """Restore directly from an existing dump file."""
+    _restore_database(Path(dump_path), database_url, clean_schema=clean_schema, runner=runner)

@@ -12,7 +12,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from celerp import __version__
+from celerp import __version__, runtime as _runtime
+_runtime.watch_supervisor_pipe()
 from celerp.db import engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import CodeConflictError
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
@@ -151,8 +152,47 @@ async def _try_sync_existing_entitlement() -> None:
             "Cloud startup reconciliation failed (non-fatal): %s", exc)
 
 
+
+async def _verify_runtime_dependencies() -> None:
+    """Validate later startup seams without starting external/background work."""
+    from celerp.gateway.bootstrap import associate_partner_deployment
+    from celerp.gateway import ensure_running, has_active_share
+    from celerp.services import backup_scheduler
+    from celerp.ai.batch import fail_interrupted_jobs
+    from celerp.ai.cleanup import run_cleanup_loop
+    from celerp.services.session_tracker import run_jti_cleanup_loop
+    from celerp.connectors.outbound_queue import (
+        adopt_legacy_connector_configs,
+        outbound_queue_loop,
+    )
+    from celerp.connectors.daily_scheduler import scheduler_loop_all
+    from celerp.connectors.relay_token import fetch_context as connector_token_fetcher
+    from celerp.services.reorder import reorder_alert_loop
+    from celerp.services.update import update_loop
+
+    # Keep imports live so packaging/signature regressions surface in verification.
+    _ = (
+        associate_partner_deployment,
+        ensure_running,
+        backup_scheduler.start,
+        fail_interrupted_jobs,
+        run_cleanup_loop,
+        run_jti_cleanup_loop,
+        outbound_queue_loop,
+        scheduler_loop_all,
+        connector_token_fetcher,
+        reorder_alert_loop,
+        update_loop,
+    )
+    if settings.gateway_token and not settings.celerp_public_url:
+        await has_active_share()
+    # This is local DB maintenance only; it is covered by the pre-update dump.
+    await adopt_legacy_connector_configs()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    update_verify = _os.environ.get(_runtime.UPDATE_VERIFY_ENV) == "1"
     (settings.data_dir / "static" / "attachments").mkdir(parents=True, exist_ok=True)
     try:
         async with lifecycle_engine.begin() as conn:
@@ -198,6 +238,11 @@ async def lifespan(_app: FastAPI):
             # Run create_all again so module tables are created (idempotent).
             async with lifecycle_engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+            if update_verify:
+                # Verification proves DB/module/runtime startup without external work.
+                await _verify_runtime_dependencies()
+                yield
+                return
             # Allow modules to backfill data for existing companies (e.g. seed
             # chart of accounts when accounting module is first enabled on an
             # instance that already has companies).
@@ -234,6 +279,11 @@ async def lifespan(_app: FastAPI):
             except Exception:
                 logging.getLogger(__name__).debug(
                     "Demoted-module notification skipped (non-fatal)", exc_info=True)
+
+    if update_verify:
+        await _verify_runtime_dependencies()
+        yield
+        return
 
     # Register kernel projection handler for sys.* events (not module-owned)
     from celerp.modules.slots import register as register_slot
@@ -364,6 +414,11 @@ async def lifespan(_app: FastAPI):
     from celerp.services.reorder import reorder_alert_loop
     reorder_alert_task = asyncio.create_task(reorder_alert_loop())
 
+    # Update checks: reports the last update attempt once, then checks hourly and,
+    # when automatic updates are on, installs overnight in the owner's time zone.
+    from celerp.services.update import update_loop
+    update_task = asyncio.create_task(update_loop(restart=system._send_sigterm))
+
     yield
 
     # Terminate all active SSE connections so Uvicorn doesn't hang on shutdown
@@ -376,6 +431,7 @@ async def lifespan(_app: FastAPI):
     connector_sched_task.cancel()
     outbound_connector_task.cancel()
     reorder_alert_task.cancel()
+    update_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:
@@ -509,6 +565,7 @@ app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(ledger.router, prefix="/ledger", tags=["ledger"])
 app.include_router(companies.router, prefix="/companies", tags=["companies"])
 app.include_router(system.router, prefix="/system", tags=["system"])
+app.include_router(system.update_router, prefix="/system", tags=["system"])
 app.include_router(stars_router_mod.router, prefix="/stars", tags=["stars"])
 app.include_router(notifications.router)
 app.include_router(events_router_mod.router)

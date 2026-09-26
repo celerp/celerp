@@ -38,10 +38,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
 
       - name: Install deps
-        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split
+        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
 
       - name: Run tests (shard ${{ matrix.group }}/6)
         env:
@@ -91,10 +93,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
 
       - name: Install deps
-        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split
+        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
 
       - name: Install Chromium for Playwright
         run: python -m playwright install --with-deps chromium
@@ -155,10 +159,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
       - name: Install deps
         shell: bash
-        run: pip install -e ".[dev]" ${{ matrix.extra }}
+        run: pip install -e ".[dev]" ${{ matrix.extra }} -c constraints.txt
       - name: Run embedded-PG unit + integration tests
         env:
           ALLOW_INSECURE_JWT: "true"
@@ -201,19 +207,87 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
       - name: Install deps
-        run: pip install uv && uv pip install --system -e ".[dev]"
+        run: pip install uv && uv pip install --system -e ".[dev]" -c constraints.txt
       - name: Regenerate the lock
         run: python scripts/gen_first_party_lock.py
       - name: Fail if the committed lock is stale
         run: git diff --exit-code default_modules/first_party.lock.json
 
+  # constraints.txt is the resolved dependency set every job above installs and every
+  # release pins (scripts/pin_release_deps.py). It is derived from the ranges in
+  # pyproject.toml: re-resolve without --upgrade (existing pins are kept) and fail if
+  # the committed file differs, so a range change always lands with its resolution.
+  constraints:
+    name: Constraints are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Re-resolve
+        run: pip install uv && uv pip compile pyproject.toml --extra prod --universal --python-version 3.10 -o constraints.txt -q
+      - name: Fail if the committed constraints are stale
+        run: git diff --exit-code constraints.txt
+
+  # A pip install updating itself from the app, end to end, on every OS the bundled
+  # PostgreSQL ships for: real wheels built from this tree, fresh venvs, `celerp
+  # start` as the supervisor, updates requested through the API (a good release, a
+  # failed install, a failed migration, a release that fails its health check, a
+  # supervisor killed mid-update, and more). Runs when the update path or the
+  # dependency set changes, and on every push to main.
+  update-changes:
+    name: Update path changed
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.diff.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD | grep -qE '^(celerp/(cli|config|config_store|embedded_pg|main|runtime)\.py|celerp/services/(update|backup)\.py|celerp/routers/(system|health)\.py|celerp/migrations/env\.py|pyproject\.toml|constraints\.txt|scripts/(e2e_update|pin_release_deps)\.py|\.github/workflows/ci\.yml)$'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  update-e2e:
+    name: Self-update end to end (${{ matrix.os }})
+    needs: update-changes
+    if: needs.update-changes.outputs.run == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build, install and update
+        run: python -u scripts/e2e_update.py --work "${{ runner.temp }}/e2e" --keep
+      - name: Keep the logs
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-e2e-${{ matrix.os }}
+          path: ${{ runner.temp }}/e2e/runs/*/*.log
+          if-no-files-found: ignore
+
   # Aggregator: the single required status check. Branch protection should require "Test"
   # (this job), which passes only when every unit, browser, electron, AND lockfile job passed.
   test:
     name: Test
-    needs: [shard, browser, embedded, electron, lockfile]
+    needs: [shard, browser, embedded, electron, lockfile, constraints, update-changes, update-e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -239,4 +313,16 @@ jobs:
             echo "First-party lock is stale (result: ${{ needs.lockfile.result }})"
             exit 1
           fi
-          echo "All unit, browser, embedded, electron, and lockfile checks passed."
+          if [ "${{ needs.constraints.result }}" != "success" ]; then
+            echo "constraints.txt is stale (result: ${{ needs.constraints.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.update-changes.result }}" != "success" ]; then
+            echo "Could not tell whether the update path changed (result: ${{ needs.update-changes.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.update-e2e.result }}" != "success" ] && [ "${{ needs.update-e2e.result }}" != "skipped" ]; then
+            echo "Self-update end to end failed (result: ${{ needs.update-e2e.result }})"
+            exit 1
+          fi
+          echo "All unit, browser, embedded, electron, lockfile, constraints, and self-update checks passed."

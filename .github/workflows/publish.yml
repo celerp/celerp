@@ -5,13 +5,9 @@ on:
     tags:
       - "v*"
 
-permissions:
-  id-token: write  # Required for PyPI trusted publishing
-
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
-    environment: pypi
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,17 +17,113 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build
-        run: |
-          pip install build setuptools-scm
-          python -m build
-
       - name: Verify version matches tag
         run: |
+          pip install build setuptools-scm
           TAG=${GITHUB_REF#refs/tags/v}
           PKG=$(python -c "from setuptools_scm import get_version; print(get_version())")
           echo "Tag: $TAG, Package: $PKG"
           [ "$TAG" = "$PKG" ] || { echo "Version mismatch!"; exit 1; }
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      # The release requires exactly the dependency set CI tested, so an install
+      # made months later gets the same packages. Pinning edits pyproject.toml,
+      # which would make setuptools-scm read the tree as a dev build; the version
+      # was verified against the tag above, so it is passed in explicitly.
+      - name: Pin dependencies and build
+        run: |
+          python scripts/pin_release_deps.py
+          SETUPTOOLS_SCM_PRETEND_VERSION=$TAG python -m build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # The built wheel, installed fresh and as an update from the current PyPI
+  # release, on every OS the bundled PostgreSQL ships for. Nothing is published
+  # unless every one passes.
+  verify:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-26, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Fresh install and update from the current release
+        shell: bash
+        run: python -u scripts/e2e_update.py --release-wheel dist/*.whl --work "${{ runner.temp }}/e2e" --keep
+      - name: Keep the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-e2e-${{ matrix.os }}
+          path: ${{ runner.temp }}/e2e/runs/*/*.log
+          if-no-files-found: ignore
+
+  # Some dependencies resolve to a different version per Python. On each
+  # supported Python, a fresh install of the wheel must get exactly the version
+  # the release pins for that Python.
+  pins:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Fresh install gets the pinned versions
+        run: |
+          python -m venv /tmp/pins
+          /tmp/pins/bin/pip install dist/*.whl
+          /tmp/pins/bin/python - <<'PY'
+          from importlib.metadata import distributions, requires, version
+          from packaging.requirements import Requirement
+          from packaging.utils import canonicalize_name
+          wrong, pinned_names = [], {"celerp", "pip", "setuptools"}
+          for req in map(Requirement, requires("celerp")):
+              if req.marker and not req.marker.evaluate({"extra": ""}):
+                  continue
+              pinned_names.add(canonicalize_name(req.name))
+              pinned = [s for s in req.specifier if s.operator == "=="]
+              if not pinned or version(req.name) != pinned[0].version:
+                  wrong.append(f"{req}: installed {version(req.name)}")
+          for dist in distributions():
+              if canonicalize_name(dist.metadata["Name"]) not in pinned_names:
+                  wrong.append(f"{dist.metadata['Name']} {dist.version}: installed without a pin")
+          if wrong:
+              raise SystemExit("\n".join(wrong))
+          print("all pinned versions installed")
+          PY
+
+  publish:
+    needs: [verify, pins]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # Required for PyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

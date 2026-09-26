@@ -99,3 +99,46 @@ async def test_modules_ready_commit_guarded(monkeypatch):
 
     assert entered, "boot did not survive a failing on_modules_ready hook"
     assert rollback_spy.await_count >= 1, "the poisoned boot session was not rolled back"
+
+
+@pytest.mark.asyncio
+async def test_update_verification_boot_skips_runtime_side_effects(monkeypatch):
+    import celerp.main as main_mod
+    from celerp import runtime
+    from celerp.config import settings
+    from celerp.modules import slots
+
+    monkeypatch.setenv(runtime.UPDATE_VERIFY_ENV, "1")
+    monkeypatch.setattr(main_mod, "_MODULE_DIR", "/tmp/modules-forced")
+    monkeypatch.setenv("ENABLED_MODULES", "test-mod")
+    monkeypatch.setattr(
+        "celerp.modules.migrations_runner.run_migration_phase",
+        AsyncMock(return_value=({"test-mod"}, {})),
+    )
+    monkeypatch.setattr("celerp.modules.loader.load_all", lambda *a, **k: [])
+    monkeypatch.setattr("celerp.modules.loader.register_api_routes", lambda *a, **k: None)
+    monkeypatch.setattr("celerp.modules.loader.record_load_error", lambda *a, **k: None)
+
+    fire = AsyncMock()
+    associate = AsyncMock()
+    adopt = AsyncMock()
+    monkeypatch.setattr("celerp.modules.slots.fire_lifecycle", fire)
+    monkeypatch.setattr("celerp.gateway.bootstrap.associate_partner_deployment", associate)
+    monkeypatch.setattr("celerp.connectors.outbound_queue.adopt_legacy_connector_configs", adopt)
+
+    saved_token, saved_public = settings.gateway_token, settings.celerp_public_url
+    settings.gateway_token = ""
+    settings.celerp_public_url = None
+    slots.clear()
+    try:
+        with _mock_db():
+            async with main_mod.lifespan(MagicMock()):
+                pass
+    finally:
+        slots.clear()
+        settings.gateway_token = saved_token
+        settings.celerp_public_url = saved_public
+
+    fire.assert_not_awaited()
+    associate.assert_not_awaited()
+    adopt.assert_awaited_once()
