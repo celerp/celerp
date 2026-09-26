@@ -299,7 +299,6 @@ def _config_to_env(cfg: dict, root: Path | None = None) -> dict:
     return runtime.release_env(_pkg_root, env, _extra_paths)
 
 
-
 def _test_db(db_url: str) -> str | None:
     """Try connecting to DB. Returns error string or None on success."""
     sync_url = _sync_url(db_url)
@@ -1226,6 +1225,7 @@ def _start(cfg: dict) -> None:
     """
     release_lock = _hold_update_lock("start")
     try:
+        ensure_database(cfg, own=True)
         _supervise(cfg, release_lock)
     finally:
         release_lock()
@@ -1363,7 +1363,6 @@ def start():
     if not cfg:
         click.echo("Not initialized. Run `celerp init` first.", err=True)
         sys.exit(1)
-    ensure_database(cfg, own=True)
     _start(cfg)
 
 

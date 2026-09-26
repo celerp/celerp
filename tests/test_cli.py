@@ -452,6 +452,29 @@ def test_start_migrates_before_launching(tmp_path, valid_cfg):
     assert "spawn" in order
 
 
+def test_start_locks_before_owning_embedded_database(valid_cfg):
+    """A losing second start must not adopt and then stop the live server's
+    embedded PostgreSQL when it fails the installation-wide lock."""
+    from celerp.cli import _start
+
+    order = []
+    release = lambda: order.append("unlock")
+
+    with patch(
+        "celerp.cli._hold_update_lock",
+        side_effect=lambda what: order.append("lock") or release,
+    ), patch(
+        "celerp.cli.ensure_database",
+        side_effect=lambda cfg, own=False: order.append(("database", own)),
+    ), patch(
+        "celerp.cli._supervise",
+        side_effect=lambda cfg, held: order.append("supervise"),
+    ):
+        _start(valid_cfg)
+
+    assert order == ["lock", ("database", True), "supervise", "unlock"]
+
+
 # ── _start sentinel-based respawn ────────────────────────────────────────────
 
 def _is_api_cmd(cmd):
@@ -807,3 +830,4 @@ def test_output_sent_to_a_legacy_code_page_file_still_prints(monkeypatch):
     print("✓ ready")
     legacy.flush()
     assert raw.getvalue().decode("utf-8") == "✓ ready\n"
+
