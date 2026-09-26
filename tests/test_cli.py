@@ -464,7 +464,6 @@ def test_start_respawns_api_on_sentinel(tmp_path):
     from celerp.cli import _start
 
     sentinel_path = tmp_path / ".restart_requested"
-    sentinel_path.touch()
 
     cfg = {
         "server": {"api_port": 8000, "ui_port": 8080},
@@ -487,7 +486,10 @@ def test_start_respawns_api_on_sentinel(tmp_path):
         spawn_calls.append(list(cmd))
         if _is_api_cmd(cmd):
             api_n = sum(1 for c in spawn_calls if _is_api_cmd(c))
-            return _Proc(dead=True, code=0) if api_n == 1 else _Proc()
+            if api_n == 1:
+                sentinel_path.touch()  # the running API asks for a restart
+                return _Proc(dead=True, code=0)
+            return _Proc()
         return _Proc()
 
     sleep_calls = [0]

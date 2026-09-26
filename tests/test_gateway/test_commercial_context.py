@@ -404,18 +404,20 @@ def test_feature_flags_persist_survives_midwrite_failure(gateway_client, tmp_pat
     prior = {"external_db_url": "postgresql://x", "feature_flags": {"external_db": False}}
     config_path.write_text(json.dumps(prior))
 
-    import celerp.gateway.client as gw_client
+    import celerp.config_store as store
 
     def _boom(*a, **k):
-        raise RuntimeError("disk full")
+        raise OSError("disk full")
 
-    monkeypatch.setattr(gw_client.json, "dump", _boom)
+    # The new content is written, then swapping it in fails.
+    monkeypatch.setattr(store.os, "replace", _boom)
     # Persist must swallow the write error (best-effort) and never raise.
     asyncio.run(gateway_client._persist_feature_flags({"external_db": True}))
 
-    # The prior config is untouched and still parseable.
+    # The prior config is untouched and still parseable, with nothing left behind.
     reread = json.loads(config_path.read_text())
     assert reread == prior
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["celerp-config.json"]
 
 
 def test_commercial_context_persist_coerces_non_dict_config(gateway_client, tmp_path, monkeypatch):
