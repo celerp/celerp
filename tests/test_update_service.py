@@ -340,9 +340,11 @@ def test_verification_children_get_side_effect_free_startup_env(monkeypatch):
         def wait(self, timeout=None): pass
 
     def spawn(env, port):
-        seen.append(dict(env))
+        seen.append((dict(env), port))
         return Proc()
 
+    ports = iter([18000, 18080])
+    monkeypatch.setattr(update, "_free_loopback_port", lambda exclude=None: next(ports))
     monkeypatch.setattr(
         update,
         "get_json",
@@ -357,7 +359,10 @@ def test_verification_children_get_side_effect_free_startup_env(monkeypatch):
     )
     steps.verify("1.1.0")
     assert len(seen) == 2
-    assert all(env[runtime.UPDATE_VERIFY_ENV] == "1" for env in seen)
+    assert [port for _, port in seen] == [18000, 18080]
+    assert all(env[runtime.UPDATE_VERIFY_ENV] == "1" for env, _ in seen)
+    assert all(env["API_URL"] == "http://127.0.0.1:18000" for env, _ in seen)
+    assert {port for _, port in seen}.isdisjoint({8000, 8080})
 
 
 # ── Requests, window, blockers, availability ─────────────────────────────────

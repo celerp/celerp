@@ -25,6 +25,7 @@ import logging
 import os
 import asyncio
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -738,6 +739,17 @@ def _terminate(proc: subprocess.Popen) -> None:
             proc.wait()
 
 
+def _free_loopback_port(exclude: set[int] | None = None) -> int:
+    """Choose a private verification port, never one used by the live service."""
+    exclude = exclude or set()
+    while True:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = int(sock.getsockname()[1])
+        if port not in exclude:
+            return port
+
+
 def get_json(url: str) -> dict | None:
     try:
         with urllib.request.urlopen(url, timeout=2) as resp:
@@ -802,10 +814,13 @@ class SupervisorSteps(Steps):
     def verify(self, target: str) -> tuple:
         """Start the new API alone and require it healthy on the target
         version before the UI starts, so no user reaches it until it passed."""
+        api_port = _free_loopback_port({self.api_port, self.ui_port})
+        ui_port = _free_loopback_port({self.api_port, self.ui_port, api_port})
         env = self._env_for(runtime.release_dir(target))
         env[runtime.UPDATE_VERIFY_ENV] = "1"
-        api = self._spawn_api(env, self.api_port)
-        base = f"http://127.0.0.1:{self.api_port}"
+        env["API_URL"] = f"http://127.0.0.1:{api_port}"
+        api = self._spawn_api(env, api_port)
+        base = f"http://127.0.0.1:{api_port}"
         deadline = time.time() + VERIFY_TIMEOUT_SECONDS
         version = None
         while time.time() < deadline and api.poll() is None:
@@ -817,8 +832,8 @@ class SupervisorSteps(Steps):
         if version != target:
             _terminate(api)
             raise UpdateError(f"reported version {version}" if version else "not healthy")
-        ui = self._spawn_ui(env, self.ui_port)
-        if not self._wait_ready((api, self.api_port), (ui, self.ui_port), VERIFY_TIMEOUT_SECONDS):
+        ui = self._spawn_ui(env, ui_port)
+        if not self._wait_ready((api, api_port), (ui, ui_port), VERIFY_TIMEOUT_SECONDS):
             self.stop_children((api, ui))
             raise UpdateError("the web interface did not start")
         return api, ui
