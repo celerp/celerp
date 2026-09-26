@@ -465,7 +465,6 @@ jobs:
             && ! grep -q $'^-\t-\t' <<<"$stat"; then
             targets="dmg:arm64 zip:arm64"
           fi
-          targets="dmg:arm64 zip:arm64"  # temporary: exercise the arm64 path
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
           echo "mac targets: ${targets:-universal}"
 
