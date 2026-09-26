@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 import uuid
 
@@ -76,16 +77,17 @@ def _acquire_lock(lock_path: str, budget: float = _LOCK_BUDGET_S):
             if age > _LOCK_STALE_S:
                 # Abandoned lock: re-read the token immediately before removing
                 # and unlink only that same stale token, so a faster successor
-                # that already replaced the lock is never deleted. Then loop
-                # back to the exclusive create, which stays the only way to win.
+                # that already replaced the lock is never deleted. Then retry
+                # the exclusive create, which stays the only way to win; a lock
+                # that cannot be removed still ends at the deadline.
                 stale_token = _read_lock_token(lock_path)
                 if stale_token is not None:
                     try:
                         if _read_lock_token(lock_path) == stale_token:
                             os.unlink(lock_path)
+                            continue
                     except OSError:
                         pass
-                continue
             if time.monotonic() >= deadline:
                 return None
             time.sleep(_LOCK_RETRY_S)
@@ -103,6 +105,39 @@ def _release_lock(fd: int, lock_path: str, token: bytes) -> None:
             os.unlink(lock_path)
     except OSError:
         pass
+
+
+def hold_lock(lock_path: str, budget: float = _LOCK_BUDGET_S):
+    """Acquire the lock at `lock_path` for as long as the caller needs it,
+    beyond _LOCK_STALE_S: a background thread refreshes its mtime while this
+    owner's token is still in it. Returns the function that releases it, or
+    None when another owner held it for all of `budget` seconds. An owner that
+    dies without releasing stops refreshing, so its lock goes stale."""
+    acquired = _acquire_lock(lock_path, budget)
+    if acquired is None:
+        return None
+    fd, token = acquired
+    stop = threading.Event()
+
+    def _refresh() -> None:
+        while not stop.wait(_LOCK_STALE_S / 3):
+            if _read_lock_token(lock_path) != token:
+                return
+            try:
+                os.utime(lock_path)
+            except OSError:
+                pass
+
+    refresher = threading.Thread(target=_refresh, name="lock-refresh", daemon=True)
+    refresher.start()
+
+    def release() -> None:
+        if not stop.is_set():
+            stop.set()
+            refresher.join()
+            _release_lock(fd, lock_path, token)
+
+    return release
 
 
 def _fsync_dir(dir_path: str) -> None:

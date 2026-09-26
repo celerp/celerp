@@ -291,3 +291,42 @@ def test_concurrent_node_python_writers(tmp_path, monkeypatch):
         assert final[f"py_{i}"] == i, f"lost py_{i}"
         assert final[f"node_{i}"] == i, f"lost node_{i}"
     assert final["db_mode"] == "local", "original key clobbered"
+
+
+# ── hold_lock ─────────────────────────────────────────────────────────────────
+
+
+def test_hold_lock_excludes_a_second_holder_and_releases_once(tmp_path):
+    lock = str(tmp_path / "update.lock")
+    release = config_store.hold_lock(lock, 0.1)
+    assert release is not None
+    assert config_store.hold_lock(lock, 0.1) is None
+    release()
+    release()  # idempotent
+    assert not os.path.exists(lock)
+    again = config_store.hold_lock(lock, 0.1)
+    assert again is not None
+    again()
+
+
+def test_hold_lock_is_refreshed_so_it_never_goes_stale(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_store, "_LOCK_STALE_S", 0.3)
+    lock = str(tmp_path / "update.lock")
+    release = config_store.hold_lock(lock, 0.1)
+    time.sleep(0.8)  # well past the stale age: only the refresh keeps it held
+    assert config_store.hold_lock(lock, 0.1) is None
+    release()
+
+
+def test_stale_lock_that_cannot_be_removed_ends_at_the_budget(tmp_path, monkeypatch):
+    lock = tmp_path / "update.lock"
+    lock.write_text("dead owner")
+    os.utime(lock, (0, 0))
+
+    def refuse(path):
+        raise PermissionError(path)
+
+    monkeypatch.setattr(config_store.os, "unlink", refuse)
+    start = time.monotonic()
+    assert config_store._acquire_lock(str(lock), 0.2) is None
+    assert time.monotonic() - start < 2

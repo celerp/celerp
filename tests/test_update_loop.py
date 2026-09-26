@@ -83,7 +83,7 @@ async def test_a_person_can_retry_a_version_that_failed_overnight(cfg_dir):
 
 def _last_result(ok):
     return {"last_result": {"ok": ok, "outcome": update.OK if ok else update.FAILED,
-                            "from": "1.0.0", "to": "1.1.0", "reason": "install failed: x",
+                            "from": "1.0.0", "to": "1.1.0", "reason": "install_failed",
                             "at": "t", "notified": False}}
 
 
@@ -108,3 +108,16 @@ async def test_notifies_every_company_once(client, session, cfg_dir, ok, title):
     assert update.read_state()["last_result"]["notified"] is True
     if not ok:
         assert "still on 1.0.0" in rows[0].body and "not changed" in rows[0].body
+        assert update.reason_text("install_failed") in rows[0].body
+
+
+@pytest.mark.asyncio
+async def test_unreadable_update_record_notifies_nobody(client, session, cfg_dir):
+    (cfg_dir / update.STATE_FILE).write_text("{torn")
+    assert await update.notify_last_result(session) == 0
+
+
+def test_status_with_unreadable_update_record_shows_an_update_running(cfg_dir):
+    (cfg_dir / update.STATE_FILE).write_text("{torn")
+    body = update.status(owner=True)
+    assert body["last_result"] is None and body["installing"] is True

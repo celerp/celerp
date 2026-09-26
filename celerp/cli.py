@@ -238,9 +238,12 @@ def _post_migration_grants(db_url: str) -> None:
 
 
 
-def _config_to_env(cfg: dict) -> dict:
-    """Convert config dict to env vars for subprocess launch."""
-    env = os.environ.copy()
+def _config_to_env(cfg: dict, root: Path | None = None) -> dict:
+    """Convert config dict to env vars for a server or command running the
+    release installed at `root` (default: the release this process runs)."""
+    from celerp import runtime
+
+    env = runtime.base_env()
     env["DATABASE_URL"] = cfg["database"]["url"]
     env["JWT_SECRET"] = cfg["auth"]["jwt_secret"]
     if cfg["cloud"]["token"]:
@@ -258,7 +261,7 @@ def _config_to_env(cfg: dict) -> dict:
     # default (core) and premium (opt-in add-ons) trees. Keeping the writable
     # dir separate means a sideload never lands in default_modules/.
     from celerp.modules.loader import first_party_names, is_first_party, writable_module_dir
-    _pkg_root = Path(__file__).parent.parent
+    _pkg_root = root or runtime.package_root()
     _mod_dirs = [_pkg_root / "default_modules", _pkg_root / "premium_modules"]
     _writable_dir = None
     try:
@@ -293,9 +296,7 @@ def _config_to_env(cfg: dict) -> dict:
             ):
                 continue
             _extra_paths.append(str(_path))
-    existing_path = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = ":".join(filter(None, [str(_pkg_root)] + _extra_paths + [existing_path]))
-    return env
+    return runtime.release_env(_pkg_root, env, _extra_paths)
 
 
 
@@ -865,10 +866,38 @@ def _utf8_output() -> None:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
 
+def _exec_celerp(args: list[str], env: dict) -> None:
+    """Replace this process with `python -m celerp <args>` under `env`. POSIX
+    replaces it in place (same PID for a service manager); Windows has no
+    in-place exec that keeps the PID, so this process waits on the new one and
+    passes its exit code through, leaving Ctrl+C to the new one."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    argv = [sys.executable, "-m", "celerp", *args]
+    if os.name == "nt":
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        sys.exit(subprocess.call(argv, env=env))
+    os.execve(sys.executable, argv, env)
+
+
+def _run_active_release() -> None:
+    """Run the command on the release a self-update switched to, when this is
+    the installed one (`celerp.runtime`)."""
+    from celerp import runtime
+
+    if runtime.PKG_ROOT_ENV in os.environ:
+        return
+    root = runtime.active()
+    if root is not None:
+        _exec_celerp(sys.argv[1:], runtime.release_env(root))
+
+
 @click.group()
 def main() -> None:
     """Celerp ERP — self-hosted business management."""
     _utf8_output()
+    _run_active_release()
 
 
 @main.command()
@@ -1115,34 +1144,61 @@ def _server_spawners(cfg: dict) -> tuple:
             partial(_spawn_server, "ui.app:app", "0.0.0.0"))
 
 
-def _update_steps(cfg: dict, env: dict):
+def _update_steps(cfg: dict):
     """The self-update steps for this supervisor (`celerp.services.update`)."""
     from celerp.services import update
 
     spawn_api, spawn_ui = _server_spawners(cfg)
-    return update.SupervisorSteps(cfg, env, spawn_api=spawn_api, spawn_ui=spawn_ui,
-                                  wait_ready=_wait_ready)
+    return update.SupervisorSteps(cfg, lambda root: _config_to_env(cfg, root),
+                                  spawn_api=spawn_api, spawn_ui=spawn_ui, wait_ready=_wait_ready)
 
 
-def _hand_over(steps) -> None:
-    """Replace this supervisor with one running the newly installed version.
+def _hold_update_lock(what: str):
+    """The update lock (`update.lock_path`), or exit: one `celerp start` or
+    `celerp upgrade` per install at a time. Returns its release function."""
+    from celerp import config_store
+    from celerp.services import update
 
-    Called with the API, UI and embedded cluster stopped, so the new supervisor
-    starts them itself and owns their shutdown. POSIX replaces the process in
-    place (same PID for the service manager); Windows has no in-place exec that
-    keeps the PID, so the old supervisor waits on the new one and passes its
-    exit code through, leaving Ctrl+C to the new one.
+    release = config_store.hold_lock(str(update.lock_path()), config_store._LOCK_STALE_S + 5)
+    if release is None:
+        click.echo(f"Cannot {what}: Celerp is already running or being upgraded for this "
+                   f"configuration ({update.config_dir()}).", err=True)
+        sys.exit(1)
+    return release
+
+
+def _hand_over(steps, release_lock) -> None:
+    """Replace this supervisor with one running the release just switched to.
+
+    Called with the API and UI stopped; the embedded cluster is stopped here, so
+    the new supervisor starts it with its own binaries and owns its shutdown.
     """
+    from celerp import runtime
+
     steps.stop_cluster()
+    release_lock()
     click.echo("Starting the new version...")
-    sys.stdout.flush()
-    sys.stderr.flush()
-    argv = [sys.executable, "-m", "celerp", "start"]
-    if os.name == "nt":
-        signal.signal(signal.SIGINT, signal.SIG_IGN)
-        signal.signal(signal.SIGTERM, signal.SIG_DFL)
-        sys.exit(subprocess.call(argv))
-    os.execv(sys.executable, argv)
+    _exec_celerp(["start"], runtime.base_env())
+
+
+def _update_state_or_exit() -> dict:
+    from celerp.services import update
+
+    try:
+        return update.read_state()
+    except update.UpdateStateError as exc:
+        click.echo(f"Update record unreadable: {exc}", err=True)
+        sys.exit(1)
+
+
+def _exit_if_rollback_failed(result: dict | None) -> None:
+    from celerp.services import update
+
+    if result and result["outcome"] == update.ROLLBACK_FAILED:
+        click.echo(f"The update to {result['to']} failed ({update.reason_text(result['reason'])}) "
+                   f"and the database could not be restored from {update.dump_path()}. Celerp "
+                   "will not start until it is; starting again retries the restore.", err=True)
+        sys.exit(1)
 
 
 def _start(cfg: dict) -> None:
@@ -1160,26 +1216,29 @@ def _start(cfg: dict) -> None:
     idempotent, so this costs nothing when there is nothing to apply, and a
     failure exits non-zero with the alembic error rather than starting anyway.
     Before that, an update a previous supervisor did not live to finish is
-    finished or undone.
+    finished or undone. The update lock is held for the supervisor's lifetime.
     """
+    release_lock = _hold_update_lock("start")
+    try:
+        _supervise(cfg, release_lock)
+    finally:
+        release_lock()
+
+
+def _supervise(cfg: dict, release_lock) -> None:
     from celerp.config import config_path as _cfg_path
     from celerp.services import update
 
-    env = _config_to_env(cfg)
-    if update.read_state().get("in_progress"):
-        steps = _update_steps(cfg, env)
-        result, children = update.reconcile(steps)
-        if result and result["outcome"] == update.ROLLBACK_FAILED:
-            click.echo(f"Update could not be undone: {result['reason']}", err=True)
-            sys.exit(1)
-        if children:
-            steps.stop_children(children)
-            _hand_over(steps)
-
-    _migrate_to_head(cfg["database"]["url"])
-
     def _sentinel() -> "Path":
         return _cfg_path().parent / ".restart_requested"
+
+    # A request left by a supervisor that stopped before acting on it is stale.
+    _sentinel().unlink(missing_ok=True)
+    if _update_state_or_exit().get("in_progress"):
+        _exit_if_rollback_failed(update.reconcile(_update_steps(cfg)))
+
+    env = _config_to_env(cfg)
+    _migrate_to_head(cfg["database"]["url"])
 
     spawn_api, spawn_ui = _server_spawners(cfg)
     api_port = cfg["server"]["api_port"]
@@ -1224,17 +1283,15 @@ def _start(cfg: dict) -> None:
                 ui_proc.wait()
                 if target:
                     click.echo(f"Updating Celerp to {target}...")
-                    steps = _update_steps(cfg, env)
+                    steps = _update_steps(cfg)
                     result, children = update.run_update(target, steps)
                     if children:
                         api_proc, ui_proc = children
                         steps.stop_children(children)
-                        _hand_over(steps)
-                    if result["outcome"] == update.ROLLBACK_FAILED:
-                        click.echo(f"Update could not be undone: {result['reason']}", err=True)
-                        sys.exit(1)
-                    click.echo(f"Update not installed ({result['reason']}); starting the current version.",
-                               err=True)
+                        _hand_over(steps, release_lock)
+                    _exit_if_rollback_failed(result)
+                    click.echo(f"Update not installed ({update.reason_text(result['reason'])}); "
+                               "starting the current version.", err=True)
                 else:
                     click.echo("Restarting API server (config changed)...")
                 # Re-read config so newly enabled modules are picked up; keep the
@@ -1401,11 +1458,22 @@ def upgrade():
     if not cfg:
         click.echo("Not initialized. Run `celerp init` first.", err=True)
         sys.exit(1)
-    if update.read_state().get("in_progress"):
-        click.echo("An update is unfinished. Run `celerp start`, which completes or undoes it.", err=True)
-        sys.exit(1)
     if update.get_json(f"http://127.0.0.1:{cfg['server']['api_port']}/health") is not None:
         click.echo("Celerp is running. Stop it first, then run `celerp upgrade` again.", err=True)
+        sys.exit(1)
+    release_lock = _hold_update_lock("upgrade")
+    try:
+        _upgrade(cfg)
+    finally:
+        release_lock()
+
+
+def _upgrade(cfg: dict) -> None:
+    from celerp.services import update
+
+    _update_state_or_exit()
+    if update.update_in_progress():
+        click.echo("An update is unfinished. Run `celerp start`, which completes or undoes it.", err=True)
         sys.exit(1)
     reasons = {
         "pip_missing": "pip is not available to this Python",
@@ -1427,9 +1495,13 @@ def upgrade():
         return
     ensure_database(cfg)
     click.echo(f"Upgrading Celerp {update.installed_version()} -> {target}...")
-    result, _ = update.run_update(target, _update_steps(cfg, _config_to_env(cfg)), verify=False)
+    steps = _update_steps(cfg)
+    result, children = update.run_update(target, steps)
+    steps.stop_children(children)
+    steps.stop_cluster()  # the next start runs it with the new release's binaries
+    _exit_if_rollback_failed(result)
     if not result["ok"]:
-        click.echo(f"Upgrade not installed: {result['reason']}", err=True)
+        click.echo(f"Upgrade not installed: {update.reason_text(result['reason'])}.", err=True)
         sys.exit(1)
     click.echo(f"\u2713 Upgraded to {target}. Start Celerp with `celerp start`.")
 

@@ -9,6 +9,10 @@ sentinel: an empty sentinel is a plain restart, `update <version>` is a request
 to update. Every step is recorded in `update_state.json` in the config dir first,
 so a supervisor killed mid-update finishes or undoes it on the next start.
 
+The installed environment is never changed: the new release is installed into
+its own directory and switched to only after it migrated and started
+(`celerp.runtime`). An undo therefore only has to restore the database.
+
 `run_update` owns the order of the steps and the undo rules; `Steps` does the
 work. Tests drive `run_update` with fake steps; the supervisor uses
 `SupervisorSteps`.
@@ -20,17 +24,20 @@ import json
 import logging
 import os
 import asyncio
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import urllib.request
 from datetime import datetime, timezone
-from importlib import invalidate_caches, metadata
+from importlib import metadata
 from pathlib import Path
 from typing import Callable
 
 from packaging.version import InvalidVersion, Version
+
+from celerp import runtime
 
 log = logging.getLogger(__name__)
 
@@ -47,11 +54,30 @@ WINDOW_END_HOUR = 5
 OK = "ok"
 FAILED = "failed"            # nothing changed, or packages put back before the database changed
 ROLLED_BACK = "rolled_back"  # the new version failed after the database changed; database and packages restored
-ROLLBACK_FAILED = "rollback_failed"
+ROLLBACK_FAILED = "rollback_failed"  # the database could not be restored; Celerp stays stopped until it is
+
+# Why an attempt did not install, as recorded in last_result["reason"]. Error
+# detail goes to the log only; everything recorded here can be shown to anyone.
+REASONS = {
+    "backup_failed": "the database backup taken before updating failed",
+    "install_failed": "the new version could not be installed",
+    "migrate_failed": "the database update failed",
+    "verify_failed": "the new version did not start",
+    "interrupted": "the update was interrupted",
+}
+
+
+def reason_text(code: str) -> str:
+    return REASONS.get(code, "the update did not complete")
 
 
 class UpdateError(RuntimeError):
-    """A step failed; the message is shown to the install owner."""
+    """A step failed, or an update cannot go ahead."""
+
+
+class UpdateStateError(UpdateError):
+    """update_state.json exists but cannot be read. Nothing updates, and
+    `celerp start` refuses to run, until it is repaired or removed."""
 
 
 # ── Paths and state ───────────────────────────────────────────────────────────
@@ -67,26 +93,39 @@ def sentinel_path() -> Path:
     return _restart_sentinel_path()
 
 
-def backup_paths() -> tuple[Path, Path]:
-    """(freeze file, database dump) kept from the last update attempt."""
-    d = config_dir() / "backups"
-    return d / "pre-update-requirements.txt", d / "pre-update.dump"
+def dump_path() -> Path:
+    """The database dump kept from the last update attempt."""
+    return config_dir() / "backups" / "pre-update.dump"
+
+
+def lock_path() -> Path:
+    """Held by whichever process may update: a running `celerp start` or `celerp upgrade`."""
+    return config_dir() / "update.lock"
 
 
 def read_state() -> dict:
+    """The update state; {} when there is none. Raises UpdateStateError when the
+    file exists but cannot be read, so an unreadable record of an unfinished
+    update is never taken for no update at all."""
     path = config_dir() / STATE_FILE
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as exc:
+        raise UpdateStateError(f"{path} cannot be read ({exc.__class__.__name__}); "
+                               "repair or remove it") from exc
+    if not isinstance(state, dict):
+        raise UpdateStateError(f"{path} does not hold an update record; repair or remove it")
+    return state
 
 
 def write_state(state: dict) -> None:
+    from celerp.config_store import atomic_write_text
+
     path = config_dir() / STATE_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, path)
+    atomic_write_text(str(path), json.dumps(state, indent=2, sort_keys=True))
 
 
 def _now() -> str:
@@ -97,8 +136,7 @@ def _now() -> str:
 
 
 def installed_version() -> str:
-    """The celerp version on disk now (not the one this process imported)."""
-    invalidate_caches()
+    """The version of the release this process runs."""
     try:
         return metadata.version("celerp")
     except metadata.PackageNotFoundError:
@@ -153,8 +191,7 @@ def self_update_blockers() -> list[str]:
     pip = _pip_blocker()
     if pip:
         blockers.append(pip)
-    import celerp
-    if not os.access(Path(celerp.__file__).resolve().parent.parent, os.W_OK):
+    if not os.access(config_dir(), os.W_OK):  # new releases are installed under it
         blockers.append("not_writable")
     if Path("/.dockerenv").exists() or Path("/run/.containerenv").exists():
         blockers.append("container")
@@ -205,7 +242,10 @@ def requested_target(sentinel_text: str) -> str | None:
 
 
 def update_in_progress() -> bool:
-    if read_state().get("in_progress"):
+    try:
+        if read_state().get("in_progress"):
+            return True
+    except UpdateStateError:
         return True
     try:
         return requested_target(sentinel_path().read_text(encoding="utf-8")) is not None
@@ -272,6 +312,10 @@ def status(*, owner: bool) -> dict:
     else sees reason "administrator"."""
     blockers = self_update_blockers()
     reason = (blockers[0] if blockers else "") if owner else "administrator"
+    try:
+        last_result = read_state().get("last_result")
+    except UpdateStateError:
+        last_result = None
     return {
         "current": installed_version(),
         "latest": _check["latest"],
@@ -281,7 +325,7 @@ def status(*, owner: bool) -> dict:
         "reason": reason,
         "auto": auto_enabled(),
         "installing": update_in_progress(),
-        "last_result": read_state().get("last_result"),
+        "last_result": last_result,
     }
 
 
@@ -346,12 +390,12 @@ def result_message(result: dict) -> tuple[str, str]:
         return (f"Celerp was updated to {result['to']}",
                 f"Celerp is now on version {result['to']}.")
     title = f"Celerp could not update to {result['to']}"
+    reason = reason_text(result.get("reason", ""))
     if result.get("outcome") == ROLLBACK_FAILED:
-        return title, (f"The update to {result['to']} failed and could not be undone: "
-                       f"{result.get('reason', '')}. The backup taken before the update is "
-                       "kept; see the update instructions to restore it.")
-    return title, (f"Celerp is still on {result['from']}: {result.get('reason', '')}. "
-                   "Your data was not changed.")
+        return title, (f"The update to {result['to']} failed ({reason}) and the database "
+                       "could not be restored. The backup taken before the update is kept; "
+                       "see the update instructions to restore it.")
+    return title, f"Celerp is still on {result['from']}: {reason}. Your data was not changed."
 
 
 async def notify_last_result(session) -> int:
@@ -363,7 +407,11 @@ async def notify_last_result(session) -> int:
     from celerp.models.company import Company
     from celerp.notifications import service as notif_service
 
-    state = read_state()
+    try:
+        state = read_state()
+    except UpdateStateError as exc:
+        log.error("update result not reported: %s", exc)
+        return 0
     result = state.get("last_result")
     if not result or result.get("notified"):
         return 0
@@ -421,28 +469,29 @@ async def update_loop(restart: Callable[[], None]) -> None:
 class Steps:
     """The work behind each update step. Every method raises on failure."""
 
-    def freeze(self, path: Path) -> None: ...
     def dump(self, path: Path) -> None: ...
-    def stop_cluster(self) -> None: ...
-    def install(self, target: str) -> None: ...
-    def start_cluster(self) -> None: ...
-    def migrate(self) -> None: ...
+    def stage(self, target: str) -> None: ...
+    def migrate(self, target: str) -> None: ...
     def verify(self, target: str) -> tuple: ...
     def stop_children(self, children: tuple) -> None: ...
     def restore(self, path: Path) -> None: ...
-    def reinstall(self, path: Path) -> None: ...
 
 
-def _mark(state: dict, current: str, target: str, step: str) -> None:
+def _mark(state: dict, current: str, target: str, step: str, reason: str = "") -> None:
     state["in_progress"] = {"from": current, "to": target, "step": step,
                             "started_at": state.get("in_progress", {}).get("started_at") or _now()}
+    if reason:
+        state["in_progress"]["reason"] = reason
     write_state(state)
 
 
 def _finish(state: dict, current: str, target: str, outcome: str, reason: str = "") -> dict:
+    """Record the outcome. A failed rollback keeps the update in progress, so
+    every start retries it and nothing serves the half-restored database."""
     result = {"ok": outcome == OK, "outcome": outcome, "from": current, "to": target,
               "reason": reason, "at": _now(), "notified": False}
-    state.pop("in_progress", None)
+    if outcome != ROLLBACK_FAILED:
+        state.pop("in_progress", None)
     state["last_result"] = result
     if outcome != OK:
         failed = state.setdefault("failed_versions", [])
@@ -454,100 +503,95 @@ def _finish(state: dict, current: str, target: str, outcome: str, reason: str = 
     return result
 
 
-def _undo(steps: Steps, state: dict, current: str, target: str, reason: str,
-          *, restore: bool) -> dict:
-    """Put the database (when `restore`) and packages back as they were."""
-    freeze, dump = backup_paths()
-    _mark(state, current, target, "rollback")
+def _undo(steps: Steps, state: dict, current: str, target: str, reason: str) -> dict:
+    """Restore the database from the dump and drop the staged release. The
+    installed release never changed, so nothing else needs undoing."""
+    dump = dump_path()
+    _mark(state, current, target, "rollback", reason)
     try:
-        if restore:
-            steps.restore(dump)
-        steps.stop_cluster()
-        steps.reinstall(freeze)
-        steps.start_cluster()
-    except Exception as exc:
-        log.error(
-            "Rollback failed: %s. The pre-update database is at %s (pg_restore --clean -d <url> %s) "
-            "and the previous packages at %s (python -m pip install -r %s).",
-            exc, dump, dump, freeze, freeze,
-        )
-        return _finish(state, current, target, ROLLBACK_FAILED, f"{reason}; rollback failed: {exc}")
-    return _finish(state, current, target, ROLLED_BACK if restore else FAILED, reason)
+        steps.restore(dump)
+    except Exception:
+        log.exception("Restoring the database failed; it is retried at every start. The "
+                      "pre-update database is at %s (pg_restore --clean -d <url> %s).", dump, dump)
+        return _finish(state, current, target, ROLLBACK_FAILED, reason)
+    runtime.discard(target)
+    return _finish(state, current, target, ROLLED_BACK, reason)
 
 
-def run_update(target: str, steps: Steps, *, verify: bool = True) -> tuple[dict, tuple]:
+def run_update(target: str, steps: Steps) -> tuple[dict, tuple]:
     """Update to `target`. Returns (last_result, children).
 
-    `children` are the verified new API and UI processes (empty unless the
-    update succeeded with `verify`). The database is restored from the dump
-    once a migration may have touched it; a failed install leaves it untouched.
+    `children` are the new API and UI processes, already verified; empty unless
+    the update succeeded. The release switch is the last step, so until then the
+    installed release is untouched, and the database is restored from the dump
+    once a migration may have touched it.
     """
     target = validate_target(target)
     current = installed_version()
     state = read_state()
-    freeze, dump = backup_paths()
-    freeze.parent.mkdir(parents=True, exist_ok=True)
+    dump = dump_path()
+    dump.parent.mkdir(parents=True, exist_ok=True)
 
-    _mark(state, current, target, "snapshot")
+    _mark(state, current, target, "backup")
     try:
-        steps.freeze(freeze)
-        _mark(state, current, target, "backup")
         steps.dump(dump)
-    except Exception as exc:
-        return _finish(state, current, target, FAILED, f"backup failed: {exc}"), ()
+    except Exception:
+        log.exception("update backup failed")
+        return _finish(state, current, target, FAILED, "backup_failed"), ()
 
     _mark(state, current, target, "install")
     try:
-        steps.stop_cluster()
-        steps.install(target)
-    except Exception as exc:
-        return _undo(steps, state, current, target, f"install failed: {exc}", restore=False), ()
+        steps.stage(target)
+    except Exception:
+        log.exception("update install failed")
+        runtime.discard(target)
+        return _finish(state, current, target, FAILED, "install_failed"), ()
 
     _mark(state, current, target, "migrate")
     try:
-        steps.start_cluster()
-        steps.migrate()
-    except Exception as exc:
-        return _undo(steps, state, current, target, f"database update failed: {exc}", restore=True), ()
+        steps.migrate(target)
+    except Exception:
+        log.exception("update migration failed")
+        return _undo(steps, state, current, target, "migrate_failed"), ()
 
-    if not verify:
-        return _finish(state, current, target, OK), ()
-    return _verify(steps, state, current, target)
-
-
-def _verify(steps: Steps, state: dict, current: str, target: str) -> tuple[dict, tuple]:
     _mark(state, current, target, "verify")
     try:
         children = steps.verify(target)
-    except Exception as exc:
-        return _undo(steps, state, current, target, f"new version did not start: {exc}", restore=True), ()
+    except Exception:
+        log.exception("updated version did not start")
+        return _undo(steps, state, current, target, "verify_failed"), ()
+
+    try:
+        runtime.switch(target)
+    except Exception:
+        log.exception("switching to the new version failed")
+        steps.stop_children(children)
+        return _undo(steps, state, current, target, "install_failed"), ()
+    runtime.prune({target, current})
     return _finish(state, current, target, OK), children
 
 
-def reconcile(steps: Steps) -> tuple[dict | None, tuple]:
+def reconcile(steps: Steps) -> dict | None:
     """Finish or undo an update the supervisor did not live to finish.
 
-    Runs once at `celerp start`: when the target is installed it migrates and
-    verifies; otherwise it puts everything back. Safe to repeat: restore and
-    reinstall are exact regardless of how far the last attempt got.
+    Runs at `celerp start`, which by then runs the release `runtime` points at:
+    the target when the switch happened (the update is done), the previous one
+    otherwise (the database is restored when a migration may have touched it).
+    Safe to repeat: a restore is exact however far the last attempt got.
     """
     state = read_state()
     pending = state.get("in_progress")
     if not pending:
-        return None, ()
+        return None
     current, target, step = pending["from"], pending["to"], pending["step"]
     log.warning("Resuming an interrupted update to %s (last step: %s)", target, step)
-    if step in ("snapshot", "backup"):
-        return _finish(state, current, target, FAILED, "interrupted before anything changed"), ()
-    if step != "rollback" and installed_version() == target:
-        try:
-            steps.start_cluster()
-            steps.migrate()
-        except Exception as exc:
-            return _undo(steps, state, current, target, f"database update failed: {exc}", restore=True), ()
-        return _verify(steps, state, current, target)
-    return _undo(steps, state, current, target, "interrupted",
-                 restore=step in ("migrate", "verify", "rollback")), ()
+    if installed_version() == target:
+        runtime.prune({target})
+        return _finish(state, current, target, OK)
+    if step in ("backup", "install"):
+        runtime.discard(target)
+        return _finish(state, current, target, FAILED, "interrupted")
+    return _undo(steps, state, current, target, pending.get("reason") or "interrupted")
 
 
 # ── Real steps ────────────────────────────────────────────────────────────────
@@ -564,18 +608,17 @@ def _python(*args: str, env: dict | None = None, timeout: float) -> subprocess.C
 
 def _step(*args: str, env: dict | None = None) -> str:
     """Run `python <args>` as one update step; any failure, or no end within
-    STEP_TIMEOUT_SECONDS, raises UpdateError so the update is undone."""
+    STEP_TIMEOUT_SECONDS, raises UpdateError so the update is undone. The
+    step's output goes to the log."""
+    name = " ".join(args[:3])
     try:
         result = _python(*args, env=env, timeout=STEP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
-        raise UpdateError(f"{' '.join(args[:3])} did not finish within {STEP_TIMEOUT_SECONDS // 60} minutes") from exc
+        raise UpdateError(f"{name} did not finish within {STEP_TIMEOUT_SECONDS // 60} minutes") from exc
     if result.returncode != 0:
-        raise UpdateError((result.stderr or result.stdout).strip()[-800:] or f"exit {result.returncode}")
+        log.error("%s failed:\n%s", name, (result.stderr or result.stdout).strip()[-4000:])
+        raise UpdateError(f"{name} exited {result.returncode}")
     return result.stdout
-
-
-def _pip(*args: str) -> str:
-    return _step("-m", "pip", *args, "--disable-pip-version-check")
 
 
 def _terminate(proc: subprocess.Popen) -> None:
@@ -599,19 +642,20 @@ def get_json(url: str) -> dict | None:
 
 
 class SupervisorSteps(Steps):
-    """Real steps, run by `celerp start` with its API and UI stopped.
+    """Real steps, run by `celerp start` (or `celerp upgrade`) with the API and
+    UI stopped. The database, embedded or not, keeps running throughout.
 
-    Everything used after `install` is imported here, before pip changes the
-    installed files; the new version only ever runs in child processes.
+    `env_for(root)` is the environment for a process running the release at
+    `root`; the new release only ever runs in child processes.
     """
 
-    def __init__(self, cfg: dict, env: dict, *, spawn_api: Callable, spawn_ui: Callable,
-                 wait_ready: Callable) -> None:
+    def __init__(self, cfg: dict, env_for: Callable[[Path], dict], *, spawn_api: Callable,
+                 spawn_ui: Callable, wait_ready: Callable) -> None:
         from celerp.config import settings
         from celerp.services import backup
 
         self.cfg = cfg
-        self.env = env
+        self._env_for = env_for
         self.embedded = bool(cfg.get("database", {}).get("embedded"))
         self.api_port = cfg["server"]["api_port"]
         self.ui_port = cfg["server"]["ui_port"]
@@ -621,17 +665,10 @@ class SupervisorSteps(Steps):
         self._backup = backup
         if not settings.pg_bin_dir:
             settings.pg_bin_dir = cfg.get("backup", {}).get("pg_bin_dir", "")
-        if self.embedded:
-            from celerp import embedded_pg
-            import celerp_postgres  # noqa: F401  (imported before pip replaces it)
-            self._embedded_pg = embedded_pg
 
     @property
     def db_url(self) -> str:
         return self.cfg["database"]["url"]
-
-    def freeze(self, path: Path) -> None:
-        path.write_text(_pip("freeze"), encoding="utf-8")
 
     def dump(self, path: Path) -> None:
         data = self._backup.dump_database(self.db_url)
@@ -640,28 +677,26 @@ class SupervisorSteps(Steps):
             f.write(data)
         os.chmod(path, 0o600)
 
-    def stop_cluster(self) -> None:
-        if self.embedded:
-            self._embedded_pg.stop_cluster(config_dir())
+    def stage(self, target: str) -> None:
+        """Install `target` and its dependencies into a directory of its own,
+        renamed into place only once pip finished."""
+        staging, release = runtime.staging_dir(target), runtime.release_dir(target)
+        for path in (staging, release):
+            shutil.rmtree(path, ignore_errors=True)
+        staging.parent.mkdir(parents=True, exist_ok=True)
+        _step("-m", "pip", "install", "--target", str(staging), "--no-warn-script-location",
+              "--disable-pip-version-check", f"celerp=={target}", env=runtime.base_env())
+        os.replace(staging, release)
 
-    def start_cluster(self) -> None:
-        if self.embedded:
-            self.cfg["database"]["url"] = self._embedded_pg.ensure_cluster(config_dir())
-            self.env["DATABASE_URL"] = self.db_url
-
-    def install(self, target: str) -> None:
-        _pip("install", f"celerp=={target}")
-
-    def reinstall(self, path: Path) -> None:
-        _pip("install", "-r", str(path))
-
-    def migrate(self) -> None:
-        _step("-m", "celerp", "migrate", "--db-url", self.db_url, env=self.env)
+    def migrate(self, target: str) -> None:
+        _step("-m", "celerp", "migrate", "--db-url", self.db_url,
+              env=self._env_for(runtime.release_dir(target)))
 
     def verify(self, target: str) -> tuple:
         """Start the new API alone and require it healthy on the target
         version before the UI starts, so no user reaches it until it passed."""
-        api = self._spawn_api(self.env, self.api_port)
+        env = self._env_for(runtime.release_dir(target))
+        api = self._spawn_api(env, self.api_port)
         base = f"http://127.0.0.1:{self.api_port}"
         deadline = time.time() + VERIFY_TIMEOUT_SECONDS
         version = None
@@ -674,7 +709,7 @@ class SupervisorSteps(Steps):
         if version != target:
             _terminate(api)
             raise UpdateError(f"reported version {version}" if version else "not healthy")
-        ui = self._spawn_ui(self.env, self.ui_port)
+        ui = self._spawn_ui(env, self.ui_port)
         if not self._wait_ready((api, self.api_port), (ui, self.ui_port), VERIFY_TIMEOUT_SECONDS):
             self.stop_children((api, ui))
             raise UpdateError("the web interface did not start")
@@ -686,3 +721,10 @@ class SupervisorSteps(Steps):
 
     def restore(self, path: Path) -> None:
         self._backup.restore_database(path.read_bytes(), self.db_url, clean_schema=True)
+
+    def stop_cluster(self) -> None:
+        """Stop the embedded database, so the next supervisor starts it with
+        the binaries of the release it runs."""
+        if self.embedded:
+            from celerp import embedded_pg
+            embedded_pg.stop_cluster(config_dir())
