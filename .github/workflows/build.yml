@@ -448,6 +448,24 @@ jobs:
           CSC_KEYCHAIN: ${{ env.CSC_KEYCHAIN }}
         run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
 
+      # Merging the two slices into a universal app is most of the mac build time,
+      # and only a packaging change can break it: both Python trees ride in each
+      # slice unchanged (x64ArchFiles). A pull request that touches nothing but
+      # application code builds the arm64 slice, the one the boot smoke launches.
+      # Any other path, or a diff that cannot be read, keeps the universal build.
+      - name: Choose the pull request mac targets
+        id: mac-targets
+        if: matrix.os == 'macos-latest' && github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          targets=""
+          if files="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD)" && [ -n "$files" ] \
+            && ! grep -qvE '^(celerp|ui|default_modules|tests|docs)/' <<<"$files"; then
+            targets="dmg:arm64 zip:arm64"
+          fi
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "mac targets: ${targets:-universal}"
+
       - name: Build macOS (pull request - UNSIGNED)
         # Pull-request builds do not receive signing credentials. They still build
         # the final distributable and pass the DMG integrity/mount gate below.
@@ -456,7 +474,7 @@ jobs:
         working-directory: electron
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
+        run: pnpm exec electron-builder ${{ matrix.platform_flag }} ${{ steps.mac-targets.outputs.targets }} --publish never
 
       - name: Verify macOS distributable
         if: matrix.os == 'macos-latest'
