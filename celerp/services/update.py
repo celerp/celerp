@@ -656,7 +656,7 @@ def _bound_run(command, *, env: dict | None = None, capture_output: bool = False
     env = dict(os.environ if env is None else env)
     with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         proc = subprocess.Popen(
-            [sys.executable, "-S", "-c", _PARENT_BOUND_RUNNER, *map(str, command)],
+            [sys.executable, "-E", "-S", "-c", _PARENT_BOUND_RUNNER, *map(str, command)],
             env=env,
             stdin=subprocess.PIPE,
             stdout=out if capture_output else None,
