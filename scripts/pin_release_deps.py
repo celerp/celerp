@@ -41,9 +41,11 @@ def _req_name(requirement: str) -> str:
     return _norm(re.split(r"[\s\[<>=!~;]", requirement.strip(), maxsplit=1)[0])
 
 
-def parse_constraints(text: str) -> dict[str, tuple[str, set[str]]]:
-    """Map each package to (its pin line, the set of packages that require it)."""
-    pins: dict[str, tuple[str, set[str]]] = {}
+def parse_constraints(text: str) -> dict[str, tuple[list[str], set[str]]]:
+    """Map each package to (its pin lines, the set of packages that require it).
+    A package resolved differently per Python version or platform has one line
+    per marker, and every one of them is kept."""
+    pins: dict[str, tuple[list[str], set[str]]] = {}
     current: str | None = None
     for raw in text.splitlines():
         line = raw.strip()
@@ -51,7 +53,7 @@ def parse_constraints(text: str) -> dict[str, tuple[str, set[str]]]:
             continue
         if not line.startswith("#"):
             current = _req_name(line)
-            pins[current] = (line, set())
+            pins.setdefault(current, ([], set()))[0].append(line)
             continue
         if current is None:
             continue
@@ -63,7 +65,7 @@ def parse_constraints(text: str) -> dict[str, tuple[str, set[str]]]:
     return pins
 
 
-def closure(roots: set[str], pins: dict[str, tuple[str, set[str]]]) -> set[str]:
+def closure(roots: set[str], pins: dict[str, tuple[list[str], set[str]]]) -> set[str]:
     """Every package in `pins` required, directly or transitively, by `roots`."""
     found = {name for name in roots if name in pins}
     changed = True
@@ -74,6 +76,10 @@ def closure(roots: set[str], pins: dict[str, tuple[str, set[str]]]) -> set[str]:
                 found.add(name)
                 changed = True
     return found
+
+
+def _lines(names: set[str], pins: dict[str, tuple[list[str], set[str]]]) -> list[str]:
+    return [line for name in sorted(names) for line in pins[name][0]]
 
 
 def _replace_list(text: str, header: str, entries: list[str]) -> str:
@@ -100,14 +106,14 @@ def pin(pyproject_text: str, constraints_text: str) -> str:
     if missing:
         raise SystemExit(f"pin_release_deps: not in constraints.txt: {', '.join(missing)}")
     base = closure(base_roots, pins)
-    text = _replace_list(pyproject_text, "dependencies = [", [pins[n][0] for n in sorted(base)])
+    text = _replace_list(pyproject_text, "dependencies = [", _lines(base, pins))
 
     for extra, requirements in project.get("optional-dependencies", {}).items():
         roots = {_req_name(r) for r in requirements}
         if not roots <= set(pins):
             continue
         own = closure(roots, pins) - base
-        text = _replace_list(text, f"{extra} = [", [pins[n][0] for n in sorted(own)])
+        text = _replace_list(text, f"{extra} = [", _lines(own, pins))
 
     tomllib.loads(text)  # the result must still be valid TOML
     return text

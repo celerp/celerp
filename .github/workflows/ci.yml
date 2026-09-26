@@ -252,7 +252,7 @@ jobs:
       - id: diff
         run: |
           if [ "${{ github.event_name }}" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
-          if git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD | grep -qE '^(celerp/(cli|config|embedded_pg|main)\.py|celerp/services/(update|backup)\.py|celerp/routers/(system|health)\.py|celerp/migrations/env\.py|pyproject\.toml|constraints\.txt|scripts/(e2e_update|pin_release_deps)\.py|\.github/workflows/ci\.yml)$'; then
+          if git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD | grep -qE '^(celerp/(cli|config|config_store|embedded_pg|main|runtime)\.py|celerp/services/(update|backup)\.py|celerp/routers/(system|health)\.py|celerp/migrations/env\.py|pyproject\.toml|constraints\.txt|scripts/(e2e_update|pin_release_deps)\.py|\.github/workflows/ci\.yml)$'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"

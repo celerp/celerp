@@ -21,7 +21,7 @@ Scenarios:
   E2 update to pip_fail             E7 update that replaces celerp-postgres
   E3 update to migrate_fail         E8 two requests at once, then "current"
   E4 update to health_fail          E9 member and anonymous requests refused
-  E5 supervisor killed mid-update, finished by the next start
+  E5 supervisor killed while installing, undone by the next start
 
 Release gate (publish.yml): --release-wheel PATH runs
   R1 a fresh install of that wheel
@@ -471,6 +471,22 @@ class Install:
     def freeze(self) -> list[str]:
         return sorted(self.pip("freeze").splitlines())
 
+    def releases(self) -> tuple[str | None, list[str]]:
+        """(the release `runtime/current` names, every release directory)."""
+        runtime = self.config / "runtime"
+        try:
+            pointed = (runtime / "current").read_text(encoding="utf-8").strip()
+        except OSError:
+            pointed = None
+        dirs = sorted(p.name for p in runtime.iterdir() if p.is_dir()) if runtime.is_dir() else []
+        return pointed, dirs
+
+    def release_package_version(self, release: str, package: str) -> str | None:
+        prefix = package.replace("-", "_") + "-"
+        for info in (self.config / "runtime" / release).glob(prefix + "*.dist-info"):
+            return info.name[len(prefix):-len(".dist-info")]
+        return None
+
     def db(self) -> dict:
         """Tables, alembic revision and row counts, read straight from Postgres."""
         out = self.py(r"""
@@ -639,6 +655,7 @@ def failed_update(work: Path, wheels, name: str, variant: str, outcome: str) -> 
         wait_result(inst, VERSIONS["base"], t0)
         after_update_checks(inst, outcome, VERSIONS[variant])
         check(inst.freeze() == freeze, "installed packages identical to before")
+        check(inst.releases() == (None, []), f"nothing staged is left ({inst.releases()})")
         after = inst.db()
         check(after == db, "database identical to before (tables, revision, row counts)")
         check(MARKER_TABLE not in after["tables"], "the new version's table is absent")
@@ -658,8 +675,9 @@ def good_update(inst: Install, target_variant: str) -> None:
 
 def assert_updated(inst: Install, target_variant: str, db: dict, notices: int) -> None:
     after_update_checks(inst, "ok", VERSIONS[target_variant])
-    check(inst.pip("show", "celerp").count(f"Version: {VERSIONS[target_variant]}") == 1,
-          f"celerp {VERSIONS[target_variant]} installed")
+    target = VERSIONS[target_variant]
+    check(inst.releases() == (target, [target]), f"celerp {target} is the one release kept ({inst.releases()})")
+    check(inst.release_package_version(target, "celerp") == target, f"celerp {target} installed")
     after = inst.db()
     check(after["revision"] == MARKER_REVISION, "database at the new release's revision")
     added = set(after["tables"]) ^ set(db["tables"])
@@ -696,19 +714,24 @@ def e4(work, wheels):
 def e5(work, wheels):
     inst = fresh(work, "E5", wheels, "good")
     try:
-        db, notices = inst.db(), len(inst.system_notices())
+        freeze, db, notices = inst.freeze(), inst.db(), len(inst.system_notices())
         request_update(inst, VERSIONS["good"])
         deadline = time.time() + UPDATE_TIMEOUT
-        while (inst.state().get("in_progress") or {}).get("step") != "migrate":
+        while (inst.state().get("in_progress") or {}).get("step") != "install":
             if time.time() > deadline:
-                raise Failed("the update never reached the database step")
-            time.sleep(0.1)
+                raise Failed("the update never reached the install step")
+            time.sleep(0.05)
         inst.kill()
         check(inst.state()["in_progress"]["to"] == VERSIONS["good"], "killed with the update unfinished")
         t0 = time.time()
-        inst.start(expect_version=VERSIONS["good"])
-        wait_result(inst, VERSIONS["good"], t0)
-        assert_updated(inst, "good", db, notices)
+        inst.start(expect_version=VERSIONS["base"])
+        wait_result(inst, VERSIONS["base"], t0)
+        after_update_checks(inst, "failed", VERSIONS["good"])
+        check(inst.state()["last_result"]["reason"] == "interrupted", "recorded as interrupted")
+        check(inst.freeze() == freeze, "installed packages identical to before")
+        check(inst.releases() == (None, []), f"nothing staged is left ({inst.releases()})")
+        check(inst.db() == db, "database identical to before")
+        one_notice(inst, notices)
         stop_and_check_clean(inst)
     finally:
         inst.stop()
@@ -751,8 +774,8 @@ def e7(work, wheels):
     try:
         old = inst.pip("show", PG_PACKAGE)
         good_update(inst, "good_pg")
-        new = inst.pip("show", PG_PACKAGE)
-        check(old != new and "Version: " in new, f"{PG_PACKAGE} replaced")
+        new = inst.release_package_version(VERSIONS["good_pg"], PG_PACKAGE)
+        check(new is not None and f"Version: {new}" not in old, f"{PG_PACKAGE} replaced ({new})")
         stop_and_check_clean(inst)
     finally:
         inst.stop()

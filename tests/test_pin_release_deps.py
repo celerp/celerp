@@ -56,6 +56,26 @@ def test_markers_are_kept() -> None:
     assert "darwin" not in pg
 
 
+def test_every_marker_line_of_a_package_is_kept() -> None:
+    # Resolved per Python version: dropping one leaves that version unpinned.
+    deps = _pinned()["dependencies"]
+    for name, count in (("numpy", 3), ("sqlalchemy", 2), ("websockets", 2)):
+        constraint_lines = [
+            line for line in (_ROOT / "constraints.txt").read_text(encoding="utf-8").splitlines()
+            if line and not line.startswith("#") and _pin._req_name(line) == name
+        ]
+        assert len(constraint_lines) == count
+        assert [r for r in deps if _pin._req_name(r) == name] == constraint_lines
+
+
+def test_pinned_set_equals_the_constraint_lines_it_covers() -> None:
+    lines = [line for line in (_ROOT / "constraints.txt").read_text(encoding="utf-8").splitlines()
+             if line and not line.startswith("#")]
+    deps = _pinned()["dependencies"]
+    assert len(deps) == len(set(deps))
+    assert set(deps) == {line for line in lines if _pin._req_name(line) in _names(deps)}
+
+
 def test_resolved_extra_is_pinned_and_dev_extra_left_alone() -> None:
     project = _pinned()
     assert project["optional-dependencies"]["prod"] == [
