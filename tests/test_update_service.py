@@ -376,6 +376,17 @@ def test_available_update_raises_when_it_cannot_tell(monkeypatch, kwargs):
         update.available_update()
 
 
+def test_update_subprocesses_never_wait_for_stdin(monkeypatch):
+    seen = {}
+
+    def fake_run(*args, **kwargs):
+        seen.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(update.subprocess, "run", fake_run)
+    update._python("-c", "pass", timeout=1)
+    assert seen["stdin"] is subprocess.DEVNULL
+
 def test_stuck_step_fails_instead_of_waiting(monkeypatch):
     """A step that never ends (a stalled pip or migration) raises UpdateError,
     which every step of run_update turns into the undo path above."""

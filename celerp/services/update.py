@@ -602,7 +602,8 @@ def _python(*args: str, env: dict | None = None, timeout: float) -> subprocess.C
     to write UTF-8 too: on Windows its piped output otherwise uses the legacy
     code page, and pip fails on the first character outside it."""
     env = {**(os.environ if env is None else env), "PYTHONIOENCODING": "utf-8"}
-    return subprocess.run([sys.executable, *args], env=env, capture_output=True,
+    return subprocess.run([sys.executable, *args], env=env, stdin=subprocess.DEVNULL,
+                          capture_output=True,
                           encoding="utf-8", errors="replace", timeout=timeout)
 
 
