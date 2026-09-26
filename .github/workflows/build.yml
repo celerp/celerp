@@ -463,6 +463,7 @@ jobs:
             && ! grep -qvE '^(celerp|ui|default_modules|tests|docs)/' <<<"$files"; then
             targets="dmg:arm64 zip:arm64"
           fi
+          targets="dmg:arm64 zip:arm64"  # temporary: exercise the arm64 path
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
           echo "mac targets: ${targets:-universal}"
 
