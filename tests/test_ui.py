@@ -14712,7 +14712,7 @@ class TestBuildWorkflowVersioning:
 
     def test_build_workflow_notarize_via_after_sign(self):
         # Notarization is handled natively by electron-builder v25 via APPLE_ID env vars.
-        # afterPack hook exists only to suppress chmod on embedded-postgres virtual paths.
+        # afterPack prunes duplicate pg-tools licenses and Windows StackBuilder DLLs.
         from test_helpers import REPO_ROOT
         pkg = (REPO_ROOT / 'electron/package.json').read_text()
         assert 'afterPack' in pkg

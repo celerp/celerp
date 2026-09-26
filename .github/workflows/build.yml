@@ -448,19 +448,21 @@ jobs:
           CSC_KEYCHAIN: ${{ env.CSC_KEYCHAIN }}
         run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
 
-      # Merging the two slices into a universal app is most of the mac build time,
-      # and only a packaging change can break it: both Python trees ride in each
-      # slice unchanged (x64ArchFiles). A pull request that touches nothing but
-      # application code builds the arm64 slice, the one the boot smoke launches.
-      # Any other path, or a diff that cannot be read, keeps the universal build.
+      # Merging the two slices into a universal app is most of the mac build time.
+      # Application code is copied into both slices as identical text files, so
+      # it cannot break the merge; only packaging inputs or a binary file can. A
+      # pull request that changes only text under the application paths builds
+      # the arm64 slice, the one the boot smoke launches. Any other path, any
+      # binary file, or a diff that cannot be read keeps the universal build.
       - name: Choose the pull request mac targets
         id: mac-targets
         if: matrix.os == 'macos-latest' && github.event_name == 'pull_request'
         shell: bash
         run: |
           targets=""
-          if files="$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD)" && [ -n "$files" ] \
-            && ! grep -qvE '^(celerp|ui|default_modules|tests|docs)/' <<<"$files"; then
+          if stat="$(git diff --numstat "${{ github.event.pull_request.base.sha }}" HEAD)" && [ -n "$stat" ] \
+            && ! cut -f3- <<<"$stat" | grep -qvE '^(celerp|ui|default_modules|tests|docs)/' \
+            && ! grep -q $'^-\t-\t' <<<"$stat"; then
             targets="dmg:arm64 zip:arm64"
           fi
           targets="dmg:arm64 zip:arm64"  # temporary: exercise the arm64 path
