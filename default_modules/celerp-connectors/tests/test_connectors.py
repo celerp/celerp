@@ -544,7 +544,7 @@ def xero():
 def xero_ctx():
     return ConnectorContext(
         company_id="test-company",
-        access_token="xero_access_token_test",
+        access_token="",
         store_handle="tenant-uuid-1234",
     )
 
@@ -564,8 +564,8 @@ def test_all_connectors_includes_all_four():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_xero_sync_products_success(xero, xero_ctx):
-    respx.get("https://api.xero.com/api.xro/2.0/Items").mock(
+async def test_xero_sync_products_success(xero, xero_ctx, xero_relay):
+    respx.get(f"{xero_relay}/Items").mock(
         return_value=httpx.Response(200, json={
             "Items": [
                 {"ItemID": "aaa-111", "Code": "WIDGET-001", "Name": "Widget",
@@ -585,8 +585,8 @@ async def test_xero_sync_products_success(xero, xero_ctx):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_xero_sync_orders_filters_non_accrec(xero, xero_ctx):
-    respx.get("https://api.xero.com/api.xro/2.0/Invoices").mock(
+async def test_xero_sync_orders_filters_non_accrec(xero, xero_ctx, xero_relay):
+    respx.get(f"{xero_relay}/Invoices").mock(
         return_value=httpx.Response(200, json={
             "Invoices": [
                 {"InvoiceID": "inv-1", "Type": "ACCREC", "InvoiceNumber": "INV-001",
@@ -605,8 +605,8 @@ async def test_xero_sync_orders_filters_non_accrec(xero, xero_ctx):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_xero_sync_contacts(xero, xero_ctx):
-    respx.get("https://api.xero.com/api.xro/2.0/Contacts").mock(
+async def test_xero_sync_contacts(xero, xero_ctx, xero_relay):
+    respx.get(f"{xero_relay}/Contacts").mock(
         return_value=httpx.Response(200, json={
             "Contacts": [
                 {"ContactID": "c-1", "Name": "ACME Corp", "EmailAddress": "acme@example.com"},

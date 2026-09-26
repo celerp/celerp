@@ -4,8 +4,9 @@
 Xero connector.
 
 OAuth model: CelERP relay service holds one registered Xero app.
-Paying customers authorize via relay -> relay returns a short-lived
-access_token injected into ConnectorContext.
+Paying customers authorize via relay, and the relay keeps the Xero
+connection. API calls are sent to the relay, which forwards them to the
+Xero Accounting API for the connected organisation.
 
 Xero token model:
   - Access tokens expire after 30 minutes
@@ -36,15 +37,18 @@ import celerp.connectors.upsert as _upsert
 
 log = logging.getLogger(__name__)
 
-_API_BASE = "https://api.xero.com/api.xro/2.0"
 _PAGE_SIZE = 100
 
 
-def _headers(ctx: ConnectorContext) -> dict[str, str]:
-    tenant_id = ctx.store_handle or (ctx.extra or {}).get("tenant_id", "")
+def _api_base() -> str:
+    from celerp.gateway.state import relay_http_url
+    return f"{relay_http_url()}/connectors/xero/api"
+
+
+def _headers() -> dict[str, str]:
+    from celerp.gateway.state import relay_session_headers
     return {
-        "Authorization": f"Bearer {ctx.access_token}",
-        "Xero-Tenant-Id": tenant_id,
+        **relay_session_headers(),
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
@@ -78,13 +82,13 @@ class XeroConnector(ConnectorBase):
         (Items) pass paginated=False and are fetched in a single request."""
         results: list[dict[str, Any]] = []
         page = 1
-        headers = _headers(ctx)
+        headers = _headers()
         if since:
             headers["If-Modified-Since"] = since.strftime("%a, %d %b %Y %H:%M:%S GMT")
         async with RateLimitedClient() as client:
             while True:
                 params = {"page": page, "pageSize": _PAGE_SIZE} if paginated else None
-                resp = await client.get(f"{_API_BASE}{path}", headers=headers, params=params)
+                resp = await client.get(f"{_api_base()}{path}", headers=headers, params=params)
                 resp.raise_for_status()
                 data = resp.json()
                 items = data.get(key, [])
@@ -242,8 +246,8 @@ class XeroConnector(ConnectorBase):
                         }]
                     }
                     resp = await client.put(
-                        f"{_API_BASE}/Invoices",
-                        headers=_headers(ctx),
+                        f"{_api_base()}/Invoices",
+                        headers=_headers(),
                         json=payload,
                     )
                     resp.raise_for_status()

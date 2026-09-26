@@ -43,6 +43,23 @@ async def test_fetch_context_builds_ctx_from_relay():
 
 
 @pytest.mark.asyncio
+async def test_fetch_context_xero_reads_connected_organisation():
+    from celerp.connectors.relay_token import fetch_context
+    with patch("celerp.gateway.state.get_session_token", return_value="tok"), \
+         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"), \
+         patch("celerp.gateway.state.relay_session_headers", return_value={}), \
+         patch("celerp.connectors.ownership.connector_owned_by_company",
+               new=AsyncMock(return_value=True)), \
+         respx.mock:
+        respx.get("https://relay.test/tokens/xero/context").mock(
+            return_value=httpx.Response(200, json={"platform": "xero", "store_handle": "tenant-1"}))
+        ctx = await fetch_context("co-1", "xero")
+    assert ctx is not None
+    assert ctx.access_token == ""
+    assert ctx.store_handle == "tenant-1"
+
+
+@pytest.mark.asyncio
 async def test_fetch_context_none_on_relay_error():
     from celerp.connectors.relay_token import fetch_context
     with patch("celerp.gateway.state.get_session_token", return_value="tok"), \

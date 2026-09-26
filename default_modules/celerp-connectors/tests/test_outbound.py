@@ -243,14 +243,13 @@ def xero():
 def ctx_xero():
     return ConnectorContext(
         company_id="test-co",
-        access_token="xero_test_token",
+        access_token="",
         store_handle="tenant-abc",
-        extra={"tenant_id": "tenant-abc"},
     )
 
 
 @pytest.mark.asyncio
-async def test_xero_sync_invoices_out_success(xero, ctx_xero):
+async def test_xero_sync_invoices_out_success(xero, ctx_xero, xero_relay):
     invoices = [
         {"ref_id": "INV-X1", "customer_external_id": "contact-uuid-1", "line_items": [
             {"description": "Service", "quantity": 1, "unit_price": 100.0, "total": 100.0}
@@ -258,7 +257,7 @@ async def test_xero_sync_invoices_out_success(xero, ctx_xero):
     ]
     with patch("celerp.connectors.upsert.list_unsynced_invoices", new=AsyncMock(return_value=invoices)):
         with respx.mock:
-            respx.put("https://api.xero.com/api.xro/2.0/Invoices").mock(
+            respx.put(f"{xero_relay}/Invoices").mock(
                 return_value=httpx.Response(200, json={"Invoices": [{"InvoiceID": "xero-1"}]})
             )
             result = await xero.sync_invoices_out(ctx_xero)
@@ -270,7 +269,7 @@ async def test_xero_sync_invoices_out_success(xero, ctx_xero):
 
 
 @pytest.mark.asyncio
-async def test_xero_sync_invoices_out_error_accumulation(xero, ctx_xero):
+async def test_xero_sync_invoices_out_error_accumulation(xero, ctx_xero, xero_relay):
     invoices = [
         {"ref_id": "INV-X1", "customer_external_id": "c1", "line_items": []},
         {"ref_id": "INV-X2", "customer_external_id": "c2", "line_items": []},
@@ -286,7 +285,7 @@ async def test_xero_sync_invoices_out_error_accumulation(xero, ctx_xero):
 
     with patch("celerp.connectors.upsert.list_unsynced_invoices", new=AsyncMock(return_value=invoices)):
         with respx.mock:
-            respx.put("https://api.xero.com/api.xro/2.0/Invoices").mock(side_effect=side_effect)
+            respx.put(f"{xero_relay}/Invoices").mock(side_effect=side_effect)
             result = await xero.sync_invoices_out(ctx_xero)
 
     assert result.created == 1

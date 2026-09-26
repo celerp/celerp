@@ -21,9 +21,9 @@ def xero():
 
 
 @pytest.mark.asyncio
-async def test_sync_products_maps_fields(xero, ctx_xero, mock_upsert_item):
+async def test_sync_products_maps_fields(xero, ctx_xero, mock_upsert_item, xero_relay):
     with respx.mock:
-        respx.get("https://api.xero.com/api.xro/2.0/Items").mock(
+        respx.get(f"{xero_relay}/Items").mock(
             return_value=httpx.Response(200, json={"Items": [
                 {"ItemID": "abc", "Code": "XR-001", "Name": "Xero Widget",
                  "SalesDetails": {"UnitPrice": 15.0}, "PurchaseDetails": {"UnitPrice": 8.0}}
@@ -36,9 +36,9 @@ async def test_sync_products_maps_fields(xero, ctx_xero, mock_upsert_item):
 
 
 @pytest.mark.asyncio
-async def test_sync_products_skips_no_code(xero, ctx_xero, mock_upsert_item):
+async def test_sync_products_skips_no_code(xero, ctx_xero, mock_upsert_item, xero_relay):
     with respx.mock:
-        respx.get("https://api.xero.com/api.xro/2.0/Items").mock(
+        respx.get(f"{xero_relay}/Items").mock(
             return_value=httpx.Response(200, json={"Items": [
                 {"ItemID": "abc", "Code": "", "Name": "No Code Item"}
             ]})
@@ -49,9 +49,9 @@ async def test_sync_products_skips_no_code(xero, ctx_xero, mock_upsert_item):
 
 
 @pytest.mark.asyncio
-async def test_sync_orders_filters_accrec(xero, ctx_xero, mock_upsert_invoice_xero):
+async def test_sync_orders_filters_accrec(xero, ctx_xero, mock_upsert_invoice_xero, xero_relay):
     with respx.mock:
-        respx.get("https://api.xero.com/api.xro/2.0/Invoices").mock(
+        respx.get(f"{xero_relay}/Invoices").mock(
             return_value=httpx.Response(200, json={"Invoices": [
                 {"InvoiceID": "i1", "InvoiceNumber": "INV-001", "Type": "ACCREC"},
                 {"InvoiceID": "i2", "InvoiceNumber": "BILL-001", "Type": "ACCPAY"},
@@ -63,21 +63,25 @@ async def test_sync_orders_filters_accrec(xero, ctx_xero, mock_upsert_invoice_xe
 
 
 @pytest.mark.asyncio
-async def test_tenant_id_in_headers(xero, ctx_xero, mock_upsert_item):
+async def test_calls_go_through_relay(xero, ctx_xero, mock_upsert_item, xero_relay):
     with respx.mock:
-        route = respx.get("https://api.xero.com/api.xro/2.0/Items").mock(
+        route = respx.get(f"{xero_relay}/Items").mock(
             return_value=httpx.Response(200, json={"Items": []})
         )
         await xero.sync_products(ctx_xero)
     request = route.calls[0].request
-    assert request.headers["Xero-Tenant-Id"] == "tenant-abc"
+    assert request.url.host == "relay.test"
+    assert request.headers["X-Session-Token"] == "sess-1"
+    assert request.headers["X-Instance-ID"] == "inst-1"
+    assert "Authorization" not in request.headers
+    assert "Xero-Tenant-Id" not in request.headers
 
 
 @pytest.mark.asyncio
-async def test_sync_products_incremental(xero, ctx_xero, mock_upsert_item):
+async def test_sync_products_incremental(xero, ctx_xero, mock_upsert_item, xero_relay):
     since = datetime(2026, 2, 1, tzinfo=timezone.utc)
     with respx.mock:
-        route = respx.get("https://api.xero.com/api.xro/2.0/Items").mock(
+        route = respx.get(f"{xero_relay}/Items").mock(
             return_value=httpx.Response(200, json={"Items": []})
         )
         await xero.sync_products(ctx_xero, since=since)

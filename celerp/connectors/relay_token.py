@@ -8,6 +8,10 @@ from typing import TYPE_CHECKING
 
 log = logging.getLogger(__name__)
 
+# Connectors whose API calls go through the relay. Their context carries the
+# connected account but no credential.
+_RELAY_CALL_CONNECTORS = frozenset({"xero"})
+
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,10 +49,12 @@ async def fetch_context(
             connector_name, company_id,
         )
         return None
+    relay_calls = connector_name in _RELAY_CALL_CONNECTORS
+    endpoint = "context" if relay_calls else "access-token"
     try:
         async with httpx.AsyncClient(timeout=15.0) as c:
             r = await c.get(
-                f"{relay_http_url()}/tokens/{connector_name}/access-token",
+                f"{relay_http_url()}/tokens/{connector_name}/{endpoint}",
                 headers=relay_session_headers(),
             )
         if r.status_code != 200:
@@ -61,7 +67,7 @@ async def fetch_context(
 
     return ConnectorContext(
         company_id=company_id,
-        access_token=data["access_token"],
+        access_token="" if relay_calls else data["access_token"],
         store_handle=data.get("store_handle"),
         extra=data.get("extra"),
     )
