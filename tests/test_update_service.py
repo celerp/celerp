@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -283,6 +285,79 @@ def test_reconcile_twice_is_a_no_op_the_second_time(cfg_dir):
     steps = FakeSteps()
     assert update.reconcile(steps) is None
     assert steps.calls == []
+
+
+
+
+def test_bound_update_step_dies_when_its_supervisor_is_killed(tmp_path):
+    import psutil
+
+    pid_file = tmp_path / "child.pid"
+    child_code = (
+        "import os,pathlib,sys,time; "
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    parent_code = (
+        "from celerp.services import update; import sys; "
+        "update._step('-c', sys.argv[1], sys.argv[2])"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", parent_code, child_code, str(pid_file)]
+    )
+    child = None
+    try:
+        deadline = time.time() + 10
+        while not pid_file.exists() and time.time() < deadline:
+            if parent.poll() is not None:
+                raise AssertionError(f"supervisor exited early ({parent.returncode})")
+            time.sleep(0.05)
+        assert pid_file.exists(), "update child never started"
+        child = psutil.Process(int(pid_file.read_text()))
+        parent.kill()
+        parent.wait(timeout=5)
+        gone, alive = psutil.wait_procs([child], timeout=10)
+        assert gone and not alive, "update child outlived its supervisor"
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait()
+        if child is not None and child.is_running():
+            child.kill()
+
+
+def test_verification_children_get_side_effect_free_startup_env(monkeypatch):
+    cfg = {
+        "server": {"api_port": 8000, "ui_port": 8080},
+        "database": {"url": "postgresql+asyncpg://u:p@localhost/db", "embedded": False},
+        "backup": {},
+    }
+    seen = []
+
+    class Proc:
+        def poll(self): return None
+        def terminate(self): pass
+        def wait(self, timeout=None): pass
+
+    def spawn(env, port):
+        seen.append(dict(env))
+        return Proc()
+
+    monkeypatch.setattr(
+        update,
+        "get_json",
+        lambda url: {} if url.endswith("/ready") else {"version": "1.1.0"},
+    )
+    steps = update.SupervisorSteps(
+        cfg,
+        lambda root: {"EXAMPLE": "1"},
+        spawn_api=spawn,
+        spawn_ui=spawn,
+        wait_ready=lambda *args: True,
+    )
+    steps.verify("1.1.0")
+    assert len(seen) == 2
+    assert all(env[runtime.UPDATE_VERIFY_ENV] == "1" for env in seen)
 
 
 # ── Requests, window, blockers, availability ─────────────────────────────────

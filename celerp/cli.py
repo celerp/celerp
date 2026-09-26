@@ -1149,11 +1149,19 @@ def _server_spawners(cfg: dict) -> tuple:
             partial(_spawn_server, "ui.app:app", "0.0.0.0"))
 
 
+def _verification_spawners() -> tuple:
+    """API/UI launchers used only before an update is committed."""
+    from functools import partial
+
+    return (partial(_spawn_server, "celerp.main:app", "127.0.0.1"),
+            partial(_spawn_server, "ui.app:app", "127.0.0.1"))
+
+
 def _update_steps(cfg: dict):
     """The self-update steps for this supervisor (`celerp.services.update`)."""
     from celerp.services import update
 
-    spawn_api, spawn_ui = _server_spawners(cfg)
+    spawn_api, spawn_ui = _verification_spawners()
     return update.SupervisorSteps(cfg, lambda root: _config_to_env(cfg, root),
                                   spawn_api=spawn_api, spawn_ui=spawn_ui, wait_ready=_wait_ready)
 

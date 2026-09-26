@@ -598,6 +598,19 @@ def test_spawn_server_gives_children_a_supervisor_lifetime_pipe():
     assert kwargs["env"][runtime.SUPERVISOR_PIPE_ENV] == "1"
     assert runtime.SUPERVISOR_PIPE_ENV not in env
 
+
+def test_update_verification_servers_bind_only_to_loopback(valid_cfg):
+    from celerp.cli import _update_steps
+
+    with patch("celerp.cli._spawn_server") as spawn:
+        steps = _update_steps(valid_cfg)
+        steps._spawn_api({}, 8000)
+        steps._spawn_ui({}, 8080)
+
+    assert spawn.call_args_list[0].args[:2] == ("celerp.main:app", "127.0.0.1")
+    assert spawn.call_args_list[1].args[:2] == ("ui.app:app", "127.0.0.1")
+
+
 # ── celerp init --force purges files (#160) ──────────────────────────────────
 
 def _seed_data_dir(tmp_path, monkeypatch):

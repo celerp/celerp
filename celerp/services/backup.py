@@ -131,15 +131,16 @@ def _parse_key(b64_key: str) -> bytes:
     return key
 
 
-def dump_database(database_url: str) -> bytes:
+def dump_database(database_url: str, *, runner=None) -> bytes:
     """Run pg_dump against database_url and return raw dump bytes.
 
     Raises RuntimeError if pg_dump fails or is not found.
     """
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+    runner = runner or subprocess.run
     try:
         pg_dump = _find_pg_tool("pg_dump")
-        result = subprocess.run(
+        result = runner(
             [pg_dump, "--format=custom", "--no-password", pg_url],
             capture_output=True,
             timeout=300,
@@ -175,7 +176,7 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
     return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
 
 
-def restore_database(dump_bytes: bytes, database_url: str, *, clean_schema: bool = False) -> None:
+def restore_database(dump_bytes: bytes, database_url: str, *, clean_schema: bool = False, runner=None) -> None:
     """Run pg_restore from dump bytes into database_url.
 
     With `clean_schema` the public schema is dropped and recreated first and the
@@ -201,9 +202,10 @@ def restore_database(dump_bytes: bytes, database_url: str, *, clean_schema: bool
         mode = ["--single-transaction", "--exit-on-error"]
     else:
         mode = ["--clean", "--if-exists"]
+    runner = runner or subprocess.run
     try:
         pg_restore = _find_pg_tool("pg_restore")
-        result = subprocess.run(
+        result = runner(
             [pg_restore, *mode, "--no-password", "--no-privileges", "--no-owner", "-d", pg_url],
             input=dump_bytes,
             capture_output=True,

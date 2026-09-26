@@ -27,6 +27,7 @@ import asyncio
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -597,6 +598,140 @@ def reconcile(steps: Steps) -> dict | None:
 # ── Real steps ────────────────────────────────────────────────────────────────
 
 
+
+_PARENT_BOUND_RUNNER = r"""
+import os
+import signal
+import subprocess
+import sys
+import threading
+
+stdin_path, *command = sys.argv[1:]
+child_input = open(stdin_path, "rb") if stdin_path else subprocess.DEVNULL
+spawn = {"stdin": child_input}
+if os.name == "nt":
+    spawn["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+else:
+    spawn["start_new_session"] = True
+child = subprocess.Popen(command, **spawn)
+
+def _stop_tree():
+    if child.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(child.pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if child.poll() is None:
+            child.kill()
+    else:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+def _watch_parent():
+    try:
+        while os.read(0, 1):
+            pass
+    except OSError:
+        pass
+    _stop_tree()
+    try:
+        child.wait(timeout=5)
+    except Exception:
+        pass
+    os._exit(125)
+
+threading.Thread(target=_watch_parent, name="update-parent-watch", daemon=True).start()
+code = child.wait()
+if child_input is not subprocess.DEVNULL:
+    child_input.close()
+raise SystemExit(code)
+"""
+
+
+def _bound_run(command, *, env: dict | None = None, input: bytes | None = None,
+               capture_output: bool = False, timeout: float) -> subprocess.CompletedProcess:
+    """Run a command whose process tree cannot outlive this supervisor."""
+    env = dict(os.environ if env is None else env)
+    input_path = ""
+    if input is not None:
+        fd, input_path = tempfile.mkstemp(prefix=".celerp-update-", suffix=".stdin")
+        try:
+            os.chmod(input_path, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(input)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(input_path)
+            except OSError:
+                pass
+            raise
+    try:
+        with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+            proc = subprocess.Popen(
+                [sys.executable, "-c", _PARENT_BOUND_RUNNER, input_path, *map(str, command)],
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=out if capture_output else None,
+                stderr=err if capture_output else None,
+            )
+            try:
+                code = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                if proc.stdin and not proc.stdin.closed:
+                    proc.stdin.close()
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                if capture_output:
+                    out.seek(0); err.seek(0)
+                    stdout, stderr = out.read(), err.read()
+                else:
+                    stdout = stderr = None
+                raise subprocess.TimeoutExpired(
+                    command, timeout, output=stdout, stderr=stderr
+                ) from exc
+            finally:
+                if proc.stdin and not proc.stdin.closed:
+                    proc.stdin.close()
+            if capture_output:
+                out.seek(0); err.seek(0)
+                stdout, stderr = out.read(), err.read()
+            else:
+                stdout = stderr = None
+            return subprocess.CompletedProcess(command, code, stdout, stderr)
+    finally:
+        if input_path:
+            try:
+                os.unlink(input_path)
+            except OSError:
+                pass
+
+
+def _bound_python(*args: str, env: dict | None = None, timeout: float) -> subprocess.CompletedProcess:
+    env = {**(os.environ if env is None else env), "PYTHONIOENCODING": "utf-8"}
+    result = _bound_run(
+        [sys.executable, *args], env=env, capture_output=True, timeout=timeout
+    )
+    return subprocess.CompletedProcess(
+        result.args,
+        result.returncode,
+        (result.stdout or b"").decode("utf-8", errors="replace"),
+        (result.stderr or b"").decode("utf-8", errors="replace"),
+    )
+
+
 def _python(*args: str, env: dict | None = None, timeout: float) -> subprocess.CompletedProcess:
     """Run this interpreter with args, its output read as UTF-8. The child is told
     to write UTF-8 too: on Windows its piped output otherwise uses the legacy
@@ -613,7 +748,7 @@ def _step(*args: str, env: dict | None = None) -> str:
     step's output goes to the log."""
     name = " ".join(args[:3])
     try:
-        result = _python(*args, env=env, timeout=STEP_TIMEOUT_SECONDS)
+        result = _bound_python(*args, env=env, timeout=STEP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
         raise UpdateError(f"{name} did not finish within {STEP_TIMEOUT_SECONDS // 60} minutes") from exc
     if result.returncode != 0:
@@ -672,7 +807,7 @@ class SupervisorSteps(Steps):
         return self.cfg["database"]["url"]
 
     def dump(self, path: Path) -> None:
-        data = self._backup.dump_database(self.db_url)
+        data = self._backup.dump_database(self.db_url, runner=_bound_run)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
@@ -697,6 +832,7 @@ class SupervisorSteps(Steps):
         """Start the new API alone and require it healthy on the target
         version before the UI starts, so no user reaches it until it passed."""
         env = self._env_for(runtime.release_dir(target))
+        env[runtime.UPDATE_VERIFY_ENV] = "1"
         api = self._spawn_api(env, self.api_port)
         base = f"http://127.0.0.1:{self.api_port}"
         deadline = time.time() + VERIFY_TIMEOUT_SECONDS
@@ -721,7 +857,9 @@ class SupervisorSteps(Steps):
             _terminate(proc)
 
     def restore(self, path: Path) -> None:
-        self._backup.restore_database(path.read_bytes(), self.db_url, clean_schema=True)
+        self._backup.restore_database(
+            path.read_bytes(), self.db_url, clean_schema=True, runner=_bound_run
+        )
 
     def stop_cluster(self) -> None:
         """Stop the embedded database, so the next supervisor starts it with

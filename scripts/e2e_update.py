@@ -435,6 +435,14 @@ class Install:
             os.killpg(self.proc.pid, signal.SIGKILL)
         self.proc.wait()
 
+    def kill_supervisor_only(self) -> None:
+        """Hard-kill only celerp start; update children must die from parent EOF."""
+        if WINDOWS:
+            subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/F"], capture_output=True)
+        else:
+            os.kill(self.proc.pid, signal.SIGKILL)
+        self.proc.wait()
+
     def stop(self, *, group: bool = False) -> None:
         """SIGTERM to the supervisor alone, so the checks see that it stops what
         it started. `group` signals the whole process group instead, as Ctrl+C
@@ -728,7 +736,7 @@ def e5(work, wheels):
             if time.time() > deadline:
                 raise Failed("the update never reached the install step")
             time.sleep(0.05)
-        inst.kill()
+        inst.kill_supervisor_only()
         check(inst.state()["in_progress"]["to"] == VERSIONS["good"], "killed with the update unfinished")
         t0 = time.time()
         inst.start(expect_version=VERSIONS["base"])

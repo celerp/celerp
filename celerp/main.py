@@ -154,6 +154,7 @@ async def _try_sync_existing_entitlement() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    update_verify = _os.environ.get(_runtime.UPDATE_VERIFY_ENV) == "1"
     (settings.data_dir / "static" / "attachments").mkdir(parents=True, exist_ok=True)
     try:
         async with lifecycle_engine.begin() as conn:
@@ -199,6 +200,10 @@ async def lifespan(_app: FastAPI):
             # Run create_all again so module tables are created (idempotent).
             async with lifecycle_engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+            if update_verify:
+                # Verification proves DB/module startup without running hooks or workers.
+                yield
+                return
             # Allow modules to backfill data for existing companies (e.g. seed
             # chart of accounts when accounting module is first enabled on an
             # instance that already has companies).
@@ -235,6 +240,10 @@ async def lifespan(_app: FastAPI):
             except Exception:
                 logging.getLogger(__name__).debug(
                     "Demoted-module notification skipped (non-fatal)", exc_info=True)
+
+    if update_verify:
+        yield
+        return
 
     # Register kernel projection handler for sys.* events (not module-owned)
     from celerp.modules.slots import register as register_slot

@@ -25,6 +25,7 @@ from packaging.version import InvalidVersion, Version
 
 PKG_ROOT_ENV = "CELERP_PKG_ROOT"  # set in every process running a release directory
 SUPERVISOR_PIPE_ENV = "CELERP_SUPERVISOR_PIPE"
+UPDATE_VERIFY_ENV = "CELERP_UPDATE_VERIFY"
 _PARTIAL = ".partial"
 
 
