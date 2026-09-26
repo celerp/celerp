@@ -84,13 +84,22 @@ def check(cond: bool, what: str) -> None:
 
 
 def run(cmd: list, timeout: float = 900, **kw) -> subprocess.CompletedProcess:
-    """Run a command to completion; a hang fails the scenario, naming the command."""
-    try:
-        result = subprocess.run([str(c) for c in cmd], capture_output=True, text=True, timeout=timeout, **kw)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"{' '.join(map(str, cmd))} did not finish within {timeout:.0f}s") from exc
+    """Run a command to completion; a hang fails the scenario, naming the command.
+
+    Output goes through files, not pipes: a server the command leaves running
+    (the bundled PostgreSQL) can inherit a pipe on Windows and hold it open."""
+    cmd = [str(c) for c in cmd]
+    with tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as out, \
+            tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as err:
+        try:
+            code = subprocess.run(cmd, stdout=out, stderr=err, timeout=timeout, **kw).returncode
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"{' '.join(cmd)} did not finish within {timeout:.0f}s") from exc
+        out.seek(0)
+        err.seek(0)
+        result = subprocess.CompletedProcess(cmd, code, out.read(), err.read())
     if result.returncode != 0:
-        raise RuntimeError(f"{' '.join(map(str, cmd))} exited {result.returncode}:\n"
+        raise RuntimeError(f"{' '.join(cmd)} exited {result.returncode}:\n"
                            f"{result.stdout[-2000:]}\n{result.stderr[-2000:]}")
     return result
 
