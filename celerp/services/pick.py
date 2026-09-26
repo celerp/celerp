@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from celerp.services.document_lines import line_item_id
 from celerp.services.line_measures import splitting_allowed
 
 
