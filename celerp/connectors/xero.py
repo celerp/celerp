@@ -17,11 +17,11 @@ API version: Xero Accounting API v2 (https://api.xero.com/api.xro/2.0)
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-from datetime import datetime
-from typing import Any
+import uuid
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -36,6 +36,9 @@ from celerp.connectors.base import (
     SyncResult,
 )
 import celerp.connectors.upsert as _upsert
+
+if TYPE_CHECKING:
+    from celerp.connectors.outbound_queue import OutboundOperation
 
 log = logging.getLogger(__name__)
 
@@ -52,12 +55,74 @@ def _api_base() -> str:
 _RELAY_TIMEOUT_S = 45.0
 
 
-def _idempotency_key(company_id: Any, doc_id: Any, payload: dict) -> str:
-    """The same invoice push always sends the same key, across retries and sync
-    runs, so Xero creates it once; a changed invoice gets a new key."""
-    body = json.dumps({"company": str(company_id), "doc": str(doc_id), "payload": payload},
-                      sort_keys=True, default=str)
-    return hashlib.sha256(body.encode()).hexdigest()
+# Resending a create with the same Idempotency-Key is safe only while Xero still
+# remembers the key; past this age Celerp looks the invoice up instead.
+_KEY_WINDOW = timedelta(minutes=6)
+
+
+def _invoice_request(inv: dict) -> dict:
+    return {
+        "Invoices": [{
+            "Type": "ACCREC",
+            "InvoiceNumber": inv["ref_id"],
+            "Contact": {"ContactID": inv.get("customer_external_id") or inv.get("customer_name", "")},
+            "LineItems": [
+                {
+                    "Description": line.get("description", ""),
+                    "Quantity": float(line.get("quantity", 1)),
+                    "UnitAmount": float(line.get("unit_price", 0)),
+                    "LineAmount": float(line.get("total", 0)),
+                }
+                for line in (inv.get("line_items") or [])
+            ],
+            "Status": "AUTHORISED",
+        }]
+    }
+
+
+def _new_attempt(state: dict) -> dict:
+    return {
+        **state,
+        "idempotency_key": uuid.uuid4().hex,
+        "attempted_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _line_amounts(invoice: dict) -> list[Decimal]:
+    amounts = []
+    for line in invoice.get("LineItems") or []:
+        try:
+            amounts.append(Decimal(str(line.get("LineAmount") or 0)).quantize(Decimal("0.01")))
+        except InvalidOperation:
+            amounts.append(Decimal("NaN"))
+    return sorted(amounts)
+
+
+def _is_sent_invoice(remote: dict, sent: dict) -> bool:
+    """Whether a Xero invoice with the sent number is the one Celerp created."""
+    return (
+        remote.get("Type") == sent["Type"]
+        and (remote.get("Contact") or {}).get("ContactID") == sent["Contact"]["ContactID"]
+        and _line_amounts(remote) == _line_amounts(sent)
+    )
+
+
+def _where_literal(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _validation_message(resp: httpx.Response) -> str:
+    try:
+        body = resp.json() or {}
+    except ValueError:
+        body = {}
+    messages = [
+        error.get("Message")
+        for element in body.get("Elements") or []
+        for error in element.get("ValidationErrors") or []
+        if error.get("Message")
+    ]
+    return "Xero rejected it: " + ("; ".join(messages) or body.get("Message") or "invalid invoice")
 
 
 def _headers() -> dict[str, str]:
@@ -229,7 +294,11 @@ class XeroConnector(ConnectorBase):
     # -- Outbound: Invoices push -----------------------------------------------
 
     async def sync_invoices_out(self, ctx: ConnectorContext) -> SyncResult:
-        """Push Celerp invoices -> Xero (outbound)."""
+        """Push Celerp invoices -> Xero (outbound). Each invoice is queued and
+        delivered through the outbound queue, so an interrupted push resumes as
+        the same Xero create."""
+        from celerp.connectors.outbound_queue import enqueue_outbound, process_outbound_identity
+
         result = SyncResult(entity=SyncEntity.INVOICES, direction=SyncDirection.OUTBOUND)
         errors: list[str] = []
 
@@ -239,49 +308,113 @@ class XeroConnector(ConnectorBase):
             result.errors = [f"Failed to load invoices: {exc}"]
             return result
 
-        async with RateLimitedClient(timeout=_RELAY_TIMEOUT_S) as client:
-            for inv in invoices:
-                try:
-                    line_items = [
-                        {
-                            "Description": line.get("description", ""),
-                            "Quantity": float(line.get("quantity", 1)),
-                            "UnitAmount": float(line.get("unit_price", 0)),
-                            "LineAmount": float(line.get("total", 0)),
-                        }
-                        for line in (inv.get("line_items") or [])
-                    ]
-                    payload = {
-                        "Invoices": [{
-                            "Type": "ACCREC",
-                            "InvoiceNumber": inv.get("ref_id"),
-                            "Contact": {"ContactID": inv.get("customer_external_id") or inv.get("customer_name", "")},
-                            "LineItems": line_items,
-                            "Status": "AUTHORISED",
-                        }]
-                    }
-                    resp = await client.put(
-                        f"{_api_base()}/Invoices",
-                        headers={
-                            **_headers(),
-                            "Idempotency-Key": _idempotency_key(
-                                ctx.company_id, inv.get("entity_id") or inv.get("ref_id"), payload),
-                        },
-                        json=payload,
-                    )
-                    resp.raise_for_status()
-                    # Write-back: stamp the returned Xero InvoiceID so the next run's
-                    # list_unsynced_invoices skips this doc — never created in Xero twice.
-                    xero_id = ((resp.json() or {}).get("Invoices") or [{}])[0].get("InvoiceID")
-                    if xero_id and inv.get("entity_id"):
-                        await _upsert.mark_doc_pushed(ctx.company_id, inv["entity_id"], "xero", xero_id)
-                    result.created += 1
-                except Exception as exc:
-                    errors.append(f"Invoice {inv.get('ref_id')}: {exc}")
+        for inv in invoices:
+            doc_id = str(inv["entity_id"])
+            try:
+                await enqueue_outbound(str(ctx.company_id), self.name, "invoice", doc_id)
+                outcome = await process_outbound_identity(
+                    str(ctx.company_id), self.name, "invoice", doc_id, ctx=ctx
+                )
+            except Exception as exc:
+                errors.append(f"Invoice {inv.get('ref_id')}: {exc}")
+                continue
+            if outcome.error:
+                errors.append(f"Invoice {inv.get('ref_id')}: {outcome.error}")
+            elif outcome.result is not None:
+                result.created += outcome.result.created
+                result.skipped += outcome.result.skipped
 
         result.errors = errors or None
         log.info(
             "xero.sync_invoices_out company=%s created=%d errors=%d",
             ctx.company_id, result.created, len(errors),
         )
+        return result
+
+    async def sync_invoice_identity_out(
+        self, ctx: ConnectorContext, operation: OutboundOperation
+    ) -> SyncResult:
+        """Create one Celerp invoice in Xero, exactly once.
+
+        The request, its invoice number and an Idempotency-Key are committed
+        before the first call. From then on the operation only ever re-sends
+        that request: with the same key while Xero remembers it, and otherwise
+        after looking the number up in Xero and finding nothing. Local edits
+        made meanwhile do not change what is sent.
+        """
+        from celerp.connectors.outbound_queue import (
+            OutboundNeedsReconciliation,
+            OutboundRejected,
+        )
+
+        result = SyncResult(entity=SyncEntity.INVOICES, direction=SyncDirection.OUTBOUND)
+        doc = await _upsert.invoice_for_push(ctx.company_id, operation.identity, "xero")
+        if doc is None or doc["pushed_id"]:
+            result.skipped = 1
+            return result
+
+        state = operation.state
+        if not state:
+            if doc["imported"]:
+                result.skipped = 1
+                return result
+            if not doc["ref_id"]:
+                raise OutboundRejected("It has no invoice number.")
+            state = _new_attempt({
+                "request": _invoice_request(doc),
+                "invoice_number": doc["ref_id"],
+            })
+            await operation.save(state)
+
+        sent = state["request"]["Invoices"][0]
+        number = state["invoice_number"]
+        async with RateLimitedClient(timeout=_RELAY_TIMEOUT_S) as client:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(state["attempted_at"])
+            if state.get("held") or age >= _KEY_WINDOW:
+                found = await client.get(
+                    f"{_api_base()}/Invoices",
+                    headers=_headers(),
+                    params={
+                        "where": f'Type=="ACCREC" AND InvoiceNumber=="{_where_literal(number)}"',
+                        # Xero includes line items only in paged responses.
+                        "page": 1,
+                    },
+                )
+                found.raise_for_status()
+                matches = (found.json() or {}).get("Invoices") or []
+                if len(matches) == 1 and _is_sent_invoice(matches[0], sent):
+                    await _upsert.mark_doc_pushed(
+                        ctx.company_id, operation.identity, "xero", matches[0]["InvoiceID"]
+                    )
+                    result.created = 1
+                    return result
+                if matches:
+                    await operation.save({**state, "held": True})
+                    raise OutboundNeedsReconciliation(
+                        f"Xero has an invoice numbered {number} that does not match the one "
+                        "Celerp sent. Correct it in Xero, then sync again."
+                    )
+                if state.get("held"):
+                    # Once a conflict was seen, whether Celerp's invoice reached
+                    # Xero is unknown, so it is never sent again.
+                    raise OutboundNeedsReconciliation(
+                        f"Xero has no invoice numbered {number}. Create it in Xero to match "
+                        "this invoice, then sync again."
+                    )
+                state = _new_attempt(state)
+                await operation.save(state)
+
+            resp = await client.put(
+                f"{_api_base()}/Invoices",
+                headers={**_headers(), "Idempotency-Key": state["idempotency_key"]},
+                json=state["request"],
+            )
+        if resp.status_code == 400:
+            raise OutboundRejected(_validation_message(resp))
+        resp.raise_for_status()
+        xero_id = ((resp.json() or {}).get("Invoices") or [{}])[0].get("InvoiceID")
+        if not xero_id:
+            raise RuntimeError("Xero did not confirm the invoice.")
+        await _upsert.mark_doc_pushed(ctx.company_id, operation.identity, "xero", xero_id)
+        result.created = 1
         return result

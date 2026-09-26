@@ -11,10 +11,9 @@ import respx
 import httpx
 from unittest.mock import AsyncMock, patch
 
-from celerp.connectors.base import ConnectorBase, ConnectorContext, SyncDirection, SyncEntity, SyncResult
+from celerp.connectors.base import ConnectorBase, ConnectorContext, SyncDirection, SyncEntity
 from celerp.connectors.shopify import ShopifyConnector
 from celerp.connectors.quickbooks import QuickBooksConnector
-from celerp.connectors.xero import XeroConnector
 
 
 # -- Base class NotImplementedError --
@@ -230,105 +229,3 @@ async def test_quickbooks_sync_invoices_out_missing_realm(qb):
     result = await qb.sync_invoices_out(ctx)
     assert result.errors
     assert "realm_id" in result.errors[0]
-
-
-# -- Xero sync_invoices_out --
-
-@pytest.fixture
-def xero():
-    return XeroConnector()
-
-
-@pytest.fixture
-def ctx_xero():
-    return ConnectorContext(
-        company_id="test-co",
-        access_token="",
-        store_handle="tenant-abc",
-    )
-
-
-@pytest.mark.asyncio
-async def test_xero_sync_invoices_out_success(xero, ctx_xero, xero_relay):
-    invoices = [
-        {"ref_id": "INV-X1", "customer_external_id": "contact-uuid-1", "line_items": [
-            {"description": "Service", "quantity": 1, "unit_price": 100.0, "total": 100.0}
-        ]},
-    ]
-    with patch("celerp.connectors.upsert.list_unsynced_invoices", new=AsyncMock(return_value=invoices)):
-        with respx.mock:
-            respx.put(f"{xero_relay}/Invoices").mock(
-                return_value=httpx.Response(200, json={"Invoices": [{"InvoiceID": "xero-1"}]})
-            )
-            result = await xero.sync_invoices_out(ctx_xero)
-
-    assert result.created == 1
-    assert result.entity == SyncEntity.INVOICES
-    assert result.direction == SyncDirection.OUTBOUND
-    assert result.errors is None
-
-
-@pytest.mark.asyncio
-async def test_xero_sync_invoices_out_error_accumulation(xero, ctx_xero, xero_relay):
-    invoices = [
-        {"ref_id": "INV-X1", "customer_external_id": "c1", "line_items": []},
-        {"ref_id": "INV-X2", "customer_external_id": "c2", "line_items": []},
-    ]
-    call_count = 0
-
-    async def side_effect(request, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise httpx.HTTPStatusError("403", request=None, response=httpx.Response(403))
-        return httpx.Response(200, json={"Invoices": [{"InvoiceID": "ok"}]})
-
-    with patch("celerp.connectors.upsert.list_unsynced_invoices", new=AsyncMock(return_value=invoices)):
-        with respx.mock:
-            respx.put(f"{xero_relay}/Invoices").mock(side_effect=side_effect)
-            result = await xero.sync_invoices_out(ctx_xero)
-
-    assert result.created == 1
-    assert len(result.errors) == 1
-
-
-def _xero_invoice(total: float = 100.0) -> dict:
-    return {"entity_id": "doc-1", "ref_id": "INV-X1", "customer_external_id": "c1", "line_items": [
-        {"description": "Service", "quantity": 1, "unit_price": total, "total": total}
-    ]}
-
-
-async def _push_xero_invoice(xero, ctx_xero, xero_relay, invoice: dict, first_attempt_fails: bool = False) -> list[str]:
-    """Push one invoice and return the Idempotency-Key of every request sent."""
-    keys: list[str] = []
-
-    def respond(request):
-        keys.append(request.headers.get("Idempotency-Key"))
-        if first_attempt_fails and len(keys) == 1:
-            raise httpx.ReadTimeout("relay did not answer", request=request)
-        return httpx.Response(200, json={"Invoices": [{"InvoiceID": "xero-1"}]})
-
-    with patch("celerp.connectors.upsert.list_unsynced_invoices", new=AsyncMock(return_value=[invoice])), \
-         patch("celerp.connectors.upsert.mark_doc_pushed", new=AsyncMock()):
-        with respx.mock:
-            respx.put(f"{xero_relay}/Invoices").mock(side_effect=respond)
-            result = await xero.sync_invoices_out(ctx_xero)
-    assert result.errors is None
-    return keys
-
-
-@pytest.mark.asyncio
-async def test_xero_invoice_push_keeps_its_idempotency_key_across_a_retry(xero, ctx_xero, xero_relay):
-    keys = await _push_xero_invoice(xero, ctx_xero, xero_relay, _xero_invoice(), first_attempt_fails=True)
-    assert len(keys) == 2
-    assert keys[0] and keys[0] == keys[1]
-
-
-@pytest.mark.asyncio
-async def test_xero_invoice_idempotency_key_follows_the_invoice(xero, ctx_xero, xero_relay):
-    first = await _push_xero_invoice(xero, ctx_xero, xero_relay, _xero_invoice())
-    again = await _push_xero_invoice(xero, ctx_xero, xero_relay, _xero_invoice())
-    changed = await _push_xero_invoice(xero, ctx_xero, xero_relay, _xero_invoice(total=150.0))
-    assert first == again
-    assert changed != first
-

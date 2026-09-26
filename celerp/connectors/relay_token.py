@@ -12,6 +12,12 @@ log = logging.getLogger(__name__)
 # connected account but no credential.
 _RELAY_CALL_CONNECTORS = frozenset({"xero"})
 
+
+
+class ConnectorUpgradeRequired(Exception):
+    """The relay serves this connector only to a newer Celerp."""
+
+
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,11 +63,21 @@ async def fetch_context(
                 f"{relay_http_url()}/tokens/{connector_name}/{endpoint}",
                 headers=relay_session_headers(),
             )
-        if r.status_code != 200:
-            log.debug("relay token fetch for %s returned %d", connector_name, r.status_code)
-            return None
-        data = r.json()
     except Exception as exc:
+        log.warning("relay token fetch for %s failed: %s", connector_name, exc)
+        return None
+    if r.status_code == 426:
+        from celerp.connectors.registry import get as get_connector
+
+        raise ConnectorUpgradeRequired(
+            f"Update Celerp to continue syncing {get_connector(connector_name).display_name}."
+        )
+    if r.status_code != 200:
+        log.debug("relay token fetch for %s returned %d", connector_name, r.status_code)
+        return None
+    try:
+        data = r.json()
+    except ValueError as exc:
         log.warning("relay token fetch for %s failed: %s", connector_name, exc)
         return None
 

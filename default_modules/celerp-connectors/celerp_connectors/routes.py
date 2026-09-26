@@ -58,6 +58,15 @@ class SyncResponse(BaseModel):
     ok: bool
 
 
+async def _connector_context(company_id: str, connector_name: str, **kwargs):
+    from celerp.connectors.relay_token import ConnectorUpgradeRequired, fetch_context
+
+    try:
+        return await fetch_context(company_id, connector_name, **kwargs)
+    except ConnectorUpgradeRequired as exc:
+        raise HTTPException(status_code=426, detail=str(exc)) from exc
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @router.get("/", response_model=list[ConnectorInfo])
@@ -106,8 +115,7 @@ async def trigger_sync(
         raise HTTPException(status_code=409, detail="Connector is not connected")
     direction = SyncDirection(config.direction)
 
-    from celerp.connectors.relay_token import fetch_context
-    ctx = await fetch_context(str(company_id), connector_name)
+    ctx = await _connector_context(str(company_id), connector_name)
     if ctx is None:
         raise HTTPException(status_code=409, detail="Connector is not connected")
 
@@ -160,8 +168,7 @@ async def trigger_sync_plan(
         raise HTTPException(status_code=409, detail="Connector is not connected")
     direction = SyncDirection(config.direction)
 
-    from celerp.connectors.relay_token import fetch_context
-    ctx = await fetch_context(str(company_id), connector_name)
+    ctx = await _connector_context(str(company_id), connector_name)
     if ctx is None:
         raise HTTPException(status_code=409, detail="Connector is not connected")
 
@@ -727,9 +734,8 @@ async def set_item_sync(
             updated += 1
         await session.commit()
     else:
-        from celerp.connectors.relay_token import fetch_context
         from celerp.connectors.woocommerce import WooCommerceConnector
-        ctx = await fetch_context(
+        ctx = await _connector_context(
             str(company_id), "woocommerce", ownership_session=session
         )
         if ctx is None:
