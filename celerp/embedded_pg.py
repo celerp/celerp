@@ -217,7 +217,13 @@ def _own(pgdata: Path) -> None:
 def _stop_all() -> None:
     """atexit: stop every postmaster this process started (data preserved)."""
     for pgdata in list(_STARTED):
-        _exec([_tool("pg_ctl"), "-D", str(pgdata), "-w", "-t", "30", "-m", "fast", "stop"])
+        result = _exec(
+            [_tool("pg_ctl"), "-D", str(pgdata), "-w", "-t", "30", "-m", "fast", "stop"]
+        )
+        if result.returncode:
+            # Shutdown is best-effort at interpreter exit, but ownership must not
+            # be forgotten while the postmaster is still alive.
+            _force_stop_postmaster(pgdata)
         _STARTED.discard(pgdata)
 
 

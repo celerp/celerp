@@ -103,6 +103,17 @@ def test_ensure_cluster_takes_over_a_running_cluster_only_when_owning(tmp_path, 
     assert mreg.called is own
 
 
+def test_atexit_force_stops_when_pg_ctl_stop_fails(tmp_path):
+    embedded_pg._STARTED.add(tmp_path)
+    failed = subprocess.CompletedProcess(["pg_ctl"], 1, stdout="", stderr="stop failed")
+    with patch.object(embedded_pg, "_exec", return_value=failed), \
+         patch.object(embedded_pg, "_force_stop_postmaster") as force:
+        embedded_pg._stop_all()
+
+    force.assert_called_once_with(tmp_path)
+    assert tmp_path not in embedded_pg._STARTED
+
+
 def test_start_failure_surfaces_server_log(tmp_path):
     (tmp_path / "server.log").write_text("FATAL: broken pin\n")
     with patch.object(embedded_pg, "_is_running", return_value=False), \
