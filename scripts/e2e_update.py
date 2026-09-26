@@ -395,9 +395,9 @@ class Install:
 
     def start(self, *, expect_version: str | None = None) -> None:
         env = dict(self.env)
-        # The updater finds new versions only where these point, like a mirror.
+        # New celerp versions exist only where these point; their dependencies
+        # come from PyPI, as they do for a real install.
         env["PIP_FIND_LINKS"] = " ".join(p.as_uri() for p in self.find_links)
-        env["PIP_NO_INDEX"] = "1"
         log = open(self.log, "a", encoding="utf-8")
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if WINDOWS else 0
         self.proc = subprocess.Popen([str(self.python), "-m", "celerp", "start"], env=env, cwd=self.root,

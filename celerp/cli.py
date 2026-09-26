@@ -461,9 +461,10 @@ def _emit_db_error(kind: str, db_url: str) -> None:
         click.echo("  e.g.  sudo apt install postgresql && sudo service postgresql start", err=True)
 
 
-def ensure_database(cfg: dict) -> None:
+def ensure_database(cfg: dict, *, own: bool = False) -> None:
     """Boot the embedded cluster for a DB-touching command, if this install uses
-    one, and refresh the connection URI in `cfg` in place.
+    one, and refresh the connection URI in `cfg` in place. `own` makes this
+    process stop the cluster at exit (see embedded_pg.ensure_cluster).
 
     No-op for external mode (never imports the embedded provider, so external
     installs — including every droplet — are unaffected). Idempotent: safe to
@@ -477,7 +478,7 @@ def ensure_database(cfg: dict) -> None:
     config_dir = _config_path().parent
     # Re-derive the URI on every boot rather than trusting the stored one: the
     # unix-socket path lives under a runtime dir that a reboot can relocate.
-    db["url"] = embedded_pg.ensure_cluster(config_dir)
+    db["url"] = embedded_pg.ensure_cluster(config_dir, own=own)
     bd = embedded_pg.bin_dir()
     if bd:
         cfg.setdefault("backup", {}).setdefault("pg_bin_dir", bd)
@@ -1362,7 +1363,7 @@ def start():
     if not cfg:
         click.echo("Not initialized. Run `celerp init` first.", err=True)
         sys.exit(1)
-    ensure_database(cfg)
+    ensure_database(cfg, own=True)
     _start(cfg)
 
 

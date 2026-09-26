@@ -23,7 +23,6 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -32,7 +31,7 @@ from pathlib import Path
 # locally, so no role/password provisioning (and no sudo) is needed.
 _DATABASE = "celerp"
 
-# pg_ctl handles we started in this process, stopped again at exit so no
+# Clusters this process started or took over, stopped again at exit so no
 # postmaster outlives `celerp start` (its SIGTERM handler exits via sys.exit,
 # which runs atexit hooks).
 _STARTED: set[Path] = set()
@@ -201,13 +200,18 @@ def _start(pgdata: Path) -> tuple[str, int | None]:
         except RuntimeError as e:
             tail = log.read_text()[-1200:] if log.exists() else "-"
             raise RuntimeError(f"{e}\nSERVERLOG: {tail}") from None
-        if pgdata not in _STARTED:
-            _STARTED.add(pgdata)
-            if not _STARTED - {pgdata}:  # first cluster this process started
-                import atexit
-
-                atexit.register(_stop_all)
+        _own(pgdata)
     return host, port
+
+
+def _own(pgdata: Path) -> None:
+    """Stop the postmaster at `pgdata` when this process exits."""
+    if pgdata not in _STARTED:
+        _STARTED.add(pgdata)
+        if not _STARTED - {pgdata}:  # first cluster this process owns
+            import atexit
+
+            atexit.register(_stop_all)
 
 
 def _stop_all() -> None:
@@ -249,12 +253,14 @@ def _ensure_app_database(host: str, port: int | None) -> None:
 # ── public lifecycle ──────────────────────────────────────────────────────────
 
 
-def ensure_cluster(config_dir: Path) -> str:
+def ensure_cluster(config_dir: Path, *, own: bool = False) -> str:
     """Boot the embedded cluster (initdb on first run, start if stopped) and
     ensure the app database exists. Returns an asyncpg connection URI.
 
     Idempotent: safe to call from every DB-touching CLI command. Postgres itself
-    recovers stale postmaster.pid files from crashed processes on start.
+    recovers stale postmaster.pid files from crashed processes on start. `own`
+    stops the cluster at exit even when it was already running, so the server
+    process takes over one left behind by a server that crashed.
     """
     config_dir = Path(config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -270,6 +276,8 @@ def ensure_cluster(config_dir: Path) -> str:
         # create directory ...: File exists").
         _initdb(pgdata)
     host, port = _start(pgdata)
+    if own:
+        _own(pgdata)
     _ensure_app_database(host, port)
     return _uri(host, port, _DATABASE)
 

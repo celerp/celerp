@@ -10,7 +10,6 @@ import os
 import subprocess
 import sys
 import time
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -86,6 +85,22 @@ def test_start_registers_atexit_stop(tmp_path):
         embedded_pg._start(tmp_path)
     assert tmp_path in embedded_pg._STARTED
     mreg.assert_called_once_with(embedded_pg._stop_all)
+
+
+@pytest.mark.parametrize("own", [False, True])
+def test_ensure_cluster_takes_over_a_running_cluster_only_when_owning(tmp_path, own):
+    """A cluster left running by a crashed server is stopped at exit by the
+    next server (own=True); other commands leave it running."""
+    pgdata = embedded_pg.pgdata_dir(tmp_path.resolve())
+    pgdata.mkdir(parents=True)
+    (pgdata / "PG_VERSION").write_text("17")
+    with patch.object(embedded_pg, "_is_running", return_value=True), \
+         patch.object(embedded_pg, "_ensure_app_database"), \
+         patch("subprocess.run", side_effect=_ok), \
+         patch("atexit.register") as mreg:
+        embedded_pg.ensure_cluster(tmp_path, own=own)
+    assert (pgdata in embedded_pg._STARTED) is own
+    assert mreg.called is own
 
 
 def test_start_failure_surfaces_server_log(tmp_path):
