@@ -1,14 +1,13 @@
 version: 2
 updates:
-  # constraints.txt holds the exact dependency set CI tests and releases pin.
-  # One grouped weekly PR moves it forward through the full CI run.
+  # Python ranges in pyproject.toml are policy; constraints.txt is a derived,
+  # whole-graph resolution refreshed atomically by dependency-refresh.yml.
   - package-ecosystem: pip
     directory: "/"
     schedule:
       interval: weekly
-    groups:
-      python-dependencies:
-        patterns: ["*"]
+    open-pull-requests-limit: 0
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
