@@ -98,16 +98,15 @@ celerp init --force --db-url "postgresql+asyncpg://celerp:celerp@newhost:5432/ce
 flow). For a headless box where a process manager owns the lifecycle, set up with
 `--no-start` and let systemd run `celerp start`.
 
-Install Celerp into a virtual environment owned by the service user. `celerp start`
-installs updates itself, which needs the service user to be able to change its own
-install; a root-owned install still runs, and the update card shows the pip command
-to run instead.
+Install Celerp into a virtual environment. `celerp start` installs updates itself,
+into the service user's Celerp config folder beside its data, so the install can stay
+root-owned. When the service user cannot write to that folder, the update card shows
+the pip command to run instead.
 
 ```bash
 sudo useradd --system --create-home celerp
 sudo python3 -m venv /opt/celerp
 sudo /opt/celerp/bin/pip install celerp
-sudo chown -R celerp /opt/celerp
 ```
 
 ```bash
