@@ -39,7 +39,7 @@ def test_claim_forms_carry_account_vs_connect_intent():
 def test_build_checkout_has_history_for_semver_derivation():
     workflow = Path(".github/workflows/build.yml").read_text()
     step = workflow.index("- name: Set Electron version from git tag or development commit")
-    checkout = workflow.rfind("- uses: actions/checkout@v4", 0, step)
+    checkout = workflow.rfind("- uses: actions/checkout@", 0, step)
     assert checkout >= 0
     assert "fetch-depth: 0" in workflow[checkout:step]
 
