@@ -1,6 +1,7 @@
 {
   "name": "blank",
   "display_name": "No modules - build your own stack",
+  "label_key": "enum.vertical_preset.blank",
   "license": "MIT",
   "categories": [],
   "modules": [

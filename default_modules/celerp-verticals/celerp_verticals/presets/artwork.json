@@ -1,6 +1,7 @@
 {
   "name": "artwork",
   "display_name": "Artwork",
+  "label_key": "enum.vertical_preset.artwork",
   "license": "MIT",
   "categories": [
     "painting",

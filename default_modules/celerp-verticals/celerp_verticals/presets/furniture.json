@@ -1,6 +1,7 @@
 {
   "name": "furniture",
   "display_name": "Furniture & Home",
+  "label_key": "enum.vertical_preset.furniture",
   "license": "MIT",
   "categories": [
     "seating",

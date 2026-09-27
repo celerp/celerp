@@ -1,6 +1,7 @@
 {
   "name": "cosmetics",
   "display_name": "Cosmetics & Beauty",
+  "label_key": "enum.vertical_preset.cosmetics",
   "license": "MIT",
   "categories": [
     "skincare",

@@ -1,6 +1,7 @@
 {
   "name": "fashion",
   "display_name": "Fashion & Apparel",
+  "label_key": "enum.vertical_preset.fashion",
   "license": "MIT",
   "categories": [
     "tops",

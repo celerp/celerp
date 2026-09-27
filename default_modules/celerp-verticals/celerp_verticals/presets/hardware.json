@@ -1,6 +1,7 @@
 {
   "name": "hardware",
   "display_name": "Hardware & Tools",
+  "label_key": "enum.vertical_preset.hardware",
   "license": "MIT",
   "categories": [
     "hand_tool",

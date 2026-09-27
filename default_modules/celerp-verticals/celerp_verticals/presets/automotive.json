@@ -1,6 +1,7 @@
 {
   "name": "automotive",
   "display_name": "Automotive Parts",
+  "label_key": "enum.vertical_preset.automotive",
   "license": "MIT",
   "categories": [
     "engine_part",
