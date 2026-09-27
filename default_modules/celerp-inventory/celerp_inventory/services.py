@@ -13,14 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.inventory_codes import (
-    BarcodeConflictError,
-    RfidEpcConflictError,
-    normalize_rfid_epc,
+    PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
     validate_barcode,
     validate_rfid_epc,
 )
 from celerp.models.company import Company, Location
 from celerp.models.projections import Projection
+from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.importers.tabular import CsvImportSpec
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
 from celerp.services.money import to_stored_float, unit_price_from_total
@@ -38,30 +37,6 @@ from celerp.services.units import (
 # they are never re-used as the next internal code.
 _MAX_SEQ_DIGITS = 9
 _SEQ_WIDTH = 6
-
-
-async def lock_item_code_namespace(session: AsyncSession, company_id) -> None:
-    """Serialize SKU/barcode allocation for a company.
-
-    Two concurrent creates each read the same max sequence and mint the same next
-    code; the barcode unique index then rejects the loser with a 409. Taking a row
-    lock on the company here makes the second allocator wait for the first to
-    commit, so it reads the updated max and mints the next code instead of colliding.
-    The lock is held until the caller's transaction commits or rolls back; every
-    allocation and barcode check in that request must run after this call.
-
-    The mode is FOR NO KEY UPDATE, not FOR UPDATE. Every ledger insert takes an
-    implicit foreign-key KEY SHARE lock on its company row and holds it to commit,
-    so a plain FOR UPDATE here would have to upgrade past that share lock: two
-    transactions that have each already emitted an event for the company both hold
-    KEY SHARE and then block on each other's row lock, which PostgreSQL breaks by
-    aborting one with a deadlock (40P01). FOR NO KEY UPDATE does not conflict with
-    KEY SHARE, so the upgrade never happens, while it still conflicts with another
-    FOR NO KEY UPDATE, keeping barcode allocators serialized for every module.
-    """
-    await session.execute(
-        select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
-    )
 
 
 async def _next_seq(session: AsyncSession, company_id) -> int:
@@ -104,73 +79,10 @@ async def allocate_internal_codes(session: AsyncSession, company_id, count: int 
     candidate = await _next_seq(session, company_id)
     while len(codes) < count:
         code = str(candidate).zfill(_SEQ_WIDTH)
-        if not await _code_in_use(session, company_id, code):
+        if not await code_in_use(session, company_id, code):
             codes.append(code)
         candidate += 1
     return codes
-
-
-async def _code_in_use(
-    session: AsyncSession, company_id, code, *, exclude_entity_id=None
-) -> bool:
-    """True when ``code`` already occupies EITHER physical-code slot of another item.
-
-    A barcode and an RFID / EPC are both physical-code identifiers drawn from one
-    namespace, so a value in use as a barcode is not free to reuse as an EPC and vice
-    versa. This single query over BOTH ``state ->> 'barcode'`` and
-    ``state ->> 'rfid_epc'`` is the sole cross-field collision check; both writers call
-    it under ``lock_item_code_namespace`` so the read-then-write is serialized.
-    ``exclude_entity_id`` skips one item's own row so re-asserting an item's current
-    value is not read as a self-collision.
-    """
-    if not code:
-        return False
-    value = str(code)
-    query = select(Projection.entity_id).where(
-        Projection.company_id == company_id,
-        Projection.entity_type == "item",
-        or_(
-            Projection.state["barcode"].as_string() == value,
-            Projection.state["rfid_epc"].as_string() == value,
-        ),
-    )
-    if exclude_entity_id is not None:
-        query = query.where(Projection.entity_id != exclude_entity_id)
-    return (await session.execute(query)).first() is not None
-
-
-async def assert_barcode_available(
-    session: AsyncSession, company_id, barcode, *, exclude_entity_id=None
-) -> None:
-    """Raise BarcodeConflictError if another item in the company already holds ``barcode``.
-
-    An empty or absent barcode is always available. This is the application-side
-    check that yields a clean 409; the DB unique index is the final backstop for
-    writers that bypass it. ``exclude_entity_id`` skips one item's own row so a
-    barcode change that re-asserts the item's current value is not read as a
-    self-collision.
-    """
-    if not barcode:
-        return
-    if await _code_in_use(session, company_id, barcode, exclude_entity_id=exclude_entity_id):
-        raise BarcodeConflictError(barcode)
-
-
-async def assert_rfid_epc_available(
-    session: AsyncSession, company_id, rfid_epc, *, exclude_entity_id=None
-) -> None:
-    """Raise RfidEpcConflictError if another item in the company already holds ``rfid_epc``.
-
-    Mirrors ``assert_barcode_available``: an empty or absent value is always available,
-    the value is normalized (trimmed + upper-cased) before the check so lookup matches
-    storage, and the shared ``_code_in_use`` query catches a collision against either
-    physical-code slot. The DB unique index is the final backstop.
-    """
-    normalized = normalize_rfid_epc(rfid_epc)
-    if not normalized:
-        return
-    if await _code_in_use(session, company_id, normalized, exclude_entity_id=exclude_entity_id):
-        raise RfidEpcConflictError(normalized)
 
 
 async def create_item(session, company_id: str, data: dict, actor_id: str | None = None):
@@ -1668,9 +1580,11 @@ async def build_import_records(
     unit_map = build_unit_map(units)
 
     # Resolve upsert targets once for the batch. Barcode is a physical-lot
-    # identity. SKU is intentionally non-unique and is usable only when exactly
+    # identity, but older data and imports can leave one barcode on several items,
+    # so every resolvable holder is kept and a shared barcode never picks one
+    # arbitrarily. SKU is intentionally non-unique and is usable only when exactly
     # one current item has it.
-    by_barcode: dict[str, Projection] = {}
+    by_barcode: dict[str, list[Projection]] = {}
     by_sku: dict[str, list[Projection]] = {}
     if upsert:
         barcodes = {str(r.get("barcode") or "").strip() for r in rows} - {""}
@@ -1692,8 +1606,9 @@ async def build_import_records(
                 state = proj.state or {}
                 barcode = str(state.get("barcode") or "").strip()
                 sku = str(state.get("sku") or "").strip()
-                if barcode:
-                    by_barcode[barcode] = proj
+                status = str(state.get("status") or "").lower()
+                if barcode and status not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
+                    by_barcode.setdefault(barcode, []).append(proj)
                 if sku:
                     by_sku.setdefault(sku, []).append(proj)
 
@@ -1710,9 +1625,28 @@ async def build_import_records(
 
         target: Projection | None = None
         if upsert:
-            barcode_target = by_barcode.get(barcode) if barcode else None
+            barcode_holders = by_barcode.get(barcode, []) if barcode else []
             sku_matches = by_sku.get(sku, []) if sku else []
-            if barcode_target is not None:
+            if len(barcode_holders) > 1:
+                # A shared barcode is usable only when the row's SKU picks out exactly
+                # one of its holders.
+                narrowed = [
+                    p for p in barcode_holders
+                    if sku and str((p.state or {}).get("sku") or "").strip() == sku
+                ]
+                if len(narrowed) != 1:
+                    errors.append({
+                        "row": i + 1,
+                        "field": "barcode",
+                        "message": (
+                            f"Barcode '{barcode}' is shared by {len(barcode_holders)} items; "
+                            "include a SKU that identifies one of them"
+                        ),
+                    })
+                    continue
+                target = narrowed[0]
+            elif barcode_holders:
+                barcode_target = barcode_holders[0]
                 if len(sku_matches) == 1 and sku_matches[0].entity_id != barcode_target.entity_id:
                     errors.append({
                         "row": i + 1,
@@ -2048,6 +1982,13 @@ async def commit_import_batch(
     created_entity_ids: list[str] = []
     created_keys: list[str] = []
 
+    # One bounded import transaction can touch many item rows and later allocate
+    # or preserve a physical code. Take the company namespace before the first
+    # projection write so every item lock in this chunk follows Company -> Projection.
+    # This also prevents two imports from locking the same item set in opposite orders.
+    if body.records:
+        await lock_item_code_namespace(session, company_id)
+
     for rec in body.records:
         data = dict(rec.data)
         data.pop("status", None)
@@ -2202,33 +2143,25 @@ async def commit_import_batch(
         # Creation follows the ordinary internal-code primitive, after replay
         # detection, so a retry cannot consume a new SKU/barcode.
         if event_type == "item.created":
-            await lock_item_code_namespace(session, company_id)
             if not str(data.get("sku") or "").strip():
                 data["sku"] = (await allocate_internal_codes(session, company_id))[0]
             sku = str(data.get("sku") or "")
             if not data.get("barcode") and sku.isdigit():
-                if await _code_in_use(session, company_id, sku):
+                if await code_in_use(session, company_id, sku):
                     data["barcode"] = (await allocate_internal_codes(session, company_id))[0]
                 else:
                     data["barcode"] = sku
 
-        row_barcode = data.get("barcode")
-        row_epc = data.get("rfid_epc")
-        if row_barcode or row_epc:
-            try:
-                validate_barcode(row_barcode)
-                validate_rfid_epc(row_epc)
-                await lock_item_code_namespace(session, company_id)
-                await assert_barcode_available(
-                    session, company_id, row_barcode, exclude_entity_id=entity_id
-                )
-                await assert_rfid_epc_available(
-                    session, company_id, row_epc, exclude_entity_id=entity_id
-                )
-            except (ValueError, BarcodeConflictError, RfidEpcConflictError) as exc:
-                errors.append(f"Row (SKU={data.get('sku', '?')}): {exc}")
-                skipped += 1
-                continue
+        # Explicit codes are format-checked but recorded as the source file holds them,
+        # even when another item already carries the same code: the resolver reports the
+        # ambiguity at scan time and Doctor lists it, so an import never drops rows.
+        try:
+            validate_barcode(data.get("barcode"))
+            validate_rfid_epc(data.get("rfid_epc"))
+        except ValueError as exc:
+            errors.append(f"Row (SKU={data.get('sku', '?')}): {exc}")
+            skipped += 1
+            continue
 
         if event_type != "item.patched":
             data["idempotency_key"] = idem_key
@@ -2246,6 +2179,7 @@ async def commit_import_batch(
         try:
             entry = await emit_event(
                 session,
+                preserve_external_code_conflicts=True,
                 company_id=company_id,
                 entity_id=entity_id,
                 entity_type="item",

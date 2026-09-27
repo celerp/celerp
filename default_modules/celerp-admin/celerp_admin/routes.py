@@ -11,6 +11,7 @@ Checks:
 5. stale_projections  - Projection state diverges from replayed ledger events
 6. unbalanced_jes    - Journal entries where debit != credit
 7. zero_amount_jes   - JEs with all-zero entries (noise)
+8. physical_code_conflicts - Barcodes / RFID EPCs held by more than one item (report only)
 
 Usage:
     POST /admin/doctor              -> dry-run (report only)
@@ -37,6 +38,7 @@ from celerp.projections.engine import ProjectionEngine
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
 from celerp.services.je_keys import je_idempotency_key, je_void_data
+from celerp.services.physical_codes import physical_code_conflicts
 
 router = APIRouter()
 
@@ -52,6 +54,7 @@ ALL_CHECKS = [
     "inverted_doc_dates",
     "fractional_piece_quantities",
     "contact_file_schema",
+    "physical_code_conflicts",
 ]
 
 
@@ -778,6 +781,32 @@ async def _check_fractional_piece_quantities(
     }
 
 
+async def _check_physical_code_conflicts(
+    session: AsyncSession, company_id, user_id, *, fix: bool,
+) -> dict:
+    """Find barcodes and RFID / EPC values held by more than one item.
+
+    Older data, imports, and connectors can leave two items sharing a code; a scan
+    of that code then asks the user which item they meant. Report only: which item
+    keeps the code is the user's decision, so ``fix`` never rewrites anything.
+    Editing either item to a new code resolves the finding.
+    """
+    rows = (await session.execute(
+        select(Projection.entity_id, Projection.state).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).all()
+    conflicts = physical_code_conflicts(rows)
+    return {
+        "check": "physical_code_conflicts",
+        "found": len(conflicts),
+        "fixed": 0,
+        "auto_fixable": False,
+        "details": conflicts[:100],
+    }
+
+
 async def _write_upgrade_report(
     results: list[dict],
     company_id,
@@ -850,6 +879,7 @@ _CHECK_FNS = {
     "inverted_doc_dates": _check_inverted_doc_dates,
     "fractional_piece_quantities": _check_fractional_piece_quantities,
     "contact_file_schema": _check_contact_file_schema,
+    "physical_code_conflicts": _check_physical_code_conflicts,
 }
 
 

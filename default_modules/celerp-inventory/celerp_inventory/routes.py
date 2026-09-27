@@ -20,8 +20,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.events.schemas import reject_comma_sku
 from celerp.inventory_codes import (
-    BarcodeConflictError,
-    RfidEpcConflictError,
+    PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
     normalize_rfid_epc,
     validate_barcode,
     validate_gtin,
@@ -31,16 +30,13 @@ from celerp.models.projections import Projection
 from .services import (
     BatchImportRequest,
     BatchImportResult,
-    _code_in_use,
     allocate_internal_codes,
-    assert_barcode_available,
-    assert_rfid_epc_available,
     build_import_records,
     build_item_import_spec,
     commit_import_batch,
     import_items,
-    lock_item_code_namespace,
 )
+from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility, restricted_field_keys
@@ -1851,9 +1847,9 @@ def duplicate_barcode_detail(code: str) -> str:
 # unfiltered candidate set counts it as live: by barcode it falsely trips
 # `duplicate_physical`, and by sku (a numeric sku may equal a barcode) it re-enters
 # resolution through the fallback. Scope is `merged` ONLY: reserved/memo_out/sold/
-# archived/expired must still resolve. Applied to every identifier candidate set, in
-# both resolvers.
-_RESOLVE_EXCLUDED_STATUSES = frozenset({"merged"})
+# archived/expired must still resolve. PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES is
+# applied to every identifier candidate set, in both resolvers, and shared with
+# Doctor's physical-code conflict report.
 
 
 async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> ResolveResult:
@@ -1882,7 +1878,7 @@ async def resolve_item_by_code(session: AsyncSession, company_id, code: str) -> 
     )).scalars().all()
 
     def _live(r) -> bool:
-        return str((r.state or {}).get("status") or "").lower() not in _RESOLVE_EXCLUDED_STATUSES
+        return str((r.state or {}).get("status") or "").lower() not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 
     def _by(key, wanted):
         return [r for r in rows if str((r.state or {}).get(key) or "") == wanted and _live(r)]
@@ -1920,7 +1916,7 @@ async def resolve_items_by_codes(session: AsyncSession, company_id, codes) -> di
     by_sku: dict[str, list] = {}
     for r in rows:
         st = r.state or {}
-        if str(st.get("status") or "").lower() in _RESOLVE_EXCLUDED_STATUSES:
+        if str(st.get("status") or "").lower() in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
             continue
         bc = str(st.get("barcode") or "")
         epc = str(st.get("rfid_epc") or "")
@@ -1977,6 +1973,28 @@ async def get_item_projection(session: AsyncSession, company_id, entity_id: str)
     if row is None or row.entity_type != "item":
         raise HTTPException(status_code=404, detail="Item not found")
     return row
+
+
+async def _lock_items_for_physical_mutation(session: AsyncSession, company_id, entity_ids: list[str]) -> dict[str, Projection]:
+    """Lock the physical-code namespace, then freshly lock the source item rows.
+
+    Physical restructures mint or validate codes and derive quantities/costs from
+    existing item state. All such operations use Company -> Projection ordering so
+    they cannot deadlock with code edits, and every calculation is based on state
+    committed before this transaction acquired the row locks.
+    """
+    await lock_item_code_namespace(session, company_id)
+    ids = sorted(set(entity_ids))
+    if not ids:
+        return {}
+    rows = (await session.execute(
+        select(Projection)
+        .where(Projection.company_id == company_id, Projection.entity_type == "item", Projection.entity_id.in_(ids))
+        .order_by(Projection.entity_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    return {row.entity_id: row for row in rows}
 
 
 async def _require_company_location(session: AsyncSession, company_id, location_id) -> None:
@@ -2038,9 +2056,8 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     _validate_rfid_epc(payload.rfid_epc)
     await _require_company_location(session, company_id, payload.location_id)
 
-    # Serialize all SKU/barcode allocation and the barcode-uniqueness check for this
-    # company: two concurrent creates must not mint the same code or both pass the
-    # availability check. The lock is held until this request commits.
+    # Serialize SKU/barcode allocation for this company: two concurrent creates must
+    # not mint the same code. The lock is held until this request commits.
     await lock_item_code_namespace(session, company_id)
     replay = await find_event_by_idempotency(session, company_id, idem_key)
     if replay is not None:
@@ -2071,7 +2088,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     # is a product identifier and never inherits physical-code uniqueness.
     # Single-SKU behaviour is unchanged (the first/only item still gets barcode == sku).
     elif payload.barcode is None and payload.sku.isdigit():
-        if await _code_in_use(session, company_id, payload.sku):
+        if await code_in_use(session, company_id, payload.sku):
             new_barcode = (await allocate_internal_codes(session, company_id))[0]
         else:
             new_barcode = payload.sku
@@ -2079,16 +2096,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
 
     # SKU uniqueness is intentionally NOT enforced: `sku` is a product-type that may
     # repeat across physical lots. Physical-lot uniqueness is carried by `barcode`
-    # (below) and the immutable `entity_id`. See the 2026-06-17 sku/batch plan.
-
-    # Physical-code uniqueness (final application check under the lock; the DB unique
-    # indexes are the backstop for any writer that bypasses this path). Both checks share
-    # one namespace, so a barcode may not collide with an existing EPC or vice versa.
-    try:
-        await assert_barcode_available(session, company_id, payload.barcode)
-        await assert_rfid_epc_available(session, company_id, payload.rfid_epc)
-    except (BarcodeConflictError, RfidEpcConflictError) as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    # (checked at the event boundary, 409 on conflict) and the immutable `entity_id`.
 
     entity_id = f"item:{uuid.uuid4()}"
     data = payload.model_dump(exclude_none=True)
@@ -2315,11 +2323,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # SKU uniqueness is intentionally NOT enforced on patch: `sku` is a product-type
     # that may repeat across physical lots (barcode/entity_id carry lot identity).
 
-    # Validate barcode format + uniqueness if changing. Acquire the company code
-    # namespace lock BEFORE checking availability and hold it through emit + commit,
-    # so two concurrent patches to the same barcode serialize: one commits, the other
-    # reads the committed value and gets a clean 409 instead of racing to a duplicate
-    # (or a 500 from the unique index). The lock is released when this request commits.
+    # Validate barcode format if changing. Uniqueness is checked at the event boundary
+    # under the company code-namespace lock (409 on conflict).
     if "barcode" in changed_keys:
         new_barcode = (payload.fields_changed["barcode"] or {}).get("new")
         if new_barcode is not None:
@@ -2327,28 +2332,17 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
                 validate_barcode(new_barcode)
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc))
-            await lock_item_code_namespace(session, company_id)
-            try:
-                await assert_barcode_available(session, company_id, new_barcode, exclude_entity_id=entity_id)
-            except BarcodeConflictError as exc:
-                raise HTTPException(status_code=409, detail=str(exc))
 
     # Validate gtin format if changing (a product identifier: format only, not unique).
     if "gtin" in changed_keys:
         _validate_gtin((payload.fields_changed["gtin"] or {}).get("new"))
 
-    # Validate rfid_epc format + uniqueness if changing, mirroring barcode: it shares the
-    # physical-code namespace, so it takes the same lock and availability check. The stored
-    # value is canonicalized at the event boundary, so a case-variant tag collides here.
+    # Validate rfid_epc format if changing. It shares the physical-code namespace with
+    # barcode; uniqueness is checked at the event boundary on the canonicalized value.
     if "rfid_epc" in changed_keys:
         new_epc = (payload.fields_changed["rfid_epc"] or {}).get("new")
         if new_epc is not None:
             _validate_rfid_epc(new_epc)
-            await lock_item_code_namespace(session, company_id)
-            try:
-                await assert_rfid_epc_available(session, company_id, new_epc, exclude_entity_id=entity_id)
-            except RfidEpcConflictError as exc:
-                raise HTTPException(status_code=409, detail=str(exc))
 
     # Validate inventory_type if changing
     if "inventory_type" in changed_keys:
@@ -2751,8 +2745,7 @@ async def split_preview(
 async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     for _child in payload.children:
         _validate_sku(_child.sku)
-    # Fetch parent
-    parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
@@ -2856,19 +2849,13 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     # Mint one fresh free barcode per child that did not supply its own. The hardened
     # allocator takes the code-namespace lock (held to commit) and skips any value already
     # held as a barcode OR rfid_epc, so a minted child barcode can never collide with an
-    # existing physical tag. A caller-supplied child barcode is then checked against the
-    # same shared namespace under that lock and rejected with a clean 409 on conflict.
+    # existing physical tag. A caller-supplied child barcode is checked against the same
+    # shared namespace at the event boundary (409 on conflict).
     _minted_barcodes = iter(
         await allocate_internal_codes(
             session, company_id, sum(1 for c in children if c.barcode is None)
         )
     )
-    try:
-        for child in children:
-            if child.barcode is not None:
-                await assert_barcode_available(session, company_id, child.barcode)
-    except BarcodeConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # Pre-compute child cost_totals using unit cost invariant: cost_price is the same for
     # parent and child, so child_cost_total = (parent_cost_total / parent_qty) * child_qty.
@@ -3210,14 +3197,10 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     # first's result instead of overwriting it (lost update). Serializing the read alone
     # only fixes ordering; the capacity check just below is what stops a carve larger than
     # what is actually on hand, which is the other half of "no phantom stock".
-    locked = (await session.execute(
-        select(Projection)
-        .where(Projection.company_id == company_id, Projection.entity_id == parent_proj.entity_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )).scalar_one_or_none()
-    parent = locked if locked is not None else parent_proj
-    entity_id = parent.entity_id
+    entity_id = parent_proj.entity_id
+    parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
+    if parent is None:
+        raise ValueError("parent item no longer exists")
     parent_sku = parent.state.get("sku", "")
     parent_qty = float(parent.state.get("quantity") or 0)
     parent_attrs = dict(parent.state.get("attributes") or {})
@@ -3381,8 +3364,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
 @router.post("/{entity_id}/transform")
 async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _validate_sku(payload.child_sku)
-    # Fetch parent
-    parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
@@ -3584,6 +3566,8 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     _validate_sku(payload.resulting_sku)
     if len(payload.source_entity_ids) < 2:
         raise HTTPException(status_code=422, detail="At least 2 source_entity_ids are required to merge.")
+    if len(set(payload.source_entity_ids)) != len(payload.source_entity_ids):
+        raise HTTPException(status_code=422, detail="source_entity_ids must contain distinct items.")
 
     if payload.target_sku_from not in payload.source_entity_ids:
         raise HTTPException(
@@ -3591,14 +3575,17 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             detail="target_sku_from must identify one of the merge sources.",
         )
 
-    # Fetch projections for all source items.
+    locked_sources = await _lock_items_for_physical_mutation(session, company_id, payload.source_entity_ids)
     source_projections: list[Projection] = []
     for sid in payload.source_entity_ids:
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": sid})
+        proj = locked_sources.get(sid)
         if proj is None:
             raise HTTPException(status_code=404, detail=f"Item '{sid}' not found.")
-        if str((proj.state or {}).get("status") or "").lower() == "draft":
+        status = str((proj.state or {}).get("status") or "").lower()
+        if status == "draft":
             raise HTTPException(status_code=422, detail=f"Cannot merge a draft item ({sid}); make it available first.")
+        if status == "merged":
+            raise HTTPException(status_code=409, detail=f"Item '{sid}' has already been merged.")
         source_projections.append(proj)
 
     from celerp_inventory.services import external_link_for_state, normalize_sku
@@ -3705,11 +3692,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         )
 
     # Resolve target projection (SKU/barcode/name/prices come from this source).
-    target_proj = await session.get(Projection, {"company_id": company_id, "entity_id": payload.target_sku_from})
-    if target_proj is None:
-        raise HTTPException(status_code=422, detail=f"target_sku_from '{payload.target_sku_from}' not found.")
-    if str((target_proj.state or {}).get("status") or "").lower() == "draft":
-        raise HTTPException(status_code=422, detail=f"Cannot merge a draft item ({payload.target_sku_from}); make it available first.")
+    target_proj = locked_sources[payload.target_sku_from]
 
     def _get_expiry(proj: Projection) -> str | None:
         raw = proj.state.get("expires_at")

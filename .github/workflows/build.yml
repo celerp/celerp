@@ -677,7 +677,7 @@ jobs:
           Set-Location electron
           # The GitHub runner is full-admin with UAC off, where the bundled Postgres
           # refuses to start (it rejects an administrator token). Real users run
-          # non-admin, so reproduce that: launch the packaged app as a freshly-created
+          # non-admin, so reproduce that: install and launch the app as a freshly-created
           # standard user. A SAFER/runas restricted token would crash Electron; a real
           # standard account gives a clean medium token where both Electron and
           # Postgres run. We grant that user access to the runner's window station and
@@ -737,28 +737,40 @@ jobs:
           '@
           [WinStaAccess]::Grant("$env:COMPUTERNAME\$u")
 
-          # Stage the app where the standard user can read+execute it (the runner
-          # workspace may be ACL'd to the admin only).
-          $app = "C:\Users\Public\celerp-app"
-          if (Test-Path $app) { Remove-Item $app -Recurse -Force }
-          Copy-Item "dist/win-unpacked" $app -Recurse
-          icacls $app /grant "Users:(OI)(CI)RX" /T | Out-Null
-          $exe = Join-Path $app "Celerp.exe"
+          # Install the release installer as that standard user and launch the
+          # installed app exactly as a user would: default data directory, no
+          # --user-data-dir. Start-Process -Credential hands the child the CALLER's
+          # environment (the admin's %APPDATA%, which the standard user cannot
+          # write), so a warm-up logon first materialises the user's profile and
+          # the cmd wrappers point the profile variables at it, as a real logon does.
+          $pub = "C:\Users\Public"
+          $setup = Join-Path $pub "Celerp-Setup.exe"
+          Copy-Item "dist/Celerp-Setup.exe" $setup -Force
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "exit 0" -Credential $cred -LoadUserProfile -Wait -WorkingDirectory $pub
+          $sid = (New-Object System.Security.Principal.NTAccount("$env:COMPUTERNAME\$u")).Translate([System.Security.Principal.SecurityIdentifier]).Value
+          $profileDir = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $sid }).LocalPath
+          if (-not $profileDir) { Write-Host "::error::boot smoke FAILED on Windows - no profile created for $u"; exit 1 }
+          $envSet = "set USERPROFILE=$profileDir`r`nset APPDATA=$profileDir\AppData\Roaming`r`nset LOCALAPPDATA=$profileDir\AppData\Local`r`nset TEMP=$profileDir\AppData\Local\Temp`r`nset TMP=$profileDir\AppData\Local\Temp`r`nif not exist `"%APPDATA%`" mkdir `"%APPDATA%`"`r`nif not exist `"%TEMP%`" mkdir `"%TEMP%`""
 
-          # Launch through a cmd wrapper that captures Electron's stdout/stderr. Pin
-          # the data dir with Electron's built-in --user-data-dir: a credentialed
-          # launch has no fully-established user profile, so Electron can't resolve
-          # %APPDATA% and app.getPath("userData") throws. A world-writable override
-          # path sidesteps that (real users have working profiles).
-          $boot = "C:\Users\Public\celerp-boot.out"
-          $run  = "C:\Users\Public\celerp-run.cmd"
-          $udd  = "C:\Users\Public\celerp-udd"
+          $install = Join-Path $pub "celerp-install.cmd"
+          $installOut = Join-Path $pub "celerp-install.out"
+          Set-Content -Encoding Ascii $install "@echo off`r`n$envSet`r`n`"$setup`" /S /currentuser > `"$installOut`" 2>&1`r`necho installer exit %ERRORLEVEL% >> `"$installOut`""
+          Write-Host "smoke: installing $setup as standard user $u (profile $profileDir)"
+          $inst = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$install`"" -Credential $cred -LoadUserProfile -WorkingDirectory $pub -PassThru
+          if (-not $inst.WaitForExit(300000)) { Write-Host "::error::boot smoke FAILED on Windows - installer did not finish in 300s"; exit 1 }
+          if (Test-Path $installOut) { Get-Content $installOut }
+          $exe = Get-ChildItem -Path "$profileDir\AppData\Local\Programs" -Recurse -Filter "Celerp.exe" -EA SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $exe) { Write-Host "::error::boot smoke FAILED on Windows - Celerp.exe not installed under $profileDir"; exit 1 }
+          $udd = "$profileDir\AppData\Roaming"
+
+          # Launch through a cmd wrapper that captures Electron's stdout/stderr.
+          $boot = Join-Path $pub "celerp-boot.out"
+          $run  = Join-Path $pub "celerp-run.cmd"
           Remove-Item $boot -EA SilentlyContinue
-          Remove-Item $udd -Recurse -Force -EA SilentlyContinue
-          Set-Content -Encoding Ascii $run "@echo off`r`nset ELECTRON_ENABLE_LOGGING=1`r`n`"$exe`" --user-data-dir=`"$udd`" > `"$boot`" 2>&1"
+          Set-Content -Encoding Ascii $run "@echo off`r`n$envSet`r`nset ELECTRON_ENABLE_LOGGING=1`r`n`"$exe`" > `"$boot`" 2>&1"
 
-          Write-Host "smoke: launching $exe as standard user $u (data dir $udd, output $boot)"
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred -LoadUserProfile -WorkingDirectory $app
+          Write-Host "smoke: launching installed $exe as standard user $u (default data dir $udd, output $boot)"
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$run`"" -Credential $cred -LoadUserProfile -WorkingDirectory $pub
 
           $deadline = (Get-Date).AddSeconds(240)
           $ok = $false; $port = $null; $tick = 0

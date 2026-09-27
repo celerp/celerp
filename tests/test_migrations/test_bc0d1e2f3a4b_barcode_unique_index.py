@@ -1,17 +1,17 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""The barcode uniqueness migration: creates the partial unique index on clean data,
-and refuses (without altering anything) when incompatible data exists."""
+"""The barcode revision upgrades any data unchanged and leaves no barcode unique index.
+
+Barcode uniqueness is enforced where a write introduces a code, so this revision must
+never refuse a database because of the codes it already holds."""
 
 from __future__ import annotations
 
 import json
 import uuid
 
-import pytest
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import IntegrityError
 
 from celerp.inventory_codes import BARCODE_UNIQUE_INDEX, LEGACY_BARCODE_UNIQUE_INDEX
 
@@ -21,116 +21,79 @@ MODULE = "bc0d1e2f3a4b_barcode_unique_index"
 INDEX = BARCODE_UNIQUE_INDEX
 LEGACY_INDEX = LEGACY_BARCODE_UNIQUE_INDEX
 
-
-def _count(mig_db) -> int:
-    with mig_db.engine.connect() as conn:
-        return conn.execute(text("SELECT count(*) FROM projections")).scalar_one()
-
-
-def _index_exists(mig_db, name: str = INDEX) -> bool:
-    # Scope to this fixture's isolated schema: pg_indexes spans every schema, so an
-    # unscoped name match would see the identically-named index another parallel
-    # worker built in its own schema (or the app schema's create_all copy).
-    with mig_db.engine.connect() as conn:
-        return conn.execute(
-            text(
-                "SELECT count(*) FROM pg_indexes "
-                "WHERE indexname = :n AND schemaname = current_schema()"
-            ),
-            {"n": name},
-        ).scalar_one() > 0
+_CREATE_LEGACY = (
+    f"CREATE UNIQUE INDEX {LEGACY_INDEX} "
+    "ON projections (company_id, (state ->> 'barcode')) "
+    "WHERE entity_type = 'item' AND NULLIF(state ->> 'barcode', '') IS NOT NULL"
+)
+_CREATE_CURRENT = (
+    f"CREATE UNIQUE INDEX {INDEX} "
+    "ON projections (company_id, (state ->> 'barcode')) "
+    "WHERE entity_type = 'item' AND NULLIF(state ->> 'barcode', '') IS NOT NULL "
+    "AND lower(COALESCE(state ->> 'status', '')) <> 'merged'"
+)
 
 
-def test_creates_index_and_enforces_uniqueness_on_clean_data(mig_db):
+def _index_names(engine) -> set[str]:
+    # Scoped to this fixture's isolated schema: pg_indexes spans every schema, so an
+    # unscoped match would see an identically named index another worker built.
+    with engine.connect() as conn:
+        return {
+            row[0]
+            for row in conn.execute(text(
+                "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()"
+            ))
+        }
+
+
+def _all_states(engine) -> dict[str, dict]:
+    with engine.connect() as conn:
+        rows = conn.execute(text("SELECT entity_id, state FROM projections")).all()
+    return {eid: s if isinstance(s, dict) else json.loads(s) for eid, s in rows}
+
+
+def test_upgrade_succeeds_on_duplicate_and_oversized_codes_and_preserves_data(mig_db):
     cid = str(uuid.uuid4())
-    other = str(uuid.uuid4())
-    mig_db.insert_item(cid, "item:1", {"sku": "A", "barcode": "12345"})
-    mig_db.insert_item(cid, "item:2", {"sku": "B", "barcode": "67890"})
-    mig_db.insert_item(cid, "item:3", {"sku": "C", "barcode": ""})       # empty barcode: exempt
-    mig_db.insert_item(cid, "item:4", {"sku": "D"})                        # no barcode: exempt
-    # Same barcode in a different company is allowed (index is per company).
-    mig_db.insert_item(other, "item:5", {"sku": "E", "barcode": "12345"})
-
-    run_migration_ops(mig_db.engine, MODULE)
-    assert _index_exists(mig_db)
-
-    # A duplicate non-empty barcode within the company is now rejected by the DB.
-    with pytest.raises(IntegrityError):
-        mig_db.insert_item(cid, "item:6", {"sku": "F", "barcode": "12345"})
-
-    # Empty/absent barcodes remain insertable without collision.
-    mig_db.insert_item(cid, "item:7", {"sku": "G", "barcode": ""})
-
-
-def test_preflight_blocks_duplicate_barcodes_without_altering(mig_db):
-    cid = str(uuid.uuid4())
-    mig_db.insert_item(cid, "item:1", {"sku": "A", "barcode": "12345"})
-    mig_db.insert_item(cid, "item:2", {"sku": "B", "barcode": "12345"})
-
-    with pytest.raises(RuntimeError, match="duplicate barcode"):
-        run_migration_ops(mig_db.engine, MODULE)
-
-    assert not _index_exists(mig_db)
-    assert _count(mig_db) == 2  # nothing renamed, cleared, or dropped
-    assert mig_db.get_state(cid, "item:1")["barcode"] == "12345"
-    assert mig_db.get_state(cid, "item:2")["barcode"] == "12345"
-
-
-def test_preflight_reports_oversized_and_comma_values(mig_db):
-    cid = str(uuid.uuid4())
-    mig_db.insert_item(cid, "item:long-bc", {"sku": "A", "barcode": "1" * 65})
+    mig_db.insert_item(cid, "item:1", {"sku": "A", "barcode": "7508", "status": "available"})
+    mig_db.insert_item(cid, "item:2", {"sku": "B", "barcode": "7508", "status": "available"})
+    mig_db.insert_item(cid, "item:long-bc", {"sku": "C", "barcode": "1" * 65})
     mig_db.insert_item(cid, "item:long-sku", {"sku": "S" * 256, "barcode": "222"})
     mig_db.insert_item(cid, "item:comma", {"sku": "X,Y", "barcode": "333"})
-
-    with pytest.raises(RuntimeError) as exc:
-        run_migration_ops(mig_db.engine, MODULE)
-
-    message = str(exc.value)
-    assert "over 64 chars" in message          # oversized barcode
-    assert "over 255 chars" in message          # oversized SKU
-    assert "comma-bearing SKU" in message
-    assert not _index_exists(mig_db)
-    assert _count(mig_db) == 3
-
-
-def test_preflight_allows_live_plus_merged_historical_duplicate(mig_db):
-    cid = str(uuid.uuid4())
-    mig_db.insert_item(cid, "item:live", {"sku": "LIVE", "barcode": "12345", "status": "available"})
-    mig_db.insert_item(cid, "item:old", {"sku": "OLD", "barcode": "12345", "status": "MERGED"})
+    before = _all_states(mig_db.engine)
 
     run_migration_ops(mig_db.engine, MODULE)
-    assert _index_exists(mig_db)
 
-    # A merged historical row cannot become resolvable while colliding with live.
-    with pytest.raises(IntegrityError):
-        with mig_db.engine.begin() as conn:
-            conn.execute(
-                text(
-                    "UPDATE projections SET state = jsonb_set(state::jsonb, '{status}', "
-                    "'\"available\"'::jsonb)::json "
-                    "WHERE company_id = :cid AND entity_id = 'item:old'"
-                ),
-                {"cid": cid},
-            )
+    assert _all_states(mig_db.engine) == before
+    assert _index_names(mig_db.engine).isdisjoint({INDEX, LEGACY_INDEX})
 
 
-def test_replaces_legacy_all_status_index_and_replays_idempotently(mig_db):
+def test_upgrade_drops_existing_indexes_and_is_idempotent(mig_db):
     cid = str(uuid.uuid4())
     mig_db.insert_item(cid, "item:1", {"sku": "A", "barcode": "12345"})
     with mig_db.engine.begin() as conn:
-        conn.execute(text(
-            f"CREATE UNIQUE INDEX {LEGACY_INDEX} "
-            "ON projections (company_id, (state ->> 'barcode')) "
-            "WHERE entity_type = 'item' AND NULLIF(state ->> 'barcode', '') IS NOT NULL"
-        ))
+        conn.execute(text(_CREATE_LEGACY))
+        conn.execute(text(_CREATE_CURRENT))
+    assert {INDEX, LEGACY_INDEX} <= _index_names(mig_db.engine)
 
     run_migration_ops(mig_db.engine, MODULE)
-    assert _index_exists(mig_db)
-    assert not _index_exists(mig_db, LEGACY_INDEX)
+    assert _index_names(mig_db.engine).isdisjoint({INDEX, LEGACY_INDEX})
 
     run_migration_ops(mig_db.engine, MODULE)
-    assert _index_exists(mig_db)
-    assert not _index_exists(mig_db, LEGACY_INDEX)
+    assert _index_names(mig_db.engine).isdisjoint({INDEX, LEGACY_INDEX})
+    assert mig_db.get_state(cid, "item:1")["barcode"] == "12345"
+
+
+def test_downgrade_leaves_no_barcode_index(mig_db):
+    cid = str(uuid.uuid4())
+    mig_db.insert_item(cid, "item:1", {"sku": "A", "barcode": "7508"})
+    mig_db.insert_item(cid, "item:2", {"sku": "B", "barcode": "7508"})
+    with mig_db.engine.begin() as conn:
+        conn.execute(text(_CREATE_LEGACY.replace("CREATE UNIQUE INDEX", "CREATE INDEX")))
+
+    run_migration_ops(mig_db.engine, MODULE, "downgrade")
+
+    assert _index_names(mig_db.engine).isdisjoint({INDEX, LEGACY_INDEX})
+    assert mig_db.get_state(cid, "item:2")["barcode"] == "7508"
 
 
 def _create_sql_ascii_projections(engine) -> None:
@@ -153,15 +116,11 @@ def _insert_sql_ascii_item(conn, cid: str, entity_id: str, state: dict) -> None:
             "INSERT INTO projections VALUES "
             "(:entity_id, CAST(:cid AS uuid), 'item', CAST(:state AS json))"
         ),
-        {
-            "entity_id": entity_id,
-            "cid": cid,
-            "state": json.dumps(state),
-        },
+        {"entity_id": entity_id, "cid": cid, "state": json.dumps(state)},
     )
 
 
-def test_sql_ascii_preflight_blocks_duplicate_with_unrelated_unicode(sql_ascii_fresh_db):
+def test_sql_ascii_upgrade_succeeds_on_duplicates_with_unrelated_unicode(sql_ascii_fresh_db):
     _, sync_url = sql_ascii_fresh_db
     engine = create_engine(sync_url)
     try:
@@ -170,72 +129,19 @@ def test_sql_ascii_preflight_blocks_duplicate_with_unrelated_unicode(sql_ascii_f
         with engine.begin() as conn:
             _insert_sql_ascii_item(
                 conn, cid, "item:1",
-                {"sku": "A", "barcode": "12345", "name": "Crème Brûlée"},
+                {"sku": "A", "barcode": "7508", "name": "Crème Brûlée"},
             )
             _insert_sql_ascii_item(
                 conn, cid, "item:2",
-                {"sku": "B", "barcode": "12345", "status": "available"},
-            )
-
-        with pytest.raises(RuntimeError, match="duplicate barcode"):
-            run_migration_ops(engine, MODULE)
-
-        with engine.connect() as conn:
-            assert conn.execute(text("SELECT count(*) FROM projections")).scalar_one() == 2
-    finally:
-        engine.dispose()
-
-
-def test_sql_ascii_preflight_allows_live_plus_merged_duplicate(sql_ascii_fresh_db):
-    _, sync_url = sql_ascii_fresh_db
-    engine = create_engine(sync_url)
-    try:
-        _create_sql_ascii_projections(engine)
-        cid = str(uuid.uuid4())
-        with engine.begin() as conn:
-            _insert_sql_ascii_item(
-                conn, cid, "item:live",
-                {"sku": "LIVE", "barcode": "12345", "status": "available", "name": "Müller"},
-            )
-            _insert_sql_ascii_item(
-                conn, cid, "item:old",
-                {"sku": "OLD", "barcode": "12345", "status": "MERGED"},
+                {"sku": "B", "barcode": "7508", "status": "available", "name": "Müller"},
             )
 
         run_migration_ops(engine, MODULE)
+        run_migration_ops(engine, MODULE)
+
+        assert _index_names(engine).isdisjoint({INDEX, LEGACY_INDEX})
         with engine.connect() as conn:
             assert conn.execute(text("SELECT count(*) FROM projections")).scalar_one() == 2
-    finally:
-        engine.dispose()
-
-
-def test_sql_ascii_preflight_reports_oversized_and_comma_values(sql_ascii_fresh_db):
-    _, sync_url = sql_ascii_fresh_db
-    engine = create_engine(sync_url)
-    try:
-        _create_sql_ascii_projections(engine)
-        cid = str(uuid.uuid4())
-        with engine.begin() as conn:
-            _insert_sql_ascii_item(
-                conn, cid, "item:long-bc",
-                {"sku": "A", "barcode": "1" * 65, "name": "José"},
-            )
-            _insert_sql_ascii_item(
-                conn, cid, "item:long-sku",
-                {"sku": "S" * 256, "barcode": "222"},
-            )
-            _insert_sql_ascii_item(
-                conn, cid, "item:comma",
-                {"sku": "X,Y", "barcode": "333"},
-            )
-
-        with pytest.raises(RuntimeError) as exc:
-            run_migration_ops(engine, MODULE)
-
-        message = str(exc.value)
-        assert "over 64 chars" in message
-        assert "over 255 chars" in message
-        assert "comma-bearing SKU" in message
     finally:
         engine.dispose()
 
@@ -246,34 +152,17 @@ def test_sql_ascii_removes_barcode_expression_indexes(sql_ascii_fresh_db):
     try:
         _create_sql_ascii_projections(engine)
         with engine.begin() as conn:
-            cid = str(uuid.uuid4())
             _insert_sql_ascii_item(
-                conn, cid, "item:1",
+                conn, str(uuid.uuid4()), "item:1",
                 {"sku": "A", "barcode": "12345", "status": "available"},
             )
-            conn.execute(text(
-                f"CREATE UNIQUE INDEX {LEGACY_INDEX} "
-                "ON projections (company_id, (state ->> 'barcode')) "
-                "WHERE entity_type = 'item' AND NULLIF(state ->> 'barcode', '') IS NOT NULL"
-            ))
-            conn.execute(text(
-                f"CREATE UNIQUE INDEX {INDEX} "
-                "ON projections (company_id, (state ->> 'barcode')) "
-                "WHERE entity_type = 'item' AND NULLIF(state ->> 'barcode', '') IS NOT NULL "
-                "AND lower(COALESCE(state ->> 'status', '')) <> 'merged'"
-            ))
+            conn.execute(text(_CREATE_LEGACY))
+            conn.execute(text(_CREATE_CURRENT))
 
         run_migration_ops(engine, MODULE)
 
+        assert _index_names(engine).isdisjoint({INDEX, LEGACY_INDEX})
         with engine.connect() as conn:
-            names = {
-                row[0]
-                for row in conn.execute(text(
-                    "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema()"
-                ))
-            }
-            assert INDEX not in names
-            assert LEGACY_INDEX not in names
             assert conn.execute(text("SELECT count(*) FROM projections")).scalar_one() == 1
     finally:
         engine.dispose()

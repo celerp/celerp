@@ -276,6 +276,110 @@ async def test_upsert_repeated_sku_requires_barcode_to_choose_lot(session):
 
 
 @pytest.mark.asyncio
+async def test_import_records_duplicate_barcodes_and_edit_resolves_them(session):
+    """An import whose file carries the same barcode on two rows records both lots as
+    given; the resolver reports the duplicate instead of picking one, and moving one lot
+    to a fresh barcode through a normal edit resolves the lookup."""
+    from celerp.events.engine import emit_event
+    from celerp_inventory.routes import resolve_item_by_code
+
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    rows = [
+        {"name": "Lot A", "sku": "DUP-A", "barcode": "7508", "sell_by": "piece", "pieces": "1"},
+        {"name": "Lot B", "sku": "DUP-B", "barcode": "7508", "sell_by": "piece", "pieces": "1"},
+    ]
+    result = await import_items(
+        session, company_id, user_id, "admin", {}, rows, upsert=False,
+        filename=None, idempotency_key="dup-barcode-batch",
+    )
+    assert result.created == 2
+    res = await resolve_item_by_code(session, company_id, "7508")
+    assert res.duplicate_physical and len(res.matches) == 2
+
+    lot_a = next(i for i in await _item_projections(session, company_id) if i.state["sku"] == "DUP-A")
+    await emit_event(
+        session, company_id=company_id, entity_id=lot_a.entity_id, entity_type="item",
+        event_type="item.updated", data={"fields_changed": {"barcode": {"new": "7510"}}},
+        actor_id=user_id, location_id=None, source="test",
+        idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    assert (await resolve_item_by_code(session, company_id, "7508")).one.state["sku"] == "DUP-B"
+    assert (await resolve_item_by_code(session, company_id, "7510")).one.entity_id == lot_a.entity_id
+
+
+@pytest.mark.asyncio
+async def test_upsert_on_shared_barcode_never_picks_arbitrarily(session):
+    """An upsert row whose barcode several items share patches only the holder its SKU
+    identifies; without a distinguishing SKU the row fails instead of patching an
+    arbitrary item."""
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    seed = [
+        {"name": "Lot A", "sku": "SHR-A", "barcode": "7508", "sell_by": "piece", "pieces": "1"},
+        {"name": "Lot B", "sku": "SHR-B", "barcode": "7508", "sell_by": "piece", "pieces": "1"},
+    ]
+    assert (await import_items(
+        session, company_id, user_id, "admin", {}, seed, upsert=False,
+        filename=None, idempotency_key="shared-barcode-seed",
+    )).created == 2
+
+    ambiguous = await build_import_records(
+        session, company_id,
+        [{"name": "Renamed", "barcode": "7508", "sell_by": "piece"},
+         {"name": "Renamed", "sku": "OTHER", "barcode": "7508", "sell_by": "piece"}],
+        upsert=True, dry_run=True,
+    )
+    assert ambiguous.records == []
+    assert [(e["row"], e["field"]) for e in ambiguous.errors] == [(1, "barcode"), (2, "barcode")]
+
+    chosen = await import_items(
+        session, company_id, user_id, "admin", {},
+        [{"name": "Lot B renamed", "sku": "SHR-B", "barcode": "7508", "sell_by": "piece"}],
+        upsert=True, filename=None, idempotency_key=None,
+    )
+    assert chosen.updated == 1
+    names = {i.state["sku"]: i.state["name"] for i in await _item_projections(session, company_id)}
+    assert names == {"SHR-A": "Lot A", "SHR-B": "Lot B renamed"}
+
+
+@pytest.mark.asyncio
+async def test_import_chunk_takes_code_namespace_before_first_item_write(session, monkeypatch):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    seed = [
+        {"name": "One", "sku": "ORDER-1", "sell_by": "piece", "pieces": "1"},
+        {"name": "Two", "sku": "ORDER-2", "sell_by": "piece", "pieces": "1"},
+    ]
+    assert (await import_items(
+        session, company_id, user_id, "admin", {}, seed, upsert=False,
+        filename=None, idempotency_key="order-seed",
+    )).created == 2
+
+    calls: list[str] = []
+    real_lock, real_emit = svc.lock_item_code_namespace, svc.emit_event
+
+    async def _lock(s, cid):
+        calls.append("lock")
+        return await real_lock(s, cid)
+
+    async def _emit(s, **kwargs):
+        calls.append(f"emit:{kwargs['data'].get('name') or kwargs['data'].get('fields_changed', {}).get('name')}")
+        return await real_emit(s, **kwargs)
+
+    monkeypatch.setattr(svc, "lock_item_code_namespace", _lock)
+    monkeypatch.setattr(svc, "emit_event", _emit)
+    patches = [
+        {"name": "One renamed", "sku": "ORDER-1", "sell_by": "piece"},
+        {"name": "Two renamed", "sku": "ORDER-2", "sell_by": "piece"},
+    ]
+    result = await import_items(
+        session, company_id, user_id, "admin", {}, patches, upsert=True,
+        filename=None, idempotency_key=None,
+    )
+    assert result.updated == 2
+    assert calls == ["lock", "emit:One renamed", "emit:Two renamed"], calls
+
+
+@pytest.mark.asyncio
 async def test_exact_create_replay_uses_content_identity(session):
     company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
     rows = [{"name": "Replay Item", "sku": "REPLAY-1", "sell_by": "piece", "pieces": "1"}]

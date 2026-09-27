@@ -1,19 +1,25 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
+"""The RFID / EPC revision upgrades any data unchanged and leaves no RFID unique index."""
+
 from __future__ import annotations
 
 import uuid
 
-import pytest
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import IntegrityError
 
 from celerp.inventory_codes import RFID_EPC_UNIQUE_INDEX
 
 from .conftest import run_migration_ops
 
 MODULE = "d1e2f3a4b5c6_rfid_epc_unique_index"
+
+_CREATE_INDEX = (
+    f"CREATE UNIQUE INDEX {RFID_EPC_UNIQUE_INDEX} "
+    "ON projections (company_id, (state ->> 'rfid_epc')) "
+    "WHERE entity_type = 'item' AND NULLIF(state ->> 'rfid_epc', '') IS NOT NULL"
+)
 
 
 def _index_exists(engine) -> bool:
@@ -27,14 +33,31 @@ def _index_exists(engine) -> bool:
         ).scalar_one() > 0
 
 
-def test_utf8_creates_rfid_index_and_enforces_uniqueness(mig_db):
+def test_upgrade_succeeds_on_duplicate_rfid_and_preserves_data(mig_db):
     cid = str(uuid.uuid4())
     mig_db.insert_item(cid, "item:1", {"sku": "A", "rfid_epc": "A1B2"})
-    run_migration_ops(mig_db.engine, MODULE)
-    assert _index_exists(mig_db.engine)
+    mig_db.insert_item(cid, "item:2", {"sku": "B", "rfid_epc": "A1B2"})
 
-    with pytest.raises(IntegrityError):
-        mig_db.insert_item(cid, "item:2", {"sku": "B", "rfid_epc": "A1B2"})
+    run_migration_ops(mig_db.engine, MODULE)
+    run_migration_ops(mig_db.engine, MODULE)
+
+    assert not _index_exists(mig_db.engine)
+    assert mig_db.get_state(cid, "item:1")["rfid_epc"] == "A1B2"
+    assert mig_db.get_state(cid, "item:2")["rfid_epc"] == "A1B2"
+
+
+def test_upgrade_and_downgrade_drop_an_existing_index(mig_db):
+    cid = str(uuid.uuid4())
+    mig_db.insert_item(cid, "item:1", {"sku": "A", "rfid_epc": "A1B2"})
+    with mig_db.engine.begin() as conn:
+        conn.execute(text(_CREATE_INDEX))
+    run_migration_ops(mig_db.engine, MODULE)
+    assert not _index_exists(mig_db.engine)
+
+    with mig_db.engine.begin() as conn:
+        conn.execute(text(_CREATE_INDEX))
+    run_migration_ops(mig_db.engine, MODULE, "downgrade")
+    assert not _index_exists(mig_db.engine)
 
 
 def test_sql_ascii_removes_rfid_expression_index(sql_ascii_fresh_db):
@@ -55,13 +78,9 @@ def test_sql_ascii_removes_rfid_expression_index(sql_ascii_fresh_db):
             cid = str(uuid.uuid4())
             conn.execute(
                 text("INSERT INTO projections VALUES ('item:1', CAST(:cid AS uuid), 'item', CAST(:s AS json))"),
-                {"cid": cid, "s": '{"sku":"A","rfid_epc":"A1B2"}'},
+                {"cid": cid, "s": '{"sku":"A","rfid_epc":"A1B2","name":"Jose"}'},
             )
-            conn.execute(text(
-                f"CREATE UNIQUE INDEX {RFID_EPC_UNIQUE_INDEX} "
-                "ON projections (company_id, (state ->> 'rfid_epc')) "
-                "WHERE entity_type = 'item' AND NULLIF(state ->> 'rfid_epc', '') IS NOT NULL"
-            ))
+            conn.execute(text(_CREATE_INDEX))
 
         run_migration_ops(engine, MODULE)
         assert not _index_exists(engine)

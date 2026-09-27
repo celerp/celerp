@@ -174,6 +174,9 @@ async def connector_upsert(
 
     await emit_event(
         session,
+        # A platform's codes are recorded as the platform holds them; a duplicate is
+        # reported by the resolver and Doctor rather than failing the sync.
+        preserve_external_code_conflicts=entity_type == "item",
         company_id=company_id,
         entity_id=entity_id,
         entity_type=entity_type,
@@ -188,7 +191,37 @@ async def connector_upsert(
     return "updated" if existing_id else "created"
 
 
-async def emit_event(session, **kwargs) -> LedgerEntry:
+def _touches_physical_codes(state: dict, event_type: str, data: dict) -> bool:
+    """True when an item event can change which physical codes the item resolves by.
+
+    That is any event setting a barcode or RFID / EPC, by data shape, or any event
+    that moves an item out of a status excluded from resolution (merged back to
+    available, say), probed by applying the event to the item in an excluded status.
+    A probe that cannot be evaluated counts as touching, so the check still runs.
+    """
+    from celerp.inventory_codes import PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
+    from celerp.services.physical_codes import PHYSICAL_CODE_FIELDS
+
+    changed = data.get("fields_changed")
+    if any(
+        field in data or (isinstance(changed, dict) and field in changed)
+        for field in PHYSICAL_CODE_FIELDS
+    ):
+        return True
+    # A status change on a live item can only drop its codes from resolution, never
+    # add one, so only an item in an excluded status needs the probe (and the lock).
+    if str(state.get("status") or "").lower() not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
+        return False
+    try:
+        probe = ProjectionEngine._apply(dict(state), event_type, data)
+    except Exception:
+        return True
+    return str(probe.get("status") or "").lower() not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
+
+
+async def emit_event(
+    session, *, preserve_external_code_conflicts: bool = False, **kwargs
+) -> LedgerEntry:
     # A backup represents a clean point in time: while one is building, pause writes
     # (reads, which never emit, are unaffected) so nothing changes mid-backup.
     from celerp.services.backup_state import is_active as _backup_active
@@ -251,6 +284,48 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
 
         await lock_connector_key(session, "shopify")
 
+    # Physical codes (barcode, RFID / EPC) are unique per company among the codes a write
+    # INTRODUCES: the item's code set after the event is compared with its set before, so
+    # a duplicate already in the data never blocks an unrelated edit. An exact replay is
+    # left to the idempotency dedup below. Imports and connectors pass
+    # preserve_external_code_conflicts to record the source system's codes as given;
+    # the resolver then reports the ambiguity and Doctor lists it.
+    previous_item_state = None
+    if kwargs.get("entity_type") == "item":
+        from copy import deepcopy
+
+        from celerp.services.physical_codes import (
+            assert_new_physical_codes_available,
+            lock_item_code_namespace,
+        )
+
+        key = (kwargs["company_id"], kwargs["entity_id"])
+        previous = await session.get(Projection, key, populate_existing=True)
+        if previous is not None and previous.entity_type == "item":
+            previous_item_state = deepcopy(previous.state or {})
+        check_codes = _touches_physical_codes(
+            previous_item_state or {}, kwargs["event_type"], kwargs["data"]
+        ) and await find_event_by_idempotency(
+            session, kwargs["company_id"], kwargs.get("idempotency_key")
+        ) is None
+        if check_codes:
+            await lock_item_code_namespace(session, kwargs["company_id"])
+            # Under the lock the check must see the committed row, not the copy the
+            # identity map held from before another writer changed it.
+            previous = await session.get(Projection, key, populate_existing=True)
+            previous_item_state = (
+                deepcopy(previous.state or {})
+                if previous is not None and previous.entity_type == "item"
+                else None
+            )
+        if check_codes and not preserve_external_code_conflicts:
+            after = ProjectionEngine._apply(
+                previous_item_state or {}, kwargs["event_type"], kwargs["data"]
+            )
+            await assert_new_physical_codes_available(
+                session, kwargs["company_id"], kwargs["entity_id"], previous_item_state, after
+            )
+
     entry = LedgerEntry(**kwargs)
 
     try:
@@ -277,15 +352,6 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
         # instead of inferring from entity ids.
         original.was_deduped = True
         return original
-
-    previous_item_state = None
-    if entry.entity_type == "item":
-        from copy import deepcopy
-        previous = await session.get(
-            Projection, (entry.company_id, entry.entity_id)
-        )
-        if previous is not None and previous.entity_type == "item":
-            previous_item_state = deepcopy(previous.state or {})
 
     await ProjectionEngine.apply_event(session, entry)
 

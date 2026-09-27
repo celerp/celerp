@@ -551,10 +551,9 @@ async def rate_limit_handler(_request: Request, _exc: RateLimitExceeded):
 
 @app.exception_handler(CodeConflictError)
 async def code_conflict_handler(_request: Request, exc: CodeConflictError):
-    # The projection applier raises a CodeConflictError (barcode or RFID / EPC) when a
-    # physical-code unique index rejects a write that bypassed the allocation lock
-    # (imports, connectors). One handler on the shared base maps every physical-code
-    # collision to 409 instead of a masked 500.
+    # The event boundary raises a CodeConflictError (barcode or RFID / EPC) when a write
+    # introduces a physical code another item already holds. One handler on the shared
+    # base maps every physical-code collision to 409.
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 

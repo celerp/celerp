@@ -142,7 +142,7 @@ class ProjectionEngine:
             except IntegrityError as exc:
                 # Only the (company_id, entity_id) primary-key race is a benign
                 # concurrent-first-insert to retry as an update on the winner's row.
-                # A physical-code unique-index violation (barcode or RFID / EPC) is a real
+                # A stale physical-code unique index left by an earlier release is a real
                 # conflict - surface it so the API maps it to 409 rather than swallowing it
                 # as a PK race.
                 if is_barcode_unique_violation(exc):
@@ -158,7 +158,7 @@ class ProjectionEngine:
         fields = ProjectionEngine._next_fields(projection.state, entry, projection.version)
         for column, value in fields.items():
             setattr(projection, column, value)
-        # Flush inside a SAVEPOINT so a physical-code unique-index violation on an UPDATE
+        # Flush inside a SAVEPOINT so a stale physical-code unique index on an UPDATE
         # (not only a first insert) surfaces as a CodeConflictError -> 409 instead of
         # escaping to the outer commit masked as a 500. Unrelated integrity errors
         # re-raise unchanged.

@@ -63,7 +63,7 @@ async def test_lock_blocks_concurrent_namespace_access(_db_engine):
     """lock_item_code_namespace serializes: while one transaction holds the company
     lock, a second allocator blocks until the first commits. Without the FOR UPDATE
     lock the second returns immediately and both mint the same next code."""
-    from celerp_inventory.services import lock_item_code_namespace
+    from celerp.services.physical_codes import lock_item_code_namespace
 
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
     company_id = await _seed_company(factory)
@@ -151,10 +151,10 @@ async def test_allocate_internal_codes_batch_is_distinct_and_sequential(_db_engi
 
 
 @pytest.mark.asyncio
-async def test_assert_barcode_available_flags_taken_codes(_db_engine):
-    """assert_barcode_available raises BarcodeConflictError for a barcode another item
-    already holds and passes for an unused, empty, or absent barcode."""
-    from celerp_inventory.services import assert_barcode_available
+async def test_code_in_use_flags_taken_codes(_db_engine):
+    """code_in_use is true for a code another item already holds in either physical-code
+    slot and false for an unused, empty, or absent code."""
+    from celerp.services.physical_codes import code_in_use
 
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
     company_id = await _seed_company(factory)
@@ -164,12 +164,10 @@ async def test_assert_barcode_available_flags_taken_codes(_db_engine):
             await s.commit()
 
         async with factory() as s:
-            with pytest.raises(BarcodeConflictError):
-                await assert_barcode_available(s, company_id, "555001")
-            # Unused / empty / absent are all available (no raise).
-            await assert_barcode_available(s, company_id, "999999")
-            await assert_barcode_available(s, company_id, "")
-            await assert_barcode_available(s, company_id, None)
+            assert await code_in_use(s, company_id, "555001")
+            assert not await code_in_use(s, company_id, "999999")
+            assert not await code_in_use(s, company_id, "")
+            assert not await code_in_use(s, company_id, None)
     finally:
         await _cleanup(factory, company_id)
 
@@ -191,13 +189,10 @@ def _update_barcode_kwargs(company_id, entity_id, barcode):
 
 @pytest.mark.asyncio
 async def test_concurrent_barcode_patches_one_conflicts(_db_engine):
-    """Two items patched at once to the SAME barcode resolve to one success and one
-    clean BarcodeConflictError, never a duplicate and never a 500. This mirrors
-    patch_item's sequence: lock the code namespace, check availability excluding the
-    item's own row, emit the update, commit while the lock is held. The lock forces
-    the second patch to read the first's committed barcode and see the collision."""
-    from celerp_inventory.services import assert_barcode_available, lock_item_code_namespace
-
+    """Two items patched at once to the SAME barcode through plain emit_event resolve to
+    one success and one clean BarcodeConflictError, never a duplicate and never a 500.
+    emit_event takes the code-namespace lock before its availability check, so the
+    second writer waits for the first to commit and then sees the collision."""
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
     company_id = await _seed_company(factory)
     try:
@@ -210,8 +205,6 @@ async def test_concurrent_barcode_patches_one_conflicts(_db_engine):
 
         async def _patch(entity_id: str):
             async with factory() as s:
-                await lock_item_code_namespace(s, company_id)
-                await assert_barcode_available(s, company_id, target, exclude_entity_id=entity_id)
                 await emit_event(s, **_update_barcode_kwargs(company_id, entity_id, target))
                 await s.commit()
 
@@ -234,11 +227,10 @@ async def test_concurrent_barcode_patches_one_conflicts(_db_engine):
 
 
 @pytest.mark.asyncio
-async def test_assert_barcode_available_excludes_own_entity(_db_engine):
-    """exclude_entity_id skips one item's own row so re-asserting its current barcode
-    under lock is not read as a self-collision, while a different item holding the
-    same barcode still raises."""
-    from celerp_inventory.services import assert_barcode_available
+async def test_code_in_use_excludes_own_entity(_db_engine):
+    """exclude_entity_id skips one item's own row so its current barcode is not read as
+    a self-collision, while a different item holding the same barcode still counts."""
+    from celerp.services.physical_codes import code_in_use
 
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
     company_id = await _seed_company(factory)
@@ -249,10 +241,7 @@ async def test_assert_barcode_available_excludes_own_entity(_db_engine):
             await s.commit()
 
         async with factory() as s:
-            # item:1 re-asserting its own barcode is available when excluded.
-            await assert_barcode_available(s, company_id, "555001", exclude_entity_id="item:1")
-            # Another item's barcode still collides even with the exclusion.
-            with pytest.raises(BarcodeConflictError):
-                await assert_barcode_available(s, company_id, "555002", exclude_entity_id="item:1")
+            assert not await code_in_use(s, company_id, "555001", exclude_entity_id="item:1")
+            assert await code_in_use(s, company_id, "555002", exclude_entity_id="item:1")
     finally:
         await _cleanup(factory, company_id)

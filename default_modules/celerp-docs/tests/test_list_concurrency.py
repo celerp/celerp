@@ -289,3 +289,94 @@ async def test_get_list_for_update_404s_non_list(_db_engine):
             assert exc.value.status_code == 404
     finally:
         await _cleanup(factory, company_id)
+
+
+async def _hold_namespace_then_lock_item(factory, company_id, item_id, route_call):
+    """Hold the company code namespace the way an import chunk does, start ``route_call`` on its
+    own session, then take the item row lock as the import's next item write would. The route must
+    be queued on the namespace, not holding the item row: if it locked the row first, this lock
+    waits on the route while the route waits on the namespace, a deadlock. Returns the route result."""
+    from sqlalchemy import text
+
+    from celerp.services.physical_codes import lock_item_code_namespace
+
+    holder, route_session = factory(), factory()
+    try:
+        await lock_item_code_namespace(holder, company_id)
+
+        async def _route():
+            try:
+                result = await route_call(route_session)
+                await route_session.commit()
+                return ("ok", result)
+            except Exception as exc:  # noqa: BLE001 - reported in the assertion
+                await route_session.rollback()
+                return ("error", exc)
+
+        task = asyncio.create_task(_route())
+        done, _pending = await asyncio.wait({task}, timeout=0.5)
+        assert not done, f"route finished while the namespace was held: {task.result()!r}"
+        await holder.execute(text("SET LOCAL lock_timeout = '3s'"))
+        await holder.execute(select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_id == item_id,
+        ).with_for_update())
+        await holder.commit()
+        outcome = await asyncio.wait_for(task, timeout=15)
+        assert outcome[0] == "ok", f"route failed after the namespace was released: {outcome[1]!r}"
+        return outcome[1]
+    finally:
+        await holder.close()
+        await route_session.close()
+
+
+@pytest.mark.asyncio
+async def test_lot_locking_takes_code_namespace_before_item_rows(_db_engine):
+    """Fulfil, reserve and revert all lock their lots through _lock_item_sku_lots, and a partial
+    line then carves a child lot under the company code namespace. The namespace must come first."""
+    from celerp_docs.routes import _lock_item_sku_lots
+
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _seed_company(factory)
+    item_id = "item:LOT-ORDER"
+    try:
+        await _seed_item(factory, company_id, item_id, quantity=5, cost_total=50, sku="LOT-ORDER")
+        locked = await _hold_namespace_then_lock_item(
+            factory, company_id, item_id,
+            lambda s: _lock_item_sku_lots(s, company_id, {item_id}),
+        )
+        assert set(locked) == {item_id}
+    finally:
+        await _cleanup(factory, company_id)
+
+
+@pytest.mark.asyncio
+async def test_partial_writeoff_takes_code_namespace_before_item_rows(_db_engine):
+    """A partial write-off carves a child lot, which needs the company code namespace. It must take
+    that before its item row locks, so it cannot deadlock against an import holding the namespace."""
+    from celerp_docs.routes import write_off_stock
+
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _seed_company(factory)
+    item_id, list_id = "item:WO-ORDER", "list:WOORDER"
+    user_id = None
+    try:
+        await _seed_chart(factory, company_id)
+        await _seed_item(factory, company_id, item_id, quantity=5, cost_total=50, sku="WO-ORDER")
+        await _seed_writeoff_list(factory, company_id, list_id, item_id=item_id, qty_out=2,
+                                  account="6950", sku="WO-ORDER")
+        user_id = await _seed_user(factory, company_id)
+        user = types.SimpleNamespace(id=user_id)
+        await _hold_namespace_then_lock_item(
+            factory, company_id, item_id,
+            lambda s: write_off_stock(list_id, company_id=company_id, _=None, user=user, session=s),
+        )
+        async with factory() as s:
+            item = (await s.execute(select(Projection).where(
+                Projection.company_id == company_id, Projection.entity_id == item_id))).scalar_one()
+            assert float(item.state["quantity"]) == 3
+    finally:
+        await _cleanup(factory, company_id)
+        if user_id is not None:
+            async with factory() as s:
+                await s.execute(delete(User).where(User.id == user_id))
+                await s.commit()
