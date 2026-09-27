@@ -212,9 +212,8 @@ def _touches_physical_codes(state: dict, event_type: str, data: dict) -> bool:
     # add one, so only an item in an excluded status needs the probe (and the lock).
     if str(state.get("status") or "").lower() not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
         return False
-    excluded = next(iter(PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES))
     try:
-        probe = ProjectionEngine._apply({**state, "status": excluded}, event_type, data)
+        probe = ProjectionEngine._apply(state, event_type, data)
     except Exception:
         return True
     return str(probe.get("status") or "").lower() not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES

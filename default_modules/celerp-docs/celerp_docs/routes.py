@@ -29,6 +29,7 @@ from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
+from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
@@ -5754,10 +5755,16 @@ async def _validate_revert_entity_ids_subset(
 async def _lock_item_sku_lots(
     session, company_id, item_ids: list[str] | set[str],
 ) -> dict[str, Projection]:
-    """Lock selected items and every same-SKU lot in one deterministic batch."""
+    """Lock selected items and every same-SKU lot in one deterministic batch.
+
+    Takes the company code namespace first: a partial line later carves a child lot, which
+    needs that lock, and taking it after these item row locks would invert the canonical
+    order (see lock_item_code_namespace).
+    """
     ids = {eid for eid in item_ids if eid}
     if not ids:
         return {}
+    await lock_item_code_namespace(session, company_id)
     seeds = (await session.execute(select(Projection).where(
         Projection.company_id == company_id,
         Projection.entity_type == "item",
@@ -7945,7 +7952,9 @@ async def write_off_stock(
     # Lock every distinct item projection FOR UPDATE in one deterministic (entity_id-sorted) batch: two
     # concurrent runs that share items acquire them in the same order (no deadlock), and each reads the
     # other's committed decrement. populate_existing overwrites any stale identity-map copy, closing the
-    # unlocked-read hazard the plain get left open.
+    # unlocked-read hazard the plain get left open. A partial line carves a child lot, which needs the
+    # company code namespace, so that lock is taken first to keep the canonical namespace-then-item order.
+    await lock_item_code_namespace(session, company_id)
     locked: dict[str, Projection] = {
         p.entity_id: p for p in (await session.execute(
             select(Projection).where(

@@ -214,3 +214,22 @@ async def test_concurrent_merges_consume_sources_once(_db_engine, monkeypatch):
         assert float(results_created[0]["quantity"]) == 5
     finally:
         await _cleanup(factory, company_id, user_id)
+
+
+@pytest.mark.asyncio
+async def test_merge_rejects_duplicate_source_ids(_db_engine):
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user_id, user = await _seed_company(factory)
+    try:
+        a = await _seed_item(factory, company_id, user, "PART", 2)
+        body = MergeBody(source_entity_ids=[a, a], target_sku_from=a)
+        async with factory() as s:
+            with pytest.raises(HTTPException) as exc:
+                await merge_items(body, **_route_kwargs(company_id, user, s))
+            await s.rollback()
+        assert exc.value.status_code == 422
+        items = await _items(factory, company_id)
+        assert len(items) == 1
+        assert items[0]["status"] == "available" and float(items[0]["quantity"]) == 2
+    finally:
+        await _cleanup(factory, company_id, user_id)

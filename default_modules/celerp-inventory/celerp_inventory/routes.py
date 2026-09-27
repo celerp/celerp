@@ -3566,6 +3566,8 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     _validate_sku(payload.resulting_sku)
     if len(payload.source_entity_ids) < 2:
         raise HTTPException(status_code=422, detail="At least 2 source_entity_ids are required to merge.")
+    if len(set(payload.source_entity_ids)) != len(payload.source_entity_ids):
+        raise HTTPException(status_code=422, detail="source_entity_ids must contain distinct items.")
 
     if payload.target_sku_from not in payload.source_entity_ids:
         raise HTTPException(
