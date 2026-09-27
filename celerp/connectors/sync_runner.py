@@ -17,6 +17,7 @@ from celerp.connectors.base import (
     entity_allowed,
 )
 from celerp.connectors.ownership import ConnectorStoreChangedError
+from celerp.connectors.relay_token import ConnectorUpgradeRequired
 from celerp.models.sync_run import SyncRun
 
 log = logging.getLogger(__name__)
@@ -440,7 +441,7 @@ async def run_sync(
                             options["reconcile"] = True
                         result = await sync_method(current_ctx, since=since, **options)
                 await guard_session.commit()
-    except ConnectorStoreChangedError as exc:
+    except (ConnectorStoreChangedError, ConnectorUpgradeRequired) as exc:
         result = SyncResult(entity=entity, direction=effective_direction, errors=[str(exc)])
     except NotImplementedError:
         result = SyncResult(

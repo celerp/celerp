@@ -43,6 +43,23 @@ async def test_fetch_context_builds_ctx_from_relay():
 
 
 @pytest.mark.asyncio
+async def test_fetch_context_xero_reads_connected_organisation():
+    from celerp.connectors.relay_token import fetch_context
+    with patch("celerp.gateway.state.get_session_token", return_value="tok"), \
+         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"), \
+         patch("celerp.gateway.state.relay_session_headers", return_value={}), \
+         patch("celerp.connectors.ownership.connector_owned_by_company",
+               new=AsyncMock(return_value=True)), \
+         respx.mock:
+        respx.get("https://relay.test/tokens/xero/context").mock(
+            return_value=httpx.Response(200, json={"platform": "xero", "store_handle": "tenant-1"}))
+        ctx = await fetch_context("co-1", "xero")
+    assert ctx is not None
+    assert ctx.access_token == ""
+    assert ctx.store_handle == "tenant-1"
+
+
+@pytest.mark.asyncio
 async def test_fetch_context_none_on_relay_error():
     from celerp.connectors.relay_token import fetch_context
     with patch("celerp.gateway.state.get_session_token", return_value="tok"), \
@@ -53,6 +70,20 @@ async def test_fetch_context_none_on_relay_error():
          respx.mock:
         respx.get("https://relay.test/tokens/shopify/access-token").mock(return_value=httpx.Response(404))
         assert await fetch_context("co-1", "shopify") is None
+
+
+@pytest.mark.asyncio
+async def test_fetch_context_raises_when_relay_requires_update():
+    from celerp.connectors.relay_token import ConnectorUpgradeRequired, fetch_context
+    with patch("celerp.gateway.state.get_session_token", return_value="tok"), \
+         patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"), \
+         patch("celerp.gateway.state.relay_session_headers", return_value={}), \
+         patch("celerp.connectors.ownership.connector_owned_by_company",
+               new=AsyncMock(return_value=True)), \
+         respx.mock:
+        respx.get("https://relay.test/tokens/xero/context").mock(return_value=httpx.Response(426))
+        with pytest.raises(ConnectorUpgradeRequired, match="Update Celerp to continue syncing Xero."):
+            await fetch_context("co-1", "xero")
 
 
 # ── gateway webhook dispatch ─────────────────────────────────────────────────
@@ -270,6 +301,21 @@ async def test_scheduler_skips_on_token_fetch_error():
         synced = await check_and_run_daily_syncs(
             "co", token_fetcher=AsyncMock(side_effect=RuntimeError("relay down")))
     assert synced == [] and run.await_count == 0       # token fetch failed → no sync
+
+
+@pytest.mark.asyncio
+async def test_scheduler_stays_due_when_relay_requires_update():
+    from celerp.connectors.daily_scheduler import check_and_run_daily_syncs
+    from celerp.connectors.relay_token import ConnectorUpgradeRequired
+    config = _sched_config()
+    cm = _sched_session(config)
+    run = AsyncMock()
+    with patch("celerp.db.get_session_ctx", return_value=cm), \
+         patch("celerp.connectors.sync_runner.run_sync", new=run):
+        synced = await check_and_run_daily_syncs(
+            "co", token_fetcher=AsyncMock(side_effect=ConnectorUpgradeRequired("Update Celerp")))
+    assert synced == [] and run.await_count == 0
+    assert config.last_daily_sync_at is None           # still due next check
 
 
 @pytest.mark.asyncio

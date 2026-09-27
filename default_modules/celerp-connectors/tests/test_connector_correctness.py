@@ -65,11 +65,10 @@ async def test_quickbooks_zero_price_kept():
 
 
 @pytest.mark.asyncio
-async def test_xero_zero_price_kept():
-    ctx = ConnectorContext(company_id="co", access_token="t", store_handle="tenant-abc",
-                           extra={"tenant_id": "tenant-abc"})
+async def test_xero_zero_price_kept(xero_relay):
+    ctx = ConnectorContext(company_id="co", access_token="", store_handle="tenant-abc")
     with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")) as up:
-        respx.get("https://api.xero.com/api.xro/2.0/Items").mock(return_value=httpx.Response(
+        respx.get(f"{xero_relay}/Items").mock(return_value=httpx.Response(
             200, json={"Items": [{"ItemID": "i1", "Code": "FREE", "Name": "Free",
                                   "SalesDetails": {"UnitPrice": 0}}]}))
         await XeroConnector().sync_products(ctx)
@@ -79,14 +78,13 @@ async def test_xero_zero_price_kept():
 # ── Xero /Items must be fetched once (non-paginating endpoint) ────────────────
 
 @pytest.mark.asyncio
-async def test_xero_items_fetched_once_not_looped():
+async def test_xero_items_fetched_once_not_looped(xero_relay):
     """A full page (100) from the non-paginating /Items endpoint must not trigger
     another request — the old loop re-fetched the same set forever."""
-    ctx = ConnectorContext(company_id="co", access_token="t", store_handle="tenant-abc",
-                           extra={"tenant_id": "tenant-abc"})
+    ctx = ConnectorContext(company_id="co", access_token="", store_handle="tenant-abc")
     items = [{"ItemID": f"i{i}", "Code": f"C{i}", "Name": f"N{i}"} for i in range(100)]
     with respx.mock, patch("celerp.connectors.upsert.upsert_item", new=AsyncMock(return_value="created")):
-        route = respx.get("https://api.xero.com/api.xro/2.0/Items").mock(
+        route = respx.get(f"{xero_relay}/Items").mock(
             return_value=httpx.Response(200, json={"Items": items}))
         result = await XeroConnector().sync_products(ctx)
     assert route.call_count == 1            # fetched exactly once

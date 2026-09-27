@@ -1,10 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 
-import uuid
-
-
-
 
 def _f(v, default: float = 0.0) -> float:
     """Null-safe float. Missing/null/empty -> default; a real 0 stays 0.0."""
@@ -95,6 +91,23 @@ async def upsert_order_from_shopify(company_id: str, order: dict) -> str:
         return await _emit_doc(session, company_id, data, idem_key)
 
 
+_IMPORTED_INVOICE_MARKERS = (
+    "shopify_order_id", "woocommerce_order_id",
+    "quickbooks_invoice_id", "xero_invoice_id",
+)
+
+
+def _invoice_for_push(entity_id: str, state: dict) -> dict:
+    return {
+        "entity_id": entity_id,
+        "ref_id": state.get("ref_id") or state.get("doc_number"),
+        "line_items": state.get("line_items") or [],
+        "total": state.get("total"),
+        "customer_name": state.get("customer_name"),
+        "customer_external_id": state.get("customer_external_id"),
+    }
+
+
 async def list_unsynced_invoices(company_id: str, platform: str) -> list[dict]:
     """Native CelERP invoices that are candidates to push out to `platform`.
 
@@ -109,12 +122,7 @@ async def list_unsynced_invoices(company_id: str, platform: str) -> list[dict]:
     from celerp.models.projections import Projection
     from sqlalchemy import select
 
-    _IMPORTED_MARKERS = (
-        "shopify_order_id", "woocommerce_order_id",
-        "quickbooks_invoice_id", "xero_invoice_id",
-    )
     cid = _uuid.UUID(str(company_id))
-    out: list[dict] = []
     async with SessionLocal() as session:
         rows = (await session.execute(
             select(Projection).where(
@@ -123,21 +131,34 @@ async def list_unsynced_invoices(company_id: str, platform: str) -> list[dict]:
                 Projection.state["doc_type"].as_string() == "invoice",
             )
         )).scalars().all()
-        for r in rows:
-            st = r.state or {}
-            if any(st.get(m) for m in _IMPORTED_MARKERS):
-                continue  # imported from a platform, not ours to push back
-            if st.get(f"{platform}_invoice_id"):
-                continue  # already pushed to this platform
-            out.append({
-                "entity_id": r.entity_id,
-                "ref_id": st.get("ref_id") or st.get("doc_number"),
-                "line_items": st.get("line_items") or [],
-                "total": st.get("total"),
-                "customer_name": st.get("customer_name"),
-                "customer_external_id": st.get("customer_external_id"),
-            })
-    return out
+    return [
+        _invoice_for_push(r.entity_id, st)
+        for r in rows
+        if not any((st := r.state or {}).get(m) for m in _IMPORTED_INVOICE_MARKERS)
+        and not st.get(f"{platform}_invoice_id")
+    ]
+
+
+async def invoice_for_push(company_id: str, entity_id: str, platform: str) -> dict | None:
+    """One invoice as list_unsynced_invoices returns it, plus `pushed_id` (its
+    {platform}_invoice_id, if already pushed) and `imported` (it came from a
+    platform). None when there is no such invoice."""
+    import uuid as _uuid
+    from celerp.db import SessionLocal
+    from celerp.models.projections import Projection
+
+    async with SessionLocal() as session:
+        row = await session.get(
+            Projection, {"company_id": _uuid.UUID(str(company_id)), "entity_id": entity_id}
+        )
+    state = (row.state or {}) if row is not None else {}
+    if state.get("doc_type") != "invoice":
+        return None
+    return {
+        **_invoice_for_push(row.entity_id, state),
+        "pushed_id": state.get(f"{platform}_invoice_id"),
+        "imported": any(state.get(m) for m in _IMPORTED_INVOICE_MARKERS),
+    }
 
 
 async def mark_doc_pushed(
@@ -161,7 +182,10 @@ async def mark_doc_pushed(
         await session.commit()
 
 
-async def _emit_doc(session, company_id: str, data: dict, idem_key: str) -> str:
+async def _emit_doc(
+    session, company_id: str, data: dict, idem_key: str,
+    external_identity: tuple[str, str] | None = None,
+) -> str:
     # connector_upsert keys the projection on idem_key (the unique platform id), NOT the
     # human ref_id/DocNumber — two source invoices can share a DocNumber (QB allows it)
     # and would otherwise collapse into one doc. A changed re-import updates the same doc.
@@ -170,6 +194,7 @@ async def _emit_doc(session, company_id: str, data: dict, idem_key: str) -> str:
     outcome = await connector_upsert(
         session, company_id=company_id, entity_type="doc",
         event_type="doc.created", idem_key=idem_key, data=data,
+        external_identity=external_identity,
     )
     await session.commit()
     return outcome
@@ -1219,7 +1244,11 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> str:
             "conversion_rate": _source_rate(invoice.get("ExchangeRate")),
             "quickbooks_invoice_id": str(invoice["Id"]),
         }
-        return await _emit_doc(session, company_id, data, idem_key)
+        # An invoice Celerp pushed carries this id already; the import leaves it as is.
+        return await _emit_doc(
+            session, company_id, data, idem_key,
+            external_identity=("quickbooks_invoice_id", str(invoice["Id"])),
+        )
 
 
 async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> str:
@@ -1270,4 +1299,8 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> str:
             "conversion_rate": _source_rate(invoice.get("CurrencyRate"), invert=True),
             "xero_invoice_id": str(invoice["InvoiceID"]),
         }
-        return await _emit_doc(session, company_id, data, idem_key)
+        # An invoice Celerp pushed carries this id already; the import leaves it as is.
+        return await _emit_doc(
+            session, company_id, data, idem_key,
+            external_identity=("xero_invoice_id", str(invoice["InvoiceID"])),
+        )

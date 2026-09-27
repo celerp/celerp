@@ -11,10 +11,9 @@ import respx
 import httpx
 from unittest.mock import AsyncMock, patch
 
-from celerp.connectors.base import ConnectorBase, ConnectorContext, SyncDirection, SyncEntity, SyncResult
+from celerp.connectors.base import ConnectorBase, ConnectorContext, SyncDirection, SyncEntity
 from celerp.connectors.shopify import ShopifyConnector
 from celerp.connectors.quickbooks import QuickBooksConnector
-from celerp.connectors.xero import XeroConnector
 
 
 # -- Base class NotImplementedError --
@@ -230,64 +229,3 @@ async def test_quickbooks_sync_invoices_out_missing_realm(qb):
     result = await qb.sync_invoices_out(ctx)
     assert result.errors
     assert "realm_id" in result.errors[0]
-
-
-# -- Xero sync_invoices_out --
-
-@pytest.fixture
-def xero():
-    return XeroConnector()
-
-
-@pytest.fixture
-def ctx_xero():
-    return ConnectorContext(
-        company_id="test-co",
-        access_token="xero_test_token",
-        store_handle="tenant-abc",
-        extra={"tenant_id": "tenant-abc"},
-    )
-
-
-@pytest.mark.asyncio
-async def test_xero_sync_invoices_out_success(xero, ctx_xero):
-    invoices = [
-        {"ref_id": "INV-X1", "customer_external_id": "contact-uuid-1", "line_items": [
-            {"description": "Service", "quantity": 1, "unit_price": 100.0, "total": 100.0}
-        ]},
-    ]
-    with patch("celerp.connectors.upsert.list_unsynced_invoices", new=AsyncMock(return_value=invoices)):
-        with respx.mock:
-            respx.put("https://api.xero.com/api.xro/2.0/Invoices").mock(
-                return_value=httpx.Response(200, json={"Invoices": [{"InvoiceID": "xero-1"}]})
-            )
-            result = await xero.sync_invoices_out(ctx_xero)
-
-    assert result.created == 1
-    assert result.entity == SyncEntity.INVOICES
-    assert result.direction == SyncDirection.OUTBOUND
-    assert result.errors is None
-
-
-@pytest.mark.asyncio
-async def test_xero_sync_invoices_out_error_accumulation(xero, ctx_xero):
-    invoices = [
-        {"ref_id": "INV-X1", "customer_external_id": "c1", "line_items": []},
-        {"ref_id": "INV-X2", "customer_external_id": "c2", "line_items": []},
-    ]
-    call_count = 0
-
-    async def side_effect(request, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise httpx.HTTPStatusError("403", request=None, response=httpx.Response(403))
-        return httpx.Response(200, json={"Invoices": [{"InvoiceID": "ok"}]})
-
-    with patch("celerp.connectors.upsert.list_unsynced_invoices", new=AsyncMock(return_value=invoices)):
-        with respx.mock:
-            respx.put("https://api.xero.com/api.xro/2.0/Invoices").mock(side_effect=side_effect)
-            result = await xero.sync_invoices_out(ctx_xero)
-
-    assert result.created == 1
-    assert len(result.errors) == 1

@@ -428,6 +428,25 @@ async def test_sync_unsupported_entity(client, patch_session_token):
     assert resp.status_code == 422
 
 
+
+@pytest.mark.asyncio
+async def test_sync_asks_for_an_update_when_the_relay_requires_one(client, session, patch_session_token):
+    from celerp.connectors.relay_token import ConnectorUpgradeRequired
+    from celerp.models.connector_config import ConnectorConfig
+    from test_helpers import register_admin
+
+    headers = {"Authorization": f"Bearer {await register_admin(client)}",
+               "X-Session-Token": _FAKE_SESSION_TOKEN}
+    company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
+    session.add(ConnectorConfig(company_id=str(company_id), connector="xero", direction="both"))
+    await session.commit()
+    with patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(
+            side_effect=ConnectorUpgradeRequired("Update Celerp to continue syncing Xero."))):
+        resp = await client.post("/connectors/xero/sync", headers=headers, json={"entity": "contacts"})
+    assert resp.status_code == 426
+    assert resp.json()["detail"] == "Update Celerp to continue syncing Xero."
+
+
 # ── QuickBooks connector tests ────────────────────────────────────────────────
 
 @pytest.fixture
@@ -544,7 +563,7 @@ def xero():
 def xero_ctx():
     return ConnectorContext(
         company_id="test-company",
-        access_token="xero_access_token_test",
+        access_token="",
         store_handle="tenant-uuid-1234",
     )
 
@@ -564,8 +583,8 @@ def test_all_connectors_includes_all_four():
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_xero_sync_products_success(xero, xero_ctx):
-    respx.get("https://api.xero.com/api.xro/2.0/Items").mock(
+async def test_xero_sync_products_success(xero, xero_ctx, xero_relay):
+    respx.get(f"{xero_relay}/Items").mock(
         return_value=httpx.Response(200, json={
             "Items": [
                 {"ItemID": "aaa-111", "Code": "WIDGET-001", "Name": "Widget",
@@ -585,8 +604,8 @@ async def test_xero_sync_products_success(xero, xero_ctx):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_xero_sync_orders_filters_non_accrec(xero, xero_ctx):
-    respx.get("https://api.xero.com/api.xro/2.0/Invoices").mock(
+async def test_xero_sync_orders_filters_non_accrec(xero, xero_ctx, xero_relay):
+    respx.get(f"{xero_relay}/Invoices").mock(
         return_value=httpx.Response(200, json={
             "Invoices": [
                 {"InvoiceID": "inv-1", "Type": "ACCREC", "InvoiceNumber": "INV-001",
@@ -605,8 +624,8 @@ async def test_xero_sync_orders_filters_non_accrec(xero, xero_ctx):
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_xero_sync_contacts(xero, xero_ctx):
-    respx.get("https://api.xero.com/api.xro/2.0/Contacts").mock(
+async def test_xero_sync_contacts(xero, xero_ctx, xero_relay):
+    respx.get(f"{xero_relay}/Contacts").mock(
         return_value=httpx.Response(200, json={
             "Contacts": [
                 {"ContactID": "c-1", "Name": "ACME Corp", "EmailAddress": "acme@example.com"},

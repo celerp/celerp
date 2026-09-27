@@ -433,19 +433,15 @@ async def release_connector_ownership(
 ) -> None:
     """Release one company's connector state: its own row plus any legacy
     row with no company, so a disconnect also works while ownership is ambiguous."""
-    from celerp.models.connector_config import OutboundQueue
+    from celerp.connectors.outbound_queue import release_connector_queue
 
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
     await lock_connector_key(session, connector, exclusive=True)
     mine = await connector_release_scope(session, company_id, connector)
 
-    await session.execute(
-        sa.delete(OutboundQueue).where(
-            OutboundQueue.company_id.in_({company_id, legacy_id}),
-            OutboundQueue.connector == connector,
-        )
-    )
+    for queue_owner in {company_id, legacy_id}:
+        await release_connector_queue(session, queue_owner, connector)
     record_connector_reset(session, company_id, connector, status=status)
     for row in mine:
         await session.delete(row)
@@ -470,18 +466,13 @@ async def release_unassigned_connector(
     session: AsyncSession, connector: str, *,
     status: str = RESET_STATUS_DISCONNECTED,
 ) -> None:
-    """Remove an unassigned connector and its queued changes, and record the
-    reset. No company becomes its owner; one reconnects it to take it over."""
-    from celerp.models.connector_config import OutboundQueue
+    """Remove an unassigned connector, release its queued changes, and record
+    the reset. No company becomes its owner; one reconnects it to take it over."""
+    from celerp.connectors.outbound_queue import release_connector_queue
 
     legacy_id = ensure_instance_id()
     rows = await lock_unassigned_connector(session, connector)
-    await session.execute(
-        sa.delete(OutboundQueue).where(
-            OutboundQueue.company_id == legacy_id,
-            OutboundQueue.connector == connector,
-        )
-    )
+    await release_connector_queue(session, legacy_id, connector)
     record_connector_reset(session, legacy_id, connector, status=status)
     for row in rows:
         await session.delete(row)

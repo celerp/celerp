@@ -95,6 +95,11 @@ async def list_unsynced_invoices(company_id: str, platform: str) -> list:
     return await docs_svc.list_unsynced_invoices(company_id, platform=platform)
 
 
+async def invoice_for_push(company_id: str, entity_id: str, platform: str) -> dict | None:
+    from celerp_docs import doc_service as docs_svc
+    return await docs_svc.invoice_for_push(company_id, entity_id, platform)
+
+
 async def mark_doc_pushed(company_id: str, entity_id: str, platform: str, external_id: str, entity: str = "invoice") -> None:
     from celerp_docs import doc_service as docs_svc
     return await docs_svc.mark_doc_pushed(company_id, entity_id, platform, external_id, entity=entity)
