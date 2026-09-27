@@ -239,6 +239,37 @@ class OutboundOperation:
         self.state = state
 
 
+_UNRESOLVED_CREATE = (
+    OutboundQueue.connector == "xero",
+    OutboundQueue.entity_type == "invoice",
+    OutboundQueue.payload_json.is_not(None),
+)
+_DISCONNECTED = "Xero was disconnected while invoice creation was unresolved."
+
+
+async def _release_rows(session, *where, message: str = _DISCONNECTED) -> None:
+    """Drop queued work, except a Xero invoice create that may have reached Xero:
+    that row is its only record, so it is kept and parked until a manual sync
+    settles it."""
+    await session.execute(
+        sa.update(OutboundQueue)
+        .where(*where, *_UNRESOLVED_CREATE)
+        .values(status="blocked", next_retry_at=None, error_message=message)
+    )
+    await session.execute(
+        sa.delete(OutboundQueue).where(*where, sa.not_(sa.and_(*_UNRESOLVED_CREATE)))
+    )
+
+
+async def release_connector_queue(session, company_id, connector: str) -> None:
+    """Release a company's queued work for a connector being disconnected."""
+    await _release_rows(
+        session,
+        OutboundQueue.company_id == str(company_id),
+        OutboundQueue.connector == connector,
+    )
+
+
 @dataclass
 class OutboundOutcome:
     rows: int = 0
@@ -278,6 +309,18 @@ async def enqueue_outbound(
                 retry_count=0,
             ))
             await session.commit()
+
+
+async def queued_outbound(company_id: str, connector: str, entity_type: str) -> list[str]:
+    """Identities with queued work, parked ones included."""
+    async with get_session_ctx() as session:
+        return list(dict.fromkeys((await session.execute(
+            sa.select(OutboundQueue.entity_id).where(
+                OutboundQueue.company_id == company_id,
+                OutboundQueue.connector == connector,
+                OutboundQueue.entity_type == entity_type,
+            ).order_by(OutboundQueue.id)
+        )).scalars().all()))
 
 
 async def process_outbound_identity(
@@ -333,7 +376,7 @@ async def process_outbound_identity(
                 await session.commit()
                 return OutboundOutcome(error=str(exc))
             except ConnectorOwnershipError as exc:
-                await session.execute(sa.delete(OutboundQueue).where(*identity_rows))
+                await _release_rows(session, *identity_rows)
                 await session.commit()
                 return OutboundOutcome(error=str(exc))
 
@@ -399,7 +442,12 @@ async def process_outbound_identity(
                 ).limit(1)
             )
             if config is None or config.direction == SyncDirection.INBOUND.value:
-                await clear()
+                await _release_rows(
+                    session, OutboundQueue.id.in_(ids),
+                    message=_DISCONNECTED if config is None else
+                    "Sending invoices to Xero was turned off while invoice creation was unresolved.",
+                )
+                await session.commit()
                 return OutboundOutcome(rows=len(ids))
 
         handler = _OUTBOUND_HANDLERS.get((connector_name, entity_type))

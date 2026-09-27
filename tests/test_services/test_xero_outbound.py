@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 """Xero invoice creation through the outbound queue: each Celerp invoice is
-created in Xero at most once, across crashes, retries and local edits."""
+created in Xero at most once, across crashes, retries, local edits and
+disconnects, and is the same invoice when imported back."""
 from __future__ import annotations
 
 import json
@@ -189,26 +190,24 @@ async def test_first_push_creates_and_links_the_invoice(relay, company):
 
 
 @pytest.mark.asyncio
-async def test_crash_after_create_before_link_resends_same_key_in_window(relay, company):
-    with _Xero(put=[_created(), _created()]) as xero:
+async def test_write_back_failure_links_on_retry_without_resending(relay, company):
+    with _Xero(put=[_created()]) as xero:
         with patch("celerp.connectors.upsert.mark_doc_pushed",
                    new=AsyncMock(side_effect=RuntimeError("write-back failed"))):
             first = await _sync(company)
         assert first.errors and len(await _rows(company)) == 1
+        assert json.loads((await _rows(company))[0].payload_json)["remote_id"] == "xero-1"
         second = await _sync(company)
     assert second.created == 1 and second.errors is None
-    keys = xero.put_keys()
-    assert len(keys) == 2 and keys[0] == keys[1]
+    assert len(xero.puts) == 1 and xero.gets == []
     assert (await _doc(company))["xero_invoice_id"] == "xero-1"
     assert await _rows(company) == []
 
 
 @pytest.mark.asyncio
-async def test_crash_after_create_links_by_lookup_after_key_window(relay, company):
-    with _Xero(put=[_created()], get=[httpx.Response(200, json={"Invoices": [_remote()]})]) as xero:
-        with patch("celerp.connectors.upsert.mark_doc_pushed",
-                   new=AsyncMock(side_effect=RuntimeError("write-back failed"))):
-            await _sync(company)
+async def test_lost_response_links_by_lookup_after_key_window(relay, company):
+    with _Xero(put=[LOST], get=[httpx.Response(200, json={"Invoices": [_remote()]})]) as xero:
+        await _sync(company)
         await _age_attempt(company)
         result = await _sync(company)
     assert result.created == 1 and result.errors is None
@@ -259,7 +258,7 @@ async def test_lost_response_retains_row_and_queue_resends_same_key(relay, compa
 
 
 @pytest.mark.asyncio
-async def test_local_renumber_and_edit_while_unresolved_send_the_original(relay, company):
+async def test_local_edit_while_unresolved_links_the_original_and_holds(relay, company):
     with _Xero(put=[LOST, _created()]) as xero:
         await _sync(company)
         await _edit_doc(
@@ -268,11 +267,52 @@ async def test_local_renumber_and_edit_while_unresolved_send_the_original(relay,
             line_items=[{"description": "Service", "quantity": 2, "unit_price": 100, "total": 200}],
         )
         result = await _sync(company)
-    assert result.created == 1
+        assert result.created == 0
+        assert result.errors and "changed in Celerp" in result.errors[0]
+        bodies = xero.put_bodies()
+        assert [b["InvoiceNumber"] for b in bodies] == ["INV-1", "INV-1"]
+        assert [b["LineItems"][0]["LineAmount"] for b in bodies] == [100.0, 100.0]
+        assert xero.put_keys()[0] == xero.put_keys()[1]
+        assert (await _doc(company))["xero_invoice_id"] == "xero-1"
+        rows = await _rows(company)
+        assert len(rows) == 1 and rows[0].status == "blocked"
+        assert json.loads(rows[0].payload_json)["remote_id"] == "xero-1"
+
+        # A linked invoice is off the unsynced list; a manual sync still rechecks
+        # the held row, and never sends again.
+        again = await _sync(company)
+        assert again.errors and "changed in Celerp" in again.errors[0]
+        await _edit_doc(
+            company,
+            ref_id="INV-1",
+            line_items=[{"description": "Service", "quantity": 1, "unit_price": 100, "total": 100}],
+        )
+        settled = await _sync(company)
+    assert settled.created == 1 and settled.errors is None
+    assert len(xero.puts) == 2 and xero.gets == []
+    assert await _rows(company) == []
+
+
+@pytest.mark.asyncio
+async def test_after_key_window_confirmed_absence_sends_the_current_invoice(relay, company):
+    with _Xero(put=[LOST, _created()], get=[httpx.Response(200, json={"Invoices": []})]) as xero:
+        await _sync(company)
+        await _edit_doc(
+            company,
+            ref_id="INV-99",
+            line_items=[{"description": "Service", "quantity": 2, "unit_price": 100, "total": 200}],
+        )
+        frozen = await _age_attempt(company)
+        result = await _sync(company)
+    assert result.created == 1 and result.errors is None
+    assert 'InvoiceNumber=="INV-1"' in xero.gets[0].url.params["where"]
     bodies = xero.put_bodies()
-    assert [b["InvoiceNumber"] for b in bodies] == ["INV-1", "INV-1"]
-    assert [b["LineItems"][0]["LineAmount"] for b in bodies] == [100.0, 100.0]
-    assert xero.put_keys()[0] == xero.put_keys()[1]
+    assert [b["InvoiceNumber"] for b in bodies] == ["INV-1", "INV-99"]
+    assert bodies[1]["LineItems"][0]["LineAmount"] == 200.0
+    keys = xero.put_keys()
+    assert keys[0] == frozen["idempotency_key"] and keys[1] != keys[0]
+    assert (await _doc(company))["xero_invoice_id"] == "xero-1"
+    assert await _rows(company) == []
 
 
 @pytest.mark.asyncio
@@ -343,3 +383,145 @@ async def test_validation_rejection_clears_the_row_and_reports_why(relay, compan
     assert result.errors and "Contact could not be found." in result.errors[0]
     assert await _rows(company) == []
     assert "xero_invoice_id" not in await _doc(company)
+
+
+LEGACY = "legacy-instance"
+
+
+async def _disconnect(company_id) -> None:
+    from celerp.connectors.ownership import release_connector_ownership
+    from celerp.db import get_session_ctx
+    with patch("celerp.connectors.ownership.ensure_instance_id", return_value=LEGACY):
+        async with get_session_ctx() as session:
+            await release_connector_ownership(session, str(company_id), "xero")
+            await session.commit()
+
+
+async def _reconnect(company_id) -> None:
+    from celerp.db import get_session_ctx
+    async with get_session_ctx() as session:
+        session.add(ConnectorConfig(company_id=str(company_id), connector="xero", direction="both"))
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_attempted_create_survives_disconnect_and_resumes_on_reconnect(relay, company):
+    with _Xero(put=[LOST, _created()]) as xero:
+        await _sync(company)
+        frozen = json.loads((await _rows(company))[0].payload_json)
+        await _disconnect(company)
+        rows = await _rows(company)
+        assert len(rows) == 1 and rows[0].status == "blocked"
+        assert rows[0].next_retry_at is None
+        assert rows[0].error_message == "Xero was disconnected while invoice creation was unresolved."
+        assert json.loads(rows[0].payload_json) == frozen
+
+        # The background queue leaves it parked.
+        await _reconnect(company)
+        with patch("celerp.connectors.relay_token.fetch_context",
+                   new=AsyncMock(return_value=_ctx(company))):
+            await process_outbound_queue_once()
+        assert len(xero.puts) == 1
+
+        # A manual sync on the same organisation resumes the same create.
+        result = await _sync(company)
+    assert result.created == 1 and result.errors is None
+    assert xero.put_keys() == [frozen["idempotency_key"]] * 2
+    assert (await _doc(company))["xero_invoice_id"] == "xero-1"
+    assert await _rows(company) == []
+
+
+@pytest.mark.asyncio
+async def test_unattempted_row_is_deleted_on_disconnect(relay, company):
+    from celerp.connectors.outbound_queue import enqueue_outbound
+    await enqueue_outbound(str(company), "xero", "invoice", DOC_ID)
+    await _disconnect(company)
+    assert await _rows(company) == []
+
+
+@pytest.mark.asyncio
+async def test_other_organisation_makes_no_call_and_stays_blocked(relay, company):
+    with _Xero(put=[LOST]) as xero:
+        await _sync(company)
+        await _disconnect(company)
+        await _reconnect(company)
+        other = ConnectorContext(company_id=str(company), access_token="", store_handle="other")
+        result = await XeroConnector().sync_invoices_out(other)
+        assert result.errors and "different Xero organisation" in result.errors[0]
+        await _age_attempt(company)
+        await XeroConnector().sync_invoices_out(other)
+    assert len(xero.puts) == 1 and xero.gets == []
+    rows = await _rows(company)
+    assert len(rows) == 1 and rows[0].status == "blocked"
+    assert "xero_invoice_id" not in await _doc(company)
+
+
+@pytest.mark.asyncio
+async def test_push_then_import_updates_the_same_invoice(relay, company):
+    from celerp.connectors.upsert import upsert_invoice_from_xero
+    with _Xero(put=[_created()]):
+        await _sync(company)
+    remote = {**_remote(), "Status": "AUTHORISED", "Total": 100, "AmountDue": 100}
+    await upsert_invoice_from_xero(str(company), remote)
+    from celerp.db import get_session_ctx
+    async with get_session_ctx() as session:
+        docs = (await session.execute(
+            sa.select(Projection).where(
+                Projection.company_id == company, Projection.entity_type == "doc"
+            )
+        )).scalars().all()
+    assert [d.entity_id for d in docs] == [DOC_ID]
+    assert docs[0].state["idempotency_key"] == "xero:invoice:xero-1"
+    assert docs[0].state["xero_invoice_id"] == "xero-1"
+
+
+async def _docs(company_id) -> list[Projection]:
+    from celerp.db import get_session_ctx
+    async with get_session_ctx() as session:
+        return list((await session.execute(
+            sa.select(Projection).where(
+                Projection.company_id == company_id, Projection.entity_type == "doc"
+            )
+        )).scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_quickbooks_pushed_invoice_imports_as_the_same_invoice(company):
+    from celerp.connectors.upsert import mark_doc_pushed, upsert_invoice_from_quickbooks
+    await mark_doc_pushed(str(company), DOC_ID, "quickbooks", "qb-7")
+    await upsert_invoice_from_quickbooks(str(company), {
+        "Id": "qb-7", "DocNumber": "INV-1", "TotalAmt": 100, "Balance": 100, "Line": [],
+    })
+    docs = await _docs(company)
+    assert [d.entity_id for d in docs] == [DOC_ID]
+    assert docs[0].state["idempotency_key"] == "quickbooks:invoice:qb-7"
+
+
+@pytest.mark.asyncio
+async def test_import_matching_two_invoices_fails_closed(company):
+    from celerp.connectors.upsert import mark_doc_pushed, upsert_invoice_from_xero
+    from celerp.db import get_session_ctx
+    from celerp.events.engine import ConnectorIdentityConflict
+
+    await mark_doc_pushed(str(company), DOC_ID, "xero", "xero-9")
+    now = datetime.now(timezone.utc)
+    async with get_session_ctx() as session:
+        session.add(Projection(
+            company_id=company, entity_id="doc:imported", entity_type="doc", version=1,
+            created_at=now, updated_at=now,
+            state={"doc_type": "invoice", "idempotency_key": "xero:invoice:xero-9"},
+        ))
+        await session.commit()
+        before = await session.scalar(
+            sa.select(sa.func.count()).select_from(LedgerEntry)
+            .where(LedgerEntry.company_id == company)
+        )
+    with pytest.raises(ConnectorIdentityConflict):
+        await upsert_invoice_from_xero(str(company), {**_remote(invoice_id="xero-9"), "Total": 100})
+    async with get_session_ctx() as session:
+        after = await session.scalar(
+            sa.select(sa.func.count()).select_from(LedgerEntry)
+            .where(LedgerEntry.company_id == company)
+        )
+    assert after == before
+    assert sorted(d.entity_id for d in await _docs(company)) == sorted([DOC_ID, "doc:imported"])

@@ -182,7 +182,10 @@ async def mark_doc_pushed(
         await session.commit()
 
 
-async def _emit_doc(session, company_id: str, data: dict, idem_key: str) -> str:
+async def _emit_doc(
+    session, company_id: str, data: dict, idem_key: str,
+    external_identity: tuple[str, str] | None = None,
+) -> str:
     # connector_upsert keys the projection on idem_key (the unique platform id), NOT the
     # human ref_id/DocNumber — two source invoices can share a DocNumber (QB allows it)
     # and would otherwise collapse into one doc. A changed re-import updates the same doc.
@@ -191,6 +194,7 @@ async def _emit_doc(session, company_id: str, data: dict, idem_key: str) -> str:
     outcome = await connector_upsert(
         session, company_id=company_id, entity_type="doc",
         event_type="doc.created", idem_key=idem_key, data=data,
+        external_identity=external_identity,
     )
     await session.commit()
     return outcome
@@ -1240,7 +1244,11 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> str:
             "conversion_rate": _source_rate(invoice.get("ExchangeRate")),
             "quickbooks_invoice_id": str(invoice["Id"]),
         }
-        return await _emit_doc(session, company_id, data, idem_key)
+        # An invoice Celerp pushed carries this id already; the import updates it.
+        return await _emit_doc(
+            session, company_id, data, idem_key,
+            external_identity=("quickbooks_invoice_id", str(invoice["Id"])),
+        )
 
 
 async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> str:
@@ -1291,4 +1299,8 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> str:
             "conversion_rate": _source_rate(invoice.get("CurrencyRate"), invert=True),
             "xero_invoice_id": str(invoice["InvoiceID"]),
         }
-        return await _emit_doc(session, company_id, data, idem_key)
+        # An invoice Celerp pushed carries this id already; the import updates it.
+        return await _emit_doc(
+            session, company_id, data, idem_key,
+            external_identity=("xero_invoice_id", str(invoice["InvoiceID"])),
+        )

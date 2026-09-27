@@ -83,7 +83,14 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
         )
 
 
-async def _connector_entity_id(session, company_id, entity_type: str, idem_key: str) -> str | None:
+class ConnectorIdentityConflict(Exception):
+    """A platform record resolves to two different Celerp records."""
+
+
+async def _connector_entity_id(
+    session, company_id, entity_type: str, idem_key: str,
+    external_identity: tuple[str, str] | None = None,
+) -> str | None:
     """The entity_id of an existing projection this connector record maps to, or None.
 
     Records are resolved by their stable ``idempotency_key`` (stored in projection
@@ -91,22 +98,49 @@ async def _connector_entity_id(session, company_id, entity_type: str, idem_key: 
     instead of duplicating it. This includes records imported before the deterministic
     -id scheme, which stored a random-uuid entity_id: the backfill migration
     (`e4f5a6b7c8d9`) stamps ``idempotency_key`` onto those rows so they resolve here too.
+
+    ``external_identity`` is ``(field, value)``: the platform id as a Celerp record
+    carries it once Celerp itself created the record on the platform. A record found
+    only that way is the same record; one found by each route, differently, is a
+    conflict and nothing is written.
     """
-    row = (await session.execute(
-        text("SELECT entity_id FROM projections WHERE company_id = CAST(:c AS uuid) "
-             "AND entity_type = :t AND state ->> 'idempotency_key' = :k LIMIT 1"),
-        {"c": str(company_id), "t": entity_type, "k": idem_key},
-    )).first()
-    return row[0] if row else None
+    import uuid as _uuid
+
+    scope = (
+        Projection.company_id == _uuid.UUID(str(company_id)),
+        Projection.entity_type == entity_type,
+    )
+    by_key = (await session.execute(
+        select(Projection.entity_id)
+        .where(*scope, Projection.state["idempotency_key"].as_string() == idem_key)
+        .limit(1)
+    )).scalar()
+    if external_identity is None:
+        return by_key
+    field, value = external_identity
+    by_external = (await session.execute(
+        select(Projection.entity_id)
+        .where(*scope, Projection.state[field].as_string() == value)
+        .limit(2)
+    )).scalars().all()
+    ids = {i for i in (by_key, *by_external) if i is not None}
+    if len(ids) > 1:
+        raise ConnectorIdentityConflict(
+            f"{field} {value} belongs to more than one record: {', '.join(sorted(ids))}"
+        )
+    return next(iter(ids), None)
 
 
 async def connector_upsert(
-    session, *, company_id, entity_type: str, event_type: str, idem_key: str, data: dict
+    session, *, company_id, entity_type: str, event_type: str, idem_key: str, data: dict,
+    external_identity: tuple[str, str] | None = None,
 ) -> str:
     """Create-or-update a projection from a connector payload.
 
     Returns "created" (new projection), "updated" (existing projection, changed
-    content), or "noop" (this exact content was already applied).
+    content), or "noop" (this exact content was already applied). Raises
+    ConnectorIdentityConflict when ``external_identity`` and ``idem_key`` resolve
+    to different projections.
 
     ``idem_key`` (the stable platform id) is stored in projection state so a re-import
     resolves the SAME projection; the event's idempotency key varies with the content,
@@ -117,7 +151,9 @@ async def connector_upsert(
 
     data = {**data, "idempotency_key": idem_key}  # stable identity in state (rebuild-safe)
 
-    existing_id = await _connector_entity_id(session, company_id, entity_type, idem_key)
+    existing_id = await _connector_entity_id(
+        session, company_id, entity_type, idem_key, external_identity
+    )
     entity_id = existing_id or f"{entity_type}:{idem_key}"
 
     content = _json.dumps(
