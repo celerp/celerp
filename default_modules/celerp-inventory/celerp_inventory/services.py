@@ -1982,6 +1982,13 @@ async def commit_import_batch(
     created_entity_ids: list[str] = []
     created_keys: list[str] = []
 
+    # One bounded import transaction can touch many item rows and later allocate
+    # or preserve a physical code. Take the company namespace before the first
+    # projection write so every item lock in this chunk follows Company -> Projection.
+    # This also prevents two imports from locking the same item set in opposite orders.
+    if body.records:
+        await lock_item_code_namespace(session, company_id)
+
     for rec in body.records:
         data = dict(rec.data)
         data.pop("status", None)
@@ -2136,7 +2143,6 @@ async def commit_import_batch(
         # Creation follows the ordinary internal-code primitive, after replay
         # detection, so a retry cannot consume a new SKU/barcode.
         if event_type == "item.created":
-            await lock_item_code_namespace(session, company_id)
             if not str(data.get("sku") or "").strip():
                 data["sku"] = (await allocate_internal_codes(session, company_id))[0]
             sku = str(data.get("sku") or "")

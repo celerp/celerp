@@ -1975,6 +1975,28 @@ async def get_item_projection(session: AsyncSession, company_id, entity_id: str)
     return row
 
 
+async def _lock_items_for_physical_mutation(session: AsyncSession, company_id, entity_ids: list[str]) -> dict[str, Projection]:
+    """Lock the physical-code namespace, then freshly lock the source item rows.
+
+    Physical restructures mint or validate codes and derive quantities/costs from
+    existing item state. All such operations use Company -> Projection ordering so
+    they cannot deadlock with code edits, and every calculation is based on state
+    committed before this transaction acquired the row locks.
+    """
+    await lock_item_code_namespace(session, company_id)
+    ids = sorted(set(entity_ids))
+    if not ids:
+        return {}
+    rows = (await session.execute(
+        select(Projection)
+        .where(Projection.company_id == company_id, Projection.entity_type == "item", Projection.entity_id.in_(ids))
+        .order_by(Projection.entity_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    return {row.entity_id: row for row in rows}
+
+
 async def _require_company_location(session: AsyncSession, company_id, location_id) -> None:
     if location_id is None:
         return
@@ -2723,8 +2745,7 @@ async def split_preview(
 async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     for _child in payload.children:
         _validate_sku(_child.sku)
-    # Fetch parent
-    parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
@@ -3176,14 +3197,10 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     # first's result instead of overwriting it (lost update). Serializing the read alone
     # only fixes ordering; the capacity check just below is what stops a carve larger than
     # what is actually on hand, which is the other half of "no phantom stock".
-    locked = (await session.execute(
-        select(Projection)
-        .where(Projection.company_id == company_id, Projection.entity_id == parent_proj.entity_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )).scalar_one_or_none()
-    parent = locked if locked is not None else parent_proj
-    entity_id = parent.entity_id
+    entity_id = parent_proj.entity_id
+    parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
+    if parent is None:
+        raise ValueError("parent item no longer exists")
     parent_sku = parent.state.get("sku", "")
     parent_qty = float(parent.state.get("quantity") or 0)
     parent_attrs = dict(parent.state.get("attributes") or {})
@@ -3347,8 +3364,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
 @router.post("/{entity_id}/transform")
 async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     _validate_sku(payload.child_sku)
-    # Fetch parent
-    parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
@@ -3557,14 +3573,17 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             detail="target_sku_from must identify one of the merge sources.",
         )
 
-    # Fetch projections for all source items.
+    locked_sources = await _lock_items_for_physical_mutation(session, company_id, payload.source_entity_ids)
     source_projections: list[Projection] = []
     for sid in payload.source_entity_ids:
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": sid})
+        proj = locked_sources.get(sid)
         if proj is None:
             raise HTTPException(status_code=404, detail=f"Item '{sid}' not found.")
-        if str((proj.state or {}).get("status") or "").lower() == "draft":
+        status = str((proj.state or {}).get("status") or "").lower()
+        if status == "draft":
             raise HTTPException(status_code=422, detail=f"Cannot merge a draft item ({sid}); make it available first.")
+        if status == "merged":
+            raise HTTPException(status_code=409, detail=f"Item '{sid}' has already been merged.")
         source_projections.append(proj)
 
     from celerp_inventory.services import external_link_for_state, normalize_sku
@@ -3671,11 +3690,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         )
 
     # Resolve target projection (SKU/barcode/name/prices come from this source).
-    target_proj = await session.get(Projection, {"company_id": company_id, "entity_id": payload.target_sku_from})
-    if target_proj is None:
-        raise HTTPException(status_code=422, detail=f"target_sku_from '{payload.target_sku_from}' not found.")
-    if str((target_proj.state or {}).get("status") or "").lower() == "draft":
-        raise HTTPException(status_code=422, detail=f"Cannot merge a draft item ({payload.target_sku_from}); make it available first.")
+    target_proj = locked_sources[payload.target_sku_from]
 
     def _get_expiry(proj: Projection) -> str | None:
         raw = proj.state.get("expires_at")

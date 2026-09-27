@@ -343,6 +343,43 @@ async def test_upsert_on_shared_barcode_never_picks_arbitrarily(session):
 
 
 @pytest.mark.asyncio
+async def test_import_chunk_takes_code_namespace_before_first_item_write(session, monkeypatch):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    seed = [
+        {"name": "One", "sku": "ORDER-1", "sell_by": "piece", "pieces": "1"},
+        {"name": "Two", "sku": "ORDER-2", "sell_by": "piece", "pieces": "1"},
+    ]
+    assert (await import_items(
+        session, company_id, user_id, "admin", {}, seed, upsert=False,
+        filename=None, idempotency_key="order-seed",
+    )).created == 2
+
+    calls: list[str] = []
+    real_lock, real_emit = svc.lock_item_code_namespace, svc.emit_event
+
+    async def _lock(s, cid):
+        calls.append("lock")
+        return await real_lock(s, cid)
+
+    async def _emit(s, **kwargs):
+        calls.append(f"emit:{kwargs['data'].get('name') or kwargs['data'].get('fields_changed', {}).get('name')}")
+        return await real_emit(s, **kwargs)
+
+    monkeypatch.setattr(svc, "lock_item_code_namespace", _lock)
+    monkeypatch.setattr(svc, "emit_event", _emit)
+    patches = [
+        {"name": "One renamed", "sku": "ORDER-1", "sell_by": "piece"},
+        {"name": "Two renamed", "sku": "ORDER-2", "sell_by": "piece"},
+    ]
+    result = await import_items(
+        session, company_id, user_id, "admin", {}, patches, upsert=True,
+        filename=None, idempotency_key=None,
+    )
+    assert result.updated == 2
+    assert calls == ["lock", "emit:One renamed", "emit:Two renamed"], calls
+
+
+@pytest.mark.asyncio
 async def test_exact_create_replay_uses_content_identity(session):
     company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
     rows = [{"name": "Replay Item", "sku": "REPLAY-1", "sell_by": "piece", "pieces": "1"}]

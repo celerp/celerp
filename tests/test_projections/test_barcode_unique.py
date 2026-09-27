@@ -347,3 +347,17 @@ async def test_boundary_rereads_item_changed_after_it_was_loaded(_db_engine):
         assert (await _resolve(factory, company_id, "100")).one.entity_id == "item:c"
     finally:
         await _cleanup(factory, [company_id])
+
+
+def test_status_change_on_live_item_does_not_take_code_namespace():
+    """Only a merged item can gain resolvable codes from a status event. A live item's
+    status change leaves the namespace lock alone, so callers that already hold item row
+    locks never take the company lock after them."""
+    from celerp.events.engine import _touches_physical_codes
+
+    live = {"status": "available", "barcode": "123"}
+    assert not _touches_physical_codes(live, "item.status.set", {"new_status": "sold"})
+    assert not _touches_physical_codes(live, "item.status.set", {"new_status": "merged"})
+    merged = {"status": "merged", "barcode": "123"}
+    assert _touches_physical_codes(merged, "item.status.set", {"new_status": "available"})
+    assert _touches_physical_codes(live, "item.updated", {"fields_changed": {"barcode": "456"}})

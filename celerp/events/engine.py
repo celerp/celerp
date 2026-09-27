@@ -208,6 +208,10 @@ def _touches_physical_codes(state: dict, event_type: str, data: dict) -> bool:
         for field in PHYSICAL_CODE_FIELDS
     ):
         return True
+    # A status change on a live item can only drop its codes from resolution, never
+    # add one, so only an item in an excluded status needs the probe (and the lock).
+    if str(state.get("status") or "").lower() not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
+        return False
     excluded = next(iter(PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES))
     try:
         probe = ProjectionEngine._apply({**state, "status": excluded}, event_type, data)
@@ -297,7 +301,7 @@ async def emit_event(
         )
 
         key = (kwargs["company_id"], kwargs["entity_id"])
-        previous = await session.get(Projection, key)
+        previous = await session.get(Projection, key, populate_existing=True)
         if previous is not None and previous.entity_type == "item":
             previous_item_state = deepcopy(previous.state or {})
         check_codes = _touches_physical_codes(

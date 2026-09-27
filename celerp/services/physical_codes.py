@@ -48,6 +48,10 @@ async def lock_item_code_namespace(session: AsyncSession, company_id) -> None:
     aborting one with a deadlock (40P01). FOR NO KEY UPDATE does not conflict with
     KEY SHARE, so the upgrade never happens, while it still conflicts with another
     FOR NO KEY UPDATE, keeping physical-code writers serialized for every module.
+
+    Canonical lock order: when a transaction also needs item Projection row locks,
+    take this namespace lock first, then lock the Projection rows. Never acquire this
+    lock after SELECT ... FOR UPDATE on an item Projection.
     """
     await session.execute(
         select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
