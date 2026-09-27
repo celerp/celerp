@@ -13,7 +13,6 @@ import uuid
 
 import pytest
 
-from sqlalchemy import text
 
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
@@ -23,15 +22,11 @@ from celerp_inventory.routes import (
     resolve_items_by_codes,
 )
 
-# The EPC partial unique index name (mirrors celerp.inventory_codes.RFID_EPC_UNIQUE_INDEX).
-# Named by literal rather than import so this proof collects at the pre-change tree, where
-# the constant does not yet exist, and each case reds on the absent resolver behaviour.
-_RFID_EPC_UNIQUE_INDEX = "uq_projection_company_item_rfid_epc"
-
-
-async def _emit(session, cid, eid, data):
+async def _emit(session, cid, eid, data, *, legacy=False):
+    """``legacy`` records the codes as given, the import / connector shape that can hold a
+    duplicate physical code (a normal write refuses one)."""
     await emit_event(
-        session, company_id=cid, entity_id=eid, entity_type="item",
+        session, preserve_external_code_conflicts=legacy, company_id=cid, entity_id=eid, entity_type="item",
         event_type="item.created", data=data, actor_id=None, location_id=None,
         source="test", idempotency_key=str(uuid.uuid4()), metadata_={},
     )
@@ -57,7 +52,7 @@ async def test_resolve_precedence_barcode_epc_gtin_sku(session):
     sku. GTIN values are 8 digits (a valid GTIN length)."""
     cid = await _seed(session, "PrecedenceCo")
     await _emit(session, cid, "item:x", {"sku": "X", "name": "X", "quantity": 1, "barcode": "55501"})
-    await _emit(session, cid, "item:y", {"sku": "Y", "name": "Y", "quantity": 1, "barcode": "55502", "rfid_epc": "55501"})
+    await _emit(session, cid, "item:y", {"sku": "Y", "name": "Y", "quantity": 1, "barcode": "55502", "rfid_epc": "55501"}, legacy=True)
     await _emit(session, cid, "item:p", {"sku": "P", "name": "P", "quantity": 1, "barcode": "66600", "rfid_epc": "66601066"})
     await _emit(session, cid, "item:q", {"sku": "Q", "name": "Q", "quantity": 1, "barcode": "66609", "gtin": "66601066"})
     await _emit(session, cid, "item:r", {"sku": "R", "name": "R", "quantity": 1, "barcode": "77700", "gtin": "77701077"})
@@ -97,7 +92,7 @@ async def test_resolve_cross_field_barcode_epc_fails_closed(session):
     item:A, so duplicate_physical is False and one is item:A."""
     cid = await _seed(session, "CrossFieldCo")
     await _emit(session, cid, "item:A", {"sku": "CA", "name": "CA", "quantity": 1, "barcode": "70707070"})
-    await _emit(session, cid, "item:B", {"sku": "CB", "name": "CB", "quantity": 1, "rfid_epc": "70707070"})
+    await _emit(session, cid, "item:B", {"sku": "CB", "name": "CB", "quantity": 1, "rfid_epc": "70707070"}, legacy=True)
     await ProjectionEngine.rebuild(session)
 
     single = await resolve_item_by_code(session, cid, "70707070")
@@ -204,17 +199,13 @@ async def test_resolve_legacy_barcode_like_gtin_still_barcode(session):
 @pytest.mark.asyncio
 async def test_resolve_epc_duplicate_fails_closed(session):
     """Two different items sharing one rfid_epc fail closed: kind "rfid_epc", no
-    silent pick, and the physical-duplicate flag set. The current schema's EPC
-    partial unique index forbids seeding that pair directly, so it is dropped for
-    the duration of this test's rolled-back transaction - the legacy/import shape
-    the resolver guard targets (unreachable through create, which refuses a
-    duplicate EPC). RED at merge base: no rfid_epc branch (kind "none") and no
-    duplicate_physical property, so the assertions and attribute access fail
-    inside the test body."""
-    await session.execute(text(f"DROP INDEX IF EXISTS {_RFID_EPC_UNIQUE_INDEX}"))
+    silent pick, and the physical-duplicate flag set. The pair is seeded in the
+    import shape, which records codes as given - the legacy/import shape the
+    resolver guard targets (unreachable through create, which refuses a duplicate
+    EPC)."""
     cid = await _seed(session, "EpcDupCo")
     await _emit(session, cid, "item:d1", {"sku": "D1", "name": "D1", "quantity": 1, "barcode": "22201", "rfid_epc": "DUPEPC"})
-    await _emit(session, cid, "item:d2", {"sku": "D2", "name": "D2", "quantity": 1, "barcode": "22202", "rfid_epc": "DUPEPC"})
+    await _emit(session, cid, "item:d2", {"sku": "D2", "name": "D2", "quantity": 1, "barcode": "22202", "rfid_epc": "DUPEPC"}, legacy=True)
     await ProjectionEngine.rebuild(session)
 
     res = await resolve_item_by_code(session, cid, "DUPEPC")

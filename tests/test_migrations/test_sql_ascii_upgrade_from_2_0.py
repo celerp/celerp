@@ -171,7 +171,7 @@ def test_sql_ascii_2_0_database_migrates_to_head_without_json_expression_indexes
                 assert _index_names(conn).isdisjoint(forbidden)
 
                 # main.py calls create_all on every boot. Existing tables must
-                # not cause SQLAlchemy to recreate the intentionally skipped indexes.
+                # not cause SQLAlchemy to recreate the removed indexes.
                 Base.metadata.create_all(conn, tables=[Projection.__table__])
                 assert _index_names(conn).isdisjoint(forbidden)
 

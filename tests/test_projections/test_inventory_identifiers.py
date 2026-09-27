@@ -230,15 +230,6 @@ async def test_rfid_epc_company_isolated(_db_engine):
         await _cleanup(factory, [c1, c2])
 
 
-def test_rfid_epc_unique_index_declared():
-    """The projection model declares the rfid_epc unique index.
-
-    Red at merge-base: only the barcode unique index is declared on the
-    Projection table."""
-    names = {ix.name for ix in Projection.__table__.indexes}
-    assert "uq_projection_company_item_rfid_epc" in names
-
-
 # --- cross-field identifier collision (HTTP) --------------------------------
 
 
@@ -346,14 +337,11 @@ async def test_rfid_epc_case_variant_duplicate_rejected_409(client):
 
 
 @pytest.mark.asyncio
-async def test_import_cross_field_barcode_epc_collision_skipped(client):
-    """A batch-import row may not claim, as its rfid_epc, a value already held as
-    another item's barcode within the company: the row is skipped with an error and
-    never created, so the barcode's owner stays the only holder of the code.
-
-    Red at head b764c0da: batch_import_items emits rec.data verbatim with no shared
-    namespace check, so the colliding row is created and the code then belongs to two
-    items."""
+async def test_import_cross_field_barcode_epc_collision_recorded(client):
+    """A batch-import row whose rfid_epc equals another item's barcode is imported
+    as-is so source data is never dropped. The shared code is then reported as a
+    duplicate by the resolver (covered in test_barcode_unique) instead of silently
+    picking one item."""
     t = await _register(client)
 
     a = await client.post(
@@ -381,18 +369,16 @@ async def test_import_cross_field_barcode_epc_collision_skipped(client):
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["created"] == 0, body
-    assert body["skipped"] == 1, body
-    assert body["errors"], body
-
-    # The barcode still belongs only to item A; nothing holds it as an rfid_epc.
-    by_barcode = await client.get("/items", headers=_h(t), params={"barcode": "5901299"})
-    assert by_barcode.status_code == 200, by_barcode.text
-    assert {i["sku"] for i in by_barcode.json()["items"]} == {"IMP-A"}, by_barcode.json()
+    assert body["created"] == 1, body
+    assert body["skipped"] == 0, body
 
     by_epc = await client.get("/items", headers=_h(t), params={"rfid_epc": "5901299"})
     assert by_epc.status_code == 200, by_epc.text
-    assert by_epc.json()["items"] == [], by_epc.json()
+    assert {i["sku"] for i in by_epc.json()["items"]} == {"IMP-B"}, by_epc.json()
+
+    by_barcode = await client.get("/items", headers=_h(t), params={"barcode": "5901299"})
+    assert by_barcode.status_code == 200, by_barcode.text
+    assert {i["sku"] for i in by_barcode.json()["items"]} == {"IMP-A"}, by_barcode.json()
 
 
 @pytest.mark.asyncio

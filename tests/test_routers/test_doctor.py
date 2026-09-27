@@ -110,7 +110,7 @@ async def test_doctor_all_checks_run(client, session):
     r = await client.post("/admin/doctor", headers=_h(token))
     assert r.status_code == 200
     data = r.json()
-    assert len(data["results"]) == 11
+    assert len(data["results"]) == 12
     check_names = [c["check"] for c in data["results"]]
     assert "missing_jes" in check_names
     assert "duplicate_jes" in check_names
@@ -120,6 +120,7 @@ async def test_doctor_all_checks_run(client, session):
     assert "unbalanced_jes" in check_names
     assert "zero_amount_jes" in check_names
     assert "fractional_piece_quantities" in check_names
+    assert "physical_code_conflicts" in check_names
 
 
 @pytest.mark.asyncio
@@ -1010,6 +1011,69 @@ async def test_fractional_piece_quantities_detects_item_and_doc(client, session)
     result2 = next(c for c in r2.json()["results"] if c["check"] == "fractional_piece_quantities")
     assert result2["fixed"] == 0
     assert result2["found"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_physical_code_conflicts_clean(client, session):
+    """Distinct barcodes -> found=0."""
+    token = await _register(client)
+    h = _h(token)
+    for sku, barcode in (("PCC-1", "810001"), ("PCC-2", "810002")):
+        r = await client.post("/items", headers=h, json={"sku": sku, "name": sku, "quantity": 1, "sell_by": "piece", "barcode": barcode})
+        assert r.status_code == 200
+
+    r = await client.post("/admin/doctor?checks=physical_code_conflicts", headers=h)
+    assert r.status_code == 200
+    result = next(c for c in r.json()["results"] if c["check"] == "physical_code_conflicts")
+    assert result["found"] == 0
+    assert result["auto_fixable"] is False
+
+
+@pytest.mark.asyncio
+async def test_physical_code_conflicts_detects_shared_codes_report_only(client, session):
+    """A barcode on two items and a value held as one item's barcode and another's
+    RFID / EPC are listed; a merged item is not a holder; fix mode changes nothing."""
+    from celerp.events.engine import emit_event
+
+    token = await _register(client)
+    h = _h(token)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=h)).json()["id"])
+    seeds = {
+        "item:pcc-a": {"barcode": "820001"},
+        "item:pcc-b": {"barcode": "820001"},
+        "item:pcc-m": {"barcode": "820001", "status": "merged"},
+        "item:pcc-c": {"barcode": "820002"},
+        "item:pcc-d": {"rfid_epc": "820002"},
+    }
+    for eid, codes in seeds.items():
+        await emit_event(
+            session, preserve_external_code_conflicts=True, company_id=company_id,
+            entity_id=eid, entity_type="item", event_type="item.created",
+            data={"sku": eid, "name": eid, "quantity": 1, **codes},
+            actor_id=None, location_id=None, source="test",
+            idempotency_key=f"pcc-{uuid.uuid4().hex}", metadata_={},
+        )
+    await session.commit()
+
+    expected = [
+        {"code": "820001", "items": [
+            {"entity_id": "item:pcc-a", "fields": ["barcode"]},
+            {"entity_id": "item:pcc-b", "fields": ["barcode"]},
+        ]},
+        {"code": "820002", "items": [
+            {"entity_id": "item:pcc-c", "fields": ["barcode"]},
+            {"entity_id": "item:pcc-d", "fields": ["rfid_epc"]},
+        ]},
+    ]
+    for query in ("", "&fix=true"):
+        r = await client.post(f"/admin/doctor?checks=physical_code_conflicts{query}", headers=h)
+        assert r.status_code == 200
+        result = next(c for c in r.json()["results"] if c["check"] == "physical_code_conflicts")
+        assert result["found"] == 2
+        assert result["fixed"] == 0
+        assert result["details"] == expected
+
+    assert (await client.get("/items/item:pcc-b", headers=h)).json()["barcode"] == "820001"
 
 
 @pytest.mark.asyncio

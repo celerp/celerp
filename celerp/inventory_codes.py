@@ -7,9 +7,10 @@ The SKU/barcode invariants live here so the event boundary (celerp.events.schema
 the interactive inventory routes, the allocation service, and the scanner all share
 the exact same rules. A comma is Celerp's OR operator in the SKU/search syntax, so a
 SKU may never contain one (it would split into separate codes wherever SKUs are
-matched). A barcode is a numeric physical-lot identifier and must be unique per
-company - enforced at the event boundary (format) and by a partial unique index on
-the projections table (uniqueness).
+matched). A barcode is a numeric physical-lot identifier. Format is enforced at the
+event boundary schema; physical-code uniqueness is enforced when a write introduces
+a code (celerp.services.physical_codes), never by a database index, so existing
+duplicate data can always be upgraded and then resolved by the user.
 """
 
 from __future__ import annotations
@@ -26,20 +27,14 @@ MAX_RFID_EPC_LEN = 255
 GTIN_LENGTHS = frozenset({8, 12, 13, 14})
 MAX_SCAN_CODE_LEN = max(MAX_BARCODE_LEN, MAX_SKU_LEN, MAX_RFID_EPC_LEN)
 
-# Barcode uniqueness applies to operationally resolvable items. A historical merged
-# source deliberately retains its barcode but is excluded by the resolver, so the DB
-# backstop excludes that one status too. The legacy name is kept during upgrades so
-# bc0 can replace an already-created all-status index safely.
+# Statuses whose items no longer resolve by physical code. A merged source keeps its
+# codes for history but is excluded by the resolver and by Doctor's conflict report.
+PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES = frozenset({"merged"})
+# Names of the physical-code unique indexes earlier releases created. Uniqueness is no
+# longer an index; the names remain so migrations can drop them and so a stale index
+# left on a database still surfaces as a 409 instead of a 500.
 LEGACY_BARCODE_UNIQUE_INDEX = "uq_projection_company_item_barcode"
 BARCODE_UNIQUE_INDEX = "uq_projection_company_resolvable_item_barcode"
-BARCODE_UNIQUE_WHERE = (
-    "entity_type = 'item' "
-    "AND NULLIF(state ->> 'barcode', '') IS NOT NULL "
-    "AND lower(COALESCE(state ->> 'status', '')) <> 'merged'"
-)
-# Partial unique index enforcing at-most-one item per (company, rfid_epc). Mirrors the
-# barcode index: declared on the Projection model for create_all and created on existing
-# databases by the EPC-uniqueness migration.
 RFID_EPC_UNIQUE_INDEX = "uq_projection_company_item_rfid_epc"
 
 SKU_COMMA_MESSAGE = "SKU cannot contain a comma"
@@ -144,11 +139,11 @@ class CodeConflictError(Exception):
 
 
 class BarcodeConflictError(CodeConflictError):
-    """A write violated the (company, item, barcode) uniqueness invariant.
+    """A write introduced a barcode another item in the company already holds.
 
-    Raised by the projection applier when the DB unique index rejects an insert - the
-    final defense for any writer that bypasses the application lock (imports,
-    connectors, a future writer). The API layer maps it to 409.
+    Raised by the event boundary's physical-code check (or by the projection applier if
+    a stale unique index from an earlier release rejects a write). The API layer maps
+    it to 409.
     """
 
     def __init__(self, barcode: str | None = None):
@@ -159,11 +154,9 @@ class BarcodeConflictError(CodeConflictError):
 
 
 class RfidEpcConflictError(CodeConflictError):
-    """A write violated the (company, item, rfid_epc) uniqueness invariant.
+    """A write introduced an RFID / EPC another item in the company already holds.
 
-    Mirrors BarcodeConflictError: raised by the projection applier when the DB unique
-    index rejects an insert, the final defense for any writer that bypasses the
-    application lock. The API layer maps it to 409.
+    Mirrors BarcodeConflictError. The API layer maps it to 409.
     """
 
     def __init__(self, code: str | None = None):
@@ -174,7 +167,11 @@ class RfidEpcConflictError(CodeConflictError):
 
 
 def is_barcode_unique_violation(exc: Exception) -> bool:
-    """True when an IntegrityError is a barcode unique-index violation (not the PK race)."""
+    """True when an IntegrityError is a stale barcode unique-index violation (not the PK race).
+
+    Current schemas carry no such index; this keeps a database that still has one
+    (an unfinished upgrade, a stale test database) answering 409 rather than 500.
+    """
     names = (BARCODE_UNIQUE_INDEX, LEGACY_BARCODE_UNIQUE_INDEX)
     orig = getattr(exc, "orig", None)
     if getattr(orig, "constraint_name", None) in names:
@@ -184,7 +181,7 @@ def is_barcode_unique_violation(exc: Exception) -> bool:
 
 
 def is_rfid_epc_unique_violation(exc: Exception) -> bool:
-    """True when an IntegrityError is the rfid_epc unique-index violation (not the PK race)."""
+    """True when an IntegrityError is a stale rfid_epc unique-index violation (not the PK race)."""
     orig = getattr(exc, "orig", None)
     if getattr(orig, "constraint_name", None) == RFID_EPC_UNIQUE_INDEX:
         return True

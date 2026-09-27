@@ -677,25 +677,24 @@ async def test_list_patch_line_items_replacement_requires_version(client):
 @pytest.mark.asyncio
 async def test_scan_list_barcode_ignores_merged_source(client, session):
     """Defect A end to end: a live lot and a historical `merged` source share a barcode. On a current
-    database that pair is unreachable - create and merge both mint or refuse a barcode, and the partial
-    unique index forbids it - so it is reproduced as legacy data by dropping that index (for this
-    rolled-back transaction only) and injecting the merged source's events directly. Scanning the
-    barcode adds the live lot and never trips the duplicate-barcode error."""
+    database that pair is unreachable - create and merge both mint or refuse a barcode - so it is
+    reproduced as legacy data by injecting the merged source's events in the import shape, which
+    records codes as given. Scanning the barcode adds the live lot and never trips the
+    duplicate-barcode error."""
     import uuid as _uuid
-    from sqlalchemy import select, text
+    from sqlalchemy import select
     from celerp.events.engine import emit_event
-    from celerp.inventory_codes import BARCODE_UNIQUE_INDEX
     from celerp.models.company import Company
     from celerp.projections.engine import ProjectionEngine
 
     t = await _register(client)
-    await session.execute(text(f"DROP INDEX IF EXISTS {BARCODE_UNIQUE_INDEX}"))
     loc = await _location(client, t)
     live = await _item(client, t, "LIVE", loc=loc, qty=5, barcode="790900")
 
     cid = (await session.execute(select(Company))).scalars().first().id
     await emit_event(
-        session, company_id=cid, entity_id="item:merged-src", entity_type="item",
+        session, preserve_external_code_conflicts=True,
+        company_id=cid, entity_id="item:merged-src", entity_type="item",
         event_type="item.created",
         data={"sku": "SRC", "name": "Src lot", "quantity": 0, "barcode": "790900", "sell_by": "piece"},
         actor_id=None, location_id=None, source="test", idempotency_key=str(_uuid.uuid4()), metadata_={},

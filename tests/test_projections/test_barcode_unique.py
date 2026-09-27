@@ -1,14 +1,14 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""The projection barcode unique index is the final defense: a write that reaches the
-applier with a barcode already used by another item in the company is rejected as a
-BarcodeConflictError (not swallowed as a projection primary-key race).
+"""Physical-code uniqueness at the event boundary: a write that INTRODUCES a barcode or
+RFID / EPC another item in the company already holds is rejected as a conflict, while
+a duplicate already present in the data never blocks unrelated edits and can be
+resolved by moving one holder to a fresh code. Imports and connectors record the
+source system's codes as given; the resolver then reports the duplicate.
 
 These use independent sessions bound to the shared engine with real commits (not the
-savepoint session), so the first item is durably visible to the second write and the
-DB unique index fires deterministically - the constraint is a property of committed
-rows, which a single rolled-back savepoint transaction cannot exercise faithfully."""
+savepoint session), so the first item is durably visible to the second write."""
 
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ import pytest
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from celerp.events.engine import emit_event
-from celerp.inventory_codes import BarcodeConflictError
+from celerp.events.engine import connector_upsert, emit_event
+from celerp.inventory_codes import BarcodeConflictError, RfidEpcConflictError
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -75,13 +75,13 @@ async def test_duplicate_barcode_in_company_raises_conflict(_db_engine):
         await _cleanup(factory, [company_id])
 
 
-def _update_kwargs(company_id, entity_id, barcode):
+def _update_kwargs(company_id, entity_id, barcode=None, *, field="barcode", value=None):
     return dict(
         company_id=company_id,
         entity_id=entity_id,
         entity_type="item",
         event_type="item.updated",
-        data={"fields_changed": {"barcode": {"new": barcode}}},
+        data={"fields_changed": {field: {"new": barcode if value is None else value}}},
         actor_id=None,
         location_id=None,
         source="test",
@@ -94,8 +94,7 @@ def _update_kwargs(company_id, entity_id, barcode):
 async def test_update_to_taken_barcode_raises_conflict(_db_engine):
     """Changing an existing item's barcode to one another item already holds is
     rejected as a BarcodeConflictError from the UPDATE applier, not swallowed as a
-    500 at the outer commit. The barcode unique index covers updates, not only the
-    first insert."""
+    500 at the outer commit. The check covers updates, not only the first insert."""
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
     company_id = uuid.uuid4()
     try:
@@ -154,5 +153,114 @@ async def test_empty_and_absent_barcodes_do_not_collide(_db_engine):
         async with factory() as s:
             for eid in ("item:1", "item:2", "item:3"):
                 assert await s.get(Projection, {"company_id": company_id, "entity_id": eid}) is not None
+    finally:
+        await _cleanup(factory, [company_id])
+
+
+async def _company(factory, name):
+    cid = uuid.uuid4()
+    async with factory() as s:
+        s.add(Company(id=cid, name=name, slug=f"{name.lower()}-{cid.hex[:8]}"))
+        await s.commit()
+    return cid
+
+
+async def _resolve(factory, company_id, code):
+    from celerp_inventory.routes import resolve_item_by_code
+
+    async with factory() as s:
+        return await resolve_item_by_code(s, company_id, code)
+
+
+@pytest.mark.asyncio
+async def test_barcode_and_rfid_share_one_namespace(_db_engine):
+    """A value held as one item's barcode cannot become another item's RFID / EPC, and
+    the reverse, on create or update."""
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _company(factory, "XF")
+    try:
+        async with factory() as s:
+            await emit_event(s, **_item_kwargs(company_id, "item:1", "A", "30001"))
+            await emit_event(s, **_item_kwargs(company_id, "item:2", "B", "67890"))
+            await s.commit()
+
+        async with factory() as s:
+            with pytest.raises(RfidEpcConflictError):
+                await emit_event(s, **_update_kwargs(company_id, "item:2", field="rfid_epc", value="30001"))
+            await s.rollback()
+
+        async with factory() as s:
+            kwargs = _item_kwargs(company_id, "item:3", "C")
+            kwargs["data"]["rfid_epc"] = "67890"
+            with pytest.raises(RfidEpcConflictError):
+                await emit_event(s, **kwargs)
+            await s.rollback()
+    finally:
+        await _cleanup(factory, [company_id])
+
+
+@pytest.mark.asyncio
+async def test_existing_duplicate_is_grandfathered_and_can_be_resolved(_db_engine):
+    """Two items that already share a barcode (older data, an import, a connector) stay
+    editable: an unrelated edit to either succeeds, moving one to a fresh code succeeds
+    and heals the lookup, and a third item still cannot claim the shared code."""
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _company(factory, "GF")
+    try:
+        async with factory() as s:
+            await emit_event(s, **_item_kwargs(company_id, "item:a", "A", "7508"))
+            await emit_event(
+                s, preserve_external_code_conflicts=True,
+                **_item_kwargs(company_id, "item:b", "B", "7508"),
+            )
+            await emit_event(s, **_item_kwargs(company_id, "item:c", "C", "7509"))
+            await s.commit()
+        assert (await _resolve(factory, company_id, "7508")).duplicate_physical
+
+        async with factory() as s:
+            await emit_event(s, **_update_kwargs(company_id, "item:a", field="name", value="Renamed"))
+            await s.commit()
+
+        async with factory() as s:
+            await emit_event(s, **_update_kwargs(company_id, "item:a", "7510"))
+            await s.commit()
+
+        async with factory() as s:
+            with pytest.raises(BarcodeConflictError):
+                await emit_event(s, **_update_kwargs(company_id, "item:c", "7508"))
+            await s.rollback()
+
+        assert (await _resolve(factory, company_id, "7508")).one.entity_id == "item:b"
+        assert (await _resolve(factory, company_id, "7510")).one.entity_id == "item:a"
+    finally:
+        await _cleanup(factory, [company_id])
+
+
+@pytest.mark.asyncio
+async def test_connector_records_duplicate_barcodes_and_update_heals_lookup(_db_engine):
+    """A connector sync whose platform holds the same barcode on two products records
+    both; the resolver reports the duplicate, and a later sync that changes one
+    product's barcode resolves it."""
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _company(factory, "CN")
+
+    async def _sync(idem_key, sku, barcode):
+        async with factory() as s:
+            outcome = await connector_upsert(
+                s, company_id=company_id, entity_type="item", event_type="item.created",
+                idem_key=idem_key, data={"sku": sku, "name": sku, "quantity": 1, "barcode": barcode},
+            )
+            await s.commit()
+        return outcome
+
+    try:
+        assert await _sync("p1", "A", "7508") == "created"
+        assert await _sync("p2", "B", "7508") == "created"
+        res = await _resolve(factory, company_id, "7508")
+        assert res.duplicate_physical and len(res.matches) == 2
+
+        assert await _sync("p1", "A", "7510") == "updated"
+        assert (await _resolve(factory, company_id, "7508")).one.entity_id == "item:p2"
+        assert (await _resolve(factory, company_id, "7510")).one.entity_id == "item:p1"
     finally:
         await _cleanup(factory, [company_id])

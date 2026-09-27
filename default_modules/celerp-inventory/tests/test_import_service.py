@@ -276,6 +276,39 @@ async def test_upsert_repeated_sku_requires_barcode_to_choose_lot(session):
 
 
 @pytest.mark.asyncio
+async def test_import_records_duplicate_barcodes_and_edit_resolves_them(session):
+    """An import whose file carries the same barcode on two rows records both lots as
+    given; the resolver reports the duplicate instead of picking one, and moving one lot
+    to a fresh barcode through a normal edit resolves the lookup."""
+    from celerp.events.engine import emit_event
+    from celerp_inventory.routes import resolve_item_by_code
+
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    rows = [
+        {"name": "Lot A", "sku": "DUP-A", "barcode": "7508", "sell_by": "piece", "pieces": "1"},
+        {"name": "Lot B", "sku": "DUP-B", "barcode": "7508", "sell_by": "piece", "pieces": "1"},
+    ]
+    result = await import_items(
+        session, company_id, user_id, "admin", {}, rows, upsert=False,
+        filename=None, idempotency_key="dup-barcode-batch",
+    )
+    assert result.created == 2
+    res = await resolve_item_by_code(session, company_id, "7508")
+    assert res.duplicate_physical and len(res.matches) == 2
+
+    lot_a = next(i for i in await _item_projections(session, company_id) if i.state["sku"] == "DUP-A")
+    await emit_event(
+        session, company_id=company_id, entity_id=lot_a.entity_id, entity_type="item",
+        event_type="item.updated", data={"fields_changed": {"barcode": {"new": "7510"}}},
+        actor_id=user_id, location_id=None, source="test",
+        idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    assert (await resolve_item_by_code(session, company_id, "7508")).one.state["sku"] == "DUP-B"
+    assert (await resolve_item_by_code(session, company_id, "7510")).one.entity_id == lot_a.entity_id
+
+
+@pytest.mark.asyncio
 async def test_exact_create_replay_uses_content_identity(session):
     company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
     rows = [{"name": "Replay Item", "sku": "REPLAY-1", "sell_by": "piece", "pieces": "1"}]
