@@ -309,6 +309,40 @@ async def test_import_records_duplicate_barcodes_and_edit_resolves_them(session)
 
 
 @pytest.mark.asyncio
+async def test_upsert_on_shared_barcode_never_picks_arbitrarily(session):
+    """An upsert row whose barcode several items share patches only the holder its SKU
+    identifies; without a distinguishing SKU the row fails instead of patching an
+    arbitrary item."""
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    seed = [
+        {"name": "Lot A", "sku": "SHR-A", "barcode": "7508", "sell_by": "piece", "pieces": "1"},
+        {"name": "Lot B", "sku": "SHR-B", "barcode": "7508", "sell_by": "piece", "pieces": "1"},
+    ]
+    assert (await import_items(
+        session, company_id, user_id, "admin", {}, seed, upsert=False,
+        filename=None, idempotency_key="shared-barcode-seed",
+    )).created == 2
+
+    ambiguous = await build_import_records(
+        session, company_id,
+        [{"name": "Renamed", "barcode": "7508", "sell_by": "piece"},
+         {"name": "Renamed", "sku": "OTHER", "barcode": "7508", "sell_by": "piece"}],
+        upsert=True, dry_run=True,
+    )
+    assert ambiguous.records == []
+    assert [(e["row"], e["field"]) for e in ambiguous.errors] == [(1, "barcode"), (2, "barcode")]
+
+    chosen = await import_items(
+        session, company_id, user_id, "admin", {},
+        [{"name": "Lot B renamed", "sku": "SHR-B", "barcode": "7508", "sell_by": "piece"}],
+        upsert=True, filename=None, idempotency_key=None,
+    )
+    assert chosen.updated == 1
+    names = {i.state["sku"]: i.state["name"] for i in await _item_projections(session, company_id)}
+    assert names == {"SHR-A": "Lot A", "SHR-B": "Lot B renamed"}
+
+
+@pytest.mark.asyncio
 async def test_exact_create_replay_uses_content_identity(session):
     company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
     rows = [{"name": "Replay Item", "sku": "REPLAY-1", "sell_by": "piece", "pieces": "1"}]

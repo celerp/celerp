@@ -264,3 +264,86 @@ async def test_connector_records_duplicate_barcodes_and_update_heals_lookup(_db_
         assert (await _resolve(factory, company_id, "7510")).one.entity_id == "item:p1"
     finally:
         await _cleanup(factory, [company_id])
+
+
+def _status_kwargs(company_id, entity_id, new_status):
+    return dict(
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.status.set",
+        data={"new_status": new_status},
+        actor_id=None,
+        location_id=None,
+        source="test",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_reactivating_merged_item_checks_its_codes(_db_engine):
+    """A merged item does not resolve by its codes, so returning it to a live status
+    introduces them again: rejected while another live item holds the code, allowed
+    once the code is free. Moving a live holder to merged is always allowed."""
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _company(factory, "RM")
+    try:
+        async with factory() as s:
+            await emit_event(s, **_item_kwargs(company_id, "item:a", "A", "7508"))
+            await emit_event(
+                s, **_item_kwargs(company_id, "item:b", "B", "7508"),
+                preserve_external_code_conflicts=True,
+            )
+            await emit_event(s, **_status_kwargs(company_id, "item:b", "merged"))
+            await s.commit()
+        assert (await _resolve(factory, company_id, "7508")).one.entity_id == "item:a"
+
+        async with factory() as s:
+            with pytest.raises(BarcodeConflictError):
+                await emit_event(s, **_status_kwargs(company_id, "item:b", "available"))
+            await s.rollback()
+        assert (await _resolve(factory, company_id, "7508")).one.entity_id == "item:a"
+
+        async with factory() as s:
+            await emit_event(s, **_status_kwargs(company_id, "item:a", "merged"))
+            await s.commit()
+        async with factory() as s:
+            # Two merged holders: B's code is still held by A's history, so it stays
+            # rejected rather than re-issued.
+            with pytest.raises(BarcodeConflictError):
+                await emit_event(s, **_status_kwargs(company_id, "item:b", "available"))
+            await s.rollback()
+        async with factory() as s:
+            await emit_event(s, **_update_kwargs(company_id, "item:a", "7599"))
+            await emit_event(s, **_status_kwargs(company_id, "item:b", "available"))
+            await s.commit()
+        assert (await _resolve(factory, company_id, "7508")).one.entity_id == "item:b"
+    finally:
+        await _cleanup(factory, [company_id])
+
+
+@pytest.mark.asyncio
+async def test_boundary_rereads_item_changed_after_it_was_loaded(_db_engine):
+    """The availability check reads the committed item under the namespace lock, not a
+    copy the writing session loaded before another writer changed it. Otherwise a code
+    the item no longer holds looks unchanged and is written back as a duplicate."""
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _company(factory, "SR")
+    try:
+        async with factory() as s:
+            await emit_event(s, **_item_kwargs(company_id, "item:a", "A", "100"))
+            await s.commit()
+        async with factory() as stale:
+            cached = await stale.get(Projection, (company_id, "item:a"))
+            assert cached.state["barcode"] == "100"
+            async with factory() as other:
+                await emit_event(other, **_update_kwargs(company_id, "item:a", "200"))
+                await emit_event(other, **_item_kwargs(company_id, "item:c", "C", "100"))
+                await other.commit()
+            with pytest.raises(BarcodeConflictError):
+                await emit_event(stale, **_update_kwargs(company_id, "item:a", "100"))
+            await stale.rollback()
+        assert (await _resolve(factory, company_id, "100")).one.entity_id == "item:c"
+    finally:
+        await _cleanup(factory, [company_id])

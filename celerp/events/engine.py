@@ -191,15 +191,29 @@ async def connector_upsert(
     return "updated" if existing_id else "created"
 
 
-def _touches_physical_codes(data: dict) -> bool:
-    """True when an item event's data can set a barcode or RFID / EPC, by data shape."""
+def _touches_physical_codes(state: dict, event_type: str, data: dict) -> bool:
+    """True when an item event can change which physical codes the item resolves by.
+
+    That is any event setting a barcode or RFID / EPC, by data shape, or any event
+    that moves an item out of a status excluded from resolution (merged back to
+    available, say), probed by applying the event to the item in an excluded status.
+    A probe that cannot be evaluated counts as touching, so the check still runs.
+    """
+    from celerp.inventory_codes import PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
     from celerp.services.physical_codes import PHYSICAL_CODE_FIELDS
 
     changed = data.get("fields_changed")
-    return any(
+    if any(
         field in data or (isinstance(changed, dict) and field in changed)
         for field in PHYSICAL_CODE_FIELDS
-    )
+    ):
+        return True
+    excluded = next(iter(PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES))
+    try:
+        probe = ProjectionEngine._apply({**state, "status": excluded}, event_type, data)
+    except Exception:
+        return True
+    return str(probe.get("status") or "").lower() not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 
 
 async def emit_event(
@@ -282,14 +296,25 @@ async def emit_event(
             lock_item_code_namespace,
         )
 
-        check_codes = _touches_physical_codes(kwargs["data"]) and await find_event_by_idempotency(
+        key = (kwargs["company_id"], kwargs["entity_id"])
+        previous = await session.get(Projection, key)
+        if previous is not None and previous.entity_type == "item":
+            previous_item_state = deepcopy(previous.state or {})
+        check_codes = _touches_physical_codes(
+            previous_item_state or {}, kwargs["event_type"], kwargs["data"]
+        ) and await find_event_by_idempotency(
             session, kwargs["company_id"], kwargs.get("idempotency_key")
         ) is None
         if check_codes:
             await lock_item_code_namespace(session, kwargs["company_id"])
-        previous = await session.get(Projection, (kwargs["company_id"], kwargs["entity_id"]))
-        if previous is not None and previous.entity_type == "item":
-            previous_item_state = deepcopy(previous.state or {})
+            # Under the lock the check must see the committed row, not the copy the
+            # identity map held from before another writer changed it.
+            previous = await session.get(Projection, key, populate_existing=True)
+            previous_item_state = (
+                deepcopy(previous.state or {})
+                if previous is not None and previous.entity_type == "item"
+                else None
+            )
         if check_codes and not preserve_external_code_conflicts:
             after = ProjectionEngine._apply(
                 previous_item_state or {}, kwargs["event_type"], kwargs["data"]

@@ -12,7 +12,11 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event, find_event_by_idempotency
-from celerp.inventory_codes import validate_barcode, validate_rfid_epc
+from celerp.inventory_codes import (
+    PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
+    validate_barcode,
+    validate_rfid_epc,
+)
 from celerp.models.company import Company, Location
 from celerp.models.projections import Projection
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
@@ -1576,9 +1580,11 @@ async def build_import_records(
     unit_map = build_unit_map(units)
 
     # Resolve upsert targets once for the batch. Barcode is a physical-lot
-    # identity. SKU is intentionally non-unique and is usable only when exactly
+    # identity, but older data and imports can leave one barcode on several items,
+    # so every resolvable holder is kept and a shared barcode never picks one
+    # arbitrarily. SKU is intentionally non-unique and is usable only when exactly
     # one current item has it.
-    by_barcode: dict[str, Projection] = {}
+    by_barcode: dict[str, list[Projection]] = {}
     by_sku: dict[str, list[Projection]] = {}
     if upsert:
         barcodes = {str(r.get("barcode") or "").strip() for r in rows} - {""}
@@ -1600,8 +1606,9 @@ async def build_import_records(
                 state = proj.state or {}
                 barcode = str(state.get("barcode") or "").strip()
                 sku = str(state.get("sku") or "").strip()
-                if barcode:
-                    by_barcode[barcode] = proj
+                status = str(state.get("status") or "").lower()
+                if barcode and status not in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
+                    by_barcode.setdefault(barcode, []).append(proj)
                 if sku:
                     by_sku.setdefault(sku, []).append(proj)
 
@@ -1618,9 +1625,28 @@ async def build_import_records(
 
         target: Projection | None = None
         if upsert:
-            barcode_target = by_barcode.get(barcode) if barcode else None
+            barcode_holders = by_barcode.get(barcode, []) if barcode else []
             sku_matches = by_sku.get(sku, []) if sku else []
-            if barcode_target is not None:
+            if len(barcode_holders) > 1:
+                # A shared barcode is usable only when the row's SKU picks out exactly
+                # one of its holders.
+                narrowed = [
+                    p for p in barcode_holders
+                    if sku and str((p.state or {}).get("sku") or "").strip() == sku
+                ]
+                if len(narrowed) != 1:
+                    errors.append({
+                        "row": i + 1,
+                        "field": "barcode",
+                        "message": (
+                            f"Barcode '{barcode}' is shared by {len(barcode_holders)} items; "
+                            "include a SKU that identifies one of them"
+                        ),
+                    })
+                    continue
+                target = narrowed[0]
+            elif barcode_holders:
+                barcode_target = barcode_holders[0]
                 if len(sku_matches) == 1 and sku_matches[0].entity_id != barcode_target.entity_id:
                     errors.append({
                         "row": i + 1,

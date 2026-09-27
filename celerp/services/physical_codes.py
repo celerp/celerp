@@ -82,8 +82,14 @@ async def code_in_use(
 
 
 def _codes(state: dict | None) -> dict[str, str]:
-    """Map each non-empty physical code an item state holds to the first field holding it."""
+    """Map each physical code an item state resolves by to the first field holding it.
+
+    An item in a status excluded from resolution (merged) resolves by nothing, so
+    returning it to a live status introduces its codes again.
+    """
     held: dict[str, str] = {}
+    if str((state or {}).get("status") or "").lower() in PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES:
+        return held
     for field in PHYSICAL_CODE_FIELDS:
         value = (state or {}).get(field)
         if value not in (None, ""):
@@ -96,10 +102,11 @@ async def assert_new_physical_codes_available(
 ) -> None:
     """Reject a write that introduces a physical code another item already holds.
 
-    Compares code SETS: a code present both before and after the write is not new,
-    even if it moved between the barcode and RFID / EPC slots, so an item that already
-    shares a code with another item can still be edited. Caller holds
-    ``lock_item_code_namespace``.
+    Compares resolvable code SETS: a code present both before and after the write is
+    not new, even if it moved between the barcode and RFID / EPC slots, so an item that
+    already shares a code with another item can still be edited. A merged item holds
+    no resolvable codes, so reactivating it checks its codes like new ones. Caller
+    holds ``lock_item_code_namespace``.
     """
     previous = _codes(before)
     for code, field in _codes(after).items():
