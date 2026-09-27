@@ -57,6 +57,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 WINDOWS = os.name == "nt"
+# 2.5.0's own init waits on the PostgreSQL it starts and never returns on
+# Windows, so there is no working 2.5.0 install there to upgrade.
+WINDOWS_INIT_HANGS = "2.5.0"
 MARKER_TABLE = "e2e_update_marker"
 MARKER_REVISION = "e2e0update0marker"
 BROKEN_DEP = "e2e-broken-dep"
@@ -755,14 +758,12 @@ def e5(work, wheels):
 def e6(work, wheels):
     """The oldest supported pre-updater release: upgraded by pip once, as its
     users do, then updated from the app."""
-    if os.name == "nt":
-        # 2.5.0's own init waits on the PostgreSQL it starts and never returns on
-        # Windows, so there is no working 2.5.0 install there to upgrade.
-        print("    --  skipped: 2.5.0 cannot finish init on Windows")
+    if WINDOWS:
+        print(f"    --  skipped: {WINDOWS_INIT_HANGS} cannot finish init on Windows")
         return
     inst = Install(work, "E6")
     try:
-        inst.create_as_existing("celerp==2.5.0")
+        inst.create_as_existing(f"celerp=={WINDOWS_INIT_HANGS}")
         inst.init()
         inst.find_links = [wheels["base"], wheels["good"]]
         inst.start(expect_version="2.5.0")
@@ -875,6 +876,10 @@ def r2(work: Path, wheel: Path) -> None:
     inst = Install(work, "R2")
     try:
         inst.create_as_existing("celerp")
+        current = inst.py("from importlib.metadata import version; print(version('celerp'))").strip()
+        if WINDOWS and current == WINDOWS_INIT_HANGS:
+            print(f"    --  skipped: {current} cannot finish init on Windows")
+            return
         inst.init()
         inst.find_links = [wheel.parent]
         inst.start()
