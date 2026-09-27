@@ -90,8 +90,9 @@ class ConnectorIdentityConflict(Exception):
 async def _connector_entity_id(
     session, company_id, entity_type: str, idem_key: str,
     external_identity: tuple[str, str] | None = None,
-) -> str | None:
-    """The entity_id of an existing projection this connector record maps to, or None.
+) -> tuple[str | None, bool]:
+    """The entity_id of an existing projection this connector record maps to (or None),
+    and whether it was found only by ``external_identity``.
 
     Records are resolved by their stable ``idempotency_key`` (stored in projection
     state), not a freshly-minted entity_id — so a re-import updates the SAME projection
@@ -101,7 +102,7 @@ async def _connector_entity_id(
 
     ``external_identity`` is ``(field, value)``: the platform id as a Celerp record
     carries it once Celerp itself created the record on the platform. A record found
-    only that way is the same record; one found by each route, differently, is a
+    only that way is Celerp's own; one found by each route, differently, is a
     conflict and nothing is written.
     """
     import uuid as _uuid
@@ -116,7 +117,7 @@ async def _connector_entity_id(
         .limit(1)
     )).scalar()
     if external_identity is None:
-        return by_key
+        return by_key, False
     field, value = external_identity
     by_external = (await session.execute(
         select(Projection.entity_id)
@@ -128,7 +129,7 @@ async def _connector_entity_id(
         raise ConnectorIdentityConflict(
             f"{field} {value} belongs to more than one record: {', '.join(sorted(ids))}"
         )
-    return next(iter(ids), None)
+    return next(iter(ids), None), by_key is None and bool(by_external)
 
 
 async def connector_upsert(
@@ -138,9 +139,10 @@ async def connector_upsert(
     """Create-or-update a projection from a connector payload.
 
     Returns "created" (new projection), "updated" (existing projection, changed
-    content), or "noop" (this exact content was already applied). Raises
-    ConnectorIdentityConflict when ``external_identity`` and ``idem_key`` resolve
-    to different projections.
+    content), or "noop" (this exact content was already applied, or the record is one
+    Celerp created on the platform, found only by ``external_identity``: Celerp owns
+    it, so nothing is written). Raises ConnectorIdentityConflict when
+    ``external_identity`` and ``idem_key`` resolve to different projections.
 
     ``idem_key`` (the stable platform id) is stored in projection state so a re-import
     resolves the SAME projection; the event's idempotency key varies with the content,
@@ -149,11 +151,13 @@ async def connector_upsert(
     import hashlib
     import json as _json
 
-    data = {**data, "idempotency_key": idem_key}  # stable identity in state (rebuild-safe)
-
-    existing_id = await _connector_entity_id(
+    existing_id, external_only = await _connector_entity_id(
         session, company_id, entity_type, idem_key, external_identity
     )
+    if external_only:
+        return "noop"
+
+    data = {**data, "idempotency_key": idem_key}  # stable identity in state (rebuild-safe)
     entity_id = existing_id or f"{entity_type}:{idem_key}"
 
     content = _json.dumps(

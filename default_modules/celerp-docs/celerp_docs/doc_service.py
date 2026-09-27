@@ -1244,7 +1244,7 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> str:
             "conversion_rate": _source_rate(invoice.get("ExchangeRate")),
             "quickbooks_invoice_id": str(invoice["Id"]),
         }
-        # An invoice Celerp pushed carries this id already; the import updates it.
+        # An invoice Celerp pushed carries this id already; the import leaves it as is.
         return await _emit_doc(
             session, company_id, data, idem_key,
             external_identity=("quickbooks_invoice_id", str(invoice["Id"])),
@@ -1299,7 +1299,7 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> str:
             "conversion_rate": _source_rate(invoice.get("CurrencyRate"), invert=True),
             "xero_invoice_id": str(invoice["InvoiceID"]),
         }
-        # An invoice Celerp pushed carries this id already; the import updates it.
+        # An invoice Celerp pushed carries this id already; the import leaves it as is.
         return await _emit_doc(
             session, company_id, data, idem_key,
             external_identity=("xero_invoice_id", str(invoice["InvoiceID"])),

@@ -323,6 +323,22 @@ async def queued_outbound(company_id: str, connector: str, entity_type: str) -> 
         )).scalars().all()))
 
 
+async def queued_payloads(company_id: str, connector: str, entity_type: str) -> list[dict]:
+    """The saved state of every queued operation that has one, parked ones included."""
+    async with get_session_ctx() as session:
+        return [
+            json.loads(payload)
+            for payload in (await session.execute(
+                sa.select(OutboundQueue.payload_json).where(
+                    OutboundQueue.company_id == company_id,
+                    OutboundQueue.connector == connector,
+                    OutboundQueue.entity_type == entity_type,
+                    OutboundQueue.payload_json.is_not(None),
+                )
+            )).scalars().all()
+        ]
+
+
 async def process_outbound_identity(
     company_id: str,
     connector_name: str,

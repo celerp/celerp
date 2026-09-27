@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
@@ -88,23 +89,32 @@ def _new_attempt(state: dict) -> dict:
     }
 
 
-def _line_amounts(invoice: dict) -> list[Decimal]:
-    amounts = []
-    for line in invoice.get("LineItems") or []:
-        try:
-            amounts.append(Decimal(str(line.get("LineAmount") or 0)).quantize(Decimal("0.01")))
-        except InvalidOperation:
-            amounts.append(Decimal("NaN"))
-    return sorted(amounts)
+def _line_signatures(invoice: dict) -> Counter:
+    def number(value) -> Decimal:
+        return Decimal(str(value if value is not None else 0))
+
+    return Counter(
+        (line.get("Description") or "", number(line.get("Quantity")),
+         number(line.get("UnitAmount")), number(line.get("LineAmount")))
+        for line in invoice.get("LineItems") or []
+    )
 
 
 def _is_sent_invoice(remote: dict, sent: dict) -> bool:
-    """Whether a Xero invoice with the sent number is the one Celerp created."""
-    return (
-        remote.get("Type") == sent["Type"]
-        and (remote.get("Contact") or {}).get("ContactID") == sent["Contact"]["ContactID"]
-        and _line_amounts(remote) == _line_amounts(sent)
-    )
+    """Whether a Xero invoice with the sent number is the one Celerp created.
+
+    Every field Xero echoes back must match: a wrong link is permanent, while a
+    miss only parks the invoice for review. Status is not compared, since the
+    invoice may since have been paid."""
+    try:
+        return (
+            remote.get("Type") == sent["Type"]
+            and remote.get("InvoiceNumber") == sent["InvoiceNumber"]
+            and (remote.get("Contact") or {}).get("ContactID") == sent["Contact"]["ContactID"]
+            and _line_signatures(remote) == _line_signatures(sent)
+        )
+    except (InvalidOperation, TypeError):
+        return False
 
 
 def _where_literal(value: str) -> str:
@@ -244,6 +254,8 @@ class XeroConnector(ConnectorBase):
           Invoice.Status         -> doc.status (PAID->paid, AUTHORISED->final, DRAFT->draft)
           Invoice.InvoiceID      -> idempotency_key
         """
+        from celerp.connectors.outbound_queue import queued_payloads
+
         result = SyncResult(entity=SyncEntity.ORDERS)
         errors: list[str] = []
 
@@ -253,8 +265,15 @@ class XeroConnector(ConnectorBase):
             result.errors = [f"Xero API error: {exc}"]
             return result
 
+        # An invoice Celerp may have created but not yet confirmed is left to the
+        # outbound sync to link, so it is never imported as a second invoice.
+        unresolved = {
+            state["invoice_number"]
+            for state in await queued_payloads(str(ctx.company_id), self.name, "invoice")
+            if state.get("tenant_id") == ctx.store_handle
+        }
         for inv in invoices:
-            if inv.get("Type") != "ACCREC":
+            if inv.get("Type") != "ACCREC" or inv.get("InvoiceNumber") in unresolved:
                 result.skipped += 1
                 continue
             try:

@@ -127,7 +127,9 @@ def _remote(number: str = "INV-1", contact: str = CONTACT, amount: float = 100.0
         "Type": "ACCREC",
         "InvoiceNumber": number,
         "Contact": {"ContactID": contact},
-        "LineItems": [{"LineAmount": amount}],
+        "LineItems": [
+            {"Description": "Service", "Quantity": 1.0, "UnitAmount": amount, "LineAmount": amount},
+        ],
     }
 
 
@@ -456,25 +458,6 @@ async def test_other_organisation_makes_no_call_and_stays_blocked(relay, company
     assert "xero_invoice_id" not in await _doc(company)
 
 
-@pytest.mark.asyncio
-async def test_push_then_import_updates_the_same_invoice(relay, company):
-    from celerp.connectors.upsert import upsert_invoice_from_xero
-    with _Xero(put=[_created()]):
-        await _sync(company)
-    remote = {**_remote(), "Status": "AUTHORISED", "Total": 100, "AmountDue": 100}
-    await upsert_invoice_from_xero(str(company), remote)
-    from celerp.db import get_session_ctx
-    async with get_session_ctx() as session:
-        docs = (await session.execute(
-            sa.select(Projection).where(
-                Projection.company_id == company, Projection.entity_type == "doc"
-            )
-        )).scalars().all()
-    assert [d.entity_id for d in docs] == [DOC_ID]
-    assert docs[0].state["idempotency_key"] == "xero:invoice:xero-1"
-    assert docs[0].state["xero_invoice_id"] == "xero-1"
-
-
 async def _docs(company_id) -> list[Projection]:
     from celerp.db import get_session_ctx
     async with get_session_ctx() as session:
@@ -485,16 +468,149 @@ async def _docs(company_id) -> list[Projection]:
         )).scalars().all())
 
 
+async def _event_count(company_id) -> int:
+    from celerp.db import get_session_ctx
+    async with get_session_ctx() as session:
+        return await session.scalar(
+            sa.select(sa.func.count()).select_from(LedgerEntry)
+            .where(LedgerEntry.company_id == company_id)
+        )
+
+
+async def _finalize_doc(company_id) -> None:
+    """Give the native invoice the accounting state an import must never replace."""
+    await _edit_doc(
+        company_id, status="final", total=100.0, amount_outstanding=100.0,
+        currency="THB", conversion_rate=1.0,
+        line_items=[{"description": "Service", "quantity": 1, "unit_price": 100,
+                     "total": 100, "item_id": "item-1", "sku": "SKU-1"}],
+    )
+
+
 @pytest.mark.asyncio
-async def test_quickbooks_pushed_invoice_imports_as_the_same_invoice(company):
+async def test_push_then_import_leaves_the_native_invoice_unchanged(relay, company):
+    from celerp.connectors.upsert import upsert_invoice_from_xero
+    await _finalize_doc(company)
+    with _Xero(put=[_created()]):
+        await _sync(company)
+    before, events = await _doc(company), await _event_count(company)
+    remote = {**_remote(), "Status": "PAID", "Total": 90, "AmountDue": 0,
+              "CurrencyCode": "USD", "CurrencyRate": 0.03}
+    assert await upsert_invoice_from_xero(str(company), remote) == "noop"
+    assert [d.entity_id for d in await _docs(company)] == [DOC_ID]
+    assert await _doc(company) == before
+    assert "idempotency_key" not in before
+    assert await _event_count(company) == events
+
+
+@pytest.mark.asyncio
+async def test_quickbooks_pushed_invoice_import_leaves_it_unchanged(company):
     from celerp.connectors.upsert import mark_doc_pushed, upsert_invoice_from_quickbooks
+    await _finalize_doc(company)
     await mark_doc_pushed(str(company), DOC_ID, "quickbooks", "qb-7")
-    await upsert_invoice_from_quickbooks(str(company), {
-        "Id": "qb-7", "DocNumber": "INV-1", "TotalAmt": 100, "Balance": 100, "Line": [],
-    })
-    docs = await _docs(company)
-    assert [d.entity_id for d in docs] == [DOC_ID]
-    assert docs[0].state["idempotency_key"] == "quickbooks:invoice:qb-7"
+    before, events = await _doc(company), await _event_count(company)
+    assert await upsert_invoice_from_quickbooks(str(company), {
+        "Id": "qb-7", "DocNumber": "INV-1", "TotalAmt": 90, "Balance": 0, "Line": [],
+        "CurrencyRef": {"value": "USD"}, "ExchangeRate": 33.0,
+    }) == "noop"
+    assert [d.entity_id for d in await _docs(company)] == [DOC_ID]
+    assert await _doc(company) == before
+    assert await _event_count(company) == events
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_invoice_is_not_imported_before_outbound_links_it(relay, company):
+    """The create reached Xero but its reply was lost; the next sync imports first."""
+    with _Xero(put=[LOST], get=[
+        httpx.Response(200, json={"Invoices": [_remote()]}),
+        httpx.Response(200, json={"Invoices": [_remote()]}),
+    ]) as xero:
+        await _sync(company)
+        pulled = await XeroConnector().sync_orders(_ctx(company))
+        assert pulled.skipped == 1 and pulled.created == 0
+        assert [d.entity_id for d in await _docs(company)] == [DOC_ID]
+        await _age_attempt(company)
+        assert (await _sync(company)).created == 1
+    assert len(xero.puts) == 1
+    assert (await _doc(company))["xero_invoice_id"] == "xero-1"
+    assert await _rows(company) == []
+    with _Xero(get=[httpx.Response(200, json={"Invoices": [_remote()]})]):
+        pulled = await XeroConnector().sync_orders(_ctx(company))
+    assert pulled.created == 0 and pulled.errors is None
+    assert [d.entity_id for d in await _docs(company)] == [DOC_ID]
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_invoice_in_another_organisation_does_not_hold_imports(relay, company):
+    with _Xero(put=[LOST]):
+        await _sync(company)
+    other = ConnectorContext(company_id=str(company), access_token="", store_handle="other")
+    with _Xero(get=[httpx.Response(200, json={"Invoices": [_remote(invoice_id="xero-o")]})]):
+        pulled = await XeroConnector().sync_orders(other)
+    assert pulled.created == 1
+
+
+def _sent() -> dict:
+    from celerp.connectors.xero import _invoice_request
+    return _invoice_request({
+        "ref_id": "INV-1", "customer_external_id": CONTACT,
+        "line_items": [
+            {"description": "Service", "quantity": 1, "unit_price": 100, "total": 100},
+            {"description": "Parts", "quantity": 4, "unit_price": 2.5, "total": 10},
+        ],
+    })["Invoices"][0]
+
+
+def _echo(**changes) -> dict:
+    """Xero's copy of the sent invoice: lines reordered, amounts in its own format."""
+    lines = [
+        {"Description": "Parts", "Quantity": 4.0, "UnitAmount": 2.5, "LineAmount": 10.0},
+        {"Description": "Service", "Quantity": 1.0, "UnitAmount": 100.0, "LineAmount": 100.0},
+    ]
+    remote = {"InvoiceID": "xero-1", "Type": "ACCREC", "InvoiceNumber": "INV-1",
+              "Status": "PAID", "Contact": {"ContactID": CONTACT}, "LineItems": lines}
+    for key, value in changes.items():
+        if key.startswith("line_"):
+            lines[1][key[5:]] = value
+        else:
+            remote[key] = value
+    return remote
+
+
+def test_sent_invoice_matches_its_own_echo():
+    from celerp.connectors.xero import _is_sent_invoice
+    assert _is_sent_invoice(_echo(), _sent())
+
+
+@pytest.mark.parametrize("changes", [
+    {"InvoiceNumber": "INV-2"},
+    {"Type": "ACCPAY"},
+    {"Contact": {"ContactID": "someone-else"}},
+    {"line_Description": "Consulting"},
+    {"line_Quantity": 2.0, "line_UnitAmount": 50.0},
+    {"line_UnitAmount": "not a number"},
+    {"LineItems": [{"Description": "Service", "Quantity": 1.0, "UnitAmount": 100.0,
+                    "LineAmount": 100.0}]},
+])
+def test_any_differing_field_is_not_the_sent_invoice(changes):
+    from celerp.connectors.xero import _is_sent_invoice
+    assert not _is_sent_invoice(_echo(**changes), _sent())
+
+
+@pytest.mark.asyncio
+async def test_same_totals_with_different_lines_blocks_instead_of_linking(relay, company):
+    lookalike = _remote()
+    lookalike["LineItems"] = [
+        {"Description": "Other work", "Quantity": 2.0, "UnitAmount": 50.0, "LineAmount": 100.0},
+    ]
+    with _Xero(put=[LOST], get=[httpx.Response(200, json={"Invoices": [lookalike]})]) as xero:
+        await _sync(company)
+        await _age_attempt(company)
+        result = await _sync(company)
+    assert result.errors and len(xero.puts) == 1
+    rows = await _rows(company)
+    assert len(rows) == 1 and rows[0].status == "blocked"
+    assert "xero_invoice_id" not in await _doc(company)
 
 
 @pytest.mark.asyncio
