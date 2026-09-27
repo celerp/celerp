@@ -28,7 +28,7 @@ Release gate (publish.yml): --release-wheel PATH runs
   R2 the current PyPI release updated to that wheel
 
 Usage:
-  python scripts/e2e_update.py [--scenario E1 --scenario E4 ...] [--work DIR] [--keep]
+  python scripts/e2e_update.py [--scenario E1 --scenario E4 ...] [--group N/M] [--work DIR] [--keep]
   python scripts/e2e_update.py --release-wheel dist/celerp-X-py3-none-any.whl
 """
 
@@ -896,9 +896,21 @@ def r2(work: Path, wheel: Path) -> None:
         inst.stop()
 
 
+def _group(value: str) -> tuple[int, int]:
+    """N/M: run every Mth scenario starting at the Nth, so M runners share the list."""
+    try:
+        n, m = (int(x) for x in value.split("/"))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected N/M, got {value!r}") from None
+    if not 1 <= n <= m:
+        raise argparse.ArgumentTypeError(f"expected 1 <= N <= M, got {value!r}")
+    return n, m
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--scenario", action="append", choices=sorted(SCENARIOS))
+    parser.add_argument("--group", type=_group, help="N/M: run the Nth of M equal shares of the scenarios")
     parser.add_argument("--release-wheel", type=Path)
     parser.add_argument("--work", type=Path)
     parser.add_argument("--keep", action="store_true", help="keep the work directory")
@@ -914,6 +926,9 @@ def main() -> int:
                 ("R2", lambda: r2(work, args.release_wheel.resolve()))]
     else:
         chosen = args.scenario or sorted(SCENARIOS)
+        if args.group:
+            n, m = args.group
+            chosen = chosen[n - 1::m]
         wheels = build_wheels(work, set().union(*(SCENARIOS[s][1] for s in chosen)))
         runs = [(s, (lambda s=s: SCENARIOS[s][0](work, wheels))) for s in chosen]
 

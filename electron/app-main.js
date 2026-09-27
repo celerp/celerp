@@ -45,7 +45,7 @@ const spawn = childProcess.spawn;
 
 // Suppress fs.promises.chmod for embedded-postgres binary paths.
 // embedded-postgres calls chmod to ensure its binaries are executable, but:
-//   1. The afterPack hook already set +x before signing, so the bits are correct.
+//   1. The packaged binaries already carry +x (the boot smoke starts them on every build).
 //   2. The path it passes is the virtual app.asar path (not app.asar.unpacked),
 //      which the OS cannot chmod — it would throw ENOTDIR.
 //   3. On a signed/notarized build the OS would throw EPERM anyway.
