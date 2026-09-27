@@ -536,7 +536,7 @@ _FULFILL_EXPECTED = {
         "event.doc.fulfilled": "ተፈጽሟል",
         "event.doc.partially_fulfilled": "በከፊል ተፈጽሟል",
         "event.doc.fulfillment_reversed": "የትዕዛዝ አፈጻጸም ተቀልብሷል",
-        "activity.change.fulfilled_items": "የተፈጸሙ እቃዎች ተዘምነዋል",
+        "activity.change.fulfilled_items": "የተፈጸሙ ዕቃዎች ተዘምነዋል",
     },
     "ar": {
         "btn.fulfill_deduct_inventory": "تنفيذ الطلب / خصم المخزون",
