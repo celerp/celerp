@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from httpx import AsyncClient
 
@@ -802,18 +804,84 @@ def test_print_view_escapes_injected_html():
 
 
 @pytest.mark.asyncio
-async def test_import_src_rejects_non_https(client: AsyncClient):
+async def test_import_link_rejects_non_https(client: AsyncClient):
     tok = await _token(client)
-    r = await client.get("/docs/import?src=http://evil.example.com&token=abc", headers=_h(tok))
+    r = await client.get("/docs/import", params={"link": "http://evil.example.com/share/abc"}, headers=_h(tok))
     assert r.status_code == 400
 
 
 @pytest.mark.asyncio
-async def test_import_src_rejects_private_and_metadata_hosts(client: AsyncClient):
+async def test_import_link_rejects_private_and_metadata_hosts(client: AsyncClient):
     tok = await _token(client)
     for host in ("https://127.0.0.1", "https://10.0.0.1", "https://169.254.169.254", "https://192.168.1.1"):
-        r = await client.get(f"/docs/import?src={host}&token=abc", headers=_h(tok))
+        r = await client.get("/docs/import", params={"link": f"{host}/share/abc"}, headers=_h(tok))
         assert r.status_code == 400, host
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("link", [
+    "https://shop.example.com",
+    "https://shop.example.com/share/abc?x=1",
+    "https://shop.example.com/share/abc#top",
+])
+async def test_import_link_rejects_links_without_a_share_page(client: AsyncClient, link):
+    tok = await _token(client)
+    r = await client.get("/docs/import", params={"link": link}, headers=_h(tok))
+    assert r.status_code == 400
+
+
+def _bundle_response(doc: dict):
+    from unittest.mock import MagicMock
+
+    return MagicMock(status_code=200, content=json.dumps({"version": 1, "doc": doc}).encode(), headers={})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("link", [
+    "https://shop.example.com/share/abc123",
+    "https://share.celerp.com/eyJTWU5USEVUSUMtbGluayJ9",
+])
+async def test_import_link_fetches_the_bundle_next_to_the_share_page(client: AsyncClient, link):
+    """Every share link form, the free-tier one included, imports from <link>/bundle."""
+    from unittest.mock import AsyncMock, patch
+
+    tok = await _token(client)
+    fetch = AsyncMock(return_value=_bundle_response({"doc_type": "invoice", "ref_id": "EXT-9", "total": 5.0}))
+    with patch("celerp_docs.routes_share.validate_public_base_url", new=AsyncMock(return_value=link)), \
+         patch("celerp.services.outbound_url.fetch_public_bytes", new=fetch):
+        r = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
+        again = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
+
+    assert fetch.await_args.args[0] == f"{link}/bundle"
+    assert r.status_code == 302 and r.headers["location"].startswith("/docs/doc:rcv:")
+    assert again.headers["location"] == r.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_import_bundle_file_retry_opens_the_same_doc(client: AsyncClient):
+    """Uploading the same .celerp file twice (a retry) does not create a second received doc."""
+    tok = await _token(client)
+    content = json.dumps({"version": 1, "doc": {"doc_type": "invoice", "ref_id": "EXT-7", "total": 7.0}}).encode()
+    locations = []
+    for _ in range(2):
+        r = await client.post(
+            "/docs/import-bundle",
+            files={"bundle": ("EXT-7.celerp", content, "application/json")},
+            headers=_h(tok),
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        locations.append(r.headers["location"])
+    assert locations[0] == locations[1]
+
+    other = json.dumps({"version": 1, "doc": {"doc_type": "invoice", "ref_id": "EXT-8", "total": 8.0}}).encode()
+    r = await client.post(
+        "/docs/import-bundle",
+        files={"bundle": ("EXT-8.celerp", other, "application/json")},
+        headers=_h(tok),
+        follow_redirects=False,
+    )
+    assert r.headers["location"] != locations[0]
 
 
 # ---------------------------------------------------------------------------

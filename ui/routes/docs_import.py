@@ -50,23 +50,30 @@ _DOC_IMPORT_SPEC = CsvImportSpec(
 )
 
 
-def parse_share_link(link: str) -> tuple[str, str] | None:
-    """Return (sender URL, share token) from a Celerp share link, or None.
+# The address free-tier share links are published under.
+_FREE_SHARE_HOST = "share.celerp.com"
 
-    Accepts both forms a sender can pass on: the celerp.com accept link
-    (``...accept?src=<url>&token=<token>``) and the sender's own share page
-    (``<url>/share/<token>``).
+
+def parse_share_link(link: str) -> str | None:
+    """Return the share page URL for a Celerp share link, or None.
+
+    Accepts every form a sender can pass on: the celerp.com accept link
+    (``...accept?src=<url>&token=<token>``), the sender's own share page
+    (``<url>/share/<token>``), and a free-tier ``share.celerp.com`` link.
     """
     parts = urlsplit(link.strip())
     if parts.scheme not in ("http", "https") or not parts.netloc:
         return None
     query = parse_qs(parts.query)
     if query.get("src") and query.get("token"):
-        return query["src"][0], query["token"][0]
-    base, sep, share_token = parts.path.partition("/share/")
-    share_token = share_token.strip("/")
+        return f"{query['src'][0].rstrip('/')}/share/{query['token'][0]}"
+    path = parts.path.rstrip("/")
+    base, sep, share_token = path.partition("/share/")
     if sep and share_token and "/" not in share_token:
-        return f"{parts.scheme}://{parts.netloc}{base}", share_token
+        return f"{parts.scheme}://{parts.netloc}{path}"
+    segment = path.lstrip("/")
+    if parts.hostname == _FREE_SHARE_HOST and segment and "/" not in segment:
+        return f"{parts.scheme}://{parts.netloc}/{segment}"
     return None
 
 
@@ -139,11 +146,11 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         link = str((await request.form()).get("link") or "").strip()
-        parsed = parse_share_link(link)
-        if parsed is None:
+        share_page = parse_share_link(link)
+        if share_page is None:
             return await _import_page(request, shared_error=t("docs_import.invalid_share_link"), link=link)
         try:
-            doc_path = await api.import_shared_doc(token, *parsed)
+            doc_path = await api.import_shared_doc(token, share_page)
         except APIError as e:
             return await _import_page(request, shared_error=str(e.detail), link=link)
         return RedirectResponse(doc_path, status_code=303)
@@ -155,11 +162,11 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         upload = (await request.form()).get("bundle")
-        content = await upload.read() if upload is not None and hasattr(upload, "read") else b""
-        if not content:
+        if not getattr(upload, "size", None):
             return await _import_page(request, shared_error=t("docs_import.no_celerp_file"))
         try:
-            doc_path = await api.import_doc_bundle(token, upload.filename or "shared.celerp", content)
+            # Streamed on to the API, which enforces the bundle size limit.
+            doc_path = await api.import_doc_bundle(token, upload.filename or "shared.celerp", upload.file)
         except APIError as e:
             return await _import_page(request, shared_error=str(e.detail))
         return RedirectResponse(doc_path, status_code=303)

@@ -8,6 +8,8 @@ on the documents import page; the UI calls the API with the user's session and
 opens the received document.
 """
 
+import io
+
 import httpx
 import pytest
 from fasthtml.common import Div, Span, to_xml
@@ -52,10 +54,8 @@ class _FormReq:
 class _Upload:
     def __init__(self, filename: str, content: bytes):
         self.filename = filename
-        self._content = content
-
-    async def read(self):
-        return self._content
+        self.file = io.BytesIO(content)
+        self.size = len(content)
 
 
 async def _fake_base_shell(*content, title="", **kwargs):
@@ -71,12 +71,16 @@ def ui_routes(monkeypatch):
 
 @pytest.mark.parametrize("link, expected", [
     ("https://www.celerp.com/accept?src=https%3A%2F%2Fshop.example.com&token=abc123",
-     ("https://shop.example.com", "abc123")),
-    ("https://shop.example.com/share/abc123", ("https://shop.example.com", "abc123")),
-    ("https://example.com/celerp/share/abc123/", ("https://example.com/celerp", "abc123")),
-    ("  https://shop.example.com/share/abc123  ", ("https://shop.example.com", "abc123")),
+     "https://shop.example.com/share/abc123"),
+    ("https://www.celerp.com/accept?src=https%3A%2F%2Fshop.example.com%2F&token=abc123",
+     "https://shop.example.com/share/abc123"),
+    ("https://shop.example.com/share/abc123", "https://shop.example.com/share/abc123"),
+    ("https://example.com/celerp/share/abc123/", "https://example.com/celerp/share/abc123"),
+    ("  https://shop.example.com/share/abc123  ", "https://shop.example.com/share/abc123"),
+    ("https://share.celerp.com/eyJTWU5USEVUSUMtbGluayJ9", "https://share.celerp.com/eyJTWU5USEVUSUMtbGluayJ9"),
+    ("https://share.celerp.com/eyJTWU5USEVUSUMtbGluayJ9/", "https://share.celerp.com/eyJTWU5USEVUSUMtbGluayJ9"),
 ])
-def test_parse_share_link_accepts_both_link_forms(link, expected):
+def test_parse_share_link_accepts_every_link_form(link, expected):
     assert di.parse_share_link(link) == expected
 
 
@@ -88,6 +92,9 @@ def test_parse_share_link_accepts_both_link_forms(link, expected):
     "https://shop.example.com/share/",
     "https://shop.example.com/share/abc123/bundle",
     "https://www.celerp.com/accept?token=abc123",
+    "https://share.celerp.com/",
+    "https://share.celerp.com/abc/def",
+    "https://shop.example.com/abc123",
 ])
 def test_parse_share_link_rejects_other_links(link):
     assert di.parse_share_link(link) is None
@@ -106,15 +113,15 @@ async def test_import_page_offers_shared_import(ui_routes):
 async def test_shared_link_imports_and_opens_the_received_doc(ui_routes, monkeypatch):
     calls = []
 
-    async def _fake_import(token, src, share_token):
-        calls.append((token, src, share_token))
+    async def _fake_import(token, share_page):
+        calls.append((token, share_page))
         return "/docs/doc:rcv:abc"
 
     monkeypatch.setattr(di.api, "import_shared_doc", _fake_import)
     handler = ui_routes[("POST", "/docs/import/shared")]
     resp = await handler(_FormReq({"link": "https://shop.example.com/share/abc123"}))
 
-    assert calls == [("tok", "https://shop.example.com", "abc123")]
+    assert calls == [("tok", "https://shop.example.com/share/abc123")]
     assert resp.status_code == 303
     assert resp.headers["location"] == "/docs/doc:rcv:abc"
 
@@ -149,7 +156,7 @@ async def test_celerp_file_imports_and_opens_the_received_doc(ui_routes, monkeyp
     calls = []
 
     async def _fake_bundle(token, filename, content):
-        calls.append((token, filename, content))
+        calls.append((token, filename, content.read()))
         return "/docs/doc:rcv:def"
 
     monkeypatch.setattr(di.api, "import_doc_bundle", _fake_bundle)
@@ -169,7 +176,9 @@ async def test_missing_celerp_file_explains(ui_routes, monkeypatch):
     monkeypatch.setattr(di.api, "import_doc_bundle", _never)
     handler = ui_routes[("POST", "/docs/import/shared-file")]
     html = to_xml(await handler(_FormReq({})))
+    assert "Choose a .celerp file" in html
 
+    html = to_xml(await handler(_FormReq({"bundle": _Upload("empty.celerp", b"")})))
     assert "Choose a .celerp file" in html
 
 
@@ -199,12 +208,11 @@ async def test_api_client_returns_the_received_doc_path(monkeypatch):
         return httpx.Response(200, json={"id": "doc:rcv:abc"})
 
     seen = _mock_api(monkeypatch, _handler)
-    path = await api.import_shared_doc("tok", "https://shop.example.com", "abc123")
+    path = await api.import_shared_doc("tok", "https://shop.example.com/share/abc123")
 
     assert path == "/docs/doc:rcv:abc"
     assert [r.url.path for r in seen] == ["/docs/import"]
-    assert seen[0].url.params["src"] == "https://shop.example.com"
-    assert seen[0].url.params["token"] == "abc123"
+    assert seen[0].url.params["link"] == "https://shop.example.com/share/abc123"
     assert seen[0].headers["authorization"] == "Bearer tok"
 
 
@@ -214,11 +222,12 @@ async def test_api_client_uploads_the_bundle(monkeypatch):
         return httpx.Response(302, headers={"location": "/docs/doc:rcv:def"})
 
     seen = _mock_api(monkeypatch, _handler)
-    path = await api.import_doc_bundle("tok", "INV-1.celerp", b'{"doc": {"doc_type": "invoice"}}')
+    path = await api.import_doc_bundle("tok", "INV-1.celerp", io.BytesIO(b'{"doc": {"doc_type": "invoice"}}'))
 
     assert path == "/docs/doc:rcv:def"
     assert seen[0].method == "POST" and seen[0].url.path == "/docs/import-bundle"
     assert b'name="bundle"' in seen[0].content
+    assert b'{"doc": {"doc_type": "invoice"}}' in seen[0].content
 
 
 @pytest.mark.asyncio
@@ -226,6 +235,6 @@ async def test_api_client_raises_the_api_error(monkeypatch):
     _mock_api(monkeypatch, lambda request: httpx.Response(404, json={"detail": "Share link not found on sender's instance"}))
 
     with pytest.raises(APIError) as exc:
-        await api.import_shared_doc("tok", "https://shop.example.com", "gone")
+        await api.import_shared_doc("tok", "https://shop.example.com/share/gone")
     assert exc.value.status == 404
     assert "not found" in exc.value.detail

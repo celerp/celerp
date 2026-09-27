@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from typing import BinaryIO
 
 import httpx
 
@@ -1184,15 +1185,15 @@ def _received_doc_path(r: httpx.Response) -> str:
     raise APIError(r.status_code, "Import did not return a document")
 
 
-async def import_shared_doc(token: str, src: str, share_token: str) -> str:
+async def import_shared_doc(token: str, share_page: str) -> str:
     """Fetch a document shared from another Celerp and import it; returns its UI path."""
     async with _local_error_mapping():
         async with _local_client(token, timeout=30.0, follow_redirects=False) as c:
-            r = await c.get("/docs/import", params={"src": src, "token": share_token})
+            r = await c.get("/docs/import", params={"link": share_page})
     return _received_doc_path(r)
 
 
-async def import_doc_bundle(token: str, filename: str, content: bytes) -> str:
+async def import_doc_bundle(token: str, filename: str, content: BinaryIO) -> str:
     """Import a downloaded .celerp bundle; returns the new document's UI path."""
     async with _local_error_mapping():
         async with _local_client(token, timeout=30.0, follow_redirects=False, bulk=True) as c:

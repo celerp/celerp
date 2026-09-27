@@ -19,11 +19,12 @@ See celerp-cloud/SHARE_ACCEPT_FLOW.md for full spec and all failure states.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import secrets
 import uuid as _uuid
 from datetime import date as _date, datetime, time as _time, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
@@ -103,11 +104,19 @@ def _share_url(token: str) -> str:
 # Untrusted-input guards (SSRF, size caps, field whitelist + money recompute)
 # ---------------------------------------------------------------------------
 
-async def _validate_public_src(src: str) -> str:
+async def _validate_share_link(link: str) -> tuple[str, str]:
+    """Return (share page URL, share token) for a public share link, or 400.
+
+    Every Celerp share link is a public page whose last path segment is its
+    token, with the bundle download at ``<page>/bundle``."""
     try:
-        return await validate_public_base_url(src)
+        page = await validate_public_base_url(link, reject_query=True, reject_fragment=True)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    token = urlsplit(page).path.rsplit("/", 1)[-1]
+    if not token:
+        raise HTTPException(status_code=400, detail="Not a Celerp share link")
+    return page, token
 
 
 async def _read_body_capped(request: Request, limit: int) -> bytes:
@@ -675,20 +684,19 @@ async def download_share_bundle(
 
 @public_router.get("/docs/import")
 async def import_shared_doc(
-    src: str = Query(..., description="Sender's Celerp public URL"),
-    token: str = Query(..., description="Share token from sender"),
+    link: str = Query(..., description="The share link: the page the sender's document is shown on"),
     company_id: _uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """Recipient's Celerp fetches a shared doc from the sender's instance and imports it.
+    """Fetch a document another Celerp shared and import it as a received doc.
 
-    Called by celerp.com/accept after probing that both instances are reachable.
-    The doc is stored with status='received' — not auto-booked. Recipient reviews first.
+    The doc is stored with status='received', not booked: the recipient reviews it first.
     """
-    src_clean = await _validate_public_src(src)
-    fetch_url = f"{src_clean}/share/{token}/bundle"
+    page, token = await _validate_share_link(link)
+    parts = urlsplit(page)
+    fetch_url = f"{page}/bundle"
 
     try:
         from celerp.services.outbound_url import (
@@ -719,7 +727,7 @@ async def import_shared_doc(
     except Exception:
         raise HTTPException(status_code=502, detail="Could not reach sender's Celerp instance")
 
-    return await _import_bundle(bundle, token, company_id, user.id, session, src_clean)
+    return await _import_bundle(bundle, token, company_id, user.id, session, f"{parts.scheme}://{parts.netloc}")
 
 
 @public_router.post("/docs/import-bundle")
@@ -789,7 +797,13 @@ async def _import_bundle(
         inbound["source_origin"] = src
 
     entity_id = f"doc:rcv:{_uuid.uuid4().hex[:12]}"
-    idem_key = f"share:{token}:{company_id}" if token else f"bundle:{_uuid.uuid4().hex}"
+    # A retried import resolves to the document it already created: a link by its
+    # share token, a file by its document content.
+    if token:
+        idem_key = f"share:{token}:{company_id}"
+    else:
+        digest = hashlib.sha256(json.dumps(doc, sort_keys=True, default=str).encode()).hexdigest()
+        idem_key = f"bundle:{digest}:{company_id}"
 
     entry = await emit_event(
         session,
