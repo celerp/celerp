@@ -1175,6 +1175,34 @@ async def patch_item(token: str, entity_id: str, fields_changed: dict) -> dict:
         return _raise(await c.patch(f"/items/{entity_id}", json={"fields_changed": wrapped})).json()
 
 
+def _received_doc_path(r: httpx.Response) -> str:
+    """The API answers a shared-document import with a redirect to the new doc."""
+    location = r.headers.get("location", "")
+    if r.status_code == 302 and location.startswith("/docs/"):
+        return location
+    _raise(r)
+    raise APIError(r.status_code, "Import did not return a document")
+
+
+async def import_shared_doc(token: str, src: str, share_token: str) -> str:
+    """Fetch a document shared from another Celerp and import it; returns its UI path."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=30.0, follow_redirects=False) as c:
+            r = await c.get("/docs/import", params={"src": src, "token": share_token})
+    return _received_doc_path(r)
+
+
+async def import_doc_bundle(token: str, filename: str, content: bytes) -> str:
+    """Import a downloaded .celerp bundle; returns the new document's UI path."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=30.0, follow_redirects=False, bulk=True) as c:
+            r = await c.post(
+                "/docs/import-bundle",
+                files={"bundle": (filename, content, "application/json")},
+            )
+    return _received_doc_path(r)
+
+
 async def upload_attachment(token: str, entity_id: str, file) -> dict:
     async with _bulk_api_client(token) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()

@@ -1348,7 +1348,7 @@ def setup_routes(app):
                     cls="btn btn--primary",
                 ) if role_has_permission(_settings, _role, "edit_documents") else "",
                 A(t("btn.export_csv"), href="/docs/export/csv?" + _state_query(state), cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
-                A(t("doc.import_csv"), href="/docs/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
+                A(t("btn.import"), href="/docs/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") or role_has_permission(_settings, _role, "edit_documents") else "",
             ),
             _doc_type_intro(doc_type),
             _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{date_bar_extra}" if date_bar_extra else "", lang=lang),

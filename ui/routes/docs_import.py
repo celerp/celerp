@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 import io
 import uuid
+from urllib.parse import parse_qs, urlsplit
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -49,13 +50,63 @@ _DOC_IMPORT_SPEC = CsvImportSpec(
 )
 
 
+def parse_share_link(link: str) -> tuple[str, str] | None:
+    """Return (sender URL, share token) from a Celerp share link, or None.
+
+    Accepts both forms a sender can pass on: the celerp.com accept link
+    (``...accept?src=<url>&token=<token>``) and the sender's own share page
+    (``<url>/share/<token>``).
+    """
+    parts = urlsplit(link.strip())
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return None
+    query = parse_qs(parts.query)
+    if query.get("src") and query.get("token"):
+        return query["src"][0], query["token"][0]
+    base, sep, share_token = parts.path.partition("/share/")
+    share_token = share_token.strip("/")
+    if sep and share_token and "/" not in share_token:
+        return f"{parts.scheme}://{parts.netloc}{base}", share_token
+    return None
+
+
+def shared_import_panel(*, error: str | None = None, link: str = "") -> FT:
+    """Import a document someone shared: paste the link, or upload the .celerp file."""
+    return Div(
+        H2(t("docs_import.shared_title"), cls="section-title"),
+        P(t("docs_import.shared_hint"), cls="text-muted"),
+        P(error, cls="flash flash--error") if error else "",
+        Form(
+            Div(
+                Label(t("docs_import.share_link_label"), For="share-link", cls="form-label"),
+                Input(type="url", id="share-link", name="link", value=link, required=True, cls="form-input"),
+                cls="form-group",
+            ),
+            Button(t("btn.import"), cls="btn btn--primary", type="submit"),
+            method="post",
+            action="/docs/import/shared",
+        ),
+        P(t("docs_import.celerp_file_hint"), cls="text-muted", style="margin-top: 16px;"),
+        Form(
+            Div(
+                Label(t("docs_import.celerp_file_label"), For="celerp-file", cls="form-label"),
+                Input(type="file", id="celerp-file", name="bundle", accept=".celerp,application/json", required=True),
+                cls="form-group",
+            ),
+            Button(t("btn.import"), cls="btn btn--secondary", type="submit"),
+            method="post",
+            action="/docs/import/shared-file",
+            enctype="multipart/form-data",
+        ),
+        cls="import-panel",
+        id="shared-import",
+        style="margin-top: 32px;",
+    )
+
+
 def setup_routes(app):
 
-    @app.get("/docs/import")
-    async def docs_import_page(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
+    async def _import_page(request: Request, *, shared_error: str | None = None, link: str = ""):
         return await base_shell(
             page_header(
                 t("docs_import.import_documents"),
@@ -68,10 +119,50 @@ def setup_routes(app):
                 preview_action="/docs/import/preview",
                 has_mapping=True,
             ),
+            shared_import_panel(error=shared_error, link=link),
             title=page_title("docs_import.import_documents"),
             nav_active="docs",
             request=request,
         )
+
+    @app.get("/docs/import")
+    async def docs_import_page(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        return await _import_page(request)
+
+    @app.post("/docs/import/shared")
+    async def docs_import_shared(request: Request):
+        """Import a document another Celerp shared, from its share link."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        link = str((await request.form()).get("link") or "").strip()
+        parsed = parse_share_link(link)
+        if parsed is None:
+            return await _import_page(request, shared_error=t("docs_import.invalid_share_link"), link=link)
+        try:
+            doc_path = await api.import_shared_doc(token, *parsed)
+        except APIError as e:
+            return await _import_page(request, shared_error=str(e.detail), link=link)
+        return RedirectResponse(doc_path, status_code=303)
+
+    @app.post("/docs/import/shared-file")
+    async def docs_import_shared_file(request: Request):
+        """Import a document from a downloaded .celerp file."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        upload = (await request.form()).get("bundle")
+        content = await upload.read() if upload is not None and hasattr(upload, "read") else b""
+        if not content:
+            return await _import_page(request, shared_error=t("docs_import.no_celerp_file"))
+        try:
+            doc_path = await api.import_doc_bundle(token, upload.filename or "shared.celerp", content)
+        except APIError as e:
+            return await _import_page(request, shared_error=str(e.detail))
+        return RedirectResponse(doc_path, status_code=303)
 
     @app.get("/docs/import/template")
     async def docs_import_template(request: Request):
