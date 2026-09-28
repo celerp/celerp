@@ -64,7 +64,7 @@ def parse_share_link(link: str) -> str | None:
     ``share.celerp.com`` link.
     """
     parts = urlsplit(link.strip())
-    if parts.scheme not in ("http", "https") or not parts.netloc:
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password:
         return None
     query = parse_qs(parts.query)
     if query.get("link"):
@@ -73,7 +73,7 @@ def parse_share_link(link: str) -> str | None:
         inner = query["link"][0]
         return None if "link=" in urlsplit(inner).query else parse_share_link(inner)
     if query.get("src") and query.get("token"):
-        return f"{query['src'][0].rstrip('/')}/share/{query['token'][0]}"
+        return parse_share_link(f"{query['src'][0].rstrip('/')}/share/{query['token'][0]}")
     path = parts.path.rstrip("/")
     base, sep, share_token = path.partition("/share/")
     if sep and share_token and "/" not in share_token:

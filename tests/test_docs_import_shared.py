@@ -101,6 +101,10 @@ def test_parse_share_link_accepts_every_link_form(link, expected):
     "https://shop.example.com/abc123",
     "https://www.celerp.com/accept?link=https%3A%2F%2Fshop.example.com%2Fdocs%2F1",
     "https://www.celerp.com/accept?link=javascript%3Aalert(1)",
+    "https://user:pass@shop.example.com/share/abc123",
+    "https://www.celerp.com/accept?link=https%3A%2F%2Fuser%3Apass%40shop.example.com%2Fshare%2Fabc",
+    "https://www.celerp.com/accept?src=javascript%3Aalert(1)&token=abc",
+    "https://www.celerp.com/accept?src=https%3A%2F%2Fuser%3Apass%40shop.example.com&token=abc",
     "https://www.celerp.com/accept?link=https%3A%2F%2Fshop.example.com%2Fshare%2Fabc&src=https%3A%2F%2Fx.example.com&token=t",
     "https://www.celerp.com/accept?link=https%3A%2F%2Fwww.celerp.com%2Faccept%3Flink%3Dhttps%253A%252F%252Fshop.example.com%252Fshare%252Fabc",
 ])
