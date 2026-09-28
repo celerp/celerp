@@ -1550,12 +1550,22 @@ async def _recost_run_lots(session: AsyncSession, company_id, user, order_id: st
         if lot is None:
             continue
         new_total = round(unit_cost * float(lot.get("quantity") or 0), 2)
-        await emit_event(
-            session, company_id=company_id, entity_id=lot_id, entity_type="item",
-            event_type="item.cost_adjusted",
+        event = dict(
+            entity_id=lot_id, event_type="item.cost_adjusted",
             data={"cost_total": new_total, "manufacturing_order_id": order_id},
-            actor_id=user.id, location_id=lot.get("location_id"), source="api",
-            idempotency_key=f"mfg:{order_id}:recost:{lot_id}", metadata_={"manufacturing_order_id": order_id},
+            actor_id=user.id, source="api", idempotency_key=f"mfg:{order_id}:recost:{lot_id}",
+        )
+        if lot.get("status") == "merged":
+            # The lot's cost already went into a merge result: carry the change there too.
+            from celerp_inventory.services import CostRestatementConflict, restate_item_cost
+            try:
+                await restate_item_cost(session, company_id, **event)
+            except CostRestatementConflict as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            continue
+        await emit_event(
+            session, company_id=company_id, entity_type="item", location_id=lot.get("location_id"),
+            metadata_={"manufacturing_order_id": order_id}, **event,
         )
 
 

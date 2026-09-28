@@ -2395,21 +2395,29 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             session, company_id, entity_id, actor_id=user.id, source="api"
         )
 
-    entry = await emit_event(
-        session,
-        company_id=company_id,
+    event = dict(
         entity_id=entity_id,
-        entity_type="item",
         event_type="item.updated",
         data=payload.model_dump(exclude_none=True),
         actor_id=user.id,
-        location_id=None,
         source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
     )
+    if changed_keys & COST_ITEM_KEYS:
+        entry = await _restate_cost_or_409(session, company_id, **event)
+    else:
+        entry = await emit_event(session, company_id=company_id, entity_type="item", location_id=None, metadata_={}, **event)
     await session.commit()
     return {"event_id": entry.id}
+
+
+async def _restate_cost_or_409(session: AsyncSession, company_id, **event):
+    """Apply a goods-cost change with its merge and COGS consequences (see restate_item_cost)."""
+    from celerp_inventory.services import CostRestatementConflict, restate_item_cost
+    try:
+        return await restate_item_cost(session, company_id, **event)
+    except CostRestatementConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 class BulkStatusBody(BaseModel):
@@ -4066,19 +4074,18 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
                 status_code=403,
                 detail="Setting inventory prices requires the 'set_inventory_prices' permission",
             )
-    entry = await emit_event(
-        session,
-        company_id=company_id,
+    event = dict(
         entity_id=entity_id,
-        entity_type="item",
         event_type="item.pricing.set",
         data=payload.model_dump(exclude_none=True),
         actor_id=user.id,
-        location_id=None,
         source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
     )
+    if is_cost_price_type(payload.price_type):
+        entry = await _restate_cost_or_409(session, company_id, **event)
+    else:
+        entry = await emit_event(session, company_id=company_id, entity_type="item", location_id=None, metadata_={}, **event)
     await session.commit()
     return {"event_id": entry.id}
 

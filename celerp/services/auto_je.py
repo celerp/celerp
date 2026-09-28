@@ -880,16 +880,24 @@ async def recognized_cogs_allocations(session, company_id, doc_id: str) -> dict 
     return (created.metadata_ or {}).get("cogs_allocations") or None
 
 
-async def create_for_doc_cogs_adjustment(session, *, company_id, user_id, doc_id: str, delta: float, cycle_tag: str, doc_number: str, ts: str | None = None) -> None:
-    """Post the fulfillment true-up JE: the difference between the actual cost of
-    the lots drawn and the COGS recognized at finalize.
+async def create_for_doc_cogs_adjustment(
+    session, *, company_id, user_id, doc_id: str, delta: float, cycle_tag: str, doc_number: str,
+    ts: str | None = None, trigger: str = "doc.fulfilled", memo: str | None = None,
+    context: dict | None = None,
+) -> None:
+    """Post a COGS true-up JE for a document line: by default the fulfillment
+    difference between the actual cost of the lots drawn and the COGS recognized
+    at finalize.
 
     A positive delta (actual cost above recognized) debits 5100 and relieves
     inventory; a negative one reverses that. cycle_tag scopes the JE id and its
     idempotency keys to the fulfillment cycle plus the batch of lines fulfilled
     in one call (fulfill-0:l0-1, fulfill-1:l2, ...), so replaying a batch is a
     no-op while each distinct batch, and each re-finalize cycle, trues up on
-    its own JE.
+    its own JE. A retrospective cost correction of a sold lot posts through the
+    same rule with its own trigger, memo, and context (the item and the
+    correction's identity) and a cycle_tag ending in the line (:l{index}), so
+    reversing that line voids it like any fulfillment true-up.
     """
     amount = round(abs(float(delta)), 2)
     if amount <= 0:
@@ -911,10 +919,12 @@ async def create_for_doc_cogs_adjustment(session, *, company_id, user_id, doc_id
         je_id=f"je:auto:{doc_id}:cogs-adj:{cycle_tag}",
         idem_create=je_idempotency_key(doc_id, f"cogs_adjustment:{cycle_tag}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"cogs_adjustment:{cycle_tag}", "p"),
-        memo=f"COGS adjustment for {doc_number} at fulfillment",
+        memo=memo or f"COGS adjustment for {doc_number} at fulfillment",
         ts=ts,
         entries=entries,
-        metadata_={"trigger": "doc.fulfilled", "doc_id": doc_id, "cogs_delta": round(float(delta), 2)},
+        metadata_={
+            "trigger": trigger, "doc_id": doc_id, "cogs_delta": round(float(delta), 2), **(context or {}),
+        },
     )
 
 
