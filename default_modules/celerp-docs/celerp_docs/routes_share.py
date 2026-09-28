@@ -1,20 +1,20 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
 
-"""Document sharing — generate public share links and serve read-only doc views.
+"""Document sharing: share links and read-only document pages.
 
-P2P share flow:
-  1. Sender clicks Share → POST /docs/{id}/share → get token
-  2. The share page (``<public url>/share/<token>``, or a share.celerp.com link on a
-     free instance) carries an Import link: celerp.com/accept?link=<share page>
-  3. Recipient pastes the link into their own Celerp → GET /docs/import?link=
-     (the older ``src`` + ``token`` pair is still accepted)
-  4. The document lands in Received; Book turns it into a local draft
-  5. Sender on private net → bundle download fallback
+How a share works:
+  1. The sender shares a document (POST /docs/{id}/share) and gets a link to a
+     read-only page for it.
+  2. That page has an Import button for recipients who use Celerp.
+  3. The recipient pastes the link into their own Celerp (GET /docs/import?link=).
+  4. The document arrives under Received, apart from the recipient's own books,
+     until they book it as a local draft.
+  5. When the sender's Celerp is not reachable from the recipient, the page offers
+     the document as a file to download and import instead.
 
-The official branded public renderers (the "Powered by Celerp" share pages) live in the proprietary
-celerp.output.share_render module; this module owns the share lifecycle/auth and passes the accept URL in.
-See celerp-cloud/SHARE_ACCEPT_FLOW.md for full spec and all failure states.
+Only the document types a recipient can import can be shared. The sender can
+revoke a link at any time.
 """
 
 from __future__ import annotations
