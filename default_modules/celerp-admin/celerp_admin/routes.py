@@ -63,7 +63,14 @@ ALL_CHECKS = [
 async def _check_missing_jes(
     session: AsyncSession, company_id, user_id, *, fix: bool,
 ) -> dict:
-    """Find documents whose expected accounting entry is missing."""
+    """Find documents whose expected accounting entry is missing.
+
+    An entry is only expected when the document's own history holds the
+    operation that posts it: a finalize for an invoice, a receipt for a
+    purchase order, or an import that posts on create. Status alone is not
+    evidence (a sent draft is still a draft)."""
+    from celerp.services.auto_je import import_auto_je_kind
+
     docs = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
@@ -77,6 +84,23 @@ async def _check_missing_jes(
             LedgerEntry.entity_type == "journal_entry",
         )
     )).scalars().all())
+
+    posted_by: dict[str, set[str]] = {"invoice": set(), "purchase_order": set()}
+    for entity_id, event_type, data in (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_type == "doc",
+            LedgerEntry.event_type.in_(("doc.finalized", "doc.received", "doc.created")),
+        )
+    )).all():
+        if event_type == "doc.finalized":
+            posted_by["invoice"].add(entity_id)
+        elif event_type == "doc.received":
+            posted_by["purchase_order"].add(entity_id)
+        else:
+            kind = import_auto_je_kind(data or {})
+            if kind in posted_by:
+                posted_by[kind].add(entity_id)
 
     from celerp.models.company import Company
     from celerp.services.money import checked_exchange_rate, require_doc_rate
@@ -122,7 +146,7 @@ async def _check_missing_jes(
 
         if doc_type == "invoice":
             fin_key = je_idempotency_key(entity_id, "invoice.finalized", "c")
-            if fin_key not in existing_keys:
+            if fin_key not in existing_keys and entity_id in posted_by["invoice"]:
                 problem = _rate_problem(state)
                 detail = {"doc_id": entity_id, "trigger": "finalize", "total": total}
                 if problem:
@@ -193,7 +217,7 @@ async def _check_missing_jes(
                         existing_keys.add(agg_key)
                         fixed += 1
 
-        elif doc_type == "purchase_order" and status != "draft":
+        elif doc_type == "purchase_order" and entity_id in posted_by["purchase_order"]:
             rcv_key = je_idempotency_key(entity_id, "po.received", "c")
             if rcv_key not in existing_keys:
                 problem = _rate_problem(state)

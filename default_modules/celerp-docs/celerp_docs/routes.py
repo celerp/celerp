@@ -1246,13 +1246,8 @@ async def get_doc_pdf(
 
     # Footer import link only while the share link is live, so saved PDFs
     # never carry a URL that 404s.
-    from celerp_docs.routes_share import _find_share_row, _share_active, _share_url
-    from celerp.output.doc_print import IMPORTABLE_DOC_TYPES
-    import_url = None
-    if doc.get("doc_type") in IMPORTABLE_DOC_TYPES:
-        share_row = await _find_share_row(session, company_id, entity_id)
-        if share_row is not None and _share_active(share_row):
-            import_url = _share_url(share_row.token)
+    from celerp_docs.routes_share import _find_share_row, share_import_url
+    import_url = await share_import_url(session, await _find_share_row(session, company_id, entity_id))
 
     # reportlab layout is CPU-bound Python; a worker thread keeps a large
     # document's render from stalling every concurrent request on the loop.
@@ -3883,22 +3878,6 @@ async def delete_doc_note(
     return {"event_id": entry.id}
 
 
-def _import_auto_je_kind(data: dict) -> str | None:
-    """Accounting operation an imported snapshot would post, or None."""
-    status = str(data.get("status") or "draft")
-    total = float(data.get("total", 0) or 0)
-    if status in ("void", "draft", "converted", "expired") or total <= 0:
-        return None
-    doc_type = str(data.get("doc_type") or "")
-    if doc_type == "invoice" and status in ("sent", "final", "partial", "paid", "awaiting_payment"):
-        return "invoice"
-    if doc_type == "purchase_order" and status in ("received", "partially_received", "final"):
-        return "purchase_order"
-    if doc_type == "bill" and status in ("awaiting_payment", "partial", "paid", "final"):
-        return "bill"
-    return None
-
-
 @router.post("/import")
 async def import_doc(
     body: DocImportRecord,
@@ -3933,7 +3912,7 @@ async def import_doc(
 
     _imp_company = await session.get(Company, company_id)
     _imp_base_currency = (_imp_company.settings.get("currency", "USD") if _imp_company else "USD")
-    if _import_auto_je_kind(body.data) is not None:
+    if auto_je.import_auto_je_kind(body.data) is not None:
         _require_doc_rate_http(body.data, _imp_base_currency)
 
     entry = await emit_event(
@@ -4004,7 +3983,7 @@ async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id:
     Payment entries are never synthesized from snapshot totals because their bank
     account and settlement date/rate are separate facts that the snapshot cannot supply.
     """
-    kind = _import_auto_je_kind(data)
+    kind = auto_je.import_auto_je_kind(data)
     if kind is None:
         return
     total = float(data.get("total", 0) or 0)
@@ -4123,7 +4102,7 @@ async def batch_import_docs(
             skipped_existing += 1
             continue
         try:
-            if _import_auto_je_kind(rec.data) is not None:
+            if auto_je.import_auto_je_kind(rec.data) is not None:
                 _require_doc_rate_http(rec.data, _batch_base_currency)
             entry = await emit_event(
                 session,

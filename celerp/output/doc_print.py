@@ -30,9 +30,24 @@ EMPTY = "--"
 # Doc types that show pieces/weight measure sub-lines (the invoice layout).
 INVOICE_LAYOUT_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo", "list"})
 
-# Doc types a recipient can import on their own instance; only these get the
-# Import-into-Celerp footer link (an import link on a memo would just 422).
-IMPORTABLE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "purchase_order", "quotation", "list"})
+# The celerp.com page a recipient lands on to import a shared document. It is
+# handed the share page's own address as `link`.
+IMPORT_ACCEPT_URL = "https://www.celerp.com/accept"
+
+
+def import_accept_url(page: str) -> str:
+    """Accept URL carrying the share page address as `link`."""
+    from urllib.parse import urlencode
+    return f"{IMPORT_ACCEPT_URL}?{urlencode({'link': page})}"
+
+
+# On a share page the address the recipient is actually reading is the one to
+# import from; behind the relay the server cannot know it, so the page fills it in.
+_IMPORT_FROM_PAGE_JS = (
+    "(function(){var a=document.getElementById('dp-import');"
+    "if(a&&/^https?:$/.test(location.protocol)){a.href='" + IMPORT_ACCEPT_URL
+    + "?link='+encodeURIComponent(location.origin+location.pathname);}})();"
+)
 
 _BRAND_URL = _brand_url("doc-print")
 
@@ -179,17 +194,20 @@ body { font-family: Arial, sans-serif; font-size: 10pt; color: #111; background:
 """
 
 
-def _doc_footer(import_url: str | None):
+def _doc_footer(import_url: str | None, import_from_page: bool = False):
     """One footer format everywhere: brand left, pipe, import link right.
     The import link is only rendered when the document's share link is live,
-    so a printed or PDF'd copy never carries a URL that 404s."""
+    so a printed or PDF'd copy never carries a URL that 404s. On the share
+    page itself (``import_from_page``) the link is pointed at the page's own
+    address once it loads."""
     brand = A(_BRAND_LABEL, href=_BRAND_URL, target="_blank", rel="noopener")
     if not import_url:
         return Div(brand, cls="dp-footer")
     return Div(
         brand,
         Span("|", cls="dp-footer__sep"),
-        A("Import into Celerp", href=import_url),
+        A("Import into Celerp", href=import_url, id="dp-import"),
+        Script(_IMPORT_FROM_PAGE_JS) if import_from_page else None,
         cls="dp-footer",
     )
 
@@ -216,6 +234,7 @@ def _pay_bar(pay_url: str | None, doc: dict, currency: str):
 
 
 def render_doc_print_html(doc: dict, *, import_url: str | None = None,
+                          import_from_page: bool = False,
                           pay_url: str | None = None, auto_print: bool = False,
                           layout: str | None = None,
                           line_identifier: str = "sku") -> str:
@@ -225,7 +244,8 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
     fields, and (for invoice-layout types) enriched line measures - both the
     UI print routes and the API share view prepare it the same way.
     ``pay_url`` adds the screen-only payment bar (public share view of a
-    payable doc on a Stripe-connected instance).
+    payable doc on a Stripe-connected instance). ``import_from_page`` marks
+    the public share view, whose import link points at its own address.
 
     A shipping document (list_type="shipping_doc") is one shipment record with
     two paper renderings, chosen via ``layout``: "delivery_note" (the default -
@@ -622,7 +642,7 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
             Div(P("Note to Customer", cls="dp-notes-label"), P(customer_note), cls="dp-notes") if customer_note else None,
             declaration_section,
             signature_section,
-            _doc_footer(import_url),
+            _doc_footer(import_url, import_from_page),
             Script("window.onload = function() { window.print(); }") if auto_print else None,
         ),
     )

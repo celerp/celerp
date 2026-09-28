@@ -343,9 +343,9 @@ async def test_share_import_bundle_multipart(client):
         files={"bundle": ("bundle.json", BytesIO(bundle_data.encode()), "application/json")},
         follow_redirects=False,
     )
-    # Returns 302 redirect to the created doc (same as JSON path) — proves multipart branch hit
+    # Returns 302 redirect to the Received entry (same as JSON path), which proves multipart branch hit
     assert r.status_code == 302
-    assert r.headers.get("location", "").startswith("/docs/doc:rcv:")
+    assert r.headers.get("location", "").startswith("/docs/received/rcv:")
 
 
 @pytest.mark.asyncio

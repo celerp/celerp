@@ -325,6 +325,14 @@ _SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
     {
         "slot": "projection_handler",
         "contrib": {
+            "prefix": "received_doc.",
+            "handler": "celerp_docs.received:apply_received_event",
+            "_module": "celerp-docs",
+        },
+    },
+    {
+        "slot": "projection_handler",
+        "contrib": {
             "prefix": "item.",
             "handler": "celerp_inventory.projections:apply_item_event",
             "_module": "celerp-inventory",

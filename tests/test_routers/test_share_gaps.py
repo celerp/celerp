@@ -231,9 +231,9 @@ async def test_share_import_bundle_json(client):
         content=json.dumps(bundle),
         follow_redirects=False,
     )
-    # Returns 302 redirect to /docs/{entity_id}
+    # Returns 302 redirect to the Received entry
     assert r.status_code == 302
-    assert r.headers["location"].startswith("/docs/doc:rcv:")
+    assert r.headers["location"].startswith("/docs/received/rcv:")
 
 
 @pytest.mark.asyncio

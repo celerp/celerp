@@ -243,24 +243,6 @@ async def test_reports_purchases_price_range(client):
 
 
 # ---------------------------------------------------------------------------
-# share.py line 53: _share_url with celerp_public_url set
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_share_url_with_public_url(client):
-    """Share URL includes src= param when CELERP_PUBLIC_URL is set (line 53)."""
-    # Test _share_url() directly - it's a pure function that builds the URL.
-    # Testing via HTTP adds no value here and introduces flakiness from the
-    # shared settings singleton across the full test suite.
-    from celerp_docs.routes_share import _share_url
-    with patch("celerp_docs.routes_share.settings") as mock_settings:
-        mock_settings.celerp_public_url = "https://my.celerp.instance"
-        url = _share_url("testtoken123")
-    assert "src=" in url, f"Expected src= in share URL, got: {url!r}"
-    assert "testtoken123" in url
-
-
-# ---------------------------------------------------------------------------
 # share.py line 129: GET /share/{token} with doc projection missing
 # ---------------------------------------------------------------------------
 

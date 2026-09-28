@@ -37,6 +37,25 @@ _INVENTORY_ACCT = "1130-P"
 _FX_DIFFERENCE_ACCT = "6960"
 
 
+def import_auto_je_kind(data: dict) -> str | None:
+    """Accounting operation an imported snapshot would post, or None.
+
+    Shared by the import endpoints (which post it) and the Doctor (which only
+    repairs an entry the document's own history says should exist)."""
+    status = str(data.get("status") or "draft")
+    total = float(data.get("total", 0) or 0)
+    if status in ("void", "draft", "converted", "expired") or total <= 0:
+        return None
+    doc_type = str(data.get("doc_type") or "")
+    if doc_type == "invoice" and status in ("sent", "final", "partial", "paid", "awaiting_payment"):
+        return "invoice"
+    if doc_type == "purchase_order" and status in ("received", "partially_received", "final"):
+        return "purchase_order"
+    if doc_type == "bill" and status in ("awaiting_payment", "partial", "paid", "final"):
+        return "bill"
+    return None
+
+
 def _balanced_with_fx_difference(entries: list[dict]) -> list[dict]:
     """The entry, plus the exchange difference line that makes it balance.
 

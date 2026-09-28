@@ -681,6 +681,34 @@ class DocSharedImport(BaseModel):
     model_config = {"extra": "allow"}  # carries the allowlisted shared-document fields
 
 
+class ReceivedDocImported(BaseModel):
+    """A document another business shared, held apart from our own documents.
+
+    Carries the sender identity, the revision digest and the sanitized document.
+    The same event type records a first import and a later sender revision."""
+    source_installation: str
+    source_document: str
+    source_revision: str | None = None
+    source_link: str | None = None
+    digest: str
+    received_at: str
+    document: dict[str, Any]
+
+
+class ReceivedDocBooked(BaseModel):
+    """The recipient booked a received document as a local draft."""
+    target_id: str
+    target_type: str
+    revision_digest: str
+    target_version: int
+
+
+class ReceivedDocDraftUpdated(BaseModel):
+    """The recipient applied a newer sender revision to the booked draft."""
+    revision_digest: str
+    target_version: int
+
+
 class DocNoteAdded(BaseModel):
     doc_id: str
     note_id: str
@@ -1231,6 +1259,10 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.converted": DocConverted,
     "doc.received": DocReceived,
     "doc.shared_import": DocSharedImport,
+    "received_doc.imported": ReceivedDocImported,
+    "received_doc.revised": ReceivedDocImported,
+    "received_doc.booked": ReceivedDocBooked,
+    "received_doc.draft_updated": ReceivedDocDraftUpdated,
     "doc.note_added": DocNoteAdded,
     "doc.note_updated": DocNoteUpdated,
     "doc.note_removed": DocNoteRemoved,

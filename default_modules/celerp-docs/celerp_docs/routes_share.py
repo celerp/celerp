@@ -5,11 +5,12 @@
 
 P2P share flow:
   1. Sender clicks Share → POST /docs/{id}/share → get token
-  2. Share URL: https://www.celerp.com/accept?src={CELERP_PUBLIC_URL}&token={token}
-  3. Recipient lands on celerp.com/accept (static page) → probes localhost + src
-  4a. Recipient has local Celerp + src reachable → GET /docs/import?src=&token= on their instance
-  4b. Recipient has no Celerp → signup CTA
-  4c. Sender on private net → bundle download fallback
+  2. The share page (``<public url>/share/<token>``, or a share.celerp.com link on a
+     free instance) carries an Import link: celerp.com/accept?link=<share page>
+  3. Recipient pastes the link into their own Celerp → GET /docs/import?link=
+     (the older ``src`` + ``token`` pair is still accepted)
+  4. The document lands in Received; Book turns it into a local draft
+  5. Sender on private net → bundle download fallback
 
 The official branded public renderers (the "Powered by Celerp" share pages) live in the proprietary
 celerp.output.share_render module; this module owns the share lifecycle/auth and passes the accept URL in.
@@ -21,10 +22,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import secrets
 import uuid as _uuid
 from datetime import date as _date, datetime, time as _time, timedelta, timezone
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
@@ -34,7 +36,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
 from celerp.db import get_session
-from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken, is_active as share_is_active
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -42,11 +43,12 @@ from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp.services.permissions import require_permission
 from celerp.services.outbound_url import validate_public_base_url
 from celerp.output.doc_print import (
-    IMPORTABLE_DOC_TYPES, INVOICE_LAYOUT_DOC_TYPES,
-    render_doc_print_html,
+    IMPORT_ACCEPT_URL, INVOICE_LAYOUT_DOC_TYPES,
+    import_accept_url, render_doc_print_html,
 )
 from celerp.output.share_render import _not_found_page
 from celerp.output.document_context import prepare_document_output
+from celerp_docs import received
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 
 # Authenticated router — share token generation requires login
@@ -56,7 +58,7 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 public_router = APIRouter()
 
 _TOKEN_BYTES = 9  # 72-bit URL-safe token (12 chars) — short enough to share by hand, unguessable, revocable
-_ACCEPT_BASE = "https://www.celerp.com/accept"
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 # A bundle arrives from another party — treat it as untrusted input. Cap what we
 # read, accept only known fields, and recompute all money locally rather than
@@ -91,21 +93,34 @@ _LINE_NUM_FIELDS = frozenset({
 })
 
 
-def _share_url(token: str) -> str:
-    """Build the full celerp.com/accept URL for a share token."""
-    params: dict[str, str] = {"token": token}
-    src = (settings.celerp_public_url or "").rstrip("/")
-    if src:
-        params["src"] = src
-    return f"{_ACCEPT_BASE}?{urlencode(params)}"
+def _import_doc_type(entity_type: str, state: dict) -> str | None:
+    """The doc_type a shared document carries in its bundle: a quote list goes
+    out as a quotation."""
+    if entity_type == "list":
+        return "quotation" if state.get("list_type") in ("quote", "quotation") else "list"
+    return state.get("doc_type")
+
+
+def _import_link(link: str | None, src: str | None, token: str | None) -> str:
+    """One share link from either input form: ``link``, or the older
+    ``src`` + ``token`` pair. Mixed or incomplete input is rejected."""
+    if link:
+        if src or token:
+            raise HTTPException(status_code=400, detail="Give either link, or src and token, not both")
+        return link
+    if not (src and token):
+        raise HTTPException(status_code=400, detail="A share link is required: link, or both src and token")
+    if not _TOKEN_RE.fullmatch(token):
+        raise HTTPException(status_code=400, detail="Not a Celerp share link")
+    return f"{src.rstrip('/')}/share/{token}"
 
 
 # ---------------------------------------------------------------------------
 # Untrusted-input guards (SSRF, size caps, field whitelist + money recompute)
 # ---------------------------------------------------------------------------
 
-async def _validate_share_link(link: str) -> tuple[str, str]:
-    """Return (share page URL, share token) for a public share link, or 400.
+async def _validate_share_link(link: str) -> str:
+    """Return the share page URL for a public share link, or 400.
 
     Every Celerp share link is a public page whose last path segment is its
     token, with the bundle download at ``<page>/bundle``."""
@@ -116,7 +131,7 @@ async def _validate_share_link(link: str) -> tuple[str, str]:
     token = urlsplit(page).path.rsplit("/", 1)[-1]
     if not token:
         raise HTTPException(status_code=400, detail="Not a Celerp share link")
-    return page, token
+    return page
 
 
 async def _read_body_capped(request: Request, limit: int) -> bytes:
@@ -242,8 +257,8 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     public = _public_bundle_doc(doc)
     currency = _str(public.get("currency"), 8) or "USD"
     # Payment state and derived totals are local accounting facts. Never
-    # accept them from an untrusted sender; totals are recomputed below and
-    # payment/outstanding state starts clean on the received document.
+    # accept them from an untrusted sender: totals are recomputed below, and a
+    # received document carries no payment state at all.
     derived = {"line_items", "doc_taxes", "subtotal", "tax", "total", "amount_paid", "amount_outstanding"}
     out: dict = {k: v for k, v in public.items() if k not in derived}
     out["currency"] = currency
@@ -297,10 +312,6 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     out["subtotal"] = to_stored_float(round_money(subtotal_d, currency))
     out["tax"] = to_stored_float(round_money(tax_d, currency))
     out["total"] = to_stored_float(round_money(subtotal_d + tax_d + shipping_d, currency))
-    # Payment state belongs to the recipient. Never credit payment data from an
-    # untrusted shared bundle.
-    out["amount_paid"] = 0.0
-    out["amount_outstanding"] = out["total"]
     return out
 
 
@@ -392,20 +403,35 @@ async def send_pay_url(session: AsyncSession, company_id, entity_id: str) -> str
     return f"{base}/pay/{row.token}"
 
 
-async def _share_status(row: DocShareToken | None) -> dict:
+async def share_import_url(session: AsyncSession, row: DocShareToken | None,
+                           view_url: str | None = None) -> str | None:
+    """Import link for a live share of an importable document: the accept page
+    carrying the public view address. None otherwise, so a printed or saved
+    copy never carries a link that goes nowhere."""
+    if row is None or not _share_active(row):
+        return None
+    doc = await session.get(Projection, (row.company_id, row.entity_id))
+    if doc is None or _import_doc_type(doc.entity_type, doc.state or {}) not in _IMPORTABLE_DOC_TYPES:
+        return None
+    view_url = view_url or await public_view_url(row.token)
+    return import_accept_url(view_url) if view_url else None
+
+
+async def _share_status(session: AsyncSession, row: DocShareToken | None) -> dict:
     """Uniform share-state payload for the UI: status/create/revoke all return it."""
     if row is None:
         return {"shared": False, "active": False, "revoked": False, "expired": False,
                 "token": None, "url": None, "view_url": None, "expires_at": None}
     active = _share_active(row)
+    view_url = await public_view_url(row.token)
     return {
         "shared": active,
         "active": active,
         "revoked": row.revoked_at is not None,
         "expired": row.revoked_at is None and not active,
         "token": row.token,
-        "url": _share_url(row.token),
-        "view_url": await public_view_url(row.token),
+        "url": await share_import_url(session, row, view_url),
+        "view_url": view_url,
         "expires_at": row.expires_at.date().isoformat() if row.expires_at else None,
     }
 
@@ -442,7 +468,7 @@ async def share_status(
         raise HTTPException(status_code=404, detail="Document not found")
     share_row = await get_or_create_share_token(session, company_id, entity_id)
     await session.commit()
-    return await _share_status(share_row)
+    return await _share_status(session, share_row)
 
 
 @router.post("/docs/{entity_id}/share")
@@ -477,7 +503,7 @@ async def create_share_link(
     from celerp.services import relay_share
     relay_share.ensure_running()
     await session.commit()
-    return await _share_status(share_row)
+    return await _share_status(session, share_row)
 
 
 @router.delete("/docs/{entity_id}/share")
@@ -494,7 +520,7 @@ async def revoke_share_link(
         raise HTTPException(status_code=404, detail="No share link found")
     token_row.revoked_at = datetime.now(timezone.utc)
     await session.commit()
-    return await _share_status(token_row)
+    return await _share_status(session, token_row)
 
 
 # ---------------------------------------------------------------------------
@@ -614,7 +640,11 @@ async def view_shared_doc(
     await _resolve_share_contact(session, share_row.company_id, state)
     ident_mode = await _enrich_share_lines(session, share_row.company_id, state)
 
-    importable = state.get("doc_type") in IMPORTABLE_DOC_TYPES
+    importable = _import_doc_type(row.entity_type, state) in _IMPORTABLE_DOC_TYPES
+    # The page points its Import link at the address it is read from, which
+    # behind share.celerp.com only the browser knows.
+    base = (settings.celerp_public_url or "").rstrip("/")
+    import_url = (import_accept_url(f"{base}/share/{token}") if base else IMPORT_ACCEPT_URL) if importable else None
     # Online payment: offered on money-carrying, payable doc types when this
     # instance has Stripe connected. The renderer drops the bar once nothing
     # is outstanding, so a paid invoice's link quietly reverts to view-only.
@@ -624,7 +654,8 @@ async def view_shared_doc(
         pay_url = f"/pay/{token}"
     html = render_doc_print_html(
         state,
-        import_url=_share_url(token) if importable else None,
+        import_url=import_url,
+        import_from_page=True,
         pay_url=pay_url,
         line_identifier=ident_mode,
     )
@@ -659,16 +690,24 @@ async def download_share_bundle(
 
     doc = dict(row.state or {})
     if row.entity_type == "list":
-        doc.setdefault("doc_type", "quotation" if doc.get("list_type") in ("quote", "quotation") else "list")
+        doc.setdefault("doc_type", _import_doc_type(row.entity_type, doc))
     for key, value in (await _letterhead(session, share_row.company_id)).items():
         if key not in doc and value:
             doc[key] = value
     await _resolve_share_contact(session, share_row.company_id, doc)
     public_doc = _public_bundle_doc(doc)
     ref = public_doc.get("ref_id") or public_doc.get("doc_number") or share_row.entity_id
+    from celerp.config import ensure_instance_id
     bundle = {
         "version": 1,
         "doc": public_doc,
+        # Stable identity of this document, whichever link or file carries it:
+        # the recipient files every revision of it under one Received entry.
+        "source": {
+            "installation": hashlib.sha256(ensure_instance_id().encode()).hexdigest(),
+            "document": share_row.entity_id,
+            "revision": row.version,
+        },
         "exported_at": datetime.now(timezone.utc).isoformat(),
     }
     filename = f"{ref}.celerp"
@@ -684,18 +723,19 @@ async def download_share_bundle(
 
 @public_router.get("/docs/import")
 async def import_shared_doc(
-    link: str = Query(..., description="The share link: the page the sender's document is shown on"),
+    link: str | None = Query(None, description="The share link: the page the sender's document is shown on"),
+    src: str | None = Query(None, description="Older link form: the sender's public address, given with token"),
+    token: str | None = Query(None, description="Older link form: the share token, given with src"),
     company_id: _uuid.UUID = Depends(get_current_company_id),
     _: None = require_permission("edit_documents"),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    """Fetch a document another Celerp shared and import it as a received doc.
+    """Fetch a document another Celerp shared and file it in Received.
 
-    The doc is stored with status='received', not booked: the recipient reviews it first.
+    Nothing is booked: the recipient reviews it there and books it explicitly.
     """
-    page, token = await _validate_share_link(link)
-    parts = urlsplit(page)
+    page = await _validate_share_link(_import_link(link, src, token))
     fetch_url = f"{page}/bundle"
 
     try:
@@ -727,7 +767,7 @@ async def import_shared_doc(
     except Exception:
         raise HTTPException(status_code=502, detail="Could not reach sender's Celerp instance")
 
-    return await _import_bundle(bundle, token, company_id, user.id, session, f"{parts.scheme}://{parts.netloc}")
+    return await _import_bundle(bundle, company_id, user.id, session, page)
 
 
 @public_router.post("/docs/import-bundle")
@@ -767,7 +807,7 @@ async def import_bundle_upload(
         except Exception:
             raise HTTPException(status_code=422, detail="Request body is not valid JSON")
 
-    return await _import_bundle(bundle, None, company_id, user.id, session, None)
+    return await _import_bundle(bundle, company_id, user.id, session, None)
 
 
 # ---------------------------------------------------------------------------
@@ -776,51 +816,26 @@ async def import_bundle_upload(
 
 async def _import_bundle(
     bundle: dict,
-    token: str | None,
     company_id: _uuid.UUID,
     actor_id: _uuid.UUID,
     session: AsyncSession,
-    src: str | None,
+    link: str | None,
 ) -> Response:
-    """Import a .celerp bundle dict as a received doc. Returns a redirect to the doc."""
+    """File a .celerp bundle in Received. Returns a redirect to the Received entry."""
     if not isinstance(bundle, dict):
         raise HTTPException(status_code=422, detail="Bundle is malformed")
     doc = bundle.get("doc") or {}
-    if not doc:
+    if not isinstance(doc, dict) or not doc:
         raise HTTPException(status_code=422, detail="Bundle contains no document data")
 
     # Accept only known fields and recompute money locally — never trust the bundle.
-    inbound = _sanitize_bundle_doc(doc)
-    if token:
-        inbound["source_share_token"] = token
-    if src:
-        inbound["source_origin"] = src
-
-    entity_id = f"doc:rcv:{_uuid.uuid4().hex[:12]}"
-    # A retried import resolves to the document it already created: a link by its
-    # share token, a file by its document content.
-    if token:
-        idem_key = f"share:{token}:{company_id}"
-    else:
-        digest = hashlib.sha256(json.dumps(doc, sort_keys=True, default=str).encode()).hexdigest()
-        idem_key = f"bundle:{digest}:{company_id}"
-
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="doc",
-        event_type="doc.shared_import",
-        data=inbound,
-        actor_id=actor_id,
-        location_id=None,
-        source="share_import",
-        idempotency_key=idem_key,
-        metadata_={"share_token": token or "", "src": src or ""},
+    document = _sanitize_bundle_doc(doc)
+    rid = await received.record_received(
+        session, company_id, actor_id, bundle=bundle, document=document, link=link,
     )
     await session.commit()
 
     return Response(
         status_code=302,
-        headers={"Location": f"/docs/{entry.entity_id}"},
+        headers={"Location": f"/docs/received/{rid}"},
     )

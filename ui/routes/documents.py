@@ -28,7 +28,6 @@ from ui.components.files import files_section as _shared_doc_files_section
 
 
 from celerp.output.doc_print import (
-    IMPORTABLE_DOC_TYPES as _IMPORTABLE_DOC_TYPES,
     INVOICE_LAYOUT_DOC_TYPES as _INVOICE_LAYOUT_DOC_TYPES,
     render_doc_print_html,
 )
@@ -1933,13 +1932,14 @@ def setup_routes(app):
         await _aio.gather(*(_enrich(li) for li in doc.get("line_items", [])))
 
     async def _print_import_url(token: str, entity_id: str) -> str | None:
-        """Accept URL for the printout footer - only while the share link is
-        live, so a paper or PDF copy never carries a URL that 404s."""
+        """Import link for the printout footer. The API gives one only while the
+        share link is live and the document can be imported, so a paper or PDF
+        copy never carries a link that goes nowhere."""
         try:
             status = await api.get_share_status(token, entity_id)
         except APIError:
             return None
-        return status.get("url") if status.get("active") else None
+        return status.get("url")
 
     # Same export for lists
     @app.get("/lists/{entity_id}/print")
@@ -2015,8 +2015,7 @@ def setup_routes(app):
         # Source pieces/weight (+ the weight unit) from each line's parcel for the printout.
         _ident_mode = await _line_identifier_mode(token)
         await _enrich_print_lines(token, doc, _ident_mode)
-        _imp = (await _print_import_url(token, entity_id)
-                if doc.get("doc_type") in _IMPORTABLE_DOC_TYPES else None)
+        _imp = await _print_import_url(token, entity_id)
         from starlette.responses import HTMLResponse as _HR
         return _HR(render_doc_print_html(doc, import_url=_imp, auto_print=True, line_identifier=_ident_mode))
 
