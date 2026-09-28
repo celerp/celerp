@@ -17,7 +17,6 @@ def draft_invoice_id(api):
         "line_items": [{"name": "Widget", "quantity": 1, "unit_price": 100.0,
                         "line_total": 100.0}],
         "total": 100.0,
-        "amount_outstanding": 100.0,
     })
     assert r.status_code in {200, 201}, f"Failed to create doc: {r.text}"
     return r.json()["id"]
@@ -86,13 +85,12 @@ def test_doc_void_via_api_then_view(page, ui_server, api):
     r = api.post("/docs", json={
         "doc_type": "invoice",
         "ref_id": "DOC-VOID-001",
-        "status": "open",
-        "line_items": [],
-        "total": 0,
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 10.0, "line_total": 10.0}],
     })
     if r.status_code not in {200, 201}:
         pytest.skip("Could not create doc")
     doc_id = r.json()["id"]
+    assert api.post(f"/docs/{doc_id}/finalize").status_code == 200
 
     # Void via API — body required (reason is optional but body must be present)
     void_r = api.post(f"/docs/{doc_id}/void", json={})

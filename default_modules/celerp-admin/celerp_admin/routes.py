@@ -5,6 +5,7 @@
 
 Checks:
 1. missing_jes       - Docs with no corresponding journal entries
+1b. uncaused_recognition_jes - Sales/receiving JEs on a doc that was never finalized or received
 2. duplicate_jes     - Multiple JEs for the same doc trigger (finalize/payment/receive)
 3. ghost_events      - Multiple doc.created events for the same entity_id
 4. orphan_projections - Projections with no backing ledger events
@@ -44,6 +45,7 @@ router = APIRouter()
 
 ALL_CHECKS = [
     "missing_jes",
+    "uncaused_recognition_jes",
     "duplicate_jes",
     "ghost_events",
     "orphan_projections",
@@ -60,10 +62,58 @@ ALL_CHECKS = [
 
 # --- Individual checks ---
 
+async def _documents_with_posting_event(
+    session: AsyncSession, company_id,
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Documents whose own history holds the event that posts their entry.
+
+    Keyed by posting kind: "invoice" for a finalize (or a snapshot import that
+    posts an invoice on create), "purchase_order" for a receipt (or a snapshot
+    import that posts a received purchase order on create). Only a doc.created
+    the import routes recorded as a snapshot import counts; the status in any
+    other doc.created payload is not evidence.
+
+    The second map holds documents created already issued with no such record:
+    imports from before the record existed look exactly like this, so their
+    entries are neither owed nor safe to void without review."""
+    from celerp.services.auto_je import IMPORTED_SNAPSHOT, import_auto_je_kind
+
+    posted_by: dict[str, set[str]] = {"invoice": set(), "purchase_order": set()}
+    unrecorded: dict[str, set[str]] = {"invoice": set(), "purchase_order": set()}
+    for entity_id, event_type, data, meta in (await session.execute(
+        select(
+            LedgerEntry.entity_id, LedgerEntry.event_type,
+            LedgerEntry.data, LedgerEntry.metadata_,
+        ).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_type == "doc",
+            LedgerEntry.event_type.in_(("doc.finalized", "doc.received", "doc.created")),
+        )
+    )).all():
+        if event_type == "doc.finalized":
+            posted_by["invoice"].add(entity_id)
+        elif event_type == "doc.received":
+            posted_by["purchase_order"].add(entity_id)
+        else:
+            kind = import_auto_je_kind(data or {})
+            if kind not in posted_by:
+                continue
+            if (meta or {}).get(IMPORTED_SNAPSHOT):
+                posted_by[kind].add(entity_id)
+            else:
+                unrecorded[kind].add(entity_id)
+    return posted_by, unrecorded
+
+
 async def _check_missing_jes(
     session: AsyncSession, company_id, user_id, *, fix: bool,
 ) -> dict:
-    """Find documents whose expected accounting entry is missing."""
+    """Find documents whose expected accounting entry is missing.
+
+    An entry is only expected when the document's own history holds the
+    operation that posts it: a finalize for an invoice, a receipt for a
+    purchase order, or an import that posts on create. Status alone is not
+    evidence (a sent draft is still a draft)."""
     docs = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
@@ -77,6 +127,8 @@ async def _check_missing_jes(
             LedgerEntry.entity_type == "journal_entry",
         )
     )).scalars().all())
+
+    posted_by, _ = await _documents_with_posting_event(session, company_id)
 
     from celerp.models.company import Company
     from celerp.services.money import checked_exchange_rate, require_doc_rate
@@ -122,7 +174,7 @@ async def _check_missing_jes(
 
         if doc_type == "invoice":
             fin_key = je_idempotency_key(entity_id, "invoice.finalized", "c")
-            if fin_key not in existing_keys:
+            if fin_key not in existing_keys and entity_id in posted_by["invoice"]:
                 problem = _rate_problem(state)
                 detail = {"doc_id": entity_id, "trigger": "finalize", "total": total}
                 if problem:
@@ -193,7 +245,7 @@ async def _check_missing_jes(
                         existing_keys.add(agg_key)
                         fixed += 1
 
-        elif doc_type == "purchase_order" and status != "draft":
+        elif doc_type == "purchase_order" and entity_id in posted_by["purchase_order"]:
             rcv_key = je_idempotency_key(entity_id, "po.received", "c")
             if rcv_key not in existing_keys:
                 problem = _rate_problem(state)
@@ -212,6 +264,82 @@ async def _check_missing_jes(
         "fixed": fixed,
         "auto_fixable": not any(detail.get("blocked_reason") for detail in missing),
         "details": missing[:50],
+    }
+
+
+# Auto-JE triggers that recognise a document's sale or receipt, and the posting
+# kind whose event has to be in the document's own history for the entry to
+# be owed. The COGS backfill only ever followed a finalize entry.
+_RECOGNITION_CAUSE = {
+    "doc.finalized": "invoice",
+    "doc.cogs_backfill": "invoice",
+    "doc.received": "purchase_order",
+}
+
+
+async def _check_uncaused_recognition_jes(
+    session: AsyncSession, company_id, user_id, *, fix: bool,
+) -> dict:
+    """Find recognition JEs with no causal lifecycle event.
+
+    Earlier versions of the missing-JE repair posted from a document's status
+    alone, so a document that was never finalized or received (an imported copy
+    of someone else's invoice, a sent draft) could carry a sales or receiving
+    entry it never earned. Such an entry names a finalize or receipt the
+    document's history does not have. The fix voids only those entries; the
+    documents and every other entry are left as they are."""
+    caused, unrecorded = await _documents_with_posting_event(session, company_id)
+    created = (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.metadata_).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_type == "journal_entry",
+            LedgerEntry.event_type == "acc.journal_entry.created",
+            LedgerEntry.source == "auto_je",
+        )
+    )).all()
+
+    found: list[dict] = []
+    fixed = 0
+    for je_id, meta in created:
+        meta = meta or {}
+        kind = _RECOGNITION_CAUSE.get(meta.get("trigger"))
+        doc_id = meta.get("doc_id")
+        if kind is None or not doc_id or doc_id in caused[kind]:
+            continue
+        je = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+        if je is None or je.state.get("status") != "posted":
+            continue
+        detail = {"je_id": je_id, "doc_id": doc_id, "trigger": meta["trigger"]}
+        found.append(detail)
+        if doc_id in unrecorded[kind]:
+            detail["blocked_reason"] = (
+                "The document was created already issued, as an import made before imports "
+                "were recorded, so the entry may be owed. Review it and void it by hand if not."
+            )
+            continue
+        if not fix:
+            continue
+        try:
+            async with session.begin_nested():
+                await emit_event(
+                    session, company_id=company_id, entity_id=je_id,
+                    entity_type="journal_entry", event_type="acc.journal_entry.voided",
+                    data=je_void_data("Doctor: no finalize or receipt on the document", je.state),
+                    actor_id=user_id, location_id=None, source="doctor",
+                    idempotency_key=f"doctor:void-uncaused:{je_id}",
+                    metadata_={"voided_by": "doctor", "doc_id": doc_id},
+                )
+        except HTTPException as exc:
+            detail["blocked_reason"] = str(exc.detail)
+            continue
+        fixed += 1
+
+    return {
+        "check": "uncaused_recognition_jes",
+        "found": len(found),
+        "fixed": fixed,
+        "auto_fixable": not any(d.get("blocked_reason") for d in found),
+        "details": found[:50],
     }
 
 
@@ -869,6 +997,7 @@ async def _write_upgrade_report(
 
 _CHECK_FNS = {
     "missing_jes": _check_missing_jes,
+    "uncaused_recognition_jes": _check_uncaused_recognition_jes,
     "duplicate_jes": _check_duplicate_jes,
     "ghost_events": _check_ghost_events,
     "orphan_projections": _check_orphan_projections,

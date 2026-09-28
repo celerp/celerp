@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -106,6 +107,21 @@ async def create_location(client, headers: dict, name: str = "Warehouse 2") -> s
     r = await client.post("/companies/me/locations", headers=headers,
                           json={"name": name, "type": "warehouse"})
     return r.json()["id"]
+
+
+async def import_sent_po(client, headers: dict, **data) -> str:
+    """Seed a purchase order that was sent to its supplier elsewhere and imported.
+
+    In the app a PO stays a draft until finalized, which turns it into a bill, so an
+    outstanding PO only reaches the reports through import."""
+    entity_id = f"doc:{uuid.uuid4()}"
+    r = await client.post("/docs/import", headers=headers, json={
+        "entity_id": entity_id, "event_type": "doc.created",
+        "data": {"doc_type": "purchase_order", "status": "sent", "tax": 0, **data},
+        "source": "import:test", "idempotency_key": f"po-{uuid.uuid4()}",
+    })
+    assert r.status_code == 200, r.text
+    return entity_id
 
 
 # ── Role/permission bootstrap ─────────────────────────────────────────────────

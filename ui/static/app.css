@@ -1971,6 +1971,12 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .badge--recon-suggested { background: var(--c-amber-badge-bg); color: var(--c-amber-dark); }
 .badge--recon-unmatched { background: var(--c-red-bg); color: var(--c-red-text); }
 .badge--recon-skipped { background: var(--c-gray-bg); color: var(--c-text2); }
+/* Received document states */
+.badge--unbooked { background: var(--c-blue-bg); color: var(--c-blue-dark); }
+.badge--booked { background: var(--c-green-badge-bg); color: var(--c-green-text); }
+.badge--update-available { background: var(--c-amber-badge-bg); color: var(--c-amber-dark); }
+.badge--needs-reconciliation { background: var(--c-red-bg); color: var(--c-red-text); }
+.badge--review-only, .badge--not-bookable { background: var(--c-gray-bg); color: var(--c-text2); }
 /* Responsive: stack panels on small screens */
 @media (max-width: 900px) { .recon-panels { grid-template-columns: 1fr; } }
 

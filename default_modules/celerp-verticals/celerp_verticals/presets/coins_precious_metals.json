@@ -1,6 +1,7 @@
 {
   "name": "coins_precious_metals",
   "display_name": "Coins & Precious Metals",
+  "label_key": "enum.vertical_preset.coins_precious_metals",
   "license": "MIT",
   "categories": [
     "gold_bullion",

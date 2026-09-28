@@ -5,8 +5,12 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from httpx import AsyncClient
+
+from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +133,10 @@ async def test_public_share_view_import_is_quiet_footer_link(client: AsyncClient
 
     r = await client.get(f"/share/{token}")
     assert "Import into Celerp" in r.text
-    assert f"/accept?token={token}" in r.text
+    # The link carries the address the page is read from, which the page
+    # itself fills in so a relay-hosted copy points at the relay address.
+    assert 'id="dp-import"' in r.text
+    assert "accept?link='+encodeURIComponent(location.origin+location.pathname)" in r.text
     # Brand line leads; import trails it. No direct bundle link (the accept
     # page offers the bundle as its own fallback) and no prominent CTA.
     assert r.text.index("Powered by Celerp") < r.text.index("Import into Celerp")
@@ -156,15 +163,22 @@ async def test_public_share_view_is_the_print_layout_with_letterhead(client: Asy
 
 
 @pytest.mark.asyncio
-async def test_public_share_view_no_import_link_for_memo(client: AsyncClient):
-    """Memos are not importable, so their footer has no import link."""
+@pytest.mark.parametrize("doc_type", ["purchase_order", "consignment_in"])
+async def test_supplier_side_docs_can_be_shared_and_imported(client: AsyncClient, doc_type):
     tok = await _token(client)
-    entity_id = await _create_doc(client, tok, "memo")
-    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+    entity_id = await _create_doc(client, tok, doc_type)
+    r = await client.post(f"/docs/{entity_id}/share", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    assert "Import into Celerp" in (await client.get(f"/share/{r.json()['token']}")).text
 
-    r = await client.get(f"/share/{token}")
-    assert r.status_code == 200
-    assert "Import into Celerp" not in r.text
+
+@pytest.mark.asyncio
+async def test_shipping_doc_cannot_be_shared(client: AsyncClient):
+    """Shipping documents cannot be imported, so they cannot be shared either."""
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok, "shipping_doc")
+    assert (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).status_code == 422
+    assert (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).status_code == 422
 
 
 @pytest.mark.asyncio
@@ -240,14 +254,20 @@ async def test_revoke_then_reshare_keeps_stable_url(client: AsyncClient):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_create_share_link_returns_url(client: AsyncClient):
+async def test_create_share_link_returns_url(client: AsyncClient, monkeypatch):
+    """The import link carries the share page address as one `link` value."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from celerp.config import settings
+
+    monkeypatch.setattr(settings, "celerp_public_url", "https://shop.example.com")
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
-    r = await client.post(f"/docs/{entity_id}/share", headers=_h(tok))
-    data = r.json()
-    assert "url" in data
-    assert "celerp.com/accept" in data["url"]
-    assert data["token"] in data["url"]
+    data = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()
+    parts = urlsplit(data["url"])
+    assert f"{parts.netloc}{parts.path}" == "www.celerp.com/accept"
+    assert parse_qs(parts.query) == {"link": [f"https://shop.example.com/share/{data['token']}"]}
+    assert data["view_url"] == f"https://shop.example.com/share/{data['token']}"
 
 
 # ---------------------------------------------------------------------------
@@ -271,16 +291,54 @@ async def test_bundle_download_returns_json(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_bundle_revision_matches_the_projection_that_supplied_the_content(client: AsyncClient, session):
+    """An event committed after the projection was read must not raise the
+    exported revision: the number and the content come from the same moment."""
+    import uuid
+
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+    before = (await client.get(f"/share/{token}/bundle")).json()
+
+    row = await session.get(Projection, (await _company_id(session, entity_id), entity_id))
+    # A newer event for this document whose projection has not caught up yet.
+    session.add(LedgerEntry(
+        company_id=row.company_id, entity_id=entity_id, entity_type="doc",
+        event_type="doc.updated", data={"fields_changed": {"notes": {"old": None, "new": "later"}}},
+        actor_id=None, location_id=None, source="test",
+        idempotency_key=str(uuid.uuid4()), metadata_={},
+    ))
+    await session.flush()
+
+    after = (await client.get(f"/share/{token}/bundle")).json()
+    assert after["source"]["revision"] == before["source"]["revision"]
+    assert after["doc"] == before["doc"]
+
+
+async def _company_id(session, entity_id: str):
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    return (await session.execute(
+        select(Projection.company_id).where(Projection.entity_id == entity_id)
+    )).scalar_one()
+
+
+@pytest.mark.asyncio
 async def test_customer_share_excludes_internal_notes_and_preserves_public_fields(client: AsyncClient):
     tok = await _token(client)
     payload = {
         **_doc_payload(),
+        # A rated tax: an amount with no rate cannot be imported (see test_received_documents).
+        "doc_taxes": [{"code": "VAT", "rate": 7.0}],
         "reference": "PO-PUBLIC-55",
         "terms_text": "PUBLIC SHARE TERMS",
         "customer_note": "PUBLIC SHARE NOTE",
         "notes": "SECRET INTERNAL NOTE - NEVER SEND",
-        "amount_paid": 25,
-        "amount_outstanding": 75,
     }
     created = await client.post("/docs", json=payload, headers=_h(tok))
     assert created.status_code == 200, created.text
@@ -313,7 +371,7 @@ async def test_customer_share_excludes_internal_notes_and_preserves_public_field
         follow_redirects=False,
     )
     assert imported.status_code == 302, imported.text
-    received = (await client.get(imported.headers["location"], headers=_h(tok))).json()
+    received = (await client.get(imported.headers["location"], headers=_h(tok))).json()["document"]
     assert received["terms_text"] == "PUBLIC SHARE TERMS"
     assert received["customer_note"] == "PUBLIC SHARE NOTE"
     assert received["reference"] == "PO-PUBLIC-55"
@@ -341,6 +399,7 @@ async def test_import_legacy_bundle_terms_stores_only_canonical_field(client: As
         "version": 1,
         "doc": {
             "doc_type": "invoice",
+            "currency": "USD",
             "terms": "Legacy imported customer terms.",
             "line_items": [],
         },
@@ -352,7 +411,7 @@ async def test_import_legacy_bundle_terms_stores_only_canonical_field(client: As
         follow_redirects=False,
     )
     assert imported.status_code == 302, imported.text
-    received = (await client.get(imported.headers["location"], headers=_h(tok))).json()
+    received = (await client.get(imported.headers["location"], headers=_h(tok))).json()["document"]
     assert received["terms_text"] == "Legacy imported customer terms."
     assert "terms" not in received
 
@@ -567,13 +626,14 @@ async def test_list_share_preserves_explicit_blank_contact_name(client: AsyncCli
 
 @pytest.mark.asyncio
 async def test_import_bundle_json_body(client: AsyncClient):
-    """POST /docs/import-bundle with JSON body imports a received doc."""
+    """POST /docs/import-bundle with JSON body files the document in Received."""
     tok = await _token(client)
     bundle = {
         "version": 1,
         "doc": {
             "doc_type": "invoice",
             "ref_id": "EXT-001",
+            "currency": "USD",
             "contact_name": "Sender Corp",
             "total": 2500.0,
             "status": "open",
@@ -589,14 +649,13 @@ async def test_import_bundle_json_body(client: AsyncClient):
     )
     assert r.status_code == 302
     location = r.headers["location"]
-    assert location.startswith("/docs/doc:rcv:")
+    assert location.startswith("/docs/received/rcv:")
 
-    # Verify the doc was actually stored
     r2 = await client.get(location, headers=_h(tok))
     assert r2.status_code == 200
-    doc = r2.json()
-    assert doc["status"] == "received"
-    assert doc["contact_name"] == "Sender Corp"
+    received = r2.json()
+    assert received["sender_doc_number"] == "EXT-001"
+    assert received["document"]["contact_name"] == "Sender Corp"
 
 
 @pytest.mark.asyncio
@@ -631,12 +690,14 @@ async def test_import_bundle_requires_auth(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_import_bundle_sets_status_received(client: AsyncClient):
-    """Even if the sender doc has status=paid, imported doc is always status=received."""
+async def test_import_bundle_never_becomes_our_document(client: AsyncClient):
+    """Whatever status the sender's copy has, an import is not one of our
+    documents: it is kept in Received, carries no payment state, and no
+    document of ours exists for it."""
     tok = await _token(client)
     bundle = {
         "version": 1,
-        "doc": {"doc_type": "invoice", "ref_id": "EXT-002", "total": 500.0, "status": "paid"},
+        "doc": {"doc_type": "invoice", "currency": "USD", "ref_id": "EXT-002", "total": 500.0, "status": "paid"},
     }
     r = await client.post(
         "/docs/import-bundle",
@@ -645,8 +706,12 @@ async def test_import_bundle_sets_status_received(client: AsyncClient):
         follow_redirects=False,
     )
     assert r.status_code == 302
-    r2 = await client.get(r.headers["location"], headers=_h(tok))
-    assert r2.json()["status"] == "received"
+    received = (await client.get(r.headers["location"], headers=_h(tok))).json()
+    assert "status" not in received["document"]
+    assert "amount_paid" not in received["document"]
+    docs = (await client.get("/docs", headers=_h(tok))).json()
+    rows = docs.get("items", docs) if isinstance(docs, dict) else docs
+    assert not [d for d in rows if d.get("ref_id") == "EXT-002"]
 
 
 # ---------------------------------------------------------------------------
@@ -667,6 +732,7 @@ async def test_import_recomputes_total_and_drops_unknown_fields(client: AsyncCli
     tok = await _token(client)
     r = await _import(client, tok, {
         "doc_type": "invoice",
+        "currency": "USD",
         "total": 0.01,                 # tampered
         "subtotal": 0.01,
         "injected_field": "x",
@@ -674,17 +740,17 @@ async def test_import_recomputes_total_and_drops_unknown_fields(client: AsyncCli
         "line_items": [{"description": "Widget", "quantity": 2, "unit_price": 500.0, "line_total": 0.01}],
     })
     assert r.status_code == 302
-    doc = (await client.get(r.headers["location"], headers=_h(tok))).json()
+    doc = (await client.get(r.headers["location"], headers=_h(tok))).json()["document"]
     assert doc["total"] == 1000.0           # recomputed from qty*price, not trusted
     assert doc["subtotal"] == 1000.0
-    assert doc["amount_paid"] == 0.0
+    assert "amount_paid" not in doc
     assert "injected_field" not in doc
 
 
 @pytest.mark.asyncio
 async def test_import_rejects_unsupported_doc_type(client: AsyncClient):
     tok = await _token(client)
-    r = await _import(client, tok, {"doc_type": "totally_unknown", "total": 100.0})
+    r = await _import(client, tok, {"doc_type": "totally_unknown", "currency": "USD", "total": 100.0})
     assert r.status_code == 422
 
 
@@ -693,6 +759,7 @@ async def test_import_rejects_too_many_line_items(client: AsyncClient):
     tok = await _token(client)
     r = await _import(client, tok, {
         "doc_type": "invoice",
+        "currency": "USD",
         "line_items": [{"description": "x", "quantity": 1, "unit_price": 1} for _ in range(1001)],
     })
     assert r.status_code == 422
@@ -744,13 +811,18 @@ def test_share_hidden_when_connected_but_no_public_url():
     assert "share-modal-doc-x1" not in xml
 
 
-def test_supplier_docs_are_not_shareable():
-    """Inbound/supplier docs (bill, purchase_order, consignment_in) never get Share."""
-    for dt in ("bill", "purchase_order", "consignment_in"):
-        xml = _detail_xml(_invoice(status="sent", doc_type=dt), share_enabled=True)
-        assert "share-modal-doc-x1" not in xml, dt
-    # A customer-facing invoice does.
-    assert "share-modal-doc-x1" in _detail_xml(_invoice(status="sent"), share_enabled=True)
+@pytest.mark.parametrize("doc_type", sorted(SHAREABLE_DOC_TYPES))
+def test_every_importable_type_is_shareable(doc_type):
+    """Share is offered on exactly the types the other side can import,
+    purchase orders and consignments in included."""
+    xml = _detail_xml(_invoice(status="sent", doc_type=doc_type), share_enabled=True)
+    assert "share-modal-doc-x1" in xml
+
+
+@pytest.mark.parametrize("doc_type", ["shipping_doc", "production_order"])
+def test_types_the_other_side_cannot_import_are_not_shareable(doc_type):
+    xml = _detail_xml(_invoice(status="sent", doc_type=doc_type), share_enabled=True)
+    assert "share-modal-doc-x1" not in xml
 
 
 def test_paid_invoice_is_still_shareable():
@@ -802,18 +874,84 @@ def test_print_view_escapes_injected_html():
 
 
 @pytest.mark.asyncio
-async def test_import_src_rejects_non_https(client: AsyncClient):
+async def test_import_link_rejects_non_https(client: AsyncClient):
     tok = await _token(client)
-    r = await client.get("/docs/import?src=http://evil.example.com&token=abc", headers=_h(tok))
+    r = await client.get("/docs/import", params={"link": "http://evil.example.com/share/abc"}, headers=_h(tok))
     assert r.status_code == 400
 
 
 @pytest.mark.asyncio
-async def test_import_src_rejects_private_and_metadata_hosts(client: AsyncClient):
+async def test_import_link_rejects_private_and_metadata_hosts(client: AsyncClient):
     tok = await _token(client)
     for host in ("https://127.0.0.1", "https://10.0.0.1", "https://169.254.169.254", "https://192.168.1.1"):
-        r = await client.get(f"/docs/import?src={host}&token=abc", headers=_h(tok))
+        r = await client.get("/docs/import", params={"link": f"{host}/share/abc"}, headers=_h(tok))
         assert r.status_code == 400, host
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("link", [
+    "https://shop.example.com",
+    "https://shop.example.com/share/abc?x=1",
+    "https://shop.example.com/share/abc#top",
+])
+async def test_import_link_rejects_links_without_a_share_page(client: AsyncClient, link):
+    tok = await _token(client)
+    r = await client.get("/docs/import", params={"link": link}, headers=_h(tok))
+    assert r.status_code == 400
+
+
+def _bundle_response(doc: dict):
+    from unittest.mock import MagicMock
+
+    return MagicMock(status_code=200, content=json.dumps({"version": 1, "doc": doc}).encode(), headers={})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("link", [
+    "https://shop.example.com/share/abc123",
+    "https://share.celerp.com/eyJTWU5USEVUSUMtbGluayJ9",
+])
+async def test_import_link_fetches_the_bundle_next_to_the_share_page(client: AsyncClient, link):
+    """Every share link form, the free-tier one included, imports from <link>/bundle."""
+    from unittest.mock import AsyncMock, patch
+
+    tok = await _token(client)
+    fetch = AsyncMock(return_value=_bundle_response({"doc_type": "invoice", "currency": "USD", "ref_id": "EXT-9", "total": 5.0}))
+    with patch("celerp_docs.routes_share.validate_public_base_url", new=AsyncMock(return_value=link)), \
+         patch("celerp.services.outbound_url.fetch_public_bytes", new=fetch):
+        r = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
+        again = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
+
+    assert fetch.await_args.args[0] == f"{link}/bundle"
+    assert r.status_code == 302 and r.headers["location"].startswith("/docs/received/rcv:")
+    assert again.headers["location"] == r.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_import_bundle_file_retry_opens_the_same_doc(client: AsyncClient):
+    """Uploading the same .celerp file twice (a retry) does not create a second received doc."""
+    tok = await _token(client)
+    content = json.dumps({"version": 1, "doc": {"doc_type": "invoice", "currency": "USD", "ref_id": "EXT-7", "total": 7.0}}).encode()
+    locations = []
+    for _ in range(2):
+        r = await client.post(
+            "/docs/import-bundle",
+            files={"bundle": ("EXT-7.celerp", content, "application/json")},
+            headers=_h(tok),
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        locations.append(r.headers["location"])
+    assert locations[0] == locations[1]
+
+    other = json.dumps({"version": 1, "doc": {"doc_type": "invoice", "currency": "USD", "ref_id": "EXT-8", "total": 8.0}}).encode()
+    r = await client.post(
+        "/docs/import-bundle",
+        files={"bundle": ("EXT-8.celerp", other, "application/json")},
+        headers=_h(tok),
+        follow_redirects=False,
+    )
+    assert r.headers["location"] != locations[0]
 
 
 # ---------------------------------------------------------------------------

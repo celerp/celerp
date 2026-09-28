@@ -136,17 +136,16 @@ def test_inline_edit_doc_status(page, ui_server, api):
 
 def test_inline_edit_subscription(page, ui_server, api):
     """EDIT-05: Subscription detail loads — no crash."""
-    # Subscriptions are documents: created via POST /docs with a subscription doc_type.
+    # Subscriptions are documents: created as a draft via POST /docs, then activated.
     r = api.post("/docs", json={
         "doc_type": "subscription_invoice",
         "frequency": "monthly",
         "start_date": "2026-01-01",
-        "status": "active",
-        "next_run_date": "2026-02-01",
         "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
     })
     assert r.status_code in {200, 201}, f"Could not create subscription: {r.text}"
     sub_id = r.json()["id"]
+    assert api.post(f"/subscriptions/{sub_id}/activate").status_code == 200
 
     page.goto(f"{ui_server}/subscriptions/{sub_id}", wait_until="domcontentloaded")
     body = page.locator("body").inner_text()

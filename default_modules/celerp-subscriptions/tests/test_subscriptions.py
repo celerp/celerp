@@ -30,14 +30,15 @@ async def _create_sub_template(client, headers, doc_type="subscription_invoice",
         "contact_id": "contact:test-001",
         "frequency": "monthly",
         "start_date": "2026-01-01",
-        "status": "active",
-        "next_run_date": "2026-02-01",
         "line_items": [{"description": "Monthly Service", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
         **kwargs,
     }
     r = await client.post("/docs", json=data, headers=headers)
     assert r.status_code in {200, 201}, f"Failed to create template: {r.text}"
-    return r.json()
+    created = r.json()
+    ra = await client.post(f"/subscriptions/{created['id']}/activate", headers=headers)
+    assert ra.status_code == 200, f"Failed to activate template: {ra.text}"
+    return created
 
 
 # ---------------------------------------------------------------------------
@@ -53,8 +54,6 @@ async def test_create_subscription_template(client):
         "contact_id": "contact:test-001",
         "frequency": "monthly",
         "start_date": "2026-01-01",
-        "status": "active",
-        "next_run_date": "2026-02-01",
         "line_items": [{"description": "Monthly Service", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
     }
     r = await client.post("/docs", json=data, headers=h)
@@ -62,6 +61,7 @@ async def test_create_subscription_template(client):
     body = r.json()
     eid = body.get("entity_id") or body.get("id") or ""
     assert eid
+    assert (await client.get(f"/docs/{eid}", headers=h)).json()["status"] == "draft"
 
 
 # ---------------------------------------------------------------------------

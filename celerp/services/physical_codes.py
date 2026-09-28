@@ -25,7 +25,7 @@ from celerp.inventory_codes import (
     BarcodeConflictError,
     RfidEpcConflictError,
 )
-from celerp.models.company import Company
+from celerp.services.company_lock import lock_company
 from celerp.models.projections import Projection
 
 PHYSICAL_CODE_FIELDS = ("barcode", "rfid_epc")
@@ -35,27 +35,11 @@ async def lock_item_code_namespace(session: AsyncSession, company_id) -> None:
     """Serialize physical-code allocation and availability checks for a company.
 
     Two concurrent writers each read the same max sequence and mint the same next
-    code, or both pass the availability check for the same value. Taking a row lock
-    on the company makes the second writer wait for the first to commit, so it reads
-    the committed state instead of colliding. The lock is held until the caller's
-    transaction commits or rolls back.
-
-    The mode is FOR NO KEY UPDATE, not FOR UPDATE. Every ledger insert takes an
-    implicit foreign-key KEY SHARE lock on its company row and holds it to commit,
-    so a plain FOR UPDATE here would have to upgrade past that share lock: two
-    transactions that have each already emitted an event for the company both hold
-    KEY SHARE and then block on each other's row lock, which PostgreSQL breaks by
-    aborting one with a deadlock (40P01). FOR NO KEY UPDATE does not conflict with
-    KEY SHARE, so the upgrade never happens, while it still conflicts with another
-    FOR NO KEY UPDATE, keeping physical-code writers serialized for every module.
-
-    Canonical lock order: when a transaction also needs item Projection row locks,
-    take this namespace lock first, then lock the Projection rows. Never acquire this
-    lock after SELECT ... FOR UPDATE on an item Projection.
+    code, or both pass the availability check for the same value. The company
+    lock (``lock_company``, which documents the lock mode and order) makes the
+    second writer read the committed state instead of colliding.
     """
-    await session.execute(
-        select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
-    )
+    await lock_company(session, company_id)
 
 
 async def code_in_use(

@@ -28,7 +28,6 @@ from ui.components.files import files_section as _shared_doc_files_section
 
 
 from celerp.output.doc_print import (
-    IMPORTABLE_DOC_TYPES as _IMPORTABLE_DOC_TYPES,
     INVOICE_LAYOUT_DOC_TYPES as _INVOICE_LAYOUT_DOC_TYPES,
     render_doc_print_html,
 )
@@ -1348,7 +1347,7 @@ def setup_routes(app):
                     cls="btn btn--primary",
                 ) if role_has_permission(_settings, _role, "edit_documents") else "",
                 A(t("btn.export_csv"), href="/docs/export/csv?" + _state_query(state), cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
-                A(t("doc.import_csv"), href="/docs/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
+                A(t("btn.import"), href="/docs/import", cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") or role_has_permission(_settings, _role, "edit_documents") else "",
             ),
             _doc_type_intro(doc_type),
             _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{date_bar_extra}" if date_bar_extra else "", lang=lang),
@@ -1933,13 +1932,14 @@ def setup_routes(app):
         await _aio.gather(*(_enrich(li) for li in doc.get("line_items", [])))
 
     async def _print_import_url(token: str, entity_id: str) -> str | None:
-        """Accept URL for the printout footer - only while the share link is
-        live, so a paper or PDF copy never carries a URL that 404s."""
+        """Import link for the printout footer. The API gives one only while the
+        share link is live and the document can be imported, so a paper or PDF
+        copy never carries a link that goes nowhere."""
         try:
             status = await api.get_share_status(token, entity_id)
         except APIError:
             return None
-        return status.get("url") if status.get("active") else None
+        return status.get("url")
 
     # Same export for lists
     @app.get("/lists/{entity_id}/print")
@@ -2015,8 +2015,7 @@ def setup_routes(app):
         # Source pieces/weight (+ the weight unit) from each line's parcel for the printout.
         _ident_mode = await _line_identifier_mode(token)
         await _enrich_print_lines(token, doc, _ident_mode)
-        _imp = (await _print_import_url(token, entity_id)
-                if doc.get("doc_type") in _IMPORTABLE_DOC_TYPES else None)
+        _imp = await _print_import_url(token, entity_id)
         from starlette.responses import HTMLResponse as _HR
         return _HR(render_doc_print_html(doc, import_url=_imp, auto_print=True, line_identifier=_ident_mode))
 
@@ -6276,7 +6275,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         )
     # Refund is now handled via credit notes + void in the payment section
     # Send (relay modal) + Mark as Sent - hidden for internal/receiving doc types (bill, consignment_in)
-    from celerp_docs.doc_constants import NO_SEND_DOC_TYPES, NO_SEND_STATUSES
+    from celerp_docs.doc_constants import NO_SEND_DOC_TYPES, NO_SEND_STATUSES, is_shareable
     # Quotations get the same Send / Mark-as-sent as documents (relay-gated). For a list, "sent" is a
     # milestone (sent_at) on the finalized state, so the gates below are list-aware.
     _list_sendable = is_list and list_type == "quotation"
@@ -6285,15 +6284,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         not suppress_doc_actions
         and ((not is_list and doc_type not in NO_SEND_DOC_TYPES) or _list_sendable)
     )
-    # Share is independent of Send's status gates: any customer-facing document or list
-    # can be shared for viewing (a paid invoice is a receipt). Supplier/inbound docs
-    # (bills, POs, consignment-in) are never shared. Gated on a relay-bound instance
-    # (gateway_token_set) that can mint a link: a paid instance serves it from its own
-    # public URL, a free instance mints one through the relay. Only a self-hosted
+    # Share is independent of Send's status gates (a paid invoice is a receipt): it is
+    # offered on exactly the types the other side can import. Gated on a relay-bound
+    # instance (gateway_token_set) that can mint a link: a paid instance serves it from
+    # its own public URL, a free instance mints one through the relay. Only a self-hosted
     # instance with no relay stays hidden, since it can never mint.
     _can_share = (
         share_enabled and not suppress_doc_actions
-        and (is_list or doc_type not in NO_SEND_DOC_TYPES)
+        and is_shareable("list" if is_list else "doc", {"doc_type": doc_type, "list_type": list_type})
     )
     if _can_send:
         # Send via relay - modal popup, shown whenever this instance is relay-bound

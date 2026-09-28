@@ -54,9 +54,9 @@ async def _doc(client, tok, doc_type="invoice") -> str:
 
 
 async def _list_entity(client, tok) -> str:
-    """Create a list-type entity (price list / quotation list)."""
+    """Create a quotation list, the list type that can be shared."""
     r = await client.post("/lists", headers=_h(tok), json={
-        "list_type": "price_list",
+        "list_type": "quotation",
         "name": "Test List",
         "line_items": [{"name": "Product A", "quantity": 2, "unit_price": 50}],
     })
@@ -223,7 +223,7 @@ async def test_share_import_bundle_json(client):
     tok = await _reg(client)
     bundle = {
         "version": 1,
-        "doc": {"doc_type": "invoice", "total": 100, "status": "draft", "line_items": []},
+        "doc": {"doc_type": "invoice", "currency": "USD", "total": 100, "status": "draft", "line_items": []},
     }
     r = await client.post(
         "/docs/import-bundle",
@@ -231,9 +231,9 @@ async def test_share_import_bundle_json(client):
         content=json.dumps(bundle),
         follow_redirects=False,
     )
-    # Returns 302 redirect to /docs/{entity_id}
+    # Returns 302 redirect to the Received entry
     assert r.status_code == 302
-    assert r.headers["location"].startswith("/docs/doc:rcv:")
+    assert r.headers["location"].startswith("/docs/received/rcv:")
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,7 @@
 {
   "name": "electronics",
   "display_name": "Electronics",
+  "label_key": "enum.vertical_preset.electronics",
   "license": "MIT",
   "categories": [
     "mobile_phone",

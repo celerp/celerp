@@ -24,7 +24,7 @@ from pathlib import Path
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import auth_shell, flash, page_title
-from ui.components.currency import CURRENCIES, CURRENCY_CODES
+from celerp.services.currencies import CURRENCIES, CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 from celerp.config import set_enabled_modules as _set_enabled_modules
@@ -71,7 +71,9 @@ async def _seed_vertical_categories(token: str, vertical: str) -> int:
 def _load_verticals() -> list[tuple[str, str]]:
     """Load vertical options from preset files. Returns [(value, label), ...].
 
-    'blank' preset sorts last. All others sort alphabetically by display_name.
+    Labels resolve through t() at render time: first-party presets carry a
+    ``label_key``; a preset without one renders its ``display_name``.
+    'blank' preset sorts last. All others sort alphabetically by label.
     Presets flagged "hidden": true are skipped — used to stage a vertical that the
     product can't yet honestly support (see the preset's "hidden_reason").
     """
@@ -83,7 +85,8 @@ def _load_verticals() -> list[tuple[str, str]]:
                 data = json.loads(p.read_text())
                 if data.get("hidden"):
                     continue
-                entry = (data["name"], data["display_name"])
+                label = t(data["label_key"]) if data.get("label_key") else data["display_name"]
+                entry = (data["name"], label)
                 if data["name"] == "blank":
                     pinned_last.append(entry)
                 else:
@@ -98,7 +101,6 @@ _TIMEZONES = [
     "Asia/Kolkata", "Europe/London", "Europe/Paris", "America/New_York",
     "America/Los_Angeles", "UTC",
 ]
-_VERTICALS = _load_verticals()
 
 
 def setup_routes(app):
@@ -449,7 +451,7 @@ def _company_details_form(company: dict, error: str | None = None, lang: str = "
                 Label(t("label.business_type"), For="vertical", cls="form-label"),
                 Select(
                     *[Option(label, value=val, selected=(val == s.get("vertical", "general")))
-                      for val, label in _VERTICALS],
+                      for val, label in _load_verticals()],
                     id="vertical", name="vertical", cls="form-input",
                 ),
                 cls="form-group",

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from typing import BinaryIO
 
 import httpx
 
@@ -1173,6 +1174,59 @@ async def patch_item(token: str, entity_id: str, fields_changed: dict) -> dict:
     wrapped = {k: (v if isinstance(v, dict) and "new" in v else {"old": None, "new": _coerce(k, v)}) for k, v in fields_changed.items()}
     async with _api_client(token) as c:
         return _raise(await c.patch(f"/items/{entity_id}", json={"fields_changed": wrapped})).json()
+
+
+def _received_doc_path(r: httpx.Response) -> str:
+    """The API answers a shared-document import with a redirect to its Received entry."""
+    location = r.headers.get("location", "")
+    if r.status_code == 302 and location.startswith("/docs/received/"):
+        return location
+    _raise(r)
+    raise APIError(r.status_code, "Import did not return a document")
+
+
+async def import_shared_doc(token: str, share_page: str) -> str:
+    """Fetch a document shared from another Celerp into Received; returns its UI path."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=30.0, follow_redirects=False) as c:
+            r = await c.get("/docs/import", params={"link": share_page})
+    return _received_doc_path(r)
+
+
+async def import_doc_bundle(token: str, filename: str, content: BinaryIO) -> str:
+    """Import a downloaded .celerp bundle; returns its Received entry's UI path."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=30.0, follow_redirects=False, bulk=True) as c:
+            r = await c.post(
+                "/docs/import-bundle",
+                files={"bundle": (filename, content, "application/json")},
+            )
+    return _received_doc_path(r)
+
+
+async def list_received(token: str) -> list[dict]:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/docs/received")).json()["items"]
+
+
+async def get_received(token: str, rid: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/docs/received/{rid}")).json()
+
+
+async def book_received(token: str, rid: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/received/{rid}/book")).json()
+
+
+async def update_received_draft(token: str, rid: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/received/{rid}/update-draft")).json()
+
+
+async def mark_received_reconciled(token: str, rid: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/received/{rid}/mark-reconciled")).json()
 
 
 async def upload_attachment(token: str, entity_id: str, file) -> dict:

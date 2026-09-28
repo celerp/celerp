@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """
 Seed demo data via the Celerp API.
-Idempotent: skips entities with the same SKU/ref already present.
+Idempotent: skips items and contacts already present and replays documents
+by idempotency key.
 
 Usage:
     cd <repo-root>/core
@@ -16,6 +17,7 @@ import os
 import random
 import sys
 import uuid
+from datetime import date, timedelta
 
 import httpx
 
@@ -105,25 +107,27 @@ async def login(client: httpx.AsyncClient) -> str:
     return token
 
 
-async def get_existing_skus(client: httpx.AsyncClient, token: str) -> set:
-    r = await client.get("/items", params={"limit": 500}, headers={"Authorization": f"Bearer {token}"})
+def _require(r: httpx.Response, what: str) -> httpx.Response:
+    """Stop the whole seed on the first failed call, so `celerp demo` exits non-zero
+    instead of reporting success over a half-seeded company."""
     if r.is_error:
-        return set()
-    return {it.get("sku") for it in r.json() if it.get("sku")}
+        print(f"Seeding failed at {what}: {r.status_code} {r.text[:200]}", file=sys.stderr)
+        sys.exit(1)
+    return r
+
+
+def _rows(r: httpx.Response) -> list[dict]:
+    return r.json()["items"]
+
+
+async def get_existing_skus(client: httpx.AsyncClient, token: str) -> set:
+    r = _require(await client.get("/items", params={"limit": 500}, headers={"Authorization": f"Bearer {token}"}), "listing items")
+    return {it.get("sku") for it in _rows(r) if it.get("sku")}
 
 
 async def get_existing_contacts(client: httpx.AsyncClient, token: str) -> set:
-    r = await client.get("/crm/contacts", params={"limit": 500}, headers={"Authorization": f"Bearer {token}"})
-    if r.is_error:
-        return set()
-    return {c.get("email") for c in r.json() if c.get("email")}
-
-
-async def get_existing_docs(client: httpx.AsyncClient, token: str) -> set:
-    r = await client.get("/docs", params={"limit": 500}, headers={"Authorization": f"Bearer {token}"})
-    if r.is_error:
-        return set()
-    return {d.get("doc_number") for d in r.json() if d.get("doc_number")}
+    r = _require(await client.get("/crm/contacts", params={"limit": 500}, headers={"Authorization": f"Bearer {token}"}), "listing contacts")
+    return {c.get("email") for c in _rows(r) if c.get("email")}
 
 
 async def seed_items(client: httpx.AsyncClient, token: str) -> list[str]:
@@ -147,12 +151,9 @@ async def seed_items(client: httpx.AsyncClient, token: str) -> list[str]:
             "source": "seed",
             "idempotency_key": f"seed:item:{sku}",
         }]
-        r = await client.post("/items/import/batch", json={"records": records}, headers=headers)
-        if r.is_error:
-            print(f"  WARN item {sku}: {r.text[:80]}")
-        else:
-            entity_ids.append(eid)
-            created += 1
+        _require(await client.post("/items/import/batch", json={"records": records}, headers=headers), f"item {sku}")
+        entity_ids.append(eid)
+        created += 1
     print(f"Items: {created} created, {skipped} skipped")
     return entity_ids
 
@@ -160,58 +161,69 @@ async def seed_items(client: httpx.AsyncClient, token: str) -> list[str]:
 async def seed_contacts(client: httpx.AsyncClient, token: str) -> list[dict]:
     existing = await get_existing_contacts(client, token)
     headers = {"Authorization": f"Bearer {token}"}
-    contacts = []
     created = skipped = 0
     for name, ctype, phone, email in _CONTACTS:
         if email in existing:
             skipped += 1
             continue
-        r = await client.post("/crm/contacts", json={
+        _require(await client.post("/crm/contacts", json={
             "name": name, "contact_type": ctype, "phone": phone, "email": email,
             "credit_limit": random.choice([5000, 10000, 20000, 50000]),
-        }, headers=headers)
-        if r.is_error:
-            print(f"  WARN contact {name}: {r.text[:80]}")
-        else:
-            contacts.append(r.json())
-            created += 1
-    # Need actual IDs; refetch
-    r2 = await client.get("/crm/contacts", params={"limit": 500}, headers=headers)
-    all_contacts = r2.json() if not r2.is_error else []
+        }, headers=headers), f"contact {name}")
+        created += 1
+    r = _require(await client.get("/crm/contacts", params={"limit": 500}, headers=headers), "listing contacts")
     print(f"Contacts: {created} created, {skipped} skipped")
-    return all_contacts
+    return _rows(r)
+
+
+# The actions that take each demo document to where it ends up. Every document
+# starts as a draft and moves on only through the actions a user takes: an
+# invoice is finalized, sent and paid; a purchase order is converted to a bill.
+_LIFECYCLES = {
+    "invoice": ((), ("finalize", "send"), ("finalize", "send", "pay")),
+    "purchase_order": ((), ("finalize",)),
+}
+
+
+async def _advance(client: httpx.AsyncClient, headers: dict, doc_id: str, steps: tuple, key: str) -> None:
+    for step in steps:
+        if step == "finalize":
+            _require(await client.post(f"/docs/{doc_id}/finalize", headers=headers), f"finalizing {key}")
+        elif step == "send":
+            _require(await client.post(f"/docs/{doc_id}/send", json={"idempotency_key": f"{key}:send"},
+                                       headers=headers), f"sending {key}")
+        elif step == "pay":
+            doc = _require(await client.get(f"/docs/{doc_id}", headers=headers), f"reading {key}").json()
+            outstanding = float(doc.get("amount_outstanding") or 0)
+            if outstanding > 0:
+                _require(await client.post(f"/docs/{doc_id}/payment", json={
+                    "amount": outstanding, "payment_date": doc.get("date") or date.today().isoformat(),
+                    "bank_account": "1110", "idempotency_key": f"{key}:payment",
+                }, headers=headers), f"recording payment on {key}")
 
 
 async def seed_docs(client: httpx.AsyncClient, token: str, contacts: list[dict], doc_type: str, count: int):
-    existing_refs = await get_existing_docs(client, token)
     headers = {"Authorization": f"Bearer {token}"}
-    customer_contacts = [c for c in contacts if c.get("contact_type") in ("customer", None)]
-    supplier_contacts = [c for c in contacts if c.get("contact_type") in ("supplier", None)]
-    pool = supplier_contacts if doc_type == "purchase_order" else customer_contacts
+    wanted = "supplier" if doc_type == "purchase_order" else "customer"
+    pool = [c for c in contacts if c.get("contact_type") in (wanted, None)] or contacts
     if not pool:
-        pool = contacts
-    items_r = await client.get("/items", params={"limit": 500}, headers=headers)
-    all_items = items_r.json() if not items_r.is_error else []
+        print(f"Seeding failed: no contacts to use for {doc_type}", file=sys.stderr)
+        sys.exit(1)
+    all_items = _rows(_require(await client.get("/items", params={"limit": 500}, headers=headers), "listing items"))
     if not all_items:
-        print(f"  WARN no items to use for {doc_type}")
-        return
-    created = skipped = 0
+        print(f"Seeding failed: no items to use for {doc_type}", file=sys.stderr)
+        sys.exit(1)
+    lifecycles = _LIFECYCLES[doc_type]
+    today = date.today()
     for i in range(count):
-        from datetime import date, timedelta
-        today = date.today()
         doc_date = (today - timedelta(days=random.randint(0, 180))).isoformat()
         due_date = (today + timedelta(days=random.randint(7, 60))).isoformat()
-        prefix = "INV" if doc_type == "invoice" else "PO"
-        doc_num = f"{prefix}-DEMO-{i+1:04d}"
-        if doc_num in existing_refs:
-            skipped += 1
-            continue
         contact = random.choice(pool)
-        n_items = random.randint(1, 4)
         line_items = []
-        for item in random.sample(all_items, min(n_items, len(all_items))):
+        for item in random.sample(all_items, min(random.randint(1, 4), len(all_items))):
             qty = random.randint(1, 10)
-            price = float(item.get("retail_price") or item.get("wholesale_price") or 100)
+            price_key = "wholesale_price" if doc_type == "purchase_order" else "retail_price"
+            price = float(item.get(price_key) or 100)
             line_items.append({
                 "item_id": item.get("entity_id", ""),
                 "name": item.get("name", ""),
@@ -219,21 +231,19 @@ async def seed_docs(client: httpx.AsyncClient, token: str, contacts: list[dict],
                 "unit_price": price,
                 "line_total": qty * price,
             })
-        total = sum(l["line_total"] for l in line_items)
-        payload = {
-            "doc_type": doc_type, "doc_number": doc_num,
+        # The key makes a re-run replay the same draft instead of adding another,
+        # and the actions below skip or replay whatever step already happened.
+        key = f"seed:{doc_type}:{i + 1}"
+        r = _require(await client.post("/docs", json={
+            "doc_type": doc_type,
             "contact_id": contact.get("entity_id", ""),
             "contact_name": contact.get("name", ""),
             "date": doc_date, "due_date": due_date,
-            "line_items": line_items, "total": total,
-            "status": random.choice(["draft", "sent", "paid"]),
-        }
-        r = await client.post("/docs", json=payload, headers=headers)
-        if r.is_error:
-            print(f"  WARN doc {doc_num}: {r.text[:80]}")
-        else:
-            created += 1
-    print(f"{doc_type}: {created} created, {skipped} skipped")
+            "line_items": line_items, "total": sum(li["line_total"] for li in line_items),
+            "idempotency_key": key,
+        }, headers=headers), f"creating {key}")
+        await _advance(client, headers, r.json()["id"], lifecycles[i % len(lifecycles)], key)
+    print(f"{doc_type}: {count} seeded")
 
 
 async def main():

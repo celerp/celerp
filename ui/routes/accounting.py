@@ -22,7 +22,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, PlainTextRespons
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
-from ui.components.currency import CURRENCIES
+from celerp.services.currencies import CURRENCIES, CURRENCY_CODES
 from ui.components.report_kit import (
     action_bar, csv_response as _csv_response, date_params as _date_params,
     href as _href, journal_totals as _journal_totals,
@@ -252,7 +252,6 @@ def setup_routes(app):
 
         error: str | None = None
         entries: list[dict] = []
-        valid_codes = {c for c, _ in CURRENCIES}
         try:
             # A line with no currency posts exactly the request it posted before
             # the columns existed: no currency key, no rate key. Same for a line
@@ -271,7 +270,7 @@ def setup_routes(app):
 
         if error is None:
             for e in entries:
-                if e.get("currency") and e["currency"] not in valid_codes:
+                if e.get("currency") and e["currency"] not in CURRENCY_CODES:
                     error = t("acct.err_currency_unknown")
                     break
                 r = e.get("rate")

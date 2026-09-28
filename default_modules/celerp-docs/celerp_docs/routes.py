@@ -27,6 +27,7 @@ from celerp.models.company import Company
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN
+from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.physical_codes import lock_item_code_namespace
@@ -37,7 +38,7 @@ from celerp.services.line_measures import line_label, splitting_allowed
 from celerp.services.document_lines import line_item_id
 from celerp.services.attachments import store_upload
 from celerp.services.csv_export import csv_stream, resolve_export_cols
-from ui.components.currency import CURRENCY_CODES
+from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
@@ -47,7 +48,7 @@ from celerp.services.money import checked_exchange_rate, discount_from_inputs, d
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES
+from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )
@@ -140,6 +141,28 @@ def _require_doc_rate_http(doc: dict, base_currency: str) -> Decimal:
         ) from exc
 
 
+def _reject_lifecycle_fields(data):
+    """Creation owns no lifecycle or settlement state. Status is checked on its
+    own (it may say draft); anything else lifecycle-owned is refused by name."""
+    if isinstance(data, dict):
+        forged = sorted(k for k in data if k in LIFECYCLE_OWNED_FIELDS and k != "status")
+        if forged:
+            raise ValueError(
+                f"{', '.join(forged)} cannot be set when creating. A new record is always "
+                "an unpaid draft; finalize, send, record payments or receive it with those actions."
+            )
+    return data
+
+
+def _created_as_draft(v):
+    if v != "draft":
+        raise ValueError(
+            "A new record is always created as a draft. "
+            "Create it, then finalize, send or receive it."
+        )
+    return v
+
+
 class DocCreatePayload(BaseModel):
     doc_type: str
     ref_id: str | None = None
@@ -172,11 +195,15 @@ class DocCreatePayload(BaseModel):
     to_address: dict | None = None
     original_doc_id: str | None = None
     reason: str | None = None
-    status: str = "draft"
-    amount_paid: float = 0
-    amount_outstanding: float | None = None
+    # Creation always makes an unpaid draft; issuing and settling it are
+    # lifecycle actions that post their entries. Only the import routes create
+    # a document already issued.
+    status: Literal["draft"] = "draft"
     idempotency_key: str | None = None
     model_config = {"extra": "allow"}
+
+    _no_lifecycle_state = model_validator(mode="before")(_reject_lifecycle_fields)
+    _draft_only = field_validator("status", mode="before")(_created_as_draft)
 
     @field_validator("conversion_rate")
     @classmethod
@@ -187,6 +214,10 @@ class DocCreatePayload(BaseModel):
 class DocPatch(BaseModel):
     fields_changed: dict[str, dict] = Field(default_factory=dict)
     idempotency_key: str | None = None
+    # Optimistic concurrency: when set, the patch applies only if it equals the record's current
+    # version (its latest ledger-entry id). A mismatch means another editor moved the record on since
+    # this client last read it, so the write is a stale clobber and is rejected 409. Omitted = no check.
+    expected_version: int | None = None
 
 
 class DocSendBody(BaseModel):
@@ -616,6 +647,9 @@ async def _assert_sales_line_price_permission(
     stored_by_idx: dict[int, dict] | None,
 ) -> None:
     """Reject a sales-document or quotation price change without set_sales_doc_prices.
+
+    Callers apply it only to sales-priced documents (SALES_PRICED_DOC_TYPES) and
+    money lists (is_money_list); purchase-side prices are never gated by it.
 
     A line's unit_price is an override when it differs from its reference price: the
     stored line at the same index when editing an existing document, otherwise the
@@ -1246,13 +1280,8 @@ async def get_doc_pdf(
 
     # Footer import link only while the share link is live, so saved PDFs
     # never carry a URL that 404s.
-    from celerp_docs.routes_share import _find_share_row, _share_active, _share_url
-    from celerp.output.doc_print import IMPORTABLE_DOC_TYPES
-    import_url = None
-    if doc.get("doc_type") in IMPORTABLE_DOC_TYPES:
-        share_row = await _find_share_row(session, company_id, entity_id)
-        if share_row is not None and _share_active(share_row):
-            import_url = _share_url(share_row.token)
+    from celerp_docs.routes_share import _find_share_row, share_import_url
+    import_url = await share_import_url(session, await _find_share_row(session, company_id, entity_id))
 
     # reportlab layout is CPU-bound Python; a worker thread keeps a large
     # document's render from stalling every concurrent request on the loop.
@@ -1393,14 +1422,15 @@ async def create_doc(
             (li.entity_id or li.item_id for li in payload.line_items),
         )
 
-        # Price-override gate: a new line whose unit_price deviates from the item's
-        # catalog price is a price override, rejected when the caller lacks
-        # set_sales_doc_prices. This closes the create path so the gate cannot be
-        # bypassed by making a new draft with overridden prices.
-        await _assert_sales_line_price_permission(
-            session, company_id, settings, role,
-            [li.model_dump() for li in payload.line_items], None,
-        )
+        # Price-override gate: on a sales document, a new line whose unit_price
+        # deviates from the item's catalog price is a price override, rejected when
+        # the caller lacks set_sales_doc_prices. This closes the create path so the
+        # gate cannot be bypassed by making a new draft with overridden prices.
+        if payload.doc_type in SALES_PRICED_DOC_TYPES:
+            await _assert_sales_line_price_permission(
+                session, company_id, settings, role,
+                [li.model_dump() for li in payload.line_items], None,
+            )
 
     # Lock the company row (SELECT ... FOR UPDATE) for the rest of the
     # transaction so concurrent doc creation can't read the same numbering
@@ -1496,7 +1526,8 @@ async def create_doc(
         # overstating revenue and understating the VAT liability. total = subtotal + tax + shipping.
         data["tax"] = to_stored_float(round_money(effective_tax_d, currency))
 
-    data["amount_outstanding"] = payload.amount_outstanding if payload.amount_outstanding is not None else float(data.get("total", 0))
+    data["amount_paid"] = 0.0
+    data["amount_outstanding"] = float(data.get("total", 0))
 
     entry = await emit_event(
         session,
@@ -1560,15 +1591,18 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
             status_code=422,
             detail=f"Fields {sorted(protected_attempted)} cannot be changed via patch. Use the appropriate lifecycle endpoints.",
         )
-    row = await _get_doc(session, company_id, entity_id)
+    # Locked load so the version check and the emit are one compare-and-set, as for lists.
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    if payload.expected_version is not None and row.version != payload.expected_version:
+        raise HTTPException(status_code=409, detail="This document was changed by someone else; reload to get the latest before saving")
     new_contact_id = (payload.fields_changed.get("contact_id") or {}).get("new")
     if new_contact_id:
         await _validate_doc_contact_reference(session, company_id, str(new_contact_id))
-    # Price-override gate: reject unit_price changes when the caller lacks
-    # set_sales_doc_prices, comparing incoming lines against the stored lines by
-    # index. Runs for drafts and finalized documents alike, before the draft branch.
+    # Price-override gate: on a sales document, reject unit_price changes when the
+    # caller lacks set_sales_doc_prices, comparing incoming lines against the stored
+    # lines by index. Runs for drafts and finalized documents alike, before the draft branch.
     _incoming_lines = (payload.fields_changed.get("line_items") or {}).get("new")
-    if isinstance(_incoming_lines, list):
+    if isinstance(_incoming_lines, list) and row.state.get("doc_type") in SALES_PRICED_DOC_TYPES:
         _stored_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
         await _assert_sales_line_price_permission(session, company_id, settings, role, _incoming_lines, _stored_by_idx)
     is_draft = row.state.get("status") == "draft"
@@ -3883,22 +3917,6 @@ async def delete_doc_note(
     return {"event_id": entry.id}
 
 
-def _import_auto_je_kind(data: dict) -> str | None:
-    """Accounting operation an imported snapshot would post, or None."""
-    status = str(data.get("status") or "draft")
-    total = float(data.get("total", 0) or 0)
-    if status in ("void", "draft", "converted", "expired") or total <= 0:
-        return None
-    doc_type = str(data.get("doc_type") or "")
-    if doc_type == "invoice" and status in ("sent", "final", "partial", "paid", "awaiting_payment"):
-        return "invoice"
-    if doc_type == "purchase_order" and status in ("received", "partially_received", "final"):
-        return "purchase_order"
-    if doc_type == "bill" and status in ("awaiting_payment", "partial", "paid", "final"):
-        return "bill"
-    return None
-
-
 @router.post("/import")
 async def import_doc(
     body: DocImportRecord,
@@ -3933,7 +3951,7 @@ async def import_doc(
 
     _imp_company = await session.get(Company, company_id)
     _imp_base_currency = (_imp_company.settings.get("currency", "USD") if _imp_company else "USD")
-    if _import_auto_je_kind(body.data) is not None:
+    if auto_je.import_auto_je_kind(body.data) is not None:
         _require_doc_rate_http(body.data, _imp_base_currency)
 
     entry = await emit_event(
@@ -3947,7 +3965,7 @@ async def import_doc(
         location_id=None,
         source=body.source,
         idempotency_key=body.idempotency_key,
-        metadata_={"source_ts": body.source_ts} if body.source_ts else {},
+        metadata_=_import_metadata(body.source_ts),
     )
 
     # The event type is doc.created by the guard above. Drafts return immediately.
@@ -3975,12 +3993,9 @@ def _assert_doc_import_permissions(settings: dict, role: str, data: dict) -> Non
         assert_role_permission(settings, role, "record_payments")
 
 
-_DOC_IMPORT_UPSERT_EXCLUDED = frozenset({
-    # Lifecycle/accounting state is owned by dedicated document operations.
-    "status", "amount_paid", "amount_outstanding", "finalized",
-    # Identity/type are established by the original create and never rewritten by import-upsert.
-    "entity_type", "company_id", "doc_type", "doc_number", "ref_id",
-})
+# Lifecycle state is owned by dedicated document operations, and the type and
+# number are established by the original create; import-upsert rewrites neither.
+_DOC_IMPORT_UPSERT_EXCLUDED = LIFECYCLE_OWNED_FIELDS | {"doc_type", "ref_id"}
 
 
 def _doc_import_fields_changed(state: dict, incoming: dict) -> dict[str, dict]:
@@ -3998,13 +4013,21 @@ def _doc_import_fields_changed(state: dict, incoming: dict) -> dict[str, dict]:
     }
 
 
+def _import_metadata(source_ts: str | None) -> dict:
+    """Ledger metadata of a raw snapshot import, recording that it came through import."""
+    meta: dict = {auto_je.IMPORTED_SNAPSHOT: True}
+    if source_ts:
+        meta["source_ts"] = source_ts
+    return meta
+
+
 async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id: str, data: dict, base_currency: str = "USD") -> None:
     """Create the accounting entry implied by an imported non-draft snapshot.
 
     Payment entries are never synthesized from snapshot totals because their bank
     account and settlement date/rate are separate facts that the snapshot cannot supply.
     """
-    kind = _import_auto_je_kind(data)
+    kind = auto_je.import_auto_je_kind(data)
     if kind is None:
         return
     total = float(data.get("total", 0) or 0)
@@ -4123,7 +4146,7 @@ async def batch_import_docs(
             skipped_existing += 1
             continue
         try:
-            if _import_auto_je_kind(rec.data) is not None:
+            if auto_je.import_auto_je_kind(rec.data) is not None:
                 _require_doc_rate_http(rec.data, _batch_base_currency)
             entry = await emit_event(
                 session,
@@ -4136,7 +4159,7 @@ async def batch_import_docs(
                 location_id=None,
                 source=rec.source,
                 idempotency_key=rec.idempotency_key,
-                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
+                metadata_=_import_metadata(rec.source_ts),
             )
             existing_keys.add(rec.idempotency_key)
             existing_entities.add(entry.entity_id)
@@ -4226,7 +4249,7 @@ class ListCreatePayload(BaseModel):
     total: float = 0
     currency: str | None = None
     notes: str | None = None
-    status: str = "draft"
+    status: Literal["draft"] = "draft"
     share_token: str | None = None
     # Shipment fields (list_type="shipping_doc"): one shipment record feeds both the
     # Delivery Note and Commercial Invoice printouts. Declared - not extra="allow" -
@@ -4246,6 +4269,9 @@ class ListCreatePayload(BaseModel):
     idempotency_key: str | None = None
     model_config = {"extra": "allow"}
 
+    _no_lifecycle_state = model_validator(mode="before")(_reject_lifecycle_fields)
+    _draft_only = field_validator("status", mode="before")(_created_as_draft)
+
     @model_validator(mode="after")
     def _validate_shipment_enums(self) -> "ListCreatePayload":
         _validate_shipment_values({"incoterms": self.incoterms,
@@ -4253,11 +4279,7 @@ class ListCreatePayload(BaseModel):
         return self
 
 
-class ListPatch(DocPatch):
-    # Optimistic concurrency: when set, the patch applies only if it equals the list's current
-    # version (its latest ledger-entry id). A mismatch means another editor moved the list on since
-    # this client last read it, so the write is a stale clobber and is rejected 409. Omitted = no check.
-    expected_version: int | None = None
+ListPatch = DocPatch
 
 
 ListVoidBody = DocVoidBody
@@ -4660,7 +4682,30 @@ async def create_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    idem_key = payload.idempotency_key or str(uuid.uuid4())
+
+    async def _replay() -> dict | None:
+        if not payload.idempotency_key:
+            return None
+        replay = await find_event_by_idempotency(session, company_id, idem_key)
+        if replay is None:
+            return None
+        if replay.event_type != "list.created":
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        return {"event_id": replay.id, "id": replay.entity_id}
+
+    if (done := await _replay()) is not None:
+        return done
+    if payload.currency and payload.currency not in CURRENCY_CODES:
+        raise HTTPException(status_code=422, detail=f"Invalid currency code: {payload.currency}")
+    # Lock the company row so concurrent creates cannot read the same numbering counter, then
+    # re-check the key under that lock: a retry racing the first request returns the original
+    # list instead of consuming a second number. Mirrors create_doc.
+    company = (
+        await session.execute(select(Company).where(Company.id == company_id).with_for_update())
+    ).scalar_one_or_none()
+    if (done := await _replay()) is not None:
+        return done
     ref_id = payload.ref_id or next_doc_ref(company, list_sequence_key(payload.list_type))
     entity_id = f"list:{ref_id}"
 
@@ -4684,7 +4729,7 @@ async def create_list(
         await _assert_sales_line_price_permission(
             session, company_id, settings, role, data.get("line_items") or [], None,
         )
-    entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
+    entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, idem_key)
     await session.commit()
     return {"event_id": entry.id, "id": entity_id}
 
@@ -4700,6 +4745,12 @@ async def patch_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    if payload.idempotency_key:
+        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+        if replay is not None:
+            if replay.event_type != "list.updated" or replay.entity_id != entity_id:
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            return {"event_id": replay.id, "version": replay.id}
     # Locked load so the version check and the emit are one atomic compare-and-set: two concurrent
     # patches cannot both read version N, both pass the check, and both write (the second clobbering
     # the first). The second waits, re-reads the advanced version, and its stale expected_version fails.
@@ -4869,102 +4920,6 @@ async def _reprice_catalog_lines(
     return updated_lines, repriced, skipped, effective_currency
 
 
-def _recompute_tax_applications(raw, base, currency: str):
-    """Recompute stored tax definitions against a new base, never stale amounts."""
-    if not isinstance(raw, list) or not raw:
-        return [], to_decimal(0)
-    definitions: list[TaxApplication] = []
-    try:
-        for value in raw:
-            if not isinstance(value, dict):
-                raise ValueError("tax entry is not an object")
-            definitions.append(TaxApplication.model_validate({**value, "amount": 0.0}))
-    except Exception as exc:
-        raise HTTPException(
-            status_code=422,
-            detail="Stored tax data is invalid; correct it before repricing",
-        ) from exc
-    resolved = compute_tax_amounts(definitions, to_stored_float(round_money(base, currency)), currency)
-    return [item.model_dump() for item in resolved], sum(
-        (to_decimal(item.amount) for item in resolved), to_decimal(0))
-
-
-def _reprice_doc_money(state: dict, updated_lines: list[dict], currency: str) -> dict:
-    """Document-only totals derived from the repriced lines.
-
-    List totals remain projection-owned. Documents do not have that reducer, so
-    this wrapper recomputes their monetary snapshot once on the server instead of
-    trusting the browser's independent arithmetic.
-    """
-    def _line_amount(line: dict):
-        value = line.get("line_total")
-        if value not in (None, ""):
-            return to_decimal(value or 0)
-        return (
-            to_decimal(line.get("quantity", 0) or 0)
-            * to_decimal(line.get("unit_price", 0) or 0)
-        )
-
-    subtotal = round_money(
-        sum((_line_amount(line) for line in updated_lines if isinstance(line, dict)), to_decimal(0)),
-        currency,
-    )
-    discount = max(to_decimal(0), to_decimal(state.get("discount", 0) or 0))
-    if state.get("discount_type") == "percentage":
-        discount_amount = subtotal * discount / 100
-    else:
-        discount_amount = discount
-    discount_amount = round_money(min(max(discount_amount, to_decimal(0)), subtotal), currency)
-    taxable = subtotal - discount_amount
-    ratio = taxable / subtotal if subtotal > 0 else to_decimal(1)
-
-    line_tax_total = to_decimal(0)
-    has_line_tax = False
-    for line in updated_lines:
-        if not isinstance(line, dict):
-            continue
-        base = _line_amount(line) * ratio
-        raw_taxes = line.get("taxes")
-        if isinstance(raw_taxes, list) and raw_taxes:
-            resolved, amount = _recompute_tax_applications(raw_taxes, base, currency)
-            line["taxes"] = resolved
-            line_tax_total += amount
-            has_line_tax = True
-            continue
-        rate = to_decimal(line.get("tax_rate", 0) or 0)
-        if rate:
-            line_tax_total += round_money(base * rate / 100, currency)
-            has_line_tax = True
-
-    result: dict = {
-        "subtotal": to_stored_float(subtotal),
-        "discount_amount": to_stored_float(discount_amount),
-    }
-    raw_doc_taxes = state.get("doc_taxes")
-    if isinstance(raw_doc_taxes, list) and raw_doc_taxes:
-        resolved_doc_taxes, doc_tax_total = _recompute_tax_applications(
-            raw_doc_taxes, taxable, currency)
-        result["doc_taxes"] = resolved_doc_taxes
-        tax_total = line_tax_total + doc_tax_total
-    elif has_line_tax:
-        tax_total = line_tax_total
-    elif to_decimal(state.get("tax_rate", 0) or 0):
-        tax_total = round_money(
-            taxable * to_decimal(state.get("tax_rate", 0) or 0) / 100,
-            currency,
-        )
-    else:
-        # Legacy documents may carry only an absolute tax amount and no rate
-        # definition from which to recompute it. Preserve that explicit snapshot.
-        tax_total = round_money(state.get("tax", 0) or 0, currency)
-
-    tax_total = round_money(tax_total, currency)
-    shipping = round_money(state.get("shipping", 0) or 0, currency)
-    result["tax"] = to_stored_float(tax_total)
-    result["total"] = to_stored_float(round_money(taxable + tax_total + shipping, currency))
-    return result
-
-
 @router.post("/{entity_id}/reprice")
 async def reprice_doc(
     entity_id: str,
@@ -5005,14 +4960,15 @@ async def reprice_doc(
     # Preserve the canonical document price-override authorization that the old
     # patch-based repricer inherited indirectly. Repricing is not a bypass around
     # set_sales_doc_prices; no-op prices remain allowed exactly as patch_doc allows.
-    await _assert_sales_line_price_permission(
-        session, company_id, settings, role, updated_lines,
-        {i: line for i, line in enumerate(stored_lines)},
-    )
+    if row.state.get("doc_type") in SALES_PRICED_DOC_TYPES:
+        await _assert_sales_line_price_permission(
+            session, company_id, settings, role, updated_lines,
+            {i: line for i, line in enumerate(stored_lines)},
+        )
     new_values = {
         "price_list": payload.price_list,
         "line_items": updated_lines,
-        **_reprice_doc_money(row.state, updated_lines, currency),
+        **document_money(row.state, updated_lines, currency, keep_unrated_tax=True),
     }
     fields_changed = {
         field: {"old": row.state.get(field), "new": value}
@@ -5541,10 +5497,7 @@ async def delete_list_note(
 
 
 
-_LIST_IMPORT_UPSERT_EXCLUDED = frozenset({
-    "status", "result", "entity_type", "company_id", "list_type", "ref_id",
-    "finalized_at", "sent_at", "issued_at", "accepted_at",
-})
+_LIST_IMPORT_UPSERT_EXCLUDED = LIFECYCLE_OWNED_FIELDS | {"list_type", "ref_id"}
 
 
 def _list_import_fields_changed(state: dict, incoming: dict) -> dict[str, dict]:

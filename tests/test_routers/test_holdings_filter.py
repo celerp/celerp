@@ -204,7 +204,7 @@ async def _sell_item(client, token: str, sku: str, unit_price: float) -> str:
         "doc_type": "invoice", "status": "draft",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": unit_price,
                         "line_total": unit_price, "entity_id": item_id}],
-        "total": unit_price, "amount_outstanding": unit_price,
+        "total": unit_price,
     })
     assert r.status_code in {200, 201}, r.text
     doc_id = r.json()["id"]

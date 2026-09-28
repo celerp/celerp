@@ -75,15 +75,27 @@ async def _count(engine, table: str) -> int:
         return (await conn.execute(text(f"SELECT count(*) FROM {table}"))).scalar_one()
 
 
+async def _bootstrap_lock_waiters(engine) -> int:
+    """Count sessions queued on the bootstrap lock in this test's own database.
+
+    pg_locks is cluster-wide, so a concurrent xdist worker on another database
+    of the shared test server can be waiting on an advisory lock legitimately.
+    """
+    from celerp.routers.auth import _BOOTSTRAP_LOCK_KEY
+
+    async with engine.connect() as probe:
+        return (await probe.execute(text(
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted "
+            "AND ((classid::bigint << 32) | objid::bigint) = :key "
+            "AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
+        ), {"key": _BOOTSTRAP_LOCK_KEY})).scalar_one()
+
+
 async def _wait_for_advisory_wait(engine, task) -> None:
     """Prove *task* reached the bootstrap lock before the 3s production timeout."""
     for _ in range(40):
         await asyncio.sleep(0.05)
-        async with engine.connect() as probe:
-            waiting = (await probe.execute(text(
-                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
-            ))).scalar_one()
-        if waiting >= 1:
+        if await _bootstrap_lock_waiters(engine) >= 1:
             return
         if task.done():
             break
@@ -213,11 +225,7 @@ async def test_bootstrapped_register_rejects_before_waiting_on_lock(real_engine)
             await asyncio.wait_for(register(payload, session=session_b), timeout=1.0)
         assert exc.value.status_code == 403
 
-        async with real_engine.connect() as probe:
-            waiting = (await probe.execute(text(
-                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
-            ))).scalar_one()
-        assert waiting == 0, "bootstrapped registration attempted to join the lock queue"
+        assert await _bootstrap_lock_waiters(real_engine) == 0, "bootstrapped registration attempted to join the lock queue"
     finally:
         await session_a.rollback()
         await session_b.rollback()
@@ -285,11 +293,7 @@ async def test_wrong_setup_code_is_rejected_before_bootstrap_lock(real_engine):
         assert exc.value.status_code == 403
         assert exc.value.detail == "Invalid or missing setup code."
 
-        async with real_engine.connect() as probe:
-            waiting = (await probe.execute(text(
-                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
-            ))).scalar_one()
-        assert waiting == 0, "invalid setup code attempted to acquire the bootstrap lock"
+        assert await _bootstrap_lock_waiters(real_engine) == 0, "invalid setup code attempted to acquire the bootstrap lock"
     finally:
         await session_a.rollback()
         await session_b.rollback()

@@ -1,6 +1,7 @@
 {
   "name": "gemstones",
   "display_name": "Gems & Jewelry",
+  "label_key": "enum.vertical_preset.gemstones",
   "license": "MIT",
   "categories": [
     "diamond",

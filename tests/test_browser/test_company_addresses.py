@@ -26,7 +26,6 @@ def draft_invoice_id(api):
         "status": "draft",
         "line_items": [{"name": "Address Test Widget", "quantity": 1, "unit_price": 50.0, "line_total": 50.0}],
         "total": 50.0,
-        "amount_outstanding": 50.0,
     })
     assert r.status_code in {200, 201}, f"Failed to create invoice: {r.text}"
     return r.json()["id"]

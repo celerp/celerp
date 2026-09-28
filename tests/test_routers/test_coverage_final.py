@@ -27,6 +27,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from test_helpers import import_sent_po
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -137,7 +139,6 @@ async def test_reports_ap_aging_all_buckets(client):
             "tax": 0,
             "total": 100.0,
             "due_date": due,
-            "amount_outstanding": 100.0,
         })
         assert r.status_code == 200, r.text
         doc_id = r.json()["id"]
@@ -219,15 +220,10 @@ async def test_reports_purchases_price_range(client):
     tok = await _reg(client)
 
     for i, (unit_price, total) in enumerate([(400, 400), (3000, 3000), (10000, 10000), (25000, 25000)]):
-        await client.post("/docs", headers=_h(tok), json={
-            "doc_type": "purchase_order",
-            "contact_id": "sup-pr",
-            "line_items": [{"name": f"Item{i}", "quantity": 1, "unit_price": unit_price, "line_total": total, "cost_total": total}],
-            "subtotal": total,
-            "tax": 0,
-            "total": total,
-            "status": "final",
-        })
+        await import_sent_po(
+            client, _h(tok), contact_id="sup-pr", subtotal=total, total=total,
+            line_items=[{"name": f"Item{i}", "quantity": 1, "unit_price": unit_price, "line_total": total, "cost_total": total}],
+        )
 
     r = await client.get("/reports/purchases?group_by=price_range", headers=_h(tok))
     assert r.status_code == 200
@@ -240,24 +236,6 @@ async def test_reports_purchases_price_range(client):
     assert "2501-5000" in price_ranges
     assert "5001-15000" in price_ranges
     assert "15001-50000" in price_ranges
-
-
-# ---------------------------------------------------------------------------
-# share.py line 53: _share_url with celerp_public_url set
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_share_url_with_public_url(client):
-    """Share URL includes src= param when CELERP_PUBLIC_URL is set (line 53)."""
-    # Test _share_url() directly - it's a pure function that builds the URL.
-    # Testing via HTTP adds no value here and introduces flakiness from the
-    # shared settings singleton across the full test suite.
-    from celerp_docs.routes_share import _share_url
-    with patch("celerp_docs.routes_share.settings") as mock_settings:
-        mock_settings.celerp_public_url = "https://my.celerp.instance"
-        url = _share_url("testtoken123")
-    assert "src=" in url, f"Expected src= in share URL, got: {url!r}"
-    assert "testtoken123" in url
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +293,7 @@ async def test_share_view_list_entity(client):
             "event_type": "list.created",
             "source": "test",
             "idempotency_key": f"list-share-{uuid.uuid4().hex}",
-            "data": {"list_type": "price_list", "ref_id": "PL-001", "customer_name": "Test Customer", "total": 100},
+            "data": {"list_type": "quotation", "ref_id": "PL-001", "customer_name": "Test Customer", "total": 100},
         }
     ]})
     assert r3.status_code == 200, r3.text
@@ -340,12 +318,12 @@ async def test_share_import_doc_http_404(client):
 
     response = MagicMock(status_code=404, content=b"", headers={})
 
-    with patch("celerp_docs.routes_share._validate_public_src",
-               new=AsyncMock(return_value="https://other.celerp.test")), \
+    with patch("celerp_docs.routes_share.validate_public_base_url",
+               new=AsyncMock(return_value="https://other.celerp.test/share/fake-token")), \
          patch("celerp.services.outbound_url.fetch_public_bytes",
                new=AsyncMock(return_value=response)):
         r = await client.get(
-            "/docs/import?src=https://other.celerp.test&token=fake-token",
+            "/docs/import?link=https://other.celerp.test/share/fake-token",
             headers=_h(tok),
         )
     assert r.status_code == 404
@@ -358,12 +336,12 @@ async def test_share_import_doc_http_502(client):
 
     response = MagicMock(status_code=503, content=b"", headers={})
 
-    with patch("celerp_docs.routes_share._validate_public_src",
-               new=AsyncMock(return_value="https://other.celerp.test")), \
+    with patch("celerp_docs.routes_share.validate_public_base_url",
+               new=AsyncMock(return_value="https://other.celerp.test/share/fake-token")), \
          patch("celerp.services.outbound_url.fetch_public_bytes",
                new=AsyncMock(return_value=response)):
         r = await client.get(
-            "/docs/import?src=https://other.celerp.test&token=fake-token",
+            "/docs/import?link=https://other.celerp.test/share/fake-token",
             headers=_h(tok),
         )
     assert r.status_code == 502
@@ -374,12 +352,12 @@ async def test_share_import_doc_network_error(client):
     """GET /docs/import when network fails → 502 (lines 209-210)."""
     tok = await _reg(client)
 
-    with patch("celerp_docs.routes_share._validate_public_src",
-               new=AsyncMock(return_value="https://other.celerp.test")), \
+    with patch("celerp_docs.routes_share.validate_public_base_url",
+               new=AsyncMock(return_value="https://other.celerp.test/share/fake-token")), \
          patch("celerp.services.outbound_url.fetch_public_bytes",
                new=AsyncMock(side_effect=ConnectionError("network fail"))):
         r = await client.get(
-            "/docs/import?src=https://other.celerp.test&token=fake-token",
+            "/docs/import?link=https://other.celerp.test/share/fake-token",
             headers=_h(tok),
         )
     assert r.status_code == 502
@@ -438,7 +416,7 @@ async def test_share_public_list_page_discount_row(client):
             "source": "test",
             "idempotency_key": f"disc-list-{uuid.uuid4().hex}",
             "data": {
-                "list_type": "price_list",
+                "list_type": "quotation",
                 "ref_id": "DISC-001",
                 "customer_name": "Customer A",
                 "total": 90,

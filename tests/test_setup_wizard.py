@@ -528,6 +528,37 @@ class TestLoadVerticals:
             (d / f"{p['name']}.json").write_text(json.dumps(p))
         return d
 
+    def test_label_key_renders_in_request_language(self, tmp_path):
+        presets_dir = self._make_presets_dir(tmp_path, [
+            {"name": "gemstones", "display_name": "Gems & Jewelry",
+             "label_key": "enum.vertical_preset.gemstones"},
+            {"name": "custom", "display_name": "My Own Preset"},
+        ])
+        import ui.i18n as i18n
+        import ui.routes.setup as setup_mod
+        with patch.object(setup_mod, "_PRESETS_DIR", presets_dir):
+            i18n.set_lang("de")
+            try:
+                labels = dict(setup_mod._load_verticals())
+            finally:
+                i18n.set_lang("en")
+        assert labels["gemstones"] == "Edelsteine & Schmuck"
+        assert labels["custom"] == "My Own Preset"
+
+    def test_shipped_presets_labelled_in_every_locale(self):
+        import ui.routes.setup as setup_mod
+        locales = Path(setup_mod.__file__).resolve().parents[1] / "locales"
+        catalogs = {p.stem: json.loads(p.read_text()) for p in locales.glob("*.json")}
+        for preset in setup_mod._PRESETS_DIR.glob("*.json"):
+            data = json.loads(preset.read_text())
+            if data.get("hidden"):
+                continue
+            key = data.get("label_key")
+            assert key, f"{preset.name} has no label_key"
+            assert catalogs["en"][key] == data["display_name"], preset.name
+            missing = [lang for lang, cat in catalogs.items() if key not in cat]
+            assert not missing, f"{key} missing in {missing}"
+
     def test_blank_sorted_last(self, tmp_path):
         presets_dir = self._make_presets_dir(tmp_path, [
             {"name": "blank", "display_name": "Blank"},

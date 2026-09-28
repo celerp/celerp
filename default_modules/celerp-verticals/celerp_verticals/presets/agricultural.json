@@ -1,6 +1,7 @@
 {
   "name": "agricultural",
   "display_name": "Agricultural",
+  "label_key": "enum.vertical_preset.agricultural",
   "license": "MIT",
   "categories": [
     "fresh_produce",

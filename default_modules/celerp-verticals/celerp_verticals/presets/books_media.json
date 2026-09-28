@@ -1,6 +1,7 @@
 {
   "name": "books_media",
   "display_name": "Books & Media",
+  "label_key": "enum.vertical_preset.books_media",
   "license": "MIT",
   "categories": [
     "book",

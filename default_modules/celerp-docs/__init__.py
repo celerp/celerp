@@ -18,14 +18,17 @@ PLUGIN_MANIFEST = {
             {"group": "Sales Documents", "key": "credit-notes", "href": "/docs?type=credit_note", "label": "Credit Notes", "label_key": "nav.credit_notes", "order": 20.8, "permission": "view_documents"},
             {"group": "Sales Documents", "key": "memos", "href": "/docs?type=memo", "label": "Consignment Out", "label_key": "nav.consignment_out", "order": 20.5, "permission": "view_documents"},
             {"group": "Sales Documents", "key": "lists", "href": "/lists", "label": "Lists / Quotations", "label_key": "nav.lists_quotations", "order": 21, "permission": "view_documents"},
+            {"group": "Purchasing Documents", "key": "received", "href": "/docs/received", "label": "Received", "label_key": "nav.received_documents", "order": 25.5, "permission": "view_documents"},
             {"group": "Purchasing Documents", "key": "purchase-orders", "href": "/docs?type=purchase_order", "label": "Purchase Orders", "label_key": "nav.purchase_orders", "order": 26, "settings_href": "/settings/purchasing", "permission": "view_documents"},
             {"group": "Purchasing Documents", "key": "vendor-bills", "href": "/docs?type=bill", "label": "Vendor Bills", "label_key": "nav.vendor_bills", "order": 26.5, "permission": "view_documents"},
             {"group": "Purchasing Documents", "key": "consignment-in", "href": "/docs?type=consignment_in", "label": "Consignment In", "label_key": "nav.consignment_in", "order": 27, "permission": "view_documents"},
             {"group": "Finance", "key": "payments", "href": "/payments", "label": "Payments", "label_key": "nav.payments", "order": 51.5, "permission": "view_payments"},
         ],
+        "on_modules_ready": {"handler": "celerp_docs.received_legacy:move_legacy_imports_hook"},
         "projection_handler": [
             {"prefix": "doc.", "handler": "celerp_docs.doc_projections:apply_documents_event"},
             {"prefix": "list.", "handler": "celerp_docs.doc_projections:apply_documents_event"},
+            {"prefix": "received_doc.", "handler": "celerp_docs.received:apply_received_event"},
         ],
         "send_to_targets": [
             {"label": "Invoice", "doc_type": "invoice", "statuses": ["draft", "awaiting_payment"]},

@@ -1,6 +1,7 @@
 {
   "name": "food_beverage",
   "display_name": "Food & Beverage",
+  "label_key": "enum.vertical_preset.food_beverage",
   "license": "MIT",
   "categories": [
     "packaged_food",

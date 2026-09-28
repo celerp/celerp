@@ -1,6 +1,7 @@
 {
   "name": "consulting",
   "display_name": "Consulting",
+  "label_key": "enum.vertical_preset.consulting",
   "license": "MIT",
   "categories": [
     "consulting_service"

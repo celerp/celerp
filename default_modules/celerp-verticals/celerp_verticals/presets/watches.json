@@ -1,6 +1,7 @@
 {
   "name": "watches",
   "display_name": "Watches & Accessories",
+  "label_key": "enum.vertical_preset.watches",
   "license": "MIT",
   "categories": [
     "watch",

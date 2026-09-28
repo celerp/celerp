@@ -1,6 +1,7 @@
 {
   "name": "wine_spirits",
   "display_name": "Wine & Spirits",
+  "label_key": "enum.vertical_preset.wine_spirits",
   "license": "MIT",
   "categories": [
     "wine",
