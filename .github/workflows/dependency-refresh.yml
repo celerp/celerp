@@ -81,4 +81,4 @@ jobs:
             --title "Refresh Python dependencies" \
             --body "Refreshes the resolved production dependency graph from pyproject.toml. constraints.txt remains resolver-generated; normal CI validates the complete set before merge."
 
-          gh workflow run ci.yml --ref "$BRANCH"
+          gh workflow run ci.yml --ref "$BRANCH" -f dependency_refresh=true

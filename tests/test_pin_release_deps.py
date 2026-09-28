@@ -59,7 +59,8 @@ def test_markers_are_kept() -> None:
 def test_every_marker_line_of_a_package_is_kept() -> None:
     # Resolved per Python version: dropping one leaves that version unpinned.
     deps = _pinned()["dependencies"]
-    for name, count in (("numpy", 3), ("sqlalchemy", 2), ("websockets", 2)):
+    for name, count in (("numpy", 3), ("sqlalchemy", 2), ("websockets", 2),
+                        ("cryptography", 2)):
         constraint_lines = [
             line for line in (_ROOT / "constraints.txt").read_text(encoding="utf-8").splitlines()
             if line and not line.startswith("#") and _pin._req_name(line) == name

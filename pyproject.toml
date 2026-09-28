@@ -26,7 +26,11 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
     "python-jose[cryptography]>=3.3",
-    "cryptography>=42",
+    # Compatibility exception: cryptography 49+ ships no x86_64 macOS wheel, so
+    # Intel Mac desktop builds are held below 49. Bounds are disjoint to force the
+    # resolver fork. Remove when Intel desktop support ends or 49+ installs there.
+    "cryptography>=42,<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "cryptography>=49; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "passlib[bcrypt]>=1.7",
     "numpy>=1.26",
     "python-multipart>=0.0.9",

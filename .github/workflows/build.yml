@@ -224,7 +224,7 @@ jobs:
         run: |
           PY="electron/python-standalone/mac-arm64/python/bin/python3"
           "$PY" -m pip install --upgrade pip
-          "$PY" -m pip install .
+          "$PY" -m pip install . -c constraints.txt
 
       - name: Install Python deps into standalone (x64)
         if: matrix.os == 'macos-latest'
@@ -235,7 +235,7 @@ jobs:
           # numba/llvmlite removed from deps to avoid source build requirement
           PY="electron/python-standalone/mac-x64/python/bin/python3"
           "$PY" -m pip install --upgrade pip --prefer-binary
-          "$PY" -m pip install . --prefer-binary
+          "$PY" -m pip install . --prefer-binary -c constraints.txt
 
       - name: Install Python deps into standalone
         if: matrix.os != 'macos-latest'
@@ -248,7 +248,7 @@ jobs:
             PY="$DIR/bin/python3"
           fi
           "$PY" -m pip install --upgrade pip
-          "$PY" -m pip install .
+          "$PY" -m pip install . -c constraints.txt
 
       # ── Bundled pg_dump/pg_restore (macOS) ──────────────────────────────
       # Built from source for both arches in this one arm64 job (x86_64 slice
@@ -874,7 +874,7 @@ jobs:
         shell: bash
         run: echo "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CELERP=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
       - name: Install the package
-        run: pip install uv && uv pip install --system -e .
+        run: pip install uv && uv pip install --system -e . -c constraints.txt
       - name: Export the OpenAPI schema
         run: python scripts/export_openapi.py --out openapi.json
       - name: Verify OpenAPI release version
