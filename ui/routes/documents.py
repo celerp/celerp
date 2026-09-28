@@ -280,7 +280,7 @@ logger = logging.getLogger(__name__)
 # Lists constants
 # ---------------------------------------------------------------------------
 from celerp.services.list_behavior import (
-    behavior as _list_behavior, status_label as _list_status_label,
+    behavior as _list_behavior, status_label as _list_status_label, is_money_list,
     LIST_TYPES as _REG_LIST_TYPES, DRAFT as _LD, FINALIZED as _LF, CLOSED as _LC,
 )
 # Selectable list types come straight from the behaviour registry (one source — adding a type
@@ -2416,11 +2416,6 @@ celerpUpdateBulkAlloc();
         )
         enter_js = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
         blur_restore = f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}})"
-        combobox_esc_js = (
-            f"if(event.key==='Escape'){{"
-            f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}});"
-            f"event.preventDefault();}}"
-        )
         if field == "company_address":
             # Re-editing the From address must re-open the location picker (the same control shown on
             # initial render), not a bare text box - otherwise the user can't switch back to a saved
@@ -2510,52 +2505,13 @@ celerpUpdateBulkAlloc();
                 onkeydown=esc_js,
             )
         elif field in ("contact_id", "commission_contact_id", "contact_company_name"):
-            # Searchable contact picker.
-            # - commission_contact_id: always vendor-only
-            # - contact_id: customer docs → customers; vendor docs → vendors
-            # - contact_company_name: same filtering as contact_id but selects by company_name → resolves contact_id
-            _VENDOR_TYPES = ("purchase_order", "bill", "consignment_in")
-            doc_type_for_filter = doc.get("doc_type", "")
-            if field == "commission_contact_id":
-                contact_filter = "vendor"
-            elif doc_type_for_filter in _VENDOR_TYPES:
-                contact_filter = "vendor"
-            else:
-                contact_filter = "customer"
-            try:
-                contact_resp = await api.list_contacts(token, {"limit": 500, "contact_type": contact_filter})
-                contacts = contact_resp.get("items", [])
-            except APIError:
-                contacts = []
-            if field == "contact_company_name":
-                # Options are (entity_id, company_name) so selecting a company resolves the contact
-                contact_opts = [
-                    (c.get("entity_id") or c.get("id") or "", c.get("company_name") or c.get("name") or "")
-                    for c in contacts if c.get("company_name")
-                ]
-                # Current value is the company_name string; find current contact_id for pre-selection
-                current_contact_id = doc.get("contact_id") or ""
-                pre_val = current_contact_id
-                patch_url = f"/docs/{entity_id}/field/contact_id"
-            else:
-                contact_opts = [(c.get("entity_id") or c.get("id") or "", c.get("name") or c.get("entity_id") or c.get("id") or "") for c in contacts]
-                contact_opts.append(("__new__", t("documents.add_new_contact")))
-                pre_val = value
-                patch_url = f"/docs/{entity_id}/field/{field}"
-            # Fix #1: wrap combobox in div so ESC keydown bubbles up and can restore the display cell
-            input_el = Div(
-                searchable_select(
-                    name="value",
-                    options=contact_opts,
-                    value=pre_val,
-                    placeholder=t("documents.search_contacts"),
-                    hx_patch=patch_url,
-                    hx_target="closest .editable-cell",
-                    hx_swap="outerHTML",
-                    hx_trigger="change",
-                    search_url=f"/contacts/search-options?contact_type={contact_filter}&field={field}",
-                ),
-                onkeydown=combobox_esc_js,
+            # Commission agents are always vendors; the party is a vendor on purchase-side
+            # documents and a customer everywhere else.
+            is_vendor = field == "commission_contact_id" or doc.get("doc_type", "") in ("purchase_order", "bill", "consignment_in")
+            input_el = await _contact_picker(
+                token, resource="doc", entity_id=entity_id, field=field,
+                value=value if field == "commission_contact_id" else str(doc.get("contact_id") or ""),
+                contact_type="vendor" if is_vendor else "customer",
             )
         elif field in ("contact_billing_address", "contact_shipping_address"):
             # Address dropdown from contact's saved addresses
@@ -2638,33 +2594,7 @@ celerpUpdateBulkAlloc();
                     doc = await api.get_doc(token, entity_id)
                     is_draft_doc = doc.get("status", "draft") == "draft"
                     contact = await api.get_contact(token, value)
-                    # Store contact details for display on the doc
-                    contact_name = contact.get("name") or contact.get("display_name")
-                    if contact_name:
-                        patch["contact_name"] = contact_name
-                    patch["contact_company_name"] = contact.get("company_name") or ""
-                    patch["contact_email"] = contact.get("email") or ""
-                    patch["contact_phone"] = contact.get("phone") or ""
-                    # Billing address: prefer default billing address from addresses list, fall back to billing_address field
-                    addresses = contact.get("addresses") or []
-                    def _default_addr(addr_type: str) -> str:
-                        default = next((a for a in addresses if a.get("address_type") == addr_type and a.get("is_default")), None)
-                        if default:
-                            return default.get("full_address") or default.get("address") or default.get("label") or ""
-                        first = next((a for a in addresses if a.get("address_type") == addr_type), None)
-                        if first:
-                            return first.get("full_address") or first.get("address") or first.get("label") or ""
-                        return contact.get(f"{addr_type}_address") or ""
-                    def _default_attn(addr_type: str) -> str:
-                        default = next((a for a in addresses if a.get("address_type") == addr_type and a.get("is_default")), None)
-                        if default and default.get("attn"):
-                            return default["attn"]
-                        first = next((a for a in addresses if a.get("address_type") == addr_type), None)
-                        return (first.get("attn") or "") if first else ""
-                    patch["contact_billing_address"] = _default_addr("billing")
-                    patch["contact_shipping_address"] = _default_addr("shipping")
-                    patch["shipping_attn"] = _default_attn("shipping")
-                    patch["contact_tax_id"] = contact.get("tax_id") or ""
+                    patch.update(_contact_snapshot(contact))
                     contact_pt = contact.get("payment_terms")
                     if contact_pt:
                         patch["payment_terms"] = contact_pt
@@ -2675,16 +2605,10 @@ celerpUpdateBulkAlloc();
                             if new_due:
                                 patch["due_date"] = new_due
                     if is_draft_doc:
-                        # Auto-populate price_list from contact (fallback to company default) - draft only
-                        contact_pl = contact.get("price_list")
+                        # Price from the contact's price list (fallback to company default) - draft only
+                        contact_pl = await _contact_price_list(token, contact)
                         if contact_pl:
                             patch["price_list"] = contact_pl
-                        else:
-                            try:
-                                default_pl = await api.get_default_price_list(token)
-                                patch["price_list"] = default_pl
-                            except Exception:
-                                pass
                         # Propagate contact currency to draft doc only
                         contact_currency = contact.get("currency")
                         if contact_currency:
@@ -4489,6 +4413,12 @@ celerpUpdateBulkAlloc();
                 onblur=f"setTimeout(()=>_celerpPatchListField(this, {_json.dumps(patch_url)}), 200)",
                 onkeydown=esc_js + enter_js,
             )
+        elif field in ("contact_id", "contact_company_name"):
+            # A List's party is a customer, chosen exactly as on a sales document.
+            input_el = await _contact_picker(
+                token, resource="list", entity_id=entity_id, field=field,
+                value=str(lst.get("contact_id") or ""), contact_type="customer",
+            )
         elif field == "status":
             # Status is lifecycle-driven (finalize / terminal actions), not freely set; this branch
             # only survives for any legacy cell that still mounts it. Offer the uniform spine.
@@ -4518,7 +4448,8 @@ celerpUpdateBulkAlloc();
             lst = await api.get_list(token, entity_id)
         except APIError as e:
             return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
-        return _doc_display_cell(entity_id, field, lst.get(field), "list")
+        value = _resolve_contact_display(lst, field) if field == "contact_id" else lst.get(field)
+        return _doc_display_cell(entity_id, field, value, "list")
 
     @app.patch("/lists/{entity_id}/field/{field}")
     async def list_field_patch(request: Request, entity_id: str, field: str):
@@ -4536,6 +4467,15 @@ celerpUpdateBulkAlloc();
                 await api.change_list_type(token, entity_id, value)
             except APIError as e:
                 return _action_error(str(e.detail))
+            return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
+        if field == "contact_id":
+            if value == "__new__":
+                return _R("", status_code=204, headers={"HX-Redirect": "/contacts/customers"})
+            try:
+                await _select_list_contact(token, entity_id, value)
+            except APIError as e:
+                return _action_error(str(e.detail))
+            # Customer details and repriced lines change together - re-render the page.
             return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         try:
             result = await api.patch_list(token, entity_id, {field: value})
@@ -5222,6 +5162,129 @@ def _resolve_contact_display(doc: dict, field: str) -> str:
     if raw.startswith("contact:"):
         return "--"
     return raw
+
+
+def _contact_snapshot(contact: dict) -> dict:
+    """Header fields a document or List copies from its selected contact.
+
+    Address precedence (billing and shipping alike): the default address of that type,
+    else the first address of that type, else the contact's top-level address field.
+    The shipping attention comes from the same address the shipping text does.
+    """
+    addresses = contact.get("addresses") or []
+
+    def _pick(addr_type: str) -> dict | None:
+        typed = [a for a in addresses if a.get("address_type") == addr_type]
+        return next((a for a in typed if a.get("is_default")), typed[0] if typed else None)
+
+    def _text(addr_type: str) -> str:
+        a = _pick(addr_type)
+        if a:
+            return a.get("full_address") or a.get("address") or a.get("label") or ""
+        return contact.get(f"{addr_type}_address") or ""
+
+    shipping = _pick("shipping")
+    snapshot = {
+        "contact_company_name": contact.get("company_name") or "",
+        "contact_email": contact.get("email") or "",
+        "contact_phone": contact.get("phone") or "",
+        "contact_tax_id": contact.get("tax_id") or "",
+        "contact_billing_address": _text("billing"),
+        "contact_shipping_address": _text("shipping"),
+        "shipping_attn": (shipping.get("attn") or "") if shipping else "",
+    }
+    name = contact.get("name") or contact.get("display_name")
+    if name:
+        snapshot["contact_name"] = name
+    return snapshot
+
+
+async def _contact_price_list(token: str, contact: dict) -> str | None:
+    """The price list a newly selected contact prices a draft at: its own, else the company default."""
+    if contact.get("price_list"):
+        return contact["price_list"]
+    try:
+        return await api.get_default_price_list(token) or None
+    except Exception:
+        return None
+
+
+async def _select_list_contact(token: str, entity_id: str, contact_id: str) -> None:
+    """Set a draft List's customer the way a draft document sets its contact.
+
+    Copies the contact snapshot; a money List also takes the contact's currency and is
+    repriced at the contact's price list (else the company default) by the backend
+    repricer, pinned to the version the header patch produced. A contact that does not
+    resolve locally (an imported or historical reference) keeps just its id, as on documents.
+    """
+    lst = await api.get_list(token, entity_id)
+    patch: dict = {"contact_id": contact_id}
+    price_list = None
+    if contact_id:
+        try:
+            contact = await api.get_contact(token, contact_id)
+        except APIError:
+            contact = None
+        if contact:
+            patch.update(_contact_snapshot(contact))
+            if is_money_list(lst.get("list_type")):
+                if contact.get("currency"):
+                    patch["currency"] = contact["currency"]
+                price_list = await _contact_price_list(token, contact)
+    await api.patch_list(token, entity_id, patch)
+    if price_list:
+        version = (await api.get_list(token, entity_id)).get("version")
+        if version is None:
+            raise APIError(409, "Reload the list before repricing")
+        await api.reprice_list(token, entity_id, price_list, int(version))
+
+
+async def _contact_picker(token: str, *, resource: str, entity_id: str, field: str, value: str,
+                          contact_type: str) -> FT:
+    """Searchable contact selector for a document or List header contact cell.
+
+    field is contact_id (options by name, with Add new) or contact_company_name (options by
+    company, still saving contact_id). A document saves through htmx; a List saves through
+    its mutation queue, persisting pending line edits first because the save reloads the page.
+    """
+    try:
+        contacts = (await api.list_contacts(token, {"limit": 500, "contact_type": contact_type})).get("items", [])
+    except APIError:
+        contacts = []
+    if field == "contact_company_name":
+        options = [
+            (c.get("entity_id") or c.get("id") or "", c.get("company_name") or c.get("name") or "")
+            for c in contacts if c.get("company_name")
+        ]
+        save_field = "contact_id"
+    else:
+        options = [(c.get("entity_id") or c.get("id") or "", c.get("name") or c.get("entity_id") or c.get("id") or "") for c in contacts]
+        options.append(("__new__", t("documents.add_new_contact")))
+        save_field = field
+    prefix = "/lists" if resource == "list" else "/docs"
+    patch_url = f"{prefix}/{entity_id}/field/{save_field}"
+    if resource == "list":
+        save_attrs = {"onchange": f"_celerpPatchListField(this, {_json.dumps(patch_url)}, true)"}
+    else:
+        save_attrs = {"hx_patch": patch_url, "hx_target": "closest .editable-cell",
+                      "hx_swap": "outerHTML", "hx_trigger": "change"}
+    restore_url = f"{prefix}/{entity_id}/field/{field}/display"
+    # The wrapper catches ESC bubbling out of the combobox and restores the display cell.
+    return Div(
+        searchable_select(
+            name="value",
+            options=options,
+            value=value,
+            placeholder=t("documents.search_contacts"),
+            search_url=f"/contacts/search-options?contact_type={contact_type}&field={field}",
+            **save_attrs,
+        ),
+        onkeydown=(
+            f"if(event.key==='Escape'){{"
+            f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}});"
+            f"event.preventDefault();}}"
+        ),
+    )
 
 
 def _li_field_display_cell(entity_id: str, li_index: str, field: str, value: str) -> FT:

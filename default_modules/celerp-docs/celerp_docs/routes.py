@@ -4767,6 +4767,8 @@ async def patch_list(
     if payload.expected_version is not None and row.version != payload.expected_version:
         raise HTTPException(status_code=409, detail="This list was changed by someone else; reload to get the latest before saving")
     _new_values = {f: (c or {}).get("new") for f, c in payload.fields_changed.items()}
+    if _new_values.get("contact_id"):
+        await _validate_doc_contact_reference(session, company_id, str(_new_values["contact_id"]))
     try:
         _validate_shipment_values(_new_values)
     except ValueError as e:
