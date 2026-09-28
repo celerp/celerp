@@ -35,6 +35,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.company_lock import lock_company
 from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import get_current_company_settings, require_permission
 from celerp_docs.doc_projections import _recalc_list_totals
@@ -254,7 +255,10 @@ async def record_received(
     digest = document_digest(document)
     source = source_identity(bundle, link, digest)
     rid = received_id(source.installation, source.company, source.document)
-    existing = await session.get(Projection, (company_id, rid))
+    # Two imports of one revision with different content must not both pass the
+    # history check below: the second waits here and then reads the first.
+    await lock_company(session, company_id)
+    existing = await session.get(Projection, (company_id, rid), populate_existing=True)
     state = (existing.state or {}) if existing is not None else {}
     if source.revision is not None:
         if any(
