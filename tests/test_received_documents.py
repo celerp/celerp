@@ -729,6 +729,60 @@ async def test_legacy_untouched_import_moves_to_received_and_survives_rebuild(cl
     assert [i["id"] for i in listed if i["sender_doc_number"] == "OLD-1"] == [rid]
 
 
+async def _false_sales_entry(session, company_id, doc_id: str, total: float) -> str:
+    """The entry an earlier Doctor posted for an import from its status alone."""
+    from celerp.services import auto_je
+
+    await auto_je.create_for_doc_finalized(
+        session, company_id=company_id, user_id=None, doc_id=doc_id,
+        doc={"doc_type": "invoice", "total": total, "currency": "USD", "issue_date": "2026-01-05", "line_items": []},
+    )
+    return f"je:auto:{doc_id}:fin"
+
+
+@pytest.mark.asyncio
+async def test_legacy_import_with_an_accounting_entry_stays_a_document(client, session):
+    """An import an earlier Doctor posted a sales entry for is not moved: the
+    entry names it only through its own id and metadata, and moving the import
+    would leave the entry pointing at nothing."""
+    from celerp.migrations._data_reconcile import set_meta
+    from celerp.models.projections import Projection
+    from celerp_docs.received_legacy import LEGACY_RECEIVED_KEY, move_legacy_imports
+
+    tok = await _token(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(tok))).json()["id"])
+    posted = f"doc:rcv:legacy{uuid.uuid4().hex[:8]}"
+    await _legacy_import(session, company_id, posted, {
+        "doc_type": "invoice", "ref_id": "OLD-3", "company_name": "Old Sender", "total": 70.0, "line_items": [],
+    })
+    je_id = await _false_sales_entry(session, company_id, posted, 70.0)
+    await session.commit()
+
+    conn = await session.connection()
+    await conn.run_sync(lambda c: set_meta(c, LEGACY_RECEIVED_KEY, ""))
+    await move_legacy_imports(session)
+    await session.commit()
+
+    doc = await session.get(Projection, {"company_id": company_id, "entity_id": posted})
+    assert doc is not None and doc.entity_type == "doc"
+    je = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    assert je.state["status"] == "posted"
+
+
+def test_dependency_detection_reads_references_not_substrings():
+    from celerp_docs.received_legacy import depended_on
+
+    docs = {"doc:a", "doc:b", "doc:c", "doc:d", "doc:e"}
+    rows = [
+        ("doc:a", "k1", {}, {}),                                          # its own later event
+        ("je:auto:doc:b:fin", "k2", {}, {}),                              # entry id names it
+        ("je:x", "je:doc:c:invoice.finalized:c", {}, {}),                 # idempotency key names it
+        ("pay:1", "k3", {"lines": [{"source": "doc:d"}]}, {"n": ["x"]}),  # nested reference
+        ("item:1", "k4", {"note": "see doc:e later"}, {"ref": "doc:ee"}), # text that only contains it
+    ]
+    assert depended_on(rows, docs) == {"doc:a", "doc:b", "doc:c", "doc:d"}
+
+
 # ---------------------------------------------------------------------------
 # Doctor
 # ---------------------------------------------------------------------------
@@ -750,3 +804,93 @@ async def test_doctor_does_not_invent_an_entry_for_a_sent_draft(client):
     r = await client.post("/admin/doctor?checks=missing_jes", headers=_h(tok))
     missing = next(c for c in r.json()["results"] if c["check"] == "missing_jes")
     assert missing["found"] == 0
+
+
+@pytest.mark.asyncio
+async def test_doctor_voids_only_recognition_entries_with_no_finalize_or_receipt(client, session):
+    """Earlier Doctor versions posted sales and receiving entries from status
+    alone, so a legacy import could carry an entry for a sale that never
+    happened. Doctor finds exactly those and voids only them."""
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    from celerp.services import auto_je
+
+    tok = await _token(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(tok))).json()["id"])
+
+    legacy_inv, legacy_po = f"doc:rcv:li{uuid.uuid4().hex[:8]}", f"doc:rcv:lp{uuid.uuid4().hex[:8]}"
+    await _legacy_import(session, company_id, legacy_inv, {
+        "doc_type": "invoice", "ref_id": "OLD-4", "company_name": "Old Sender", "total": 80.0, "line_items": [],
+    })
+    await _legacy_import(session, company_id, legacy_po, {
+        "doc_type": "purchase_order", "ref_id": "OLD-PO", "company_name": "Old Sender", "total": 40.0, "line_items": [],
+    })
+    false_sale = await _false_sales_entry(session, company_id, legacy_inv, 80.0)
+    await auto_je.create_for_po_received(
+        session, company_id=company_id, user_id=None, po_id=legacy_po, total=40.0,
+        doc={"doc_type": "purchase_order", "total": 40.0, "currency": "USD"}, receive_date="2026-01-05",
+    )
+    await session.commit()
+    false_receipt = next(p.entity_id for p in (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_id.like(f"je:auto:{legacy_po}:%"))
+    )).scalars().all())
+
+    created = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "invoice", "contact_name": "ACME",
+        "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 10.0}],
+    })
+    finalized = created.json()["id"]
+    assert (await client.post(f"/docs/{finalized}/finalize", headers=_h(tok))).status_code == 200
+    imported = f"doc:imp-{uuid.uuid4().hex[:8]}"
+    r = await client.post("/docs/import", headers=_h(tok), json={
+        "entity_id": imported, "event_type": "doc.created", "source": "test",
+        "idempotency_key": f"imp-{uuid.uuid4().hex}",
+        "data": {"doc_type": "invoice", "status": "final", "total": 30.0, "currency": "USD",
+                 "issue_date": "2026-02-01", "line_items": []},
+    })
+    assert r.status_code == 200, r.text
+
+    def _check(resp):
+        assert resp.status_code == 200, resp.text
+        return next(c for c in resp.json()["results"] if c["check"] == "uncaused_recognition_jes")
+
+    dry = _check(await client.post("/admin/doctor?checks=uncaused_recognition_jes", headers=_h(tok)))
+    assert sorted(d["je_id"] for d in dry["details"]) == sorted([false_sale, false_receipt])
+    assert dry["fixed"] == 0
+
+    fixed = _check(await client.post("/admin/doctor?fix=true&checks=uncaused_recognition_jes", headers=_h(tok)))
+    assert fixed["fixed"] == 2
+
+    session.expire_all()
+    status = {p.entity_id: p.state.get("status") for p in (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_type == "journal_entry")
+    )).scalars().all()}
+    assert status[false_sale] == "void" and status[false_receipt] == "void"
+    assert status[f"je:auto:{finalized}:fin"] == "posted"
+    assert status[f"je:auto:{imported}:fin"] == "posted"
+
+    again = _check(await client.post("/admin/doctor?fix=true&checks=uncaused_recognition_jes", headers=_h(tok)))
+    assert again["found"] == 0
+
+
+@pytest.mark.asyncio
+async def test_doctor_reports_an_uncaused_entry_in_a_locked_period_instead_of_voiding(client, session):
+    tok = await _token(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(tok))).json()["id"])
+    legacy = f"doc:rcv:lk{uuid.uuid4().hex[:8]}"
+    await _legacy_import(session, company_id, legacy, {
+        "doc_type": "invoice", "ref_id": "OLD-5", "company_name": "Old Sender", "total": 20.0, "line_items": [],
+    })
+    je_id = await _false_sales_entry(session, company_id, legacy, 20.0)
+    await session.commit()
+    locked = await client.post("/accounting/period-lock", headers=_h(tok), json={"lock_date": "2026-06-30"})
+    assert locked.status_code == 200, locked.text
+
+    r = await client.post("/admin/doctor?fix=true&checks=uncaused_recognition_jes", headers=_h(tok))
+    check = next(c for c in r.json()["results"] if c["check"] == "uncaused_recognition_jes")
+    assert check["fixed"] == 0 and check["auto_fixable"] is False
+    assert [d["je_id"] for d in check["details"]] == [je_id]
+    assert "locked" in check["details"][0]["blocked_reason"].lower()

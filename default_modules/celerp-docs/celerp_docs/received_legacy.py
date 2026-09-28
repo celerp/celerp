@@ -7,9 +7,10 @@ Imports used to land as documents of our own (``doc.shared_import``), which put
 another business's invoice among ours. An import nobody has touched since is
 moved: its single ledger event is rewritten as a ``received_doc.imported``
 event and its projection is replaced, so a rebuild from the ledger gives the
-same result. An import that has any later activity (edited, converted, paid,
-voided, a note or a file added, or referenced from another record) is part of
-our books by now and stays a document.
+same result. An import that anything else in the ledger depends on is part of
+our books by now and stays a document: any later event on it (edited,
+converted, paid, voided, a note or a file added), any journal entry posted for
+it, and any record that names it in its data.
 
 Earlier imports carry no sender identity, so each becomes its own received
 record keyed by its old document id. Runs in the lifespan and is gated by a
@@ -20,7 +21,9 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import Text, cast, func, or_, select
+from collections.abc import Iterable, Iterator
+
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
@@ -47,6 +50,41 @@ def legacy_received_data(data: dict, old_id: str, received_at: str | None) -> di
     }
 
 
+def _strings(value) -> Iterator[str]:
+    """Every string held anywhere in a JSON value."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            yield from _strings(v)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _strings(v)
+
+
+def depended_on(rows: Iterable[tuple], candidates: set[str]) -> set[str]:
+    """The candidate documents that any of ``rows`` depends on.
+
+    Rows are (entity_id, idempotency_key, data, metadata) of ledger entries. A
+    ledger entry depends on a document when it is an event on the document,
+    a journal entry posted for it (its entity id or idempotency key is scoped
+    to the document), or when any field of its data or metadata holds the
+    document id. Fields are matched by exact value, so an id that only appears
+    inside longer text does not count."""
+    found: set[str] = set()
+    for entity_id, key, data, metadata in rows:
+        if entity_id in candidates:
+            found.add(entity_id)
+        for scoped, prefix in ((entity_id, "je:auto:"), (key or "", "je:")):
+            if scoped.startswith(prefix):
+                rest = scoped[len(prefix):]
+                found.update(c for c in candidates if rest.startswith(c + ":"))
+        for value in (*_strings(data), *_strings(metadata)):
+            if value in candidates:
+                found.add(value)
+    return found
+
+
 async def move_legacy_imports(session: AsyncSession) -> dict:
     """Move untouched earlier imports into Received. Caller owns the transaction."""
     from celerp.migrations._data_reconcile import get_meta, set_meta
@@ -62,20 +100,23 @@ async def move_legacy_imports(session: AsyncSession) -> dict:
     imported = (await session.execute(
         select(LedgerEntry).where(LedgerEntry.event_type == "doc.shared_import")
     )).scalars().all()
+    by_company: dict = {}
+    for entry in imported:
+        by_company.setdefault(entry.company_id, []).append(entry)
+    import_ids = {entry.id for entry in imported}
+    kept: set[tuple] = set()
+    for company_id, entries in by_company.items():
+        candidates = {e.entity_id for e in entries}
+        rows = await session.stream(
+            select(LedgerEntry.entity_id, LedgerEntry.idempotency_key, LedgerEntry.data, LedgerEntry.metadata_)
+            .where(LedgerEntry.company_id == company_id, LedgerEntry.id.not_in(import_ids))
+        )
+        async for part in rows.partitions(1000):
+            kept.update((company_id, doc) for doc in depended_on(part, candidates))
+
     moved = 0
     for entry in imported:
-        # Notes, journal entries and conversions sit on their own entities and
-        # name the document in their data, so they count as activity too.
-        events = (await session.execute(
-            select(func.count()).select_from(LedgerEntry).where(
-                LedgerEntry.company_id == entry.company_id,
-                or_(
-                    LedgerEntry.entity_id == entry.entity_id,
-                    cast(LedgerEntry.data, Text).like(f'%"{entry.entity_id}"%'),
-                ),
-            )
-        )).scalar_one()
-        if events != 1:
+        if (entry.company_id, entry.entity_id) in kept:
             continue
         old_id = entry.entity_id
         rid = received_id(LEGACY_INSTALLATION, "", old_id)
