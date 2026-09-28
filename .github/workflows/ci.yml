@@ -266,6 +266,35 @@ jobs:
           PY="$RUNNER_TEMP/mac-x64/python/bin/python3"
           "$PY" -m pip install --upgrade pip --prefer-binary
           "$PY" -m pip install . --prefer-binary -c constraints.txt
+      - name: Exercise cryptography under the x86_64 bundled Python
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/mac-x64/python/bin/python3" - <<'PY'
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric import ec
+          from jose import jwt
+
+          from celerp.services.backup import decrypt, encrypt
+
+          key = b"x" * 32
+          assert decrypt(encrypt(b"intel-crypto-smoke", key), key) == b"intel-crypto-smoke"
+
+          token = jwt.encode({"sub": "test"}, "test-secret", algorithm="HS256")
+          assert jwt.decode(token, "test-secret", algorithms=["HS256"])["sub"] == "test"
+
+          private = ec.generate_private_key(ec.SECP256R1())
+          private_pem = private.private_bytes(
+              serialization.Encoding.PEM,
+              serialization.PrivateFormat.PKCS8,
+              serialization.NoEncryption(),
+          )
+          public_pem = private.public_key().public_bytes(
+              serialization.Encoding.PEM,
+              serialization.PublicFormat.SubjectPublicKeyInfo,
+          )
+          token = jwt.encode({"sub": "test"}, private_pem, algorithm="ES256")
+          assert jwt.decode(token, public_pem, algorithms=["ES256"])["sub"] == "test"
+          PY
 
   # A pip install updating itself from the app, end to end, on every OS the bundled
   # PostgreSQL ships for: real wheels built from this tree, fresh venvs, `celerp
