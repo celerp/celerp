@@ -115,18 +115,17 @@ def test_list_detail_loads(page, ui_server, api):
 
 def test_subscription_pause_resume(page, ui_server, api):
     """SUB-LIFECYCLE-01: Create subscription → pause → resume → no crash."""
-    # Subscriptions are documents: created via POST /docs with a subscription doc_type.
+    # Subscriptions are documents: created as a draft via POST /docs, then activated.
     r = api.post("/docs", json={
         "doc_type": "subscription_invoice",
         "frequency": "monthly",
         "start_date": "2026-01-01",
-        "status": "active",
-        "next_run_date": "2026-02-01",
         "line_items": [{"description": _unique("Service"), "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
     })
     assert r.status_code in {200, 201}, f"POST /docs (subscription) failed: {r.text}"
     sub_id = r.json().get("id", "")
     assert sub_id, f"No id in response: {r.json()}"
+    assert api.post(f"/subscriptions/{sub_id}/activate").status_code == 200
 
     resp = page.request.post(f"{ui_server}/subscriptions/{sub_id}/pause")
     assert resp.status not in {404, 500, 422}, f"Pause returned {resp.status}: {resp.text()[:200]}"

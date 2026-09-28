@@ -26,6 +26,8 @@ from datetime import date, timedelta
 
 import pytest
 
+from test_helpers import import_sent_po
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -2058,11 +2060,12 @@ async def test_rpt_ar_aging_has_lines_after_invoice(client):
     token = await _reg(client)
     h = _h(token)
     past = (date.today() - timedelta(days=10)).isoformat()
-    await client.post("/docs", headers=h, json={
+    r = await client.post("/docs", headers=h, json={
         "doc_type": "invoice", "contact_id": "c1", "contact_name": "C1",
-        "line_items": [], "subtotal": 100, "tax": 0, "total": 100,
-        "status": "final", "date": past, "due_date": past,
+        "line_items": [{"name": "Service", "quantity": 1, "unit_price": 100, "line_total": 100}], "subtotal": 100, "tax": 0, "total": 100,
+        "date": past, "due_date": past,
     })
+    assert (await client.post(f"/docs/{r.json()['id']}/finalize", headers=h)).status_code == 200
     ar = (await client.get("/reports/ar-aging", headers=h)).json()
     assert "lines" in ar
     assert len(ar["lines"]) >= 1
@@ -2073,11 +2076,10 @@ async def test_rpt_ap_aging_has_lines_after_po(client):
     token = await _reg(client)
     h = _h(token)
     past = (date.today() - timedelta(days=5)).isoformat()
-    await client.post("/docs", headers=h, json={
-        "doc_type": "purchase_order", "contact_id": "s1", "contact_name": "S1",
-        "line_items": [], "subtotal": 200, "tax": 0, "total": 200,
-        "status": "final", "date": past,
-    })
+    await import_sent_po(
+        client, h, contact_id="s1", contact_name="S1", date=past, subtotal=200, total=200,
+        line_items=[{"name": "Stock", "quantity": 1, "unit_price": 200, "line_total": 200}],
+    )
     ap = (await client.get("/reports/ap-aging", headers=h)).json()
     assert "lines" in ap
     assert len(ap["lines"]) >= 1
@@ -2088,11 +2090,12 @@ async def test_rpt_sales_group_by_customer(client):
     token = await _reg(client)
     h = _h(token)
     past = (date.today() - timedelta(days=5)).isoformat()
-    await client.post("/docs", headers=h, json={
+    r = await client.post("/docs", headers=h, json={
         "doc_type": "invoice", "contact_id": "c1", "contact_name": "Cust1",
         "line_items": [{"name": "P", "quantity": 1, "line_total": 100}],
-        "subtotal": 100, "tax": 0, "total": 100, "status": "final", "date": past,
+        "subtotal": 100, "tax": 0, "total": 100, "date": past,
     })
+    assert (await client.post(f"/docs/{r.json()['id']}/finalize", headers=h)).status_code == 200
     r = await client.get("/reports/sales?group_by=customer", headers=h)
     assert r.status_code == 200
     body = r.json()
@@ -2105,11 +2108,12 @@ async def test_rpt_sales_group_by_item(client):
     token = await _reg(client)
     h = _h(token)
     past = (date.today() - timedelta(days=3)).isoformat()
-    await client.post("/docs", headers=h, json={
+    r = await client.post("/docs", headers=h, json={
         "doc_type": "invoice", "contact_id": "c1", "contact_name": "C1",
         "line_items": [{"item_id": "i1", "name": "Prod", "quantity": 2, "line_total": 200}],
-        "subtotal": 200, "tax": 0, "total": 200, "status": "final", "date": past,
+        "subtotal": 200, "tax": 0, "total": 200, "date": past,
     })
+    assert (await client.post(f"/docs/{r.json()['id']}/finalize", headers=h)).status_code == 200
     r = await client.get("/reports/sales?group_by=item", headers=h)
     assert r.status_code == 200
     assert r.json().get("group_by") == "item"
@@ -2128,11 +2132,10 @@ async def test_rpt_purchases_group_by_supplier(client):
     token = await _reg(client)
     h = _h(token)
     past = (date.today() - timedelta(days=5)).isoformat()
-    await client.post("/docs", headers=h, json={
-        "doc_type": "purchase_order", "contact_id": "s1", "contact_name": "Supplier1",
-        "line_items": [{"name": "P1", "quantity": 5, "line_total": 500}],
-        "subtotal": 500, "tax": 0, "total": 500, "status": "final", "date": past,
-    })
+    await import_sent_po(
+        client, h, contact_id="s1", contact_name="Supplier1", date=past, subtotal=500, total=500,
+        line_items=[{"name": "P1", "quantity": 5, "line_total": 500}],
+    )
     r = await client.get("/reports/purchases?group_by=supplier", headers=h)
     assert r.status_code == 200
     assert r.json().get("group_by") == "supplier"
@@ -2201,11 +2204,12 @@ async def test_rpt_sales_returns_amounts(client):
     token = await _reg(client)
     h = _h(token)
     past = (date.today() - timedelta(days=2)).isoformat()
-    await client.post("/docs", headers=h, json={
+    r = await client.post("/docs", headers=h, json={
         "doc_type": "invoice", "contact_id": "c1", "contact_name": "C1",
         "line_items": [{"name": "Item", "quantity": 1, "line_total": 750}],
-        "subtotal": 750, "tax": 0, "total": 750, "status": "final", "date": past,
+        "subtotal": 750, "tax": 0, "total": 750, "date": past,
     })
+    assert (await client.post(f"/docs/{r.json()['id']}/finalize", headers=h)).status_code == 200
     r = await client.get("/reports/sales?group_by=customer", headers=h)
     body = r.json()
     total_amount = sum(float(l.get("total_revenue", 0) or l.get("total", 0) or 0) for l in body.get("lines", []))

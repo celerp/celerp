@@ -173,6 +173,8 @@ class DocCreatePayload(BaseModel):
     to_address: dict | None = None
     original_doc_id: str | None = None
     reason: str | None = None
+    # Creation always makes a draft; issuing it is a lifecycle action that posts
+    # its entry. Only the import routes create a document already issued.
     status: str = "draft"
     amount_paid: float = 0
     amount_outstanding: float | None = None
@@ -183,6 +185,16 @@ class DocCreatePayload(BaseModel):
     @classmethod
     def _rate_is_usable(cls, v: float | None) -> float | None:
         return _stored_conversion_rate(v)
+
+    @field_validator("status")
+    @classmethod
+    def _created_as_draft(cls, v: str) -> str:
+        if v != "draft":
+            raise ValueError(
+                "A new document is always created as a draft. "
+                "Create it, then finalize, send or receive it."
+            )
+        return v
 
 
 class DocPatch(BaseModel):
@@ -3934,7 +3946,7 @@ async def import_doc(
         location_id=None,
         source=body.source,
         idempotency_key=body.idempotency_key,
-        metadata_={"source_ts": body.source_ts} if body.source_ts else {},
+        metadata_=_import_metadata(body.source_ts),
     )
 
     # The event type is doc.created by the guard above. Drafts return immediately.
@@ -3983,6 +3995,14 @@ def _doc_import_fields_changed(state: dict, incoming: dict) -> dict[str, dict]:
         for key, value in incoming.items()
         if key not in _DOC_IMPORT_UPSERT_EXCLUDED and state.get(key) != value
     }
+
+
+def _import_metadata(source_ts: str | None) -> dict:
+    """Ledger metadata of a raw snapshot import, recording that it came through import."""
+    meta: dict = {auto_je.IMPORTED_SNAPSHOT: True}
+    if source_ts:
+        meta["source_ts"] = source_ts
+    return meta
 
 
 async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id: str, data: dict, base_currency: str = "USD") -> None:
@@ -4123,7 +4143,7 @@ async def batch_import_docs(
                 location_id=None,
                 source=rec.source,
                 idempotency_key=rec.idempotency_key,
-                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
+                metadata_=_import_metadata(rec.source_ts),
             )
             existing_keys.add(rec.idempotency_key)
             existing_entities.add(entry.entity_id)

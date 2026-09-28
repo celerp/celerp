@@ -12,6 +12,8 @@ import uuid
 
 import pytest
 
+from test_helpers import import_sent_po
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -28,14 +30,18 @@ def _h(tok: str) -> dict:
     return {"Authorization": f"Bearer {tok}"}
 
 
-async def _doc(client, tok, doc_type="invoice", total=100, **extra):
+async def _doc(client, tok, doc_type="invoice", total=100, finalize=False, **extra):
     body = {"doc_type": doc_type, "contact_id": "c:1",
             "line_items": [{"description": "Item", "quantity": 1, "unit_price": total, "line_total": total}],
             "subtotal": total, "tax": 0, "total": total}
     body.update(extra)
     r = await client.post("/docs", headers=_h(tok), json=body)
     assert r.status_code == 200, r.text
-    return r.json()["id"]
+    doc_id = r.json()["id"]
+    if finalize:
+        rf = await client.post(f"/docs/{doc_id}/finalize", headers=_h(tok))
+        assert rf.status_code == 200, rf.text
+    return doc_id
 
 
 # ===========================================================================
@@ -266,8 +272,8 @@ async def test_export_docs_csv_applies_date_and_card_filters(client):
     All issued card, a status set, and a contact scope each export exactly their rows."""
     tok = await _reg(client)
     draft = await _doc(client, tok, doc_type="invoice", total=10)
-    final = await _doc(client, tok, doc_type="invoice", total=20, status="final")
-    other = await _doc(client, tok, doc_type="invoice", total=30, status="final", contact_id="c:2")
+    final = await _doc(client, tok, doc_type="invoice", total=20, finalize=True)
+    other = await _doc(client, tok, doc_type="invoice", total=30, finalize=True, contact_id="c:2")
 
     def _ids(text: str) -> set[str]:
         return {l.split(",")[0] for l in text.strip().splitlines()[1:] if l}
@@ -437,17 +443,10 @@ async def test_reports_po_analysis_price_range(client):
     tok = await _reg(client)
 
     for unit_price in [800, 3000, 8000, 30000]:
-        body = {
-            "doc_type": "purchase_order",
-            "contact_id": "c:1",
-            "line_items": [{"description": f"Item {unit_price}", "quantity": 1, "unit_price": unit_price, "total": unit_price}],
-            "subtotal": unit_price,
-            "tax": 0,
-            "total": unit_price,
-            "status": "final",
-        }
-        r = await client.post("/docs", headers=_h(tok), json=body)
-        assert r.status_code == 200
+        await import_sent_po(
+            client, _h(tok), contact_id="c:1", subtotal=unit_price, total=unit_price,
+            line_items=[{"description": f"Item {unit_price}", "quantity": 1, "unit_price": unit_price, "total": unit_price}],
+        )
 
     resp = await client.get("/reports/purchases?group_by=price_range", headers=_h(tok))
     assert resp.status_code == 200

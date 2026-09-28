@@ -37,6 +37,12 @@ _INVENTORY_ACCT = "1130-P"
 _FX_DIFFERENCE_ACCT = "6960"
 
 
+# Ledger metadata key set on a doc.created written by a raw snapshot import. It is
+# the only doc.created that may carry an issued document and post its entry, so
+# the Doctor reads this record rather than the payload's status.
+IMPORTED_SNAPSHOT = "imported_snapshot"
+
+
 def import_auto_je_kind(data: dict) -> str | None:
     """Accounting operation an imported snapshot would post, or None.
 

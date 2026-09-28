@@ -27,8 +27,9 @@ def _h(token: str) -> dict:
 
 async def _emit_legacy_doc_event(client, session, token: str, entity_id: str,
                                  event_type: str, data: dict) -> None:
-    """Seed historical ledger state without reopening the public raw-event import."""
+    """Seed ledger state as a snapshot import records it, without the import route's checks."""
     from celerp.events.engine import emit_event
+    from celerp.services.auto_je import IMPORTED_SNAPSHOT
 
     company = (await client.get("/companies/me", headers=_h(token))).json()
     await emit_event(
@@ -42,17 +43,17 @@ async def _emit_legacy_doc_event(client, session, token: str, entity_id: str,
         location_id=None,
         source="import:test",
         idempotency_key=f"legacy-{uuid.uuid4().hex}",
-        metadata_={},
+        metadata_={IMPORTED_SNAPSHOT: True} if event_type == "doc.created" else {},
     )
     await session.commit()
 
 
-async def _create_invoice(client, token, *, total=1000, tax=70, status="draft") -> str:
+async def _create_invoice(client, token, *, total=1000, tax=70) -> str:
     r = await client.post("/docs", headers=_h(token), json={
         "doc_type": "invoice", "contact_name": "Test",
         "line_items": [{"description": "Item", "quantity": 1,
                         "unit_price": total - tax, "line_total": total - tax}],
-        "subtotal": total - tax, "tax": tax, "total": total, "status": status,
+        "subtotal": total - tax, "tax": tax, "total": total,
     })
     assert r.status_code == 200
     return r.json()["id"]

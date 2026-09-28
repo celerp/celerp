@@ -27,6 +27,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from test_helpers import import_sent_po
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -219,15 +221,10 @@ async def test_reports_purchases_price_range(client):
     tok = await _reg(client)
 
     for i, (unit_price, total) in enumerate([(400, 400), (3000, 3000), (10000, 10000), (25000, 25000)]):
-        await client.post("/docs", headers=_h(tok), json={
-            "doc_type": "purchase_order",
-            "contact_id": "sup-pr",
-            "line_items": [{"name": f"Item{i}", "quantity": 1, "unit_price": unit_price, "line_total": total, "cost_total": total}],
-            "subtotal": total,
-            "tax": 0,
-            "total": total,
-            "status": "final",
-        })
+        await import_sent_po(
+            client, _h(tok), contact_id="sup-pr", subtotal=total, total=total,
+            line_items=[{"name": f"Item{i}", "quantity": 1, "unit_price": unit_price, "line_total": total, "cost_total": total}],
+        )
 
     r = await client.get("/reports/purchases?group_by=price_range", headers=_h(tok))
     assert r.status_code == 200

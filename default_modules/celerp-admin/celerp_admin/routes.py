@@ -62,17 +62,29 @@ ALL_CHECKS = [
 
 # --- Individual checks ---
 
-async def _documents_with_posting_event(session: AsyncSession, company_id) -> dict[str, set[str]]:
+async def _documents_with_posting_event(
+    session: AsyncSession, company_id,
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     """Documents whose own history holds the event that posts their entry.
 
-    Keyed by posting kind: "invoice" for a finalize (or an import that posts an
-    invoice on create), "purchase_order" for a receipt (or an import that posts
-    a received purchase order on create)."""
-    from celerp.services.auto_je import import_auto_je_kind
+    Keyed by posting kind: "invoice" for a finalize (or a snapshot import that
+    posts an invoice on create), "purchase_order" for a receipt (or a snapshot
+    import that posts a received purchase order on create). Only a doc.created
+    the import routes recorded as a snapshot import counts; the status in any
+    other doc.created payload is not evidence.
+
+    The second map holds documents created already issued with no such record:
+    imports from before the record existed look exactly like this, so their
+    entries are neither owed nor safe to void without review."""
+    from celerp.services.auto_je import IMPORTED_SNAPSHOT, import_auto_je_kind
 
     posted_by: dict[str, set[str]] = {"invoice": set(), "purchase_order": set()}
-    for entity_id, event_type, data in (await session.execute(
-        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data).where(
+    unrecorded: dict[str, set[str]] = {"invoice": set(), "purchase_order": set()}
+    for entity_id, event_type, data, meta in (await session.execute(
+        select(
+            LedgerEntry.entity_id, LedgerEntry.event_type,
+            LedgerEntry.data, LedgerEntry.metadata_,
+        ).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_type == "doc",
             LedgerEntry.event_type.in_(("doc.finalized", "doc.received", "doc.created")),
@@ -84,9 +96,13 @@ async def _documents_with_posting_event(session: AsyncSession, company_id) -> di
             posted_by["purchase_order"].add(entity_id)
         else:
             kind = import_auto_je_kind(data or {})
-            if kind in posted_by:
+            if kind not in posted_by:
+                continue
+            if (meta or {}).get(IMPORTED_SNAPSHOT):
                 posted_by[kind].add(entity_id)
-    return posted_by
+            else:
+                unrecorded[kind].add(entity_id)
+    return posted_by, unrecorded
 
 
 async def _check_missing_jes(
@@ -112,7 +128,7 @@ async def _check_missing_jes(
         )
     )).scalars().all())
 
-    posted_by = await _documents_with_posting_event(session, company_id)
+    posted_by, _ = await _documents_with_posting_event(session, company_id)
 
     from celerp.models.company import Company
     from celerp.services.money import checked_exchange_rate, require_doc_rate
@@ -272,7 +288,7 @@ async def _check_uncaused_recognition_jes(
     entry it never earned. Such an entry names a finalize or receipt the
     document's history does not have. The fix voids only those entries; the
     documents and every other entry are left as they are."""
-    caused = await _documents_with_posting_event(session, company_id)
+    caused, unrecorded = await _documents_with_posting_event(session, company_id)
     created = (await session.execute(
         select(LedgerEntry.entity_id, LedgerEntry.metadata_).where(
             LedgerEntry.company_id == company_id,
@@ -295,6 +311,12 @@ async def _check_uncaused_recognition_jes(
             continue
         detail = {"je_id": je_id, "doc_id": doc_id, "trigger": meta["trigger"]}
         found.append(detail)
+        if doc_id in unrecorded[kind]:
+            detail["blocked_reason"] = (
+                "The document was created already issued, as an import made before imports "
+                "were recorded, so the entry may be owed. Review it and void it by hand if not."
+            )
+            continue
         if not fix:
             continue
         try:

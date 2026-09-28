@@ -896,6 +896,78 @@ async def test_doctor_reports_an_uncaused_entry_in_a_locked_period_instead_of_vo
     assert "locked" in check["details"][0]["blocked_reason"].lower()
 
 
+async def _issued_create(session, company_id, doc_id: str, total: float) -> None:
+    """A doc.created that already reads as a finalized invoice but did not come
+    through a snapshot import (a connector copy, or a create from before
+    creation was draft-only)."""
+    from celerp.events.engine import emit_event
+
+    await emit_event(
+        session, company_id=company_id, entity_id=doc_id, entity_type="doc",
+        event_type="doc.created",
+        data={"doc_type": "invoice", "status": "final", "total": total, "currency": "USD",
+              "issue_date": "2026-01-05", "line_items": []},
+        actor_id=None, location_id=None, source="api",
+        idempotency_key=f"issued:{uuid.uuid4().hex}", metadata_={},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["final", "sent", "paid", "received"])
+async def test_a_new_document_is_always_created_as_a_draft(client, status):
+    tok = await _token(client)
+    r = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "invoice", "contact_name": "ACME", "status": status,
+        "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 10.0}],
+    })
+    assert r.status_code == 422, r.text
+    assert "draft" in r.text
+
+
+@pytest.mark.asyncio
+async def test_doctor_does_not_post_an_entry_for_a_create_that_only_looks_issued(client, session):
+    """Only a finalize, a receipt, or a recorded snapshot import owes an entry.
+    A doc.created whose payload happens to read "final" is not one of those."""
+    tok = await _token(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(tok))).json()["id"])
+    doc_id = f"doc:iss-{uuid.uuid4().hex[:8]}"
+    await _issued_create(session, company_id, doc_id, 60.0)
+    await session.commit()
+
+    r = await client.post("/admin/doctor?fix=true&checks=missing_jes", headers=_h(tok))
+    missing = next(c for c in r.json()["results"] if c["check"] == "missing_jes")
+    assert [d for d in missing["details"] if d["doc_id"] == doc_id] == []
+    assert missing["fixed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_doctor_holds_an_entry_on_an_unrecorded_issued_create_for_review(client, session):
+    """An import from before imports were recorded looks exactly like a create
+    that was issued with no finalize. Its entry may be owed, so Doctor reports
+    it for review and never voids it on its own."""
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+
+    tok = await _token(client)
+    company_id = uuid.UUID((await client.get("/companies/me", headers=_h(tok))).json()["id"])
+    doc_id = f"doc:iss-{uuid.uuid4().hex[:8]}"
+    await _issued_create(session, company_id, doc_id, 45.0)
+    je_id = await _false_sales_entry(session, company_id, doc_id, 45.0)
+    await session.commit()
+
+    r = await client.post("/admin/doctor?fix=true&checks=uncaused_recognition_jes", headers=_h(tok))
+    check = next(c for c in r.json()["results"] if c["check"] == "uncaused_recognition_jes")
+    assert [d["je_id"] for d in check["details"]] == [je_id]
+    assert check["fixed"] == 0 and check["auto_fixable"] is False
+    assert "review" in check["details"][0]["blocked_reason"].lower()
+
+    session.expire_all()
+    je = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_id == je_id))).scalar_one()
+    assert je.state.get("status") == "posted"
+
+
 # ---------------------------------------------------------------------------
 # Revision identity
 # ---------------------------------------------------------------------------
