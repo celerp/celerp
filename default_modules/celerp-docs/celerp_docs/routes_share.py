@@ -703,8 +703,11 @@ async def download_share_bundle(
         "doc": public_doc,
         # Stable identity of this document, whichever link or file carries it:
         # the recipient files every revision of it under one Received entry.
+        # The company is named by a digest of the installation and company ids,
+        # stable for the recipient without revealing either id.
         "source": {
             "installation": hashlib.sha256(ensure_instance_id().encode()).hexdigest(),
+            "company": hashlib.sha256(f"{ensure_instance_id()}\n{share_row.company_id}".encode()).hexdigest(),
             "document": share_row.entity_id,
             "revision": row.version,
         },

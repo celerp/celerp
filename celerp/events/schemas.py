@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -687,6 +687,7 @@ class ReceivedDocImported(BaseModel):
     Carries the sender identity, the revision digest and the sanitized document.
     The same event type records a first import and a later sender revision."""
     source_installation: str
+    source_company: str = ""
     source_document: str
     source_revision: str | None = None
     source_link: str | None = None
@@ -698,6 +699,7 @@ class ReceivedDocImported(BaseModel):
 class ReceivedDocBooked(BaseModel):
     """The recipient booked a received document as a local draft."""
     target_id: str
+    target_kind: Literal["doc", "list"]
     target_type: str
     revision_digest: str
     target_version: int

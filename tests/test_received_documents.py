@@ -43,10 +43,12 @@ def _doc(doc_type: str = "invoice", number: str = "INV-77", price: float = 100.0
 
 
 def _bundle(doc: dict, *, installation: str | None = "inst-a", document: str = "doc:S-1",
-            revision: int | None = 1) -> dict:
+            revision: int | None = 1, company: str | None = None) -> dict:
     bundle: dict = {"version": 1, "doc": doc}
     if installation is not None:
         bundle["source"] = {"installation": installation, "document": document, "revision": revision}
+        if company is not None:
+            bundle["source"]["company"] = company
     return bundle
 
 
@@ -68,6 +70,17 @@ async def _book(client: AsyncClient, tok: str, rid: str) -> str:
     r = await client.post(f"/docs/received/{rid}/book", headers=_h(tok))
     assert r.status_code == 200, r.text
     return r.json()["id"]
+
+
+async def _target(client: AsyncClient, tok: str, target: str) -> dict:
+    path = "/lists" if target.startswith("list:") else "/docs"
+    r = await client.get(f"{path}/{target}", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def _update(client: AsyncClient, tok: str, rid: str):
+    return await client.post(f"/docs/received/{rid}/update-draft", headers=_h(tok))
 
 
 async def _all_docs(session) -> list:
@@ -112,7 +125,7 @@ async def test_import_is_kept_in_received_not_among_our_documents(client, sessio
     assert row["due_date"] == "2026-09-30"
     assert row["total"] == 200.0
     assert row["revision_state"] == "unbooked"
-    assert row["book_target"] == "bill"
+    assert row["book_target"] == {"kind": "doc", "type": "bill"}
 
 
 @pytest.mark.asyncio
@@ -126,6 +139,23 @@ async def test_received_list_shows_the_original_share_link(client):
         r = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
     rid = r.headers["location"].rsplit("/", 1)[-1]
     assert (await _received(client, tok, rid))["source_link"] == link
+
+
+@pytest.mark.asyncio
+async def test_same_document_through_a_refreshed_link_keeps_the_new_link(client):
+    tok = await _token(client)
+    body = json.dumps(_bundle(_doc())).encode()
+    rids = []
+    for link in ("https://shop.example.com/share/old1", "https://shop.example.com/share/new2"):
+        with patch("celerp_docs.routes_share.validate_public_base_url", new=AsyncMock(return_value=link)), \
+             patch("celerp.services.outbound_url.fetch_public_bytes",
+                   new=AsyncMock(return_value=MagicMock(status_code=200, content=body, headers={}))):
+            r = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
+        rids.append(r.headers["location"].rsplit("/", 1)[-1])
+    assert rids[0] == rids[1]
+    received = await _received(client, tok, rids[0])
+    assert received["source_link"] == "https://shop.example.com/share/new2"
+    assert received["revision_count"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +173,18 @@ async def test_identity_is_sender_installation_plus_document(client):
     assert same == first
     assert len({first, other_sender, other_doc}) == 3
     assert (await _received(client, tok, first))["revision_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_two_companies_on_one_installation_are_two_senders(client):
+    """Entity ids are per company, so two companies on one installation can
+    share one; the sender company keeps their documents apart."""
+    tok = await _token(client)
+    a = await _import(client, tok, _bundle(_doc(), installation="inst-a", company="co-1", document="doc:INV-1"))
+    b = await _import(client, tok, _bundle(_doc(), installation="inst-a", company="co-2", document="doc:INV-1"))
+    assert a != b
+    assert len([i for i in (await client.get("/docs/received", headers=_h(tok))).json()["items"]
+                if i["id"] in (a, b)]) == 2
 
 
 @pytest.mark.asyncio
@@ -181,6 +223,54 @@ async def test_older_revision_arriving_late_is_history_only(client):
 # ---------------------------------------------------------------------------
 # Booking
 # ---------------------------------------------------------------------------
+
+MAPPING = [
+    ("invoice", "doc", "bill"),
+    ("proforma", "doc", "purchase_order"),
+    ("quotation", "doc", "purchase_order"),
+    ("purchase_order", "list", "quotation"),
+    ("memo", "doc", "consignment_in"),
+    ("consignment_in", "doc", "memo"),
+]
+
+
+def test_mapping_covers_every_shareable_type():
+    from celerp_docs.received import BOOK_TARGETS
+
+    assert {k: tuple(v) for k, v in BOOK_TARGETS.items()} == {s: (k, t) for s, k, t in MAPPING}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sender_type,kind,local_type", MAPPING)
+async def test_book_and_update_each_mapping(client, sender_type, kind, local_type):
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_doc(doc_type=sender_type, number="S-9", price=100.0), revision=1))
+    assert (await _received(client, tok, rid))["book_target"] == {"kind": kind, "type": local_type}
+
+    r = await client.post(f"/docs/received/{rid}/book", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    assert r.json()["kind"] == kind
+    target = r.json()["id"]
+    assert target.startswith("list:" if kind == "list" else "doc:")
+    received = await _received(client, tok, rid)
+    assert received["revision_state"] == "booked"
+    assert received["booked_kind"] == kind
+
+    made = await _target(client, tok, target)
+    assert made.get("list_type" if kind == "list" else "doc_type") == local_type
+    assert made["status"] == "draft"
+    assert made["reference"] == "S-9"
+    assert made["source_received_id"] == rid
+    assert made["total"] == 200.0
+
+    await _import(client, tok, _bundle(_doc(doc_type=sender_type, number="S-9", price=150.0), revision=2))
+    assert (await _received(client, tok, rid))["revision_state"] == "update_available"
+    r = await _update(client, tok, rid)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"id": target, "kind": kind}
+    assert (await _target(client, tok, target))["total"] == 300.0
+    assert (await _received(client, tok, rid))["revision_state"] == "booked"
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("doc_type", ["bill", "credit_note"])
@@ -225,6 +315,171 @@ async def test_book_is_idempotent(client, session):
     assert first == second
     booked = [p for p in await _all_docs(session) if (p.state or {}).get("source_received_id") == rid]
     assert len(booked) == 1
+
+
+@pytest.mark.asyncio
+async def test_book_retry_after_the_draft_was_made_reuses_it(client, session, monkeypatch):
+    """The draft committed but recording the booking failed: the retry finds
+    the same draft through its create key instead of making a second one."""
+    from fastapi import HTTPException
+
+    from celerp_docs import received as rcv
+
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_doc()))
+    real = rcv._emit
+
+    async def _fail_once(*args, **kwargs):
+        monkeypatch.setattr(rcv, "_emit", real)
+        raise HTTPException(status_code=503, detail="unavailable")
+
+    monkeypatch.setattr(rcv, "_emit", _fail_once)
+    r = await client.post(f"/docs/received/{rid}/book", headers=_h(tok))
+    assert r.status_code == 503
+    await session.rollback()
+    target = await _book(client, tok, rid)
+    booked = [p for p in await _all_docs(session) if (p.state or {}).get("source_received_id") == rid]
+    assert [p.entity_id for p in booked] == [target]
+    assert (await _received(client, tok, rid))["revision_state"] == "booked"
+
+
+@pytest.mark.asyncio
+async def test_list_create_replay_does_not_use_a_number(client):
+    tok = await _token(client)
+    body = {"list_type": "quotation", "idempotency_key": f"k-{uuid.uuid4().hex}"}
+    first = await client.post("/lists", headers=_h(tok), json=body)
+    again = await client.post("/lists", headers=_h(tok), json=body)
+    assert first.status_code == again.status_code == 200, (first.text, again.text)
+    assert again.json()["id"] == first.json()["id"]
+    assert again.json()["event_id"] == first.json()["event_id"]
+    nxt = (await client.post("/lists", headers=_h(tok), json={"list_type": "quotation"})).json()["id"]
+
+    def _n(entity_id: str) -> int:
+        return int("".join(ch for ch in entity_id.rsplit("-", 1)[-1] if ch.isdigit()))
+
+    assert _n(nxt) == _n(first.json()["id"]) + 1
+
+
+@pytest.mark.asyncio
+async def test_update_clears_fields_the_sender_removed(client):
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_doc(), revision=1))
+    target = await _book(client, tok, rid)
+    made = await _target(client, tok, target)
+    assert made["due_date"] == "2026-09-30"
+    assert made["contact_email"] == "billing@sender.example.com"
+
+    revised = _doc(price=150.0)
+    del revised["due_date"], revised["company_email"]
+    await _import(client, tok, _bundle(revised, revision=2))
+    r = await _update(client, tok, rid)
+    assert r.status_code == 200, r.text
+    doc = await _target(client, tok, target)
+    assert doc.get("due_date") is None
+    assert doc.get("contact_email") is None
+    assert doc["total"] == 300.0
+
+
+@pytest.mark.asyncio
+async def test_update_never_touches_our_own_fields(client, session):
+    """Fields we set on the draft that the sender does not manage survive an update."""
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_doc(), revision=1))
+    target = await _book(client, tok, rid)
+    await _import(client, tok, _bundle(_doc(price=150.0), revision=2))
+    row = (await session.execute(select(Projection).where(Projection.entity_id == target))).scalar_one()
+    before = dict(row.state)
+    assert (await _update(client, tok, rid)).status_code == 200
+    after = await _target(client, tok, target)
+    for key in ("ref_id", "status", "source_received_id", "doc_type"):
+        assert after[key] == before[key]
+
+
+@pytest.mark.asyncio
+async def test_stale_expected_version_is_rejected(client):
+    tok = await _token(client)
+    created = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "bill", "contact_name": "ACME",
+        "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 10.0}],
+    })
+    doc_id = created.json()["id"]
+    version = created.json()["event_id"]
+    first = await client.patch(f"/docs/{doc_id}", headers=_h(tok), json={
+        "fields_changed": {"notes": {"old": None, "new": "one"}}, "expected_version": version,
+    })
+    assert first.status_code == 200, first.text
+    stale = await client.patch(f"/docs/{doc_id}", headers=_h(tok), json={
+        "fields_changed": {"notes": {"old": "one", "new": "two"}}, "expected_version": version,
+    })
+    assert stale.status_code == 409
+    assert (await client.get(f"/docs/{doc_id}", headers=_h(tok))).json()["notes"] == "one"
+
+
+@pytest.mark.asyncio
+async def test_local_edit_racing_update_draft_wins(client, monkeypatch):
+    """A local edit that lands after Update draft read the draft, but before it
+    wrote, is kept: the update is rejected and the draft needs reconciling."""
+    from celerp_docs import received as rcv
+
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_doc(price=100.0), revision=1))
+    target = await _book(client, tok, rid)
+    await _import(client, tok, _bundle(_doc(price=150.0), revision=2))
+    real = rcv._fresh
+
+    async def _read_then_edit(session, company_id, entity_id):
+        row = await real(session, company_id, entity_id)
+        edit = await client.patch(f"/docs/{target}", headers=_h(tok), json={
+            "fields_changed": {"notes": {"old": None, "new": "edited here"}},
+        })
+        assert edit.status_code == 200, edit.text
+        return row
+
+    monkeypatch.setattr(rcv, "_fresh", _read_then_edit)
+    r = await _update(client, tok, rid)
+    assert r.status_code == 409
+    monkeypatch.setattr(rcv, "_fresh", real)
+    doc = await _target(client, tok, target)
+    assert doc["notes"] == "edited here"
+    assert doc["total"] == 200.0
+    assert (await _received(client, tok, rid))["revision_state"] == "needs_reconciliation"
+
+
+@pytest.mark.asyncio
+async def test_update_retry_after_patch_committed_recovers_its_version(client, session, monkeypatch):
+    """The draft was patched but recording the update failed. The retry finds
+    the patch by its key, records that version, and the draft stays updatable."""
+    from fastapi import HTTPException
+
+    from celerp_docs import received as rcv
+
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_doc(price=100.0), revision=1))
+    target = await _book(client, tok, rid)
+    await _import(client, tok, _bundle(_doc(price=150.0), revision=2))
+    real = rcv._emit
+
+    async def _fail_once(*args, **kwargs):
+        monkeypatch.setattr(rcv, "_emit", real)
+        raise HTTPException(status_code=503, detail="unavailable")
+
+    monkeypatch.setattr(rcv, "_emit", _fail_once)
+    assert (await _update(client, tok, rid)).status_code == 503
+    await session.rollback()
+    assert (await _target(client, tok, target))["total"] == 300.0
+    assert (await _received(client, tok, rid))["revision_state"] == "needs_reconciliation"
+
+    r = await _update(client, tok, rid)
+    assert r.status_code == 200, r.text
+    assert (await _received(client, tok, rid))["revision_state"] == "booked"
+    await _import(client, tok, _bundle(_doc(price=175.0), revision=3))
+    assert (await _received(client, tok, rid))["revision_state"] == "update_available"
+    assert (await _update(client, tok, rid)).status_code == 200
+    assert (await _target(client, tok, target))["total"] == 350.0
 
 
 @pytest.mark.asyncio
@@ -364,6 +619,36 @@ async def test_bundle_carries_stable_source_identity(client, monkeypatch):
     assert (again["installation"], again["document"]) == (source["installation"], source["document"])
 
 
+@pytest.mark.asyncio
+async def test_two_sender_companies_on_one_installation_stay_apart(client, monkeypatch):
+    from celerp.config import settings
+
+    monkeypatch.setattr(settings, "gateway_instance_id", "sender-instance-1")
+    first = await _token(client)
+
+    async def _company(name: str) -> str:
+        r = await client.post("/companies", json={"name": name}, headers=_h(first))
+        assert r.status_code == 200, r.text
+        return r.json()["access_token"]
+
+    sources = []
+    for tok in (first, await _company("Second Co")):
+        created = await client.post("/docs", headers=_h(tok), json={
+            "doc_type": "invoice", "contact_name": "ACME",
+            "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 10.0}],
+        })
+        entity_id = created.json()["id"]
+        token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+        sources.append((await client.get(f"/share/{token}/bundle")).json())
+    a, b = (s["source"] for s in sources)
+    assert a["installation"] == b["installation"]
+    assert a["document"] == b["document"]
+    assert a["company"] and b["company"] and a["company"] != b["company"]
+
+    buyer = await _company("Receiving Co")
+    assert await _import(client, buyer, sources[0]) != await _import(client, buyer, sources[1])
+
+
 def test_print_import_link_fills_in_the_page_address():
     """The Import link on a share page carries the address the page is read
     from, so a relay-hosted page links back to the relay address."""
@@ -425,7 +710,7 @@ async def test_legacy_untouched_import_moves_to_received_and_survives_rebuild(cl
     assert result["moved"] == 1
     assert (await move_legacy_imports(session))["changed"] is False
 
-    rid = received_id("legacy", untouched)
+    rid = received_id("legacy", "", untouched)
     await ProjectionEngine.rebuild(session, company_id)
     await session.commit()
     rows = {p.entity_id: p for p in (await session.execute(

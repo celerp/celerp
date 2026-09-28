@@ -268,7 +268,8 @@ def _received(**over) -> dict:
         "sender_doc_number": "INV-0042", "issue_date": "2026-09-01", "due_date": None,
         "total": 1250.0, "currency": "USD", "first_received_at": "2026-09-02T10:00:00+00:00",
         "last_received_at": "2026-09-03T10:00:00+00:00", "revision_count": 2,
-        "revision_state": "unbooked", "book_target": "bill", "booked_id": None,
+        "revision_state": "unbooked", "book_target": {"kind": "doc", "type": "bill"},
+        "booked_id": None, "booked_kind": None,
         "source_link": "https://shop.example.com/share/abc123", "booked_status": None,
         "document": {"currency": "USD", "line_items": [
             {"name": "Emerald ring", "quantity": 2, "unit_price": 625.0, "line_total": 1250.0}]},
@@ -371,6 +372,20 @@ async def test_book_opens_the_new_draft(ui_routes, monkeypatch):
     monkeypatch.setattr(di.api, "book_received", _book)
     resp = await ui_routes[("POST", "/docs/received/{rid}/book")](_FormReq({}), "rcv:abc")
     assert resp.status_code == 303 and resp.headers["location"] == "/docs/doc:new"
+
+
+@pytest.mark.asyncio
+async def test_booked_list_opens_on_the_list_page(ui_routes, monkeypatch):
+    async def _book(token, rid):
+        return {"id": "list:Q-1", "kind": "list"}
+
+    monkeypatch.setattr(di.api, "book_received", _book)
+    resp = await ui_routes[("POST", "/docs/received/{rid}/book")](_FormReq({}), "rcv:abc")
+    assert resp.status_code == 303 and resp.headers["location"] == "/lists/list:Q-1"
+    html = await _detail(ui_routes, monkeypatch, doc_type="purchase_order", revision_state="booked",
+                         book_target={"kind": "list", "type": "quotation"},
+                         booked_id="list:Q-1", booked_kind="list")
+    assert 'href="/lists/list:Q-1"' in html and 'href="/docs/list:Q-1"' not in html
 
 
 @pytest.mark.asyncio

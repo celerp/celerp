@@ -162,6 +162,12 @@ def received_table(items: list[dict]) -> FT:
     return Table(Thead(head), body, cls="data-table sticky-head", id="received-table")
 
 
+def _booked_href(kind: str | None, entity_id: str) -> str:
+    """Where a draft booked from a received document is opened: lists and
+    documents have their own pages."""
+    return f"/lists/{entity_id}" if kind == "list" else f"/docs/{entity_id}"
+
+
 def _received_actions(r: dict) -> FT:
     """What can be done with a received document in its current state."""
     state = r.get("revision_state")
@@ -170,7 +176,8 @@ def _received_actions(r: dict) -> FT:
     if state in _RECEIVED_NOTICES:
         parts.append(P(t(_RECEIVED_NOTICES[state]), cls="flash flash--warning"))
     if state == "unbooked":
-        parts.append(P(t("received.book_hint", target=display_enum(r.get("book_target") or "", domain="doc_type")), cls="text-muted"))
+        target = r.get("book_target") or {}
+        parts.append(P(t("received.book_hint", target=display_enum(target.get("type") or "", domain="doc_type")), cls="text-muted"))
         parts.append(Form(Button(t("received.book"), cls="btn btn--primary", type="submit"),
                           method="post", action=f"/docs/received/{rid}/book"))
     elif state == "update_available":
@@ -178,7 +185,7 @@ def _received_actions(r: dict) -> FT:
         parts.append(Form(Button(t("received.update_draft"), cls="btn btn--primary", type="submit"),
                           method="post", action=f"/docs/received/{rid}/update-draft"))
     if r.get("booked_id"):
-        parts.append(P(A(t("received.open_booked"), href=f"/docs/{r['booked_id']}", cls="table-link")))
+        parts.append(P(A(t("received.open_booked"), href=_booked_href(r.get("booked_kind"), r["booked_id"]), cls="table-link")))
     return Div(*parts, cls="received-actions", style="margin: 16px 0;")
 
 
@@ -331,7 +338,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             return await _received_page(request, token, rid, error=str(e.detail))
-        return RedirectResponse(f"/docs/{result['id']}", status_code=303)
+        return RedirectResponse(_booked_href(result.get("kind"), result["id"]), status_code=303)
 
     @app.post("/docs/received/{rid}/book")
     async def received_book(request: Request, rid: str):

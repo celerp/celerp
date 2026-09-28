@@ -53,7 +53,7 @@ async def move_legacy_imports(session: AsyncSession) -> dict:
     from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
     from celerp.projections.engine import ProjectionEngine
-    from celerp_docs.received import ENTITY_TYPE, received_id
+    from celerp_docs.received import ENTITY_TYPE, received_id, revision_key
 
     conn = await session.connection()
     if await conn.run_sync(lambda c: get_meta(c, LEGACY_RECEIVED_KEY)):
@@ -78,13 +78,13 @@ async def move_legacy_imports(session: AsyncSession) -> dict:
         if events != 1:
             continue
         old_id = entry.entity_id
-        rid = received_id(LEGACY_INSTALLATION, old_id)
+        rid = received_id(LEGACY_INSTALLATION, "", old_id)
         data = legacy_received_data(entry.data, old_id, entry.ts.isoformat() if entry.ts else None)
         entry.entity_id = rid
         entry.entity_type = ENTITY_TYPE
         entry.event_type = "received_doc.imported"
         entry.data = data
-        entry.idempotency_key = f"{rid}:r:{data['digest']}:{entry.company_id}"
+        entry.idempotency_key = revision_key(rid, data["digest"], data.get("source_link"), entry.company_id)
         old = await session.get(Projection, (entry.company_id, old_id))
         if old is not None:
             await session.delete(old)

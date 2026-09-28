@@ -187,6 +187,10 @@ class DocCreatePayload(BaseModel):
 class DocPatch(BaseModel):
     fields_changed: dict[str, dict] = Field(default_factory=dict)
     idempotency_key: str | None = None
+    # Optimistic concurrency: when set, the patch applies only if it equals the record's current
+    # version (its latest ledger-entry id). A mismatch means another editor moved the record on since
+    # this client last read it, so the write is a stale clobber and is rejected 409. Omitted = no check.
+    expected_version: int | None = None
 
 
 class DocSendBody(BaseModel):
@@ -1555,7 +1559,10 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
             status_code=422,
             detail=f"Fields {sorted(protected_attempted)} cannot be changed via patch. Use the appropriate lifecycle endpoints.",
         )
-    row = await _get_doc(session, company_id, entity_id)
+    # Locked load so the version check and the emit are one compare-and-set, as for lists.
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    if payload.expected_version is not None and row.version != payload.expected_version:
+        raise HTTPException(status_code=409, detail="This document was changed by someone else; reload to get the latest before saving")
     new_contact_id = (payload.fields_changed.get("contact_id") or {}).get("new")
     if new_contact_id:
         await _validate_doc_contact_reference(session, company_id, str(new_contact_id))
@@ -4232,11 +4239,7 @@ class ListCreatePayload(BaseModel):
         return self
 
 
-class ListPatch(DocPatch):
-    # Optimistic concurrency: when set, the patch applies only if it equals the list's current
-    # version (its latest ledger-entry id). A mismatch means another editor moved the list on since
-    # this client last read it, so the write is a stale clobber and is rejected 409. Omitted = no check.
-    expected_version: int | None = None
+ListPatch = DocPatch
 
 
 ListVoidBody = DocVoidBody
@@ -4639,7 +4642,28 @@ async def create_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    company = await session.get(Company, company_id)
+    idem_key = payload.idempotency_key or str(uuid.uuid4())
+
+    async def _replay() -> dict | None:
+        if not payload.idempotency_key:
+            return None
+        replay = await find_event_by_idempotency(session, company_id, idem_key)
+        if replay is None:
+            return None
+        if replay.event_type != "list.created":
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        return {"event_id": replay.id, "id": replay.entity_id}
+
+    if (done := await _replay()) is not None:
+        return done
+    # Lock the company row so concurrent creates cannot read the same numbering counter, then
+    # re-check the key under that lock: a retry racing the first request returns the original
+    # list instead of consuming a second number. Mirrors create_doc.
+    company = (
+        await session.execute(select(Company).where(Company.id == company_id).with_for_update())
+    ).scalar_one_or_none()
+    if (done := await _replay()) is not None:
+        return done
     ref_id = payload.ref_id or next_doc_ref(company, list_sequence_key(payload.list_type))
     entity_id = f"list:{ref_id}"
 
@@ -4663,7 +4687,7 @@ async def create_list(
         await _assert_sales_line_price_permission(
             session, company_id, settings, role, data.get("line_items") or [], None,
         )
-    entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
+    entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, idem_key)
     await session.commit()
     return {"event_id": entry.id, "id": entity_id}
 
@@ -4679,6 +4703,12 @@ async def patch_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    if payload.idempotency_key:
+        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+        if replay is not None:
+            if replay.event_type != "list.updated" or replay.entity_id != entity_id:
+                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+            return {"event_id": replay.id, "version": replay.id}
     # Locked load so the version check and the emit are one atomic compare-and-set: two concurrent
     # patches cannot both read version N, both pass the check, and both write (the second clobbering
     # the first). The second waits, re-reads the advanced version, and its stale expected_version fails.
