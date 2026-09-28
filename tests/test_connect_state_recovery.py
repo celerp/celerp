@@ -308,14 +308,51 @@ async def test_persisted_only_sync_ignores_environment_override(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_boot_sync_uses_only_persisted_credentials():
+@pytest.mark.parametrize("first_boot", [True, False])
+async def test_boot_sync_uses_only_persisted_credentials(first_boot, monkeypatch):
+    monkeypatch.setattr("celerp.main._FIRST_BOOT", first_boot)
     sync = AsyncMock()
     with patch(
         "celerp.services.cloud_entitlement.sync_existing_entitlement", new=sync
     ):
         from celerp.main import _try_sync_existing_entitlement
         await _try_sync_existing_entitlement()
-    sync.assert_awaited_once_with(require_persisted_key=True)
+    sync.assert_awaited_once_with(require_persisted_key=True, first_boot=first_boot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs, expected", [
+    ({"first_boot": True}, True),
+    ({"first_boot": False}, False),
+    ({}, None),
+])
+async def test_sync_sends_boot_marker_only_when_given(
+        kwargs, expected, tmp_path, monkeypatch):
+    """Startup passes its boot marker; runtime callers leave it off the payload."""
+    mod, _ = _reload_config(tmp_path, monkeypatch)
+    mod.write_config({"cloud": {"token": "key-a", "instance_id": "instance-a"}})
+    mod.load_cloud_config()
+    sent = []
+
+    class Client:
+        async def post(self, _url, **kw):
+            sent.append(kw["json"])
+            return MagicMock(status_code=503)
+
+    async def run(_timeout, operation):
+        return await operation(Client())
+
+    with (
+        patch("celerp.gateway.state.fetch_relay_auth",
+              new=AsyncMock(return_value=("jwt-a", "instance-a"))),
+        patch("celerp.gateway.state.with_relay_client", new=run),
+    ):
+        from celerp.services.cloud_entitlement import sync_existing_entitlement
+        assert await sync_existing_entitlement(**kwargs) is None
+
+    assert len(sent) == 1
+    assert sent[0].get("first_boot") is expected
+    assert ("first_boot" in sent[0]) is (expected is not None)
 
 
 @pytest.mark.asyncio

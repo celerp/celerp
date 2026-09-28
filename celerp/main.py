@@ -22,6 +22,10 @@ load_cloud_config()
 load_backup_config()
 load_commercial_context()
 assert_secure_jwt()
+# First boot means no instance id existed before this process minted one. Taken
+# here because ensure_instance_id() writes it, and `celerp init` may already have
+# written the rest of config.toml.
+_FIRST_BOOT = not settings.gateway_instance_id
 ensure_instance_id()
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
@@ -85,42 +89,31 @@ async def _try_auto_activate() -> None:
     """Recover a challenge-approved activation, otherwise only check in.
 
     The verifier is durable, so retrying it after response loss returns the same
-    credential. UUID-only activation is intentionally not retried at startup.
+    credential. Without one, startup never activates by UUID; it only checks in.
     """
     _log = logging.getLogger(__name__)
     try:
-        import httpx
-        from celerp.config import (
-            settings as _s, ensure_instance_id, config_path)
+        from celerp.config import settings as _s, ensure_instance_id
         if _s.cloud_disconnected:
             return
-        first_boot = not config_path().exists()
         iid = await asyncio.to_thread(ensure_instance_id)
-        from celerp.gateway.state import activate_payload, relay_http_url as _rhu
+        from celerp.gateway.state import (
+            activate_payload, relay_http_url as _rhu, relay_post_with_retry)
         relay_base = _rhu()
         verifier = _s.activation_verifier or ""
 
         if not verifier:
-            async def _checkin():
-                async with httpx.AsyncClient(timeout=6.0) as c:
-                    return await c.post(
-                        f"{relay_base}/auth/checkin",
-                        json=activate_payload(iid, first_boot=first_boot),
-                    )
-
-            try:
-                await asyncio.wait_for(_checkin(), timeout=6.0)
-            except (httpx.HTTPError, asyncio.TimeoutError):
-                pass
+            # Check-in is observation-only, so transport retries are safe.
+            await relay_post_with_retry(
+                f"{relay_base}/auth/checkin",
+                activate_payload(iid, first_boot=_FIRST_BOOT))
             return
-        else:
-            # Challenge redemption is idempotent for this verifier, so transient
-            # transport retries are safe here.
-            from celerp.gateway.state import relay_post_with_retry
-            r = await relay_post_with_retry(
-                f"{relay_base}/auth/activate",
-                activate_payload(
-                    iid, first_boot=first_boot, activation_verifier=verifier))
+        # Challenge redemption is idempotent for this verifier, so transient
+        # transport retries are safe here.
+        r = await relay_post_with_retry(
+            f"{relay_base}/auth/activate",
+            activate_payload(
+                iid, first_boot=_FIRST_BOOT, activation_verifier=verifier))
 
         if r is None or r.status_code != 200:
             return
@@ -146,7 +139,8 @@ async def _try_sync_existing_entitlement() -> None:
     """Best-effort boot convergence for an already-persisted relay credential."""
     try:
         from celerp.services.cloud_entitlement import sync_existing_entitlement
-        await sync_existing_entitlement(require_persisted_key=True)
+        await sync_existing_entitlement(
+            require_persisted_key=True, first_boot=_FIRST_BOOT)
     except Exception as exc:
         logging.getLogger(__name__).debug(
             "Cloud startup reconciliation failed (non-fatal): %s", exc)
