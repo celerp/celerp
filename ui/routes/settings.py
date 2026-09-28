@@ -16,7 +16,8 @@ from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
 from ui.components.table import EMPTY, unwrap_address
-from ui.components.currency import CURRENCIES, CURRENCY_CODES, currency_label, currency_combobox_td
+from celerp.services.currencies import CURRENCY_CODES, currency_label
+from ui.components.currency import currency_combobox_td
 from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
 from ui.config import PRIVACY_POLICY_URL
 from ui.config import get_token as _token

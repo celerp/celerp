@@ -54,7 +54,7 @@ from celerp_docs import received
 from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES, is_shareable, share_doc_type
 from celerp_docs.doc_money import UnratedTaxError, document_money
 from celerp_docs.taxes import TaxApplication
-from ui.components.currency import CURRENCY_CODES
+from celerp.services.currencies import CURRENCY_CODES
 
 # Authenticated router — share token generation requires login
 router = APIRouter(dependencies=[Depends(get_current_user)])

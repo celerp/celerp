@@ -24,7 +24,7 @@ from pathlib import Path
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import auth_shell, flash, page_title
-from ui.components.currency import CURRENCIES, CURRENCY_CODES
+from celerp.services.currencies import CURRENCIES, CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 from celerp.config import set_enabled_modules as _set_enabled_modules

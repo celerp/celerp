@@ -38,7 +38,7 @@ from celerp.services.line_measures import line_label, splitting_allowed
 from celerp.services.document_lines import line_item_id
 from celerp.services.attachments import store_upload
 from celerp.services.csv_export import csv_stream, resolve_export_cols
-from ui.components.currency import CURRENCY_CODES
+from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
