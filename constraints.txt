@@ -40,7 +40,11 @@ click==8.5.0
     #   uvicorn
 colorama==0.4.6 ; sys_platform == 'win32'
     # via qrcode
-cryptography==50.0.1
+cryptography==48.0.1 ; platform_machine == 'x86_64' and sys_platform == 'darwin'
+    # via
+    #   celerp (pyproject.toml)
+    #   python-jose
+cryptography==50.0.1 ; platform_machine != 'x86_64' or sys_platform != 'darwin'
     # via
     #   celerp (pyproject.toml)
     #   python-jose
