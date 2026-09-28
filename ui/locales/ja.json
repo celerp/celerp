@@ -3251,8 +3251,11 @@
   "received.book_hint": "登録すると、自社の番号で{target}の下書きが作成されます。送信者の番号は参照として残ります。",
   "received.update_draft": "下書きを更新",
   "received.update_hint": "送信者が新しい改訂を送りました。下書きは登録後に変更されていないため、内容を合わせて更新できます。",
+  "received.mark_reconciled": "照合済みにする",
+  "received.reconcile_hint": "下書きが最新の改訂と一致したら、照合済みにしてください。以降の改訂は再び「下書きを更新」で反映できます。",
   "received.notice_not_bookable": "この種類の書類は確認用としてここに保管され、登録できません。",
   "received.notice_needs_reconciliation": "送信者が新しい改訂を送りましたが、登録した下書きはここで編集されています。下の改訂を比較し、下書きを手動で更新してください。",
+  "received.notice_source_changed": "送信者が新しい改訂を送りましたが、種類、通貨、または金額が変わったため、登録した下書きに自動では反映できません。下の改訂を比較し、下書きを手動で更新してください。",
   "received.notice_review_only": "送信者が新しい改訂を送りましたが、登録した書類はもう下書きではありません。変更はされていません。新しい改訂は確認用としてここに保管されます。",
   "received.lines_title": "明細",
   "received.no_lines": "明細なし",
@@ -3261,6 +3264,7 @@
   "enum.received_state.booked": "登録済み",
   "enum.received_state.update_available": "更新あり",
   "enum.received_state.needs_reconciliation": "照合が必要",
+  "enum.received_state.source_changed": "送信者が変更",
   "enum.received_state.review_only": "登録後に変更",
   "enum.received_state.not_bookable": "登録不可"
 }

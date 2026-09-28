@@ -10,7 +10,9 @@ event and its projection is replaced, so a rebuild from the ledger gives the
 same result. An import that anything else in the ledger depends on is part of
 our books by now and stays a document: any later event on it (edited,
 converted, paid, voided, a note or a file added), any journal entry posted for
-it, and any record that names it in its data.
+it, and any record that names it in its data. So does an import with a share
+link, active or not, since the link resolves by its document id, and one
+queued for sending to a connected platform.
 
 Earlier imports carry no sender identity, so each becomes its own received
 record keyed by its old document id. Runs in the lifespan and is gated by a
@@ -88,7 +90,9 @@ def depended_on(rows: Iterable[tuple], candidates: set[str]) -> set[str]:
 async def move_legacy_imports(session: AsyncSession) -> dict:
     """Move untouched earlier imports into Received. Caller owns the transaction."""
     from celerp.migrations._data_reconcile import get_meta, set_meta
+    from celerp.models.connector_config import OutboundQueue
     from celerp.models.ledger import LedgerEntry
+    from celerp.models.share import DocShareToken
     from celerp.models.projections import Projection
     from celerp.projections.engine import ProjectionEngine
     from celerp_docs.received import ENTITY_TYPE, received_id, revision_key
@@ -113,6 +117,14 @@ async def move_legacy_imports(session: AsyncSession) -> dict:
         )
         async for part in rows.partitions(1000):
             kept.update((company_id, doc) for doc in depended_on(part, candidates))
+        referenced = (await session.execute(
+            select(DocShareToken.entity_id).where(
+                DocShareToken.company_id == company_id, DocShareToken.entity_id.in_(candidates),
+            ).union(select(OutboundQueue.entity_id).where(
+                OutboundQueue.company_id == str(company_id), OutboundQueue.entity_id.in_(candidates),
+            ))
+        )).scalars().all()
+        kept.update((company_id, doc) for doc in referenced)
 
     moved = 0
     for entry in imported:
@@ -125,7 +137,7 @@ async def move_legacy_imports(session: AsyncSession) -> dict:
         entry.entity_type = ENTITY_TYPE
         entry.event_type = "received_doc.imported"
         entry.data = data
-        entry.idempotency_key = revision_key(rid, data["digest"], data.get("source_link"), entry.company_id)
+        entry.idempotency_key = revision_key(rid, "after0", data["digest"], data.get("source_link"), entry.company_id)
         old = await session.get(Projection, (entry.company_id, old_id))
         if old is not None:
             await session.delete(old)

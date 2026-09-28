@@ -4656,6 +4656,8 @@ async def create_list(
 
     if (done := await _replay()) is not None:
         return done
+    if payload.currency and payload.currency not in CURRENCY_CODES:
+        raise HTTPException(status_code=422, detail=f"Invalid currency code: {payload.currency}")
     # Lock the company row so concurrent creates cannot read the same numbering counter, then
     # re-check the key under that lock: a retry racing the first request returns the original
     # list instead of consuming a second number. Mirrors create_doc.

@@ -894,3 +894,403 @@ async def test_doctor_reports_an_uncaused_entry_in_a_locked_period_instead_of_vo
     assert check["fixed"] == 0 and check["auto_fixable"] is False
     assert [d["je_id"] for d in check["details"]] == [je_id]
     assert "locked" in check["details"][0]["blocked_reason"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Revision identity
+# ---------------------------------------------------------------------------
+
+async def _revisions(session, company_id, rid: str) -> int:
+    from sqlalchemy import func, select
+
+    from celerp.models.ledger import LedgerEntry
+
+    return (await session.execute(
+        select(func.count()).select_from(LedgerEntry).where(
+            LedgerEntry.company_id == company_id, LedgerEntry.entity_id == rid)
+    )).scalar_one()
+
+
+async def _company_id(client: AsyncClient, tok: str) -> uuid.UUID:
+    return uuid.UUID((await client.get("/companies/me", headers=_h(tok))).json()["id"])
+
+
+@pytest.mark.asyncio
+async def test_unnumbered_content_that_comes_back_is_a_new_revision(client):
+    """A -> B -> A from a sender without revision numbers: the return to A is
+    the current revision, not a repeat of the first one."""
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_doc(price=100.0), revision=None))
+    await _import(client, tok, _bundle(_doc(price=150.0), revision=None))
+    await _import(client, tok, _bundle(_doc(price=100.0), revision=None))
+
+    received = await _received(client, tok, rid)
+    assert received["total"] == 200.0
+    assert received["revision_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_same_content_at_a_newer_revision_becomes_current(client):
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_doc(price=100.0), revision=1))
+    await _import(client, tok, _bundle(_doc(price=150.0), revision=2))
+    await _import(client, tok, _bundle(_doc(price=100.0), revision=3))
+
+    received = await _received(client, tok, rid)
+    assert received["total"] == 200.0
+    assert received["revision_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_same_revision_with_different_content_is_rejected(client):
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_doc(price=100.0), revision=1))
+    r = await client.post("/docs/import-bundle", json=_bundle(_doc(price=999.0), revision=1),
+                          headers=_h(tok), follow_redirects=False)
+    assert r.status_code == 422
+    assert "different content" in r.json()["detail"]
+    received = await _received(client, tok, rid)
+    assert received["total"] == 200.0
+    assert received["revision_count"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revision", [1, None])
+async def test_retried_arrival_records_nothing_new(client, session, revision):
+    tok = await _token(client)
+    company_id = await _company_id(client, tok)
+    rid = await _import(client, tok, _bundle(_doc(price=100.0), revision=revision))
+    await _import(client, tok, _bundle(_doc(price=150.0), revision=None if revision is None else 2))
+    before = await _revisions(session, company_id, rid)
+    await _import(client, tok, _bundle(_doc(price=150.0), revision=None if revision is None else 2))
+    assert await _revisions(session, company_id, rid) == before
+    assert (await _received(client, tok, rid))["revision_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_bundle_revision_counts_this_documents_own_changes(client):
+    """The revision is the document's own event count: it grows with each
+    change to the document and not with activity elsewhere in the books."""
+    tok = await _token(client)
+
+    async def _create() -> str:
+        r = await client.post("/docs", headers=_h(tok), json={
+            "doc_type": "invoice", "contact_name": "ACME",
+            "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 10.0}],
+        })
+        assert r.status_code == 200, r.text
+        return r.json()["id"]
+
+    entity_id = await _create()
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+
+    async def _revision() -> int:
+        return (await client.get(f"/share/{token}/bundle")).json()["source"]["revision"]
+
+    first = await _revision()
+    await _create()
+    assert await _revision() == first
+    patched = await client.patch(f"/docs/{entity_id}", headers=_h(tok), json={
+        "fields_changed": {"notes": {"old": None, "new": "revised"}},
+    })
+    assert patched.status_code == 200, patched.text
+    assert await _revision() == first + 1
+
+
+# ---------------------------------------------------------------------------
+# Purchase order to quotation: money carries over exactly or not at all
+# ---------------------------------------------------------------------------
+
+def _po(**extra) -> dict:
+    doc = _doc(doc_type="purchase_order", number="PO-5", price=100.0)
+    doc.update(extra)
+    return doc
+
+
+def _tax(rate: float, *, compound: bool = False) -> list[dict]:
+    return [{"code": "VAT", "rate": rate, "order": 1, "is_compound": compound, "label": "VAT"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra", [
+    pytest.param({"currency": "EUR"}, id="foreign-currency"),
+    pytest.param({"line_items": [{"description": "Widget", "quantity": 3, "unit_price": 33.33,
+                                  "discount_pct": 12.5}]}, id="line-discount"),
+    pytest.param({"doc_taxes": _tax(7.0), "discount": 15.0}, id="document-tax"),
+    pytest.param({"line_items": [{"description": "Widget", "quantity": 2, "unit_price": 100.0,
+                                  "taxes": _tax(10.0)}]}, id="line-tax"),
+])
+async def test_booked_quotation_keeps_currency_and_total_exactly(client, extra):
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_po(**extra)))
+    received = await _received(client, tok, rid)
+    target = await _book(client, tok, rid)
+
+    made = await _target(client, tok, target)
+    assert made["list_type"] == "quotation"
+    assert made["currency"] == received["currency"] == extra.get("currency", "USD")
+    assert made["total"] == received["total"]
+    assert (await _received(client, tok, rid))["revision_state"] == "booked"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra, reason", [
+    pytest.param({"shipping": 25.0}, "no shipping charge", id="shipping"),
+    pytest.param({"doc_taxes": _tax(5.0, compound=True)}, "no compound tax", id="compound-document-tax"),
+    pytest.param({"line_items": [{"description": "Widget", "quantity": 2, "unit_price": 100.0,
+                                  "taxes": _tax(5.0, compound=True)}]}, "no compound tax", id="compound-line-tax"),
+    pytest.param({"doc_taxes": _tax(7.0),
+                  "line_items": [{"description": "Widget", "quantity": 2, "unit_price": 100.0,
+                                  "taxes": _tax(10.0)}]}, "not both", id="line-and-document-tax"),
+])
+async def test_quotation_that_would_change_the_total_is_not_booked(client, session, extra, reason):
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_po(**extra)))
+    r = await client.post(f"/docs/received/{rid}/book", headers=_h(tok))
+    assert r.status_code == 422
+    assert reason in r.json()["detail"]
+    received = await _received(client, tok, rid)
+    assert received["revision_state"] == "unbooked"
+    assert received["booked_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_document_target_keeps_shipping_and_every_tax_exactly(client):
+    tok = await _token(client)
+    doc = _doc(price=100.0)
+    doc.update(currency="EUR", shipping=12.5, doc_taxes=_tax(5.0, compound=True),
+               line_items=[{"description": "Widget", "quantity": 2, "unit_price": 100.0, "taxes": _tax(10.0)}])
+    rid = await _import(client, tok, _bundle(doc))
+    received = await _received(client, tok, rid)
+    made = await _target(client, tok, await _book(client, tok, rid))
+    assert made["currency"] == "EUR"
+    assert made["total"] == received["total"]
+    assert made["shipping"] == 12.5
+
+
+# ---------------------------------------------------------------------------
+# Update draft only when the revision still fits the draft
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [
+    pytest.param({"currency": "EUR"}, id="currency"),
+    pytest.param({"doc_type": "proforma"}, id="type"),
+])
+async def test_revision_that_no_longer_fits_the_draft_needs_reconciliation(client, change):
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_doc(price=100.0), revision=1))
+    target = await _book(client, tok, rid)
+    changed = _doc(price=150.0)
+    changed.update(change)
+    await _import(client, tok, _bundle(changed, revision=2))
+
+    assert (await _received(client, tok, rid))["revision_state"] == "source_changed"
+    r = await _update(client, tok, rid)
+    assert r.status_code == 409
+    made = await _target(client, tok, target)
+    assert (made["doc_type"], made["currency"], made["total"]) == ("bill", "USD", 200.0)
+
+
+@pytest.mark.asyncio
+async def test_quotation_revision_it_cannot_carry_is_not_applied(client):
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_po(), revision=1))
+    target = await _book(client, tok, rid)
+    await _import(client, tok, _bundle(_po(shipping=25.0), revision=2))
+
+    assert (await _received(client, tok, rid))["revision_state"] == "source_changed"
+    assert (await _update(client, tok, rid)).status_code == 409
+    assert (await _target(client, tok, target))["total"] == 200.0
+
+
+# ---------------------------------------------------------------------------
+# Mark reconciled
+# ---------------------------------------------------------------------------
+
+async def _mark(client: AsyncClient, tok: str, rid: str):
+    return await client.post(f"/docs/received/{rid}/mark-reconciled", headers=_h(tok))
+
+
+@pytest.mark.asyncio
+async def test_mark_reconciled_records_the_revision_without_touching_the_draft(client):
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_doc(price=100.0), revision=1))
+    target = await _book(client, tok, rid)
+    edit = await client.patch(f"/docs/{target}", headers=_h(tok), json={
+        "fields_changed": {"notes": {"old": None, "new": "checked against delivery"}},
+    })
+    assert edit.status_code == 200, edit.text
+    await _import(client, tok, _bundle(_doc(price=150.0), revision=2))
+    assert (await _received(client, tok, rid))["revision_state"] == "needs_reconciliation"
+    before = await _target(client, tok, target)
+
+    r = await _mark(client, tok, rid)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"id": target, "kind": "doc"}
+    assert await _target(client, tok, target) == before
+    assert (await _received(client, tok, rid))["revision_state"] == "booked"
+    assert (await _mark(client, tok, rid)).status_code == 200
+
+    await _import(client, tok, _bundle(_doc(price=175.0), revision=3))
+    assert (await _received(client, tok, rid))["revision_state"] == "update_available"
+    assert (await _update(client, tok, rid)).status_code == 200
+    assert (await _target(client, tok, target))["total"] == 350.0
+
+
+@pytest.mark.asyncio
+async def test_mark_reconciled_after_a_change_the_draft_cannot_follow(client):
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_doc(price=100.0), revision=1))
+    target = await _book(client, tok, rid)
+    changed = _doc(price=150.0)
+    changed["currency"] = "EUR"
+    await _import(client, tok, _bundle(changed, revision=2))
+    assert (await _received(client, tok, rid))["revision_state"] == "source_changed"
+
+    assert (await _mark(client, tok, rid)).status_code == 200
+    assert (await _received(client, tok, rid))["revision_state"] == "booked"
+    assert (await _target(client, tok, target))["currency"] == "USD"
+
+
+@pytest.mark.asyncio
+async def test_mark_reconciled_needs_a_booked_draft(client):
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_doc(price=100.0), revision=1))
+    assert (await _mark(client, tok, rid)).status_code == 409
+
+    target = await _book(client, tok, rid)
+    assert (await client.post(f"/docs/{target}/void", headers=_h(tok), json={})).status_code == 200
+    await _import(client, tok, _bundle(_doc(price=150.0), revision=2))
+    r = await _mark(client, tok, rid)
+    assert r.status_code == 409
+    assert (await _received(client, tok, rid))["revision_state"] == "review_only"
+
+
+# ---------------------------------------------------------------------------
+# Untrusted numbers and currency
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("patch_doc", [
+    pytest.param(lambda d: d["line_items"][0].update(unit_price="NaN"), id="line-nan"),
+    pytest.param(lambda d: d.update(shipping="Infinity"), id="shipping-inf"),
+    pytest.param(lambda d: d.update(doc_taxes=[{"code": "VAT", "rate": 7, "order": "NaN"}]), id="tax-order-nan"),
+    pytest.param(lambda d: d.update(discount=float("-inf")), id="discount-neg-inf"),
+])
+async def test_non_finite_number_is_rejected(client, patch_doc):
+    tok = await _token(client)
+    doc = _doc()
+    patch_doc(doc)
+    r = await client.post("/docs/import-bundle", content=json.dumps(_bundle(doc)),
+                          headers={**_h(tok), "Content-Type": "application/json"}, follow_redirects=False)
+    assert r.status_code == 422
+    assert "not finite" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("currency", [None, "", "XXX", "usd"])
+async def test_bundle_without_a_supported_currency_is_rejected(client, currency):
+    tok = await _token(client)
+    doc = _doc()
+    if currency is None:
+        doc.pop("currency")
+    else:
+        doc["currency"] = currency
+    r = await client.post("/docs/import-bundle", json=_bundle(doc), headers=_h(tok), follow_redirects=False)
+    assert r.status_code == 422
+    assert "currency" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_list_with_an_unsupported_currency_is_rejected(client):
+    tok = await _token(client)
+    r = await client.post("/lists", headers=_h(tok), json={
+        "list_type": "quotation", "currency": "XXX",
+        "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 10.0}],
+    })
+    assert r.status_code == 422
+    assert "currency" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_shared_document_without_its_own_currency_goes_out_in_the_company_currency(client, session):
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from celerp.models.projections import Projection
+
+    tok = await _token(client)
+    created = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "invoice", "contact_name": "ACME",
+        "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 10.0}],
+    })
+    entity_id = created.json()["id"]
+    row = await session.get(Projection, {"company_id": await _company_id(client, tok), "entity_id": entity_id})
+    row.state.pop("currency", None)
+    flag_modified(row, "state")
+    await session.commit()
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+    assert (await client.get(f"/share/{token}/bundle")).json()["doc"]["currency"] == "USD"
+
+
+# ---------------------------------------------------------------------------
+# Legacy imports that were shared on stay documents
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoked", [False, True])
+async def test_legacy_import_with_a_share_link_stays_a_document(client, session, revoked):
+    """A share link names the import by its id. Active or revoked, the link
+    must keep resolving to the same document, so the import is not moved."""
+    from datetime import datetime, timezone
+
+    from celerp.migrations._data_reconcile import set_meta
+    from celerp.models.projections import Projection
+    from celerp.models.share import DocShareToken
+    from celerp_docs.received_legacy import LEGACY_RECEIVED_KEY, move_legacy_imports
+
+    tok = await _token(client)
+    company_id = await _company_id(client, tok)
+    shared = f"doc:rcv:legacy{uuid.uuid4().hex[:8]}"
+    await _legacy_import(session, company_id, shared, {
+        "doc_type": "invoice", "ref_id": "OLD-9", "company_name": "Old Sender", "total": 90.0, "line_items": [],
+    })
+    session.add(DocShareToken(
+        token=uuid.uuid4().hex[:12], company_id=company_id, entity_id=shared,
+        revoked_at=datetime.now(timezone.utc) if revoked else None,
+    ))
+    await session.commit()
+
+    conn = await session.connection()
+    await conn.run_sync(lambda c: set_meta(c, LEGACY_RECEIVED_KEY, ""))
+    result = await move_legacy_imports(session)
+    await session.commit()
+
+    assert result["moved"] == 0
+    doc = await session.get(Projection, {"company_id": company_id, "entity_id": shared})
+    assert doc is not None and doc.entity_type == "doc"
+
+
+@pytest.mark.asyncio
+async def test_legacy_import_queued_for_a_connected_platform_stays_a_document(client, session):
+    from celerp.migrations._data_reconcile import set_meta
+    from celerp.models.connector_config import OutboundQueue
+    from celerp.models.projections import Projection
+    from celerp_docs.received_legacy import LEGACY_RECEIVED_KEY, move_legacy_imports
+
+    tok = await _token(client)
+    company_id = await _company_id(client, tok)
+    queued = f"doc:rcv:legacy{uuid.uuid4().hex[:8]}"
+    await _legacy_import(session, company_id, queued, {
+        "doc_type": "invoice", "ref_id": "OLD-10", "company_name": "Old Sender", "total": 10.0, "line_items": [],
+    })
+    session.add(OutboundQueue(company_id=str(company_id), connector="shopify", entity_type="doc", entity_id=queued))
+    await session.commit()
+
+    conn = await session.connection()
+    await conn.run_sync(lambda c: set_meta(c, LEGACY_RECEIVED_KEY, ""))
+    await move_legacy_imports(session)
+    await session.commit()
+
+    doc = await session.get(Projection, {"company_id": company_id, "entity_id": queued})
+    assert doc is not None and doc.entity_type == "doc"

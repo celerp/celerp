@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import re
 import secrets
 import uuid as _uuid
@@ -31,11 +32,12 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
 from celerp.db import get_session
+from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.models.share import DocShareToken, is_active as share_is_active
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -51,6 +53,7 @@ from celerp.output.document_context import prepare_document_output
 from celerp_docs import received
 from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES, is_shareable, share_doc_type
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
+from ui.components.currency import CURRENCY_CODES
 
 # Authenticated router — share token generation requires login
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -134,9 +137,12 @@ async def _read_body_capped(request: Request, limit: int) -> bytes:
 
 def _num(v) -> float:
     try:
-        return float(v)
+        f = float(v)
     except (TypeError, ValueError):
         return 0.0
+    if not math.isfinite(f):
+        raise HTTPException(status_code=422, detail="Bundle contains a number that is not finite")
+    return f
 
 
 def _str(v, limit: int = _MAX_STR) -> str | None:
@@ -244,7 +250,9 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
         raise HTTPException(status_code=422, detail="Unsupported document type in bundle")
 
     public = _public_bundle_doc(doc)
-    currency = _str(public.get("currency"), 8) or "USD"
+    currency = public.get("currency")
+    if currency not in CURRENCY_CODES:
+        raise HTTPException(status_code=422, detail="Bundle document has no supported currency")
     # Payment state and derived totals are local accounting facts. Never
     # accept them from an untrusted sender: totals are recomputed below, and a
     # received document carries no payment state at all.
@@ -667,6 +675,16 @@ async def share_cors_preflight(token: str) -> Response:
     )
 
 
+async def _document_revision(session: AsyncSession, company_id, entity_id: str) -> int:
+    """This document's own revision number: how many events it has had. It
+    only grows, and says nothing about activity elsewhere in the books."""
+    return (await session.execute(
+        select(func.count()).select_from(LedgerEntry).where(
+            LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id,
+        )
+    )).scalar_one()
+
+
 @public_router.get("/share/{token}/bundle")
 async def download_share_bundle(
     token: str,
@@ -687,6 +705,12 @@ async def download_share_bundle(
     for key, value in (await _letterhead(session, share_row.company_id)).items():
         if key not in doc and value:
             doc[key] = value
+    if not doc.get("currency"):
+        # A document without its own currency is in the company currency,
+        # the same default it would be given when created today.
+        from celerp.models.company import Company
+        company = await session.get(Company, share_row.company_id)
+        doc["currency"] = ((company.settings or {}) if company else {}).get("currency", "USD")
     await _resolve_share_contact(session, share_row.company_id, doc)
     public_doc = _public_bundle_doc(doc)
     ref = public_doc.get("ref_id") or public_doc.get("doc_number") or share_row.entity_id
@@ -702,7 +726,7 @@ async def download_share_bundle(
             "installation": hashlib.sha256(ensure_instance_id().encode()).hexdigest(),
             "company": hashlib.sha256(f"{ensure_instance_id()}\n{share_row.company_id}".encode()).hexdigest(),
             "document": share_row.entity_id,
-            "revision": row.version,
+            "revision": await _document_revision(session, share_row.company_id, share_row.entity_id),
         },
         "exported_at": datetime.now(timezone.utc).isoformat(),
     }

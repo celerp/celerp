@@ -1224,6 +1224,11 @@ async def update_received_draft(token: str, rid: str) -> dict:
         return _raise(await c.post(f"/docs/received/{rid}/update-draft")).json()
 
 
+async def mark_received_reconciled(token: str, rid: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/received/{rid}/mark-reconciled")).json()
+
+
 async def upload_attachment(token: str, entity_id: str, file) -> dict:
     async with _bulk_api_client(token) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()

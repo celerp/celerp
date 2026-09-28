@@ -3251,8 +3251,11 @@
   "received.book_hint": "Al registrar se crea un borrador de {target} con su propio número. El número del remitente se conserva como referencia.",
   "received.update_draft": "Actualizar borrador",
   "received.update_hint": "El remitente envió una revisión más reciente. Su borrador no ha cambiado desde que se registró, así que puede actualizarse.",
+  "received.mark_reconciled": "Marcar como conciliado",
+  "received.reconcile_hint": "Cuando el borrador coincida con la última revisión, márquelo como conciliado. Después, las revisiones siguientes podrán aplicarse de nuevo con Actualizar borrador.",
   "received.notice_not_bookable": "Este tipo de documento se conserva aquí para revisión y no se puede registrar.",
   "received.notice_needs_reconciliation": "El remitente envió una revisión más reciente, pero el borrador registrado se editó aquí. Compare las revisiones de abajo y actualice el borrador a mano.",
+  "received.notice_source_changed": "El remitente envió una revisión más reciente que el borrador registrado no puede seguir automáticamente: cambió su tipo, su moneda o sus importes. Compare las revisiones de abajo y actualice el borrador a mano.",
   "received.notice_review_only": "El remitente envió una revisión más reciente, pero el documento registrado ya no es un borrador. No se modificó. La nueva revisión se conserva aquí para revisión.",
   "received.lines_title": "Líneas",
   "received.no_lines": "Sin líneas",
@@ -3261,6 +3264,7 @@
   "enum.received_state.booked": "Registrado",
   "enum.received_state.update_available": "Actualización disponible",
   "enum.received_state.needs_reconciliation": "Requiere conciliación",
+  "enum.received_state.source_changed": "Cambiado por el remitente",
   "enum.received_state.review_only": "Cambiado tras registrar",
   "enum.received_state.not_bookable": "No se puede registrar"
 }

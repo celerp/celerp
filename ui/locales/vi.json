@@ -3251,8 +3251,11 @@
   "received.book_hint": "Ghi sổ sẽ tạo bản nháp {target} với số của riêng bạn. Số của người gửi được giữ làm tham chiếu.",
   "received.update_draft": "Cập nhật bản nháp",
   "received.update_hint": "Người gửi đã gửi bản sửa đổi mới hơn. Bản nháp của bạn chưa bị sửa từ khi ghi sổ nên có thể cập nhật cho khớp.",
+  "received.mark_reconciled": "Đánh dấu đã đối chiếu",
+  "received.reconcile_hint": "Khi bản nháp đã khớp với bản sửa đổi mới nhất, hãy đánh dấu đã đối chiếu. Sau đó các bản sửa đổi tiếp theo có thể được áp dụng lại bằng Cập nhật bản nháp.",
   "received.notice_not_bookable": "Loại chứng từ này được giữ ở đây để xem xét và không thể ghi sổ.",
   "received.notice_needs_reconciliation": "Người gửi đã gửi bản sửa đổi mới hơn, nhưng bản nháp đã ghi sổ đã được sửa ở đây. Hãy so sánh các bản sửa đổi bên dưới và cập nhật bản nháp thủ công.",
+  "received.notice_source_changed": "Người gửi đã gửi bản sửa đổi mới hơn mà bản nháp đã ghi sổ không thể tự động theo: loại, tiền tệ hoặc số tiền đã thay đổi. Hãy so sánh các bản sửa đổi bên dưới và cập nhật bản nháp thủ công.",
   "received.notice_review_only": "Người gửi đã gửi bản sửa đổi mới hơn, nhưng chứng từ đã ghi sổ không còn là bản nháp. Nó không bị thay đổi. Bản sửa đổi mới được giữ ở đây để xem xét.",
   "received.lines_title": "Dòng",
   "received.no_lines": "Không có dòng",
@@ -3261,6 +3264,7 @@
   "enum.received_state.booked": "Đã ghi sổ",
   "enum.received_state.update_available": "Có bản cập nhật",
   "enum.received_state.needs_reconciliation": "Cần đối chiếu",
+  "enum.received_state.source_changed": "Người gửi đã thay đổi",
   "enum.received_state.review_only": "Thay đổi sau khi ghi sổ",
   "enum.received_state.not_bookable": "Không thể ghi sổ"
 }

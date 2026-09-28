@@ -361,6 +361,7 @@ async def test_import_legacy_bundle_terms_stores_only_canonical_field(client: As
         "version": 1,
         "doc": {
             "doc_type": "invoice",
+            "currency": "USD",
             "terms": "Legacy imported customer terms.",
             "line_items": [],
         },
@@ -594,6 +595,7 @@ async def test_import_bundle_json_body(client: AsyncClient):
         "doc": {
             "doc_type": "invoice",
             "ref_id": "EXT-001",
+            "currency": "USD",
             "contact_name": "Sender Corp",
             "total": 2500.0,
             "status": "open",
@@ -657,7 +659,7 @@ async def test_import_bundle_never_becomes_our_document(client: AsyncClient):
     tok = await _token(client)
     bundle = {
         "version": 1,
-        "doc": {"doc_type": "invoice", "ref_id": "EXT-002", "total": 500.0, "status": "paid"},
+        "doc": {"doc_type": "invoice", "currency": "USD", "ref_id": "EXT-002", "total": 500.0, "status": "paid"},
     }
     r = await client.post(
         "/docs/import-bundle",
@@ -692,6 +694,7 @@ async def test_import_recomputes_total_and_drops_unknown_fields(client: AsyncCli
     tok = await _token(client)
     r = await _import(client, tok, {
         "doc_type": "invoice",
+        "currency": "USD",
         "total": 0.01,                 # tampered
         "subtotal": 0.01,
         "injected_field": "x",
@@ -709,7 +712,7 @@ async def test_import_recomputes_total_and_drops_unknown_fields(client: AsyncCli
 @pytest.mark.asyncio
 async def test_import_rejects_unsupported_doc_type(client: AsyncClient):
     tok = await _token(client)
-    r = await _import(client, tok, {"doc_type": "totally_unknown", "total": 100.0})
+    r = await _import(client, tok, {"doc_type": "totally_unknown", "currency": "USD", "total": 100.0})
     assert r.status_code == 422
 
 
@@ -718,6 +721,7 @@ async def test_import_rejects_too_many_line_items(client: AsyncClient):
     tok = await _token(client)
     r = await _import(client, tok, {
         "doc_type": "invoice",
+        "currency": "USD",
         "line_items": [{"description": "x", "quantity": 1, "unit_price": 1} for _ in range(1001)],
     })
     assert r.status_code == 422
@@ -874,7 +878,7 @@ async def test_import_link_fetches_the_bundle_next_to_the_share_page(client: Asy
     from unittest.mock import AsyncMock, patch
 
     tok = await _token(client)
-    fetch = AsyncMock(return_value=_bundle_response({"doc_type": "invoice", "ref_id": "EXT-9", "total": 5.0}))
+    fetch = AsyncMock(return_value=_bundle_response({"doc_type": "invoice", "currency": "USD", "ref_id": "EXT-9", "total": 5.0}))
     with patch("celerp_docs.routes_share.validate_public_base_url", new=AsyncMock(return_value=link)), \
          patch("celerp.services.outbound_url.fetch_public_bytes", new=fetch):
         r = await client.get("/docs/import", params={"link": link}, headers=_h(tok), follow_redirects=False)
@@ -889,7 +893,7 @@ async def test_import_link_fetches_the_bundle_next_to_the_share_page(client: Asy
 async def test_import_bundle_file_retry_opens_the_same_doc(client: AsyncClient):
     """Uploading the same .celerp file twice (a retry) does not create a second received doc."""
     tok = await _token(client)
-    content = json.dumps({"version": 1, "doc": {"doc_type": "invoice", "ref_id": "EXT-7", "total": 7.0}}).encode()
+    content = json.dumps({"version": 1, "doc": {"doc_type": "invoice", "currency": "USD", "ref_id": "EXT-7", "total": 7.0}}).encode()
     locations = []
     for _ in range(2):
         r = await client.post(
@@ -902,7 +906,7 @@ async def test_import_bundle_file_retry_opens_the_same_doc(client: AsyncClient):
         locations.append(r.headers["location"])
     assert locations[0] == locations[1]
 
-    other = json.dumps({"version": 1, "doc": {"doc_type": "invoice", "ref_id": "EXT-8", "total": 8.0}}).encode()
+    other = json.dumps({"version": 1, "doc": {"doc_type": "invoice", "currency": "USD", "ref_id": "EXT-8", "total": 8.0}}).encode()
     r = await client.post(
         "/docs/import-bundle",
         files={"bundle": ("EXT-8.celerp", other, "application/json")},

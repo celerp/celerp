@@ -3251,8 +3251,11 @@
   "received.book_hint": "ينشئ التسجيل مسودة {target} برقمك الخاص. يبقى رقم المرسل مرجعًا لها.",
   "received.update_draft": "تحديث المسودة",
   "received.update_hint": "أرسل المرسل مراجعة أحدث. لم تتغير مسودتك منذ تسجيلها، لذا يمكن تحديثها لتطابقها.",
+  "received.mark_reconciled": "وضع علامة تمت التسوية",
+  "received.reconcile_hint": "عندما تطابق المسودة أحدث مراجعة، ضع عليها علامة تمت التسوية. بعد ذلك يمكن تطبيق المراجعات اللاحقة بزر تحديث المسودة مرة أخرى.",
   "received.notice_not_bookable": "يُحفظ هذا النوع من المستندات هنا للمراجعة ولا يمكن تسجيله.",
   "received.notice_needs_reconciliation": "أرسل المرسل مراجعة أحدث، لكن المسودة المسجلة عُدلت هنا. قارن المراجعات أدناه وحدّث المسودة يدويًا.",
+  "received.notice_source_changed": "أرسل المرسل مراجعة أحدث لا يمكن للمسودة المسجلة اتباعها تلقائيًا: تغير نوعها أو عملتها أو مبالغها. قارن المراجعات أدناه وحدّث المسودة يدويًا.",
   "received.notice_review_only": "أرسل المرسل مراجعة أحدث، لكن المستند المسجل لم يعد مسودة. لم يتم تغييره. تُحفظ المراجعة الجديدة هنا للمراجعة.",
   "received.lines_title": "الأسطر",
   "received.no_lines": "لا توجد أسطر",
@@ -3261,6 +3264,7 @@
   "enum.received_state.booked": "مسجل",
   "enum.received_state.update_available": "يتوفر تحديث",
   "enum.received_state.needs_reconciliation": "يحتاج إلى تسوية",
+  "enum.received_state.source_changed": "غيّره المرسل",
   "enum.received_state.review_only": "تغير بعد التسجيل",
   "enum.received_state.not_bookable": "لا يمكن تسجيله"
 }

@@ -3251,8 +3251,11 @@
   "received.book_hint": "መመዝገብ በራስዎ ቁጥር የ{target} ረቂቅ ይፈጥራል። የላኪው ቁጥር እንደ ማጣቀሻ ይቀመጣል።",
   "received.update_draft": "ረቂቁን አዘምን",
   "received.update_hint": "ላኪው አዲስ ክለሳ ልኳል። ረቂቅዎ ከተመዘገበ ጀምሮ ስላልተቀየረ እንዲመሳሰል ማዘመን ይቻላል።",
+  "received.mark_reconciled": "እንደታረቀ ምልክት አድርግ",
+  "received.reconcile_hint": "ረቂቁ ከቅርብ ጊዜው ክለሳ ጋር ሲመሳሰል እንደታረቀ ምልክት ያድርጉበት። ከዚያ በኋላ የሚመጡ ክለሳዎች እንደገና በ«ረቂቁን አዘምን» ሊተገበሩ ይችላሉ።",
   "received.notice_not_bookable": "ይህ የሰነድ ዓይነት ለግምገማ እዚህ ይቀመጣል፤ መመዝገብ አይቻልም።",
   "received.notice_needs_reconciliation": "ላኪው አዲስ ክለሳ ልኳል፣ ነገር ግን የተመዘገበው ረቂቅ እዚህ ተስተካክሏል። ከታች ያሉትን ክለሳዎች አወዳድረው ረቂቁን በእጅ ያዘምኑ።",
+  "received.notice_source_changed": "ላኪው የተመዘገበው ረቂቅ በራሱ ሊከተለው የማይችል አዲስ ክለሳ ልኳል፤ ዓይነቱ፣ ምንዛሬው ወይም መጠኖቹ ተቀይረዋል። ከታች ያሉትን ክለሳዎች አወዳድረው ረቂቁን በእጅ ያዘምኑ።",
   "received.notice_review_only": "ላኪው አዲስ ክለሳ ልኳል፣ ነገር ግን የተመዘገበው ሰነድ ከአሁን በኋላ ረቂቅ አይደለም። አልተቀየረም። አዲሱ ክለሳ ለግምገማ እዚህ ይቀመጣል።",
   "received.lines_title": "መስመሮች",
   "received.no_lines": "መስመር የለም",
@@ -3261,6 +3264,7 @@
   "enum.received_state.booked": "የተመዘገበ",
   "enum.received_state.update_available": "ማዘመኛ አለ",
   "enum.received_state.needs_reconciliation": "ማስታረቅ ያስፈልጋል",
+  "enum.received_state.source_changed": "በላኪው ተቀይሯል",
   "enum.received_state.review_only": "ከተመዘገበ በኋላ የተቀየረ",
   "enum.received_state.not_bookable": "መመዝገብ አይቻልም"
 }

@@ -3251,8 +3251,11 @@
   "received.book_hint": "La registrazione crea una bozza di tipo {target} con il tuo numero. Il numero del mittente resta come riferimento.",
   "received.update_draft": "Aggiorna bozza",
   "received.update_hint": "Il mittente ha inviato una revisione più recente. La tua bozza non è stata modificata dalla registrazione, quindi può essere aggiornata.",
+  "received.mark_reconciled": "Segna come riconciliata",
+  "received.reconcile_hint": "Quando la bozza corrisponde all'ultima revisione, segnala come riconciliata. Le revisioni successive potranno poi essere applicate di nuovo con Aggiorna bozza.",
   "received.notice_not_bookable": "Questo tipo di documento resta qui per la consultazione e non può essere registrato.",
   "received.notice_needs_reconciliation": "Il mittente ha inviato una revisione più recente, ma la bozza registrata è stata modificata qui. Confronta le revisioni qui sotto e aggiorna la bozza a mano.",
+  "received.notice_source_changed": "Il mittente ha inviato una revisione più recente che la bozza registrata non può seguire automaticamente: sono cambiati il tipo, la valuta o gli importi. Confronta le revisioni qui sotto e aggiorna la bozza a mano.",
   "received.notice_review_only": "Il mittente ha inviato una revisione più recente, ma il documento registrato non è più una bozza. Non è stato modificato. La nuova revisione resta qui per la consultazione.",
   "received.lines_title": "Righe",
   "received.no_lines": "Nessuna riga",
@@ -3261,6 +3264,7 @@
   "enum.received_state.booked": "Registrato",
   "enum.received_state.update_available": "Aggiornamento disponibile",
   "enum.received_state.needs_reconciliation": "Da riconciliare",
+  "enum.received_state.source_changed": "Modificato dal mittente",
   "enum.received_state.review_only": "Modificato dopo la registrazione",
   "enum.received_state.not_bookable": "Non registrabile"
 }

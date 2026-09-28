@@ -10,9 +10,12 @@ create path, with our own number, linked back to the received record.
 
 Identity is exact: the sender's installation, the sender's company on it and
 the sender's document id. Re-imports, refreshed links and retries land on the
-same received record. Revisions are tracked separately from identity: an
-identical revision is a no-op, a different one updates the record and keeps
-the history.
+same received record. Revisions are tracked separately from identity. The
+sender's revision number, when the bundle carries one, identifies a revision
+and orders it: a repeat is a no-op, a newer one becomes current, an older one
+arriving late is kept in history, and the same number with different content
+is refused. Without a revision number, arrival order decides and content
+equal to the current revision is a no-op.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import hashlib
 import json
 import uuid as _uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -31,7 +35,9 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.money import round_money, to_decimal
 from celerp.services.permissions import get_current_company_settings, require_permission
+from celerp_docs.doc_projections import _recalc_list_totals
 
 ENTITY_TYPE = "received_document"
 
@@ -61,6 +67,7 @@ BOOKED = "booked"
 UPDATE_AVAILABLE = "update_available"
 NEEDS_RECONCILIATION = "needs_reconciliation"
 REVIEW_ONLY = "review_only"
+SOURCE_CHANGED = "source_changed"
 
 _MAX_SOURCE_ID = 256
 
@@ -113,10 +120,12 @@ def received_id(installation: str, company: str, document: str) -> str:
     return f"rcv:{hashlib.sha256(key).hexdigest()[:24]}"
 
 
-def revision_key(rid: str, digest: str, link: str | None, company_id) -> str:
-    """Idempotency key of one revision arriving through one link."""
+def revision_key(rid: str, position: str, digest: str, link: str | None, company_id) -> str:
+    """Idempotency key of one revision arriving through one link. ``position``
+    is the sender's revision, or for unnumbered revisions the local sequence it
+    arrives after, so content that comes back after a change is a new arrival."""
     link_key = hashlib.sha256((link or "").encode()).hexdigest()[:16]
-    return f"{rid}:r:{digest}:{link_key}:{company_id}"
+    return f"{rid}:r:{position}:{digest}:{link_key}:{company_id}"
 
 
 def _sender_number(document: dict) -> str | None:
@@ -125,13 +134,22 @@ def _sender_number(document: dict) -> str | None:
 
 def _supersedes(new: str | None, current: str | None) -> bool:
     """Whether an arriving revision replaces the current one. Numeric sender
-    revisions order; an older one arriving late is kept in history only."""
+    revisions order; an older one arriving late is kept in history only.
+    Unnumbered revisions go by arrival order."""
     if current is None or new is None:
         return True
     try:
-        return int(new) >= int(current)
+        return int(new) > int(current)
     except ValueError:
         return True
+
+
+def _is_repeat(state: dict, revision: str | None, digest: str) -> bool:
+    """Whether an arrival adds nothing to the history: its sender revision is
+    already recorded, or, unnumbered, its content is the current revision's."""
+    if revision is not None:
+        return any(r.get("sender_revision") == revision for r in state.get("revisions") or [])
+    return digest == state.get("current_digest")
 
 
 def apply_received_event(state: dict, event_type: str, data: dict) -> dict:
@@ -142,12 +160,14 @@ def apply_received_event(state: dict, event_type: str, data: dict) -> dict:
         # unchanged: a refreshed link replaces one the sender has since revoked.
         if data.get("source_link"):
             s["source_link"] = data["source_link"]
-        digest = data["digest"]
-        revisions = list(s.get("revisions") or [])
-        if any(r.get("digest") == digest for r in revisions):
+        digest, revision = data["digest"], data.get("source_revision")
+        if _is_repeat(s, revision, digest):
             return s
         document = data.get("document") or {}
+        revisions = list(s.get("revisions") or [])
+        seq = len(revisions) + 1
         revisions.append({
+            "seq": seq,
             "digest": digest,
             "sender_revision": data.get("source_revision"),
             "received_at": data.get("received_at"),
@@ -159,11 +179,12 @@ def apply_received_event(state: dict, event_type: str, data: dict) -> dict:
         s.setdefault("source_company", data.get("source_company"))
         s.setdefault("source_document", data.get("source_document"))
         s.setdefault("first_received_at", data.get("received_at"))
-        if not s.get("current_digest") or _supersedes(data.get("source_revision"), s.get("current_revision")):
+        if not s.get("current_digest") or _supersedes(revision, s.get("current_revision")):
             s.update({
                 "document": document,
+                "current_seq": seq,
                 "current_digest": digest,
-                "current_revision": data.get("source_revision"),
+                "current_revision": revision,
                 "last_received_at": data.get("received_at"),
                 "sender_name": document.get("company_name"),
                 "doc_type": document.get("doc_type"),
@@ -178,12 +199,19 @@ def apply_received_event(state: dict, event_type: str, data: dict) -> dict:
             "target_id": data["target_id"],
             "target_kind": data["target_kind"],
             "target_type": data["target_type"],
+            "revision_seq": data["revision_seq"],
             "revision_digest": data["revision_digest"],
             "target_version": data["target_version"],
         }
-    elif event_type == "received_doc.draft_updated":
+    elif event_type in ("received_doc.draft_updated", "received_doc.reconciled"):
+        # Updated from the revision, or reconciled with it by hand: either way
+        # the draft now stands for this revision at this version.
         booked = dict(s.get("booked") or {})
-        booked.update(revision_digest=data["revision_digest"], target_version=data["target_version"])
+        booked.update(
+            revision_seq=data["revision_seq"],
+            revision_digest=data["revision_digest"],
+            target_version=data["target_version"],
+        )
         s["booked"] = booked
     return s
 
@@ -197,6 +225,8 @@ def revision_state(state: dict, target: Projection | None) -> str:
         return BOOKED
     if target is None or (target.state or {}).get("status") != "draft":
         return REVIEW_ONLY
+    if not _fits(state, booked, target):
+        return SOURCE_CHANGED
     if target.version == booked.get("target_version"):
         return UPDATE_AVAILABLE
     return NEEDS_RECONCILIATION
@@ -225,6 +255,22 @@ async def record_received(
     source = source_identity(bundle, link, digest)
     rid = received_id(source.installation, source.company, source.document)
     existing = await session.get(Projection, (company_id, rid))
+    state = (existing.state or {}) if existing is not None else {}
+    if source.revision is not None:
+        if any(
+            r.get("sender_revision") == source.revision and r.get("digest") != digest
+            for r in state.get("revisions") or []
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="This revision was received before with different content, so it was not imported.",
+            )
+        position = f"v{source.revision}"
+    else:
+        # A repeat of the current content keeps the position it first arrived
+        # at, so a retry over the same link is the same arrival.
+        seq = state.get("current_seq") or 0
+        position = f"after{seq - 1 if _is_repeat(state, None, digest) else seq}"
     await emit_event(
         session,
         company_id=company_id,
@@ -244,7 +290,7 @@ async def record_received(
         actor_id=actor_id,
         location_id=None,
         source="share_import",
-        idempotency_key=revision_key(rid, digest, link, company_id),
+        idempotency_key=revision_key(rid, position, digest, link, company_id),
         metadata_={},
     )
     return rid
@@ -265,8 +311,10 @@ _COUNTERPARTY = {
     "contact_billing_address": "company_address",
     "contact_tax_id": "company_tax_id",
 }
+# A document line carries its discount inside line_total; a list line keeps the
+# percentage it was given.
 _DOC_LINE_FIELDS = ("name", "description", "quantity", "unit", "unit_price", "line_total", "taxes", "pieces", "weight")
-_LIST_LINE_FIELDS = ("name", "description", "quantity", "unit", "unit_price", "line_total", "pieces", "weight")
+_LIST_LINE_FIELDS = ("name", "description", "quantity", "unit", "unit_price", "discount_pct", "line_total", "pieces", "weight")
 _DOC_TOTALS = ("subtotal", "tax", "total", "doc_taxes", "discount", "shipping")
 _BILL_FIELDS = ("issue_date", "due_date", "payment_terms")
 
@@ -297,15 +345,15 @@ def managed_fields(document: dict, target: BookTarget) -> dict:
     fields: dict = {local: document.get(sender) for local, sender in _COUNTERPARTY.items()}
     fields["reference"] = _sender_number(document)
     fields["line_items"] = _lines(document, target.kind)
+    fields["currency"] = document.get("currency")
     if target.kind == "list":
         # A list names its counterparty as customer_name, holds the discount as
-        # an amount, and its tax as a header rate; its currency is set once.
+        # an amount, and its tax as one rate per line or one header rate.
         fields["customer_name"] = document.get("company_name")
         fields["discount"] = document.get("discount") or 0
         fields["discount_type"] = "flat"
         fields["tax"] = _tax_rate(document.get("doc_taxes")) or 0
         return fields
-    fields["currency"] = document.get("currency")
     for key in _DOC_TOTALS:
         # Amounts a document always holds: an absent one is zero, as on create.
         fields[key] = document.get(key) or ([] if key == "doc_taxes" else 0)
@@ -313,6 +361,49 @@ def managed_fields(document: dict, target: BookTarget) -> dict:
         for key in _BILL_FIELDS:
             fields[key] = document.get(key) or None
     return fields
+
+
+def _money(value, currency) -> Decimal:
+    return round_money(to_decimal(value or 0), currency)
+
+
+def unrepresentable(document: dict, target: BookTarget) -> str | None:
+    """Why a draft of this target cannot carry the document's money exactly, or None.
+
+    A document keeps the sender's amounts as they are. A quotation list
+    recomputes its own total from its lines, one discount and simple tax rates,
+    so a revision it cannot hold without changing the total is refused rather
+    than booked or applied with different money."""
+    if target.kind != "list":
+        return None
+    currency = document.get("currency")
+    doc_taxes = document.get("doc_taxes") or []
+    line_taxes = [t for li in document.get("line_items") or [] for t in li.get("taxes") or []]
+    if _money(document.get("shipping"), currency):
+        return "A quotation has no shipping charge, so this document cannot become one without changing its total."
+    if any(t.get("is_compound") for t in (*doc_taxes, *line_taxes)):
+        return "A quotation has no compound tax, so this document cannot become one without changing its total."
+    if doc_taxes and line_taxes:
+        return (
+            "A quotation taxes either each line or the whole document, not both, "
+            "so this document cannot become one without changing its total."
+        )
+    totals = _recalc_list_totals(dict(managed_fields(document, target)))
+    if _money(totals["total"], currency) != _money(document.get("total"), currency):
+        return "A quotation would total this document differently, so it cannot become one without changing its total."
+    return None
+
+
+def _fits(state: dict, booked: dict, target: Projection) -> bool:
+    """Whether the current revision can update the booked draft: its type
+    still books to the same kind of draft, in the draft's currency, and the
+    draft can carry its money exactly."""
+    kind = BookTarget(booked["target_kind"], booked["target_type"])
+    return (
+        BOOK_TARGETS.get(state.get("doc_type") or "") == kind
+        and state.get("currency") == (target.state or {}).get("currency")
+        and unrepresentable(state.get("document") or {}, kind) is None
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -360,8 +451,10 @@ async def book(session: AsyncSession, company_id, rid: str, *, role: str, settin
             status_code=422,
             detail="This document type is kept in Received for review and cannot be booked.",
         )
-    digest = state["current_digest"]
-    fields = {k: v for k, v in managed_fields(state.get("document") or {}, target).items() if v is not None}
+    document = state.get("document") or {}
+    if (reason := unrepresentable(document, target)) is not None:
+        raise HTTPException(status_code=422, detail=reason)
+    fields = {k: v for k, v in managed_fields(document, target).items() if v is not None}
     common = {"status": "draft", "source_received_id": rid, "idempotency_key": f"book:{rid}:{company_id}"}
     if target.kind == "list":
         created = await create_list(
@@ -377,16 +470,22 @@ async def book(session: AsyncSession, company_id, rid: str, *, role: str, settin
         "target_id": created["id"],
         "target_kind": target.kind,
         "target_type": target.type,
-        "revision_digest": digest,
+        "revision_seq": state["current_seq"],
+        "revision_digest": state["current_digest"],
         "target_version": created["event_id"],
     }, user, f"{rid}:booked:{company_id}")
     await session.commit()
     return {"id": created["id"], "kind": target.kind}
 
 
+_NOT_DRAFT = "The booked document is no longer a draft. The new revision is kept here for review."
 _NOT_UPDATABLE = {
     NEEDS_RECONCILIATION: "The draft was edited here, so the new revision has to be reconciled by hand.",
-    REVIEW_ONLY: "The booked document is no longer a draft. The new revision is kept here for review.",
+    SOURCE_CHANGED: (
+        "The new revision changed its type, currency or amounts in a way the draft cannot follow, "
+        "so it has to be reconciled by hand."
+    ),
+    REVIEW_ONLY: _NOT_DRAFT,
 }
 
 
@@ -404,10 +503,10 @@ async def update_draft(session: AsyncSession, company_id, rid: str, *, role: str
     if not booked:
         raise HTTPException(status_code=409, detail="Book this document first.")
     result = {"id": booked["target_id"], "kind": booked["target_kind"]}
-    digest = state["current_digest"]
+    seq, digest = state["current_seq"], state["current_digest"]
     if booked["revision_digest"] == digest:
         return result
-    patch_key = f"{rid}:update:{digest}:{company_id}"
+    patch_key = f"{rid}:update:{seq}:{company_id}"
     applied = await find_event_by_idempotency(session, company_id, patch_key)
     if applied is not None:
         version = applied.id
@@ -430,8 +529,31 @@ async def update_draft(session: AsyncSession, company_id, rid: str, *, role: str
             )
             version = patched["event_id"] or version
     await _emit(session, company_id, rid, "received_doc.draft_updated",
-                {"revision_digest": digest, "target_version": version},
-                user, f"{rid}:draft_updated:{digest}:{company_id}")
+                {"revision_seq": seq, "revision_digest": digest, "target_version": version},
+                user, f"{rid}:draft_updated:{seq}:{company_id}")
+    await session.commit()
+    return result
+
+
+async def mark_reconciled(session: AsyncSession, company_id, rid: str, *, user) -> dict:
+    """Record that the booked draft was brought in line with the current
+    revision by hand. The draft itself is not touched: what is recorded is the
+    revision it now stands for and its version at this moment, so a later
+    sender revision is offered as a normal update again."""
+    state = (await _received_row(session, company_id, rid)).state or {}
+    booked = state.get("booked")
+    if not booked:
+        raise HTTPException(status_code=409, detail="Book this document first.")
+    result = {"id": booked["target_id"], "kind": booked["target_kind"]}
+    seq, digest = state["current_seq"], state["current_digest"]
+    if booked["revision_digest"] == digest:
+        return result
+    target = await _fresh(session, company_id, booked["target_id"])
+    if target is None or (target.state or {}).get("status") != "draft":
+        raise HTTPException(status_code=409, detail=_NOT_DRAFT)
+    await _emit(session, company_id, rid, "received_doc.reconciled",
+                {"revision_seq": seq, "revision_digest": digest, "target_version": target.version},
+                user, f"{rid}:reconciled:{seq}:{target.version}:{company_id}")
     await session.commit()
     return result
 
@@ -535,3 +657,14 @@ async def update_received_draft(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     return await update_draft(session, company_id, rid, role=role, settings=settings, user=user)
+
+
+@router.post("/docs/received/{rid}/mark-reconciled")
+async def mark_received_reconciled(
+    rid: str,
+    company_id: _uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("edit_documents"),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    return await mark_reconciled(session, company_id, rid, user=user)

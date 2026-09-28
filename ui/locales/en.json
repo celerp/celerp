@@ -3251,8 +3251,11 @@
   "received.book_hint": "Booking creates a {target} draft with your own number. The sender's number is kept as its reference.",
   "received.update_draft": "Update draft",
   "received.update_hint": "The sender sent a newer revision. Your draft has not been changed since it was booked, so it can be updated to match.",
+  "received.mark_reconciled": "Mark reconciled",
+  "received.reconcile_hint": "When the draft matches the latest revision, mark it reconciled. Later revisions can then be applied with Update draft again.",
   "received.notice_not_bookable": "This document type is kept here for review and cannot be booked.",
   "received.notice_needs_reconciliation": "The sender sent a newer revision, but the booked draft was edited here. Compare the revisions below and update the draft by hand.",
+  "received.notice_source_changed": "The sender sent a newer revision that the booked draft cannot follow automatically: its type, currency or amounts changed. Compare the revisions below and update the draft by hand.",
   "received.notice_review_only": "The sender sent a newer revision, but the booked document is no longer a draft. It was not changed. The new revision is kept here for review.",
   "received.lines_title": "Lines",
   "received.no_lines": "No lines",
@@ -3261,6 +3264,7 @@
   "enum.received_state.booked": "Booked",
   "enum.received_state.update_available": "Update available",
   "enum.received_state.needs_reconciliation": "Needs reconciliation",
+  "enum.received_state.source_changed": "Changed by sender",
   "enum.received_state.review_only": "Changed after booking",
   "enum.received_state.not_bookable": "Cannot be booked"
 }

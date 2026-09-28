@@ -334,7 +334,7 @@ async def test_share_import_bundle_multipart(client):
     tok = await _reg(client, "ShareMultiCo")
     bundle_data = json.dumps({
         "version": 1,
-        "doc": {"doc_type": "invoice", "total": 5, "status": "draft", "line_items": []},
+        "doc": {"doc_type": "invoice", "currency": "USD", "total": 5, "status": "draft", "line_items": []},
     })
 
     r = await client.post(

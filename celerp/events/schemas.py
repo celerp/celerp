@@ -701,12 +701,15 @@ class ReceivedDocBooked(BaseModel):
     target_id: str
     target_kind: Literal["doc", "list"]
     target_type: str
+    revision_seq: int
     revision_digest: str
     target_version: int
 
 
 class ReceivedDocDraftUpdated(BaseModel):
-    """The recipient applied a newer sender revision to the booked draft."""
+    """The booked draft now stands for a newer revision: the recipient applied
+    it (draft_updated) or reconciled the draft with it by hand (reconciled)."""
+    revision_seq: int
     revision_digest: str
     target_version: int
 
@@ -1265,6 +1268,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "received_doc.revised": ReceivedDocImported,
     "received_doc.booked": ReceivedDocBooked,
     "received_doc.draft_updated": ReceivedDocDraftUpdated,
+    "received_doc.reconciled": ReceivedDocDraftUpdated,
     "doc.note_added": DocNoteAdded,
     "doc.note_updated": DocNoteUpdated,
     "doc.note_removed": DocNoteRemoved,

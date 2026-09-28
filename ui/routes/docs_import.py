@@ -122,6 +122,7 @@ def shared_import_panel(*, error: str | None = None, link: str = "") -> FT:
 _RECEIVED_NOTICES = {
     "not_bookable": "received.notice_not_bookable",
     "needs_reconciliation": "received.notice_needs_reconciliation",
+    "source_changed": "received.notice_source_changed",
     "review_only": "received.notice_review_only",
 }
 
@@ -184,6 +185,10 @@ def _received_actions(r: dict) -> FT:
         parts.append(P(t("received.update_hint"), cls="text-muted"))
         parts.append(Form(Button(t("received.update_draft"), cls="btn btn--primary", type="submit"),
                           method="post", action=f"/docs/received/{rid}/update-draft"))
+    elif state in ("needs_reconciliation", "source_changed"):
+        parts.append(P(t("received.reconcile_hint"), cls="text-muted"))
+        parts.append(Form(Button(t("received.mark_reconciled"), cls="btn btn--secondary", type="submit"),
+                          method="post", action=f"/docs/received/{rid}/mark-reconciled"))
     if r.get("booked_id"):
         parts.append(P(A(t("received.open_booked"), href=_booked_href(r.get("booked_kind"), r["booked_id"]), cls="table-link")))
     return Div(*parts, cls="received-actions", style="margin: 16px 0;")
@@ -349,6 +354,11 @@ def setup_routes(app):
     async def received_update_draft(request: Request, rid: str):
         """Bring the untouched booked draft up to the latest received revision."""
         return await _received_action(request, rid, api.update_received_draft)
+
+    @app.post("/docs/received/{rid}/mark-reconciled")
+    async def received_mark_reconciled(request: Request, rid: str):
+        """Record that the booked draft was brought in line with the latest revision by hand."""
+        return await _received_action(request, rid, api.mark_received_reconciled)
 
     @app.post("/docs/import/shared")
     async def docs_import_shared(request: Request):

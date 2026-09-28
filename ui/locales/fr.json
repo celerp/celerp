@@ -3251,8 +3251,11 @@
   "received.book_hint": "L'enregistrement crée un brouillon de type {target} avec votre propre numéro. Le numéro de l'expéditeur est conservé comme référence.",
   "received.update_draft": "Mettre à jour le brouillon",
   "received.update_hint": "L'expéditeur a envoyé une révision plus récente. Votre brouillon n'a pas été modifié depuis son enregistrement, il peut donc être mis à jour.",
+  "received.mark_reconciled": "Marquer comme rapproché",
+  "received.reconcile_hint": "Quand le brouillon correspond à la dernière révision, marquez-le comme rapproché. Les révisions suivantes pourront alors de nouveau être appliquées avec Mettre à jour le brouillon.",
   "received.notice_not_bookable": "Ce type de document est conservé ici pour consultation et ne peut pas être enregistré.",
   "received.notice_needs_reconciliation": "L'expéditeur a envoyé une révision plus récente, mais le brouillon enregistré a été modifié ici. Comparez les révisions ci-dessous et mettez le brouillon à jour à la main.",
+  "received.notice_source_changed": "L'expéditeur a envoyé une révision plus récente que le brouillon enregistré ne peut pas suivre automatiquement : son type, sa devise ou ses montants ont changé. Comparez les révisions ci-dessous et mettez le brouillon à jour à la main.",
   "received.notice_review_only": "L'expéditeur a envoyé une révision plus récente, mais le document enregistré n'est plus un brouillon. Il n'a pas été modifié. La nouvelle révision est conservée ici pour consultation.",
   "received.lines_title": "Lignes",
   "received.no_lines": "Aucune ligne",
@@ -3261,6 +3264,7 @@
   "enum.received_state.booked": "Enregistré",
   "enum.received_state.update_available": "Mise à jour disponible",
   "enum.received_state.needs_reconciliation": "Rapprochement requis",
+  "enum.received_state.source_changed": "Modifié par l'expéditeur",
   "enum.received_state.review_only": "Modifié après enregistrement",
   "enum.received_state.not_bookable": "Non enregistrable"
 }

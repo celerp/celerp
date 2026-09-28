@@ -3251,8 +3251,11 @@
   "received.book_hint": "Lançar cria um rascunho de {target} com o seu próprio número. O número do remetente fica como referência.",
   "received.update_draft": "Atualizar rascunho",
   "received.update_hint": "O remetente enviou uma revisão mais recente. Seu rascunho não foi alterado desde o lançamento, então pode ser atualizado.",
+  "received.mark_reconciled": "Marcar como conciliado",
+  "received.reconcile_hint": "Quando o rascunho corresponder à revisão mais recente, marque-o como conciliado. As revisões seguintes poderão então ser aplicadas de novo com Atualizar rascunho.",
   "received.notice_not_bookable": "Este tipo de documento fica aqui para consulta e não pode ser lançado.",
   "received.notice_needs_reconciliation": "O remetente enviou uma revisão mais recente, mas o rascunho lançado foi editado aqui. Compare as revisões abaixo e atualize o rascunho manualmente.",
+  "received.notice_source_changed": "O remetente enviou uma revisão mais recente que o rascunho lançado não pode acompanhar automaticamente: o tipo, a moeda ou os valores mudaram. Compare as revisões abaixo e atualize o rascunho manualmente.",
   "received.notice_review_only": "O remetente enviou uma revisão mais recente, mas o documento lançado não é mais um rascunho. Ele não foi alterado. A nova revisão fica aqui para consulta.",
   "received.lines_title": "Linhas",
   "received.no_lines": "Sem linhas",
@@ -3261,6 +3264,7 @@
   "enum.received_state.booked": "Lançado",
   "enum.received_state.update_available": "Atualização disponível",
   "enum.received_state.needs_reconciliation": "Requer conciliação",
+  "enum.received_state.source_changed": "Alterado pelo remetente",
   "enum.received_state.review_only": "Alterado após o lançamento",
   "enum.received_state.not_bookable": "Não pode ser lançado"
 }

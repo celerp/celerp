@@ -3251,8 +3251,11 @@
   "received.book_hint": "Beim Buchen wird ein Entwurf vom Typ {target} mit Ihrer eigenen Nummer erstellt. Die Nummer des Absenders bleibt als Referenz erhalten.",
   "received.update_draft": "Entwurf aktualisieren",
   "received.update_hint": "Der Absender hat eine neuere Revision gesendet. Ihr Entwurf wurde seit dem Buchen nicht geändert und kann daher angepasst werden.",
+  "received.mark_reconciled": "Als abgeglichen markieren",
+  "received.reconcile_hint": "Wenn der Entwurf der neuesten Revision entspricht, markieren Sie ihn als abgeglichen. Spätere Revisionen lassen sich dann wieder mit Entwurf aktualisieren übernehmen.",
   "received.notice_not_bookable": "Dieser Dokumenttyp wird hier nur zur Prüfung aufbewahrt und kann nicht gebucht werden.",
   "received.notice_needs_reconciliation": "Der Absender hat eine neuere Revision gesendet, aber der gebuchte Entwurf wurde hier bearbeitet. Vergleichen Sie die Revisionen unten und passen Sie den Entwurf von Hand an.",
+  "received.notice_source_changed": "Der Absender hat eine neuere Revision gesendet, der der gebuchte Entwurf nicht automatisch folgen kann: Art, Währung oder Beträge haben sich geändert. Vergleichen Sie die Revisionen unten und passen Sie den Entwurf von Hand an.",
   "received.notice_review_only": "Der Absender hat eine neuere Revision gesendet, aber das gebuchte Dokument ist kein Entwurf mehr. Es wurde nicht geändert. Die neue Revision wird hier zur Prüfung aufbewahrt.",
   "received.lines_title": "Positionen",
   "received.no_lines": "Keine Positionen",
@@ -3261,6 +3264,7 @@
   "enum.received_state.booked": "Gebucht",
   "enum.received_state.update_available": "Aktualisierung verfügbar",
   "enum.received_state.needs_reconciliation": "Abgleich nötig",
+  "enum.received_state.source_changed": "Vom Absender geändert",
   "enum.received_state.review_only": "Nach dem Buchen geändert",
   "enum.received_state.not_bookable": "Nicht buchbar"
 }

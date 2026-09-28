@@ -341,6 +341,7 @@ async def test_received_detail_offers_book_and_shows_history(ui_routes, monkeypa
 @pytest.mark.parametrize("state, text", [
     ("not_bookable", "cannot be booked"),
     ("needs_reconciliation", "update the draft by hand"),
+    ("source_changed", "cannot follow automatically"),
     ("review_only", "no longer a draft"),
 ])
 @pytest.mark.asyncio
@@ -348,6 +349,36 @@ async def test_received_detail_explains_states_without_a_book_action(ui_routes, 
     html = await _detail(ui_routes, monkeypatch, revision_state=state, booked_id=None if state == "not_bookable" else "doc:1")
     assert text in html
     assert "/book" not in html and "/update-draft" not in html
+
+
+@pytest.mark.parametrize("state", ["needs_reconciliation", "source_changed"])
+@pytest.mark.asyncio
+async def test_received_detail_offers_mark_reconciled_when_it_cannot_update(ui_routes, monkeypatch, state):
+    html = await _detail(ui_routes, monkeypatch, revision_state=state, booked_id="doc:1")
+    assert 'action="/docs/received/rcv:abc/mark-reconciled"' in html
+    assert "Mark reconciled" in html
+
+
+@pytest.mark.parametrize("state", ["unbooked", "booked", "update_available", "review_only"])
+@pytest.mark.asyncio
+async def test_mark_reconciled_is_offered_only_when_update_cannot_apply(ui_routes, monkeypatch, state):
+    html = await _detail(ui_routes, monkeypatch, revision_state=state,
+                         booked_id=None if state == "unbooked" else "doc:1")
+    assert "/mark-reconciled" not in html
+
+
+@pytest.mark.asyncio
+async def test_mark_reconciled_opens_the_draft(ui_routes, monkeypatch):
+    calls = []
+
+    async def _mark(token, rid):
+        calls.append(rid)
+        return {"id": "doc:1", "kind": "doc"}
+
+    monkeypatch.setattr(di.api, "mark_received_reconciled", _mark)
+    resp = await ui_routes[("POST", "/docs/received/{rid}/mark-reconciled")](_FormReq({}), "rcv:abc")
+    assert calls == ["rcv:abc"]
+    assert resp.status_code == 303 and resp.headers["location"] == "/docs/doc:1"
 
 
 @pytest.mark.asyncio
@@ -426,7 +457,9 @@ async def test_api_client_received_calls(monkeypatch):
     assert (await api.get_received("tok", "rcv:abc"))["id"] == "rcv:abc"
     assert await api.book_received("tok", "rcv:abc") == {"id": "doc:1"}
     assert await api.update_received_draft("tok", "rcv:abc") == {"id": "doc:1"}
+    assert await api.mark_received_reconciled("tok", "rcv:abc") == {"id": "doc:1"}
     assert [(r.method, r.url.path) for r in seen] == [
         ("GET", "/docs/received"), ("GET", "/docs/received/rcv:abc"),
         ("POST", "/docs/received/rcv:abc/book"), ("POST", "/docs/received/rcv:abc/update-draft"),
+        ("POST", "/docs/received/rcv:abc/mark-reconciled"),
     ]
