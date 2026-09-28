@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Importing a shared document from the documents list: the Import button, a
-share link that is not valid, and a downloaded .celerp file end to end."""
+share link that is not valid, and a downloaded .celerp file end to end, through
+Received to a booked draft."""
 import re
 from pathlib import Path
 
@@ -58,6 +59,21 @@ def test_uploaded_celerp_file_becomes_received_document(page, ui_server, api, tm
     page.goto(f"{ui_server}/docs/import", wait_until="domcontentloaded")
     page.set_input_files("#celerp-file", str(path))
     page.locator('form[action="/docs/import/shared-file"] button[type=submit]').click()
-    page.wait_for_url(re.compile(r"/docs/doc:rcv:"))
+    page.wait_for_url(re.compile(r"/docs/received/rcv:"))
+    _no_crash(page)
+    expect(page.locator("#received-lines")).to_contain_text("Shared widget")
+    expect(page.locator("#received-facts")).to_contain_text("DOC-SHARED-IMPORT-001")
+    OUT.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(OUT / "received_detail.png"), full_page=True)
+
+    page.goto(f"{ui_server}/docs/received", wait_until="domcontentloaded")
+    expect(page.locator("#received-table")).to_contain_text("DOC-SHARED-IMPORT-001")
+    page.screenshot(path=str(OUT / "received_list.png"), full_page=True)
+    page.locator("#received-table a.table-link").first.click()
+    page.wait_for_url(re.compile(r"/docs/received/rcv:"))
+
+    page.locator('form[action$="/book"] button[type=submit]').click()
+    page.wait_for_url(re.compile(r"/docs/doc:"))
     _no_crash(page)
     expect(page.locator("body")).to_contain_text("Shared widget")
+    expect(page.locator("body")).to_contain_text("DOC-SHARED-IMPORT-001")

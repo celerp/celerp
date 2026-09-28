@@ -79,6 +79,10 @@ def ui_routes(monkeypatch):
     ("  https://shop.example.com/share/abc123  ", "https://shop.example.com/share/abc123"),
     ("https://share.celerp.com/eyJTWU5USEVUSUMtbGluayJ9", "https://share.celerp.com/eyJTWU5USEVUSUMtbGluayJ9"),
     ("https://share.celerp.com/eyJTWU5USEVUSUMtbGluayJ9/", "https://share.celerp.com/eyJTWU5USEVUSUMtbGluayJ9"),
+    ("https://www.celerp.com/accept?link=https%3A%2F%2Fshop.example.com%2Fshare%2Fabc123",
+     "https://shop.example.com/share/abc123"),
+    ("https://www.celerp.com/accept?link=https%3A%2F%2Fshare.celerp.com%2FeyJTWU5USEVUSUMtbGluayJ9",
+     "https://share.celerp.com/eyJTWU5USEVUSUMtbGluayJ9"),
 ])
 def test_parse_share_link_accepts_every_link_form(link, expected):
     assert di.parse_share_link(link) == expected
@@ -95,6 +99,10 @@ def test_parse_share_link_accepts_every_link_form(link, expected):
     "https://share.celerp.com/",
     "https://share.celerp.com/abc/def",
     "https://shop.example.com/abc123",
+    "https://www.celerp.com/accept?link=https%3A%2F%2Fshop.example.com%2Fdocs%2F1",
+    "https://www.celerp.com/accept?link=javascript%3Aalert(1)",
+    "https://www.celerp.com/accept?link=https%3A%2F%2Fshop.example.com%2Fshare%2Fabc&src=https%3A%2F%2Fx.example.com&token=t",
+    "https://www.celerp.com/accept?link=https%3A%2F%2Fwww.celerp.com%2Faccept%3Flink%3Dhttps%253A%252F%252Fshop.example.com%252Fshare%252Fabc",
 ])
 def test_parse_share_link_rejects_other_links(link):
     assert di.parse_share_link(link) is None
@@ -110,12 +118,22 @@ async def test_import_page_offers_shared_import(ui_routes):
 
 
 @pytest.mark.asyncio
+async def test_import_page_fills_the_link_it_was_handed(ui_routes, monkeypatch):
+    async def _never(*a, **k):
+        raise AssertionError("Opening the page must not import anything")
+
+    monkeypatch.setattr(di.api, "import_shared_doc", _never)
+    html = to_xml(await ui_routes[("GET", "/docs/import")](_FormReq({}), link="https://shop.example.com/share/abc123"))
+    assert 'value="https://shop.example.com/share/abc123"' in html
+
+
+@pytest.mark.asyncio
 async def test_shared_link_imports_and_opens_the_received_doc(ui_routes, monkeypatch):
     calls = []
 
     async def _fake_import(token, share_page):
         calls.append((token, share_page))
-        return "/docs/doc:rcv:abc"
+        return "/docs/received/rcv:abc"
 
     monkeypatch.setattr(di.api, "import_shared_doc", _fake_import)
     handler = ui_routes[("POST", "/docs/import/shared")]
@@ -123,7 +141,7 @@ async def test_shared_link_imports_and_opens_the_received_doc(ui_routes, monkeyp
 
     assert calls == [("tok", "https://shop.example.com/share/abc123")]
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/docs/doc:rcv:abc"
+    assert resp.headers["location"] == "/docs/received/rcv:abc"
 
 
 @pytest.mark.asyncio
@@ -157,7 +175,7 @@ async def test_celerp_file_imports_and_opens_the_received_doc(ui_routes, monkeyp
 
     async def _fake_bundle(token, filename, content):
         calls.append((token, filename, content.read()))
-        return "/docs/doc:rcv:def"
+        return "/docs/received/rcv:def"
 
     monkeypatch.setattr(di.api, "import_doc_bundle", _fake_bundle)
     handler = ui_routes[("POST", "/docs/import/shared-file")]
@@ -165,7 +183,7 @@ async def test_celerp_file_imports_and_opens_the_received_doc(ui_routes, monkeyp
 
     assert calls == [("tok", "INV-1.celerp", b'{"doc": {}}')]
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/docs/doc:rcv:def"
+    assert resp.headers["location"] == "/docs/received/rcv:def"
 
 
 @pytest.mark.asyncio
@@ -204,13 +222,13 @@ def _mock_api(monkeypatch, handler):
 async def test_api_client_returns_the_received_doc_path(monkeypatch):
     def _handler(request):
         if request.url.path == "/docs/import":
-            return httpx.Response(302, headers={"location": "/docs/doc:rcv:abc"})
+            return httpx.Response(302, headers={"location": "/docs/received/rcv:abc"})
         return httpx.Response(200, json={"id": "doc:rcv:abc"})
 
     seen = _mock_api(monkeypatch, _handler)
     path = await api.import_shared_doc("tok", "https://shop.example.com/share/abc123")
 
-    assert path == "/docs/doc:rcv:abc"
+    assert path == "/docs/received/rcv:abc"
     assert [r.url.path for r in seen] == ["/docs/import"]
     assert seen[0].url.params["link"] == "https://shop.example.com/share/abc123"
     assert seen[0].headers["authorization"] == "Bearer tok"
@@ -219,12 +237,12 @@ async def test_api_client_returns_the_received_doc_path(monkeypatch):
 @pytest.mark.asyncio
 async def test_api_client_uploads_the_bundle(monkeypatch):
     def _handler(request):
-        return httpx.Response(302, headers={"location": "/docs/doc:rcv:def"})
+        return httpx.Response(302, headers={"location": "/docs/received/rcv:def"})
 
     seen = _mock_api(monkeypatch, _handler)
     path = await api.import_doc_bundle("tok", "INV-1.celerp", io.BytesIO(b'{"doc": {"doc_type": "invoice"}}'))
 
-    assert path == "/docs/doc:rcv:def"
+    assert path == "/docs/received/rcv:def"
     assert seen[0].method == "POST" and seen[0].url.path == "/docs/import-bundle"
     assert b'name="bundle"' in seen[0].content
     assert b'{"doc": {"doc_type": "invoice"}}' in seen[0].content
@@ -238,3 +256,158 @@ async def test_api_client_raises_the_api_error(monkeypatch):
         await api.import_shared_doc("tok", "https://shop.example.com/share/gone")
     assert exc.value.status == 404
     assert "not found" in exc.value.detail
+
+
+def _received(**over) -> dict:
+    r = {
+        "id": "rcv:abc", "sender_name": "Sender Ltd", "doc_type": "invoice",
+        "sender_doc_number": "INV-0042", "issue_date": "2026-09-01", "due_date": None,
+        "total": 1250.0, "currency": "USD", "first_received_at": "2026-09-02T10:00:00+00:00",
+        "last_received_at": "2026-09-03T10:00:00+00:00", "revision_count": 2,
+        "revision_state": "unbooked", "book_target": "bill", "booked_id": None,
+        "source_link": "https://shop.example.com/share/abc123", "booked_status": None,
+        "document": {"currency": "USD", "line_items": [
+            {"name": "Emerald ring", "quantity": 2, "unit_price": 625.0, "line_total": 1250.0}]},
+        "revisions": [
+            {"received_at": "2026-09-03T10:00:00+00:00", "doc_number": "INV-0042", "sender_revision": 2, "total": 1250.0},
+            {"received_at": "2026-09-02T10:00:00+00:00", "doc_number": "INV-0042", "sender_revision": 1, "total": 1000.0},
+        ],
+    }
+    r.update(over)
+    return r
+
+
+@pytest.mark.asyncio
+async def test_received_list_shows_the_inbox_columns(ui_routes, monkeypatch):
+    async def _list(token):
+        return [_received()]
+
+    monkeypatch.setattr(di.api, "list_received", _list)
+    html = to_xml(await ui_routes[("GET", "/docs/received")](_FormReq({})))
+
+    assert 'href="/docs/received/rcv:abc"' in html and "Sender Ltd" in html
+    assert "INV-0042" in html and "2026-09-01" in html and "2026-09-03" in html
+    assert "Not booked" in html
+    # The missing due date reads as "--", never blank.
+    assert "<td>--</td>" in html
+    assert 'href="/docs/import#shared-import"' in html
+
+
+@pytest.mark.asyncio
+async def test_received_list_empty_state(ui_routes, monkeypatch):
+    async def _list(token):
+        return []
+
+    monkeypatch.setattr(di.api, "list_received", _list)
+    html = to_xml(await ui_routes[("GET", "/docs/received")](_FormReq({})))
+    assert "Nothing received yet" in html
+
+
+@pytest.mark.asyncio
+async def test_received_list_shows_an_api_failure(ui_routes, monkeypatch):
+    async def _fail(token):
+        raise APIError(500, "Could not load received documents")
+
+    monkeypatch.setattr(di.api, "list_received", _fail)
+    html = to_xml(await ui_routes[("GET", "/docs/received")](_FormReq({})))
+    assert "Could not load received documents" in html
+
+
+async def _detail(ui_routes, monkeypatch, **over) -> str:
+    async def _get(token, rid):
+        assert rid == "rcv:abc"
+        return _received(**over)
+
+    monkeypatch.setattr(di.api, "get_received", _get)
+    return to_xml(await ui_routes[("GET", "/docs/received/{rid}")](_FormReq({}), "rcv:abc"))
+
+
+@pytest.mark.asyncio
+async def test_received_detail_offers_book_and_shows_history(ui_routes, monkeypatch):
+    html = await _detail(ui_routes, monkeypatch)
+    assert 'action="/docs/received/rcv:abc/book"' in html
+    assert "Bill draft" in html
+    assert "Emerald ring" in html
+    revisions = html[html.index('id="received-revisions"'):]
+    assert revisions.index("2026-09-03") < revisions.index("2026-09-02")
+    assert 'href="https://shop.example.com/share/abc123"' in html and 'rel="noopener noreferrer"' in html
+
+
+@pytest.mark.parametrize("state, text", [
+    ("not_bookable", "cannot be booked"),
+    ("needs_reconciliation", "update the draft by hand"),
+    ("review_only", "no longer a draft"),
+])
+@pytest.mark.asyncio
+async def test_received_detail_explains_states_without_a_book_action(ui_routes, monkeypatch, state, text):
+    html = await _detail(ui_routes, monkeypatch, revision_state=state, booked_id=None if state == "not_bookable" else "doc:1")
+    assert text in html
+    assert "/book" not in html and "/update-draft" not in html
+
+
+@pytest.mark.asyncio
+async def test_received_detail_offers_update_draft(ui_routes, monkeypatch):
+    html = await _detail(ui_routes, monkeypatch, revision_state="update_available", booked_id="doc:1")
+    assert 'action="/docs/received/rcv:abc/update-draft"' in html
+    assert 'href="/docs/doc:1"' in html
+    assert "/book" not in html
+
+
+@pytest.mark.asyncio
+async def test_received_detail_never_links_a_non_web_source(ui_routes, monkeypatch):
+    html = await _detail(ui_routes, monkeypatch, source_link="javascript:alert(1)")
+    assert "javascript:" not in html
+
+
+@pytest.mark.asyncio
+async def test_book_opens_the_new_draft(ui_routes, monkeypatch):
+    async def _book(token, rid):
+        return {"id": "doc:new"}
+
+    monkeypatch.setattr(di.api, "book_received", _book)
+    resp = await ui_routes[("POST", "/docs/received/{rid}/book")](_FormReq({}), "rcv:abc")
+    assert resp.status_code == 303 and resp.headers["location"] == "/docs/doc:new"
+
+
+@pytest.mark.asyncio
+async def test_book_failure_is_explained_on_the_received_page(ui_routes, monkeypatch):
+    async def _book(token, rid):
+        raise APIError(422, "This document type is kept in Received for review and cannot be booked.")
+
+    async def _get(token, rid):
+        return _received()
+
+    monkeypatch.setattr(di.api, "book_received", _book)
+    monkeypatch.setattr(di.api, "get_received", _get)
+    html = to_xml(await ui_routes[("POST", "/docs/received/{rid}/book")](_FormReq({}), "rcv:abc"))
+    assert "kept in Received for review" in html and "flash--error" in html
+
+
+@pytest.mark.asyncio
+async def test_update_draft_opens_the_draft(ui_routes, monkeypatch):
+    async def _update(token, rid):
+        return {"id": "doc:1"}
+
+    monkeypatch.setattr(di.api, "update_received_draft", _update)
+    resp = await ui_routes[("POST", "/docs/received/{rid}/update-draft")](_FormReq({}), "rcv:abc")
+    assert resp.status_code == 303 and resp.headers["location"] == "/docs/doc:1"
+
+
+@pytest.mark.asyncio
+async def test_api_client_received_calls(monkeypatch):
+    def _handler(request):
+        if request.method == "GET" and request.url.path == "/docs/received":
+            return httpx.Response(200, json={"items": [{"id": "rcv:abc"}]})
+        if request.method == "GET":
+            return httpx.Response(200, json={"id": "rcv:abc"})
+        return httpx.Response(200, json={"id": "doc:1"})
+
+    seen = _mock_api(monkeypatch, _handler)
+    assert await api.list_received("tok") == [{"id": "rcv:abc"}]
+    assert (await api.get_received("tok", "rcv:abc"))["id"] == "rcv:abc"
+    assert await api.book_received("tok", "rcv:abc") == {"id": "doc:1"}
+    assert await api.update_received_draft("tok", "rcv:abc") == {"id": "doc:1"}
+    assert [(r.method, r.url.path) for r in seen] == [
+        ("GET", "/docs/received"), ("GET", "/docs/received/rcv:abc"),
+        ("POST", "/docs/received/rcv:abc/book"), ("POST", "/docs/received/rcv:abc/update-draft"),
+    ]
