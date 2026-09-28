@@ -48,7 +48,7 @@ from celerp.services.money import checked_exchange_rate, discount_from_inputs, d
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES
+from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )
@@ -141,6 +141,28 @@ def _require_doc_rate_http(doc: dict, base_currency: str) -> Decimal:
         ) from exc
 
 
+def _reject_lifecycle_fields(data):
+    """Creation owns no lifecycle or settlement state. Status is checked on its
+    own (it may say draft); anything else lifecycle-owned is refused by name."""
+    if isinstance(data, dict):
+        forged = sorted(k for k in data if k in LIFECYCLE_OWNED_FIELDS and k != "status")
+        if forged:
+            raise ValueError(
+                f"{', '.join(forged)} cannot be set when creating. A new record is always "
+                "an unpaid draft; finalize, send, record payments or receive it with those actions."
+            )
+    return data
+
+
+def _created_as_draft(v):
+    if v != "draft":
+        raise ValueError(
+            "A new record is always created as a draft. "
+            "Create it, then finalize, send or receive it."
+        )
+    return v
+
+
 class DocCreatePayload(BaseModel):
     doc_type: str
     ref_id: str | None = None
@@ -173,28 +195,20 @@ class DocCreatePayload(BaseModel):
     to_address: dict | None = None
     original_doc_id: str | None = None
     reason: str | None = None
-    # Creation always makes a draft; issuing it is a lifecycle action that posts
-    # its entry. Only the import routes create a document already issued.
-    status: str = "draft"
-    amount_paid: float = 0
-    amount_outstanding: float | None = None
+    # Creation always makes an unpaid draft; issuing and settling it are
+    # lifecycle actions that post their entries. Only the import routes create
+    # a document already issued.
+    status: Literal["draft"] = "draft"
     idempotency_key: str | None = None
     model_config = {"extra": "allow"}
+
+    _no_lifecycle_state = model_validator(mode="before")(_reject_lifecycle_fields)
+    _draft_only = field_validator("status", mode="before")(_created_as_draft)
 
     @field_validator("conversion_rate")
     @classmethod
     def _rate_is_usable(cls, v: float | None) -> float | None:
         return _stored_conversion_rate(v)
-
-    @field_validator("status")
-    @classmethod
-    def _created_as_draft(cls, v: str) -> str:
-        if v != "draft":
-            raise ValueError(
-                "A new document is always created as a draft. "
-                "Create it, then finalize, send or receive it."
-            )
-        return v
 
 
 class DocPatch(BaseModel):
@@ -633,6 +647,9 @@ async def _assert_sales_line_price_permission(
     stored_by_idx: dict[int, dict] | None,
 ) -> None:
     """Reject a sales-document or quotation price change without set_sales_doc_prices.
+
+    Callers apply it only to sales-priced documents (SALES_PRICED_DOC_TYPES) and
+    money lists (is_money_list); purchase-side prices are never gated by it.
 
     A line's unit_price is an override when it differs from its reference price: the
     stored line at the same index when editing an existing document, otherwise the
@@ -1405,14 +1422,15 @@ async def create_doc(
             (li.entity_id or li.item_id for li in payload.line_items),
         )
 
-        # Price-override gate: a new line whose unit_price deviates from the item's
-        # catalog price is a price override, rejected when the caller lacks
-        # set_sales_doc_prices. This closes the create path so the gate cannot be
-        # bypassed by making a new draft with overridden prices.
-        await _assert_sales_line_price_permission(
-            session, company_id, settings, role,
-            [li.model_dump() for li in payload.line_items], None,
-        )
+        # Price-override gate: on a sales document, a new line whose unit_price
+        # deviates from the item's catalog price is a price override, rejected when
+        # the caller lacks set_sales_doc_prices. This closes the create path so the
+        # gate cannot be bypassed by making a new draft with overridden prices.
+        if payload.doc_type in SALES_PRICED_DOC_TYPES:
+            await _assert_sales_line_price_permission(
+                session, company_id, settings, role,
+                [li.model_dump() for li in payload.line_items], None,
+            )
 
     # Lock the company row (SELECT ... FOR UPDATE) for the rest of the
     # transaction so concurrent doc creation can't read the same numbering
@@ -1508,7 +1526,8 @@ async def create_doc(
         # overstating revenue and understating the VAT liability. total = subtotal + tax + shipping.
         data["tax"] = to_stored_float(round_money(effective_tax_d, currency))
 
-    data["amount_outstanding"] = payload.amount_outstanding if payload.amount_outstanding is not None else float(data.get("total", 0))
+    data["amount_paid"] = 0.0
+    data["amount_outstanding"] = float(data.get("total", 0))
 
     entry = await emit_event(
         session,
@@ -1579,11 +1598,11 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     new_contact_id = (payload.fields_changed.get("contact_id") or {}).get("new")
     if new_contact_id:
         await _validate_doc_contact_reference(session, company_id, str(new_contact_id))
-    # Price-override gate: reject unit_price changes when the caller lacks
-    # set_sales_doc_prices, comparing incoming lines against the stored lines by
-    # index. Runs for drafts and finalized documents alike, before the draft branch.
+    # Price-override gate: on a sales document, reject unit_price changes when the
+    # caller lacks set_sales_doc_prices, comparing incoming lines against the stored
+    # lines by index. Runs for drafts and finalized documents alike, before the draft branch.
     _incoming_lines = (payload.fields_changed.get("line_items") or {}).get("new")
-    if isinstance(_incoming_lines, list):
+    if isinstance(_incoming_lines, list) and row.state.get("doc_type") in SALES_PRICED_DOC_TYPES:
         _stored_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
         await _assert_sales_line_price_permission(session, company_id, settings, role, _incoming_lines, _stored_by_idx)
     is_draft = row.state.get("status") == "draft"
@@ -3974,12 +3993,9 @@ def _assert_doc_import_permissions(settings: dict, role: str, data: dict) -> Non
         assert_role_permission(settings, role, "record_payments")
 
 
-_DOC_IMPORT_UPSERT_EXCLUDED = frozenset({
-    # Lifecycle/accounting state is owned by dedicated document operations.
-    "status", "amount_paid", "amount_outstanding", "finalized",
-    # Identity/type are established by the original create and never rewritten by import-upsert.
-    "entity_type", "company_id", "doc_type", "doc_number", "ref_id",
-})
+# Lifecycle state is owned by dedicated document operations, and the type and
+# number are established by the original create; import-upsert rewrites neither.
+_DOC_IMPORT_UPSERT_EXCLUDED = LIFECYCLE_OWNED_FIELDS | {"doc_type", "ref_id"}
 
 
 def _doc_import_fields_changed(state: dict, incoming: dict) -> dict[str, dict]:
@@ -4233,7 +4249,7 @@ class ListCreatePayload(BaseModel):
     total: float = 0
     currency: str | None = None
     notes: str | None = None
-    status: str = "draft"
+    status: Literal["draft"] = "draft"
     share_token: str | None = None
     # Shipment fields (list_type="shipping_doc"): one shipment record feeds both the
     # Delivery Note and Commercial Invoice printouts. Declared - not extra="allow" -
@@ -4252,6 +4268,9 @@ class ListCreatePayload(BaseModel):
     source_docs: list[str] | None = None  # invoices/memos this shipment ships
     idempotency_key: str | None = None
     model_config = {"extra": "allow"}
+
+    _no_lifecycle_state = model_validator(mode="before")(_reject_lifecycle_fields)
+    _draft_only = field_validator("status", mode="before")(_created_as_draft)
 
     @model_validator(mode="after")
     def _validate_shipment_enums(self) -> "ListCreatePayload":
@@ -4941,10 +4960,11 @@ async def reprice_doc(
     # Preserve the canonical document price-override authorization that the old
     # patch-based repricer inherited indirectly. Repricing is not a bypass around
     # set_sales_doc_prices; no-op prices remain allowed exactly as patch_doc allows.
-    await _assert_sales_line_price_permission(
-        session, company_id, settings, role, updated_lines,
-        {i: line for i, line in enumerate(stored_lines)},
-    )
+    if row.state.get("doc_type") in SALES_PRICED_DOC_TYPES:
+        await _assert_sales_line_price_permission(
+            session, company_id, settings, role, updated_lines,
+            {i: line for i, line in enumerate(stored_lines)},
+        )
     new_values = {
         "price_list": payload.price_list,
         "line_items": updated_lines,
@@ -5477,10 +5497,7 @@ async def delete_list_note(
 
 
 
-_LIST_IMPORT_UPSERT_EXCLUDED = frozenset({
-    "status", "result", "entity_type", "company_id", "list_type", "ref_id",
-    "finalized_at", "sent_at", "issued_at", "accepted_at",
-})
+_LIST_IMPORT_UPSERT_EXCLUDED = LIFECYCLE_OWNED_FIELDS | {"list_type", "ref_id"}
 
 
 def _list_import_fields_changed(state: dict, incoming: dict) -> dict[str, dict]:

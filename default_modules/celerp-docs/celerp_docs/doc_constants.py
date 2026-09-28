@@ -33,6 +33,31 @@ INBOUND_DOC_TYPES: frozenset[str] = frozenset({"consignment_in", "bill"})
 # These are recurring template docs - they should never show a fulfill button.
 TEMPLATE_DOC_TYPES: frozenset[str] = frozenset({"subscription_invoice", "subscription_po"})
 
+# Document types whose line prices are the company's own selling prices, so a
+# price that differs from its reference needs set_sales_doc_prices. Purchase and
+# receiving documents carry the supplier's prices and are never gated by it; the
+# list-side counterpart is list_behavior.is_money_list.
+SALES_PRICED_DOC_TYPES: frozenset[str] = frozenset({
+    "invoice", "proforma", "quotation", "credit_note", "memo", "subscription_invoice",
+})
+
+# State that only lifecycle operations write: finalize, send, payment, receive,
+# fulfil, convert, close and void, plus the record identity the ledger assigns.
+# Ordinary creation never carries any of it, since a new document or list is an
+# unpaid draft, and import-upsert never rewrites it. Only the snapshot import
+# routes bring in an issued record, behind their own permission checks.
+LIFECYCLE_OWNED_FIELDS: frozenset[str] = frozenset({
+    "status", "finalized", "amount_paid", "amount_outstanding", "payments",
+    "sent_to", "sent_via", "finalized_at", "sent_at", "issued_at", "accepted_at",
+    "received_items", "received_item_ids", "returned_items", "return_received_items",
+    "fulfilled_items", "fulfillment_status", "fulfilled_at", "fulfilled_by", "fulfill_cycle",
+    "converted_to", "converted_to_type", "source_po_ref", "source_proforma_ref", "linked",
+    "result", "close_reason", "void_reason", "revert_count", "files",
+    "pre_close_status", "pre_void_status", "pre_void_fulfillment",
+    "entity_type", "company_id", "doc_number",
+})
+
+
 # Document types that can be shared by link and imported by the recipient. One
 # set serves the Share button, the share API, the share page's Import link and
 # the importer, so nothing can be shared that the other side cannot import. A

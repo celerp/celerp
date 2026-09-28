@@ -234,6 +234,33 @@ MAPPING = [
 ]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sender_type,kind,local_type", MAPPING)
+async def test_booking_needs_the_sales_price_permission_only_for_a_sales_target(client, session, sender_type, kind, local_type):
+    """A role that may edit documents but not set sales prices can book what it
+    buys (bill, purchase order, consignment in) at the sender's prices, and keep
+    the draft up to date. A sales target (a quotation, a memo) still needs
+    set_sales_doc_prices, since its prices become ours."""
+    from test_helpers import grant_permission, perm_setup
+
+    ctx = await perm_setup(client, session)
+    await grant_permission(client, ctx["admin_h"], "set_sales_doc_prices", "manager")
+    admin = ctx["admin_h"]["Authorization"].split()[1]
+    operator = ctx["operator_h"]["Authorization"].split()[1]
+    rid = await _import(client, admin, _bundle(_doc(doc_type=sender_type, number="S-9", price=100.0), revision=1))
+
+    r = await client.post(f"/docs/received/{rid}/book", headers=_h(operator))
+    if local_type in {"bill", "purchase_order", "consignment_in"}:
+        assert r.status_code == 200, r.text
+        await _import(client, admin, _bundle(_doc(doc_type=sender_type, number="S-9", price=150.0), revision=2))
+        assert (await _update(client, operator, rid)).status_code == 200
+        made = await _target(client, admin, r.json()["id"])
+        assert made["line_items"][0]["unit_price"] == 150.0
+    else:
+        assert r.status_code == 403, r.text
+        assert "set_sales_doc_prices" in r.text
+
+
 def test_mapping_covers_every_shareable_type():
     from celerp_docs.received import BOOK_TARGETS
 
@@ -922,6 +949,65 @@ async def test_a_new_document_is_always_created_as_a_draft(client, status):
     })
     assert r.status_code == 422, r.text
     assert "draft" in r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("forged", [
+    {"finalized": True},
+    {"amount_paid": 50.0},
+    {"amount_outstanding": 0},
+    {"payments": [{"amount": 10.0, "payment_date": "2026-01-05"}]},
+    {"received_items": [{"line_index": 0, "quantity": 1}]},
+    {"fulfillment_status": "fulfilled"},
+    {"converted_to": "doc:INV-1"},
+    {"entity_type": "list"},
+])
+async def test_a_new_document_carries_no_lifecycle_or_payment_state(client, forged):
+    """Creation owns no lifecycle or settlement state: a caller cannot create a
+    document that already reads as finalized, paid, received or converted."""
+    tok = await _token(client)
+    before = (await client.get("/docs", headers=_h(tok))).json()
+    r = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "invoice", "contact_name": "ACME", **forged,
+        "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 100.0}],
+        "subtotal": 100.0, "total": 100.0,
+    })
+    assert r.status_code == 422, r.text
+    assert next(iter(forged)) in r.text
+    assert (await client.get("/docs", headers=_h(tok))).json() == before
+
+
+@pytest.mark.asyncio
+async def test_a_created_document_is_unpaid_with_its_total_outstanding_and_finalizes_normally(client):
+    tok = await _token(client)
+    r = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "invoice", "contact_name": "ACME", "currency": "USD",
+        "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 100.0}],
+        "subtotal": 100.0, "total": 100.0,
+    })
+    doc_id = r.json()["id"]
+    doc = (await client.get(f"/docs/{doc_id}", headers=_h(tok))).json()
+    assert (doc["status"], doc["amount_paid"], doc["amount_outstanding"]) == ("draft", 0, 100.0)
+    fin = await client.post(f"/docs/{doc_id}/finalize", headers=_h(tok))
+    assert fin.status_code == 200, fin.text
+    assert fin.json().get("already_finalized") is not True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("forged", [{"status": "finalized"}, {"result": "converted"}, {"finalized_at": "2026-01-05"}])
+async def test_a_new_list_carries_no_lifecycle_state(client, forged):
+    tok = await _token(client)
+    r = await client.post("/lists", headers=_h(tok), json={"list_type": "quotation", **forged})
+    assert r.status_code == 422, r.text
+
+
+def test_the_published_create_contract_says_draft_only_and_takes_no_payment_state():
+    from celerp_docs.routes import DocCreatePayload, ListCreatePayload
+
+    for model in (DocCreatePayload, ListCreatePayload):
+        props = model.model_json_schema()["properties"]
+        assert props["status"].get("const") == "draft" or props["status"].get("enum") == ["draft"]
+        assert "amount_paid" not in props and "amount_outstanding" not in props
 
 
 @pytest.mark.asyncio
