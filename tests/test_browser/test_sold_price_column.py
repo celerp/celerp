@@ -34,7 +34,6 @@ def _sell_item(api, sku, unit_price, qty=1, sell_by="carat"):
         "line_items": [{"sku": sku, "name": sku, "quantity": qty, "unit_price": unit_price,
                         "line_total": unit_price * qty, "entity_id": item_id}],
         "total": unit_price * qty,
-        "amount_outstanding": unit_price * qty,
     })
     assert r.status_code in {200, 201}, f"create doc failed: {r.text}"
     doc_id = r.json()["id"]

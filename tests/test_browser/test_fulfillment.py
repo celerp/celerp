@@ -82,7 +82,6 @@ def final_doc(api):
         "line_items": [{"sku": sku, "name": "Widget", "quantity": 2, "unit_price": 75.0,
                         "line_total": 150.0, "entity_id": item_id}],
         "total": 150.0,
-        "amount_outstanding": 150.0,
     })
     assert r.status_code in {200, 201}, f"Create doc failed: {r.text}"
     doc_id = r.json()["id"]
@@ -391,7 +390,6 @@ def test_set_as_available_mixed_selection_routes_both(page, ui_server, api):
              "line_total": 100.0, "entity_id": item_s},
         ],
         "total": 200.0,
-        "amount_outstanding": 200.0,
     })
     assert r.status_code in {200, 201}, f"create doc failed: {r.text}"
     doc_id = r.json()["id"]

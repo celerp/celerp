@@ -139,7 +139,6 @@ async def test_reports_ap_aging_all_buckets(client):
             "tax": 0,
             "total": 100.0,
             "due_date": due,
-            "amount_outstanding": 100.0,
         })
         assert r.status_code == 200, r.text
         doc_id = r.json()["id"]

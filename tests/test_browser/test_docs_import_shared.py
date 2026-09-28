@@ -46,7 +46,6 @@ def test_uploaded_celerp_file_becomes_received_document(page, ui_server, api, tm
         "status": "draft",
         "line_items": [{"name": "Shared widget", "quantity": 2, "unit_price": 50.0, "line_total": 100.0}],
         "total": 100.0,
-        "amount_outstanding": 100.0,
     })
     assert r.status_code in {200, 201}, r.text
     share = api.post(f"/docs/{r.json()['id']}/share")

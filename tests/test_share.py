@@ -339,8 +339,6 @@ async def test_customer_share_excludes_internal_notes_and_preserves_public_field
         "terms_text": "PUBLIC SHARE TERMS",
         "customer_note": "PUBLIC SHARE NOTE",
         "notes": "SECRET INTERNAL NOTE - NEVER SEND",
-        "amount_paid": 25,
-        "amount_outstanding": 75,
     }
     created = await client.post("/docs", json=payload, headers=_h(tok))
     assert created.status_code == 200, created.text
