@@ -291,6 +291,44 @@ async def test_bundle_download_returns_json(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_bundle_revision_matches_the_projection_that_supplied_the_content(client: AsyncClient, session):
+    """An event committed after the projection was read must not raise the
+    exported revision: the number and the content come from the same moment."""
+    import uuid
+
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok)
+    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
+    before = (await client.get(f"/share/{token}/bundle")).json()
+
+    row = await session.get(Projection, (await _company_id(session, entity_id), entity_id))
+    # A newer event for this document whose projection has not caught up yet.
+    session.add(LedgerEntry(
+        company_id=row.company_id, entity_id=entity_id, entity_type="doc",
+        event_type="doc.updated", data={"fields_changed": {"notes": {"old": None, "new": "later"}}},
+        actor_id=None, location_id=None, source="test",
+        idempotency_key=str(uuid.uuid4()), metadata_={},
+    ))
+    await session.flush()
+
+    after = (await client.get(f"/share/{token}/bundle")).json()
+    assert after["source"]["revision"] == before["source"]["revision"]
+    assert after["doc"] == before["doc"]
+
+
+async def _company_id(session, entity_id: str):
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    return (await session.execute(
+        select(Projection.company_id).where(Projection.entity_id == entity_id)
+    )).scalar_one()
+
+
+@pytest.mark.asyncio
 async def test_customer_share_excludes_internal_notes_and_preserves_public_fields(client: AsyncClient):
     tok = await _token(client)
     payload = {

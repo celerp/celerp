@@ -661,12 +661,17 @@ async def share_cors_preflight(token: str) -> Response:
     )
 
 
-async def _document_revision(session: AsyncSession, company_id, entity_id: str) -> int:
-    """This document's own revision number: how many events it has had. It
+async def _document_revision(session: AsyncSession, row: Projection) -> int:
+    """This document's own revision number: how many events it had when the
+    projection that supplies the exported content was written. Counting only
+    up to that projection's version keeps the number and the content from the
+    same moment, even when a newer event lands while the bundle is built. It
     only grows, and says nothing about activity elsewhere in the books."""
     return (await session.execute(
         select(func.count()).select_from(LedgerEntry).where(
-            LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id,
+            LedgerEntry.company_id == row.company_id,
+            LedgerEntry.entity_id == row.entity_id,
+            LedgerEntry.id <= row.version,
         )
     )).scalar_one()
 
@@ -712,7 +717,7 @@ async def download_share_bundle(
             "installation": hashlib.sha256(ensure_instance_id().encode()).hexdigest(),
             "company": hashlib.sha256(f"{ensure_instance_id()}\n{share_row.company_id}".encode()).hexdigest(),
             "document": share_row.entity_id,
-            "revision": await _document_revision(session, share_row.company_id, share_row.entity_id),
+            "revision": await _document_revision(session, row),
         },
         "exported_at": datetime.now(timezone.utc).isoformat(),
     }
