@@ -207,13 +207,13 @@ def _revisions_table(revisions: list[dict], currency: str | None) -> FT:
         Tr(
             Td(format_value(rv.get("received_at"), "date")),
             Td(rv.get("doc_number") or EMPTY),
-            Td(str(rv["sender_revision"]) if rv.get("sender_revision") is not None else EMPTY),
+            Td(str(rv["sender_revision"]) if rv.get("sender_revision") is not None else EMPTY, cls="cell--number"),
             Td(format_value(rv.get("total"), "money", currency), cls="cell--number"),
         )
         for rv in revisions
     ]
     head = Tr(Th(t("received.th_received")), Th(t("received.th_sender_number")),
-              Th(t("received.th_revision")), Th(t("received.th_total"), cls="cell--number"))
+              Th(t("received.th_revision"), cls="cell--number"), Th(t("received.th_total"), cls="cell--number"))
     return Table(Thead(head), Tbody(*rows), cls="data-table", id="received-revisions")
 
 
@@ -236,7 +236,7 @@ def received_detail(r: dict, *, error: str | None = None) -> list:
         _received_actions(r),
         H2(t("received.lines_title"), cls="section-title"),
         _lines_table(doc),
-        H2(t("received.revisions_title"), cls="section-title"),
+        H2(t("received.revisions_title"), cls="section-title", style="margin-top: 24px;"),
         _revisions_table(r.get("revisions") or [], r.get("currency")),
     ]
 

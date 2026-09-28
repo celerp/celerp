@@ -75,5 +75,9 @@ def test_uploaded_celerp_file_becomes_received_document(page, ui_server, api, tm
     page.locator('form[action$="/book"] button[type=submit]').click()
     page.wait_for_url(re.compile(r"/docs/doc:"))
     _no_crash(page)
-    expect(page.locator("body")).to_contain_text("Shared widget")
+    # The draft opens in the line editor, where line text sits in input values.
+    page.wait_for_selector("table.doc-lines tbody tr", timeout=8000)
+    values = page.locator("table.doc-lines tbody tr").first.locator("input, textarea").evaluate_all(
+        "els => els.map(e => e.value)")
+    assert "Shared widget" in values
     expect(page.locator("body")).to_contain_text("DOC-SHARED-IMPORT-001")
