@@ -317,9 +317,13 @@ _COUNTERPARTY = {
 }
 # A document line carries its discount inside line_total; a list line keeps the
 # percentage it was given.
-_DOC_LINE_FIELDS = ("name", "description", "quantity", "unit", "unit_price", "line_total", "taxes", "pieces", "weight")
+_DOC_LINE_FIELDS = ("name", "description", "quantity", "unit", "unit_price", "line_total", "taxes", "tax_rate", "pieces", "weight")
 _LIST_LINE_FIELDS = ("name", "description", "quantity", "unit", "unit_price", "discount_pct", "line_total", "pieces", "weight")
-_DOC_TOTALS = ("subtotal", "tax", "total", "doc_taxes", "discount", "shipping")
+# Amounts a document always holds, with the value an absent one has on create.
+_DOC_TOTALS = {
+    "subtotal": 0, "tax": 0, "total": 0, "doc_taxes": [], "discount": 0,
+    "discount_type": "flat", "discount_amount": 0, "shipping": 0, "tax_rate": 0,
+}
 _BILL_FIELDS = ("issue_date", "due_date", "payment_terms")
 
 
@@ -351,16 +355,15 @@ def managed_fields(document: dict, target: BookTarget) -> dict:
     fields["line_items"] = _lines(document, target.kind)
     fields["currency"] = document.get("currency")
     if target.kind == "list":
-        # A list names its counterparty as customer_name, holds the discount as
-        # an amount, and its tax as one rate per line or one header rate.
+        # A list names its counterparty as customer_name, and holds its tax as
+        # one rate per line or one header rate.
         fields["customer_name"] = document.get("company_name")
         fields["discount"] = document.get("discount") or 0
-        fields["discount_type"] = "flat"
-        fields["tax"] = _tax_rate(document.get("doc_taxes")) or 0
+        fields["discount_type"] = document.get("discount_type") or "flat"
+        fields["tax"] = _tax_rate(document.get("doc_taxes")) or document.get("tax_rate") or 0
         return fields
-    for key in _DOC_TOTALS:
-        # Amounts a document always holds: an absent one is zero, as on create.
-        fields[key] = document.get(key) or ([] if key == "doc_taxes" else 0)
+    for key, absent in _DOC_TOTALS.items():
+        fields[key] = document.get(key) or absent
     if target.type == "bill":
         for key in _BILL_FIELDS:
             fields[key] = document.get(key) or None

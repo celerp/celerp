@@ -295,6 +295,8 @@ async def test_customer_share_excludes_internal_notes_and_preserves_public_field
     tok = await _token(client)
     payload = {
         **_doc_payload(),
+        # A rated tax: an amount with no rate cannot be imported (see test_received_documents).
+        "doc_taxes": [{"code": "VAT", "rate": 7.0}],
         "reference": "PO-PUBLIC-55",
         "terms_text": "PUBLIC SHARE TERMS",
         "customer_note": "PUBLIC SHARE NOTE",

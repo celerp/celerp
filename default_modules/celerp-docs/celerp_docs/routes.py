@@ -27,6 +27,7 @@ from celerp.models.company import Company
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN
+from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.physical_codes import lock_item_code_namespace
@@ -4880,102 +4881,6 @@ async def _reprice_catalog_lines(
     return updated_lines, repriced, skipped, effective_currency
 
 
-def _recompute_tax_applications(raw, base, currency: str):
-    """Recompute stored tax definitions against a new base, never stale amounts."""
-    if not isinstance(raw, list) or not raw:
-        return [], to_decimal(0)
-    definitions: list[TaxApplication] = []
-    try:
-        for value in raw:
-            if not isinstance(value, dict):
-                raise ValueError("tax entry is not an object")
-            definitions.append(TaxApplication.model_validate({**value, "amount": 0.0}))
-    except Exception as exc:
-        raise HTTPException(
-            status_code=422,
-            detail="Stored tax data is invalid; correct it before repricing",
-        ) from exc
-    resolved = compute_tax_amounts(definitions, to_stored_float(round_money(base, currency)), currency)
-    return [item.model_dump() for item in resolved], sum(
-        (to_decimal(item.amount) for item in resolved), to_decimal(0))
-
-
-def _reprice_doc_money(state: dict, updated_lines: list[dict], currency: str) -> dict:
-    """Document-only totals derived from the repriced lines.
-
-    List totals remain projection-owned. Documents do not have that reducer, so
-    this wrapper recomputes their monetary snapshot once on the server instead of
-    trusting the browser's independent arithmetic.
-    """
-    def _line_amount(line: dict):
-        value = line.get("line_total")
-        if value not in (None, ""):
-            return to_decimal(value or 0)
-        return (
-            to_decimal(line.get("quantity", 0) or 0)
-            * to_decimal(line.get("unit_price", 0) or 0)
-        )
-
-    subtotal = round_money(
-        sum((_line_amount(line) for line in updated_lines if isinstance(line, dict)), to_decimal(0)),
-        currency,
-    )
-    discount = max(to_decimal(0), to_decimal(state.get("discount", 0) or 0))
-    if state.get("discount_type") == "percentage":
-        discount_amount = subtotal * discount / 100
-    else:
-        discount_amount = discount
-    discount_amount = round_money(min(max(discount_amount, to_decimal(0)), subtotal), currency)
-    taxable = subtotal - discount_amount
-    ratio = taxable / subtotal if subtotal > 0 else to_decimal(1)
-
-    line_tax_total = to_decimal(0)
-    has_line_tax = False
-    for line in updated_lines:
-        if not isinstance(line, dict):
-            continue
-        base = _line_amount(line) * ratio
-        raw_taxes = line.get("taxes")
-        if isinstance(raw_taxes, list) and raw_taxes:
-            resolved, amount = _recompute_tax_applications(raw_taxes, base, currency)
-            line["taxes"] = resolved
-            line_tax_total += amount
-            has_line_tax = True
-            continue
-        rate = to_decimal(line.get("tax_rate", 0) or 0)
-        if rate:
-            line_tax_total += round_money(base * rate / 100, currency)
-            has_line_tax = True
-
-    result: dict = {
-        "subtotal": to_stored_float(subtotal),
-        "discount_amount": to_stored_float(discount_amount),
-    }
-    raw_doc_taxes = state.get("doc_taxes")
-    if isinstance(raw_doc_taxes, list) and raw_doc_taxes:
-        resolved_doc_taxes, doc_tax_total = _recompute_tax_applications(
-            raw_doc_taxes, taxable, currency)
-        result["doc_taxes"] = resolved_doc_taxes
-        tax_total = line_tax_total + doc_tax_total
-    elif has_line_tax:
-        tax_total = line_tax_total
-    elif to_decimal(state.get("tax_rate", 0) or 0):
-        tax_total = round_money(
-            taxable * to_decimal(state.get("tax_rate", 0) or 0) / 100,
-            currency,
-        )
-    else:
-        # Legacy documents may carry only an absolute tax amount and no rate
-        # definition from which to recompute it. Preserve that explicit snapshot.
-        tax_total = round_money(state.get("tax", 0) or 0, currency)
-
-    tax_total = round_money(tax_total, currency)
-    shipping = round_money(state.get("shipping", 0) or 0, currency)
-    result["tax"] = to_stored_float(tax_total)
-    result["total"] = to_stored_float(round_money(taxable + tax_total + shipping, currency))
-    return result
-
-
 @router.post("/{entity_id}/reprice")
 async def reprice_doc(
     entity_id: str,
@@ -5023,7 +4928,7 @@ async def reprice_doc(
     new_values = {
         "price_list": payload.price_list,
         "line_items": updated_lines,
-        **_reprice_doc_money(row.state, updated_lines, currency),
+        **document_money(row.state, updated_lines, currency, keep_unrated_tax=True),
     }
     fields_changed = {
         field: {"old": row.state.get(field), "new": value}

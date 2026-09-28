@@ -52,7 +52,8 @@ from celerp.output.share_render import _not_found_page
 from celerp.output.document_context import prepare_document_output
 from celerp_docs import received
 from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES, is_shareable, share_doc_type
-from celerp_docs.taxes import TaxApplication, compute_tax_amounts
+from celerp_docs.doc_money import UnratedTaxError, document_money
+from celerp_docs.taxes import TaxApplication
 from ui.components.currency import CURRENCY_CODES
 
 # Authenticated router — share token generation requires login
@@ -82,7 +83,7 @@ _DOC_STR_FIELDS = frozenset({
     "customer_note", "payment_terms", "discount_type", "carrier", "tracking",
 })
 _DOC_NUM_FIELDS = frozenset({
-    "discount", "shipping", "subtotal", "tax", "total",
+    "discount", "shipping", "subtotal", "tax", "tax_rate", "total",
 })
 _LINE_STR_FIELDS = frozenset({
     "sku", "name", "description", "unit", "sell_by", "weight_unit",
@@ -239,9 +240,10 @@ def _public_bundle_doc(doc: dict) -> dict:
 def _sanitize_bundle_doc(doc: dict) -> dict:
     """Rebuild a doc from an allowlist and recompute every monetary value locally.
 
-    Nothing from the sender's bundle is trusted for money or status: line totals,
-    subtotal, tax, and total are all derived here from quantity × price so a
-    tampered bundle can never misstate the figures the recipient sees.
+    Nothing from the sender's bundle is trusted for money or status: line totals
+    are derived here from quantity × price, and the discount, taxes and totals
+    from the same calculation every document uses, so a tampered bundle can
+    never misstate the figures the recipient sees.
     """
     if not isinstance(doc, dict):
         raise HTTPException(status_code=422, detail="Bundle document is malformed")
@@ -259,56 +261,40 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     derived = {"line_items", "doc_taxes", "subtotal", "tax", "total", "amount_paid", "amount_outstanding"}
     out: dict = {k: v for k, v in public.items() if k not in derived}
     out["currency"] = currency
+    out["discount_type"] = public.get("discount_type") or "flat"
+    if out["discount_type"] not in ("flat", "percentage"):
+        raise HTTPException(status_code=422, detail="Bundle document has an unknown discount type")
     out["discount"] = _num(public.get("discount"))
     out["shipping"] = _num(public.get("shipping"))
 
-    raw_lines = public.get("line_items")
-    if not isinstance(raw_lines, list):
-        raw_lines = []
-    if len(raw_lines) > _MAX_LINE_ITEMS:
-        raise HTTPException(status_code=422, detail="Too many line items in bundle")
-
     lines: list[dict] = []
-    subtotal_d = to_decimal(0)
-    line_tax_d = to_decimal(0)
-    for raw in raw_lines:
-        if not isinstance(raw, dict):
-            continue
-        line: dict = {}
-        for k in _LINE_STR_FIELDS:
-            val = _str(raw.get(k), _MAX_STR)
-            if val is not None:
-                line[k] = val
-        for k in _LINE_NUM_FIELDS:
-            if k in raw:
-                line[k] = _num(raw.get(k))
+    for raw in public.get("line_items") or []:
+        line: dict = {k: v for k, v in raw.items() if k in _LINE_STR_FIELDS or k in _LINE_NUM_FIELDS}
         base = to_decimal(line.get("quantity", 0)) * to_decimal(line.get("unit_price", 0))
         disc_pct = to_decimal(line.get("discount_pct", 0))
         if disc_pct:
             base = base * (to_decimal(1) - disc_pct / 100)
-        lt = round_money(base, currency)
-        line["line_total"] = to_stored_float(lt)
-        subtotal_d += lt
+        line["line_total"] = to_stored_float(round_money(base, currency))
         taxes = _sanitize_taxes(raw.get("taxes"))
         if taxes:
-            resolved = compute_tax_amounts(taxes, to_stored_float(lt), currency)
-            line["taxes"] = [t.model_dump() for t in resolved]
-            line_tax_d += sum(to_decimal(t.amount) for t in resolved)
+            line["taxes"] = [t.model_dump() for t in taxes]
         lines.append(line)
     out["line_items"] = lines
 
-    subtotal_d = subtotal_d - round_money(out["discount"], currency)
+    # The sender's tax figure is read only as a legacy input: with no rate to
+    # recompute it from, the document is refused rather than imported with a
+    # different amount.
+    inputs = {**out, "tax": _num(public.get("tax"))}
     doc_taxes = _sanitize_taxes(public.get("doc_taxes"))
     if doc_taxes:
-        resolved = compute_tax_amounts(doc_taxes, to_stored_float(subtotal_d), currency)
-        out["doc_taxes"] = [t.model_dump() for t in resolved]
-        tax_d = sum(to_decimal(t.amount) for t in resolved) + line_tax_d
-    else:
-        tax_d = line_tax_d
-    shipping_d = round_money(out["shipping"], currency)
-    out["subtotal"] = to_stored_float(round_money(subtotal_d, currency))
-    out["tax"] = to_stored_float(round_money(tax_d, currency))
-    out["total"] = to_stored_float(round_money(subtotal_d + tax_d + shipping_d, currency))
+        inputs["doc_taxes"] = [t.model_dump() for t in doc_taxes]
+    try:
+        out.update(document_money(inputs, lines, currency, keep_unrated_tax=False))
+    except UnratedTaxError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="This document has a tax amount without a tax rate, so it cannot be imported without changing its total.",
+        ) from exc
     return out
 
 

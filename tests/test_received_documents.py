@@ -1069,6 +1069,68 @@ async def test_document_target_keeps_shipping_and_every_tax_exactly(client):
 
 
 # ---------------------------------------------------------------------------
+# Discount and tax follow the rules every document uses
+# ---------------------------------------------------------------------------
+
+def _priced(**extra) -> dict:
+    doc = _doc(price=250.0)  # 2 x 250 = 500
+    doc.update(extra)
+    return doc
+
+
+def _taxed_line(**tax) -> list[dict]:
+    return [{"description": "Widget", "quantity": 2, "unit_price": 250.0, **tax}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extra, money", [
+    pytest.param({"discount": 10.0, "discount_type": "percentage"},
+                 {"subtotal": 500.0, "discount_amount": 50.0, "tax": 0.0, "total": 450.0},
+                 id="percentage-discount"),
+    pytest.param({"discount": 100.0, "line_items": _taxed_line(taxes=_tax(10.0))},
+                 {"subtotal": 500.0, "discount_amount": 100.0, "tax": 40.0, "total": 440.0},
+                 id="discount-and-line-tax"),
+    pytest.param({"line_items": _taxed_line(tax_rate=7.0)},
+                 {"subtotal": 500.0, "discount_amount": 0.0, "tax": 35.0, "total": 535.0},
+                 id="legacy-line-tax-rate"),
+    pytest.param({"discount": 10.0, "discount_type": "percentage", "tax_rate": 7.0},
+                 {"subtotal": 500.0, "discount_amount": 50.0, "tax": 31.5, "total": 481.5},
+                 id="legacy-header-tax-rate"),
+])
+async def test_received_money_follows_document_rules(client, extra, money):
+    tok = await _token(client)
+    rid = await _import(client, tok, _bundle(_priced(**extra)))
+    document = (await _received(client, tok, rid))["document"]
+    assert {k: document[k] for k in money} == money
+
+    made = await _target(client, tok, await _book(client, tok, rid))
+    assert {k: made[k] for k in money} == money
+    assert made["discount_type"] == extra.get("discount_type", "flat")
+
+
+@pytest.mark.asyncio
+async def test_tax_amount_without_a_rate_is_not_imported(client):
+    tok = await _token(client)
+    r = await client.post("/docs/import-bundle", json=_bundle(_priced(tax=35.0, total=535.0)),
+                          headers=_h(tok), follow_redirects=False)
+    assert r.status_code == 422
+    assert "without a tax rate" in r.json()["detail"]
+    listed = await client.get("/docs/received", headers=_h(tok))
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_quotation_keeps_a_percentage_discount(client):
+    tok = await _token(client)
+    po = _priced(doc_type="purchase_order", discount=10.0, discount_type="percentage")
+    rid = await _import(client, tok, _bundle(po))
+    made = await _target(client, tok, await _book(client, tok, rid))
+    assert made["list_type"] == "quotation"
+    assert (made["discount"], made["discount_type"], made["total"]) == (10.0, "percentage", 450.0)
+
+
+# ---------------------------------------------------------------------------
 # Update draft only when the revision still fits the draft
 # ---------------------------------------------------------------------------
 
