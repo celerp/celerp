@@ -26,13 +26,9 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
     "python-jose[cryptography]>=3.3",
-    # cryptography 49+ publishes no x86_64 macOS wheel, so an Intel Mac desktop
-    # build would fall back to a source build (Rust/OpenSSL cross-compile) that
-    # cannot work. Intel macOS stays on the 48 branch; every other platform
-    # takes the modern branch. The bounds are disjoint on purpose: a single
-    # version satisfying both markers (e.g. 48.x) would keep every platform on
-    # the older release, so the fork must be forced. Relax both bounds once
-    # Intel macOS desktop support is dropped.
+    # Compatibility exception: cryptography 49+ ships no x86_64 macOS wheel, so
+    # Intel Mac desktop builds are held below 49. Bounds are disjoint to force the
+    # resolver fork. Remove when Intel desktop support ends or 49+ installs there.
     "cryptography>=42,<49; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "cryptography>=49; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "passlib[bcrypt]>=1.7",

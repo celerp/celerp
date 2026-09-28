@@ -241,10 +241,12 @@ jobs:
         run: git diff --exit-code constraints.txt
 
   # The Intel macOS desktop build installs into an x86_64 bundled Python, where a
-  # package with no x86_64 wheel fails. Dependency refreshes check that here.
+  # package with no x86_64 wheel fails. Runs on every PR so Test gates on it.
   mac-intel-deps:
     name: Intel macOS bundled Python installs constraints
-    if: github.event_name == 'workflow_dispatch' && inputs.dependency_refresh
+    if: >
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && inputs.dependency_refresh)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
