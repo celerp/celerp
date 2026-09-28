@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      dependency_refresh:
+        description: Also install the dependency graph into the Intel macOS bundled Python
+        type: boolean
+        default: false
 
 jobs:
   shard:
@@ -235,6 +240,31 @@ jobs:
       - name: Fail if the committed constraints are stale
         run: git diff --exit-code constraints.txt
 
+  # The Intel macOS desktop build installs into an x86_64 bundled Python, where a
+  # package with no x86_64 wheel fails. Dependency refreshes check that here.
+  mac-intel-deps:
+    name: Intel macOS bundled Python installs constraints
+    if: github.event_name == 'workflow_dispatch' && inputs.dependency_refresh
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install into the x86_64 bundled Python
+        shell: bash
+        run: |
+          set -eo pipefail
+          PBS_TAG="$(sed -n 's/^  PBS_TAG: "\(.*\)"$/\1/p' .github/workflows/build.yml)"
+          PBS_PYTHON="$(sed -n 's/^  PBS_PYTHON: "\(.*\)"$/\1/p' .github/workflows/build.yml)"
+          F="cpython-${PBS_PYTHON}+${PBS_TAG}-x86_64-apple-darwin-install_only_stripped.tar.gz"
+          BASE="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o "$F" "$BASE/$F"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o SHA256SUMS "$BASE/SHA256SUMS"
+          grep " $F\$" SHA256SUMS | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/mac-x64"
+          tar xz -f "$F" -C "$RUNNER_TEMP/mac-x64"
+          PY="$RUNNER_TEMP/mac-x64/python/bin/python3"
+          "$PY" -m pip install --upgrade pip --prefer-binary
+          "$PY" -m pip install . --prefer-binary -c constraints.txt
+
   # A pip install updating itself from the app, end to end, on every OS the bundled
   # PostgreSQL ships for: real wheels built from this tree, fresh venvs, `celerp
   # start` as the supervisor, updates requested through the API (a good release, a
@@ -291,7 +321,7 @@ jobs:
   # (this job), which passes only when every unit, browser, electron, AND lockfile job passed.
   test:
     name: Test
-    needs: [shard, browser, embedded, electron, lockfile, constraints, update-changes, update-e2e]
+    needs: [shard, browser, embedded, electron, lockfile, constraints, mac-intel-deps, update-changes, update-e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -319,6 +349,10 @@ jobs:
           fi
           if [ "${{ needs.constraints.result }}" != "success" ]; then
             echo "constraints.txt is stale (result: ${{ needs.constraints.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.mac-intel-deps.result }}" != "success" ] && [ "${{ needs.mac-intel-deps.result }}" != "skipped" ]; then
+            echo "Intel macOS bundled Python could not install constraints.txt (result: ${{ needs.mac-intel-deps.result }})"
             exit 1
           fi
           if [ "${{ needs.update-changes.result }}" != "success" ]; then

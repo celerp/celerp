@@ -81,11 +81,4 @@ jobs:
             --title "Refresh Python dependencies" \
             --body "Refreshes the resolved production dependency graph from pyproject.toml. constraints.txt remains resolver-generated; normal CI validates the complete set before merge."
 
-          gh workflow run ci.yml --ref "$BRANCH"
-          # GITHUB_TOKEN PRs do not trigger PR workflows reliably, and CI does
-          # not build binaries: dispatch the mac build too, since it installs
-          # both the arm64 and x64 standalone Python environments. This is what
-          # catches an unbuildable wheel for one platform (e.g. cryptography on
-          # Intel macOS) that the resolver accepted but production packaging
-          # cannot install.
-          gh workflow run build.yml --ref "$BRANCH" -f platforms=mac
+          gh workflow run ci.yml --ref "$BRANCH" -f dependency_refresh=true
