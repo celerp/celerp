@@ -54,9 +54,9 @@ async def _doc(client, tok, doc_type="invoice") -> str:
 
 
 async def _list_entity(client, tok) -> str:
-    """Create a list-type entity (price list / quotation list)."""
+    """Create a quotation list, the list type that can be shared."""
     r = await client.post("/lists", headers=_h(tok), json={
-        "list_type": "price_list",
+        "list_type": "quotation",
         "name": "Test List",
         "line_items": [{"name": "Product A", "quantity": 2, "unit_price": 50}],
     })

@@ -10,6 +10,8 @@ import json
 import pytest
 from httpx import AsyncClient
 
+from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -161,15 +163,22 @@ async def test_public_share_view_is_the_print_layout_with_letterhead(client: Asy
 
 
 @pytest.mark.asyncio
-async def test_public_share_view_no_import_link_for_shipping_doc(client: AsyncClient):
-    """Shipping documents are not importable, so their footer has no import link."""
+@pytest.mark.parametrize("doc_type", ["purchase_order", "consignment_in"])
+async def test_supplier_side_docs_can_be_shared_and_imported(client: AsyncClient, doc_type):
+    tok = await _token(client)
+    entity_id = await _create_doc(client, tok, doc_type)
+    r = await client.post(f"/docs/{entity_id}/share", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    assert "Import into Celerp" in (await client.get(f"/share/{r.json()['token']}")).text
+
+
+@pytest.mark.asyncio
+async def test_shipping_doc_cannot_be_shared(client: AsyncClient):
+    """Shipping documents cannot be imported, so they cannot be shared either."""
     tok = await _token(client)
     entity_id = await _create_doc(client, tok, "shipping_doc")
-    token = (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).json()["token"]
-
-    r = await client.get(f"/share/{token}")
-    assert r.status_code == 200
-    assert "Import into Celerp" not in r.text
+    assert (await client.get(f"/docs/{entity_id}/share", headers=_h(tok))).status_code == 422
+    assert (await client.post(f"/docs/{entity_id}/share", headers=_h(tok))).status_code == 422
 
 
 @pytest.mark.asyncio
@@ -760,13 +769,18 @@ def test_share_hidden_when_connected_but_no_public_url():
     assert "share-modal-doc-x1" not in xml
 
 
-def test_supplier_docs_are_not_shareable():
-    """Inbound/supplier docs (bill, purchase_order, consignment_in) never get Share."""
-    for dt in ("bill", "purchase_order", "consignment_in"):
-        xml = _detail_xml(_invoice(status="sent", doc_type=dt), share_enabled=True)
-        assert "share-modal-doc-x1" not in xml, dt
-    # A customer-facing invoice does.
-    assert "share-modal-doc-x1" in _detail_xml(_invoice(status="sent"), share_enabled=True)
+@pytest.mark.parametrize("doc_type", sorted(SHAREABLE_DOC_TYPES))
+def test_every_importable_type_is_shareable(doc_type):
+    """Share is offered on exactly the types the other side can import,
+    purchase orders and consignments in included."""
+    xml = _detail_xml(_invoice(status="sent", doc_type=doc_type), share_enabled=True)
+    assert "share-modal-doc-x1" in xml
+
+
+@pytest.mark.parametrize("doc_type", ["shipping_doc", "production_order"])
+def test_types_the_other_side_cannot_import_are_not_shareable(doc_type):
+    xml = _detail_xml(_invoice(status="sent", doc_type=doc_type), share_enabled=True)
+    assert "share-modal-doc-x1" not in xml
 
 
 def test_paid_invoice_is_still_shareable():

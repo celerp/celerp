@@ -33,6 +33,27 @@ INBOUND_DOC_TYPES: frozenset[str] = frozenset({"consignment_in", "bill"})
 # These are recurring template docs - they should never show a fulfill button.
 TEMPLATE_DOC_TYPES: frozenset[str] = frozenset({"subscription_invoice", "subscription_po"})
 
+# Document types that can be shared by link and imported by the recipient. One
+# set serves the Share button, the share API, the share page's Import link and
+# the importer, so nothing can be shared that the other side cannot import. A
+# quotation list travels as a quotation.
+SHAREABLE_DOC_TYPES: frozenset[str] = frozenset({
+    "invoice", "quotation", "proforma", "purchase_order",
+    "credit_note", "bill", "memo", "consignment_in",
+})
+
+
+def share_doc_type(entity_type: str, state: dict) -> str | None:
+    """The doc_type a document or list is shared and imported as."""
+    if entity_type == "list":
+        return "quotation" if state.get("list_type") in ("quote", "quotation") else None
+    return state.get("doc_type")
+
+
+def is_shareable(entity_type: str, state: dict) -> bool:
+    return share_doc_type(entity_type, state) in SHAREABLE_DOC_TYPES
+
+
 # Doc types where Send and Mark as Sent must be hidden entirely.
 # Bills and consignment_in are internal receiving documents - never sent to external parties.
 # Purchase orders are outbound to vendors and DO need send/mark-as-sent.

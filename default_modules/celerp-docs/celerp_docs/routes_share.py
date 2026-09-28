@@ -49,6 +49,7 @@ from celerp.output.doc_print import (
 from celerp.output.share_render import _not_found_page
 from celerp.output.document_context import prepare_document_output
 from celerp_docs import received
+from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES, is_shareable, share_doc_type
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 
 # Authenticated router — share token generation requires login
@@ -69,10 +70,6 @@ _MAX_STR = 2000
 _MAX_NOTES = 20_000
 _FETCH_TIMEOUT = 10.0
 
-_IMPORTABLE_DOC_TYPES = frozenset({
-    "invoice", "quotation", "proforma", "purchase_order",
-    "credit_note", "bill", "memo", "consignment_in",
-})
 _DOC_STR_FIELDS = frozenset({
     "doc_type", "list_type", "ref_id", "doc_number", "reference", "issue_date", "due_date", "valid_until",
     "expected_delivery", "currency", "company_name", "company_address", "company_phone",
@@ -91,14 +88,6 @@ _LINE_STR_FIELDS = frozenset({
 _LINE_NUM_FIELDS = frozenset({
     "quantity", "unit_price", "pieces", "weight", "tax_rate", "discount_pct",
 })
-
-
-def _import_doc_type(entity_type: str, state: dict) -> str | None:
-    """The doc_type a shared document carries in its bundle: a quote list goes
-    out as a quotation."""
-    if entity_type == "list":
-        return "quotation" if state.get("list_type") in ("quote", "quotation") else "list"
-    return state.get("doc_type")
 
 
 def _import_link(link: str | None, src: str | None, token: str | None) -> str:
@@ -251,7 +240,7 @@ def _sanitize_bundle_doc(doc: dict) -> dict:
     if not isinstance(doc, dict):
         raise HTTPException(status_code=422, detail="Bundle document is malformed")
     doc_type = str(doc.get("doc_type") or "").strip()
-    if doc_type not in _IMPORTABLE_DOC_TYPES:
+    if doc_type not in SHAREABLE_DOC_TYPES:
         raise HTTPException(status_code=422, detail="Unsupported document type in bundle")
 
     public = _public_bundle_doc(doc)
@@ -411,7 +400,7 @@ async def share_import_url(session: AsyncSession, row: DocShareToken | None,
     if row is None or not _share_active(row):
         return None
     doc = await session.get(Projection, (row.company_id, row.entity_id))
-    if doc is None or _import_doc_type(doc.entity_type, doc.state or {}) not in _IMPORTABLE_DOC_TYPES:
+    if doc is None or not is_shareable(doc.entity_type, doc.state or {}):
         return None
     view_url = view_url or await public_view_url(row.token)
     return import_accept_url(view_url) if view_url else None
@@ -466,6 +455,8 @@ async def share_status(
     row = await session.get(Projection, (company_id, entity_id))
     if row is None or row.entity_type not in ("doc", "list"):
         raise HTTPException(status_code=404, detail="Document not found")
+    if not is_shareable(row.entity_type, row.state or {}):
+        raise HTTPException(status_code=422, detail="This type of document cannot be shared")
     share_row = await get_or_create_share_token(session, company_id, entity_id)
     await session.commit()
     return await _share_status(session, share_row)
@@ -484,6 +475,8 @@ async def create_share_link(
     row = await session.get(Projection, (company_id, entity_id))
     if row is None or row.entity_type not in ("doc", "list"):
         raise HTTPException(status_code=404, detail="Document not found")
+    if not is_shareable(row.entity_type, row.state or {}):
+        raise HTTPException(status_code=422, detail="This type of document cannot be shared")
 
     expires = None
     if body and body.expires_at:
@@ -640,7 +633,7 @@ async def view_shared_doc(
     await _resolve_share_contact(session, share_row.company_id, state)
     ident_mode = await _enrich_share_lines(session, share_row.company_id, state)
 
-    importable = _import_doc_type(row.entity_type, state) in _IMPORTABLE_DOC_TYPES
+    importable = is_shareable(row.entity_type, state)
     # The page points its Import link at the address it is read from, which
     # behind share.celerp.com only the browser knows.
     base = (settings.celerp_public_url or "").rstrip("/")
@@ -690,7 +683,7 @@ async def download_share_bundle(
 
     doc = dict(row.state or {})
     if row.entity_type == "list":
-        doc.setdefault("doc_type", _import_doc_type(row.entity_type, doc))
+        doc.setdefault("doc_type", share_doc_type(row.entity_type, doc))
     for key, value in (await _letterhead(session, share_row.company_id)).items():
         if key not in doc and value:
             doc[key] = value

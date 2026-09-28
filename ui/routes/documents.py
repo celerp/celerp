@@ -6275,7 +6275,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         )
     # Refund is now handled via credit notes + void in the payment section
     # Send (relay modal) + Mark as Sent - hidden for internal/receiving doc types (bill, consignment_in)
-    from celerp_docs.doc_constants import NO_SEND_DOC_TYPES, NO_SEND_STATUSES
+    from celerp_docs.doc_constants import NO_SEND_DOC_TYPES, NO_SEND_STATUSES, is_shareable
     # Quotations get the same Send / Mark-as-sent as documents (relay-gated). For a list, "sent" is a
     # milestone (sent_at) on the finalized state, so the gates below are list-aware.
     _list_sendable = is_list and list_type == "quotation"
@@ -6284,15 +6284,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         not suppress_doc_actions
         and ((not is_list and doc_type not in NO_SEND_DOC_TYPES) or _list_sendable)
     )
-    # Share is independent of Send's status gates: any customer-facing document or list
-    # can be shared for viewing (a paid invoice is a receipt). Supplier/inbound docs
-    # (bills, POs, consignment-in) are never shared. Gated on a relay-bound instance
-    # (gateway_token_set) that can mint a link: a paid instance serves it from its own
-    # public URL, a free instance mints one through the relay. Only a self-hosted
+    # Share is independent of Send's status gates (a paid invoice is a receipt): it is
+    # offered on exactly the types the other side can import. Gated on a relay-bound
+    # instance (gateway_token_set) that can mint a link: a paid instance serves it from
+    # its own public URL, a free instance mints one through the relay. Only a self-hosted
     # instance with no relay stays hidden, since it can never mint.
     _can_share = (
         share_enabled and not suppress_doc_actions
-        and (is_list or doc_type not in NO_SEND_DOC_TYPES)
+        and is_shareable("list" if is_list else "doc", {"doc_type": doc_type, "list_type": list_type})
     )
     if _can_send:
         # Send via relay - modal popup, shown whenever this instance is relay-bound

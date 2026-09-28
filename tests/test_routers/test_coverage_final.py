@@ -297,7 +297,7 @@ async def test_share_view_list_entity(client):
             "event_type": "list.created",
             "source": "test",
             "idempotency_key": f"list-share-{uuid.uuid4().hex}",
-            "data": {"list_type": "price_list", "ref_id": "PL-001", "customer_name": "Test Customer", "total": 100},
+            "data": {"list_type": "quotation", "ref_id": "PL-001", "customer_name": "Test Customer", "total": 100},
         }
     ]})
     assert r3.status_code == 200, r3.text
@@ -420,7 +420,7 @@ async def test_share_public_list_page_discount_row(client):
             "source": "test",
             "idempotency_key": f"disc-list-{uuid.uuid4().hex}",
             "data": {
-                "list_type": "price_list",
+                "list_type": "quotation",
                 "ref_id": "DISC-001",
                 "customer_name": "Customer A",
                 "total": 90,
