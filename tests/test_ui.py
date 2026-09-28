@@ -2140,9 +2140,10 @@ class TestInventoryCategoryTabs:
     async def test_category_tab_active_highlight_correct(self, ui_client):
         """When ?category=Ruby is set, Ruby tab gets category-tab--active and All does not."""
         valuation = {**_VALUATION, "category_counts": {"Ruby": 5}, "count_by_status": {"available": 5}}
+        listed = {"items": [_ITEM], "total": 1, "aggregates": {"item_count": 1}}
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value=listed)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
@@ -2158,8 +2159,8 @@ class TestInventoryCategoryTabs:
         all_idx = html.find("All (")
         # Ruby tab is in the page with active marker
         assert b"Ruby" in r.content
-        # Valuation bar reflects category scope (count from scoped valuation)
-        assert b"Available:" in r.content
+        # Totals bar counts the category-filtered result from the list response
+        assert b"Items: 1" in r.content
     @pytest.mark.asyncio
     async def test_company_field_edit_returns_input(self, ui_client):
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)):

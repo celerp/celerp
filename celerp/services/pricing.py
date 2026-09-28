@@ -76,17 +76,20 @@ def resolve_price(item: dict, price_list: str) -> float:
 
     Checks the price list name directly on the item, then the conventional
     {name.lower()}_price key (e.g. "retail_price" for "Retail").
-    Returns 0.0 if no price is found for this list. A non-numeric or non-finite
-    stored value reads as missing; item state is not schema-validated, and one
-    garbage value must not take down every read that prices items.
+    Returns 0.0 if no price is found for this list (see stored_price).
     """
+    val = stored_price(item, price_list)
+    return 0.0 if val is None else val
+
+
+def stored_price(item: dict, price_list: str) -> float | None:
+    """The item's price on this list, or None when it has none. A non-numeric or
+    non-finite stored value reads as missing; item state is not schema-validated,
+    and one garbage value must not take down every read that prices items."""
     val = coerce_price(item.get(price_list))
     if val is not None:
         return val
-    val = coerce_price(item.get(price_key(price_list)))
-    if val is not None:
-        return val
-    return 0.0
+    return coerce_price(item.get(price_key(price_list)))
 
 
 def round_half_up_to_increment(value: float, increment: float | None) -> float:

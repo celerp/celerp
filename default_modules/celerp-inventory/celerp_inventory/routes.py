@@ -55,7 +55,7 @@ from celerp.services.pricing import (
     inject_derived_prices,
     is_cost_list_name,
     price_key,
-    resolve_price,
+    stored_price,
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.line_measures import splitting_allowed
@@ -819,6 +819,65 @@ def _attr_filters(request: Request) -> list[tuple[str, set[str]]]:
     return out
 
 
+def _list_value(flat: dict, price_list: str) -> Decimal | None:
+    """A flattened item's value on one price list, or None when it cannot be valued.
+
+    Cost values at the lot total (recipe standard x qty when recipe-backed), else the
+    cost list's unit price x quantity; every other list (derived lists included, which
+    flatten_item resolves) is its unit price x quantity."""
+    lot_cost = coerce_price(flat.get("cost_total"))
+    if is_cost_list_name(price_list) and lot_cost is not None:
+        return Decimal(str(lot_cost))
+    unit = stored_price(flat, price_list)
+    qty = coerce_price(flat.get("quantity"))
+    if unit is None or qty is None:
+        return None
+    return Decimal(str(unit)) * Decimal(str(qty))
+
+
+def result_aggregates(result: list[dict], price_lists: list[dict], can_see_costs: bool) -> dict:
+    """Totals of exactly the rows in ``result`` (the filtered, visibility-stripped set).
+
+    Amounts are grouped by their own unit and never added across units; a row whose
+    amount or price the role cannot see is left out of that total, and price totals
+    count the rows they leave out (price_missing) instead of reading them as zero.
+    Cost lists are omitted entirely for a role without view_inventory_costs."""
+    quantity_by_unit: dict[str, float] = {}
+    weight_by_unit: dict[str, float] = {}
+    pieces_total: float | None = None
+    names = [pl.get("name", "") for pl in price_lists
+             if can_see_costs or not is_cost_list_name(pl.get("name", ""))]
+    price_totals = {name: Decimal(0) for name in names}
+    price_missing = {name: 0 for name in names}
+    for r in result:
+        # coerce_price reads any stored amount as a finite number or None.
+        qty = coerce_price(r.get("quantity"))
+        if qty is not None:
+            unit = str(r.get("sell_by") or "")
+            quantity_by_unit[unit] = quantity_by_unit.get(unit, 0.0) + qty
+        weight = coerce_price(r.get("weight"))
+        if weight is not None:
+            unit = str(r.get("weight_unit") or "")
+            weight_by_unit[unit] = weight_by_unit.get(unit, 0.0) + weight
+        pieces = coerce_price(r.get("pieces"))
+        if pieces is not None:
+            pieces_total = (pieces_total or 0.0) + pieces
+        for name in names:
+            value = _list_value(r, name)
+            if value is None:
+                price_missing[name] += 1
+            else:
+                price_totals[name] += value
+    return {
+        "item_count": len(result),
+        "quantity_by_unit": {k: round(v, 4) for k, v in quantity_by_unit.items()},
+        "weight_by_unit": {k: round(v, 4) for k, v in weight_by_unit.items()},
+        "pieces_total": None if pieces_total is None else round(pieces_total, 4),
+        "price_totals": {k: float(round(v, 2)) for k, v in price_totals.items()},
+        "price_missing": price_missing,
+    }
+
+
 async def query_items(
     session: AsyncSession, company_id, role: str, f: ItemListFilters, attr_filters: list[tuple[str, set[str]]],
 ) -> dict:
@@ -1042,6 +1101,10 @@ async def query_items(
     for r in sold_result:
         r["sold_price"] = sold_price.get(r.get("id"))
 
+    # Totals of the final filtered set, so they describe exactly the rows `total` counts,
+    # on every page and for any combination of filters.
+    aggregates = result_aggregates(result, (await get_price_config(session, company_id))[0], can_see_costs)
+
     # Ordering (FEFO / user column sort / default) is single-sourced in
     # celerp_inventory.search so the list and the global-search bar stay in
     # lockstep. Applied AFTER all filtering so pagination is globally correct.
@@ -1058,7 +1121,8 @@ async def query_items(
     for _item in result:
         _item["_channel_state"] = _channel_states.get(_item.get("id"), {})
 
-    resp: dict = {"items": result, "total": len(result), "attribute_facets": attribute_facets}
+    resp: dict = {"items": result, "total": len(result), "attribute_facets": attribute_facets,
+                  "aggregates": aggregates}
     if holding_scoped and not gate_cost:
         # Total over the whole scoped set (post-filter, pre-pagination) so the contact
         # card reads it directly and reconciles with the list at the same value basis; items
@@ -1231,25 +1295,13 @@ async def get_valuation(
             continue
 
         active_item_count += 1
-        qty = float(state.get("quantity") or 0)
         # Value from the flattened item so cost (recipe standard / lot total) and derived
         # lists price identically to every other consumer of item state.
         flat = flatten_item(state, row.entity_id, price_config=_price_config)
         for pl in _price_lists:
-            pl_name = pl.get("name", "")
-            try:
-                if is_cost_list_name(pl_name):
-                    # Cost values at the lot total (recipe standard × qty when recipe-backed).
-                    if flat.get("cost_total") is not None:
-                        price_totals[pl_name] += Decimal(str(flat["cost_total"]))
-                    elif flat.get(price_key(pl_name)) is not None:
-                        price_totals[pl_name] += Decimal(str(flat[price_key(pl_name)])) * Decimal(str(qty))
-                else:
-                    v = resolve_price(flat, pl_name)
-                    if v:
-                        price_totals[pl_name] += Decimal(str(v)) * Decimal(str(qty))
-            except Exception:
-                pass
+            value = _list_value(flat, pl.get("name", ""))
+            if value is not None:
+                price_totals[pl.get("name", "")] += value
 
     _cost_pl_names = {pl.get("name", "") for pl in _price_lists if is_cost_list_name(pl.get("name", ""))}
     show_cost = role_has_permission(settings, role, "view_inventory_costs")
