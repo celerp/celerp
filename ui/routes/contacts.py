@@ -18,7 +18,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title
-from ui.components.table import search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
+from ui.components.table import search_bar, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_section as _shared_files_section, _DOCUMENT_TAGS
 from celerp.services.currencies import CURRENCY_CODES as _CURRENCY_CODES
@@ -937,10 +937,7 @@ def setup_routes(app):
         page = int(request.query_params.get("page", 1))
         sort = request.query_params.get("sort", "created_at")
         sort_dir = request.query_params.get("dir", "desc")
-        try:
-            per_page = max(1, int(request.query_params.get("per_page", _PER_PAGE)))
-        except (ValueError, TypeError):
-            per_page = _PER_PAGE
+        per_page = per_page_value(request.query_params.get("per_page"), _PER_PAGE)
 
         params = {"limit": per_page, "offset": (page - 1) * per_page, "contact_type": "customer"}
         if q:
@@ -979,10 +976,7 @@ def setup_routes(app):
         page = int(request.query_params.get("page", 1))
         sort = request.query_params.get("sort", "created_at")
         sort_dir = request.query_params.get("dir", "desc")
-        try:
-            per_page = max(1, int(request.query_params.get("per_page", _PER_PAGE)))
-        except (ValueError, TypeError):
-            per_page = _PER_PAGE
+        per_page = per_page_value(request.query_params.get("per_page"), _PER_PAGE)
 
         params = {"limit": per_page, "offset": (page - 1) * per_page, "contact_type": "vendor"}
         if q:
@@ -1091,10 +1085,7 @@ def setup_routes(app):
         page = int(request.query_params.get("page", 1))
         sort = request.query_params.get("sort", "created_at")
         sort_dir = request.query_params.get("dir", "desc")
-        try:
-            per_page = max(1, int(request.query_params.get("per_page", _PER_PAGE)))
-        except (ValueError, TypeError):
-            per_page = _PER_PAGE
+        per_page = per_page_value(request.query_params.get("per_page"), _PER_PAGE)
 
         params = {"limit": per_page, "offset": (page - 1) * per_page, "contact_type": contact_type}
         if q:
