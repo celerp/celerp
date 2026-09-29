@@ -68,7 +68,7 @@ _TOTAL_CHECKS = ("debits_equal_credits", "ar_control", "ap_control")
 
 
 @dataclass(frozen=True)
-class _Mode:
+class WizardMode:
     key: str
     base: str
     back: str
@@ -78,8 +78,8 @@ class _Mode:
         return self.key == "bootstrap"
 
 
-BOOTSTRAP = _Mode("bootstrap", "/setup/migrate", "/setup")
-COMPANY = _Mode("company", "/setup/new-company/migrate", "/setup/new-company")
+BOOTSTRAP = WizardMode("bootstrap", "/setup/migrate", "/setup")
+COMPANY = WizardMode("company", "/setup/new-company/migrate", "/setup/new-company")
 
 
 # ---------------------------------------------------------------------------
@@ -92,19 +92,19 @@ COMPANY = _Mode("company", "/setup/new-company/migrate", "/setup/new-company")
 PREPARED_BY_COOKIE = "celerp_migration_prepared_by"
 
 
-def _set_scan_cookies(resp, token: str, prepared_by: str, mode: _Mode, request: Request) -> None:
+def _set_scan_cookies(resp, token: str, prepared_by: str, mode: WizardMode, request: Request) -> None:
     for name, value in ((SCAN_COOKIE, token), (PREPARED_BY_COOKIE, prepared_by)):
         resp.set_cookie(name, value, max_age=SCAN_TTL_SECONDS, path=mode.base, httponly=True,
                         samesite="strict", secure=session_cookie_secure(request),
                         domain=cookie_domain(request))
 
 
-def _clear_scan_cookie(resp, mode: _Mode, request: Request) -> None:
+def _clear_scan_cookie(resp, mode: WizardMode, request: Request) -> None:
     for name in (SCAN_COOKIE, PREPARED_BY_COOKIE):
         resp.delete_cookie(name, path=mode.base, domain=cookie_domain(request))
 
 
-async def _read_scan(request: Request, mode: _Mode, token: str) -> dict:
+async def _read_scan(request: Request, mode: WizardMode, token: str) -> dict:
     """The scan entry for a token: the API's scan view plus the Prepared by name, or
     ``{"run_id"}`` when a run was already started from the scan. Raises APIError."""
     body = await api.migration_scan_read(_api_token(request, mode), token)
@@ -119,7 +119,7 @@ async def _read_scan(request: Request, mode: _Mode, token: str) -> dict:
 # Shared page pieces
 # ---------------------------------------------------------------------------
 
-def _page(request: Request, *content, status_code: int = 200):
+def wizard_page(request: Request, *content, status_code: int = 200):
     page = auth_shell(*client_scripts(get_lang(request)), Div(*content, cls="auth-card migration-wizard"),
                       title=page_title("migration.title"))
     if status_code == 200:
@@ -127,7 +127,7 @@ def _page(request: Request, *content, status_code: int = 200):
     return HTMLResponse(to_xml(page), status_code=status_code)
 
 
-def _back(href: str) -> FT:
+def back_link(href: str) -> FT:
     label = t("auth.back_to_setup") if href == "/setup" else t("btn.back")
     return P(A(label, href=href, cls="auth-link"), cls="auth-alt-action")
 
@@ -152,7 +152,7 @@ def _badge(text: str, cls: str) -> FT:
     return Span(text, cls=f"badge {cls}")
 
 
-def _field_error(errors: dict, field: str) -> FT | str:
+def field_error(errors: dict, field: str) -> FT | str:
     message = errors.get(field)
     return P(str(message), cls="form-hint text-danger") if message else ""
 
@@ -182,7 +182,7 @@ def chooser(title: str, subtitle: str, cards: list, back: FT | str = "") -> FT:
 # Gates
 # ---------------------------------------------------------------------------
 
-async def _gate(request: Request, mode: _Mode):
+async def gate(request: Request, mode: WizardMode):
     """Return a response when the request may not use this mode, else None."""
     if mode.bootstrap:
         if get_token(request):
@@ -199,27 +199,27 @@ async def _gate(request: Request, mode: _Mode):
         return RedirectResponse("/login", status_code=302)
     from celerp.services.permissions import role_has_permission
     if not role_has_permission({}, get_role(request), "manage_company_lifecycle"):
-        return _page(request, auth_header(t("migration.title")),
-                     flash(t("migration.owner_only")), _back(mode.back), status_code=403)
+        return wizard_page(request, auth_header(t("migration.title")),
+                     flash(t("migration.owner_only")), back_link(mode.back), status_code=403)
     return None
 
 
-def _api_token(request: Request, mode: _Mode) -> str | None:
+def _api_token(request: Request, mode: WizardMode) -> str | None:
     return None if mode.bootstrap else get_token(request)
 
 
-def _expired(request: Request, mode: _Mode, message: str | None = None):
-    resp = _page(request, auth_header(t("migration.title")),
+def _expired(request: Request, mode: WizardMode, message: str | None = None):
+    resp = wizard_page(request, auth_header(t("migration.title")),
                  flash(message or t("migration.scan_expired")),
                  A(t("migration.upload_again"), href=mode.base, cls="btn btn--primary btn--full"),
-                 _back(mode.back))
+                 back_link(mode.back))
     if not isinstance(resp, HTMLResponse):
         resp = HTMLResponse(to_xml(resp))
     _clear_scan_cookie(resp, mode, request)
     return resp
 
 
-async def _current_scan(request: Request, mode: _Mode):
+async def _current_scan(request: Request, mode: WizardMode):
     """(token, entry) for the request's scan, or (None, the response explaining why not)."""
     token = request.cookies.get(SCAN_COOKIE)
     if not token:
@@ -229,7 +229,7 @@ async def _current_scan(request: Request, mode: _Mode):
     except APIError as e:
         if e.status == 410:
             return None, _expired(request, mode, str(e.detail))
-        return None, _page(request, auth_header(t("migration.title")), flash(str(e.detail)), _back(mode.back),
+        return None, wizard_page(request, auth_header(t("migration.title")), flash(str(e.detail)), back_link(mode.back),
                            status_code=e.status if e.status >= 400 else 502)
     if "run_id" in entry:
         # The start went through but its response was lost: continue with that run.
@@ -250,7 +250,7 @@ async def _sources() -> tuple[list[dict], str | None]:
         return [], str(e.detail)
 
 
-async def _setup_code_required(mode: _Mode) -> bool:
+async def setup_code_required(mode: WizardMode) -> bool:
     return mode.bootstrap and await api.setup_code_required()
 
 
@@ -268,7 +268,7 @@ def _source_request_form() -> FT:
     )
 
 
-def _setup_code_field() -> FT:
+def setup_code_field() -> FT:
     from celerp.config import config_path
     return Div(
         Label(t("label.setup_code"), For="setup_code", cls="form-label"),
@@ -278,10 +278,10 @@ def _setup_code_field() -> FT:
     )
 
 
-async def _source_page(request: Request, mode: _Mode, *, selected: str = "", prepared_by: str = "",
+async def _source_page(request: Request, mode: WizardMode, *, selected: str = "", prepared_by: str = "",
                        error: str | None = None, back: str | None = None):
     sources, sources_error = await _sources()
-    code_required = await _setup_code_required(mode)
+    code_required = await setup_code_required(mode)
     extensions = sorted({ext for s in sources for a in s.get("artifacts", []) for ext in a.get("extensions", [])})
     options = [("", t("migration.detect_source"))] + [(s["key"], s["display_name"]) for s in sources]
     radios = [
@@ -306,17 +306,17 @@ async def _source_page(request: Request, mode: _Mode, *, selected: str = "", pre
             P(t("migration.prepared_by_hint"), cls="form-hint"),
             cls="form-group",
         ),
-        _setup_code_field() if code_required else "",
+        setup_code_field() if code_required else "",
         P(t("migration.retention"), cls="form-hint"),
         Button(t("migration.analyze"), type="submit", cls="btn btn--primary btn--full"),
         method="post", action=f"{mode.base}/scan", enctype="multipart/form-data", cls="auth-form",
     )
     sample = Form(
-        _setup_code_field() if code_required else "",
+        setup_code_field() if code_required else "",
         Button(t("migration.try_sample"), type="submit", cls="btn btn--secondary btn--full"),
         method="post", action=f"{mode.base}/sample", cls="auth-form mt-sm",
     )
-    return _page(
+    return wizard_page(
         request,
         _steps(1),
         auth_header(t("migration.title"), t("migration.source_subtitle")),
@@ -325,13 +325,13 @@ async def _source_page(request: Request, mode: _Mode, *, selected: str = "", pre
         upload,
         sample,
         _source_request_form(),
-        _back(back or mode.back),
+        back_link(back or mode.back),
     )
 
 
-def _change_source_page(request: Request, mode: _Mode, entry: dict, source: str):
+def _change_source_page(request: Request, mode: WizardMode, entry: dict, source: str):
     scan = entry["scan"]
-    return _page(
+    return wizard_page(
         request,
         _steps(1),
         auth_header(t("migration.change_source_title"),
@@ -344,12 +344,12 @@ def _change_source_page(request: Request, mode: _Mode, entry: dict, source: str)
             method="get", action=mode.base, cls="auth-form",
         ),
         A(t("migration.keep_current_file"), href=f"{mode.base}/coverage", cls="btn btn--secondary btn--full mt-sm"),
-        _back(mode.back),
+        back_link(mode.back),
     )
 
 
-async def _choose_source(request: Request, mode: _Mode):
-    if (denied := await _gate(request, mode)) is not None:
+async def _choose_source(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
         return denied
     q = request.query_params
     source = q.get("source", "")
@@ -384,14 +384,14 @@ async def _choose_source(request: Request, mode: _Mode):
     return _with_cleared_scan(resp, request, mode) if clear else resp
 
 
-def _with_cleared_scan(resp, request: Request, mode: _Mode):
+def _with_cleared_scan(resp, request: Request, mode: WizardMode):
     if not isinstance(resp, HTMLResponse):
         resp = HTMLResponse(to_xml(resp))
     _clear_scan_cookie(resp, mode, request)
     return resp
 
 
-async def _scan_and_continue(request: Request, mode: _Mode, files: list, source: str | None,
+async def _scan_and_continue(request: Request, mode: WizardMode, files: list, source: str | None,
                              prepared_by: str, setup_code: str | None):
     try:
         result = await api.migration_scan(_api_token(request, mode), files, source, setup_code=setup_code)
@@ -403,8 +403,8 @@ async def _scan_and_continue(request: Request, mode: _Mode, files: list, source:
     return resp
 
 
-async def _upload(request: Request, mode: _Mode):
-    if (denied := await _gate(request, mode)) is not None:
+async def _upload(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
         return denied
     form = await request.form()
     source = str(form.get("source", "")).strip() or None
@@ -418,8 +418,8 @@ async def _upload(request: Request, mode: _Mode):
     return await _scan_and_continue(request, mode, files, source, prepared_by, setup_code)
 
 
-async def _sample(request: Request, mode: _Mode):
-    if (denied := await _gate(request, mode)) is not None:
+async def _sample(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
         return denied
     form = await request.form()
     setup_code = str(form.get("setup_code", "")).strip() or None
@@ -500,7 +500,7 @@ def _issues(scan: dict) -> FT:
     )
 
 
-def _coverage_page(request: Request, mode: _Mode, entry: dict, errors: dict | None = None,
+def _coverage_page(request: Request, mode: WizardMode, entry: dict, errors: dict | None = None,
                    error: str | None = None):
     scan = entry["scan"]
     decisions = _decisions(scan)
@@ -513,17 +513,17 @@ def _coverage_page(request: Request, mode: _Mode, entry: dict, errors: dict | No
         Label(Input(type="radio", name="mode", value="cutover", checked=chosen == "cutover"),
               Span(t("migration.cutover")), cls="migration-source"),
         P(t("migration.cutover_explanation"), cls="form-hint"),
-        _field_error(errors, "mode"),
+        field_error(errors, "mode"),
         cls="form-group",
     )
     cutover = Div(
         Label(t("migration.cutover_date"), For="cutover_date", cls="form-label"),
         Input(type="date", id="cutover_date", name="cutover_date", value=decisions.get("cutover_date") or "",
               cls="form-input"),
-        _field_error(errors, "cutover_date"),
+        field_error(errors, "cutover_date"),
         cls="form-group",
     )
-    return _page(
+    return wizard_page(
         request,
         _steps(2),
         auth_header(t("migration.coverage_title"), t("migration.coverage_subtitle")),
@@ -534,17 +534,17 @@ def _coverage_page(request: Request, mode: _Mode, entry: dict, errors: dict | No
         Form(
             Input(type="hidden", name="step", value="coverage"),
             method, cutover,
-            _field_error(errors, "mappings"),
-            _field_error(errors, "prepared_by"),
+            field_error(errors, "mappings"),
+            field_error(errors, "prepared_by"),
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action=f"{mode.base}/decisions", cls="auth-form",
         ),
-        _back(mode.base),
+        back_link(mode.base),
     )
 
 
-async def _coverage(request: Request, mode: _Mode):
-    if (denied := await _gate(request, mode)) is not None:
+async def _coverage(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
         return denied
     token, entry = await _current_scan(request, mode)
     if token is None:
@@ -565,13 +565,13 @@ def _mapping_control(question: dict, value: str) -> FT:
                   aria_label=question.get("label", ""), cls="form-input")
 
 
-def _mapping_page(request: Request, mode: _Mode, entry: dict, errors: dict | None = None,
+def _mapping_page(request: Request, mode: WizardMode, entry: dict, errors: dict | None = None,
                   error: str | None = None):
     scan = entry["scan"]
     current = _decisions(scan).get("mappings") or {}
     errors = errors or {}
     questions = scan.get("questions") or []
-    return _page(
+    return wizard_page(
         request,
         _steps(3),
         auth_header(t("migration.mapping_title"), t("migration.mapping_subtitle")),
@@ -584,22 +584,22 @@ def _mapping_page(request: Request, mode: _Mode, entry: dict, errors: dict | Non
                     Tr(
                         Td(q.get("label", ""), Br(), Span(q.get("source_type", ""), cls="form-hint")),
                         Td(_mapping_control(q, current.get(q["key"], q.get("suggested") or "")),
-                           _field_error(errors, q["key"])),
+                           field_error(errors, q["key"])),
                     )
                     for q in questions
                 ]),
                 cls="data-table",
             ),
-            _field_error(errors, "mappings"),
+            field_error(errors, "mappings"),
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full mt-md"),
             method="post", action=f"{mode.base}/decisions", cls="auth-form",
         ),
-        _back(f"{mode.base}/coverage"),
+        back_link(f"{mode.base}/coverage"),
     )
 
 
-async def _mapping(request: Request, mode: _Mode):
-    if (denied := await _gate(request, mode)) is not None:
+async def _mapping(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
         return denied
     token, entry = await _current_scan(request, mode)
     if token is None:
@@ -609,8 +609,8 @@ async def _mapping(request: Request, mode: _Mode):
     return _mapping_page(request, mode, entry)
 
 
-async def _save_decisions(request: Request, mode: _Mode):
-    if (denied := await _gate(request, mode)) is not None:
+async def _save_decisions(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
         return denied
     token, entry = await _current_scan(request, mode)
     if token is None:
@@ -649,7 +649,7 @@ async def _save_decisions(request: Request, mode: _Mode):
 # Step 4: review and start
 # ---------------------------------------------------------------------------
 
-def _account_fields(values: dict) -> list:
+def account_fields(values: dict) -> list:
     fields = [
         ("name", "label.your_name", "text"),
         ("email", "label.email", "email"),
@@ -667,7 +667,7 @@ def _account_fields(values: dict) -> list:
     ]
 
 
-async def _review_page(request: Request, mode: _Mode, entry: dict, *, values: dict | None = None,
+async def _review_page(request: Request, mode: WizardMode, entry: dict, *, values: dict | None = None,
                        error: str | None = None, errors: dict | None = None):
     scan = entry["scan"]
     decisions = _decisions(scan)
@@ -684,7 +684,7 @@ async def _review_page(request: Request, mode: _Mode, entry: dict, *, values: di
         (t("migration.prepared_by"), entry.get("prepared_by") or "--"),
     ]
     back = f"{mode.base}/mapping" if scan.get("questions") else f"{mode.base}/coverage"
-    return _page(
+    return wizard_page(
         request,
         _steps(4),
         auth_header(t("migration.review_title"), t("migration.review_subtitle")),
@@ -705,20 +705,20 @@ async def _review_page(request: Request, mode: _Mode, entry: dict, *, values: di
                 Label(t("label.company_name"), For="company_name", cls="form-label"),
                 Input(type="text", id="company_name", name="company_name", cls="form-input",
                       value=values.get("company_name", scan.get("company_name") or "")),
-                _field_error(errors, "company_name"),
+                field_error(errors, "company_name"),
                 cls="form-group",
             ),
-            *(_account_fields(values) if mode.bootstrap else []),
-            _setup_code_field() if await _setup_code_required(mode) else "",
+            *(account_fields(values) if mode.bootstrap else []),
+            setup_code_field() if await setup_code_required(mode) else "",
             Button(t("migration.create_and_migrate"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action=f"{mode.base}/start", cls="auth-form",
         ),
-        _back(back),
+        back_link(back),
     )
 
 
-async def _review(request: Request, mode: _Mode):
-    if (denied := await _gate(request, mode)) is not None:
+async def _review(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
         return denied
     token, entry = await _current_scan(request, mode)
     if token is None:
@@ -728,7 +728,7 @@ async def _review(request: Request, mode: _Mode):
     return await _review_page(request, mode, entry)
 
 
-def _account_error(values: dict) -> str | None:
+def account_error(values: dict) -> str | None:
     from celerp.services.auth import MIN_PASSWORD_LENGTH
     if not all(values.get(k) for k in ("company_name", "name", "email", "password")):
         return t("settings.all_fields_required")
@@ -739,8 +739,8 @@ def _account_error(values: dict) -> str | None:
     return None
 
 
-async def _start(request: Request, mode: _Mode):
-    if (denied := await _gate(request, mode)) is not None:
+async def _start(request: Request, mode: WizardMode):
+    if (denied := await gate(request, mode)) is not None:
         return denied
     # The scan is read only to show the review page again: a repeated start whose first
     # response was lost finds its scan already claimed, and the API returns that run.
@@ -763,9 +763,9 @@ async def _start(request: Request, mode: _Mode):
         return await review(error=t("settings.all_fields_required"))
     try:
         if mode.bootstrap:
-            if (problem := _account_error(values)) is not None:
+            if (problem := account_error(values)) is not None:
                 return await review(error=problem)
-            if await _setup_code_required(mode) and not setup_code:
+            if await setup_code_required(mode) and not setup_code:
                 return await review(error=t("auth.setup_code_required"))
             started = await api.migration_bootstrap_start(
                 token, values["company_name"], values["name"], values["email"], values["password"],
@@ -792,7 +792,7 @@ async def _start(request: Request, mode: _Mode):
 # ---------------------------------------------------------------------------
 
 def _run_error_page(request: Request, message: str):
-    return _page(request, auth_header(t("migration.title")), flash(message), _back("/"))
+    return wizard_page(request, auth_header(t("migration.title")), flash(message), back_link("/"))
 
 
 def _phase_label(phase: dict) -> str:
@@ -875,7 +875,7 @@ async def _load_run(request: Request, run_id: str):
 
 
 def _progress_page(request: Request, run: dict, error: str | None = None):
-    return _page(
+    return wizard_page(
         request,
         _steps(5),
         auth_header(t("migration.progress_title", company=run.get("company_name", "")),
@@ -967,7 +967,7 @@ def migrations_routes(app) -> None:
         return resp
 
 
-def _register_wizard(app, mode: _Mode) -> None:
+def _register_wizard(app, mode: WizardMode) -> None:
     steps = (
         ("get", "", _choose_source), ("post", "/scan", _upload), ("post", "/sample", _sample),
         ("get", "/coverage", _coverage), ("get", "/mapping", _mapping),
@@ -977,7 +977,7 @@ def _register_wizard(app, mode: _Mode) -> None:
         getattr(app, method)(f"{mode.base}{suffix}")(_bind(handler, mode))
 
 
-def _bind(handler, mode: _Mode):
+def _bind(handler, mode: WizardMode):
     async def route(request: Request):
         return await handler(request, mode)
     route.__name__ = f"migrate_{mode.key}{handler.__name__}"
@@ -1002,11 +1002,11 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None):
     except APIError as e:
         if e.status != 409:
             return _run_error_page(request, str(e.detail))
-        return _page(request, _steps(6), auth_header(t("migration.verify_title")), flash(error) if error else "",
-                     P(str(e.detail), cls="form-hint"), _back(f"/migrations/{run_id}"))
+        return wizard_page(request, _steps(6), auth_header(t("migration.verify_title")), flash(error) if error else "",
+                     P(str(e.detail), cls="form-hint"), back_link(f"/migrations/{run_id}"))
     rows = recon.get("rows") or []
     lock_date = run.get("lock_date")
-    return _page(
+    return wizard_page(
         request,
         _steps(6),
         auth_header(t("migration.verify_title"), t("migration.verify_subtitle")),
@@ -1034,7 +1034,7 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None):
              method="post", action=f"/migrations/{run_id}/finalize", cls="auth-form mt-md"),
         P(A(t("migration.download_pack"), href=f"/migrations/{run_id}/pack", cls="auth-link")),
         P(A(t("migration.discard"), href=f"/migrations/{run_id}/discard", cls="auth-link")),
-        _back(f"/migrations/{run_id}"),
+        back_link(f"/migrations/{run_id}"),
     )
 
 
@@ -1044,7 +1044,7 @@ async def _complete_page(request: Request, run: dict):
     open_href = f"/switch-company/{run['company_id']}"
     open_company = A(t("migration.open_company"), href=open_href, cls="btn btn--primary btn--full")
     if run.get("is_sample"):
-        return _page(
+        return wizard_page(
             request,
             auth_header(t("migration.sample_done_title"), t("migration.sample_done_body")),
             pack,
@@ -1056,7 +1056,7 @@ async def _complete_page(request: Request, run: dict):
     except APIError:
         rows = []
     totals = [row for row in rows if row.get("check") in _TOTAL_CHECKS]
-    return _page(
+    return wizard_page(
         request,
         auth_header(t("migration.success_title"), run.get("company_name", "")),
         Table(
@@ -1067,6 +1067,8 @@ async def _complete_page(request: Request, run: dict):
         ) if totals else "",
         pack,
         open_company,
+        A(t("company_copy.make_title"), href=f"/company-copy?from_run={run_id}",
+          cls="btn btn--secondary btn--full mt-sm"),
         A(t("migration.move_another"), href=f"{COMPANY.base}?from_run={run_id}",
           cls="btn btn--secondary btn--full mt-sm"),
     )
@@ -1074,12 +1076,12 @@ async def _complete_page(request: Request, run: dict):
 
 def _discard_page(request: Request, run: dict, error: str | None = None):
     run_id = run["id"]
-    return _page(
+    return wizard_page(
         request,
         auth_header(t("migration.discard")),
         flash(error) if error else "",
         P(t("migration.discard_confirm", company=run.get("company_name", ""))),
         Form(Button(t("migration.discard"), type="submit", cls="btn btn--danger btn--full"),
              method="post", action=f"/migrations/{run_id}/discard", cls="auth-form"),
-        _back(f"/migrations/{run_id}"),
+        back_link(f"/migrations/{run_id}"),
     )

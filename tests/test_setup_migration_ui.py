@@ -732,6 +732,7 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     assert _link(complete, f"/switch-company/{company_id}", "Open company")
     assert not _link(complete, "/dashboard")
     assert _link(complete, f"/setup/new-company/migrate?from_run={run_id}", "Move another company")
+    assert _link(complete, f"/company-copy?from_run={run_id}", "Create independent company copy")
 
     r = await ui.get(f"/migrations/{run_id}/pack")
     assert r.status_code == 200
@@ -892,3 +893,44 @@ def test_cancel_offered_only_where_the_run_can_be_cancelled(status):
 
     shown = "/cancel" in to_xml(_run_actions({"id": "r1", "status": status}))
     assert shown == can_transition(MigrationStatus(status), MigrationStatus.CANCEL_REQUESTED)
+
+
+@pytest.mark.asyncio
+async def test_company_copy_from_run_copies_the_migrated_company(ui, router, fake_api):
+    """The copy button on a finished migration copies that run's company: the confirm
+    page names it without moving the session, and creating the copy moves to it."""
+    _owner(ui)
+    run_id = fake_api.add_run("completed")
+    run = fake_api.runs[run_id]
+    r = await ui.get(f"/company-copy?from_run={run_id}")
+    assert r.status_code == 200
+    page = _visible(r)
+    assert "Harbor Goods Ltd" in page and "Only this company is included." in page
+    assert _attr(_inputs(page, "prepared_by")[0], "value") == "Example Bookkeeping"
+    assert _link(page, f"/migrations/{run_id}/complete", "Cancel")
+    assert _cookie_header(r, "celerp_token") is None
+
+    switched = []
+
+    def switch(request):
+        switched.append(request.url.path)
+        return httpx.Response(200, json={"access_token": "moved-access", "refresh_token": "moved-refresh"})
+
+    router.overrides[("POST", f"/auth/switch-company/{run['company_id']}")] = switch
+    router.overrides[("POST", "/company-copies")] = _respond(
+        201, {"copy_id": "c0ffee", "company_name": "Harbor Goods Ltd", "handoff_id": str(uuid.uuid4())})
+    r = await ui.post("/company-copy", data={"run_id": run_id, "prepared_by": "Example Bookkeeping"})
+    assert r.status_code == 200
+    ready = _visible(r)
+    assert "Company copy ready." in ready and "Harbor Goods Ltd" in ready
+    assert _link(ready, "/company-copy/c0ffee/download", "Download copy")
+    assert switched == [f"/auth/switch-company/{run['company_id']}"]
+    assert _cookie_value(r, "celerp_token") == "moved-access"
+
+    router.overrides[("POST", "/company-copies")] = _respond(
+        409, {"detail": "This company has data in widgets that a company copy cannot carry yet. Nothing was copied."})
+    ui.cookies.clear()
+    _owner(ui)
+    r = await ui.post("/company-copy", data={"run_id": run_id, "prepared_by": ""})
+    assert "a company copy cannot carry yet" in _visible(r)
+    assert "Create company copy" in _visible(r)

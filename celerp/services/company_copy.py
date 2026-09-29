@@ -173,7 +173,7 @@ async def export_company(session: AsyncSession, company_id: uuid.UUID, dest: Pat
     manifest: dict = {
         "format": FORMAT, "format_version": FORMAT_VERSION, "scope": "company",
         "app_version": __version__, "created_at": datetime.now(timezone.utc).isoformat(),
-        "handoff_id": str(uuid.uuid4()), "prepared_by": (prepared_by or "").strip()[:200],
+        "handoff_id": str(uuid.uuid4()), "prepared_by": prepared_by or "",
         "company": {"id": str(company.id), "name": company.name, "settings": _copied_settings(company.settings)},
         "tables": {}, "attachments": {},
     }

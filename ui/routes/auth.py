@@ -642,6 +642,7 @@ def _setup_chooser(code_required: bool) -> FT:
         [
             choice_card(t("setup.card_new"), t("setup.card_new_desc"), href="/setup/fresh"),
             choice_card(t("setup.card_move"), t("setup.card_move_desc"), href=BOOTSTRAP.base),
+            choice_card(t("setup.card_open_copy"), t("setup.card_open_copy_desc"), href="/setup/open-copy"),
             sample,
             choice_card(t("setup.card_restore"), t("setup.card_restore_desc"), href="/setup/import-backup"),
         ],

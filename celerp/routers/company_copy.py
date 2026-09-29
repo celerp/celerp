@@ -29,6 +29,7 @@ from celerp.routers.auth import limiter
 from celerp.routers.migrations import ensure_not_bootstrapped, user_owner
 from celerp.services import bootstrap
 from celerp.services import company_copy as cc
+from celerp.services.migrations import MigrationError, validate_prepared_by
 from celerp.services.auth import MIN_PASSWORD_LENGTH, AuthContext, issue_token_pair, validate_password
 from celerp.services.provisioning import create_install_owner
 
@@ -70,11 +71,15 @@ class CopyIn(BaseModel):
 async def create_copy(payload: CopyIn, ctx: AuthContext = Depends(user_owner),
                       session: AsyncSession = Depends(get_session)):
     """Copy the company the session is on."""
+    try:
+        prepared_by = validate_prepared_by(payload.prepared_by)
+    except MigrationError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     _purge(_root())
     copy_id = uuid.uuid4().hex
     dest = _root() / str(ctx.company_id) / f"{copy_id}{cc.SUFFIX}"
     try:
-        manifest = await cc.export_company(session, ctx.company_id, dest, prepared_by=payload.prepared_by)
+        manifest = await cc.export_company(session, ctx.company_id, dest, prepared_by=prepared_by)
     except cc.CopyError as exc:
         return _error(exc)
     return {"copy_id": copy_id, "company_name": manifest["company"]["name"], "handoff_id": manifest["handoff_id"]}

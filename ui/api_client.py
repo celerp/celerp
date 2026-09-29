@@ -3563,3 +3563,46 @@ async def migration_pack(token: str, run_id: str):
     """GET the reconciliation pack CSV, streamed. Returns (chunk_iterator, headers)."""
     return await _stream_get(token, f"/migrations/{run_id}/reconciliation/pack",
                              timeout_message=TIMEOUT_MESSAGE)
+
+
+# ── Company copies ───────────────────────────────────────────────────────────
+
+async def company_copy_create(token: str, prepared_by: str | None) -> dict:
+    """Copy the session's company. Returns {"copy_id", "company_name", "handoff_id"}."""
+    async with _api_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
+        return _raise(await c.post("/company-copies", json={"prepared_by": prepared_by})).json()
+
+
+async def company_copy_download(token: str, copy_id: str):
+    """GET a company copy file, streamed. Returns (chunk_iterator, headers)."""
+    return await _stream_get(token, f"/company-copies/{copy_id}/download", timeout_message=TIMEOUT_MESSAGE)
+
+
+async def company_copy_read(token: str | None, filename: str, content: BinaryIO,
+                            setup_code: str | None = None) -> dict:
+    """Upload a company copy for checking. Returns the upload token and a preview."""
+    path = "/company-copies/read" if token else "/company-copies/bootstrap/read"
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True,
+                                 headers=None if token else _setup_code_headers(setup_code)) as c:
+            r = await c.post(path, files=[("file", (filename, content, "application/octet-stream"))])
+    return _raise(r).json()
+
+
+async def company_copy_open(token: str, upload_token: str) -> dict:
+    """Open an uploaded copy as a new company of the signed-in owner. Returns {"company_id", "company_name"}."""
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT) as c:
+            r = await c.post("/company-copies/open", json={"upload_token": upload_token})
+    return _raise(r).json()
+
+
+async def company_copy_bootstrap_open(upload_token: str, name: str, email: str, password: str,
+                                      setup_code: str | None = None) -> dict:
+    """Create the first owner and open an uploaded copy as their company. Returns tokens and the company."""
+    async with _local_error_mapping():
+        async with _local_client(None, timeout=_MIGRATION_UPLOAD_TIMEOUT, headers=_setup_code_headers(setup_code)) as c:
+            r = await c.post("/company-copies/bootstrap/open", json={
+                "upload_token": upload_token, "name": name, "email": email, "password": password,
+            })
+    return _raise(r).json()

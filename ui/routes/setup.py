@@ -270,6 +270,8 @@ def setup_routes(app):
                 [
                     choice_card(t("setup.card_fresh"), t("setup.card_new_desc"), href="/setup/new-company/fresh"),
                     choice_card(t("setup.card_move"), t("setup.card_move_desc"), href=COMPANY.base),
+                    choice_card(t("setup.card_open_copy"), t("setup.card_open_copy_desc"),
+                                href="/setup/new-company/open-copy"),
                 ],
                 back,
             ),
