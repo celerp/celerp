@@ -433,3 +433,68 @@ async def test_a_copy_racing_a_merge_never_names_the_merged_contact(_db_engine, 
         assert await _references(factory, company_id, "contact:A") == []
     finally:
         await _cleanup(factory, company_id, user_id)
+
+def _patcher(resource, entity_id, company_id, user_id, **payload):
+    from celerp_docs import routes
+
+    async def call(s):
+        fn = routes.patch_doc if resource == "docs" else routes.patch_list
+        await fn(entity_id, routes.DocPatch(**payload), company_id=company_id, _=None, role="owner",
+                 settings={}, user=types.SimpleNamespace(id=user_id), session=s)
+    return call
+
+
+_DRAFTS = {
+    "docs": ("doc:D-1", "doc", "doc.created",
+             {"doc_type": "invoice", "status": "draft", "currency": "USD", "ref_id": "D-1", "line_items": []}),
+    "lists": ("list:L-1", "list", "list.created",
+              {"list_type": "quotation", "status": "draft", "currency": "USD", "ref_id": "L-1", "line_items": []}),
+}
+
+
+async def _version(factory, company_id, entity_id) -> int:
+    from celerp.models.projections import Projection
+    async with factory() as s:
+        return (await s.get(Projection, {"company_id": company_id, "entity_id": entity_id})).version
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", ["docs", "lists"])
+async def test_a_different_body_sent_at_the_same_moment_with_one_key_is_refused(_db_engine, resource):
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user_id = await _company(factory)
+    entity_id = _DRAFTS[resource][0]
+    await _seed(factory, company_id, [_DRAFTS[resource]])
+    key = f"edit-{uuid.uuid4().hex}"
+    try:
+        waited, first, second = await _race(
+            factory,
+            _patcher(resource, entity_id, company_id, user_id, fields_changed=_fields(notes="first"), idempotency_key=key),
+            _patcher(resource, entity_id, company_id, user_id, fields_changed=_fields(notes="second"), idempotency_key=key),
+        )
+        assert (waited, first, second) == (True, 200, 409)
+    finally:
+        await _cleanup(factory, company_id, user_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", ["docs", "lists"])
+@pytest.mark.parametrize("keyed", [True, False], ids=["with-key", "without-key"])
+async def test_an_identical_versioned_edit_sent_at_the_same_moment_is_saved_once(_db_engine, resource, keyed):
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id, user_id = await _company(factory)
+    entity_id = _DRAFTS[resource][0]
+    await _seed(factory, company_id, [_DRAFTS[resource]])
+    payload = {"fields_changed": _fields(notes="once"),
+               "expected_version": await _version(factory, company_id, entity_id)}
+    if keyed:
+        payload["idempotency_key"] = f"edit-{uuid.uuid4().hex}"
+    try:
+        waited, first, second = await _race(
+            factory,
+            _patcher(resource, entity_id, company_id, user_id, **payload),
+            _patcher(resource, entity_id, company_id, user_id, **payload),
+        )
+        assert (waited, first, second) == (True, 200, 200)
+    finally:
+        await _cleanup(factory, company_id, user_id)

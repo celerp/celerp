@@ -220,6 +220,15 @@ def _patch_replay(replay, event_type: str, entity_id: str, digest: str) -> dict:
     return {"event_id": done["event_id"], "version": done["version"]}
 
 
+async def _find_patch_replay(session: AsyncSession, company_id, idem_key: str | None,
+                             event_type: str, entity_id: str, digest: str) -> dict | None:
+    """The result of an earlier save of this same patch, or None when there was none."""
+    if not idem_key:
+        return None
+    replay = await find_event_by_idempotency(session, company_id, idem_key)
+    return None if replay is None else _patch_replay(replay, event_type, entity_id, digest)
+
+
 def _created_as_draft(v):
     if v != "draft":
         raise ValueError(
@@ -1683,10 +1692,8 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     if selecting and "line_items" in fields_changed:
         raise HTTPException(status_code=422, detail="Change the contact and the line items in separate saves.")
     digest, idem_key = _patch_identity("doc", entity_id, payload)
-    if idem_key:
-        replay = await find_event_by_idempotency(session, company_id, idem_key)
-        if replay is not None:
-            return _patch_replay(replay, "doc.updated", entity_id, digest)
+    if (done := await _find_patch_replay(session, company_id, idem_key, "doc.updated", entity_id, digest)) is not None:
+        return done
     # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
     _FINALIZED_EDITABLE_FIELDS = {
         "description", "customer_note", "internal_note",
@@ -1701,6 +1708,8 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     contact = await _lock_selected_contact(session, company_id, settings, role, new_contact_id) if selecting else None
     # Locked load so the version check and the emit are one compare-and-set, as for lists.
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    if (done := await _find_patch_replay(session, company_id, idem_key, "doc.updated", entity_id, digest)) is not None:
+        return done
     if payload.expected_version is not None and row.version != payload.expected_version:
         raise HTTPException(status_code=409, detail="This document was changed by someone else; reload to get the latest before saving")
     if selecting:
@@ -1831,6 +1840,8 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=idem_key or str(uuid.uuid4()), metadata_={"request": digest},
     )
+    if getattr(entry, "was_deduped", False):
+        return _patch_replay(entry, "doc.updated", entity_id, digest)
     await session.commit()
     # entry.id is the document's new version, so the client's next versioned write pins
     # exactly the state this patch produced, as patch_list does.
@@ -4946,16 +4957,16 @@ async def patch_list(
     if selecting and "line_items" in fields_changed:
         raise HTTPException(status_code=422, detail="Change the customer and the line items in separate saves.")
     digest, idem_key = _patch_identity("list", entity_id, payload)
-    if idem_key:
-        replay = await find_event_by_idempotency(session, company_id, idem_key)
-        if replay is not None:
-            return _patch_replay(replay, "list.updated", entity_id, digest)
+    if (done := await _find_patch_replay(session, company_id, idem_key, "list.updated", entity_id, digest)) is not None:
+        return done
     # The selected contact is locked before the List, the order merge and delete use.
     contact = await _lock_selected_contact(session, company_id, settings, role, new_contact_id) if selecting else None
     # Locked load so the version check and the emit are one atomic compare-and-set: two concurrent
     # patches cannot both read version N, both pass the check, and both write (the second clobbering
     # the first). The second waits, re-reads the advanced version, and its stale expected_version fails.
     row = await _get_list_for_update(session, company_id, entity_id)
+    if (done := await _find_patch_replay(session, company_id, idem_key, "list.updated", entity_id, digest)) is not None:
+        return done
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
     # Replacing line_items is a read-modify-write over the whole array: two concurrent editors (or a
@@ -5003,6 +5014,8 @@ async def patch_list(
     # expected_version is a concurrency guard, not list data - it never enters the event payload.
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
                              {"fields_changed": fields_changed}, user, idem_key, meta={"request": digest})
+    if getattr(entry, "was_deduped", False):
+        return _patch_replay(entry, "list.updated", entity_id, digest)
     await session.commit()
     # entry.id is the list's new version (the projection version tracks the latest entry id), so the
     # client refreshes its cached version from here and its next save pins the value it just wrote.
