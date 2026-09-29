@@ -42,7 +42,7 @@ SOURCE_SYSTEM = "manager_io"
 ZERO = Decimal(0)
 # Journal parts of the ledger, and the source id suffix each part's journal carries.
 JOURNAL_PARTS = {"journal": "", "fallback": ":journal"}
-FALLBACK_NARRATION = "Lines of this record that do not settle a customer or supplier balance."
+FALLBACK_NARRATION = "Lines of this record that settle no invoice or bill."
 
 
 def _src(source_type: str, key: str, ref: str | None = None) -> dict:

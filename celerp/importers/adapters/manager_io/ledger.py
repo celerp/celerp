@@ -155,8 +155,7 @@ def _states(book: Book, keys: set[str]) -> dict[str, DocumentState]:
     for key in keys:
         if key in book.settlements:
             for line in book.settlements[key].party_lines:
-                if line.document:
-                    paid[line.document] += line.net
+                paid[line.document] += line.net
         elif key in book.documents and book.documents[key].applies_to:
             note = book.documents[key]
             paid[note.applies_to] += note.total
@@ -199,7 +198,7 @@ def _carried(book: Book, records: set[str], cutover: date) -> set[str]:
     carried = {k for k, state in _states(book, pre).items() if state.amount_outstanding != 0}
     for key in records - pre:
         if key in book.settlements:
-            carried |= {ln.document for ln in book.settlements[key].party_lines if ln.document}
+            carried |= {ln.document for ln in book.settlements[key].party_lines}
         elif key in book.documents and book.documents[key].applies_to:
             carried.add(book.documents[key].applies_to)
     carried &= pre
@@ -227,7 +226,7 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
             lines = [ln for ln in lines if ln.document in imported]
         if lines:
             ledger.settlement_amounts[key] = sum((ln.net for ln in lines), ZERO)
-            ledger.allocations[key] = [(ln.document, ln.net) for ln in lines if ln.document]
+            ledger.allocations[key] = [(ln.document, ln.net) for ln in lines]
 
     if cutover is not None:
         imported_postings = ledger.imported_postings()

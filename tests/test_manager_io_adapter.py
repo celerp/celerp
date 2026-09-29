@@ -506,3 +506,79 @@ def test_manifest_refuses_a_mapped_record_it_does_not_carry(monkeypatch):
     monkeypatch.setattr(mappings, "_transfers", lambda book, ledger: [])
     with pytest.raises(ScanError, match="InterAccountTransfer"):
         adapter().build_manifest([artifact(BASIC)], FULL)
+
+
+# ── Settlement lines with no document ─────────────────────────────────────────
+# A customer or supplier line that names a document settles it; one that names only the
+# contact is money on account, carried in the settlement's journal fallback with the
+# contact on the receivable or payable line and the bank on the other side.
+
+def _settlement_file(tmp_path, kind: str, lines: list[tuple[str | None, str]]) -> Path:
+    """Masters, one invoice or bill of 110, and one receipt or payment of the given
+    (document label or None, amount) lines."""
+    ca, sa, opb = specs.k("CA"), specs.k("SA"), specs.k("OPB")
+    if kind == "Receipt":
+        doc = specs.obj("SalesInvoice", "DOC", {1: date(2026, 1, 10), 2: "INV-1", 3: ca, 49: [
+            {2: specs.k("S1"), 17: "Consulting", 18: Decimal("1"), 19: Decimal("100"), 21: specs.k("VAT")}]})
+        raw = [{2: specs.AR, 3: ca, 18: Decimal(amount), **({4: specs.k(d)} if d else {})} for d, amount in lines]
+        record = specs.obj("Receipt", "SET", {1: date(2026, 1, 20), 2: "R-1", 3: specs.PAID_BY_CUSTOMER, 4: ca,
+                                             7: opb, 11: raw})
+    else:
+        doc = specs.obj("PurchaseInvoice", "DOC", {1: date(2026, 1, 10), 2: "BILL-1", 3: sa, 23: [
+            {2: specs.k("OFF"), 17: "Supplies", 18: Decimal("1"), 19: Decimal("100"), 21: specs.k("VAT")}]})
+        raw = [{2: specs.AP, 7: sa, 18: Decimal(amount), **({8: specs.k(d)} if d else {})} for d, amount in lines]
+        record = specs.obj("Payment", "SET", {1: date(2026, 1, 20), 2: "P-1", 3: specs.PAID_BY_SUPPLIER, 5: sa,
+                                             7: opb, 11: raw})
+    return write_manager_file(tmp_path / "settlement.manager", [
+        *specs.masters(), specs.funding("JE0", "JE-0", date(2026, 1, 2), Decimal("500")), doc, record])
+
+
+def _bank_and_party(manifest, kind: str) -> tuple[Decimal, Decimal]:
+    """The bank and customer or supplier movement the bundle carries for the settlement."""
+    party = ref("@BalanceSheetAccountsReceivableAccount" if kind == "Receipt" else "@BalanceSheetAccountsPayableAccount")
+    sign = 1 if kind == "Receipt" else -1
+    bank = party_total = Decimal(0)
+    for s in manifest.bundle.settlements:
+        bank += sign * s.amount
+        party_total -= sign * s.amount
+    for j in manifest.bundle.journals:
+        if j.source_external_id != f"{ref('SET')}:journal":
+            continue
+        for line in j.lines:
+            if line.account_external_id == ref("OPB"):
+                bank += line.debit - line.credit
+            if line.account_external_id == party:
+                party_total += line.debit - line.credit
+                assert line.contact_external_id == ref("CA" if kind == "Receipt" else "SA")
+    return bank, party_total
+
+
+@pytest.mark.parametrize("kind", ["Receipt", "Payment"])
+@pytest.mark.parametrize("lines, settled, on_account", [
+    ([("DOC", "110")], "110", "0"),
+    ([(None, "50")], "0", "50"),
+    ([("DOC", "60"), (None, "40")], "60", "40"),
+], ids=["allocated", "on_account", "mixed"])
+def test_settlement_on_account_lines_are_a_contact_journal(tmp_path, kind, lines, settled, on_account):
+    manifest = adapter().build_manifest([artifact(_settlement_file(tmp_path, kind, lines))], FULL)
+    settled, on_account = Decimal(settled), Decimal(on_account)
+    settlements = [s for s in manifest.bundle.settlements if s.source_external_id == ref("SET")]
+    fallback = [j for j in manifest.bundle.journals if j.source_external_id == f"{ref('SET')}:journal"]
+    if settled:
+        (s,) = settlements
+        assert s.amount == settled
+        assert [(a.document_external_id, a.amount) for a in s.allocations] == [(ref("DOC"), settled)]
+    else:
+        assert settlements == []
+    assert len(fallback) == (1 if on_account else 0)
+    # The source bank and customer or supplier movement, represented once across both.
+    sign = 1 if kind == "Receipt" else -1
+    assert _bank_and_party(manifest, kind) == (sign * (settled + on_account), -sign * (settled + on_account))
+    coverage = _coverage(manifest)
+    if on_account:
+        count, klass, note = coverage[f"{kind} (journal fallback)"]
+        assert (count, klass) == (1, CoverageClass.MAPPED_WITH_LOSS)
+        assert "on account" in note
+        assert all(klass != CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER for _, klass, _ in coverage.values())
+    else:
+        assert f"{kind} (journal fallback)" not in coverage

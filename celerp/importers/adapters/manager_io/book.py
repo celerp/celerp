@@ -201,8 +201,8 @@ class Settlement:
     bank: str
     currency: str | None
     description: str | None
-    party_lines: list[Line]                    # receivable lines of a receipt, payable lines of a payment
-    other_lines: list[Line]                    # everything else: kept as a journal
+    party_lines: list[Line]                    # receivable or payable lines that settle a document
+    other_lines: list[Line]                    # everything else, money on account included: kept as a journal
     include_tax: bool = True
 
     @property
@@ -457,7 +457,7 @@ def _settlement(source_type: str, key: str, m: Message) -> Settlement:
             line.contact, line.document = _ref(raw.guid(contact_field)), _ref(raw.guid(doc_field))
             if raw.values(20):
                 raise Blocked("unsupported feature", "A tax code on a customer or supplier balance line.")
-            party.append(line)
+            (party if line.document else other).append(line)
             continue
         if account == other_party[0]:
             if raw.values(other_party[2]):
@@ -640,10 +640,9 @@ def _resolve_settlement(book: Book, s: Settlement) -> None:
         _check(contact is not None and contact.source_type == wanted, f"a {wanted.lower()}")
         if contact.currency != s.currency:
             raise Blocked("currency mismatch", "The settlement currency differs from the contact's currency.")
-        if line.document:
-            doc = book.documents.get(line.document)
-            _check(doc is not None and doc.source_type == wanted_doc and doc.contact == line.contact,
-                   "the document it settles")
+        doc = book.documents.get(line.document)
+        _check(doc is not None and doc.source_type == wanted_doc and doc.contact == line.contact,
+               "the document it settles")
     for line in s.other_lines:
         _check(line.account in book.accounts, "an account")
         if line.account in (AR, AP):
@@ -736,13 +735,14 @@ def _resolve(book: Book) -> None:
 
 
 def _receipt_verdicts(book: Book) -> None:
-    """A settlement with lines other than customer or supplier balances keeps them as a journal."""
+    """A settlement with lines that settle no document keeps them as a journal."""
     for key, s in book.settlements.items():
         if book.is_blocked(key) or not s.other_lines:
             continue
         book.accept(s.source_type, key, label=f"{s.source_type} (journal fallback)",
                     klass=CoverageClass.MAPPED_WITH_LOSS, target="journal",
-                    note="Lines not settling a customer or supplier balance are carried as a journal entry.")
+                    note="Lines that settle no invoice or bill, money on account included, are carried as a "
+                         "journal entry naming the customer or supplier.")
 
 
 def read_book(reader: ManagerReader) -> Book:

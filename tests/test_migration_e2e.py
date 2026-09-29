@@ -223,14 +223,16 @@ async def test_source_financial_effect_has_exactly_one_representation(
     journal_sources = {m.source_external_id.removesuffix(":journal")
                        for m in financial if m.target_entity_type == "journal_entry"}
     assert doc_sources.isdisjoint(journal_sources)
-    # The split lines of a receipt or payment never touch the balances its settlement posts.
+    # A receipt or payment line kept in its journal fallback that posts to a customer or
+    # supplier balance names that customer or supplier, so it reaches their statement.
     control_accounts = {m.target_entity_id for m in maps
                         if m.source_type in ("BalanceSheetAccountsReceivableAccount",
                                              "BalanceSheetAccountsPayableAccount")}
     entries = await _projections(real_engine, run, "journal_entry")
     for m in fallbacks:
         if m.source_external_id.endswith(":journal"):
-            assert {e["account"] for e in entries[m.target_entity_id]["entries"]}.isdisjoint(control_accounts)
+            for e in entries[m.target_entity_id]["entries"]:
+                assert e["account"] not in control_accounts or e.get("contact"), e
     for m in fallbacks:
         assert ((m.source_type, "mapped_with_loss") in coverage
                 or (f"{m.source_type} (journal fallback)", "mapped_with_loss") in coverage), m.source_type
@@ -305,6 +307,59 @@ async def test_manager_cutover_reconciles_synthetic_fixture(real_engine, monkeyp
     held = {(r["check"], r["key"], r["currency"]): r["celerp"] for r in run.reconciliation["rows"]}
     expected = {(check, key, currency): figure for check, key, currency, figure in expected_rows(fixture, "USD")}
     assert {row: Decimal(held[row]) if held.get(row) is not None else None for row in expected} == expected
+
+
+async def test_manager_on_account_money_reaches_the_customer_statement(real_engine, monkeypatch, tmp_path):
+    """A receipt line naming only the customer is money on account: it lands once, as a journal
+    with the customer on the receivable line, and never as a payment on a document. A mixed
+    receipt pays its invoice with the allocated part and carries the rest the same way."""
+    from datetime import date
+    from decimal import Decimal as D
+
+    from celerp_accounting.routes import statement_of_account
+    from fixtures.manager_io import specs
+    from fixtures.manager_io.encoder import write_manager_file
+    from fixtures.manager_io.support import ref
+
+    ca, opb = specs.k("CA"), specs.k("OPB")
+    source = write_manager_file(tmp_path / "on-account.manager", [
+        *specs.masters(), specs.funding("JE0", "JE-0", date(2026, 1, 2), D("500")),
+        specs.obj("SalesInvoice", "INVX", {1: date(2026, 1, 10), 2: "INV-X", 3: ca, 49: [
+            {2: specs.k("S1"), 17: "Consulting", 18: D("1"), 19: D("100"), 21: specs.k("VAT")}]}),
+        specs.obj("Receipt", "RX", {1: date(2026, 1, 20), 2: "R-X", 3: specs.PAID_BY_CUSTOMER, 4: ca, 7: opb, 11: [
+            {2: specs.AR, 3: ca, 4: specs.k("INVX"), 18: D("60")}, {2: specs.AR, 3: ca, 18: D("40")}]}),
+        specs.obj("Receipt", "RY", {1: date(2026, 1, 25), 2: "R-Y", 3: specs.PAID_BY_CUSTOMER, 4: ca, 7: opb, 11: [
+            {2: specs.AR, 3: ca, 18: D("25")}]}),
+    ])
+    run, rejected = await migrate(real_engine, source.read_bytes(), source.name, {"mode": "full_history"},
+                                  monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    maps = {(m.source_external_id, m.target_entity_type): m.target_entity_id for m in await _maps(real_engine, run)}
+    mapped = {source for source, _ in maps}
+    customer = maps[(ref("CA"), "contact")]
+    ar = maps[(ref("@BalanceSheetAccountsReceivableAccount"), "account")]
+
+    # The allocated part pays the invoice; nothing on account reaches a document.
+    assert ref("RX") in mapped and ref("RY") not in mapped
+    invoice = (await _projections(real_engine, run, "doc"))[maps[(ref("INVX"), "doc")]]
+    assert (D(str(invoice["amount_paid"])), D(str(invoice["amount_outstanding"]))) == (D("60"), D("50"))
+    # The on-account money is one contact-tagged journal per receipt, the bank on the other side.
+    entries = await _projections(real_engine, run, "journal_entry")
+    for receipt, amount in (("RX", D("40")), ("RY", D("25"))):
+        lines = entries[maps[(f"{ref(receipt)}:journal", "journal_entry")]]["entries"]
+        on_account = [e for e in lines if e["account"] == ar]
+        assert [(e.get("contact"), D(str(e["credit"]))) for e in on_account] == [(customer, amount)]
+        assert sum(D(str(e["debit"])) - D(str(e["credit"])) for e in lines if e["account"] != ar) == amount
+
+    # Bank, receivable control and the customer's statement all read the source position.
+    held = {(r["check"], r["key"]): D(r["celerp"]) for r in run.reconciliation["rows"] if r["celerp"] is not None}
+    assert held[("ar_by_customer", ref("CA"))] == D("-15")
+    assert held[("ar_control", ref("@BalanceSheetAccountsReceivableAccount"))] == D("-15")
+    assert held[("bank_cash", ref("OPB"))] == D("625")
+    async with maker(real_engine)() as s:
+        statement = await statement_of_account(customer, company_id=run.company_id, _=None, session=s)
+    assert D(str(statement["closing_balance"])) == D("-15")
 
 
 async def test_sample_migration_finalizes_and_reconciles(real_engine, monkeypatch, tmp_path):
