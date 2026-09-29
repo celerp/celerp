@@ -357,7 +357,7 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
                 status_code=422,
                 detail="Business type is set through POST /companies/me/business-type, not company settings",
             )
-        merged ={**(company.settings or {}), **payload.settings}
+        merged = {**(company.settings or {}), **payload.settings}
         if "timezone" in payload.settings:
             try:
                 business_timezone(payload.settings.get("timezone"))

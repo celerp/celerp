@@ -210,7 +210,7 @@ async def lifespan(_app: FastAPI):
         if _enabled_env:
             _enabled: set[str] = set(_enabled_env.split(","))
         else:
-            # Fall back to config.toml (written by setup wizard apply-preset)
+            # Fall back to the module list saved in config.toml.
             _cfg = _read_config()
             _enabled = set(_cfg.get("modules", {}).get("enabled") or [])
         if _enabled:

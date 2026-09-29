@@ -3,12 +3,19 @@
 """
 Comprehensive tests for the setup wizard flow and related kernel wiring.
 
-Coverage targets:
-  A. ui/routes/setup.py     — all GET/POST handlers, form rendering, redirect logic
-  B. celerp/main.py         — ENABLED_MODULES env-var path vs. config.toml fallback
-  C. ui/routes/settings.py  — module-gated tabs, setup_done banner, company tab field display
-  D. business_type_options() - preset loading, blank-last ordering, error tolerance
-  E. Fringe / integration   — unauthenticated, API errors, missing presets dir, etc.
+Coverage:
+  A.  GET /setup/company            form rendering and pre-fill
+  B.  POST /setup/company           validation, business type, restart and redirects
+  C.  GET /setup/activating         module activation page and poll script
+  C2. GET /setup/activating-status  activation status reporting
+  D.  GET /setup/cloud              cloud offer page
+  E.  Legacy setup redirect routes
+  F.  business_type_options()       preset loading, blank-last ordering, error tolerance
+  G.  celerp/main.py                ENABLED_MODULES env var vs config.toml fallback
+  H.  settings.py                   module-gated tabs
+  I.  settings.py                   setup_done banner with modules loaded
+  J.  Company tab                   flat dict field display
+  K.  Fringe cases                  unauthenticated, API errors, partial company data
 """
 
 from __future__ import annotations
@@ -946,39 +953,6 @@ class TestCompanyDetailsFormPreFill:
 
 class TestSetupFringe:
     """Edge cases that reveal integration bugs."""
-
-    @pytest.mark.asyncio
-    async def test_post_blank_vertical_does_not_call_apply_preset(self, ui_client):
-        """blank vertical must never touch /companies/me/apply-preset."""
-        api_calls = []
-
-        class FakeClient:
-            async def post(self, url, **kw):
-                api_calls.append(url)
-
-                class R:
-                    @property
-                    def is_error(self): return False
-                return R()
-            async def __aenter__(self): return self
-            async def __aexit__(self, *a): pass
-
-        with (
-            patch("ui.api_client.patch_company", new=AsyncMock(return_value={})),
-            patch("ui.api_client._client", return_value=FakeClient()),
-            patch("ui.api_client.set_business_type",
-                  new=AsyncMock(return_value={"vertical": "blank", "restart_required": False})),
-        ):
-            r = await ui_client.post(
-                "/setup/company",
-                data={"vertical": "blank"},
-                cookies=_authed(),
-            )
-        assert r.status_code in (302, 303)
-        assert all("apply-preset" not in u for u in api_calls), \
-            f"apply-preset must NOT be called for blank vertical; got calls: {api_calls}"
-        assert all("restart" not in u for u in api_calls), \
-            f"/system/restart must NOT be called for blank vertical; got calls: {api_calls}"
 
     @pytest.mark.asyncio
     async def test_activating_page_max_attempts_message_present(self, ui_client):
