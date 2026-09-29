@@ -3138,7 +3138,7 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
             form = await request.form()
-            location_id = str(form.get("location_id", "") or form.get("location_name", "")).strip()
+            location_id = str(form.get("location_id", "")).strip()
             notes = str(form.get("notes", "")).strip() or None
             received_items = []
             idx = 0
@@ -3150,9 +3150,11 @@ celerpUpdateBulkAlloc();
                     qty = float(str(form.get(f"qty_{idx}", "0")))
                 except ValueError:
                     qty = 0.0
-                receive_as = str(form.get(f"receive_as_{idx}", "stock")).strip() or "stock"
+                receive_as = str(form.get(f"receive_as_{idx}", "")).strip()
                 if qty > 0:
-                    item = {"po_line_index": idx, "quantity_received": qty, "receive_as": receive_as}
+                    item = {"po_line_index": idx, "quantity_received": qty}
+                    if receive_as:
+                        item["receive_as"] = receive_as
                     if item_id:
                         item["item_id"] = item_id
                     if sku:
@@ -5838,15 +5840,12 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                     Input(type="hidden", name=f"item_id_{i}", value=li.get("entity_id") or li.get("item_id") or ""),
                     Input(type="hidden", name=f"sku_{i}", value=li.get("sku") or ""),
                     Input(type="hidden", name=f"name_{i}", value=li.get("description") or li.get("name") or li.get("sku") or ""),
-                    Input(type="hidden", name=f"receive_as_{i}", value=li.get("receive_as") or "stock"),
+                    Input(type="hidden", name=f"receive_as_{i}", value=li.get("receive_as") or ""),
                     Input(type="hidden", name=f"qty_{i}", value=str(float(li.get("quantity") or 0))),
                 ]
-            loc_opts = [Option(loc.get("name", ""), value=loc.get("name", "")) for loc in (locations or [])]
-            loc_el = (
-                Select(*loc_opts, name="location_name", cls="form-input form-input--sm", id="li-bulk-location")
-                if loc_opts else
-                Input(type="text", name="location_name", placeholder=t("documents.location_optional"), cls="form-input form-input--sm", id="li-bulk-location")
-            )
+            loc_opts = [Option(loc.get("name", ""), value=loc.get("id", "")) for loc in (locations or [])]
+            loc_el = (Select(*loc_opts, name="location_id", cls="form-input form-input--sm", id="li-bulk-location")
+                      if loc_opts else "")
             children += [
                 Form(
                     *line_inputs,

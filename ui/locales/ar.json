@@ -2202,7 +2202,6 @@
   "documents.line_item_not_found": "لم يتم العثور على البند.",
   "documents.list_not_found": "لم يتم العثور على القائمة",
   "documents.list_ref": "القائمة {ref}",
-  "documents.location_optional": "الموقع (اختياري)",
   "documents.lookup_error": "خطأ في البحث",
   "documents.mark_as_scanned": "وضع علامة «تم المسح الضوئي»",
   "documents.memo_ref": "مذكرة {ref}",

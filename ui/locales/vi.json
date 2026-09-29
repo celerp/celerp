@@ -2202,7 +2202,6 @@
   "documents.line_item_not_found": "Không tìm thấy mục hàng.",
   "documents.list_not_found": "Không tìm thấy danh sách",
   "documents.list_ref": "Danh sách {ref}",
-  "documents.location_optional": "Vị trí (tùy chọn)",
   "documents.lookup_error": "Lỗi tra cứu",
   "documents.mark_as_scanned": "Đánh dấu là đã quét",
   "documents.memo_ref": "Ghi chú {ref}",

@@ -2202,7 +2202,6 @@
   "documents.line_item_not_found": "Item da linha não encontrado.",
   "documents.list_not_found": "Lista não encontrada",
   "documents.list_ref": "Lista {ref}",
-  "documents.location_optional": "Localização (opcional)",
   "documents.lookup_error": "Erro de pesquisa",
   "documents.mark_as_scanned": "Marcar como digitalizado",
   "documents.memo_ref": "Memorando {ref}",

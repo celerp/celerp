@@ -2202,7 +2202,6 @@
   "documents.line_item_not_found": "ไม่พบรายการสินค้า",
   "documents.list_not_found": "ไม่พบรายการ",
   "documents.list_ref": "รายการ {ref}",
-  "documents.location_optional": "สถานที่ (ไม่บังคับ)",
   "documents.lookup_error": "ข้อผิดพลาดในการค้นหา",
   "documents.mark_as_scanned": "ทำเครื่องหมายว่าสแกนแล้ว",
   "documents.memo_ref": "ใบยืม {ref}",

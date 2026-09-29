@@ -2306,7 +2306,6 @@
   "documents.line_item_not_found": "መስመር ዕቃ አልተገኘም።",
   "documents.list_not_found": "ዝርዝር አልተገኘም",
   "documents.list_ref": "ዝርዝር {ref}",
-  "documents.location_optional": "ቦታ (አማራጭ)",
   "documents.lookup_error": "የመፈለጊያ ስህተት",
   "documents.mark_as_scanned": "እንደተቃኘ ምልክት ያድርጉ",
   "documents.memo_ref": "ማስታወሻ {ref}",

@@ -2325,7 +2325,6 @@
   "documents.line_item_not_found": "Line item not found.",
   "documents.list_not_found": "List not found",
   "documents.list_ref": "List {ref}",
-  "documents.location_optional": "Location (optional)",
   "documents.lookup_error": "Lookup error",
   "documents.mark_as_scanned": "Mark as scanned",
   "documents.memo_ref": "Memo {ref}",

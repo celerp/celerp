@@ -2202,7 +2202,6 @@
   "documents.line_item_not_found": "No se ha encontrado la partida.",
   "documents.list_not_found": "Lista no encontrada",
   "documents.list_ref": "Lista {ref}",
-  "documents.location_optional": "Ubicación (opcional)",
   "documents.lookup_error": "Error de búsqueda",
   "documents.mark_as_scanned": "Marcar como escaneado",
   "documents.memo_ref": "Nota: {ref}",

@@ -2203,7 +2203,6 @@
   "documents.line_item_not_found": "Riga non trovata.",
   "documents.list_not_found": "Elenco non trovato",
   "documents.list_ref": "Elenco {ref}",
-  "documents.location_optional": "Ubicazione (facoltativo)",
   "documents.lookup_error": "Errore di ricerca",
   "documents.mark_as_scanned": "Contrassegna come scansionato",
   "documents.memo_ref": "Memo {ref}",

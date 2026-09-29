@@ -2202,7 +2202,6 @@
   "documents.line_item_not_found": "明細が見つかりません。",
   "documents.list_not_found": "リストが見つかりません",
   "documents.list_ref": "リスト {ref}",
-  "documents.location_optional": "場所（任意）",
   "documents.lookup_error": "検索エラー",
   "documents.mark_as_scanned": "スキャン済みとしてマーク",
   "documents.memo_ref": "メモ {ref}",

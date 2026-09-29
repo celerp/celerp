@@ -17182,9 +17182,10 @@ class TestInboundReceiveToolbar:
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
         doc = self._make_bill_final()
-        locations = [{"name": "Warehouse A"}, {"name": "Store B"}]
+        locations = [{"id": "loc-a", "name": "Warehouse A"}, {"id": "loc-b", "name": "Store B"}]
         html = to_xml(_doc_detail(doc, locations=locations, item_status_map={}))
-        assert "location_name" in html, "Toolbar form must include location_name field"
+        assert 'name="location_id"' in html
+        assert '<option value="loc-a">Warehouse A</option>' in html
 
     def test_collapsible_receive_form_absent_on_bill(self):
         """The old collapsible 'Record Receipt' form must not appear on bill detail."""

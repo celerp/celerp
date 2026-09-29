@@ -2203,7 +2203,6 @@
   "documents.line_item_not_found": "Einzelposten nicht gefunden.",
   "documents.list_not_found": "Liste nicht gefunden",
   "documents.list_ref": "Liste {ref}",
-  "documents.location_optional": "Lagerort (optional)",
   "documents.lookup_error": "Suchfehler",
   "documents.mark_as_scanned": "Als gescannt markieren",
   "documents.memo_ref": "Vermerk {ref}",

@@ -2202,7 +2202,6 @@
   "documents.line_item_not_found": "Item baris tidak ditemukan.",
   "documents.list_not_found": "Daftar tidak ditemukan",
   "documents.list_ref": "Daftar {ref}",
-  "documents.location_optional": "Lokasi (opsional)",
   "documents.lookup_error": "Kesalahan pencarian",
   "documents.mark_as_scanned": "Tandai sebagai telah dipindai",
   "documents.memo_ref": "Catatan {ref}",
