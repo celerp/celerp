@@ -138,7 +138,7 @@ class TestInstanceIdentityFirstBoot:
 # ---------------------------------------------------------------------------
 
 class TestAutoActivateProbe:
-    """Startup is observational unless a durable verifier proves interrupted recovery."""
+    """Startup check-in and pending activation."""
 
     @staticmethod
     def _prepare(tmp_path, monkeypatch):
@@ -179,7 +179,7 @@ class TestAutoActivateProbe:
         assert _json.loads(route.calls[0].request.content)["first_boot"] is False
 
     @respx.mock
-    async def test_checkin_retries_transport_failure_and_never_activates(self, tmp_path, monkeypatch):
+    async def test_checkin_transport_failure_never_activates(self, tmp_path, monkeypatch):
         self._prepare(tmp_path, monkeypatch)
         checkin = respx.post("https://relay.test/auth/checkin")
         checkin.side_effect = httpx.ConnectError("offline")
@@ -192,7 +192,7 @@ class TestAutoActivateProbe:
         assert activate.call_count == 0
 
     @respx.mock
-    async def test_checkin_recovers_after_transient_failure(self, tmp_path, monkeypatch):
+    async def test_checkin_succeeds_after_transient_failure(self, tmp_path, monkeypatch):
         self._prepare(tmp_path, monkeypatch)
         checkin = respx.post("https://relay.test/auth/checkin")
         checkin.side_effect = [
@@ -206,7 +206,24 @@ class TestAutoActivateProbe:
         assert _json.loads(checkin.calls[1].request.content)["first_boot"] is True
 
     @respx.mock
-    async def test_checkin_http_error_is_not_retried(self, tmp_path, monkeypatch):
+    async def test_checkin_sends_one_boot_id_per_process(self, tmp_path, monkeypatch):
+        self._prepare(tmp_path, monkeypatch)
+        checkin = respx.post("https://relay.test/auth/checkin")
+        checkin.side_effect = [
+            httpx.ConnectError("offline"),
+            httpx.Response(200, json={"ok": True}),
+            httpx.Response(200, json={"ok": True}),
+        ]
+        from celerp.main import _try_auto_activate
+        await _try_auto_activate()
+        await _try_auto_activate()
+        import json as _json
+        ids = {_json.loads(c.request.content).get("boot_id") for c in checkin.calls}
+        assert len(checkin.calls) == 3
+        assert len(ids) == 1 and None not in ids and "" not in ids
+
+    @respx.mock
+    async def test_checkin_http_error_is_sent_once(self, tmp_path, monkeypatch):
         self._prepare(tmp_path, monkeypatch)
         checkin = respx.post("https://relay.test/auth/checkin").respond(500)
         from celerp.main import _try_auto_activate
@@ -507,7 +524,7 @@ def test_instance_identity_and_verifier_converge_across_processes(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# First-boot marker - evaluated per process, before anything writes identity
+# Startup check-in, one fresh process per launch
 # ---------------------------------------------------------------------------
 
 _BOOT_PROBE = """
@@ -516,12 +533,13 @@ import celerp.main as m
 with respx.mock:
     route = respx.post("https://relay.test/auth/checkin").respond(200, json={})
     asyncio.run(m._try_auto_activate())
-    print(json.loads(route.calls[0].request.content)["first_boot"])
+    body = json.loads(route.calls[0].request.content)
+    print(body["first_boot"], body.get("boot_id"))
 """
 
 
-def _boot_first_boot_flag(cfg_file) -> str:
-    """Import celerp.main in a fresh process and return the first_boot it sends."""
+def _boot_checkin(cfg_file) -> tuple[str, str]:
+    """Import celerp.main in a fresh process and return (first_boot, boot_id) it sends."""
     import os
     import subprocess
     import sys
@@ -532,20 +550,26 @@ def _boot_first_boot_flag(cfg_file) -> str:
     out = subprocess.run([sys.executable, "-c", _BOOT_PROBE], env=env,
                          capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stderr[-2000:]
-    return out.stdout.strip().splitlines()[-1]
+    first_boot, boot_id = out.stdout.strip().splitlines()[-1].split()
+    return first_boot, boot_id
 
 
 class TestFirstBootMarker:
-    """The relay counts installs from the startup check-in. Importing the app
-    mints the instance id, so the marker must be taken before that happens."""
+    """What a fresh process reports in its startup check-in."""
 
     def test_fresh_install_reports_first_boot_then_relaunch_does_not(self, tmp_path):
         cfg_file = tmp_path / "celerp" / "config.toml"
-        assert _boot_first_boot_flag(cfg_file) == "True"
-        assert _boot_first_boot_flag(cfg_file) == "False"
+        assert _boot_checkin(cfg_file)[0] == "True"
+        assert _boot_checkin(cfg_file)[0] == "False"
+
+    def test_each_launch_sends_a_new_boot_id(self, tmp_path):
+        cfg_file = tmp_path / "celerp" / "config.toml"
+        first, second = _boot_checkin(cfg_file)[1], _boot_checkin(cfg_file)[1]
+        assert first not in ("None", "") and second not in ("None", "")
+        assert first != second
 
     def test_config_written_by_init_is_still_first_boot(self, tmp_path):
         cfg_file = tmp_path / "celerp" / "config.toml"
         cfg_file.parent.mkdir(parents=True)
         cfg_file.write_text('[server]\napi_port = 8000\n')
-        assert _boot_first_boot_flag(cfg_file) == "True"
+        assert _boot_checkin(cfg_file)[0] == "True"

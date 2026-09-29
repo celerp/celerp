@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 import asyncio
 import logging
 import sys
+import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -23,10 +24,9 @@ load_cloud_config()
 load_backup_config()
 load_commercial_context()
 assert_secure_jwt()
-# First boot means no instance id existed before this process minted one. Taken
-# here because ensure_instance_id() writes it, and `celerp init` may already have
-# written the rest of config.toml.
+# Read before ensure_instance_id() writes the id.
 _FIRST_BOOT = not settings.gateway_instance_id
+_BOOT_ID = uuid.uuid4().hex
 ensure_instance_id()
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
@@ -87,11 +87,7 @@ _MODULE_DIR = _os.environ["MODULE_DIR"]
 
 
 async def _try_auto_activate() -> None:
-    """Recover a challenge-approved activation, otherwise only check in.
-
-    The verifier is durable, so retrying it after response loss returns the same
-    credential. Without one, startup never activates by UUID; it only checks in.
-    """
+    """Check in with the relay at startup, or finish a pending activation."""
     _log = logging.getLogger(__name__)
     try:
         from celerp.config import settings as _s, ensure_instance_id
@@ -104,13 +100,10 @@ async def _try_auto_activate() -> None:
         verifier = _s.activation_verifier or ""
 
         if not verifier:
-            # Check-in is observation-only, so transport retries are safe.
             await relay_post_with_retry(
                 f"{relay_base}/auth/checkin",
-                activate_payload(iid, first_boot=_FIRST_BOOT))
+                activate_payload(iid, first_boot=_FIRST_BOOT, boot_id=_BOOT_ID))
             return
-        # Challenge redemption is idempotent for this verifier, so transient
-        # transport retries are safe here.
         r = await relay_post_with_retry(
             f"{relay_base}/auth/activate",
             activate_payload(
