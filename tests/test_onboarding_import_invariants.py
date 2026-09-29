@@ -1320,9 +1320,12 @@ class TestOnboardingStateInvariant:
         assert r.status_code == 302 and r.headers["location"] == destination
 
     @pytest.mark.asyncio
-    async def test_invited_user_in_an_established_company_reaches_the_app(self):
-        r = await _ui_request("GET", "/", role="operator", settings={})
-        assert r.headers["location"] == "/dashboard"
+    @pytest.mark.parametrize("settings", [{}, {"onboarding_pending": False}, {"onboarding_pending": True}])
+    async def test_invited_user_reaches_the_app_whatever_the_setup_state(self, settings):
+        # An invited operator cannot set the company up, so even a company still being
+        # set up sends them to the app, never to the getting-started hub.
+        r = await _ui_request("GET", "/", role="operator", settings=settings)
+        assert r.status_code == 302 and r.headers["location"] == "/dashboard"
 
     @pytest.mark.asyncio
     async def test_dashboard_remains_directly_accessible_while_onboarding_pending(self):
