@@ -300,9 +300,14 @@ async def real_engine(_db_engine, monkeypatch):
         connect_args={"server_settings": {"lock_timeout": "3000", "statement_timeout": "30000"}},
     )
 
+    from celerp.models.base import Base
+
+    # migration_cleanup_tasks has no foreign keys, so the cascade from companies misses it.
+    tables = ", ".join(t for t in ("users", "companies", "migration_cleanup_tasks") if t in Base.metadata.tables)
+
     async def _truncate():
         async with engine.begin() as conn:
-            await conn.execute(text("TRUNCATE users, companies, migration_cleanup_tasks RESTART IDENTITY CASCADE"))
+            await conn.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
 
     await _truncate()
     monkeypatch.setattr(celerp.db, "engine", engine)
