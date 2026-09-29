@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import csv
-import hashlib
 import io
 import logging
 import re
@@ -297,7 +296,7 @@ def _adapter(key: str) -> SourceAdapter:
 def _sample_sha256() -> str | None:
     from celerp.importers.sample import SAMPLE_ARTIFACT
     try:
-        return hashlib.sha256(SAMPLE_ARTIFACT.read_bytes()).hexdigest()
+        return store.file_sha256(SAMPLE_ARTIFACT)
     except OSError:
         return None
 

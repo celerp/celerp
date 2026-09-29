@@ -58,6 +58,7 @@ _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{43}")
 _STORED_RE = re.compile(r"artifact-\d+")
 _SOURCE_KEY_MAX = 200
 _WRITE_BYTES = 4096  # disk writes are block sized, so a failing disk is caught part way through a file
+_HASH_CHUNK = 1024 * 1024  # a source can be gigabytes, so it is hashed a bounded chunk at a time
 
 ScanOwner = tuple[str, "uuid.UUID | None"]
 
@@ -428,6 +429,15 @@ def save_decisions(token: str, *, owner: ScanOwner, decisions: MigrationDecision
         return _read(token, directory, owner)
 
 
+def file_sha256(path: Path) -> str:
+    """The SHA-256 of a stored file, read a bounded chunk at a time."""
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        while chunk := fh.read(_HASH_CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def scan_claim(token: str) -> str:
     """The durable, non-secret identity a run keeps of the scan it was started from."""
     return hashlib.sha256(token.encode()).hexdigest()
@@ -443,12 +453,17 @@ def find_scan_token(claim: str) -> str | None:
 
 def verify_unchanged(token: str, *, owner: ScanOwner) -> ScanSession:
     """The scan, after checking its files are the ones that were scanned; a changed file
-    discards the scan."""
+    discards the scan. A size change is caught before any hashing."""
     directory = _directory(token)
     with _token_lock(directory):
         session = _read(token, directory, owner)
         for artifact in session.artifacts:
-            if hashlib.sha256(artifact.path.read_bytes()).hexdigest() != artifact.sha256:
+            try:
+                changed = (artifact.path.stat().st_size != artifact.size_bytes
+                           or file_sha256(artifact.path) != artifact.sha256)
+            except OSError as exc:
+                raise ScanStoreError(500, STORE_FAILED) from exc
+            if changed:
                 _discard(directory)
                 raise ScanStoreError(409, "The uploaded file changed after it was scanned. Upload it again.")
     return session
