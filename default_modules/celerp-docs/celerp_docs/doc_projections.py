@@ -447,8 +447,8 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current = _recalc_list_totals(current)
     elif event_type == "list.updated":
         for field, change in data["fields_changed"].items():
-            if field == "currency" and current.get("currency") is not None:
-                continue  # currency is immutable after creation
+            if field == "currency" and current.get("currency") is not None and current.get("status") != "draft":
+                continue  # a List's currency is fixed once it leaves draft
             current[field] = change.get("new")
         current = _recalc_list_totals(current)
     elif event_type == "list.finalized":

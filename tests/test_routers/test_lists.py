@@ -619,18 +619,19 @@ class TestListSequence:
 # Currency immutability
 # ---------------------------------------------------------------------------
 
-class TestListCurrencyImmutability:
+class TestListCurrency:
 
     @pytest.mark.asyncio
-    async def test_currency_cannot_be_changed_via_patch(self, client):
+    async def test_draft_currency_can_be_changed_via_patch(self, client):
         token = await _register(client)
         eid = await _create_list(client, token, currency="THB")
 
-        await client.patch(f"/lists/{eid}", headers=_h(token), json={
+        r = await client.patch(f"/lists/{eid}", headers=_h(token), json={
             "fields_changed": {"currency": {"old": "THB", "new": "USD"}},
         })
+        assert r.status_code == 200, r.text
         detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
-        assert detail["currency"] == "THB"
+        assert detail["currency"] == "USD"
 
 
 # ---------------------------------------------------------------------------
