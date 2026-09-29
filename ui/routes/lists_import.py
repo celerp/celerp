@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import csv
 import io
-import uuid
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -27,6 +26,7 @@ from ui.routes.csv_import import (
     column_mapping_form,
     error_report_response,
     import_result_panel,
+    record_id_for,
     read_csv_upload,
     upload_form,
     validate_cell,
@@ -263,16 +263,18 @@ def setup_routes(app):
                 "total_weight": _f("total_weight") or 0.0,
                 "notes": str(r.get("notes", "")).strip() or None,
             }
-            idem = f"csv:list:{ref_id}".lower()
             records.append({
-                "entity_id": f"list:{uuid.uuid4()}",
                 "event_type": "list.created",
                 "data": data,
                 "source": "csv_import",
-                "idempotency_key": idem,
+                "idempotency_key": f"csv:list:{ref_id}".lower(),
             })
 
         try:
+            for rec in records:
+                rec["entity_id"] = await record_id_for(
+                    lambda params: api.list_lists(token, params), {}, "ref_id", rec["data"]["ref_id"], "list",
+                )
             result = await api.batch_import(token, "/lists/import/batch", records, upsert=upsert)
         except APIError as e:
             if e.status == 401:

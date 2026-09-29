@@ -126,11 +126,15 @@ async def test_upsert_label_translates(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_result_panel_entity_label_translates(monkeypatch):
+    async def _no_rows(token, params=None):
+        return {"items": [], "total": 0}
+
     async def _fake_batch(token, path, records, upsert=False):
         return {"created": 1, "skipped": 0, "updated": 0, "errors": []}
 
     monkeypatch.setattr(li, "_token", lambda request: "tok")
     monkeypatch.setattr(li.api, "batch_import", _fake_batch)
+    monkeypatch.setattr(li.api, "list_lists", _no_rows)
 
     # entity_label=t("lists_import.entity_lists"), title-cased inside the
     # result panel's "View {label}" button.

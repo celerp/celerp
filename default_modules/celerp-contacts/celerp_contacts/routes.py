@@ -750,7 +750,7 @@ async def import_contact(
         raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
-        if replay.event_type != "crm.contact.created":
+        if replay.event_type != "crm.contact.created" or replay.entity_id != body.entity_id:
             raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
         return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
     existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})

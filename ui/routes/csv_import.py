@@ -23,8 +23,9 @@ import hashlib
 import io
 import json
 import tempfile
+import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from fasthtml.common import *
 from starlette.responses import StreamingResponse
@@ -1195,6 +1196,17 @@ def import_abort_panel(
         ),
         id="import-preview",
     )
+
+
+async def record_id_for(
+    search: Callable[[dict], Awaitable[dict]], params: dict, field: str, value: str, prefix: str,
+) -> str:
+    """The id of the one existing record whose ``field`` equals ``value`` (ignoring case, as the
+    import key does), found through the list endpoint ``search`` with ``params``; a new id when
+    there is none, so a re-imported row updates the record it matched instead of creating another."""
+    items = (await search({**params, "q": value})).get("items") or []
+    matches = [r["id"] for r in items if str(r.get(field) or "").casefold() == value.casefold()]
+    return matches[0] if len(matches) == 1 else f"{prefix}:{uuid.uuid4()}"
 
 
 def import_result_panel(

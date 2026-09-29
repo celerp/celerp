@@ -219,6 +219,16 @@ async def test_upsert(client, session):
 
 
 @pytest.mark.asyncio
+async def test_resubmitting_rows_without_a_sku_changes_nothing(session):
+    company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
+    rows = [{"name": "No Code", "sell_by": "piece", "pieces": "3"}]
+    first = await import_items(session, company_id, user_id, "admin", {}, rows, upsert=True, filename=None, idempotency_key=None)
+    again = await import_items(session, company_id, user_id, "admin", {}, rows, upsert=True, filename=None, idempotency_key=None)
+    assert (first.created, again.created, again.errors) == (1, 0, [])
+    assert len(await _item_projections(session, company_id)) == 1
+
+
+@pytest.mark.asyncio
 async def test_import_keeps_distinct_lots_with_same_sku(session):
     company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
     rows = [
@@ -426,7 +436,7 @@ async def test_upsert_omitted_fields_preserve_existing_state(session):
 
 
 @pytest.mark.asyncio
-async def test_raw_upsert_binds_to_original_created_entity(session):
+async def test_raw_upsert_updates_only_the_item_its_key_created(session):
     company_id, user_id, _ = await _seed(session, locations=[{"name": "Main"}])
     user = SimpleNamespace(id=user_id)
     seed_rows = [{"name": "Raw One", "sku": "RAW-UP", "sell_by": "piece", "pieces": "1"}]
@@ -434,10 +444,10 @@ async def test_raw_upsert_binds_to_original_created_entity(session):
     first_build = await build_import_records(
         session, company_id, seed_rows, upsert=False, dry_run=False,
     )
-    original_id = first_build.records[0]["entity_id"]
+    original = first_build.records[0]
     first = await commit_import_batch(
         session, company_id, user, "admin", {},
-        BatchImportRequest(records=[ImportRecord(**first_build.records[0])]),
+        BatchImportRequest(records=[ImportRecord(**original)]),
     )
     assert first.created == 1
 
@@ -445,16 +455,22 @@ async def test_raw_upsert_binds_to_original_created_entity(session):
     replay_build = await build_import_records(
         session, company_id, changed_rows, upsert=False, dry_run=False,
     )
-    assert replay_build.records[0]["entity_id"] != original_id
-    second = await commit_import_batch(
+    changed = replay_build.records[0]
+    elsewhere = await commit_import_batch(
         session, company_id, user, "admin", {},
-        BatchImportRequest(records=[ImportRecord(**replay_build.records[0])], upsert=True),
+        BatchImportRequest(records=[ImportRecord(**changed)], upsert=True),
     )
-    assert second.updated == 1
+    assert (elsewhere.updated, len(elsewhere.errors)) == (0, 1)
+
+    same = await commit_import_batch(
+        session, company_id, user, "admin", {},
+        BatchImportRequest(records=[ImportRecord(**{**changed, "entity_id": original["entity_id"]})], upsert=True),
+    )
+    assert same.updated == 1
 
     items = await _item_projections(session, company_id)
     assert len(items) == 1
-    assert items[0].entity_id == original_id
+    assert items[0].entity_id == original["entity_id"]
     assert items[0].state["name"] == "Raw Two"
     assert float(items[0].state["quantity"]) == 2.0
 

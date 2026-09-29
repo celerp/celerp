@@ -103,6 +103,24 @@ async def test_items_upsert_true_emits_patch(client, session):
 
 
 @pytest.mark.asyncio
+async def test_items_upsert_never_edits_another_item(client, session):
+    _, _, token = await _setup(session)
+    headers = {"Authorization": f"Bearer {token}"}
+    first = {
+        "entity_id": f"item:first-{uuid.uuid4().hex[:8]}",
+        "event_type": "item.created",
+        "data": {"sku": f"FIRST-{uuid.uuid4().hex[:6]}", "name": "First", "quantity": 1, "sell_by": "piece"},
+        "source": "csv_import",
+        "idempotency_key": f"csv:item:first-{uuid.uuid4().hex[:8]}",
+    }
+    assert (await client.post("/items/import/batch", headers=headers, json={"records": [first]})).json()["created"] == 1
+    other = {**first, "entity_id": f"item:other-{uuid.uuid4().hex[:8]}", "data": {**first["data"], "name": "Other"}}
+    r = await client.post("/items/import/batch", headers=headers, json={"records": [other], "upsert": True})
+    assert r.status_code == 200 and r.json()["updated"] == 0 and r.json()["errors"], r.text
+    assert (await client.get(f"/items/{first['entity_id']}", headers=headers)).json()["name"] == "First"
+
+
+@pytest.mark.asyncio
 async def test_items_import_rejects_comma_sku(client, session):
     """The comma-SKU invariant is enforced at the event/schema boundary, so bulk import cannot slip a
     comma-bearing SKU past the interactive 422: the row lands in `errors` and nothing is created. A
@@ -164,8 +182,7 @@ async def test_docs_upsert_true_emits_patch(client, session):
     r1 = await client.post("/docs/import/batch", headers=headers, json={"records": [record]})
     assert r1.json()["created"] == 1
 
-    changed = {**record, "entity_id": f"doc:fresh-{uuid.uuid4().hex[:8]}",
-               "data": {**record["data"], "notes": "updated through canonical patch"}}
+    changed = {**record, "data": {**record["data"], "notes": "updated through canonical patch"}}
     r2 = await client.post("/docs/import/batch", headers=headers, json={"records": [changed], "upsert": True})
     assert r2.status_code == 200
     body = r2.json()
@@ -173,11 +190,72 @@ async def test_docs_upsert_true_emits_patch(client, session):
     assert body["updated"] == 1
     assert body["skipped"] == 0
 
-    # Exact replay is a no-op and never follows the fresh caller entity id.
+    # Exact replay is a no-op.
     r3 = await client.post("/docs/import/batch", headers=headers, json={"records": [changed], "upsert": True})
     assert r3.status_code == 200
     assert r3.json()["updated"] == 0
     assert r3.json()["skipped"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Spreadsheet re-import through the import screens
+# ---------------------------------------------------------------------------
+
+class _Form:
+    cookies: dict = {}
+
+    def __init__(self, form: dict):
+        self._form = form
+
+    async def form(self):
+        return self._form
+
+
+class _Routes:
+    def __init__(self):
+        self.post_routes: dict = {}
+
+    def get(self, path):
+        return lambda fn: fn
+
+    def post(self, path):
+        def deco(fn):
+            self.post_routes[path] = fn
+            return fn
+        return deco
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", ["docs", "lists"])
+async def test_reimporting_a_spreadsheet_updates_the_record_it_created(client, session, monkeypatch, resource):
+    from ui.routes import docs_import, lists_import
+
+    _, _, token = await _setup(session)
+    headers = {"Authorization": f"Bearer {token}"}
+    screen, search = (docs_import, "list_docs") if resource == "docs" else (lists_import, "list_lists")
+
+    async def _batch(_tok, path, records, upsert=False):
+        return (await client.post(path, headers=headers, json={"records": records, "upsert": upsert})).json()
+
+    async def _search(_tok, params=None):
+        return (await client.get(f"/{resource}", headers=headers, params=params or {})).json()
+
+    monkeypatch.setattr(screen, "_token", lambda request: "tok")
+    monkeypatch.setattr(screen.api, "batch_import", _batch)
+    monkeypatch.setattr(screen.api, search, _search)
+    routes = _Routes()
+    screen.setup_routes(routes)
+    confirm = routes.post_routes[f"/{resource}/import/confirm"]
+
+    head, row = (("doc_type,doc_number,status,due_date", "invoice,RE-1,draft,{due}") if resource == "docs"
+                 else ("ref_id,status,notes", "RE-1,draft,{due}"))
+    await confirm(_Form({"csv_data": f"{head}\n{row.format(due='2026-01-31')}\n"}))
+    await confirm(_Form({"csv_data": f"{head}\n{row.format(due='2026-02-28')}\n", "upsert": "1"}))
+
+    rows = (await _search("tok", {"q": "RE-1"}))["items"]
+    assert len(rows) == 1, rows
+    record = (await client.get(f"/{resource}/{rows[0]['id']}", headers=headers)).json()
+    assert record["due_date" if resource == "docs" else "notes"] == "2026-02-28"
 
 
 # ---------------------------------------------------------------------------
@@ -220,8 +298,7 @@ async def test_lists_upsert_true_emits_patch(client, session):
     r1 = await client.post("/lists/import/batch", headers=headers, json={"records": [record]})
     assert r1.json()["created"] == 1
 
-    changed = {**record, "entity_id": f"list:fresh-{uuid.uuid4().hex[:8]}",
-               "data": {**record["data"], "notes": "updated through canonical patch"}}
+    changed = {**record, "data": {**record["data"], "notes": "updated through canonical patch"}}
     r2 = await client.post("/lists/import/batch", headers=headers, json={"records": [changed], "upsert": True})
     assert r2.status_code == 200
     body = r2.json()

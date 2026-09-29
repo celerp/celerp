@@ -274,6 +274,31 @@ async def test_import_refuses_the_wrong_contact_type(client, resource):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("resource", ["docs", "lists"])
+async def test_an_import_key_reused_for_another_record_is_refused(client, resource):
+    h = await _owner(client)
+    first = _import_record(resource, "IMP-A")
+    assert (await client.post(f"/{resource}/import", headers=h, json=first)).status_code == 200
+    other = {**_import_record(resource, "IMP-B"), "idempotency_key": first["idempotency_key"]}
+    r = await client.post(f"/{resource}/import", headers=h, json=other)
+    assert r.status_code == 409, r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", ["docs", "lists"])
+async def test_batch_update_never_edits_another_record(client, resource):
+    h = await _owner(client)
+    first = _import_record(resource, "BAT-A", notes="A")
+    r = await client.post(f"/{resource}/import/batch", headers=h, json={"records": [first]})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    other = {**_import_record(resource, "BAT-B", notes="B"), "idempotency_key": first["idempotency_key"]}
+    r = await client.post(f"/{resource}/import/batch", headers=h, json={"records": [other], "upsert": True})
+    assert r.status_code == 200 and r.json()["updated"] == 0 and r.json()["errors"], r.text
+    assert (await _get(client, h, resource, first["entity_id"]))["notes"] == "A"
+
+
+
+@pytest.mark.asyncio
 async def test_list_import_update_selects_the_contact(client):
     h = await _owner(client)
     cid = await _contact(client, h, name="Imported Buyer", currency="EUR")

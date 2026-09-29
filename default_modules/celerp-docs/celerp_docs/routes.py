@@ -4134,7 +4134,7 @@ async def import_doc(
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
-        if replay.event_type != "doc.created":
+        if replay.event_type != "doc.created" or replay.entity_id != body.entity_id:
             raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
         return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
 
@@ -4302,7 +4302,7 @@ async def batch_import_docs(
 
         if rec.idempotency_key in existing_keys:
             replay = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
-            if replay is None or replay.event_type != "doc.created":
+            if replay is None or replay.event_type != "doc.created" or replay.entity_id != rec.entity_id:
                 if len(errors) < 10:
                     errors.append(f"{rec.entity_id}: idempotency key belongs to another operation")
                 skipped += 1
@@ -5886,7 +5886,7 @@ async def import_list(
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
-        if replay.event_type != "list.created":
+        if replay.event_type != "list.created" or replay.entity_id != body.entity_id:
             raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
         return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
 
@@ -5962,7 +5962,7 @@ async def batch_import_lists(
             continue
         if rec.idempotency_key in existing_keys:
             replay = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
-            if replay is None or replay.event_type != "list.created":
+            if replay is None or replay.event_type != "list.created" or replay.entity_id != rec.entity_id:
                 if len(errors) < 10:
                     errors.append(f"{rec.entity_id}: idempotency key belongs to another operation")
                 skipped += 1

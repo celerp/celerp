@@ -2096,6 +2096,7 @@ async def import_items(
         if rec["event_type"] == "item.created":
             rec["idempotency_key"] = f"{batch_key}:{rec['idempotency_key']}"
             rec["data"]["idempotency_key"] = rec["idempotency_key"]
+            rec["entity_id"] = f"item:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{rec['idempotency_key']}')}"
 
     user = SimpleNamespace(id=actor_id)
 
@@ -2179,10 +2180,9 @@ async def commit_import_batch(
     """Commit item import records through one bounded, company-scoped writer.
 
     Exact retries resolve through the ledger before any allocation or uniqueness
-    check. ``body.upsert`` keeps the legacy raw-CIF contract, but binds a replay to
-    the entity created by the original ledger event rather than trusting a newly
-    supplied entity id. Semantic upserts arrive as ``item.patched`` records whose
-    idempotency key is already target+content aware.
+    check. With ``body.upsert`` a record whose key created an item updates that
+    item, and only when it names the same entity id. Semantic upserts arrive as
+    ``item.patched`` records whose idempotency key is already target+content aware.
     """
     from sqlalchemy import delete as _delete
 
@@ -2253,16 +2253,13 @@ async def commit_import_batch(
                 continue
         elif event_type == "item.created":
             if primary is not None:
-                if primary.event_type != "item.created":
+                if primary.event_type != "item.created" or primary.entity_id != entity_id:
                     errors.append(f"{entity_id}: idempotency key was already used for another operation")
                     skipped += 1
                     continue
                 if not body.upsert:
                     skipped += 1
                     continue
-                # Legacy raw-CIF upsert: the ledger, not the caller's fresh UUID,
-                # owns the identity of the item created on the first import.
-                entity_id = primary.entity_id
                 event_type = "item.patched"
                 canonical_patch = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
                 idem_key = (
