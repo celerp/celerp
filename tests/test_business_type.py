@@ -7,6 +7,7 @@ reporting, no generic settings bypass)."""
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -15,6 +16,9 @@ from celerp.config import read_config, write_config
 from celerp.modules.registry import get_enabled
 from celerp.services.demo import payment_terms_for, terms_conditions_for
 from celerp.services.terms import normalize_terms_templates
+
+
+_DEFAULT_MODULES = str(Path(__file__).resolve().parents[1] / "default_modules")
 
 
 async def _owner(client) -> dict:
@@ -169,9 +173,11 @@ async def test_change_replaces_only_demo_items(client):
 
 
 @pytest.mark.asyncio
-async def test_restart_required_until_modules_running(client):
+async def test_restart_required_until_modules_running(client, monkeypatch):
     """The config write is not the signal: a retry after the config already holds the
     modules still reports a restart while they are not running."""
+    monkeypatch.setenv("MODULE_DIR", _DEFAULT_MODULES)
+    monkeypatch.delenv("ENABLED_MODULES", raising=False)
     h = await _owner(client)
     with patch("celerp.services.business_type.is_running", return_value=False):
         assert (await _set(client, h, "gemstones")).json()["restart_required"] is True
@@ -229,3 +235,51 @@ async def test_generic_payment_terms_are_the_list_users_see(client):
     shown = (await client.get("/companies/me/payment-terms", headers=h)).json()
     assert shown == payment_terms_for(None)
     assert "Net 90" in [t["name"] for t in shown]
+
+
+# -- restart reporting -------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_no_restart_when_the_module_system_is_off(client, monkeypatch):
+    monkeypatch.delenv("MODULE_DIR", raising=False)
+    h = await _owner(client)
+    assert (await _set(client, h, "gemstones")).json()["restart_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_no_restart_when_enabled_modules_are_pinned_by_the_environment(client, monkeypatch):
+    monkeypatch.setenv("MODULE_DIR", _DEFAULT_MODULES)
+    monkeypatch.setenv("ENABLED_MODULES", "celerp-subscriptions")
+    monkeypatch.delenv("CELERP_SUPERVISED", raising=False)
+    h = await _owner(client)
+    assert (await _set(client, h, "gemstones")).json()["restart_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_supervised_restart_rereads_the_config(client, monkeypatch):
+    """Under the supervisor ENABLED_MODULES is rebuilt from config on restart, so a
+    pinned list does not stop the restart from loading the new modules."""
+    monkeypatch.setenv("MODULE_DIR", _DEFAULT_MODULES)
+    monkeypatch.setenv("ENABLED_MODULES", "celerp-subscriptions")
+    monkeypatch.setenv("CELERP_SUPERVISED", "1")
+    h = await _owner(client)
+    assert (await _set(client, h, "gemstones")).json()["restart_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_retry_after_failed_db_step_still_requires_restart(client, monkeypatch):
+    """Config written, then the company update fails: the retry finds the config
+    already holding the modules and must still ask for the restart that loads them."""
+    monkeypatch.setenv("MODULE_DIR", _DEFAULT_MODULES)
+    monkeypatch.delenv("ENABLED_MODULES", raising=False)
+    h = await _owner(client)
+    with patch("celerp.services.business_type.reconcile_vertical_defaults",
+               side_effect=RuntimeError("database step failed")):
+        with pytest.raises(RuntimeError):
+            await _set(client, h, "gemstones")
+    assert "celerp-inventory" in read_config()["modules"]["enabled"], "the config step ran first"
+    assert (await _settings(client, h)).get("vertical") is None, "the company update rolled back"
+    r = await _set(client, h, "gemstones")
+    assert r.status_code == 200, r.text
+    assert r.json()["restart_required"] is True
+    assert (await _settings(client, h))["vertical"] == "gemstones"

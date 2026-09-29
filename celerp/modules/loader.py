@@ -523,6 +523,21 @@ def is_running(pkg_name: str) -> bool:
     return any(m["name"] == pkg_name for m in _loaded) or is_core_folded(pkg_name)
 
 
+def restart_would_load(pkg_name: str) -> bool:
+    """True when a server restart would load *pkg_name*.
+
+    That needs the module system on with an installed copy in MODULE_DIR, and an
+    enabled list the restart re-reads from the config file: under the supervisor
+    ENABLED_MODULES is rebuilt from config on every restart, while outside it a set
+    ENABLED_MODULES pins the list and only the names it holds can load."""
+    if not _module_candidates(pkg_name):
+        return False
+    pinned = os.environ.get("ENABLED_MODULES", "")
+    if not pinned or os.environ.get("CELERP_SUPERVISED") == "1":
+        return True
+    return pkg_name in {n.strip() for n in pinned.split(",")}
+
+
 # Fields to extract from PLUGIN_MANIFEST for display purposes.
 # All must be string or list-of-strings literals in __init__.py (safe for ast.literal_eval).
 _MANIFEST_DISPLAY_FIELDS: frozenset[str] = frozenset({

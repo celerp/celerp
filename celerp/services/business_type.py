@@ -13,8 +13,8 @@ Setting a type is additive and safe to repeat:
 
 Module config lives in a file, company state in the database, so the two cannot
 commit together. The config step runs first and is idempotent, and the restart
-need is derived from what is actually running, so a retry after a failure in
-between still reports that a restart is required.
+need is derived from what is actually running (and what a restart could load),
+so a retry after a failure in between still reports that a restart is required.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import set_enabled_modules
 from celerp.models.company import Company
-from celerp.modules.loader import is_running
+from celerp.modules.loader import is_running, restart_would_load
 from celerp.modules.registry import enable as enable_in_settings
 from celerp.services.demo import reconcile_vertical_defaults, replace_demo_items
 from celerp.services.vertical_presets import (
@@ -77,5 +77,5 @@ async def set_business_type(
         "vertical": vertical,
         "changed": changed,
         "modules": modules,
-        "restart_required": any(not is_running(name) for name in modules),
+        "restart_required": any(not is_running(n) and restart_would_load(n) for n in modules),
     }
