@@ -4135,7 +4135,7 @@ async def import_doc(
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
-        if replay.event_type != "doc.created":
+        if replay.event_type != "doc.created" or replay.entity_id != body.entity_id:
             raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
         return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
 
@@ -4148,8 +4148,7 @@ async def import_doc(
             f"Use PATCH to update or lifecycle endpoints to advance its state.",
         )
 
-    if body.data.get("contact_id"):
-        await _lock_contact_reference(session, company_id, str(body.data["contact_id"]))
+    await _lock_imported_contact(session, company_id, "doc", body.data)
     _imp_company = await session.get(Company, company_id)
     _imp_base_currency = (_imp_company.settings.get("currency", "USD") if _imp_company else "USD")
     if auto_je.import_auto_je_kind(body.data) is not None:
@@ -4304,7 +4303,7 @@ async def batch_import_docs(
 
         if rec.idempotency_key in existing_keys:
             replay = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
-            if replay is None or replay.event_type != "doc.created":
+            if replay is None or replay.event_type != "doc.created" or replay.entity_id != rec.entity_id:
                 if len(errors) < 10:
                     errors.append(f"{rec.entity_id}: idempotency key belongs to another operation")
                 skipped += 1
@@ -4347,8 +4346,7 @@ async def batch_import_docs(
             skipped_existing += 1
             continue
         try:
-            if rec.data.get("contact_id"):
-                await _lock_contact_reference(session, company_id, str(rec.data["contact_id"]))
+            await _lock_imported_contact(session, company_id, "doc", rec.data)
             if auto_je.import_auto_je_kind(rec.data) is not None:
                 _require_doc_rate_http(rec.data, _batch_base_currency)
             entry = await emit_event(
@@ -5154,6 +5152,27 @@ def _chosen_terms(values: dict) -> frozenset[str]:
     return frozenset(chosen)
 
 
+def _assert_contact_side(cstate: dict, kind: str, state: dict) -> None:
+    """Refuse a contact whose type does not fit the Document or List it is named on."""
+    vendor_side = kind == "doc" and state.get("doc_type") in VENDOR_DOC_TYPES
+    role_name = "vendor" if vendor_side else "customer"
+    if not contact_accepts(cstate, role_name):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{cstate.get('name') or 'This contact'} is not a {role_name}. "
+                   f"Choose a {role_name}, or change the contact's type to {role_name} or both.",
+        )
+
+
+async def _lock_imported_contact(session: AsyncSession, company_id, kind: str, data: dict) -> None:
+    """Lock the local contact an imported Document or List names, and refuse a wrong one."""
+    if not data.get("contact_id"):
+        return
+    contact = await _lock_contact_reference(session, company_id, str(data["contact_id"]))
+    if contact is not None:
+        _assert_contact_side(contact.state or {}, kind, data)
+
+
 async def _lock_selected_contact(session: AsyncSession, company_id, settings: dict, role: str, contact_id: str) -> Projection | None:
     """Authorize and lock the contact a patch selects, before the Document or List row is locked.
 
@@ -5200,14 +5219,7 @@ async def _contact_selection_values(
         return values
 
     cstate = contact.state or {}
-    vendor_side = kind == "doc" and state.get("doc_type") in VENDOR_DOC_TYPES
-    role_name = "vendor" if vendor_side else "customer"
-    if not contact_accepts(cstate, role_name):
-        raise HTTPException(
-            status_code=422,
-            detail=f"{cstate.get('name') or 'This contact'} is not a {role_name}. "
-                   f"Choose a {role_name}, or change the contact's type to {role_name} or both.",
-        )
+    _assert_contact_side(cstate, kind, state)
     values.update(contact_snapshot(cstate))
     if kind == "doc" and "payment_terms" in chosen:
         values["payment_terms"] = state.get("payment_terms")
@@ -5875,15 +5887,14 @@ async def import_list(
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
-        if replay.event_type != "list.created":
+        if replay.event_type != "list.created" or replay.entity_id != body.entity_id:
             raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
         return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
 
     existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})
     if existing is not None:
         raise HTTPException(status_code=409, detail=f"List {body.entity_id} already exists")
-    if body.data.get("contact_id"):
-        await _lock_contact_reference(session, company_id, str(body.data["contact_id"]))
+    await _lock_imported_contact(session, company_id, "list", body.data)
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=body.entity_id, entity_type="list",
@@ -5952,7 +5963,7 @@ async def batch_import_lists(
             continue
         if rec.idempotency_key in existing_keys:
             replay = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
-            if replay is None or replay.event_type != "list.created":
+            if replay is None or replay.event_type != "list.created" or replay.entity_id != rec.entity_id:
                 if len(errors) < 10:
                     errors.append(f"{rec.entity_id}: idempotency key belongs to another operation")
                 skipped += 1
@@ -5989,8 +6000,7 @@ async def batch_import_lists(
             skipped += 1
             continue
         try:
-            if rec.data.get("contact_id"):
-                await _lock_contact_reference(session, company_id, str(rec.data["contact_id"]))
+            await _lock_imported_contact(session, company_id, "list", rec.data)
             entry = await emit_event(
                 session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
                 event_type="list.created", data=rec.data, actor_id=user.id, location_id=None,

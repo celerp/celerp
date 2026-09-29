@@ -250,7 +250,52 @@ async def test_a_reused_create_key_with_a_different_body_is_refused(client, reso
     assert other.status_code == 409, other.text
 
 
-# ── List import ──────────────────────────────────────────────────────────────
+# ── Imports ──────────────────────────────────────────────────────────────────
+
+
+def _import_record(resource: str, name: str, **data) -> dict:
+    prefix, event = ("doc", "doc.created") if resource == "docs" else ("list", "list.created")
+    base = ({"doc_type": "invoice"} if resource == "docs" else {"list_type": "quotation"})
+    return {"entity_id": f"{prefix}:{name}", "event_type": event, "idempotency_key": f"imp-{uuid.uuid4().hex}",
+            "source": "csv", "data": {**base, "status": "draft", "currency": "USD", "line_items": [], **data}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", ["docs", "lists"])
+async def test_import_refuses_the_wrong_contact_type(client, resource):
+    h = await _owner(client)
+    cid = await _contact(client, h, name="Wrong Side", contact_type="vendor")
+    record = _import_record(resource, "IMP-V", contact_id=cid)
+    r = await client.post(f"/{resource}/import", headers=h, json=record)
+    assert r.status_code == 422 and "Wrong Side is not a customer" in r.text, r.text
+    r = await client.post(f"/{resource}/import/batch", headers=h, json={"records": [record]})
+    assert r.status_code == 200 and r.json()["created"] == 0, r.text
+    assert "Wrong Side is not a customer" in " ".join(r.json()["errors"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", ["docs", "lists"])
+async def test_an_import_key_reused_for_another_record_is_refused(client, resource):
+    h = await _owner(client)
+    first = _import_record(resource, "IMP-A")
+    assert (await client.post(f"/{resource}/import", headers=h, json=first)).status_code == 200
+    other = {**_import_record(resource, "IMP-B"), "idempotency_key": first["idempotency_key"]}
+    r = await client.post(f"/{resource}/import", headers=h, json=other)
+    assert r.status_code == 409, r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resource", ["docs", "lists"])
+async def test_batch_update_never_edits_another_record(client, resource):
+    h = await _owner(client)
+    first = _import_record(resource, "BAT-A", notes="A")
+    r = await client.post(f"/{resource}/import/batch", headers=h, json={"records": [first]})
+    assert r.status_code == 200 and r.json()["created"] == 1, r.text
+    other = {**_import_record(resource, "BAT-B", notes="B"), "idempotency_key": first["idempotency_key"]}
+    r = await client.post(f"/{resource}/import/batch", headers=h, json={"records": [other], "upsert": True})
+    assert r.status_code == 200 and r.json()["updated"] == 0 and r.json()["errors"], r.text
+    assert (await _get(client, h, resource, first["entity_id"]))["notes"] == "A"
+
 
 
 @pytest.mark.asyncio
@@ -434,6 +479,7 @@ async def test_a_copy_racing_a_merge_never_names_the_merged_contact(_db_engine, 
         assert await _references(factory, company_id, "contact:A") == []
     finally:
         await _cleanup(factory, company_id, user_id)
+
 
 def _patcher(resource, entity_id, company_id, user_id, **payload):
     from celerp_docs import routes
