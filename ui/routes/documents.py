@@ -15,6 +15,7 @@ from urllib.parse import quote_plus, urlencode
 
 import ui.api_client as api
 from ui.api_client import APIError
+from celerp.services.units import default_receive_as
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
@@ -244,6 +245,7 @@ def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
         "cost_price": item.get("cost_price") or None,
         "wholesale_price": item.get("wholesale_price") or None,
         "barcode": item.get("barcode") or None,
+        "receive_as": default_receive_as(item.get("inventory_type"), meta["sell_by"]),
         "weight": meta["weight"],
         "weight_unit": meta["weight_unit"],
         "pieces": meta["pieces"],
@@ -7645,7 +7647,7 @@ function celerpFillRow(row, data) {{
         barcodeDisp.style.display = data.barcode ? '' : 'none';
     }}
     const receiveAsEl = row.querySelector('[data-name="receive_as"]');
-    if (receiveAsEl) receiveAsEl.value = data.entity_id ? 'stock' : 'expense';
+    if (receiveAsEl) receiveAsEl.value = data.receive_as || 'expense';
     const categoryEl = row.querySelector('[data-name="category"]');
     if (categoryEl && data.category) {{
         // Ensure option exists before setting value (category may not be in inventory yet)

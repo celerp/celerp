@@ -41,6 +41,14 @@ def is_non_stock_line(inventory_type: str | None, sell_by: str | None = None) ->
     return (inventory_type or "stocked") in NON_STOCK_INVENTORY_TYPES or (sell_by or "") in SERVICE_SELL_BY
 
 
+def default_receive_as(inventory_type: str | None, sell_by: str | None = None) -> str:
+    """How a purchase line for this item comes in unless the user says otherwise: an item
+    that is not kept in stock (a service, a charge, a non-stocked item) is an expense."""
+    if inventory_type == "non_stocked" or is_non_stock_line(inventory_type, sell_by):
+        return "expense"
+    return "stock"
+
+
 def is_landed_component(inventory_type: str | None) -> bool:
     """True for a freight-typed line (a landed-cost component: freight/insurance/duty/import_vat)."""
     return (inventory_type or "stocked") == "freight"
