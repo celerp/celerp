@@ -3037,7 +3037,7 @@
   "setup.feature_web_desc": "ለእርስዎ ምሳሌ የሚሆን የተረጋጋ የህዝብ ዩአርኤል። የማይንቀሳቀስ አይፒ የለም፣ ምንም ውቅር የለም።",
   "setup.feature_ai_title": "ጉርሻ: 100 AI መጠይቆች",
   "setup.feature_ai_desc": "የግዢ ትዕዛዞችን በራስ-ሰር ያዘጋጁ፣ ደረሰኞችን ያስታርቁ፣ በተፈጥሮ ቋንቋ ሪፖርቶችን ያሂዱ።",
-  "setup.skip_for_now": "ለአሁን ዝለል - ወደ ቅንብሮች ይሂዱ",
+  "setup.skip_for_now": "ለአሁን ዝለል",
   "docs_import.import_documents": "የማስመጣት ሰነዶች",
   "docs_import.shared_title": "የተጋራ ሰነድ አስገባ",
   "docs_import.shared_hint": "አንድ ሰው ከራሱ Celerp የላከልዎትን ሊንክ እዚህ ይለጥፉ። ሰነዱ እንደ ተቀበለ ሆኖ ይገባል፤ ከመመዝገብዎ በፊት መገምገም ይችላሉ።",

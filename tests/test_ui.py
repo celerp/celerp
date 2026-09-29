@@ -7641,7 +7641,7 @@ class TestCsvImportHelpers:
         # Import All must NOT be present when there are errors
         assert "Import All" not in html
 
-    def test_validation_result_errors_includes_csv_data_for_download(self):
+    def test_validation_result_errors_includes_csv_ref_for_download(self):
         """Error panel must embed csv_ref so the download form can POST it."""
         from fasthtml.common import to_xml
         from ui.routes.csv_import import CsvImportSpec, validate_cell, validation_result
@@ -7657,7 +7657,7 @@ class TestCsvImportHelpers:
         ))
         assert 'name="csv_ref"' in html
 
-    def test_validation_result_clean_includes_csv_data_for_confirm(self):
+    def test_validation_result_clean_includes_csv_ref_for_confirm(self):
         """Clean confirm panel must embed the caller's stage ref so confirm POST can read rows."""
         from fasthtml.common import to_xml
         from ui.routes.csv_import import CsvImportSpec, validate_cell, validation_result
@@ -8461,7 +8461,7 @@ class TestUnauthenticatedAccess:
 # Bug patterns mapped to test classes below:
 #   P1 - HTMX partial responses missing data-* attrs or hx-* re-wire hooks
 #   P2 - JS feedback loops (MutationObserver watching its own writes)
-#   P3 - Hidden csv_data field not reflecting latest state
+#   P3 - Hidden csv_ref field not reflecting latest state
 #   P4 - Currency/timezone/fiscal_year not threaded into sub-renderers
 #   P5 - Multi-tenant isolation (queries not filtered by company_id)
 #   P6 - Unauthenticated access to state-changing endpoints
@@ -8523,7 +8523,7 @@ class TestCsvImportUxErrorTable:
         assert "1 error" in html.lower() or "error" in html.lower()
 
     def test_error_table_shows_only_error_rows(self):
-        """Clean rows must not appear in the error table body (may appear in csv_data)."""
+        """Clean rows must not appear in the error table body."""
         rows = [
             {"sku": "S1", "name": "Widget", "quantity": "5", "cost_price": "10"},   # clean
             {"sku": "", "name": "Broken", "quantity": "5", "cost_price": "10"},     # error
@@ -8531,7 +8531,6 @@ class TestCsvImportUxErrorTable:
         html = self._html(rows)
         # The error table Tbody must only contain the error row
         # "Widget" is only in the clean row - must not appear in the table body cells
-        # (it may appear in the hidden csv_data field which is acceptable)
         # We check that data-row="0" (clean row index) is NOT present in table cells
         assert 'data-row="0"' not in html or "data-row" not in html
         # The error row "Broken" must be visible
@@ -8894,8 +8893,7 @@ class TestCsvImportIdentifierColumnContract:
         rows = [{"sku": "", "notes": "all good", "price": "10"}]  # only sku fails
         html = self._result_html(cols, rows, required={"sku"})
         # sku (identifier+error) and notes (clean, NOT identifier) — notes header should be absent
-        # We can't perfectly enforce header vs cell since notes might leak via csv_data hidden field
-        # but the table headers should not show it
+        # The table headers should not show it
         # At minimum: sku must be present
         assert "sku" in html
 

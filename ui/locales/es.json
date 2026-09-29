@@ -2935,7 +2935,7 @@
   "setup.feature_web_desc": "Una URL pública estable para tu instancia. Sin IP estática, sin configuración.",
   "setup.feature_ai_title": "Bonificación: 100 consultas de IA",
   "setup.feature_ai_desc": "Redacta automáticamente órdenes de compra, concilia facturas y genera informes en lenguaje natural.",
-  "setup.skip_for_now": "Omitir por ahora: ir a la configuración",
+  "setup.skip_for_now": "Omitir por ahora",
   "docs_import.import_documents": "Importar documentos",
   "docs_import.shared_title": "Importar un documento compartido",
   "docs_import.shared_hint": "Pegue el enlace que alguien le envió desde su Celerp. El documento se añade como recibido para que lo revise antes de contabilizarlo.",

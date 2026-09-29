@@ -2936,7 +2936,7 @@
   "setup.feature_web_desc": "Eine stabile öffentliche URL für Ihre Instanz. Keine statische IP, keine Konfiguration.",
   "setup.feature_ai_title": "Bonus: 100 KI-Abfragen",
   "setup.feature_ai_desc": "Automatische Erstellung von Bestellaufträgen, Abgleich von Rechnungen, Erstellung von Berichten in natürlicher Sprache.",
-  "setup.skip_for_now": "Vorerst überspringen – zu den Einstellungen gehen",
+  "setup.skip_for_now": "Vorerst überspringen",
   "docs_import.import_documents": "Dokumente importieren",
   "docs_import.shared_title": "Geteiltes Dokument importieren",
   "docs_import.shared_hint": "Fügen Sie den Link ein, den Ihnen jemand aus seinem Celerp gesendet hat. Das Dokument wird als empfangen angelegt, damit Sie es vor dem Buchen prüfen können.",

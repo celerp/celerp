@@ -2935,7 +2935,7 @@
   "setup.feature_web_desc": "Một URL công khai ổn định cho phiên bản của bạn. Không cần IP tĩnh, không cần cấu hình.",
   "setup.feature_ai_title": "Phần thưởng: 100 truy vấn AI",
   "setup.feature_ai_desc": "Tự động soạn thảo đơn đặt hàng, đối chiếu hóa đơn, chạy báo cáo bằng ngôn ngữ tự nhiên.",
-  "setup.skip_for_now": "Bỏ qua lúc này - chuyển đến cài đặt",
+  "setup.skip_for_now": "Bỏ qua lúc này",
   "docs_import.import_documents": "Nhập tài liệu",
   "docs_import.shared_title": "Nhập tài liệu được chia sẻ",
   "docs_import.shared_hint": "Dán liên kết mà người khác gửi cho bạn từ Celerp của họ. Tài liệu được thêm ở trạng thái đã nhận để bạn kiểm tra trước khi ghi sổ.",

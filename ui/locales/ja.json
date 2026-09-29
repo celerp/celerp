@@ -2935,7 +2935,7 @@
   "setup.feature_web_desc": "インスタンス用の安定した公開URL。固定IP不要、設定不要。",
   "setup.feature_ai_title": "特典：AIクエリ100回",
   "setup.feature_ai_desc": "発注書の自動下書き、請求書の照合、自然言語によるレポート作成。",
-  "setup.skip_for_now": "今回はスキップ - 設定へ進む",
+  "setup.skip_for_now": "今回はスキップ",
   "docs_import.import_documents": "書類のインポート",
   "docs_import.shared_title": "共有された書類をインポート",
   "docs_import.shared_hint": "相手の Celerp から送られたリンクを貼り付けてください。書類は受領済みとして追加されるので、計上する前に確認できます。",

@@ -2935,7 +2935,7 @@
   "setup.feature_web_desc": "URL สาธารณะที่เสถียรสำหรับระบบของคุณ ไม่ต้องใช้ static IP ไม่ต้องตั้งค่า",
   "setup.feature_ai_title": "โบนัส: คำสั่ง AI 100 ครั้ง",
   "setup.feature_ai_desc": "ร่างใบสั่งซื้ออัตโนมัติ กระทบยอดใบแจ้งหนี้ สร้างรายงานด้วยภาษาธรรมชาติ",
-  "setup.skip_for_now": "ข้ามไปก่อน - ไปที่การตั้งค่า",
+  "setup.skip_for_now": "ข้ามไปก่อน",
   "docs_import.import_documents": "นำเข้าเอกสาร",
   "docs_import.shared_title": "นำเข้าเอกสารที่แชร์",
   "docs_import.shared_hint": "วางลิงก์ที่มีผู้ส่งมาจาก Celerp ของเขา เอกสารจะถูกเพิ่มเป็นสถานะได้รับ เพื่อให้คุณตรวจสอบก่อนบันทึกบัญชี",

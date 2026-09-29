@@ -2936,7 +2936,7 @@
   "setup.feature_web_desc": "Un URL pubblico stabile per la tua istanza. Nessun IP statico, nessuna configurazione.",
   "setup.feature_ai_title": "Bonus: 100 query AI",
   "setup.feature_ai_desc": "Creazione automatica di bozze di ordini di acquisto, riconciliazione delle fatture, generazione di report in linguaggio naturale.",
-  "setup.skip_for_now": "Salta per ora - vai alle impostazioni",
+  "setup.skip_for_now": "Salta per ora",
   "docs_import.import_documents": "Importa documenti",
   "docs_import.shared_title": "Importa un documento condiviso",
   "docs_import.shared_hint": "Incolla il link che qualcuno ti ha inviato dal suo Celerp. Il documento viene aggiunto come ricevuto, così puoi controllarlo prima di registrarlo.",

@@ -2935,7 +2935,7 @@
   "setup.feature_web_desc": "URL publik yang stabil untuk instance Anda. Tanpa IP statis, tanpa konfigurasi.",
   "setup.feature_ai_title": "Bonus: 100 kueri AI",
   "setup.feature_ai_desc": "Pembuatan PO otomatis, rekonsiliasi faktur, dan pembuatan laporan dengan bahasa alami.",
-  "setup.skip_for_now": "Lewati untuk saat ini - buka pengaturan",
+  "setup.skip_for_now": "Lewati untuk saat ini",
   "docs_import.import_documents": "Impor Dokumen",
   "docs_import.shared_title": "Impor dokumen yang dibagikan",
   "docs_import.shared_hint": "Tempel tautan yang dikirim seseorang dari Celerp mereka. Dokumen ditambahkan sebagai diterima, jadi Anda bisa memeriksanya sebelum dibukukan.",

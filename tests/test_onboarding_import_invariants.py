@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -204,6 +205,11 @@ class TestSetupInvariant:
         assert r.headers["location"].endswith(dest)
         set_type.assert_awaited_once()
         assert order == ["details", "set_type", "pending"]
+
+    def test_cloud_offer_skip_returns_to_the_setup_hub(self):
+        from ui.routes.setup import _cloud_form
+        html = to_xml(_cloud_form())
+        assert re.search(r'<a[^>]*href="/onboarding"[^>]*class="cloud-upsell-skip"', html), html
 
     @pytest.mark.asyncio
     async def test_setup_failure_does_not_mark_onboarding_pending_or_redirect_as_success(self):
