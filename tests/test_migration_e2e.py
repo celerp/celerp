@@ -409,6 +409,33 @@ async def test_attachment_for_a_record_that_cannot_hold_files_fails_its_batch(re
     assert not [m for m in await _maps(real_engine, run) if m.source_type == "Attachment"]
 
 
+async def test_manager_inactive_item_stays_unavailable_and_purchase_price_is_not_cost(
+    real_engine, monkeypatch, tmp_path,
+):
+    """An inactive item lands archived, out of the available stock, while an active item is
+    unchanged; the item purchase price never becomes an inventory cost."""
+    from decimal import Decimal
+
+    from fixtures.manager_io import specs
+    from fixtures.manager_io.support import CHECKPOINTS, ref
+
+    source = specs.build_inactive_masters(tmp_path / "inactive.manager")
+    run, rejected = await migrate(real_engine, source.read_bytes(), source.name, {"mode": "full_history"},
+                                  monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    maps = {m.source_external_id: m.target_entity_id for m in await _maps(real_engine, run)
+            if m.source_type == "InventoryItem"}
+    items = await _projections(real_engine, run, "item")
+    widget, retired = items[maps[ref("WID")]], items[maps[ref("OLD")]]
+    assert (widget["status"], retired["status"]) == ("available", "archived")
+    # Manager's purchase price for the widget is 4; its cost is what the bills paid.
+    expected = CHECKPOINTS["basic"]["full_history"]
+    assert Decimal(str(widget["cost_total"])) == Decimal(expected["inventory_value"]["WID"])
+    assert widget.get("cost_price") != 4
+    assert "purchase_price" not in widget
+
+
 async def test_sample_migration_finalizes_and_reconciles(real_engine, monkeypatch, tmp_path):
     """The shipped sample migrates and finalizes into a company named as the sample,
     and its completion page says so."""

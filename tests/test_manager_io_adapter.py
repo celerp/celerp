@@ -605,3 +605,34 @@ def test_attachments_move_only_to_records_that_hold_files(tmp_path):
     rejected = {row["source_external_id"] for row in manifest.source_summary["attachments"]["rejected"]}
     assert rejected == {ref(label) for label in ("AREC", "AFALL", "ATRF", "AJE", "ADN")}
     assert len(manifest.bundle.documents) == 7
+
+
+# ── Master data fidelity ──────────────────────────────────────────────────────
+
+def test_master_attributes_celerp_cannot_hold_are_each_reported(tmp_path):
+    # An inactive item becomes an archived item, which Celerp represents exactly. Celerp
+    # has no inactive state for contacts, tax codes or currencies and no default purchase
+    # price for items, so each of those is reported as lost, per record.
+    art = artifact(specs.build_inactive_masters(tmp_path / "inactive.manager"))
+    manifest = adapter().build_manifest([art], FULL)
+    bundle = manifest.bundle
+    items = {i.source_external_id: i for i in bundle.items}
+    assert (items[ref("WID")].status, items[ref("OLD")].status) == ("available", "archived")
+    # The purchase price never becomes a cost: inventory cost comes only from the bills.
+    assert [(i.cost_per_unit, i.total_cost) for i in items.values()] == [(None, None)] * 2
+    assert all(i.metadata == {} for i in items.values())
+    assert all(c.metadata == {} for c in bundle.contacts)
+
+    coverage = _coverage(manifest)
+    masters = ("Customer", "Supplier", "TaxCode", "ForeignCurrency", "InventoryItem")
+    lost = {label: (count, klass) for label, (count, klass, _) in coverage.items()
+            if label.startswith(tuple(f"{m} (" for m in masters))}
+    assert lost == {
+        "Customer (inactive)": (1, CoverageClass.MAPPED_WITH_LOSS),
+        "Supplier (inactive)": (1, CoverageClass.MAPPED_WITH_LOSS),
+        "TaxCode (inactive)": (1, CoverageClass.MAPPED_WITH_LOSS),
+        "ForeignCurrency (inactive)": (1, CoverageClass.MAPPED_WITH_LOSS),
+        "InventoryItem (purchase price not moved)": (1, CoverageClass.MAPPED_WITH_LOSS),
+    }
+    assert coverage["InventoryItem"][:2] == (1, CoverageClass.MAPPED)
+    assert coverage["Customer"][:2] == (1, CoverageClass.MAPPED)

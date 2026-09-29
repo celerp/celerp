@@ -2265,6 +2265,12 @@ async def adjust_item_quantity(
     )
 
 
+# Statuses an imported item may start in. Every other status (sold, merged, reserved,
+# memo_out...) is reached only through the events that move stock, so an import
+# never manufactures one.
+IMPORT_STATUSES = ("available", "draft", "archived")
+
+
 async def write_import_batch(
     session: AsyncSession,
     company_id,
@@ -2315,7 +2321,7 @@ async def write_import_batch(
 
     for rec in body.records:
         data = dict(rec.data)
-        data.pop("status", None)
+        status = str(data.pop("status", None) or "").strip().lower()
         data.pop("created_at", None)
         data.pop("updated_at", None)
         data.pop("idempotency_key", None)
@@ -2377,6 +2383,16 @@ async def write_import_batch(
         else:
             outcome.add(entity_id, "rejected", f"{entity_id}: event type {event_type!r} is not import-safe")
             continue
+
+        # A status changes through the status action, never through an upsert patch.
+        if status and event_type != "item.patched":
+            if status not in IMPORT_STATUSES:
+                outcome.add(entity_id, "rejected",
+                    f"Row (SKU={data.get('sku', '?')}): an imported item cannot start as {status}; "
+                    f"use {', '.join(IMPORT_STATUSES[:-1])} or {IMPORT_STATUSES[-1]}"
+                )
+                continue
+            data["status"] = status
 
         stored_proj: Projection | None = None
         if event_type == "item.patched":

@@ -278,3 +278,19 @@ def build_attachment_targets(path: Path) -> Path:
                                    for label, target in ATTACHMENT_TARGETS.items())]
     blobs = (*basic_blobs(), *(Blob(k(label), f"{label.lower()}.png", "image/png", PNG) for label in ATTACHMENT_TARGETS))
     return write_manager_file(path, objects, blobs)
+
+
+def inactive_masters() -> list[Obj]:
+    """Masters Manager marks inactive: a customer, a supplier, an item, a tax code and a currency."""
+    return [
+        obj("Customer", "CX", {1: "Former Customer", 13: "C-900", 15: True}),
+        obj("Supplier", "SX", {1: "Former Supplier", 10: "S-900", 12: True}),
+        obj("InventoryItem", "OLD", {1: "OLD-1", 11: "Retired widget", 13: "each", 10: True}),
+        obj("TaxCode", "OLDTAX", {1: "Old rate 5%", 5: CUSTOM_RATE, 6: SINGLE_RATE, 4: D("5"), 10: True}),
+        obj("ForeignCurrency", "OLDCUR", {1: "Euro", 2: "EUR", 4: 2, 6: True}),
+    ]
+
+
+def build_inactive_masters(path: Path) -> Path:
+    """The basic books plus the inactive masters."""
+    return write_manager_file(path, [*basic_objects(), *inactive_masters()], basic_blobs())

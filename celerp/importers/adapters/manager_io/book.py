@@ -745,6 +745,26 @@ def _receipt_verdicts(book: Book) -> None:
                          "journal entry naming the customer or supplier.")
 
 
+def _master_verdicts(book: Book) -> None:
+    """A master whose attribute Celerp cannot hold is carried without it, reported per record.
+    An inactive item is not listed: it becomes an archived item."""
+    lost: list[tuple[str, str, str, str]] = [
+        *((c.source_type, c.key, "inactive", "Celerp has no inactive state for customers and suppliers; "
+           "this one is imported as active.") for c in book.contacts.values() if c.inactive),
+        *(("TaxCode", t.key, "inactive", "Celerp has no inactive state for tax codes; this one is imported "
+           "as active.") for t in book.tax_codes.values() if t.inactive),
+        *(("ForeignCurrency", c.key, "inactive", "Celerp has no inactive state for currencies; this one is "
+           "imported as active.") for c in book.currencies.values() if c.inactive),
+        *(("InventoryItem", i.key, "purchase price not moved", "Celerp has no default purchase price for items. "
+           "Inventory cost comes from the purchases themselves.") for i in book.items.values()
+          if i.purchase_price is not None),
+    ]
+    for type_name, key, what, note in lost:
+        if not book.is_blocked(key):
+            book.accept(type_name, key, label=f"{type_name} ({what})", klass=CoverageClass.MAPPED_WITH_LOSS,
+                        note=note)
+
+
 def read_book(reader: ManagerReader) -> Book:
     """Decode and classify every object in an open Manager file."""
     book = Book(schema_version=reader.schema_version)
@@ -772,5 +792,6 @@ def read_book(reader: ManagerReader) -> Book:
         book.accounts.setdefault(key, Account(key, TYPE_NAMES[key], label, None, None, account_type, control))
     _resolve(book)
     _receipt_verdicts(book)
+    _master_verdicts(book)
     book.history = {"changes": reader.row_count("Changes"), "emails": reader.row_count("Emails")}
     return book

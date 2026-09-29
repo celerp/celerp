@@ -113,6 +113,7 @@ def _item_record(
         "name": item.name,
         "description": item.description,
         "quantity": 0,
+        "status": item.status,
         "sell_by": sell_by,
         "weight": float(item.weight) if item.weight is not None else None,
         "weight_unit": item.weight_unit,

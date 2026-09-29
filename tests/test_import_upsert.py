@@ -659,38 +659,42 @@ async def test_import_invalid_sell_by_counted_as_error(client, session):
     assert len(body["errors"]) >= 1
 
 
-@pytest.mark.asyncio
-async def test_import_status_stripped_always_available(client, session):
-    """Batch import with status=memo_out must create item with status=available.
-
-    The backend strips status from rec.data before calling post_item, so the
-    item always lands in the default available state regardless of CSV content.
-    """
+async def _import_item_with_status(client, session, status: str | None):
+    """Import one item, with ``status`` when given; returns the response body and the item state."""
     from celerp.models.projections import Projection
-    from sqlalchemy import select as _select
 
     company_id, _, token = await _setup(session)
-    headers = {"Authorization": f"Bearer {token}"}
-
-    record = _item_record({
-        "name": "Status Test Item",
-        "sku": f"STATUS-{uuid.uuid4().hex[:6]}",
-        "sell_by": "piece",
-        "status": "memo_out",  # must be stripped
-    })
-    r = await client.post("/items/import/batch", headers=headers, json={"records": [record]})
+    data = {"name": "Status Test Item", "sku": f"STATUS-{uuid.uuid4().hex[:6]}", "sell_by": "piece"}
+    if status is not None:
+        data["status"] = status
+    record = _item_record(data)
+    r = await client.post("/items/import/batch", headers={"Authorization": f"Bearer {token}"},
+                          json={"records": [record]})
     assert r.status_code == 200, r.text
-    assert r.json()["created"] == 1
+    proj = await session.get(Projection, {"company_id": company_id, "entity_id": record["entity_id"]})
+    return r.json(), proj.state if proj is not None else None
 
-    entity_id = record["entity_id"]
-    proj = (await session.execute(
-        _select(Projection).where(
-            Projection.entity_id == entity_id,
-            Projection.company_id == company_id,
-        )
-    )).scalars().first()
-    assert proj is not None
-    assert proj.state.get("status") == "available"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status, stored", [(None, "available"), ("available", "available"), ("draft", "draft"),
+                                            ("Archived", "archived")])
+async def test_import_item_starts_in_a_safe_status(client, session, status, stored):
+    """An imported item starts available, or in the draft or archived status the file names."""
+    body, state = await _import_item_with_status(client, session, status)
+    assert body["created"] == 1, body
+    assert state["status"] == stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["sold", "merged", "memo_out", "reserved", "fulfilled", "transformed"])
+async def test_import_item_cannot_start_in_a_lifecycle_status(client, session, status):
+    """A status that only stock movements reach cannot be manufactured by an import: the
+    record is rejected with the reason, and no item is created."""
+    body, state = await _import_item_with_status(client, session, status)
+    assert body["created"] == 0
+    assert state is None
+    (error,) = body["errors"]
+    assert status in str(error) and "available, draft or archived" in str(error)
 
 
 @pytest.mark.asyncio

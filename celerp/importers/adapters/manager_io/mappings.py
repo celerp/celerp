@@ -88,22 +88,14 @@ def _tax_codes(book: Book) -> list[CIFTaxCode]:
 def _contacts(book: Book) -> list[CIFContact]:
     return [CIFContact(**_src(c.source_type, c.key, c.code), name=c.name,
                        roles=["customer" if c.source_type == "Customer" else "supplier"], email=c.email,
-                       address=c.address, currency=book.currency_code(c.currency),
-                       metadata={"inactive": True} if c.inactive else {})
+                       address=c.address, currency=book.currency_code(c.currency))
             for c in book.contacts.values()]
 
 
 def _items(book: Book) -> list[CIFItem]:
-    out = []
-    for i in book.items.values():
-        metadata: dict = {}
-        if i.purchase_price is not None:
-            metadata["purchase_price"] = str(i.purchase_price)
-        if i.inactive:
-            metadata["inactive"] = True
-        out.append(CIFItem(**_src("InventoryItem", i.key, i.code), sku=i.code, name=i.name, unit=i.unit,
-                           sell_by="piece", retail_price=i.sales_price, status="available", metadata=metadata))
-    return out
+    return [CIFItem(**_src("InventoryItem", i.key, i.code), sku=i.code, name=i.name, unit=i.unit, sell_by="piece",
+                    retail_price=i.sales_price, status="archived" if i.inactive else "available")
+            for i in book.items.values()]
 
 
 def _line(book: Book, doc: Document, line: Line) -> CIFLineItem:

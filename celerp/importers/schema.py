@@ -362,7 +362,7 @@ class CIFItem(CIFSourceRecord):
     total_cost: CIFDecimal | None = None
     wholesale_price: CIFDecimal | None = None
     retail_price: CIFDecimal | None = None
-    status: Literal["available", "memo_out", "production", "sold", "void"]
+    status: Literal["available", "archived", "memo_out", "production", "sold", "void"]
     category: str | None = None
     parent_external_id: str | None = None     # split lineage
     barcode: str | None = None
