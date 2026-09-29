@@ -178,7 +178,7 @@ async def test_cost_price_endpoint_restates_through_lineage(client, session, aut
 
 
 @pytest.mark.asyncio
-async def test_exact_retry_adds_nothing(client, session, auth):
+async def test_the_same_restatement_sent_again_adds_nothing(client, session, auth):
     a, b = await _item(client, auth, 100.0), await _item(client, auth, 50.0)
     c = await _merge(client, auth, [a, b])
     doc = await _sell(client, session, auth, c)
@@ -362,7 +362,7 @@ async def test_csv_cost_upsert_restates_through_lineage(client, session, auth):
     assert r.json()["updated"] == 1, r.json()
     assert await _cost(session, auth, a) == 130.0
     assert await _cost(session, auth, c) == 180.0
-    # An exact retry of the import adds nothing.
+    # The same import sent again adds nothing.
     r = await client.post("/items/import/batch", headers=auth["headers"], json={"records": [record]})
     assert r.json()["skipped"] == 1
     assert await _cost(session, auth, c) == 180.0
@@ -414,7 +414,7 @@ async def test_manufacturing_recost_follows_merge_lineage(client, session, auth)
     await session.commit()
     assert await _cost(session, auth, lot) == 130.0
     assert await _cost(session, auth, merged) == 180.0
-    # Completing the same run again dedups.
+    # Completing the same run again adds nothing.
     await _recost_run_lots(session, auth["company_id"], user, "mfg:order-1", run, 130.0)
     await session.commit()
     assert await _cost(session, auth, merged) == 180.0

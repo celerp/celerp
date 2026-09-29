@@ -9,8 +9,8 @@ step that creates something of ours: a local draft made through the normal
 create path, with our own number, linked back to the received record.
 
 Identity is exact: the sender's installation, the sender's company on it and
-the sender's document id. Re-imports, refreshed links and retries land on the
-same received record. Revisions are tracked separately from identity. The
+the sender's document id. Re-imports and refreshed links land on the same
+received record. Revisions are tracked separately from identity. The
 sender's revision number, when the bundle carries one, identifies a revision
 and orders it: a repeat is a no-op, a newer one becomes current, an older one
 arriving late is kept in history, and the same number with different content
@@ -122,8 +122,8 @@ def received_id(installation: str, company: str, document: str) -> str:
 
 
 def revision_key(rid: str, position: str, digest: str, link: str | None, company_id) -> str:
-    """Idempotency key of one revision arriving through one link. ``position``
-    is the sender's revision, or for unnumbered revisions the local sequence it
+    """Key of one revision arriving through one link. ``position`` is the
+    sender's revision, or for unnumbered revisions the local sequence it
     arrives after, so content that comes back after a change is a new arrival."""
     link_key = hashlib.sha256((link or "").encode()).hexdigest()[:16]
     return f"{rid}:r:{position}:{digest}:{link_key}:{company_id}"
@@ -248,10 +248,8 @@ async def record_received(
 ) -> str:
     """Store a sanitized document in Received and return its id. Caller commits.
 
-    The idempotency key is the revision plus the link it came through, so a
-    repeat of the same revision over the same link (retry, double submit)
-    changes nothing, and the same revision over a refreshed link only
-    records the new link."""
+    The same revision over the same link changes nothing, and the same revision
+    over a refreshed link only records the new link."""
     digest = document_digest(document)
     source = source_identity(bundle, link, digest)
     rid = received_id(source.installation, source.company, source.document)
@@ -271,8 +269,7 @@ async def record_received(
             )
         position = f"v{source.revision}"
     else:
-        # A repeat of the current content keeps the position it first arrived
-        # at, so a retry over the same link is the same arrival.
+        # A repeat of the current content keeps the position it first arrived at.
         seq = state.get("current_seq") or 0
         position = f"after{seq - 1 if _is_repeat(state, None, digest) else seq}"
     await emit_event(
@@ -442,8 +439,7 @@ async def book(session: AsyncSession, company_id, rid: str, *, role: str, settin
     """Create our own draft from a received document, at most once.
 
     The draft is made through the canonical create path for its kind, and the
-    version recorded is that create event's own id: a retry after the draft
-    was created replays the same event rather than creating a second draft."""
+    version recorded is that create event's own id."""
     from celerp_docs.routes import DocCreatePayload, ListCreatePayload, create_doc, create_list
 
     state = (await _received_row(session, company_id, rid)).state or {}
@@ -499,8 +495,7 @@ async def update_draft(session: AsyncSession, company_id, rid: str, *, role: str
 
     The patch is a compare-and-set against the version recorded at booking or
     at the last update, so a local edit landing at the same moment wins and
-    this call is rejected. If the patch committed but recording it did not,
-    a retry finds the patch by its idempotency key and records that version."""
+    this call is rejected."""
     from celerp_docs.routes import DocPatch, patch_doc, patch_list
 
     state = (await _received_row(session, company_id, rid)).state or {}

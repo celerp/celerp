@@ -182,7 +182,7 @@ async def test_prices_chosen_on_create_are_kept(client):
     assert doc["line_items"][0]["unit_price"] == 100
 
 
-# ── Retries ──────────────────────────────────────────────────────────────────
+# ── Repeated sends ──────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio

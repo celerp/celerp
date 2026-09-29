@@ -4886,9 +4886,7 @@ async def create_list(
     require_currency_code(payload.currency)
     # Contact before company, the lock order every contact-reference writer takes.
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
-    # Lock the company row so concurrent creates cannot read the same numbering counter, then
-    # re-check the key under that lock: a retry racing the first request returns the original
-    # list instead of consuming a second number. Mirrors create_doc.
+    # Lock the company row so concurrent creates cannot read the same numbering counter.
     company = (
         await session.execute(select(Company).where(Company.id == company_id).with_for_update())
     ).scalar_one_or_none()

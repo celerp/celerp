@@ -3,8 +3,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """
 Seed demo data via the Celerp API.
-Idempotent: skips items and contacts already present and replays documents
-by idempotency key.
+A re-run skips items, contacts and documents already present.
 
 Usage:
     cd <repo-root>/core

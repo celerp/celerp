@@ -222,8 +222,7 @@ async def restate_item_cost(
     trued up by an adjustment JE dated today, leaving the sale's own entries
     untouched. Every check runs before the first event is written: the change
     lands with all of its consequences in the caller's transaction, or raises
-    CostRestatementConflict having written nothing. Downstream identities
-    derive from idempotency_key, so an exact retry adds nothing.
+    CostRestatementConflict having written nothing.
     """
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:

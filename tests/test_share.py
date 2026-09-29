@@ -933,8 +933,8 @@ async def test_import_link_fetches_the_bundle_next_to_the_share_page(client: Asy
 
 
 @pytest.mark.asyncio
-async def test_import_bundle_file_retry_opens_the_same_doc(client: AsyncClient):
-    """Uploading the same .celerp file twice (a retry) does not create a second received doc."""
+async def test_import_bundle_file_again_opens_the_same_doc(client: AsyncClient):
+    """Uploading the same .celerp file twice does not create a second received doc."""
     tok = await _token(client)
     content = json.dumps({"version": 1, "doc": {"doc_type": "invoice", "currency": "USD", "ref_id": "EXT-7", "total": 7.0}}).encode()
     locations = []

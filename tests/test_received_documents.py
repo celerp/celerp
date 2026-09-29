@@ -334,7 +334,7 @@ async def test_book_creates_our_own_draft_linked_back(client):
 
 
 @pytest.mark.asyncio
-async def test_book_is_idempotent(client, session):
+async def test_booking_twice_makes_one_draft(client, session):
     tok = await _token(client)
     rid = await _import(client, tok, _bundle(_doc()))
     first = await _book(client, tok, rid)
@@ -345,9 +345,9 @@ async def test_book_is_idempotent(client, session):
 
 
 @pytest.mark.asyncio
-async def test_book_retry_after_the_draft_was_made_reuses_it(client, session, monkeypatch):
-    """The draft committed but recording the booking failed: the retry finds
-    the same draft through its create key instead of making a second one."""
+async def test_booking_again_after_a_failed_finish_reuses_the_draft(client, session, monkeypatch):
+    """The draft committed but recording the booking failed: booking again
+    returns the same draft instead of making a second one."""
     from fastapi import HTTPException
 
     from celerp_docs import received as rcv
@@ -371,7 +371,7 @@ async def test_book_retry_after_the_draft_was_made_reuses_it(client, session, mo
 
 
 @pytest.mark.asyncio
-async def test_list_create_replay_does_not_use_a_number(client):
+async def test_list_create_sent_twice_uses_one_number(client):
     tok = await _token(client)
     body = {"list_type": "quotation", "idempotency_key": f"k-{uuid.uuid4().hex}"}
     first = await client.post("/lists", headers=_h(tok), json=body)
@@ -477,9 +477,9 @@ async def test_local_edit_racing_update_draft_wins(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_update_retry_after_patch_committed_recovers_its_version(client, session, monkeypatch):
-    """The draft was patched but recording the update failed. The retry finds
-    the patch by its key, records that version, and the draft stays updatable."""
+async def test_updating_again_after_a_failed_finish_keeps_the_draft_updatable(client, session, monkeypatch):
+    """The draft was patched but recording the update failed. Updating again
+    records that version, and the draft stays updatable."""
     from fastapi import HTTPException
 
     from celerp_docs import received as rcv
@@ -803,7 +803,7 @@ def test_dependency_detection_reads_references_not_substrings():
     rows = [
         ("doc:a", "k1", {}, {}),                                          # its own later event
         ("je:auto:doc:b:fin", "k2", {}, {}),                              # entry id names it
-        ("je:x", "je:doc:c:invoice.finalized:c", {}, {}),                 # idempotency key names it
+        ("je:x", "je:doc:c:invoice.finalized:c", {}, {}),                 # key names it
         ("pay:1", "k3", {"lines": [{"source": "doc:d"}]}, {"n": ["x"]}),  # nested reference
         ("item:1", "k4", {"note": "see doc:e later"}, {"ref": "doc:ee"}), # text that only contains it
     ]
@@ -1114,7 +1114,7 @@ async def test_same_revision_with_different_content_is_rejected(client):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("revision", [1, None])
-async def test_retried_arrival_records_nothing_new(client, session, revision):
+async def test_the_same_arrival_again_records_nothing_new(client, session, revision):
     tok = await _token(client)
     company_id = await _company_id(client, tok)
     rid = await _import(client, tok, _bundle(_doc(price=100.0), revision=revision))

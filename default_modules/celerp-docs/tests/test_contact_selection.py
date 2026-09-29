@@ -247,7 +247,7 @@ async def test_stale_selection_changes_nothing(client, resource):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("resource", ["docs", "lists"])
-async def test_lost_response_retry_replays_the_selection(client, resource):
+async def test_the_same_selection_sent_again_returns_the_first_result(client, resource):
     h = await _owner(client)
     item_id = await _item(client, h)
     cid = await _contact(client, h, currency="EUR", price_list="Wholesale")
@@ -255,9 +255,9 @@ async def test_lost_response_retry_replays_the_selection(client, resource):
     version = (await _get(client, h, resource, entity_id))["version"]
     first = await _select(client, h, resource, entity_id, cid, version=version)
     assert first.status_code == 200, first.text
-    retry = await _select(client, h, resource, entity_id, cid, version=version)
-    assert retry.status_code == 200, retry.text
-    assert retry.json()["version"] == first.json()["version"]
+    again = await _select(client, h, resource, entity_id, cid, version=version)
+    assert again.status_code == 200, again.text
+    assert again.json()["version"] == first.json()["version"]
     assert (await _get(client, h, resource, entity_id))["version"] == first.json()["version"]
 
 
