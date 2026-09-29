@@ -1041,7 +1041,12 @@ async def test_concurrent_invoice_fulfillment_cannot_double_claim_shared_lot(_db
                 arrivals += 1
                 if arrivals == 2:
                     ready.set()
-            await asyncio.wait_for(ready.wait(), timeout=5)
+            # The other fulfillment may be queued behind this one; after a short wait
+            # this one goes on alone.
+            try:
+                await asyncio.wait_for(ready.wait(), timeout=1)
+            except TimeoutError:
+                pass
             return await original_lock(session, cid, item_ids)
 
         monkeypatch.setattr(doc_routes, "_lock_item_sku_lots", synchronized_lock)

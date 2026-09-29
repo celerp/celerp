@@ -557,3 +557,15 @@ async def test_unit_cost_with_stock_sets_the_basis(client, session, auth, path):
     state = await _state(session, auth, item_id)
     assert state["cost_base"] == 50.0 and state["cost_total"] == 50.0
     assert "cost_price" not in state
+
+
+@pytest.mark.asyncio
+async def test_correction_reaches_every_invoice_that_recognized_a_sold_lot(client, session, auth):
+    item = await _item(client, auth, 100.0)
+    shipped = await _invoice(client, session, auth, item)
+    waiting = await _invoice(client, session, auth, item)
+    assert await _doc_cogs(session, auth, waiting) == 100.0
+    await _fulfil(client, shipped, auth, item)
+    assert (await _set_cost(client, auth, item, 120.0)).status_code == 200
+    assert await _doc_cogs(session, auth, shipped) == 120.0
+    assert await _doc_cogs(session, auth, waiting) == 120.0

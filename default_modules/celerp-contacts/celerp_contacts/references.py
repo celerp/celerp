@@ -3,8 +3,9 @@
 """Contact references held by other records (Documents, Lists, Deals).
 
 Every writer that makes a record point at a contact, or that retires a contact,
-locks the contact rows first through lock_contacts(), then the dependent record.
-One lock order everywhere means a selection cannot commit a reference to a contact
+locks the contact rows through lock_contacts(), then the dependent record.
+lock_contacts() takes the company lock before the contact rows, so the order is
+company, then contacts, then records. One lock order everywhere means a selection cannot commit a reference to a contact
 that a concurrent merge or delete has already tombstoned.
 """
 from __future__ import annotations
@@ -13,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.projections import Projection
+from celerp.services.company_lock import lock_projections
 from celerp_contacts.projections import _compose_address
 
 CONTACT_TYPE_FILTER: dict[str, tuple[str, ...]] = {
@@ -29,17 +31,8 @@ async def lock_contacts(session: AsyncSession, company_id, contact_ids) -> dict[
     from locking them in opposite orders. Ids without a local contact row are absent
     from the result; the caller decides whether that is an error.
     """
-    want = sorted({str(c) for c in contact_ids if c})
-    if not want:
-        return {}
-    rows = (await session.execute(
-        select(Projection)
-        .where(Projection.company_id == company_id, Projection.entity_id.in_(want))
-        .order_by(Projection.entity_id)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )).scalars().all()
-    return {r.entity_id: r for r in rows if r.entity_type == "contact"}
+    rows = await lock_projections(session, company_id, contact_ids)
+    return {eid: r for eid, r in rows.items() if r.entity_type == "contact"}
 
 
 async def lock_referencing_records(

@@ -30,6 +30,7 @@ from celerp.inventory_codes import MAX_SCAN_CODE_LEN
 from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
+from celerp.services.company_lock import lock_projections
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
@@ -485,11 +486,10 @@ async def _get_doc(session: AsyncSession, company_id, entity_id: str, *, for_upd
     # for_update takes the doc row under SELECT ... FOR UPDATE so the lifecycle
     # writers that share it (close, fulfill, send) are mutually exclusive: the
     # loser blocks until the winner commits, then populate_existing forces a fresh
-    # read of the just-committed state to validate against. Mirrors
-    # _get_list_for_update's row-lock idiom.
+    # read of the just-committed state to validate against. lock_projections takes
+    # the company lock first, so every writer takes company, then document, then item rows.
     if for_update:
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id},
-                                with_for_update=True, populate_existing=True)
+        row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     else:
         row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "doc":
@@ -550,18 +550,10 @@ async def _get_docs_for_update(session: AsyncSession, company_id, entity_ids) ->
     never both pass a status check against a stale read and commit after a concurrent
     lifecycle writer changes one - and so two such handlers sharing docs acquire them in
     the same order (no deadlock). populate_existing overwrites any stale identity-map
-    copy. Doc rows are locked before any item rows a caller goes on to lock, the global
-    doc-before-item ordering. Missing or non-doc ids are the caller's to reject."""
-    want = sorted({e for e in entity_ids if e})
-    if not want:
-        return {}
-    rows = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_id.in_(want),
-        ).order_by(Projection.entity_id).with_for_update().execution_options(populate_existing=True)
-    )).scalars().all()
-    return {r.entity_id: r for r in rows if r.entity_type == "doc"}
+    copy. The company lock comes first and doc rows before any item rows a caller goes on
+    to lock, the global company-document-item ordering. Missing or non-doc ids are the caller's to reject."""
+    rows = await lock_projections(session, company_id, entity_ids)
+    return {eid: r for eid, r in rows.items() if r.entity_type == "doc"}
 
 
 def _reject_if_closed(state: dict, action: str) -> None:
@@ -2023,7 +2015,6 @@ async def _finalize_doc_impl(
     """Finalize with caller-owned transaction support for domain integrations."""
     # An invoice's recognized COGS reads lot costs that a cost correction may be
     # rewriting; the company lock orders the two.
-    await lock_item_code_namespace(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     # A closed memo is terminal, settled paperwork; finalize maps closed->final in the
     # reducer, silently stripping the terminal status and its close metadata. Refuse under
@@ -2389,7 +2380,6 @@ async def renumber_doc(
 
 @router.post("/{entity_id}/unvoid")
 async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    await lock_item_code_namespace(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("unvoid", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.unvoided",
@@ -3389,7 +3379,6 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
 async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # A receipt adds to the quantity and cost of the lots it reads, so it waits for any
     # receipt or cost change in flight and reads what that one committed.
-    await lock_item_code_namespace(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("receive", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.received",
@@ -3693,7 +3682,6 @@ class ReturnBody(BaseModel):
 async def return_consignment_items(entity_id: str, payload: ReturnBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # A return takes goods off the lots it reads, so it waits for any receipt or cost
     # change in flight and reads what that one committed.
-    await lock_item_code_namespace(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("return-items", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.items_returned",
@@ -4592,9 +4580,8 @@ async def _get_list_for_update(session: AsyncSession, company_id, entity_id: str
     array, mutate it in Python, and write it back; two writers off the same read would lose one
     update. The lock makes the second writer block until the first commits, then re-read the
     committed array. populate_existing forces the locking SELECT even if the row is already in the
-    session's identity map."""
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id},
-                            with_for_update=True, populate_existing=True)
+    session's identity map. The company lock comes first, as for documents."""
+    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row is None or row.entity_type != "list":
         raise HTTPException(status_code=404, detail="List not found")
     return row
@@ -7072,7 +7059,6 @@ async def receive_return(
     """
     from celerp_inventory.routes import flatten_item
 
-    await lock_item_code_namespace(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("receive-return", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.return_received",
@@ -7404,7 +7390,6 @@ async def undo_receive(
     capitalised. The bill still stands, so what it booked stays booked. Clears
     received_items and received_item_ids on the bill projection.
     """
-    await lock_item_code_namespace(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("doc_type") != "bill":
@@ -8345,9 +8330,7 @@ async def write_off_stock(
     # Row-lock the list for the whole transaction: this terminal moves ledger value, so a second
     # concurrent run must serialize (a double run would double-carve and post twice). The audit terminal
     # only reads status; the ledger effect here is why the write-off locks and the audit does not.
-    row = (await session.execute(select(Projection).where(
-        Projection.company_id == company_id, Projection.entity_id == entity_id
-    ).with_for_update())).scalar_one_or_none()
+    row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row is None or row.state.get("list_type") != "writeoff":
         raise HTTPException(status_code=404, detail="Write-off not found")
     status = row.state.get("status")
@@ -8380,9 +8363,8 @@ async def write_off_stock(
     # Lock every distinct item projection FOR UPDATE in one deterministic (entity_id-sorted) batch: two
     # concurrent runs that share items acquire them in the same order (no deadlock), and each reads the
     # other's committed decrement. populate_existing overwrites any stale identity-map copy, closing the
-    # unlocked-read hazard the plain get left open. A partial line carves a child lot, which needs the
-    # company code namespace, so that lock is taken first to keep the canonical namespace-then-item order.
-    await lock_item_code_namespace(session, company_id)
+    # unlocked-read hazard the plain get left open. The company lock taken with the list row above also
+    # covers the child lot a partial line carves.
     locked: dict[str, Projection] = {
         p.entity_id: p for p in (await session.execute(
             select(Projection).where(
