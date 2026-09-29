@@ -124,15 +124,29 @@ async def provision_migration_company(session: AsyncSession, *, owner: User, com
     return await _create_company(session, owner=owner, company_name=company_name, settings={}, is_active=False)
 
 
-async def add_missing_required_defaults(session: AsyncSession, company_id: uuid.UUID) -> None:
-    """Fill in only what a migrated company still lacks: a default location and a fiscal year start."""
+async def ensure_default_location(session: AsyncSession, company_id: uuid.UUID) -> Location:
+    """The company's default location, settled deterministically.
+
+    An existing default is kept; otherwise the oldest location becomes the default;
+    otherwise the standard default location is created. Only one is ever marked default.
+    """
     locations = list((await session.execute(
         select(Location).where(Location.company_id == company_id).order_by(Location.created_at, Location.id)
     )).scalars())
-    if not locations:
-        session.add(_default_location(company_id))
-    elif not any(loc.is_default for loc in locations):
-        locations[0].is_default = True
+    default = next((loc for loc in locations if loc.is_default), None)
+    if default is None and locations:
+        default = locations[0]
+        default.is_default = True
+    elif default is None:
+        default = _default_location(company_id)
+        session.add(default)
+    await session.flush()
+    return default
+
+
+async def add_missing_required_defaults(session: AsyncSession, company_id: uuid.UUID) -> None:
+    """Fill in only what a migrated company still lacks: a default location and a fiscal year start."""
+    await ensure_default_location(session, company_id)
     company = await session.get(Company, company_id)
     if not (company.settings or {}).get("fiscal_year_start"):
         company.settings = {**(company.settings or {}), "fiscal_year_start": DEFAULT_FISCAL_YEAR_START}

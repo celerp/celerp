@@ -106,7 +106,7 @@ def _items(book: Book) -> list[CIFItem]:
         if i.inactive:
             metadata["inactive"] = True
         out.append(CIFItem(**_src("InventoryItem", i.key, i.code), sku=i.code, name=i.name, unit=i.unit,
-                           retail_price=i.sales_price, status="available", metadata=metadata))
+                           sell_by="piece", retail_price=i.sales_price, status="available", metadata=metadata))
     return out
 
 

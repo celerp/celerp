@@ -34,6 +34,7 @@ from celerp.services.migration_core_sink import (
     mapped_targets,
     sink_result,
 )
+from celerp.services.provisioning import ensure_default_location
 from celerp_inventory import services
 from celerp_inventory.services import BatchImportRequest, ImportRecord
 
@@ -74,9 +75,9 @@ async def _import_items(context: SinkContext, items: Sequence[CIFItem]) -> list[
         select(Location).where(Location.company_id == context.company_id)
     )).scalars().all()
     by_name = {loc.name: str(loc.id) for loc in locations}
-    default = next((str(loc.id) for loc in locations if loc.is_default), None)
-    if default is None and len(locations) == 1:
-        default = str(locations[0].id)
+    default = None
+    if any(not item.location_name for item in items):
+        default = str((await ensure_default_location(context.session, context.company_id)).id)
     prepared = [_item_record(context, item, by_name, default) for item in items]
 
     async def write(ready: list[ImportRecord]):
@@ -96,8 +97,6 @@ def _item_record(
         location_id = by_name.get(item.location_name)
         if location_id is None:
             return f"Item {item.name}: location {item.location_name} does not exist."
-    elif default is None:
-        return f"Item {item.name}: no location was given and the company has no default location."
     else:
         location_id = default
     sell_by = item.weight_unit if item.sell_by == "weight" else (item.sell_by or item.unit or "piece")
