@@ -25,7 +25,6 @@ from celerp.importers.schema import (
     CIFAttachment,
     CIFCompanyProfile,
     CIFCurrency,
-    CIFExchangeRate,
     CIFLocation,
     CIFSourceRecord,
     CIFTaxCode,
@@ -150,7 +149,6 @@ def sink_error(record: CIFSourceRecord, message: str) -> SinkError:
 _GROUP_TARGET = {
     "company": "company",
     "currencies": "currency",
-    "exchange_rates": "exchange_rate",
     "tax_codes": "tax",
     "locations": "location",
     "attachments": "attachment",
@@ -158,7 +156,7 @@ _GROUP_TARGET = {
 
 
 class CoreMigrationSink:
-    """Company settings, currencies, exchange rates, tax codes, locations and attachments."""
+    """Company settings, currencies, tax codes, locations and attachments."""
 
     key = "celerp"
     groups = frozenset(_GROUP_TARGET)
@@ -174,7 +172,7 @@ class CoreMigrationSink:
                 result.errors.append(sink_error(record, error))
                 continue
             already = await mapped_targets(context, target_type, [record.source_external_id])
-            status = "skipped" if already or target_type in ("currency", "exchange_rate") else "created"
+            status = "skipped" if already or target_type == "currency" else "created"
             if status == "created":
                 result.created += 1
             else:
@@ -191,9 +189,6 @@ class CoreMigrationSink:
             return "company", str(company.id), _apply_company_profile(company, record)
         if isinstance(record, CIFCurrency):
             return "currency", record.code, _check_currency(record.code)
-        if isinstance(record, CIFExchangeRate):
-            error = _check_currency(record.from_currency) or _check_currency(record.to_currency)
-            return "exchange_rate", f"{record.from_currency}:{record.to_currency}:{record.effective_date}", error
         if isinstance(record, CIFTaxCode):
             return "tax", record.name, _apply_tax_code(company, record)
         if isinstance(record, CIFLocation):

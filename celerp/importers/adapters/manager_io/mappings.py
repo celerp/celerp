@@ -26,7 +26,6 @@ from celerp.importers.schema import (
     CIFContact,
     CIFCurrency,
     CIFDocument,
-    CIFExchangeRate,
     CIFImportBundle,
     CIFInventoryAdjustment,
     CIFItem,
@@ -62,12 +61,6 @@ def _currencies(book: Book) -> list[CIFCurrency]:
     foreign = [CIFCurrency(**_src("ForeignCurrency", c.key), code=c.code, name=c.name, precision=c.precision)
                for c in book.currencies.values() if c.code != book.base_code]
     return [base, *sorted(foreign, key=lambda c: c.code)]
-
-
-def _exchange_rates(book: Book) -> list[CIFExchangeRate]:
-    return [CIFExchangeRate(**_src("ExchangeRate", r.key), from_currency=book.currency_code(r.currency),
-                            to_currency=book.base_code, rate=r.rate, effective_date=r.effective)
-            for r in sorted(book.rates, key=lambda r: (r.effective, r.key))]
 
 
 def _accounts(book: Book) -> list[CIFAccount]:
@@ -216,7 +209,6 @@ def build_bundle(book: Book, ledger: Ledger, screened: Screened) -> CIFImportBun
     return CIFImportBundle(
         company=_company(book),
         currencies=_currencies(book),
-        exchange_rates=_exchange_rates(book),
         accounts=_accounts(book),
         tax_codes=_tax_codes(book),
         contacts=_contacts(book),

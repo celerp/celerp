@@ -106,7 +106,7 @@ PHASE_LABELS: dict[MigrationPhase, str] = {
 # The CIF bundle groups each import phase writes, in write order.
 PHASE_GROUPS: dict[MigrationPhase, tuple[str, ...]] = {
     _P.COMPANY_SETTINGS: ("company",),
-    _P.CURRENCIES_TAXES_ACCOUNTS: ("currencies", "exchange_rates", "accounts", "tax_codes"),
+    _P.CURRENCIES_TAXES_ACCOUNTS: ("currencies", "accounts", "tax_codes"),
     _P.CONTACTS_LOCATIONS: ("locations", "contacts"),
     _P.INVENTORY_MASTERS: ("items",),
     _P.OPERATIONAL_DOCUMENTS: ("documents",),

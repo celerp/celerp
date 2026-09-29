@@ -20,7 +20,6 @@ from celerp.importers.schema import (
     CIFAccount,
     CIFCompanyProfile,
     CIFDocument,
-    CIFExchangeRate,
     CIFImportBundle,
     CIFImportManifest,
     CIFInventoryAdjustment,
@@ -71,12 +70,6 @@ def test_cif_v2_decimal_and_balanced_journal_validation():
                 {"account_external_id": "cash", "debit": bad},
                 {"account_external_id": "sales", "credit": "10.00"},
             ]))
-    with pytest.raises(ValidationError, match="binary floats"):
-        CIFExchangeRate.model_validate({**PROVENANCE, "from_currency": "EUR", "to_currency": "USD",
-                                        "rate": 1.1, "effective_date": "2026-01-31"})
-    rate = CIFExchangeRate.model_validate({**PROVENANCE, "from_currency": "EUR", "to_currency": "USD",
-                                           "rate": "1.1", "effective_date": "2026-01-31"})
-    assert rate.rate == Decimal("1.1")
 
     with pytest.raises(ValidationError, match="unbalanced"):
         CIFJournalEntry.model_validate(_journal(lines=[

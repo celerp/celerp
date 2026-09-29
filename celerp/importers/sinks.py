@@ -31,7 +31,6 @@ from celerp.importers.schema import (
 SINK_MODULES: dict[str, str] = {
     "company": "celerp",
     "currencies": "celerp",
-    "exchange_rates": "celerp",
     "tax_codes": "celerp",
     "locations": "celerp",
     "attachments": "celerp",

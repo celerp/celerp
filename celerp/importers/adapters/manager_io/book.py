@@ -70,13 +70,6 @@ def _money(value: Decimal | None) -> Decimal:
     return value if value is not None else Decimal(0)
 
 
-def _rate(value: Decimal | None, inverse: bool) -> Decimal | None:
-    """Base units per one foreign unit. Manager can store the inverse; 1/x restores the direction."""
-    if value is None or value == 0:
-        return None
-    return Decimal(1) / value if inverse else value
-
-
 # ── Source records ─────────────────────────────────────────────────────────────
 
 @dataclass
@@ -86,14 +79,6 @@ class Currency:
     name: str | None
     precision: int
     inactive: bool = False
-
-
-@dataclass
-class Rate:
-    key: str
-    effective: date
-    currency: str                              # currency object key
-    rate: Decimal                              # base units per one foreign unit
 
 
 @dataclass
@@ -275,7 +260,6 @@ class Book:
     base_name: str | None = None
     precision: int = 2
     currencies: dict[str, Currency] = field(default_factory=dict)
-    rates: list[Rate] = field(default_factory=list)
     groups: dict[str, Group] = field(default_factory=dict)
     accounts: dict[str, Account] = field(default_factory=dict)
     tax_codes: dict[str, TaxCode] = field(default_factory=dict)
@@ -513,12 +497,6 @@ def _decode_object(book: Book, name: str, key: str, m: Message) -> None:
             raise Blocked("unsupported feature", "The currency has no three-letter code.")
         book.currencies[key] = Currency(key, code, m.str(1), m.int(4, None) if m.values(4) else currency_dp(code),
                                         m.bool(6))
-    elif name == "ExchangeRate":
-        rate = _rate(m.decimal(6), m.bool(7))
-        currency = _ref(m.guid(2))
-        if rate is None or currency is None:
-            raise Blocked("unsupported feature", "The exchange rate has no currency or value.")
-        book.rates.append(Rate(key, _require_date(m, 1), currency, rate))
     elif name in ("Assets", "Liabilities", "Equity"):
         book.groups[key] = Group(key, name, None)
     elif name == "BalanceSheetGroup":
@@ -703,9 +681,6 @@ def _resolve(book: Book) -> None:
     for contact in book.contacts.values():
         if contact.currency is not None and contact.currency not in book.currencies:
             book.block(contact.source_type, contact.key, "unknown reference", "Refers to a currency not in the file.")
-    for rate in book.rates:
-        if rate.currency not in book.currencies:
-            book.block("ExchangeRate", rate.key, "unknown reference", "Refers to a currency not in the file.")
     for tax in book.tax_codes.values():
         if tax.account not in book.accounts:
             book.block("TaxCode", tax.key, "unknown reference", "Refers to an account not in the file.")

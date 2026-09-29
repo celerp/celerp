@@ -280,14 +280,6 @@ class CIFCurrency(CIFSourceRecord):
     precision: Annotated[int, Field(ge=0, le=8)] = 2
 
 
-class CIFExchangeRate(CIFSourceRecord):
-    """One unit of `from_currency` equals `rate` units of `to_currency` on `effective_date`."""
-    from_currency: Annotated[str, Field(min_length=3, max_length=3)]
-    to_currency: Annotated[str, Field(min_length=3, max_length=3)]
-    rate: Annotated[CIFDecimal, Field(gt=0)]
-    effective_date: CIFDate
-
-
 class AccountType(StrEnum):
     ASSET = "asset"
     LIABILITY = "liability"
@@ -592,7 +584,6 @@ class CIFImportBundle(BaseModel):
     """Complete set of entities for one import."""
     company: CIFCompanyProfile | None = None
     currencies: list[CIFCurrency] = Field(default_factory=list)
-    exchange_rates: list[CIFExchangeRate] = Field(default_factory=list)
     accounts: list[CIFAccount] = Field(default_factory=list)
     tax_codes: list[CIFTaxCode] = Field(default_factory=list)
     locations: list[CIFLocation] = Field(default_factory=list)
@@ -609,7 +600,7 @@ class CIFImportBundle(BaseModel):
         """Every entity in the bundle, in import dependency order."""
         records: list[CIFSourceRecord] = [self.company] if self.company else []
         for group in (
-            self.currencies, self.exchange_rates, self.accounts, self.tax_codes,
+            self.currencies, self.accounts, self.tax_codes,
             self.locations, self.contacts, self.items, self.documents,
             self.settlements, self.bank_transfers, self.journals,
             self.inventory_adjustments, self.attachments,

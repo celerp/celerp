@@ -640,6 +640,23 @@ def test_master_attributes_celerp_cannot_hold_are_each_reported(tmp_path):
     assert coverage["Customer"][:2] == (1, CoverageClass.MAPPED)
 
 
+def test_exchange_rates_are_reported_as_not_moved_and_stay_out_of_the_manifest(tmp_path):
+    # Celerp has no store of dated exchange rates, and every migrated record is in the base
+    # currency, so a rate table is disclosed at scan time and never handed to a sink.
+    objects = [*specs.basic_objects(), specs.obj("ForeignCurrency", "EUR", {1: "Euro", 2: "EUR", 4: 2}),
+               specs.obj("ExchangeRate", "RATE1", {1: date(2026, 1, 1), 2: specs.k("EUR"), 6: Decimal("1.2")})]
+    art = artifact(write_manager_file(tmp_path / "rates.manager", objects, specs.basic_blobs()))
+    manager = adapter()
+
+    count, klass, note = _coverage(manager.inspect([art]))["ExchangeRate"]
+    assert (count, klass) == (1, CoverageClass.UNSUPPORTED_NONFINANCIAL)
+    assert "base currency" in note
+
+    manifest = manager.build_manifest([art], FULL)
+    assert "exchange_rates" not in type(manifest.bundle).model_fields
+    assert all(r.source_type != "ExchangeRate" for r in manifest.bundle.source_records())
+
+
 # ── Document lines ────────────────────────────────────────────────────────────
 
 def test_document_line_forms_carry_their_exact_fields_and_report_the_rest(tmp_path):

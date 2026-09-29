@@ -37,7 +37,6 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("BusinessDetails", "38cf4712-6e95-4ce1-b53a-bff03edad273", _M),
     ("CreditNote", "245e5943-0092-409d-96ae-e2ee10eac75b", _M),
     ("Customer", "ec37c11e-2b67-49c6-8a58-6eccb7dd75ee", _M),
-    ("ExchangeRate", "14240c19-3d08-4fe6-94bb-6dd17c4bcda6", _M),
     ("ForeignCurrency", "6116531b-cb3d-4f85-b239-745972943a6b", _M),
     ("InterAccountTransfer", "dea4f923-c498-4504-b3ef-30be3c33175e", _M),
     ("InventoryItem", "0dbdbf8a-d80c-48e6-b453-bb7862445b7c", _M),
@@ -106,6 +105,7 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("DeliveryNote", "a0f6a539-f6a4-4a38-a69a-546a608a1f6d", _N),
     ("Division", "cc7fc110-e3e4-4b3b-823d-86c4a4cdabbc", _N),
     ("Employee", "dadb7f95-a5dd-45c0-945d-6ad4ee28776e", _N),
+    ("ExchangeRate", "14240c19-3d08-4fe6-94bb-6dd17c4bcda6", _N),
     ("ExpenseClaimsPayer", "563d7f9e-d64c-49ec-a938-e5531e72f4d8", _N),
     ("Forecast", "821030a6-9820-4cba-8879-eda07853b9a6", _N),
     ("GoodsReceipt", "866217a4-f841-47de-a4e6-87152405c88d", _N),
@@ -319,7 +319,6 @@ TARGETS: dict[str, str] = {
     "BusinessDetails": "company",
     "BaseCurrency": "currency",
     "ForeignCurrency": "currency",
-    "ExchangeRate": "exchange_rate",
     "BalanceSheetAccount": "account",
     "ProfitAndLossStatementAccount": "account",
     "BalanceSheetAccountsReceivableAccount": "account",
@@ -349,6 +348,7 @@ TARGETS: dict[str, str] = {
     "Equity": "account",
 }
 NOTES: dict[str, str] = {
+    "ExchangeRate": "Not moved. Celerp migrates base currency records only, so no migrated record uses these rates.",
     "DebitNote": "Posted as a journal on the bill it notes and applied to that bill; Celerp has no debit note document.",
     "BalanceSheetGroup": "Sets the account type of the accounts in the group; the group itself is not carried.",
     "ProfitAndLossStatementGroup": "Sets the account type of the accounts in the group; the group itself is not carried.",

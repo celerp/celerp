@@ -377,9 +377,6 @@
     "ForeignCurrency": [
       "fx.blocked"
     ],
-    "ExchangeRate": [
-      "fx.blocked"
-    ],
     "BalanceSheetAccount": [
       "basic.full_history.trial_balance"
     ],

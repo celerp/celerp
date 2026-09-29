@@ -73,8 +73,8 @@ def test_manager_multicurrency_requires_proven_fx_treatment():
                if row.coverage_class == CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER}
     assert blocked == set(CHECKPOINTS["fx"]["blocked"])
 
-    # The currency masters themselves are not financial records and still map.
-    for master in ("ForeignCurrency", "ExchangeRate"):
-        assert coverage[master].coverage_class == CoverageClass.MAPPED, master
+    # The currency master is not a financial record and still maps; its rate table is not moved.
+    assert coverage["ForeignCurrency"].coverage_class == CoverageClass.MAPPED
+    assert coverage["ExchangeRate"].coverage_class == CoverageClass.UNSUPPORTED_NONFINANCIAL
     with pytest.raises(ScanError, match="cannot be migrated"):
         manager.build_manifest([art], FULL)
