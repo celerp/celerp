@@ -114,6 +114,7 @@ async def test_conflicting_old_and_new_contact_fields_are_refused(client, resour
     ("lists", "list_type", "quotation", "vendor", "customer"),
     ("docs", "doc_type", "invoice", "vendor", "customer"),
     ("docs", "doc_type", "purchase_order", "customer", "vendor"),
+    ("docs", "doc_type", "subscription_po", "customer", "vendor"),
 ])
 async def test_create_refuses_the_wrong_contact_type(client, resource, kind_field, kind, contact_type, role):
     h = await _owner(client)

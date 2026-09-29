@@ -43,7 +43,7 @@ SALES_PRICED_DOC_TYPES: frozenset[str] = frozenset({
 
 # Purchase-side document types: their contact is a vendor (vendor or both), every
 # other document's contact is a customer (customer or both).
-VENDOR_DOC_TYPES: frozenset[str] = frozenset({"purchase_order", "bill", "consignment_in"})
+VENDOR_DOC_TYPES: frozenset[str] = frozenset({"purchase_order", "bill", "consignment_in", "subscription_po"})
 
 # Older records named their counterparty customer_id/customer_name (transfers: receiver).
 # Writes take them as the contact fields, and replay folds stored ones the same way.
