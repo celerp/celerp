@@ -2342,6 +2342,8 @@
   "documents.view_item_details": "Lihat detail item",
   "documents.view_reserving_document": "Lihat dokumen pemesanan",
   "documents.void_reason_placeholder": "Alasan pembatalan...",
+  "documents.refund_this_payment": "Kembalikan dana dari pembayaran ini",
+  "documents.refunded_amount": "Dikembalikan {amount}",
   "documents.void_this_payment": "Batalkan pembayaran ini",
   "documents.word_list": "daftar",
   "documents.your_company": "Perusahaan Anda",

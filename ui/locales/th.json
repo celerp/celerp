@@ -2342,6 +2342,8 @@
   "documents.view_item_details": "ดูรายละเอียดสินค้า",
   "documents.view_reserving_document": "ดูเอกสารที่จองสินค้านี้",
   "documents.void_reason_placeholder": "เหตุผลการยกเลิก...",
+  "documents.refund_this_payment": "คืนเงินจากการชำระเงินนี้",
+  "documents.refunded_amount": "คืนเงินแล้ว {amount}",
   "documents.void_this_payment": "ยกเลิกการชำระเงินนี้",
   "documents.word_list": "รายการ",
   "documents.your_company": "บริษัทของคุณ",

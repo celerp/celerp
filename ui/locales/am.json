@@ -2446,6 +2446,8 @@
   "documents.view_item_details": "ዕቃ ዝርዝሮችን ይመልከቱ",
   "documents.view_reserving_document": "የተያዘ ሰነድ ይመልከቱ",
   "documents.void_reason_placeholder": "የውድቅ ምክንያት...",
+  "documents.refund_this_payment": "ከዚህ ክፍያ ተመላሽ ክፈል",
+  "documents.refunded_amount": "ተመላሽ የተደረገ {amount}",
   "documents.void_this_payment": "ይህን ክፍያ ውድቅ አድርግ",
   "documents.word_list": "ዝርዝር",
   "documents.your_company": "የእርስዎ ኩባንያ",

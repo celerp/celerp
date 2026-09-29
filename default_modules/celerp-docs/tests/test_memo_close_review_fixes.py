@@ -135,7 +135,7 @@ async def test_refund_payment_rejected_on_closed_memo(client):
     memo = await _paid_then_closed_memo(client, h)
 
     r = await client.post(f"/docs/{memo}/refund", headers=h,
-                          json={"amount": 4, "payment_date": "2026-06-23", "method": "cash", "bank_account": "1111"})
+                          json={"payment_index": 0, "amount": 4, "payment_date": "2026-06-23", "method": "cash"})
     assert r.status_code == 409, r.text
     assert "reopen" in r.text.lower()
 

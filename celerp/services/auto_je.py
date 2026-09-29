@@ -415,8 +415,8 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     )
 
 
-async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float) -> None:
-    """Reverse a payment JE by creating a counter-entry.
+async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice", refund_date: str | None = None, base_currency: str = "USD", doc_rate: float, settlement_rate: float, refund_number: int | None = None) -> None:
+    """Reverse a payment JE, or the refunded share of it, by creating a counter-entry.
 
     refund_date: ISO date for the reversal JE (defaults to today if None). Used when
         void is actually a refund - the date affects bank ledger position.
@@ -425,10 +425,17 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         entry is the mirror of it line for line, exchange difference included. Reversing
         at any other rate would leave the difference behind in the accounts the payment
         touched, on a document that is back to unpaid.
+    refund_number: set for a refund of part or all of the payment; each refund of the
+        payment is its own entry, reversing `amount` of it at the payment's rates.
     """
     ledger_amount = to_base(float(amount), checked_exchange_rate(doc_rate), base_currency)
     bank_amount = to_base(float(amount), checked_exchange_rate(settlement_rate), base_currency)
-    void_key = f"void_{payment_index}"
+    if refund_number is None:
+        kind, key, trigger = "payvoid", f"void_{payment_index}", "doc.payment.voided"
+        memo = f"Auto JE for {doc_id} payment void (index {payment_index})"
+    else:
+        kind, key, trigger = "payrefund", f"refund_{payment_index}_{refund_number}", "doc.payment.refunded"
+        memo = f"Auto JE for {doc_id} payment refund (index {payment_index})"
     if doc_type in ("bill", "purchase_order"):
         entries = [
             {"account": bank_account_code, "debit": bank_amount, "credit": 0.0},
@@ -451,13 +458,13 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:payvoid:{void_key}",
-        idem_create=je_idempotency_key(doc_id, f"payment.voided:{void_key}", "c"),
-        idem_posted=je_idempotency_key(doc_id, f"payment.voided:{void_key}", "p"),
-        memo=f"Auto JE for {doc_id} payment void (index {payment_index})",
+        je_id=f"je:auto:{doc_id}:{kind}:{key}",
+        idem_create=je_idempotency_key(doc_id, f"{trigger.removeprefix('doc.')}:{key}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"{trigger.removeprefix('doc.')}:{key}", "p"),
+        memo=memo,
         ts=refund_date,
         entries=entries,
-        metadata_={"trigger": "doc.payment.voided", "doc_id": doc_id, "payment_index": payment_index},
+        metadata_={"trigger": trigger, "doc_id": doc_id, "payment_index": payment_index},
     )
 
 

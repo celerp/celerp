@@ -2342,6 +2342,8 @@
   "documents.view_item_details": "عرض تفاصيل العنصر",
   "documents.view_reserving_document": "عرض مستند الحجز",
   "documents.void_reason_placeholder": "سبب الإلغاء...",
+  "documents.refund_this_payment": "استرداد من هذه الدفعة",
+  "documents.refunded_amount": "تم استرداد {amount}",
   "documents.void_this_payment": "إلغاء هذا الدفع",
   "documents.word_list": "القائمة",
   "documents.your_company": "شركتك",

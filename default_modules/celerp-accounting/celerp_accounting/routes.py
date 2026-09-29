@@ -855,7 +855,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         currency = state.get("currency")
         rate = state.get("conversion_rate")
         payment_index = meta.get("payment_index")
-        if isinstance(payment_index, int) and meta.get("trigger") in ("doc.payment.received", "doc.payment.voided"):
+        if isinstance(payment_index, int) and meta.get("trigger") in ("doc.payment.received", "doc.payment.voided", "doc.payment.refunded"):
             payments = state.get("payments", [])
             # Payments are identified by their index FIELD (stable since
             # deletions tombstone in place). Projections compacted before that

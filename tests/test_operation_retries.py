@@ -71,8 +71,9 @@ async def _payment(client, session, auth):
 async def _refund(client, session, auth):
     inv = await _final(client, auth, "invoice")
     await _pay(client, auth, inv, 100.0)
+    index = (await _state(session, auth, inv))["payments"][0]["index"]
     return "POST", f"/docs/{inv}/refund", \
-        {"amount": 30.0, "payment_date": DATE, "bank_account": "1111"}, {"amount": 20.0}
+        {"payment_index": index, "amount": 30.0, "payment_date": DATE}, {"amount": 20.0}
 
 
 async def _void_payment(client, session, auth):

@@ -2465,6 +2465,8 @@
   "documents.view_item_details": "View item details",
   "documents.view_reserving_document": "View reserving document",
   "documents.void_reason_placeholder": "Void reason...",
+  "documents.refund_this_payment": "Refund from this payment",
+  "documents.refunded_amount": "Refunded {amount}",
   "documents.void_this_payment": "Void this payment",
   "documents.word_list": "list",
   "documents.your_company": "Your Company",

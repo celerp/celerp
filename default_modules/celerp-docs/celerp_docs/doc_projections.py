@@ -221,15 +221,14 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         # behind on docs compacted by pre-tombstone deletions).
         target = next((p for p in payments if p.get("index") == idx), None)
         if target is not None:
-            # Refunds adjust amount_paid without a payments[] row, so their
-            # effect is derived before this removal: what the actives summed to
-            # minus what amount_paid actually was. Deriving (rather than
-            # storing a counter) also covers docs refunded before this logic
-            # existed. Doc-level refunds cannot be attributed to one payment,
-            # so removing the very payment a refund already returned still
-            # subtracts both - the price of doc-level refund semantics.
+            # Refunds reduce amount_paid, so their effect is derived before
+            # this removal: what the actives summed to minus what amount_paid
+            # actually was. Deriving also covers refunds recorded before they
+            # named a payment. A refund of this payment leaves with it: only refunds
+            # of the other payments still count against what stays paid.
             _prior_active = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
-            refunded = max(Decimal(0), _prior_active - to_decimal(current.get("amount_paid", 0)))
+            refunded = max(Decimal(0), _prior_active - to_decimal(current.get("amount_paid", 0))
+                           - to_decimal(target.get("refunded", 0)))
             target["status"] = "voided"
             target["void_reason"] = data.get("void_reason")
             target["refund_date"] = data.get("refund_date")
@@ -272,6 +271,12 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current["status"] = _payment_status(paid, outstanding)
     elif event_type == "doc.payment.refunded":
         refunded = to_decimal(data["amount"])
+        idx = data.get("payment_index")
+        target = next((p for p in current.get("payments", []) if p.get("index") == idx), None) \
+            if idx is not None else None
+        if target is not None:
+            target["refunded"] = to_stored_float(to_decimal(target.get("refunded", 0)) + refunded)
+            target["refund_count"] = int(target.get("refund_count", 0)) + 1
         paid, outstanding = _payment_balances(
             current, to_decimal(current.get("amount_paid", 0)) - refunded)
         current["amount_paid"] = to_stored_float(paid)

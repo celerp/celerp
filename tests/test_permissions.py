@@ -139,7 +139,7 @@ class TestManagerRequiredDocOps:
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(
             f"/docs/{doc_id}/refund",
-            json={"amount": 10.0, "method": "cash", "reference": "REF2"},
+            json={"payment_index": 0, "amount": 10.0, "payment_date": "2026-01-15", "method": "cash", "reference": "REF2"},
             headers=viewer_h,
         )
         assert r.status_code == 403

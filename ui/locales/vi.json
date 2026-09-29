@@ -2342,6 +2342,8 @@
   "documents.view_item_details": "Xem chi tiết mặt hàng",
   "documents.view_reserving_document": "Xem tài liệu đặt chỗ",
   "documents.void_reason_placeholder": "Lý do hủy...",
+  "documents.refund_this_payment": "Hoàn tiền từ khoản thanh toán này",
+  "documents.refunded_amount": "Đã hoàn {amount}",
   "documents.void_this_payment": "Hủy thanh toán này",
   "documents.word_list": "Danh sách",
   "documents.your_company": "Công ty của bạn",

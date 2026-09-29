@@ -3179,17 +3179,22 @@ celerpUpdateBulkAlloc();
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
+            from datetime import date as _d
             form = await request.form()
             try:
                 amount = float(str(form.get("amount", "0")))
             except ValueError:
                 amount = 0.0
-            method = str(form.get("method", "")).strip() or None
-            reference = str(form.get("reference", "")).strip() or None
+            try:
+                payment_index = int(str(form.get("payment_index", "")))
+            except ValueError:
+                payment_index = -1
             await api.refund_payment(token, entity_id, {
+                "payment_index": payment_index,
                 "amount": amount,
-                "method": method,
-                "reference": reference,
+                "payment_date": str(form.get("payment_date", "")).strip() or _d.today().isoformat(),
+                "method": str(form.get("method", "")).strip() or None,
+                "reference": str(form.get("reference", "")).strip() or None,
             })
         except APIError as e:
             if e.status == 401:
@@ -5369,7 +5374,24 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
             void_reason = p.get("void_reason") or ""
             void_cell = Td(Span(t("doc.voided"), cls="badge badge--void", title=void_reason))
         elif not voided and is_operator:
+            refund_form = ""
+            p_left = round_money(p_amount, currency) - round_money(p.get("refunded") or 0, currency)
+            if p_method not in ("credit_note", "applied") and p_left > 0:
+                refund_form = Details(
+                    Summary(t("btn.refund"), cls="btn btn--ghost btn--xs", title=t("documents.refund_this_payment")),
+                    Form(
+                        Input(type="hidden", name="payment_index", value=str(p.get("index", 0))),
+                        Input(type="number", name="amount", value=f"{p_left:.{money_dp}f}", step=money_step,
+                              min=money_step, max=f"{p_left:.{money_dp}f}", cls="form-input form-input--sm"),
+                        Input(type="date", name="payment_date", value=today, cls="form-input form-input--sm"),
+                        Button(t("btn.refund"), type="submit", cls="btn btn--secondary btn--xs"),
+                        hx_post=f"/docs/{entity_id}/refund", hx_swap="none",
+                        cls="inline-form inline-form--compact",
+                    ),
+                    cls="void-inline",
+                )
             void_cell = Td(
+                refund_form,
                 Details(
                     Summary("🗑", cls="btn btn--ghost btn--xs", title=t("documents.void_this_payment")),
                     Form(
@@ -5390,7 +5412,9 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
             Td(format_value(p_method, "badge")),
             link_col,
             Td(p_ref or EMPTY),
-            Td(fmt_money(p_amount, currency), cls="cell--number"),
+            Td(fmt_money(p_amount, currency),
+               Div(t("documents.refunded_amount", amount=fmt_money(float(p["refunded"]), currency)), cls="text-muted small")
+               if p.get("refunded") else "", cls="cell--number"),
             void_cell,
             cls=row_cls,
         ))

@@ -2343,6 +2343,8 @@
   "documents.view_item_details": "Afficher les détails de l'article",
   "documents.view_reserving_document": "Afficher le document de réservation",
   "documents.void_reason_placeholder": "Motif d'annulation...",
+  "documents.refund_this_payment": "Rembourser sur ce paiement",
+  "documents.refunded_amount": "Remboursé {amount}",
   "documents.void_this_payment": "Annuler ce paiement",
   "documents.word_list": "Liste",
   "documents.your_company": "Votre entreprise",

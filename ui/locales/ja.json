@@ -2342,6 +2342,8 @@
   "documents.view_item_details": "アイテムの詳細を表示",
   "documents.view_reserving_document": "予約伝票を表示",
   "documents.void_reason_placeholder": "取り消し理由...",
+  "documents.refund_this_payment": "この支払いから返金",
+  "documents.refunded_amount": "返金済み {amount}",
   "documents.void_this_payment": "この支払いを取り消す",
   "documents.word_list": "リスト",
   "documents.your_company": "貴社",

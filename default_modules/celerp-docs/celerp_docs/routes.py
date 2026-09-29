@@ -2725,8 +2725,24 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
     return {"event_id": entry.id}
 
 
+class RefundBody(BaseModel):
+    payment_index: int  # the payment the money is given back from
+    amount: float = Field(allow_inf_nan=False)
+    payment_date: str  # ISO date (YYYY-MM-DD) of the refund
+    currency: str | None = None
+    method: str | None = None
+    reference: str | None = None
+    reason: str | None = None
+    idempotency_key: str | None = None
+
+
+def _refundable(payment: dict, currency: str):
+    """What is left of a payment to give back."""
+    return round_money(payment.get("amount") or 0, currency) - round_money(payment.get("refunded") or 0, currency)
+
+
 @router.post("/{entity_id}/refund")
-async def refund_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def refund_payment(entity_id: str, payload: RefundBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("refund", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.refunded",
@@ -2739,19 +2755,44 @@ async def refund_payment(entity_id: str, payload: DocPaymentBody, company_id: st
             status_code=422,
             detail=f"Refund currency {str(payload.currency).upper()} does not match document currency {currency}",
         )
-    paid = round_money(row.state.get("amount_paid", 0) or 0, currency)
+    payment = next((p for p in row.state.get("payments", []) if p.get("index") == payload.payment_index), None)
+    if payment is None or payment.get("status") != "active":
+        raise HTTPException(status_code=422, detail="Choose a payment on this document to refund.")
+    if payment.get("method") in ("credit_note", "applied"):
+        raise HTTPException(
+            status_code=422,
+            detail="A credit note application moved no money, so it cannot be refunded. Void it instead.",
+        )
     amount_d = round_money(payload.amount, currency)
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail="Refund amount must be positive")
-    if amount_d > paid:
-        raise HTTPException(status_code=409, detail="Refund exceeds amount paid")
-    refund_data = payload.model_dump(exclude_none=True)
-    refund_data["amount"] = to_stored_float(amount_d)
-    refund_data["currency"] = currency
+    left = min(_refundable(payment, currency), round_money(row.state.get("amount_paid", 0) or 0, currency))
+    if amount_d > left:
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {to_stored_float(max(left, 0))} {currency} of this payment can still be refunded.",
+        )
+    refund_number = int(payment.get("refund_count", 0))
+    refund_data = payload.model_dump(exclude_none=True, exclude={"payment_date", "idempotency_key"})
+    refund_data.update(amount=to_stored_float(amount_d), currency=currency, refund_date=payload.payment_date,
+                       method=payload.method or payment.get("method"))
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.refunded",
         data=refund_data, actor_id=user.id, location_id=None, source="api",
         idempotency_key=key, metadata_={"request": digest},
+    )
+    company = await session.get(Company, company_id)
+    # The refund gives back this payment's money: the same bank, at the same two rates
+    # the payment posted at, in proportion to the amount refunded.
+    await auto_je.void_for_doc_payment(
+        session, company_id=company_id, user_id=user.id, doc_id=entity_id,
+        payment_index=payload.payment_index, amount=to_stored_float(amount_d),
+        bank_account_code=payment.get("bank_account") or "1111",
+        doc_type=row.state.get("doc_type", "invoice"), refund_date=payload.payment_date,
+        base_currency=(company.settings.get("currency", "USD") if company else "USD"),
+        doc_rate=float(row.state.get("conversion_rate") or 1),
+        settlement_rate=float(payment.get("conversion_rate") or row.state.get("conversion_rate") or 1),
+        refund_number=refund_number,
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -2784,12 +2825,16 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
         raise HTTPException(status_code=422, detail="Invalid payment index")
     if payment.get("status") != "active":
         raise HTTPException(status_code=409, detail="Payment is already voided")
+    # A refund already gave back part of the payment; the void reverses the rest.
+    remaining = _refundable(payment, str(row.state.get("currency") or "USD").upper())
+    if payment.get("refunded") and remaining <= 0:
+        raise HTTPException(status_code=409, detail="This payment has been refunded in full, so there is nothing left to void.")
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.voided",
         data={"payment_index": payload.payment_index, "void_reason": payload.void_reason,
-              "refund_date": payload.refund_date, "amount": payment.get("amount"), "method": payment.get("method")},
+              "refund_date": payload.refund_date, "amount": to_stored_float(remaining), "method": payment.get("method")},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=key, metadata_={"request": digest},
     )
@@ -2803,7 +2848,7 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
         _void_base_currency = (_void_company.settings.get("currency", "USD") if _void_company else "USD")
         await auto_je.void_for_doc_payment(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-            payment_index=payload.payment_index, amount=payment["amount"],
+            payment_index=payload.payment_index, amount=to_stored_float(remaining),
             bank_account_code=bank_code, doc_type=doc_type,
             refund_date=payload.refund_date,
             base_currency=_void_base_currency,
@@ -2950,6 +2995,11 @@ async def delete_payment(
         raise HTTPException(status_code=422, detail="Invalid payment index")
     if payment.get("status") != "active":
         raise HTTPException(status_code=409, detail="Only active payments can be deleted")
+    if payment.get("refunded"):
+        raise HTTPException(
+            status_code=409,
+            detail="Part of this payment has been refunded, so it was real. Void it instead of deleting it.",
+        )
     if payment.get("method") in ("credit_note", "applied"):
         # A credit-note settlement is a pair with an AR transfer entry, not a
         # cash payment; deleting one side would strand the other and its

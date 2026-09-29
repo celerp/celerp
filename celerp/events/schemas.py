@@ -642,6 +642,8 @@ class DocPaymentRefunded(BaseModel):
     amount: float
     reason: str | None = None
     method: str | None = None
+    payment_index: int | None = None  # the payment the money is given back from
+    refund_date: str | None = None
 
 
 class DocPaymentVoided(BaseModel):

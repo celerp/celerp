@@ -79,7 +79,7 @@ async def test_doc_refund_success(client):
     await client.post(f"/docs/{inv_id}/finalize", headers=_h(tok))
     await client.post(f"/docs/{inv_id}/payment", headers=_h(tok), json={"payment_date": "2026-01-15", "amount": 30, "bank_account": "1111"})
 
-    r = await client.post(f"/docs/{inv_id}/refund", headers=_h(tok), json={"payment_date": "2026-01-15", "amount": 20, "bank_account": "1111"})
+    r = await client.post(f"/docs/{inv_id}/refund", headers=_h(tok), json={"payment_index": 0, "payment_date": "2026-01-15", "amount": 20})
     assert r.status_code == 200
     assert "event_id" in r.json()
 

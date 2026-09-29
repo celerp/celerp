@@ -7080,16 +7080,36 @@ class TestSprint5PaymentRefund:
         assert b"Refund" not in r.content
 
     @pytest.mark.asyncio
+    async def test_each_payment_row_offers_a_refund_of_what_is_left_of_it(self, ui_client):
+        """Each cash payment has its own refund form, for what has not been given back yet."""
+        doc = {**_PAID_INVOICE, "payments": [
+            {"index": 0, "amount": 6000, "method": "transfer", "bank_account": "1111",
+             "payment_date": "2026-03-02", "status": "active", "refunded": 1000},
+            {"index": 1, "amount": 4000, "method": "transfer", "bank_account": "1112",
+             "payment_date": "2026-03-03", "status": "active"},
+        ]}
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert r.status_code == 200
+        html = r.text
+        assert html.count('hx-post="/docs/doc:INV-2026-0001/refund"') == 2
+        assert 'value="5000.00"' in html and 'value="4000.00"' in html
+
+    @pytest.mark.asyncio
     async def test_refund_route_calls_api(self, ui_client):
-        """POST /docs/{id}/refund calls api.refund_payment."""
-        with patch("ui.api_client.refund_payment", new=AsyncMock(return_value={"event_id": "ev1"})):
+        """POST /docs/{id}/refund sends the chosen payment, amount and date."""
+        mock = AsyncMock(return_value={"event_id": "ev1"})
+        with patch("ui.api_client.refund_payment", new=mock):
             r = await ui_client.post(
                 "/docs/doc:INV-2026-0001/refund",
-                data={"amount": "5000", "method": "transfer", "reference": "REF-1"},
+                data={"payment_index": "1", "amount": "5000", "payment_date": "2026-03-09",
+                      "method": "transfer", "reference": "REF-1"},
                 cookies=_authed(),
             )
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
+        body = mock.call_args.args[2]
+        assert (body["payment_index"], body["amount"], body["payment_date"]) == (1, 5000.0, "2026-03-09")
 
     @pytest.mark.asyncio
     async def test_refund_shows_amount_paid(self, ui_client):
