@@ -16,6 +16,7 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from celerp.events.engine import find_event_by_idempotency
+from celerp.importers.results import RecordOutcome
 from celerp.importers.schema import (
     CIFInventoryAdjustment,
     CIFItem,
@@ -27,7 +28,6 @@ from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, Sink
 from celerp.models.company import Location
 from celerp.models.projections import Projection
 from celerp.services.migration_core_sink import (
-    RecordOutcome,
     acting_member,
     deterministic_id,
     import_prepared,

@@ -13,6 +13,7 @@ from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event, find_event_by_idempotency
+from celerp.importers.results import ImportOutcome
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
     validate_barcode,
@@ -30,7 +31,6 @@ from celerp.services.company_lock import lock_company, lock_projections, locked_
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.importers.tabular import CsvImportSpec
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
-from celerp.services.migration_core_sink import ImportOutcome
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.permissions import role_has_permission
 from celerp.services.vertical_presets import list_categories

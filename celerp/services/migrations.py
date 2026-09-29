@@ -46,7 +46,16 @@ from celerp.importers.schema import (
     ReconciliationExpectation,
     ToleranceKind,
 )
-from celerp.importers.sinks import SINK_MODULES, MigrationSink, MissingSinkError, SinkContext, sink_for
+from celerp.importers.sinks import (
+    SINK_MODULES,
+    MigrationBatchError,
+    MigrationSink,
+    MissingSinkError,
+    SinkContext,
+    record_identities,
+    sink_for,
+    validate_batch_result,
+)
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 from celerp.models.migration import (
@@ -509,15 +518,38 @@ async def _stop_if_cancelled(maker, run_id: uuid.UUID, status: str) -> bool:
     return True
 
 
+class IncompleteMigrationError(Exception):
+    """Source records the manifest holds that have no durable entity mapping after import."""
+
+    def __init__(self, missing: list[tuple[str, str]]) -> None:
+        self.missing = missing
+        by_type: dict[str, int] = {}
+        for source_type, _ in missing:
+            by_type[source_type] = by_type.get(source_type, 0) + 1
+        counts = ", ".join(f"{t} ({n})" for t, n in by_type.items())
+        subject = "1 source record has" if len(missing) == 1 else f"{len(missing)} source records have"
+        super().__init__(f"{subject} no imported Celerp record: {counts}.")
+
+
+def _failure_details(exc: Exception) -> tuple[int, dict]:
+    """The failed batch's rejected-record count and the extra error summary a failure carries."""
+    if isinstance(exc, MigrationBatchError):
+        return len(exc.errors), {}
+    if isinstance(exc, IncompleteMigrationError):
+        return 0, {"missing": record_identities(exc.missing)}
+    return 0, {}
+
+
 async def _fail(maker, run_id: uuid.UUID, phase: MigrationPhase, cursor: int, exc: Exception) -> None:
+    errors, details = _failure_details(exc)
     async with maker() as s:
         run = await s.get(MigrationRun, run_id, with_for_update=True)
         state = dict(run.phase_state)
-        state[phase.value] = {**_phase_entry(state, phase), "status": "failed", "cursor": cursor}
+        state[phase.value] = {**_phase_entry(state, phase), "status": "failed", "cursor": cursor, "errors": errors}
         run.phase_state = state
         run.current_phase = phase.value
         run.error_summary = {"phase": phase.value, "batch_cursor": cursor,
-                             "error_class": type(exc).__name__, "message": str(exc)}
+                             "error_class": type(exc).__name__, "message": str(exc), **details}
         await _set_status(s, run, _S.FAILED)
         await s.commit()
 
@@ -582,15 +614,13 @@ async def _run_locked(run_id: uuid.UUID) -> None:
                     await lock_company(s, company_id)
                     context = SinkContext(session=s, company_id=company_id, user_id=user_id, run_id=run_id,
                                           read_attachment=read_attachment)
-                    result = await batch[0].sink.import_batch(context, [b.record for b in batch])
+                    records = [b.record for b in batch]
+                    result = await batch[0].sink.import_batch(context, records)
+                    validate_batch_result(records, result)  # any rejected record rolls the batch back
                     await _record_mappings(s, run_id, batch[0].group, result.mappings, targets)
-                    for error in result.errors:
-                        logger.warning("Migration %s rejected %s %s", run_id, error.source_type,
-                                       error.source_external_id)
                     cursor += len(batch)
                     entry = {**entry, "cursor": cursor, "created": entry["created"] + result.created,
-                             "skipped": entry["skipped"] + result.skipped,
-                             "errors": entry["errors"] + len(result.errors),
+                             "skipped": entry["skipped"] + result.skipped, "errors": 0,
                              "status": "done" if cursor >= len(phase_steps) else "running"}
                     state[phase.value] = entry
                     status = await _checkpoint(s, run_id, phase, state)
@@ -601,7 +631,8 @@ async def _run_locked(run_id: uuid.UUID) -> None:
             if await _stop_if_cancelled(maker, run_id, status):
                 return
 
-    await _reconcile_run(maker, run_id, state)
+    await _reconcile_run(maker, run_id, state,
+                         [(r.source_type, r.source_external_id) for r in manifest.bundle.source_records()])
 
 
 async def _record_mappings(session: AsyncSession, run_id: uuid.UUID, group: str, mappings,
@@ -674,7 +705,20 @@ async def _verification(session: AsyncSession, run: MigrationRun) -> dict:
             "blockers": sum(1 for r in rows if r["result"] == "fail")}
 
 
-async def _reconcile_run(maker, run_id: uuid.UUID, state: dict) -> None:
+async def _unmapped(session: AsyncSession, run_id: uuid.UUID,
+                    expected: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Manifest source identities with no durable entity mapping for this run."""
+    mapped = set((await session.execute(
+        select(MigrationEntityMap.source_type, MigrationEntityMap.source_external_id)
+        .where(MigrationEntityMap.migration_run_id == run_id)
+    )).tuples())
+    return [key for key in expected if key not in mapped]
+
+
+async def _reconcile_run(maker, run_id: uuid.UUID, state: dict, expected: list[tuple[str, str]]) -> None:
+    """Verify every manifest record has a durable mapping, then the source's own figures.
+
+    Completeness is checked first: matching totals cannot show a lost record."""
     async with maker() as s:
         run = await s.get(MigrationRun, run_id, with_for_update=True)
         if run.status != _S.RUNNING:
@@ -682,11 +726,18 @@ async def _reconcile_run(maker, run_id: uuid.UUID, state: dict) -> None:
                 await _set_status(s, run, _S.CANCELLED)
                 await s.commit()
             return
-        state[_P.RECONCILIATION.value] = {**_phase_entry(state, _P.RECONCILIATION), "status": "running"}
-        run.phase_state = dict(state)
-        run.current_phase = _P.RECONCILIATION.value
-        await _set_status(s, run, _S.RECONCILING)
+        missing = await _unmapped(s, run_id, expected)
+        if missing:
+            run.reconciliation = {}
+        else:
+            state[_P.RECONCILIATION.value] = {**_phase_entry(state, _P.RECONCILIATION), "status": "running"}
+            run.phase_state = dict(state)
+            run.current_phase = _P.RECONCILIATION.value
+            await _set_status(s, run, _S.RECONCILING)
         await s.commit()
+    if missing:
+        await _fail(maker, run_id, _P.RECONCILIATION, 0, IncompleteMigrationError(missing))
+        return
     async with maker() as s:
         run = await s.get(MigrationRun, run_id)
         try:

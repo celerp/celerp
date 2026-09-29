@@ -101,7 +101,8 @@ async def test_first_party_sink_registration_rejects_untrusted_module(
         endpoint = getattr(route, "endpoint", None)
         if endpoint is None:
             continue
-        source = inspect.getsource(inspect.getmodule(endpoint))
+        # The endpoint's own file: a module a test has unloaded is no longer in sys.modules.
+        source = Path(inspect.getsourcefile(endpoint)).read_text()
         for name in ("sink_for(", "_SINKS", ".import_batch(", "_registered_sinks("):
             assert name not in source, (route.path, name)
     listed = subprocess.run(["git", "grep", "-l", "-e", "sink_for(", "-e", "_registered_sinks(", "--", "*.py",

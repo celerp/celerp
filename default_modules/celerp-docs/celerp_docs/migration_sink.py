@@ -17,6 +17,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from decimal import Decimal
 
+from celerp.importers.results import RecordOutcome
 from celerp.importers.schema import (
     CIFDocument,
     CIFSettlement,
@@ -31,7 +32,6 @@ from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.migration_core_sink import (
-    RecordOutcome,
     acting_member,
     deterministic_id,
     import_prepared,

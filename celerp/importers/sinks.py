@@ -11,6 +11,7 @@ module internals. Registration is limited to bundled first-party modules.
 from __future__ import annotations
 
 import uuid
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -80,6 +81,62 @@ class SinkBatchResult:
     skipped: int = 0
     errors: list[SinkError] = field(default_factory=list)
     mappings: list[SinkEntityMapping] = field(default_factory=list)
+
+
+# How many records a batch failure or contract breach names; the rest are counted.
+REPORTED_RECORD_LIMIT = 10
+
+
+def record_identities(keys: Sequence[tuple[str, str]]) -> str:
+    """Source identities (type and external id, never content) for a message, capped."""
+    shown = ", ".join(f"{t} {e}" for t, e in keys[:REPORTED_RECORD_LIMIT])
+    more = len(keys) - REPORTED_RECORD_LIMIT
+    return f"{shown} and {more} more" if more > 0 else shown
+
+
+class SinkContractError(Exception):
+    """A sink result that does not report exactly one outcome for each record it was given."""
+
+
+class MigrationBatchError(Exception):
+    """One or more records of a batch could not be imported, so none of the batch is kept."""
+
+    def __init__(self, errors: Sequence[SinkError]) -> None:
+        self.errors = list(errors)
+        reasons = "; ".join(f"{e.source_type} {e.source_external_id}: {e.message}"
+                            for e in self.errors[:REPORTED_RECORD_LIMIT])
+        more = len(self.errors) - REPORTED_RECORD_LIMIT
+        count = f"{len(self.errors)} record{'s' if len(self.errors) != 1 else ''}"
+        super().__init__(f"{count} could not be imported, so this batch was not saved. {reasons}"
+                         + (f"; and {more} more." if more > 0 else "."))
+
+
+def validate_batch_result(records: Sequence[CIFSourceRecord], result: SinkBatchResult) -> None:
+    """Accept a batch only when the sink reported exactly one outcome per input record,
+    keyed by source identity, and every outcome is a mapping to a Celerp record.
+
+    Raises SinkContractError for a missing, duplicate, unexpected, conflicting or
+    empty outcome, then MigrationBatchError when any record was rejected or failed."""
+    expected = [(r.source_type, r.source_external_id) for r in records]
+    inputs = set(expected)
+    reported = Counter((o.source_type, o.source_external_id) for o in [*result.mappings, *result.errors])
+    problems = []
+    if missing := [k for k in expected if not reported[k]]:
+        problems.append(f"no outcome for {record_identities(missing)}")
+    if repeated := [k for k in expected if reported[k] > 1]:
+        problems.append(f"more than one outcome for {record_identities(repeated)}")
+    if unexpected := [k for k in reported if k not in inputs]:
+        problems.append(f"an outcome for {record_identities(unexpected)}, which was not in the batch")
+    if empty := [(m.source_type, m.source_external_id) for m in result.mappings
+                 if m.status not in ("created", "skipped") or not m.target_entity_id]:
+        problems.append(f"no Celerp record for {record_identities(empty)}")
+    statuses = Counter(m.status for m in result.mappings)
+    if (result.created, result.skipped) != (statuses["created"], statuses["skipped"]):
+        problems.append("created and skipped counts that do not match its mappings")
+    if problems:
+        raise SinkContractError(f"The migration sink reported {'; '.join(problems)}.")
+    if result.errors:
+        raise MigrationBatchError(result.errors)
 
 
 @dataclass(frozen=True)

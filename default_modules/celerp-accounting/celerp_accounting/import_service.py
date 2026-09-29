@@ -18,9 +18,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event
+from celerp.importers.results import ImportOutcome
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services.migration_core_sink import ImportOutcome
 from celerp_accounting.models import Account, BankAccount
 
 JOURNAL_CREATED = "acc.journal_entry.created"

@@ -15,6 +15,7 @@ from decimal import Decimal
 
 from sqlalchemy import select
 
+from celerp.importers.results import RecordOutcome
 from celerp.importers.schema import (
     AccountControl,
     CIFAccount,
@@ -26,7 +27,6 @@ from celerp.importers.schema import (
 )
 from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, SinkContext
 from celerp.services.migration_core_sink import (
-    RecordOutcome,
     deterministic_id,
     import_prepared,
     mapped_targets,

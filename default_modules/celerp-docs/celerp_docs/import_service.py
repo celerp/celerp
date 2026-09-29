@@ -16,11 +16,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event, find_event_by_idempotency
+from celerp.importers.results import ImportOutcome
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
-from celerp.services.migration_core_sink import ImportOutcome
 from celerp_docs.routes import (
     DocImportRecord,
     DocPatch,

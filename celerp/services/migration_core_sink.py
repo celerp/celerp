@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Migration sink for the CIF groups the kernel owns, plus the helpers every sink shares.
 
-Domain import services report one `RecordOutcome` per input record. Their HTTP
-batch routes fold the outcomes into the route's counts and error list; their
-migration sinks turn the same outcomes into entity mappings. Sinks never commit:
-the runner owns the transaction of every batch.
+Sinks turn the import services' per-record outcomes (`celerp.importers.results`)
+into entity mappings. Sinks never commit: the runner owns the transaction of
+every batch.
 """
 
 from __future__ import annotations
@@ -15,13 +14,13 @@ import hashlib
 import mimetypes
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from dataclasses import dataclass, field
-from typing import Literal
+from dataclasses import dataclass
 
 from sqlalchemy import select
 
 from celerp.events.engine import find_event_by_idempotency
 from celerp.importers.adapters.base import ScanError
+from celerp.importers.results import ImportOutcome, RecordOutcome
 from celerp.importers.schema import (
     CIFAttachment,
     CIFCompanyProfile,
@@ -47,57 +46,6 @@ from celerp.services.attachments import FILE_ATTACHED_EVENTS, attach_file, item_
 from celerp.services.company_lock import locked_company
 from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.money import currency_dp
-
-OutcomeStatus = Literal["created", "updated", "skipped", "rejected", "failed"]
-
-# The number of error messages a batch route returns, as every batch route always has.
-ROUTE_ERROR_LIMIT = 10
-
-
-@dataclass(frozen=True)
-class RecordOutcome:
-    """What an import service did with one record.
-
-    rejected: refused by validation and counted as skipped with its reason;
-    failed: the write raised, reported but not counted. `entity_type` names the
-    Celerp entity written when it differs from the batch's own.
-    """
-    entity_id: str
-    status: OutcomeStatus
-    message: str | None = None
-    entity_type: str | None = None
-
-
-@dataclass
-class ImportOutcome:
-    """Per-record outcomes of one import service call, in input order."""
-    records: list[RecordOutcome] = field(default_factory=list)
-
-    def add(self, entity_id: str, status: OutcomeStatus, message: str | None = None) -> None:
-        self.records.append(RecordOutcome(entity_id, status, message))
-
-    def count(self, *statuses: OutcomeStatus) -> int:
-        return sum(1 for r in self.records if r.status in statuses)
-
-    def route_counts(self, *, cap_rejections: bool = True) -> dict:
-        """The batch route response: created, skipped (including rejected), updated, errors.
-
-        Failure messages stop at ROUTE_ERROR_LIMIT. Rejection messages stop there
-        too unless the route has always listed every rejection (`cap_rejections=False`).
-        """
-        errors: list[str] = []
-        for r in self.records:
-            if r.status not in ("rejected", "failed") or r.message is None:
-                continue
-            if len(errors) < ROUTE_ERROR_LIMIT or (r.status == "rejected" and not cap_rejections):
-                errors.append(r.message)
-        return {
-            "created": self.count("created"),
-            "skipped": self.count("skipped", "rejected"),
-            "updated": self.count("updated"),
-            "errors": errors,
-        }
-
 
 def deterministic_id(context: SinkContext, kind: str, external_id: str) -> uuid.UUID:
     """The same Celerp id for the same source record on every attempt of one run."""

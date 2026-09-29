@@ -7,8 +7,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from celerp.events.engine import emit_event
+from celerp.importers.results import ImportOutcome
 from celerp.models.ledger import LedgerEntry
-from celerp.services.migration_core_sink import ImportOutcome
 
 CONTACT_CREATED = "crm.contact.created"
 
