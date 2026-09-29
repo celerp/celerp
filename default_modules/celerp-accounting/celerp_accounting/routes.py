@@ -20,6 +20,8 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table
 from celerp.constants import ISO_4217_CURRENCIES
+from celerp_accounting import import_service
+from celerp_accounting.import_service import AccImportRecord
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -125,15 +127,6 @@ class AccountPatch(BaseModel):
     is_active: bool | None = None
     # None leaves the override alone; "" clears it back to the derived default.
     cash_flow_category: str | None = None
-
-
-class AccImportRecord(BaseModel):
-    entity_id: str
-    event_type: str
-    data: dict
-    source: str
-    idempotency_key: str
-    source_ts: str | None = None
 
 
 class AccBatchImportRequest(BaseModel):
@@ -330,24 +323,14 @@ async def create_account(
     company_id: uuid.UUID = Depends(get_current_company_id), _: None = require_permission("manage_accounting"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    existing = (
-        await session.execute(
-            select(Account).where(Account.company_id == company_id, Account.code == payload.code)
-        )
-    ).scalar_one_or_none()
-    if existing:
-        raise HTTPException(status_code=409, detail=f"Account code {payload.code} already exists")
-
-    acc = Account(
-        id=uuid.uuid4(),
-        company_id=company_id,
+    acc = await import_service.create_chart_account(
+        session, company_id,
         code=payload.code,
         name=payload.name,
         account_type=_checked_account_type(payload.account_type),
         parent_code=payload.parent_code,
         cash_flow_category=_checked_cash_flow_category(payload.cash_flow_category),
     )
-    session.add(acc)
     await session.commit()
     return _account_to_dict(acc)
 
@@ -402,73 +385,9 @@ async def batch_import_accounting(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    from sqlalchemy import select as _select
-    from celerp.models.ledger import LedgerEntry
-
-    keys = [r.idempotency_key for r in body.records]
-    existing_keys = set((await session.execute(
-        _select(LedgerEntry.idempotency_key).where(
-            LedgerEntry.company_id == company_id,
-            LedgerEntry.idempotency_key.in_(keys),
-        )
-    )).scalars().all())
-
-    create_entity_ids = [r.entity_id for r in body.records if r.event_type == "acc.journal_entry.created"]
-    existing_entities: set[str] = set()
-    if create_entity_ids:
-        existing_entities = set((await session.execute(
-            _select(Projection.entity_id).where(
-                Projection.company_id == company_id,
-                Projection.entity_id.in_(create_entity_ids),
-            )
-        )).scalars().all())
-
-    created = skipped = 0
-    errors: list[str] = []
-    for rec in body.records:
-        if rec.event_type != "acc.journal_entry.created":
-            if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
-            skipped += 1
-            continue
-        if rec.idempotency_key in existing_keys:
-            skipped += 1
-            continue
-        if rec.event_type == "acc.journal_entry.created" and rec.entity_id in existing_entities:
-            skipped += 1
-            continue
-        try:
-            # An imported line may name a party. Checked here, at the boundary,
-            # because an entry whose contact resolves to nothing would post to a
-            # control account and then be missing from every statement, with
-            # nothing on screen to say why.
-            entries = rec.data.get("entries") if isinstance(rec.data, dict) else None
-            if isinstance(entries, list):
-                await _check_line_contacts(
-                    session, company_id, [e for e in entries if isinstance(e, dict)])
-            await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=rec.entity_id,
-                entity_type="journal_entry",
-                event_type=rec.event_type,
-                data=rec.data,
-                actor_id=user.id,
-                location_id=None,
-                source=rec.source,
-                idempotency_key=rec.idempotency_key,
-                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
-            )
-            existing_keys.add(rec.idempotency_key)
-            if rec.event_type == "acc.journal_entry.created":
-                existing_entities.add(rec.entity_id)
-            created += 1
-        except Exception as exc:
-            if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {exc}")
-
+    outcome = await import_service.import_journal_records(session, company_id, user.id, body.records)
     await session.commit()
-    return BatchImportResult(created=created, skipped=skipped, errors=errors)
+    return BatchImportResult(**outcome.route_counts())
 
 
 # ---------------------------------------------------------------------------
@@ -631,19 +550,11 @@ def _is_debit_normal(account_type: str) -> bool:
     return account_type not in _CREDIT_NORMAL_TYPES
 
 
-async def _contact_row(
-    session: AsyncSession, company_id: uuid.UUID, contact_id: str
-) -> Projection | None:
-    """The contact projection behind an id, or None when the id names no contact."""
-    row = await session.get(Projection, (company_id, contact_id))
-    return row if row and row.entity_type == "contact" else None
-
-
 async def _require_contact(
     session: AsyncSession, company_id: uuid.UUID, contact_id: str
 ) -> Projection:
     """The contact a statement was asked for, or 404 for a contact that is not there."""
-    row = await _contact_row(session, company_id, contact_id)
+    row = await import_service.contact_row(session, company_id, contact_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Contact not found")
     return row
@@ -665,35 +576,10 @@ async def _require_contact_filter(
     """
     if contact_id is None or contact_id == "":
         return
-    if await _contact_row(session, company_id, contact_id) is None:
+    if await import_service.contact_row(session, company_id, contact_id) is None:
         raise HTTPException(
             status_code=422,
             detail=f"No contact matches contact_id {contact_id}.",
-        )
-
-
-async def _check_line_contacts(
-    session: AsyncSession, company_id: uuid.UUID, entries: list[dict]
-) -> None:
-    """Refuse a set of journal entry lines if any names a contact that is not there.
-
-    A line's contact is what puts a posting on that party's statement, so an id
-    matching no contact would post an entry no statement can ever show and no
-    control-account bucket can ever explain. Checked once per distinct contact
-    named, and by the same rule for every path that writes lines: manual
-    entries, reconciliation, and the batch import.
-    """
-    named = {e.get("contact") for e in entries if isinstance(e.get("contact"), str) and e.get("contact")}
-    if not named:
-        return
-    missing = []
-    for cid in sorted(named):
-        if await _contact_row(session, company_id, cid) is None:
-            missing.append(cid)
-    if missing:
-        raise HTTPException(
-            status_code=422,
-            detail="No contact matches " + ", ".join(missing) + ".",
         )
 
 
@@ -1335,7 +1221,7 @@ async def create_manual_journal_entry(
         raise HTTPException(status_code=422, detail="A journal entry needs at least 2 lines.")
     if not payload.idempotency_token:
         raise HTTPException(status_code=422, detail="idempotency_token is required.")
-    await _check_line_contacts(
+    await import_service.check_line_contacts(
         session, company_id, [{"contact": line.contact} for line in payload.entries])
 
     accounts = (
@@ -2278,24 +2164,6 @@ async def _bank_dicts(
     return out
 
 
-async def _next_bank_account_code(session: AsyncSession, company_id: uuid.UUID) -> str:
-    """Find next available account code under 1110 (1111, 1112, …)."""
-    rows = (
-        await session.execute(
-            select(Account.code).where(
-                Account.company_id == company_id,
-                Account.code.like("111%"),
-            )
-        )
-    ).scalars().all()
-    used = set(rows)
-    for i in range(1, 100):
-        code = f"111{i}"
-        if code not in used:
-            return code
-    raise HTTPException(status_code=400, detail="No available account codes under 1110")
-
-
 @router.get(
     "/bank-accounts",
     summary="List the company's bank and card accounts",
@@ -2348,37 +2216,18 @@ async def create_bank_account(
         raise HTTPException(status_code=422, detail=f"Invalid currency '{payload.currency}'. Must be a valid ISO 4217 code.")
 
     # Resolve or auto-assign chart account code
-    code = payload.account_code or await _next_bank_account_code(session, company_id)
+    code = payload.account_code or await import_service.next_bank_account_code(session, company_id)
 
-    # Ensure account code doesn't already exist
-    existing_acc = (
-        await session.execute(
-            select(Account).where(Account.company_id == company_id, Account.code == code)
-        )
-    ).scalar_one_or_none()
-    if not existing_acc:
-        # Auto-create a chart-of-accounts sub-entry under 1110
-        acc = Account(
-            id=uuid.uuid4(),
-            company_id=company_id,
-            code=code,
-            name=f"{payload.bank_name} ({payload.bank_type.replace('_', ' ').title()})",
-            account_type="asset",
-            parent_code="1110",
-        )
-        session.add(acc)
-
-    bank = BankAccount(
-        id=uuid.uuid4(),
-        company_id=company_id,
-        chart_account_code=code,
+    bank = await import_service.add_bank_account(
+        session, company_id,
+        code=code,
+        account_name=f"{payload.bank_name} ({payload.bank_type.replace('_', ' ').title()})",
         bank_name=payload.bank_name,
         account_number=payload.account_number,
         bank_type=payload.bank_type,
         currency=currency,
         opening_balance=payload.opening_balance,
     )
-    session.add(bank)
 
     # Create opening balance JE if opening_balance != 0
     if payload.opening_balance and payload.opening_balance != 0.0:
@@ -3390,7 +3239,7 @@ async def create_je_from_line(
         {"account": bank.chart_account_code, "debit": bank_debit, "credit": bank_credit},
         offset,
     ]
-    await _check_line_contacts(db, company_id, entries)
+    await import_service.check_line_contacts(db, company_id, entries)
 
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
@@ -3462,7 +3311,7 @@ async def split_stmt_line(
         if s.get("contact"):
             split["contact"] = s["contact"]
         entries.append(split)
-    await _check_line_contacts(db, company_id, entries)
+    await import_service.check_line_contacts(db, company_id, entries)
 
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
