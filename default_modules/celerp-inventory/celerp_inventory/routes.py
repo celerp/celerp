@@ -835,13 +835,14 @@ def _list_value(flat: dict, price_list: str) -> Decimal | None:
     return Decimal(str(unit)) * Decimal(str(qty))
 
 
-def result_aggregates(result: list[dict], price_lists: list[dict], can_see_costs: bool) -> dict:
+def result_aggregates(result: list[dict], price_lists: list[dict], can_see_costs: bool, currency: str) -> dict:
     """Totals of exactly the rows in ``result`` (the filtered, visibility-stripped set).
 
     Amounts are grouped by their own unit and never added across units; a row whose
     amount or price the role cannot see is left out of that total, and price totals
     count the rows they leave out (price_missing) instead of reading them as zero.
-    Cost lists are omitted entirely for a role without view_inventory_costs."""
+    Cost lists are omitted entirely for a role without view_inventory_costs. Price totals
+    round at the company currency's precision, as the store-wide valuation does."""
     quantity_by_unit: dict[str, float] = {}
     weight_by_unit: dict[str, float] = {}
     pieces_total: float | None = None
@@ -873,7 +874,7 @@ def result_aggregates(result: list[dict], price_lists: list[dict], can_see_costs
         "quantity_by_unit": {k: round(v, 4) for k, v in quantity_by_unit.items()},
         "weight_by_unit": {k: round(v, 4) for k, v in weight_by_unit.items()},
         "pieces_total": None if pieces_total is None else round(pieces_total, 4),
-        "price_totals": {k: float(round(v, 2)) for k, v in price_totals.items()},
+        "price_totals": {k: to_stored_float(round_money(v, currency)) for k, v in price_totals.items()},
         "price_missing": price_missing,
     }
 
@@ -1103,7 +1104,8 @@ async def query_items(
 
     # Totals of the final filtered set, so they describe exactly the rows `total` counts,
     # on every page and for any combination of filters.
-    aggregates = result_aggregates(result, (await get_price_config(session, company_id))[0], can_see_costs)
+    aggregates = result_aggregates(
+        result, (await get_price_config(session, company_id))[0], can_see_costs, base_currency)
 
     # Ordering (FEFO / user column sort / default) is single-sourced in
     # celerp_inventory.search so the list and the global-search bar stay in
@@ -1196,6 +1198,7 @@ async def get_valuation(
         )
     ).scalars().all()
 
+    currency = settings.get("currency") or "USD"
     holding_scope: set[str] | None = None
     if on_memo_to or consigned_from:
         assert_role_permission(settings, role, "view_documents")
@@ -1218,8 +1221,8 @@ async def get_valuation(
             if str((d.state or {}).get("status") or "").lower() not in ("draft", "void")
         ]
         scope_value = (
-            memo_holdings(items_state, issued, settings.get("currency") or "USD") if on_memo_to
-            else consignment_holdings(items_state, issued, settings.get("currency") or "USD")
+            memo_holdings(items_state, issued, currency) if on_memo_to
+            else consignment_holdings(items_state, issued, currency)
         )
         holding_scope = set(scope_value.keys())
 
@@ -1303,11 +1306,12 @@ async def get_valuation(
             if value is not None:
                 price_totals[pl.get("name", "")] += value
 
+    price_totals = {k: round_money(v, currency) for k, v in price_totals.items()}
     _cost_pl_names = {pl.get("name", "") for pl in _price_lists if is_cost_list_name(pl.get("name", ""))}
     show_cost = role_has_permission(settings, role, "view_inventory_costs")
 
     price_totals_out = {
-        k: float(v) for k, v in price_totals.items()
+        k: to_stored_float(v) for k, v in price_totals.items()
         if show_cost or k not in _cost_pl_names
     }
 
@@ -1316,8 +1320,8 @@ async def get_valuation(
         "active_item_count": active_item_count,
         "price_totals": price_totals_out,
         # Backward-compatible keys for existing UI
-        "wholesale_total": float(price_totals.get("Wholesale", 0)),
-        "retail_total": float(price_totals.get("Retail", 0)),
+        "wholesale_total": to_stored_float(price_totals.get("Wholesale", Decimal(0))),
+        "retail_total": to_stored_float(price_totals.get("Retail", Decimal(0))),
         "category_counts": dict(sorted(category_counts.items(), key=lambda x: -x[1])),
         # total_scoped_count backs the "All" tab: everything the scoped list shows,
         # which includes drafts even though they carry no stock value yet
@@ -1326,7 +1330,7 @@ async def get_valuation(
         "count_by_status": count_by_status,
     }
     if show_cost:
-        result["cost_total"] = float(price_totals.get("Cost", 0))
+        result["cost_total"] = to_stored_float(price_totals.get("Cost", Decimal(0)))
     return result
 
 

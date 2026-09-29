@@ -211,6 +211,54 @@ async def test_holdings_and_sold_totals_unchanged(client, seeded):
     assert body["aggregates"]["item_count"] == 1
 
 
+# Money totals round at the company currency's precision, the same way on the filtered
+# list and on the store-wide valuation.
+
+@pytest.fixture
+async def seeded_currency(client, session, seeded, request):
+    from celerp.models.company import Company
+    from celerp.models.projections import Projection
+
+    company_id = uuid.UUID(str(get_token_claims(seeded["admin_h"]["Authorization"].split()[1])["company_id"]))
+    company = await session.get(Company, company_id)
+    company.settings = {**company.settings, "currency": request.param}
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item",
+        Projection.entity_id.in_(["item:agg-ring-1", "item:agg-ring-2"]),
+    ))).scalars().all()
+    # Retail 1.2345 x 3 = 3.7035 and cost 0.00005 + 1.23451 = 1.23456 carry more
+    # places than any currency keeps.
+    for row in rows:
+        unit, cost = (1.2345, 0.00005) if row.entity_id == "item:agg-ring-1" else (0, 1.23451)
+        row.state = {**row.state, "quantity": 3 if unit else 1, "retail_price": unit, "cost_total": cost}
+    await session.flush()
+    return {**seeded, "currency": request.param}
+
+
+@pytest.mark.parametrize("seeded_currency, retail, cost", [
+    ("KWD", 3.704, 1.235),   # 3 decimals
+    ("CLF", 3.7035, 1.2346),  # 4 decimals
+    ("JPY", 4.0, 1.0),        # 0 decimals
+], indirect=["seeded_currency"])
+async def test_price_totals_round_in_company_currency(client, seeded_currency, retail, cost):
+    agg = (await _list(client, seeded_currency["admin_h"], category="ring"))["aggregates"]
+    assert agg["price_totals"]["Retail"] == retail
+    assert agg["price_totals"]["Cost"] == cost
+
+
+@pytest.mark.parametrize("seeded_currency", ["KWD", "CLF", "USD"], indirect=True)
+async def test_filtered_totals_agree_with_store_valuation(client, seeded_currency):
+    # Stocked items are exactly what the valuation counts, so both must report the same
+    # totals for the same rows.
+    h = seeded_currency["admin_h"]
+    agg = (await _list(client, h, inventory_type="stocked"))["aggregates"]
+    r = await client.get("/items/valuation", headers=h)
+    assert r.status_code == 200, r.text
+    valuation = r.json()
+    assert agg["item_count"] == valuation["item_count"]
+    assert agg["price_totals"] == valuation["price_totals"]
+
+
 # UI: the chip bar renders the list endpoint's aggregates for the current search.
 
 _UI_AGGREGATES = {
