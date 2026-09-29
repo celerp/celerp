@@ -302,6 +302,10 @@ async def check_schema(session: AsyncSession, copy: CopyFile) -> None:
 
 # ── Opening a copy ───────────────────────────────────────────────────────────
 
+# Columns every reader expects to hold a JSON object.
+_OBJECT_COLUMNS = {"ledger": "data", "projections": "state"}
+
+
 def _objects(lines: list[str]) -> list[dict]:
     """The rows of one table; a row that is not a JSON object means the file is damaged."""
     try:
@@ -380,6 +384,9 @@ async def open_copy(session: AsyncSession, copy: CopyFile, *, owner: User) -> Co
         source = {t: _member_lines(zf, f"tables/{t}.jsonl", names) for t in manifest["tables"]}
         files = {name: _member(zf, f"attachments/{name}") for name in manifest["attachments"]}
     rows = {table: _objects(lines) for table, lines in source.items()}
+    if not all(isinstance(row.get(column), dict) for table, column in _OBJECT_COLUMNS.items()
+               for row in rows.get(table, [])):
+        raise CopyError(422, DAMAGED)
     await _check_references(session, copy, rows)
     mapping = _id_map(copy, rows)
     back = {new: old for old, new in mapping.items()}

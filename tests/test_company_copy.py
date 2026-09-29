@@ -417,6 +417,20 @@ def _with_company(data: bytes, **changes) -> bytes:
     return _with_manifest(data, company={**manifest["company"], **changes})
 
 
+def _json_column(data: bytes, table: str, column: str, value) -> bytes:
+    row = json.loads(_members(data)[f"tables/{table}.jsonl"].split(b"\n")[0])
+    return _with_table(data, table, [json.dumps({**row, column: value}).encode()])
+
+
+def _with_attachment(data: bytes, name: str) -> bytes:
+    m = _members(data)
+    manifest = json.loads(m["manifest.json"])
+    m[f"attachments/{name}"] = b"file"
+    manifest["attachments"][name] = hashlib.sha256(b"file").hexdigest()
+    m["manifest.json"] = json.dumps(manifest).encode()
+    return _rezip(m)
+
+
 @pytest.mark.parametrize("change, message", [
     (_tampered, "damaged or was changed"),
     (lambda d: _with_manifest(d, created_at=None), "damaged or was changed"),
@@ -432,6 +446,9 @@ def _with_company(data: bytes, **changes) -> bytes:
     (lambda d: _with_company(d, name="Alpha\u0000Trading"), "damaged or was changed"),
     (lambda d: _with_company(d, name="A" * 300), "damaged or was changed"),
     (lambda d: _with_settings(d, {"note": "a\u0000b"}), "damaged or was changed"),
+    (lambda d: _json_column(d, "projections", "state", ["not", "an", "object"]), "damaged or was changed"),
+    (lambda d: _json_column(d, "ledger", "data", "not an object"), "damaged or was changed"),
+    (lambda d: _with_attachment(d, "a" * 300 + ".png"), "damaged or was changed"),
     (lambda d: b"not a copy", "not a Celerp company copy"),
     (lambda d: _rezip({"manifest.json": b'{"format": "other"}'}), "not a Celerp company copy"),
     (_newer_format, "newer version of Celerp"),

@@ -213,8 +213,10 @@ def _read_local(path: Path | None, max_bytes: int) -> bytes | None:
 
 
 def is_plain_name(name: str) -> bool:
-    """A single file name: no separator of either platform and no dot reference."""
-    return bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name
+    """A single file name: no separator of either platform, no dot reference, and short
+    enough for the file system (255 bytes)."""
+    return (bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name
+            and len(name.encode()) <= 255)
 
 
 def company_attachment_dir(company_id: str) -> Path:
