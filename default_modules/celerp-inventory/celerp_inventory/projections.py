@@ -339,7 +339,12 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
             current.pop("cost_price", None)
             _recompute_cost(current)
         elif pt == "cost_price":
-            current["cost_price"] = price   # legacy path - do NOT pop cost_total here
+            # cost_price is a unit goods cost. Store the same canonical cost_base that
+            # item.updated writes, then derive cost_total (including landed cost) from it.
+            qty = float(current.get("quantity") or 0)
+            current["cost_base"] = round(float(price) * qty, 2)
+            current.pop("cost_price", None)
+            _recompute_cost(current)
         else:
             current[pt] = price
     elif event_type == "item.status.set":

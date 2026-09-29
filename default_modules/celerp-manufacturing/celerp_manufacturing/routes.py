@@ -1545,6 +1545,7 @@ async def _recost_run_lots(session: AsyncSession, company_id, user, order_id: st
         return  # nothing received: no lot to re-cost, and never divide by a zero yield
     unit_cost = float(output_cost) / total_received
     fresh = await _all_item_states(session, company_id)
+    from celerp_inventory.services import CostRestatementConflict, restate_item_cost
     for lot_id in run_state.get("received_lots") or []:
         lot = fresh.get(lot_id)
         if lot is None:
@@ -1555,18 +1556,13 @@ async def _recost_run_lots(session: AsyncSession, company_id, user, order_id: st
             data={"cost_total": new_total, "manufacturing_order_id": order_id},
             actor_id=user.id, source="api", idempotency_key=f"mfg:{order_id}:recost:{lot_id}",
         )
-        if lot.get("status") == "merged":
-            # The lot's cost already went into a merge result: carry the change there too.
-            from celerp_inventory.services import CostRestatementConflict, restate_item_cost
-            try:
-                await restate_item_cost(session, company_id, **event)
-            except CostRestatementConflict as exc:
-                raise HTTPException(status_code=409, detail=str(exc))
-            continue
-        await emit_event(
-            session, company_id=company_id, entity_type="item", location_id=lot.get("location_id"),
-            metadata_={"manufacturing_order_id": order_id}, **event,
-        )
+        # Manufacturing re-cost is a historical cost correction regardless of the lot's
+        # current state. The canonical restater either carries that delta through merge/COGS
+        # consequences or refuses the operation before anything is written.
+        try:
+            await restate_item_cost(session, company_id, **event)
+        except CostRestatementConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

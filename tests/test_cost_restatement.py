@@ -168,12 +168,13 @@ async def test_merge_cost_override_is_the_baseline_for_later_deltas(client, sess
 
 @pytest.mark.asyncio
 async def test_cost_price_endpoint_restates_through_lineage(client, session, auth):
-    a, b = await _item(client, auth, 100.0), await _item(client, auth, 50.0)
+    a, b = await _item(client, auth, 100.0, qty=2), await _item(client, auth, 50.0)
     c = await _merge(client, auth, [a, b])
     r = await client.post(f"/items/{a}/price", headers=auth["headers"],
-                          json={"price_type": "cost_total", "new_price": 125.0})
+                          json={"price_type": "cost_price", "new_price": 60.0})
     assert r.status_code == 200, r.text
-    assert await _cost(session, auth, c) == 175.0
+    assert await _cost(session, auth, a) == 120.0
+    assert await _cost(session, auth, c) == 170.0
 
 
 @pytest.mark.asyncio
@@ -263,6 +264,15 @@ async def _assert_refused(client, session, auth, root: str, watch: list[str], *,
     assert fragment in r.json()["detail"]
     assert {eid: await _cost(session, auth, eid) for eid in [root, *watch]} == before
     assert await _count(session, auth) == events
+
+
+@pytest.mark.asyncio
+async def test_split_root_refuses_correction(client, session, auth):
+    item = await _item(client, auth, 100.0, qty=2)
+    r = await client.post(f"/items/{item}/split", headers=auth["headers"],
+                          json={"children": [{"quantity": 1}]})
+    assert r.status_code == 200, r.text
+    await _assert_refused(client, session, auth, item, [], fragment="cannot be carried")
 
 
 @pytest.mark.asyncio
@@ -373,6 +383,23 @@ async def test_csv_cost_upsert_that_cannot_reconcile_changes_nothing(client, ses
     assert body["updated"] == 0 and any("cannot be carried" in e for e in body["errors"]), body
     state = await _state(session, auth, a)
     assert state["cost_total"] == 100.0 and state["name"] == "Lot"
+
+
+@pytest.mark.asyncio
+async def test_manufacturing_recost_of_sold_lot_adjusts_cogs(client, session, auth):
+    from celerp_manufacturing.routes import _recost_run_lots
+
+    lot = await _item(client, auth, 100.0)
+    doc = await _sell(client, session, auth, lot)
+    user = SimpleNamespace(id=auth["user_id"])
+    run = {"received_qty": 1, "received_lots": [lot]}
+    await _recost_run_lots(session, auth["company_id"], user, "mfg:order-sold", run, 120.0)
+    await session.commit()
+
+    assert await _cost(session, auth, lot) == 120.0
+    adjustments = await _cogs_adjustments(session, auth, doc)
+    assert len(adjustments) == 1
+    assert [_cogs(state) for state in adjustments.values()] == [20.0]
 
 
 @pytest.mark.asyncio

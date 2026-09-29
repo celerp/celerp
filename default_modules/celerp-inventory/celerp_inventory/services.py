@@ -226,6 +226,12 @@ async def restate_item_cost(
     old_basis, new_basis = _goods_basis(old), _goods_basis(new)
     label = _lot_label(old, entity_id)
     status = str(old.get("status") or "").lower()
+    cost_changed = old_basis != new_basis
+    if cost_changed and not await _cost_is_traceable(session, company_id, entity_id, old):
+        raise CostRestatementConflict(
+            f"{label}'s cost was already split, transformed, or used, so the correction "
+            "cannot be carried automatically"
+        )
 
     successors: list[tuple[str, float]] = []           # (entity_id, new goods basis)
     sold: list[tuple[str, dict, float]] = []           # (entity_id, state, COGS delta)
