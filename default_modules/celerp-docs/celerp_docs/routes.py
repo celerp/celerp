@@ -56,6 +56,7 @@ from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )
 from celerp.services.shipping import INCOTERMS_2020, REASONS_FOR_EXPORT
+from celerp.schemas.numbers import FiniteFloat
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -85,20 +86,20 @@ class LineItem(BaseModel):
     barcode: str | None = None
     name: str | None = None
     description: str | None = None
-    quantity: float = 0
+    quantity: FiniteFloat = 0
     unit: str | None = None
-    unit_price: float = 0
-    tax_rate: float | None = None  # deprecated: kept for backward compat; prefer taxes list
+    unit_price: FiniteFloat = 0
+    tax_rate: FiniteFloat | None = None  # deprecated: kept for backward compat; prefer taxes list
     taxes: list[TaxApplication] = Field(default_factory=list)
     sell_by: str | None = None
-    line_total: float | None = None
+    line_total: FiniteFloat | None = None
     # Purchasing: whether the line's goods are received into stock, as an expense or as an asset.
     receive_as: Literal["stock", "expense", "asset"] | None = None
     # Invoice fulfillment: how much of the linked parcel this line draws, by piece
     # and by weight. Drive the split-on-fulfill (child_pieces / child_weight). Only
     # editable when the parcel actually tracks that measure and splitting is allowed.
-    pieces: float | None = None
-    weight: float | None = None
+    pieces: FiniteFloat | None = None
+    weight: FiniteFloat | None = None
 
     @model_validator(mode="after")
     def _resolve_entity_id(self) -> "LineItem":
@@ -293,18 +294,18 @@ class DocCreatePayload(BaseModel):
     contact_name: str | None = None
     purchase_kind: str | None = None  # inventory|expense|asset (purchase_order only)
     line_items: list[LineItem] = Field(default_factory=list)
-    subtotal: float = 0
-    tax: float = 0  # deprecated: kept for backward compat; prefer doc_taxes list
+    subtotal: FiniteFloat = 0
+    tax: FiniteFloat = 0  # deprecated: kept for backward compat; prefer doc_taxes list
     doc_taxes: list[TaxApplication] = Field(default_factory=list)
-    discount: float = 0
-    shipping: float = 0
-    total: float = 0
+    discount: FiniteFloat = 0
+    shipping: FiniteFloat = 0
+    total: FiniteFloat = 0
     payment_terms: str | None = None
     due_date: str | None = None
     currency: str | None = None
     # Declared rather than left to extra="allow" so the rate is validated on the
     # way in. Foreign-currency documents require one before they can finalize.
-    conversion_rate: float | None = None
+    conversion_rate: FiniteFloat | None = None
     notes: str | None = None
     reference: str | None = None
     terms_template: str | None = None
@@ -387,13 +388,13 @@ class DocUnvoidBody(BaseModel):
 
 
 class DocPaymentBody(BaseModel):
-    amount: float
+    amount: FiniteFloat
     payment_date: str  # ISO date (YYYY-MM-DD), always required
     currency: str | None = None
     method: str | None = None
     reference: str | None = None
     bank_account: str | None = None
-    conversion_rate: float | None = None
+    conversion_rate: FiniteFloat | None = None
     source_doc_id: str | None = None
     target_doc_id: str | None = None
     idempotency_key: str | None = None
@@ -409,11 +410,11 @@ class DocPaymentBody(BaseModel):
 class ReceivedItem(BaseModel):
     po_line_index: int = -1  # optional; -1 means not specified (e.g. one-click bill receive)
     item_id: str | None = None
-    quantity_received: float = Field(gt=0, allow_inf_nan=False)
+    quantity_received: FiniteFloat = Field(gt=0)
     condition: str = "good"
     sku: str | None = None
     name: str | None = None
-    cost_price: float | None = None
+    cost_price: FiniteFloat | None = None
     receive_as: str | None = None  # taken from the document line when not given
     category: str | None = None
     attributes: dict | None = None
@@ -471,8 +472,8 @@ class RevertLinesRequest(FulfillLinesRequest):
     measure the quantity does not imply (a piece-sold parcel that also carries a weight).
     The measure of a part-returned parcel cannot be inferred, so it must be stated.
     """
-    quantities: dict[str, float] | None = None
-    weights: dict[str, float] | None = None
+    quantities: dict[str, FiniteFloat] | None = None
+    weights: dict[str, FiniteFloat] | None = None
     pieces: dict[str, int] | None = None
 
 
@@ -2779,7 +2780,7 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
 
 class RefundBody(BaseModel):
     payment_index: int  # the payment the money is given back from
-    amount: float = Field(allow_inf_nan=False)
+    amount: FiniteFloat
     payment_date: str  # ISO date (YYYY-MM-DD) of the refund
     currency: str | None = None
     method: str | None = None
@@ -3173,7 +3174,7 @@ async def delete_payment(
 
 class ApplyToInvoiceBody(BaseModel):
     target_doc_id: str
-    amount: float
+    amount: FiniteFloat
     date: str | None = None
     idempotency_key: str | None = None
 
@@ -3293,7 +3294,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
 
 
 class CnRefundBody(BaseModel):
-    amount: float
+    amount: FiniteFloat
     date: str  # ISO date (YYYY-MM-DD), always required
     method: str | None = None
     bank_account: str | None = None
@@ -3373,7 +3374,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
 
 class BulkPaymentBody(BaseModel):
     doc_ids: list[str]
-    amount: float
+    amount: FiniteFloat
     payment_date: str  # ISO date (YYYY-MM-DD), always required
     method: str | None = None
     bank_account: str | None = None
@@ -3955,7 +3956,7 @@ _NOT_ON_HAND_STATUSES: frozenset[str] = frozenset({"memo_out", "sold", "archived
 
 class ReturnItem(BaseModel):
     item_id: str
-    quantity_returned: float = Field(gt=0, allow_inf_nan=False)
+    quantity_returned: FiniteFloat = Field(gt=0)
 
 
 class ReturnBody(BaseModel):
@@ -3985,7 +3986,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     label = {**_RECEIVING_DOC_LABEL, "consignment_in": "consignment"}[doc_type]
     returnable = await _returnable_quantities(session, company_id, row.state)
     for it in payload.items:
-        if not math.isfinite(it.quantity_returned) or it.quantity_returned <= 0:
+        if it.quantity_returned <= 0:
             raise HTTPException(status_code=422, detail=f"{it.item_id}: the quantity to return must be more than 0.")
         left = returnable.get(it.item_id)
         if left is None:
@@ -4860,11 +4861,11 @@ class ListCreatePayload(BaseModel):
     contact_id: str | None = None
     contact_name: str | None = None
     line_items: list[dict] = Field(default_factory=list)
-    subtotal: float = 0
-    discount: float = 0
+    subtotal: FiniteFloat = 0
+    discount: FiniteFloat = 0
     discount_type: str = "flat"
-    tax: float = 0
-    total: float = 0
+    tax: FiniteFloat = 0
+    total: FiniteFloat = 0
     currency: str | None = None
     notes: str | None = None
     status: Literal["draft"] = "draft"
@@ -7385,7 +7386,7 @@ async def reserve_lines(
 
 class ReturnReceivedItem(BaseModel):
     sku: str
-    quantity: float
+    quantity: FiniteFloat
     # Optional: bind the return to a specific physical lot. Under non-unique SKU a
     # credit-note line may carry item_id; when present it is authoritative (else the
     # documented LIFO-by-sku tiebreak applies).
@@ -8060,7 +8061,7 @@ class ListScanBody(BaseModel):
 
 
 class ListCountBody(BaseModel):
-    counted_qty: float | None = None  # None clears the count (line skipped on adjust)
+    counted_qty: FiniteFloat | None = None  # None clears the count (line skipped on adjust)
 
 
 async def _get_audit(session: AsyncSession, company_id, entity_id: str, *, for_update: bool = False) -> Projection:
@@ -8562,7 +8563,7 @@ class WriteoffCreateBody(BaseModel):
 class WriteoffLineBody(BaseModel):
     line_id: str | None = None
     item_id: str | None = None
-    qty_out: float | None = None
+    qty_out: FiniteFloat | None = None
     account: str | None = None
     comment: str | None = None
 

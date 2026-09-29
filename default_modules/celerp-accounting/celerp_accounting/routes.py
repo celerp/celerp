@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import math
 import re
 import uuid
 from dataclasses import dataclass
@@ -30,6 +29,7 @@ from celerp.services.money import (
     checked_exchange_rate, currency_dp, round_money, to_base, to_decimal, to_stored_float,
 )
 from celerp.services.permissions import require_permission
+from celerp.schemas.numbers import FiniteFloat
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -1282,8 +1282,8 @@ async def extended_journal(
 
 class ManualJELine(BaseModel):
     account: str
-    debit: float = 0
-    credit: float = 0
+    debit: FiniteFloat = 0
+    credit: FiniteFloat = 0
     # The party this line belongs to. Document-driven postings derive their party
     # from the document, so this is for the entries that have no document: a
     # write-off, an opening balance, an adjustment posted straight to a control
@@ -1297,7 +1297,7 @@ class ManualJELine(BaseModel):
     # because settling an invoice in one currency with cash in another is one
     # transaction, and the books already store every posting in base currency.
     currency: str | None = None
-    rate: float | None = None
+    rate: FiniteFloat | None = None
 
 
 class ManualJECreate(BaseModel):
@@ -1373,8 +1373,6 @@ async def create_manual_journal_entry(
                 status_code=422,
                 detail=f"Account {line.account} is a parent account. Post to one of its sub-accounts: {', '.join(sorted(children))}.",
             )
-        if not (math.isfinite(line.debit) and math.isfinite(line.credit)):
-            raise HTTPException(status_code=422, detail="Debit and credit amounts must be finite numbers.")
         if line.debit < 0 or line.credit < 0:
             raise HTTPException(status_code=422, detail="Debit and credit amounts cannot be negative.")
         line_fx = _validated_line_fx(base, line, index)
@@ -2216,7 +2214,7 @@ class BankAccountCreate(BaseModel):
     account_number: str
     bank_type: str  # checking|savings|credit_card
     currency: str
-    opening_balance: float = 0.0
+    opening_balance: FiniteFloat = 0.0
     account_code: str | None = None  # optional override; auto-assigned if None
 
 
@@ -2474,7 +2472,7 @@ async def patch_bank_account(
 class TransferCreate(BaseModel):
     from_bank_id: str
     to_bank_id: str
-    amount: float
+    amount: FiniteFloat
     date: str  # ISO date "YYYY-MM-DD"
     description: str = ""
     reference: str = ""
@@ -2578,7 +2576,7 @@ async def create_transfer(
 class ReconciliationStart(BaseModel):
     bank_account_id: str
     statement_date: str  # "YYYY-MM-DD"
-    statement_balance: float
+    statement_balance: FiniteFloat
 
 
 class ReconciliationMatch(BaseModel):
@@ -2890,7 +2888,7 @@ class StmtLineMatchPayload(BaseModel):
 class StmtLineCreatePayload(BaseModel):
     account_code: str
     memo: str = ""
-    amount: float | None = None  # defaults to line amount
+    amount: FiniteFloat | None = None  # defaults to line amount
     date: str | None = None      # defaults to line_date
     # A bank line settled straight to a control account belongs to a party, and
     # this is the only chance to say which: nothing downstream can infer it.

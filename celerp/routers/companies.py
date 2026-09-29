@@ -39,6 +39,7 @@ from celerp.services.permissions import (
     resolved_grant_roles,
     role_has_permission,
 )
+from celerp.schemas.numbers import FiniteFloat
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
@@ -134,7 +135,7 @@ class ItemSchemaField(BaseModel):
     required: bool = False
     options: list[str] = Field(default_factory=list)
     visible_to_roles: list[str] = Field(default_factory=list)  # empty = all roles
-    position: float = 0
+    position: FiniteFloat = 0
     show_in_table: bool = True  # False = hidden in list view by default
 
 
@@ -162,7 +163,7 @@ class ColumnPrefsPatch(BaseModel):
 
 class TaxRate(BaseModel):
     name: str
-    rate: float  # percentage, e.g. 7.0
+    rate: FiniteFloat  # percentage, e.g. 7.0
     tax_type: str = "both"  # sales|purchase|both
     is_default: bool = False
     description: str = ""

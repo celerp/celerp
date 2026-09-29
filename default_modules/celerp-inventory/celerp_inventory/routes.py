@@ -60,6 +60,7 @@ from celerp.services.pricing import (
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_basis, round_money, to_decimal, to_stored_float
+from celerp.schemas.numbers import FiniteFloat
 from celerp_inventory.projections import _is_core_key, _is_image_mime, is_item_available, thumbnail_file_id
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -283,13 +284,13 @@ class ItemCreate(BaseModel):
     sku: str | None = None
     name: str
     sell_by: str                           # required - must be a valid unit name from company settings
-    quantity: float = 0
+    quantity: FiniteFloat = 0
     category: str | None = None
     location_id: uuid.UUID | None = None
-    cost_price: float | None = None  # legacy alias; prefer cost_total
-    cost_total: float | None = None
-    wholesale_price: float | None = None
-    retail_price: float | None = None
+    cost_price: FiniteFloat | None = None  # legacy alias; prefer cost_total
+    cost_total: FiniteFloat | None = None
+    wholesale_price: FiniteFloat | None = None
+    retail_price: FiniteFloat | None = None
     description: str | None = None
     unit: str | None = None
     barcode: str | None = None             # digits only if provided
@@ -301,7 +302,7 @@ class ItemCreate(BaseModel):
     purchase_sku: str | None = None        # vendor's SKU / part number
     purchase_name: str | None = None       # vendor's product name
     purchase_unit: str | None = None       # unit vendor sells in (e.g. "case", "box")
-    purchase_conversion_factor: float | None = None  # sell units per purchase unit (e.g. 24 pcs/case)
+    purchase_conversion_factor: FiniteFloat | None = None  # sell units per purchase unit (e.g. 24 pcs/case)
     allow_splitting: bool = True
     attributes: dict = Field(default_factory=dict)
     idempotency_key: str | None = None
@@ -323,8 +324,8 @@ class TransferBody(BaseModel):
 
 class SplitChild(BaseModel):
     sku: str | None = None    # omitted → keeps the parent SKU (resolved in split_item)
-    quantity: float
-    weight: float | None = None
+    quantity: FiniteFloat
+    weight: FiniteFloat | None = None
     pieces: int | None = None   # complement for weight-unit items (independent of weight)
     barcode: str | None = None  # auto-assigned from shared sequence if omitted
     attributes: dict = Field(default_factory=dict)
@@ -332,16 +333,16 @@ class SplitChild(BaseModel):
 
 class SplitBody(BaseModel):
     children: list[SplitChild]
-    mother_qty: float | None = None    # explicit mother qty override (used when user re-weighed mother)
-    mother_weight: float | None = None # explicit mother weight override
+    mother_qty: FiniteFloat | None = None    # explicit mother qty override (used when user re-weighed mother)
+    mother_weight: FiniteFloat | None = None # explicit mother weight override
     idempotency_key: str | None = None
 
 
 class MergeBody(BaseModel):
     source_entity_ids: list[str]
     target_sku_from: str                       # entity_id of the source whose SKU/barcode to use
-    resulting_quantity: float | None = None    # optional override (default = sum)
-    resulting_cost_total: float | None = None  # optional override (default = sum of source cost_totals)
+    resulting_quantity: FiniteFloat | None = None    # optional override (default = sum)
+    resulting_cost_total: FiniteFloat | None = None  # optional override (default = sum of source cost_totals)
     resulting_name: str | None = None          # optional override (default = target's name)
     resulting_sku: str | None = None           # optional custom SKU (default = target's SKU); issue #190
     resolved_attributes: dict | None = None    # user picks for conflicting string attributes
@@ -352,23 +353,23 @@ class TransformBody(BaseModel):
     child_sku: str
     child_category: str
     child_sell_by: str
-    child_quantity: float
+    child_quantity: FiniteFloat
     child_name: str | None = None
-    child_weight: float | None = None
+    child_weight: FiniteFloat | None = None
     child_weight_unit: str | None = None
     child_pieces: int | None = None
-    child_cost_total: float | None = None  # final cost (permitted override); None or a restricted caller preserves parent cost
+    child_cost_total: FiniteFloat | None = None  # final cost (permitted override); None or a restricted caller preserves parent cost
     idempotency_key: str | None = None
 
 
 class AdjustBody(BaseModel):
-    new_qty: float
+    new_qty: FiniteFloat
     idempotency_key: str | None = None
 
 
 class PriceBody(BaseModel):
     price_type: str
-    new_price: float
+    new_price: FiniteFloat
     idempotency_key: str | None = None
 
 
@@ -378,7 +379,7 @@ class StatusBody(BaseModel):
 
 
 class ReserveBody(BaseModel):
-    quantity: float
+    quantity: FiniteFloat
     idempotency_key: str | None = None
 
 

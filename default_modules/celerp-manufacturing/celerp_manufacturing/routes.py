@@ -34,6 +34,7 @@ from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_basis
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
+from celerp.schemas.numbers import FiniteFloat
 
 from .costing import RecipeError, labor_hours, roll_up_cost, where_used
 
@@ -55,13 +56,13 @@ log = logging.getLogger(__name__)
 
 class MfgInput(BaseModel):
     item_id: str
-    quantity: float
+    quantity: FiniteFloat
 
 
 class MfgOutput(BaseModel):
     sku: str
     name: str
-    quantity: float
+    quantity: FiniteFloat
     category: str | None = None
 
 
@@ -73,7 +74,7 @@ class MfgOrderCreate(BaseModel):
     location_id: str | None = None
     assigned_to: str | None = None
     due_date: str | None = None
-    estimated_cost: float | None = None
+    estimated_cost: FiniteFloat | None = None
     notes: str | None = None
     idempotency_key: str | None = None
 
@@ -95,16 +96,16 @@ class IssueBody(BaseModel):
 
 class ReceiveBody(BaseModel):
     # Finished-goods quantity to receive. Omit `quantity` to receive everything still outstanding.
-    quantity: float | None = None
+    quantity: FiniteFloat | None = None
     idempotency_key: str | None = None
 
 
 class CompleteBody(BaseModel):
     actual_outputs: list[MfgOutput] | None = None
-    waste_quantity: float | None = Field(default=None, ge=0)
+    waste_quantity: FiniteFloat | None = Field(default=None, ge=0)
     waste_unit: str | None = None
     waste_reason: str | None = None
-    labor_hours: float | None = None
+    labor_hours: FiniteFloat | None = None
     idempotency_key: str | None = None
 
 
@@ -326,7 +327,7 @@ async def _apply_standard_cost(session: AsyncSession, company_id, user, item_id:
 
 
 class BuildBody(BaseModel):
-    quantity: float = 1.0
+    quantity: FiniteFloat = 1.0
     # One-tap build: create the run and immediately issue components + receive output + complete,
     # all in one action (restaurant / simple make-to-stock). False leaves a Planned run to be
     # issued/received step by step (jewelry stock room / WIP).
@@ -1117,17 +1118,17 @@ async def backfill_default_work_center_hook(*, session: AsyncSession) -> None:
 class WorkCenterCreate(BaseModel):
     name: str
     wip_location_id: str | None = None
-    labor_rate: float | None = None
-    capacity: float | None = None
-    hours_per_day: float | None = None
+    labor_rate: FiniteFloat | None = None
+    capacity: FiniteFloat | None = None
+    hours_per_day: FiniteFloat | None = None
 
 
 class WorkCenterPatch(BaseModel):
     name: str | None = None
     wip_location_id: str | None = None
-    labor_rate: float | None = None
-    capacity: float | None = None
-    hours_per_day: float | None = None
+    labor_rate: FiniteFloat | None = None
+    capacity: FiniteFloat | None = None
+    hours_per_day: FiniteFloat | None = None
     is_default: bool | None = None
 
 

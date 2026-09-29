@@ -29,6 +29,7 @@ from celerp.db import get_session
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import get_current_company_settings, require_permission, role_has_permission
+from celerp.schemas.numbers import FiniteFloat
 from celerp_labels.models import LabelTemplate
 
 log = logging.getLogger(__name__)
@@ -42,8 +43,8 @@ class TemplateCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     format: str = Field("40x30mm")
     orientation: str = Field("portrait")
-    width_mm: float | None = None
-    height_mm: float | None = None
+    width_mm: FiniteFloat | None = None
+    height_mm: FiniteFloat | None = None
     fields: list[dict] = Field(default_factory=lambda: [
         {"key": "name", "label": "Name", "type": "text"},
         {"key": "sku", "label": "SKU", "type": "text"},
@@ -57,8 +58,8 @@ class TemplateUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
     format: str | None = None
     orientation: str | None = None
-    width_mm: float | None = None
-    height_mm: float | None = None
+    width_mm: FiniteFloat | None = None
+    height_mm: FiniteFloat | None = None
     fields: list[dict] | None = None
     copies: int | None = Field(None, ge=1, le=100)
     notes: str | None = None
