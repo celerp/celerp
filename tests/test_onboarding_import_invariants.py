@@ -141,7 +141,7 @@ class TestImportStageInvariant:
             async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
                 r = await c.post(
                     "/inventory/import/confirm",
-                    data={"csv_ref": ref},
+                    data={"csv_ref": ref, "preview_hash": "c" * 64},
                     cookies={"celerp_token": make_test_token(role="owner")},
                 )
         assert r.status_code == 200
@@ -407,3 +407,356 @@ class TestItemSellByResolution:
         build = await build_import_records(session, cid, [{"name": "Widget", "sell_by": "Piece", "pieces": "1"}], upsert=False, dry_run=True)
         assert build.errors == []
         assert build.records[0]["data"]["sell_by"] == "piece"
+
+
+# ---------------------------------------------------------------------------
+# Preview and commit: one semantic preview, and a commit bound to it
+# ---------------------------------------------------------------------------
+
+def _codes(errors: list[dict]) -> list[tuple]:
+    return sorted((e["row"], e["field"], e.get("code")) for e in errors)
+
+
+async def _item_count(session, company_id: str) -> int:
+    from sqlalchemy import func, select
+
+    from celerp.models.projections import Projection
+    return (await session.execute(
+        select(func.count()).select_from(Projection).where(
+            Projection.company_id == uuid.UUID(company_id), Projection.entity_type == "item",
+        )
+    )).scalar_one()
+
+
+async def _rows_preview(client, h, rows, *, upsert=False, key="op-1") -> dict:
+    r = await client.post("/items/import/rows/preview", json={"rows": rows, "upsert": upsert, "idempotency_key": key}, headers=h)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def _rows_commit(client, h, rows, *, upsert=False, key="op-1", preview_hash=None):
+    return await client.post("/items/import/rows", json={
+        "rows": rows, "upsert": upsert, "idempotency_key": key, "preview_hash": preview_hash,
+    }, headers=h)
+
+
+async def _seed_items(client, h, rows, key):
+    r = await _rows_commit(client, h, rows, key=key)
+    assert r.status_code == 200 and not r.json()["errors"], r.text
+
+
+@pytest.fixture
+async def perm(client, session):
+    from celerp.services.auth import decode_access_token
+    from test_helpers import perm_setup
+    s = await perm_setup(client, session)
+    claims = decode_access_token(s["admin_h"]["Authorization"].split()[1])
+    s["company_id"], s["admin_user_id"] = claims["company_id"], claims["sub"]
+    return s
+
+
+@pytest.fixture
+def write_upload():
+    """Seed an owned transient upload for the admin, as the upload endpoint would."""
+    from celerp.ai.files import upload_dir
+
+    def _write(perm: dict, text: str, *, filename: str = "items.csv") -> str:
+        file_id = f"ai_up_{uuid.uuid4().hex}"
+        data = text.encode()
+        (upload_dir() / f"{file_id}.bin").write_bytes(data)
+        (upload_dir() / f"{file_id}.meta").write_text(json.dumps({
+            "filename": filename, "content_type": "text/csv", "size": len(data),
+            "company_id": perm["company_id"], "user_id": perm["admin_user_id"],
+        }))
+        return file_id
+    return _write
+
+
+# (case id, seed rows, rows, upsert, role header key, expected (row, field, code))
+_PARITY_CASES = [
+    ("missing_name", None, [{"sell_by": "piece", "quantity": "1"}], False, "admin_h", [(1, "name", "required")]),
+    ("resolved_sell_by", None, [{"name": "Stone", "category": "diamond", "weight": "1.5"}], False, "admin_h", []),
+    ("unresolved_sell_by", None, [{"name": "Widget", "quantity": "1"}], False, "admin_h", [(1, "sell_by", "sell_by_unresolved")]),
+    ("invalid_unit", None, [{"name": "Widget", "sell_by": "furlong", "quantity": "1"}], False, "admin_h", [(1, "sell_by", "sell_by_invalid")]),
+    ("default_location", None, [{"name": "Widget", "sell_by": "piece", "quantity": "1"}], False, "admin_h", []),
+    ("location_create_allowed", None, [{"name": "Widget", "sell_by": "piece", "quantity": "1", "location_name": "Annex"}], False, "admin_h", []),
+    ("location_create_denied", None, [{"name": "Widget", "sell_by": "piece", "quantity": "1", "location_name": "Annex"}], False, "manager_h", [(1, "location_name", "location_create_denied")]),
+    ("unique_sku_upsert", [{"name": "One", "sku": "U-1", "sell_by": "piece", "quantity": "1"}],
+     [{"name": "One renamed", "sku": "U-1", "sell_by": "piece"}], True, "admin_h", []),
+    ("ambiguous_sku_upsert", [{"name": "A", "sku": "AMB", "sell_by": "piece", "quantity": "1"}, {"name": "B", "sku": "AMB", "sell_by": "piece", "quantity": "1"}],
+     [{"name": "Which", "sku": "AMB", "sell_by": "piece"}], True, "admin_h", [(1, "sku", "sku_ambiguous")]),
+    ("shared_barcode", [{"name": "A", "sku": "SB-A", "barcode": "7508", "sell_by": "piece", "quantity": "1"}, {"name": "B", "sku": "SB-B", "barcode": "7508", "sell_by": "piece", "quantity": "1"}],
+     [{"name": "Which", "barcode": "7508", "sell_by": "piece"}], True, "admin_h", [(1, "barcode", "barcode_ambiguous")]),
+    ("sku_barcode_conflict", [{"name": "A", "sku": "CX-A", "barcode": "1111", "sell_by": "piece", "quantity": "1"}, {"name": "B", "sku": "CX-B", "barcode": "2222", "sell_by": "piece", "quantity": "1"}],
+     [{"name": "Mixed", "sku": "CX-A", "barcode": "2222", "sell_by": "piece"}], True, "admin_h", [(1, "sku", "sku_barcode_conflict")]),
+    ("sell_by_change_without_quantity", [{"name": "A", "sku": "SC-1", "sell_by": "piece", "quantity": "1"}],
+     [{"name": "A", "sku": "SC-1", "sell_by": "gram"}], True, "admin_h", [(1, "sell_by", "sell_by_change_needs_quantity")]),
+    ("price_total_derivation", None, [{"name": "Widget", "sell_by": "piece", "pieces": "4", "retail_price_total": "100"}], False, "admin_h", []),
+]
+
+
+class TestPreviewCommitInvariant:
+    """INV-PREVIEW-01..04: one preview helper, a commit that recomputes it, a hash
+    that binds every input, and no row on which preview and commit disagree."""
+
+    # INV-PREVIEW-04 --------------------------------------------------------
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", _PARITY_CASES, ids=[c[0] for c in _PARITY_CASES])
+    async def test_preview_and_bound_commit_agree(self, client, session, perm, case):
+        _id, seed, rows, upsert, who, expected = case
+        h = perm[who]
+        if seed:
+            await _seed_items(client, perm["admin_h"], seed, key=f"seed-{_id}")
+        preview = await _rows_preview(client, h, rows, upsert=upsert, key=f"op-{_id}")
+        assert _codes(preview["errors"]) == sorted(expected)
+
+        before = await _item_count(session, perm["company_id"])
+        r = await _rows_commit(client, h, rows, upsert=upsert, key=f"op-{_id}", preview_hash=preview["preview_hash"])
+        if expected:
+            assert r.status_code == 422, r.text
+            assert _codes(r.json()["detail"]["errors"]) == sorted(expected)
+            assert await _item_count(session, perm["company_id"]) == before
+        else:
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["errors"] == []
+            assert body["created"] + body["updated"] == len(rows)
+
+    @pytest.mark.asyncio
+    async def test_allowed_location_is_announced_by_preview(self, client, perm):
+        rows = [{"name": "Widget", "sell_by": "piece", "quantity": "1", "location_name": "Annex"}]
+        assert (await _rows_preview(client, perm["admin_h"], rows))["locations_to_create"] == ["Annex"]
+
+    # INV-PREVIEW-02 --------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_commit_recomputes_semantic_preview_before_writer(self, client, perm, monkeypatch):
+        import celerp_inventory.routes as routes
+        order: list[str] = []
+        real_preview, real_writer = routes.preview_import_rows, routes.import_items
+
+        async def preview_spy(*a, **k):
+            order.append("preview")
+            return await real_preview(*a, **k)
+
+        async def writer_spy(*a, **k):
+            order.append("writer")
+            return await real_writer(*a, **k)
+
+        rows = [{"name": "Widget", "sell_by": "piece", "quantity": "1"}]
+        ph = (await _rows_preview(client, perm["admin_h"], rows))["preview_hash"]
+        monkeypatch.setattr(routes, "preview_import_rows", preview_spy)
+        monkeypatch.setattr(routes, "import_items", writer_spy)
+        r = await _rows_commit(client, perm["admin_h"], rows, preview_hash=ph)
+        assert r.status_code == 200, r.text
+        assert order == ["preview", "writer"]
+
+    @pytest.mark.asyncio
+    async def test_commit_does_not_call_writer_when_preview_has_errors(self, client, perm, monkeypatch):
+        import celerp_inventory.routes as routes
+        rows = [{"name": "Widget", "quantity": "1"}]
+        ph = (await _rows_preview(client, perm["admin_h"], rows))["preview_hash"]
+        writer = AsyncMock()
+        monkeypatch.setattr(routes, "import_items", writer)
+        r = await _rows_commit(client, perm["admin_h"], rows, preview_hash=ph)
+        assert r.status_code == 422
+        assert r.json()["detail"]["code"] == "validation_failed"
+        writer.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("change", ["row_edited", "upsert", "operation_key"])
+    async def test_commit_does_not_call_writer_when_preview_hash_is_stale(self, client, perm, monkeypatch, change):
+        import celerp_inventory.routes as routes
+        rows = [{"name": "Widget", "sell_by": "piece", "quantity": "1"}]
+        ph = (await _rows_preview(client, perm["admin_h"], rows))["preview_hash"]
+        writer = AsyncMock()
+        monkeypatch.setattr(routes, "import_items", writer)
+        kwargs = {"upsert": False, "key": "op-1"}
+        if change == "row_edited":
+            rows = [dict(rows[0], quantity="2")]
+        elif change == "upsert":
+            kwargs["upsert"] = True
+        else:
+            kwargs["key"] = "op-2"
+        r = await _rows_commit(client, perm["admin_h"], rows, preview_hash=ph, **kwargs)
+        assert r.status_code == 409
+        assert r.json()["detail"]["code"] == "preview_stale"
+        writer.assert_not_awaited()
+
+    # INV-PREVIEW-01 --------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_browser_row_preview_delegates_to_same_semantic_row_preview(self, client, perm, monkeypatch):
+        import celerp_inventory.routes as routes
+        spy = AsyncMock(wraps=routes.preview_import_rows)
+        monkeypatch.setattr(routes, "preview_import_rows", spy)
+        await _rows_preview(client, perm["admin_h"], [{"name": "Widget", "sell_by": "piece"}])
+        assert spy.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_file_preview_delegates_to_semantic_row_preview(self, client, perm, monkeypatch, write_upload):
+        import celerp_inventory.routes as routes
+        spy = AsyncMock(wraps=routes.preview_import_rows)
+        monkeypatch.setattr(routes, "preview_import_rows", spy)
+        fid = write_upload(perm, "sku,name,sell_by\nF-1,Widget,piece\n")
+        r = await client.get(f"/items/import/preview?file_id={fid}", headers=perm["admin_h"])
+        assert r.status_code == 200, r.text
+        assert spy.await_count == 1
+        assert spy.await_args.args[4] == [{"sku": "F-1", "name": "Widget", "sell_by": "piece"}]
+
+    @pytest.mark.asyncio
+    async def test_file_and_row_preview_report_the_same_semantic_errors(self, client, perm, write_upload):
+        fid = write_upload(perm, "name,sell_by,quantity\nGood,piece,1\nNo unit,,1\nBad unit,furlong,1\n")
+        file_errors = (await client.get(f"/items/import/preview?file_id={fid}", headers=perm["admin_h"])).json()["errors"]
+        rows = [
+            {"name": "Good", "sell_by": "piece", "quantity": "1"},
+            {"name": "No unit", "sell_by": "", "quantity": "1"},
+            {"name": "Bad unit", "sell_by": "furlong", "quantity": "1"},
+        ]
+        row_errors = (await _rows_preview(client, perm["admin_h"], rows))["errors"]
+        assert _codes(file_errors) == _codes(row_errors) == [(2, "sell_by", "sell_by_unresolved"), (3, "sell_by", "sell_by_invalid")]
+
+    # INV-PREVIEW-03 --------------------------------------------------------
+
+    def test_preview_hash_changes_when_row_changes(self):
+        from celerp_inventory.routes import _rows_preview_hash
+        assert _rows_preview_hash([{"name": "A"}], False, "k") != _rows_preview_hash([{"name": "B"}], False, "k")
+
+    def test_preview_hash_changes_when_upsert_changes(self):
+        from celerp_inventory.routes import _rows_preview_hash
+        assert _rows_preview_hash([{"name": "A"}], False, "k") != _rows_preview_hash([{"name": "A"}], True, "k")
+
+    def test_preview_hash_changes_when_operation_key_changes(self):
+        from celerp_inventory.routes import _rows_preview_hash
+        assert _rows_preview_hash([{"name": "A"}], False, "k1") != _rows_preview_hash([{"name": "A"}], False, "k2")
+
+    def test_preview_hash_is_stable_for_equivalent_dict_key_order(self):
+        from celerp_inventory.routes import _rows_preview_hash
+        assert _rows_preview_hash([{"name": "A", "sku": "1"}], False, "k") == _rows_preview_hash([{"sku": "1", "name": "A"}], False, "k")
+
+    @pytest.mark.asyncio
+    async def test_file_preview_hash_changes_when_file_bytes_change(self, client, perm, write_upload):
+        a = write_upload(perm, "name,sell_by\nWidget,piece\n")
+        b = write_upload(perm, "name,sell_by\nWidget,gram\n")
+        ha = (await client.get(f"/items/import/preview?file_id={a}", headers=perm["admin_h"])).json()["preview_hash"]
+        hb = (await client.get(f"/items/import/preview?file_id={b}", headers=perm["admin_h"])).json()["preview_hash"]
+        assert ha != hb
+
+    @pytest.mark.asyncio
+    async def test_file_preview_hash_changes_when_mapping_changes(self, client, perm, write_upload):
+        fid = write_upload(perm, "title,unit\nWidget,piece\n")
+        hashes = []
+        for mapping in ({"title": "name", "unit": "sell_by"}, {"title": "name", "unit": "__skip__"}):
+            r = await client.post("/items/import/preview", json={"file_id": fid, "mapping": mapping}, headers=perm["admin_h"])
+            assert r.status_code == 200, r.text
+            hashes.append(r.json()["preview_hash"])
+        assert hashes[0] != hashes[1]
+
+    @pytest.mark.asyncio
+    async def test_file_preview_hash_changes_when_sheet_changes(self, client, perm, write_upload, monkeypatch):
+        import celerp.importers.tabular as tabular
+        monkeypatch.setattr(tabular, "read_table", lambda data, filename, sheet=None: (["name"], [{"name": "Widget"}]))
+        fid = write_upload(perm, "not really a workbook", filename="items.xlsx")
+        ha = (await client.get(f"/items/import/preview?file_id={fid}&sheet=One", headers=perm["admin_h"])).json()["preview_hash"]
+        hb = (await client.get(f"/items/import/preview?file_id={fid}&sheet=Two", headers=perm["admin_h"])).json()["preview_hash"]
+        assert ha != hb
+
+    # Whole-import identity -------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_large_import_is_one_semantic_build_with_bounded_writes(self, client, perm, monkeypatch):
+        import celerp_inventory.services as svc
+        builds, batches = [], []
+        real_build, real_commit = svc.build_import_records, svc.commit_import_batch
+
+        async def build_spy(*a, **k):
+            builds.append(len(a[2]))
+            return await real_build(*a, **k)
+
+        async def commit_spy(session, company_id, user, role, settings, body):
+            batches.append(len(body.records))
+            return await real_commit(session, company_id, user, role, settings, body)
+
+        rows = [{"name": f"Item {i}", "sell_by": "piece", "quantity": "1"} for i in range(501)]
+        ph = (await _rows_preview(client, perm["admin_h"], rows, key="big"))["preview_hash"]
+        monkeypatch.setattr(svc, "build_import_records", build_spy)
+        monkeypatch.setattr(svc, "commit_import_batch", commit_spy)
+        r = await _rows_commit(client, perm["admin_h"], rows, key="big", preview_hash=ph)
+        assert r.status_code == 200, r.text
+        assert r.json()["created"] == 501
+        assert builds.count(501) == 2  # the bound preview, then the writer: each over the whole import
+        assert batches == [500, 1]
+
+    @pytest.mark.asyncio
+    async def test_identical_rows_are_distinct_creates_and_exact_retry_is_a_no_op(self, client, session, perm):
+        rows = [{"name": "Same", "sell_by": "piece", "quantity": "1"}] * 2
+        ph = (await _rows_preview(client, perm["admin_h"], rows, key="twins"))["preview_hash"]
+        first = await _rows_commit(client, perm["admin_h"], rows, key="twins", preview_hash=ph)
+        assert first.json()["created"] == 2
+        count = await _item_count(session, perm["company_id"])
+        again = await _rows_commit(client, perm["admin_h"], rows, key="twins", preview_hash=ph)
+        assert again.status_code == 200 and again.json()["created"] == 0
+        assert await _item_count(session, perm["company_id"]) == count
+
+    @pytest.mark.asyncio
+    async def test_rows_envelope_is_bounded_by_the_tabular_limits(self, client, perm):
+        from celerp.importers.tabular import MAX_CELLS, MAX_ROWS
+        too_many_rows = [{"name": "x"}] * (MAX_ROWS + 1)
+        r = await client.post("/items/import/rows/preview", json={"rows": too_many_rows}, headers=perm["admin_h"])
+        assert r.status_code == 422
+        wide = [{f"c{j}": "v" for j in range(MAX_CELLS // 10 + 1)}] * 10
+        r = await client.post("/items/import/rows/preview", json={"rows": wide}, headers=perm["admin_h"])
+        assert r.status_code == 422
+
+    # Browser: nothing is importable until the server review is clean -------
+
+    async def _ui_post(self, path, data, *, preview, import_rows=None):
+        from ui.app import app as ui_app
+        company = {"id": _COMPANY_A, "current_role": "owner", "settings": {}}
+        import_rows = import_rows or AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
+             patch("ui.api_client.preview_import_rows", new=preview), \
+             patch("ui.api_client.import_rows", new=import_rows):
+            async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+                r = await c.post(path, data=data, cookies=_owner_cookies())
+        assert r.status_code == 200, r.text
+        return r.text, import_rows
+
+    @pytest.mark.asyncio
+    async def test_review_with_row_errors_offers_no_import(self, stage_dir):
+        ref = ci._write_stage(_COMPANY_A, "name,quantity\nWidget,1\n")
+        preview = AsyncMock(return_value={"errors": [{"row": 1, "field": "sell_by", "code": "sell_by_unresolved", "message": "No selling unit"}],
+                                          "locations_to_create": [], "preview_hash": "d" * 64})
+        html, _ = await self._ui_post("/inventory/import/review", {"csv_ref": ref}, preview=preview)
+        assert "No selling unit" in html
+        assert "d" * 64 not in html
+        assert 'hx-post="/inventory/import/confirm"' not in html
+
+    @pytest.mark.asyncio
+    async def test_changing_update_existing_reruns_review(self, stage_dir):
+        ref = ci._write_stage(_COMPANY_A, "name,sku,sell_by\nWidget,W-1,piece\n")
+        preview = AsyncMock(return_value={"errors": [], "locations_to_create": [], "preview_hash": "e" * 64})
+        html, _ = await self._ui_post("/inventory/import/review", {"csv_ref": ref, "upsert": "1"}, preview=preview)
+        assert preview.await_args.kwargs["upsert"] is True
+        assert 'name="preview_hash" value="' + "e" * 64 in html
+        assert 'hx-post="/inventory/import/review"' in html
+
+    @pytest.mark.asyncio
+    async def test_confirm_without_reviewed_hash_never_imports(self, stage_dir):
+        ref = ci._write_stage(_COMPANY_A, "name,sell_by\nWidget,piece\n")
+        preview = AsyncMock(return_value={"errors": [], "locations_to_create": [], "preview_hash": "f" * 64})
+        html, writer = await self._ui_post("/inventory/import/confirm", {"csv_ref": ref}, preview=preview)
+        writer.assert_not_awaited()
+        assert "f" * 64 in html
+
+    @pytest.mark.asyncio
+    async def test_stale_confirm_returns_to_review(self, stage_dir):
+        from ui.api_client import APIError
+        ref = ci._write_stage(_COMPANY_A, "name,sell_by\nWidget,piece\n")
+        preview = AsyncMock(return_value={"errors": [], "locations_to_create": [], "preview_hash": "a" * 64})
+        stale = AsyncMock(side_effect=APIError(409, {"code": "preview_stale"}))
+        html, _ = await self._ui_post("/inventory/import/confirm", {"csv_ref": ref, "preview_hash": "b" * 64},
+                                      preview=preview, import_rows=stale)
+        assert "a" * 64 in html
+        assert ci._read_stage(_COMPANY_A, ref) is not None

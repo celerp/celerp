@@ -1111,6 +1111,11 @@ def _fix_errors_panel(
     )
 
 
+def rows_have_errors(rows: list[dict], cols: list[str], validate: ValidateFn) -> bool:
+    """True when any cell fails ``validate`` (the fix-errors panel would show)."""
+    return any(_row_errors(row, cols, validate) for row in rows)
+
+
 def validation_result(
     *,
     rows: list[dict],
@@ -1157,36 +1162,75 @@ def validation_result(
         )
 
     # Clean - confirm panel with preview table
+    return _confirm_panel(
+        rows=rows,
+        cols=cols,
+        hidden={"csv_ref": csv_ref},
+        confirm_action=confirm_action,
+        back_href=back_href,
+        has_mapping=has_mapping,
+        upsert_control=_upsert_control(upsert_label) if upsert_label else "",
+    )
+
+
+def _preview_table(rows: list[dict], cols: list[str]) -> FT:
+    """First 5 rows, values truncated to 40 chars, with a 'showing n of total' note."""
+    n = len(rows)
+    preview_rows = rows[:5]
+    if not preview_rows:
+        return ""
+    return Div(
+        Table(
+            Thead(Tr(*[Th(c.replace("_", " ").title()) for c in cols])),
+            Tbody(*[Tr(*[Td(str(row.get(c, ""))[:40]) for c in cols]) for row in preview_rows]),
+            cls="data-table import-preview-table",
+        ),
+        P(t("import.showing_rows", n=len(preview_rows), total=n), cls="import-hint") if n > 5 else "",
+    )
+
+
+def _upsert_control(upsert_label: str, *, checked: bool = False, review_action: str = "") -> FT:
+    """The 'Update existing records' checkbox and its matching hint.
+
+    With ``review_action`` a change re-runs the review for the new choice, so the
+    confirmation always matches what will be imported.
+    """
+    review_attrs = (
+        {"hx_post": review_action, "hx_trigger": "change", "hx_include": "closest form",
+         "hx_target": "#import-preview", "hx_swap": "outerHTML"}
+        if review_action else {}
+    )
+    return Div(
+        Label(
+            Input(type="checkbox", name="upsert", value="1", checked=checked, **review_attrs),
+            " ",
+            t("import.update_existing_records"),
+            cls="flex-row gap-sm",
+            style="align-items:center;cursor:pointer;",
+        ),
+        Span(
+            t("import.upsert_hint", label=upsert_label),
+            cls="import-hint",
+            style="display:block;margin-top:4px;",
+        ),
+        cls="mt-sm mb-sm",
+    )
+
+
+def _confirm_panel(
+    *,
+    rows: list[dict],
+    cols: list[str],
+    hidden: dict[str, str],
+    confirm_action: str,
+    back_href: str,
+    has_mapping: bool,
+    upsert_control: Any = "",
+    notes: Any = "",
+) -> FT:
+    """Rows-ready summary, preview table, and the single import button."""
     review_step = 3 if has_mapping else 2
     n = len(rows)
-
-    # Preview table: first 5 rows, values truncated to 40 chars
-    preview_rows = rows[:5]
-    preview_header = [Th(c.replace("_", " ").title()) for c in cols]
-    preview_body = []
-    for row in preview_rows:
-        cells = [Td(str(row.get(c, ""))[:40]) for c in cols]
-        preview_body.append(Tr(*cells))
-
-    # Optional upsert checkbox + info badge
-    upsert_control: Any = ""
-    if upsert_label:
-        upsert_control = Div(
-            Label(
-                Input(type="checkbox", name="upsert", value="1"),
-                " ",
-                t("import.update_existing_records"),
-                cls="flex-row gap-sm",
-                style="align-items:center;cursor:pointer;",
-            ),
-            Span(
-                t("import.upsert_hint", label=upsert_label),
-                cls="import-hint",
-                style="display:block;margin-top:4px;",
-            ),
-            cls="mt-sm mb-sm",
-        )
-
     return Div(
         _step_indicator(review_step, has_mapping=has_mapping),
         Div(
@@ -1198,14 +1242,10 @@ def validation_result(
                 ),
                 cls="import-summary-cards",
             ),
-            Table(
-                Thead(Tr(*preview_header)),
-                Tbody(*preview_body),
-                cls="data-table import-preview-table",
-            ) if preview_rows else "",
-            P(t("import.showing_rows", n=len(preview_rows), total=n), cls="import-hint") if n > 5 else "",
+            notes,
+            _preview_table(rows, cols),
             Form(
-                Input(type="hidden", name="csv_ref", value=csv_ref),
+                *[Input(type="hidden", name=k, value=v) for k, v in hidden.items()],
                 upsert_control,
                 Button(
                     t("import.import_all_rows", n=n),
@@ -1226,6 +1266,85 @@ def validation_result(
                 ),
                 A(t("btn.cancel"), href=back_href, cls="btn btn--secondary"),
                 cls="flex-row gap-sm mt-md",
+            ),
+            cls="import-panel",
+        ),
+        id="import-preview",
+    )
+
+
+_REVIEW_ERROR_LIMIT = 50
+
+
+def semantic_review_panel(
+    *,
+    rows: list[dict],
+    cols: list[str],
+    csv_ref: str,
+    upsert: bool,
+    upsert_label: str,
+    errors: list[dict],
+    locations_to_create: list[str],
+    preview_hash: str,
+    review_action: str,
+    confirm_action: str,
+    upload_href: str,
+    back_href: str,
+    notice: str = "",
+) -> FT:
+    """Final review of rows that passed the cell checks, from the server's preview.
+
+    Row errors (``{"row", "field", "message"}``) block the import and are listed;
+    a clean preview shows the import button carrying ``preview_hash``, so the
+    server imports exactly what was reviewed. Changing 'Update existing records'
+    re-runs the review.
+    """
+    upsert_control = _upsert_control(upsert_label, checked=upsert, review_action=review_action)
+    notice_el = P(notice, cls="flash flash--warning") if notice else ""
+    if not errors:
+        hidden = {"csv_ref": csv_ref, "preview_hash": preview_hash}
+        notes = Div(
+            notice_el,
+            P(t("import.locations_to_create", names=", ".join(locations_to_create)), cls="import-hint")
+            if locations_to_create else "",
+        )
+        return _confirm_panel(
+            rows=rows, cols=cols, hidden=hidden, confirm_action=confirm_action,
+            back_href=back_href, has_mapping=True, upsert_control=upsert_control, notes=notes,
+        )
+
+    shown = errors[:_REVIEW_ERROR_LIMIT]
+    return Div(
+        _step_indicator(3, has_mapping=True),
+        Div(
+            notice_el,
+            Div(
+                Div(
+                    Div(str(len({e.get("row") for e in errors})), cls="import-card-value"),
+                    Div(t("import.rows_need_changes"), cls="import-card-label"),
+                    cls="import-card import-card--error",
+                ),
+                cls="import-summary-cards",
+            ),
+            P(t("import.review_fix_in_file"), cls="import-hint"),
+            Table(
+                Thead(Tr(Th(t("import.col_row")), Th(t("import.col_field")), Th(t("import.col_problem")))),
+                Tbody(*[
+                    Tr(Td(str(e.get("row", ""))), Td(str(e.get("field", ""))), Td(str(e.get("message", ""))))
+                    for e in shown
+                ]),
+                cls="data-table import-preview-table",
+            ),
+            P(t("import.showing_errors", n=len(shown), total=len(errors)), cls="import-hint")
+            if len(errors) > len(shown) else "",
+            Form(
+                Input(type="hidden", name="csv_ref", value=csv_ref),
+                upsert_control,
+                Div(
+                    A(t("import.upload_corrected_file"), href=upload_href, cls="btn btn--primary"),
+                    A(t("btn.cancel"), href=back_href, cls="btn btn--secondary"),
+                    cls="flex-row gap-sm mt-md",
+                ),
             ),
             cls="import-panel",
         ),

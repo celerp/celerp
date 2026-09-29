@@ -3429,5 +3429,14 @@
   "migration.sample_done_title": "ያ ሙሉው ዝውውር ነበር።",
   "migration.sample_done_body": "የናሙና መዝገቦቹ ተነበዋል፣ ገብተዋል፣ እና ከራሳቸው ድምር ጋር ተረጋግጠዋል።",
   "migration.move_first_company": "የመጀመሪያ ኩባንያዎን ያዛውሩ",
-  "migration.open_sample": "የናሙና ኩባንያውን ክፈት"
+  "migration.open_sample": "የናሙና ኩባንያውን ክፈት",
+  "import.locations_to_create": "አዲስ ቦታዎች ይፈጠራሉ፦ {names}",
+  "import.rows_need_changes": "መስተካከል ያለባቸው ረድፎች",
+  "import.review_fix_in_file": "እነዚህ ረድፎች እንዳሉ ሊገቡ አይችሉም። በፋይልዎ ውስጥ አስተካክለው እንደገና ይጫኑት።",
+  "import.col_row": "ረድፍ",
+  "import.col_field": "መስክ",
+  "import.col_problem": "ችግር",
+  "import.showing_errors": "ከ{total} ችግሮች {n} በማሳየት ላይ",
+  "import.upload_corrected_file": "የተስተካከለ ፋይል ይጫኑ",
+  "inventory.import_review_changed": "ረድፎቹ ከተገመገሙ በኋላ ተቀይረዋል። ከታች ያለውን ይመልከቱና እንደገና ያስገቡ።"
 }

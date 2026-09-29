@@ -3429,5 +3429,14 @@
   "migration.sample_done_title": "これで移行の全過程は終了です。",
   "migration.sample_done_body": "サンプルの帳簿を読み込み、取り込み、自身の合計と照合しました。",
   "migration.move_first_company": "最初の会社を移行する",
-  "migration.open_sample": "サンプルの会社を開く"
+  "migration.open_sample": "サンプルの会社を開く",
+  "import.locations_to_create": "新しいロケーションが作成されます: {names}",
+  "import.rows_need_changes": "行に修正が必要です",
+  "import.review_fix_in_file": "これらの行はこのままではインポートできません。ファイルで修正して再度アップロードしてください。",
+  "import.col_row": "行",
+  "import.col_field": "項目",
+  "import.col_problem": "問題",
+  "import.showing_errors": "{total} 件中 {n} 件の問題を表示",
+  "import.upload_corrected_file": "修正したファイルをアップロード",
+  "inventory.import_review_changed": "確認後に行が変更されました。下の内容を確認して、もう一度インポートしてください。"
 }

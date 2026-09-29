@@ -3429,5 +3429,14 @@
   "migration.sample_done_title": "Itulah keseluruhan migrasi.",
   "migration.sample_done_body": "Data contoh telah dibaca, diimpor, dan diperiksa terhadap totalnya sendiri.",
   "migration.move_first_company": "Pindahkan perusahaan pertama Anda",
-  "migration.open_sample": "Buka perusahaan contoh"
+  "migration.open_sample": "Buka perusahaan contoh",
+  "import.locations_to_create": "Lokasi baru akan dibuat: {names}",
+  "import.rows_need_changes": "baris perlu diubah",
+  "import.review_fix_in_file": "Baris ini tidak dapat diimpor apa adanya. Perbaiki di file Anda lalu unggah lagi.",
+  "import.col_row": "Baris",
+  "import.col_field": "Kolom",
+  "import.col_problem": "Masalah",
+  "import.showing_errors": "Menampilkan {n} dari {total} masalah",
+  "import.upload_corrected_file": "Unggah file yang sudah diperbaiki",
+  "inventory.import_review_changed": "Baris berubah sejak ditinjau. Periksa ringkasan di bawah dan impor lagi."
 }

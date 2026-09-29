@@ -3429,5 +3429,14 @@
   "migration.sample_done_title": "That's the whole migration.",
   "migration.sample_done_body": "The sample books were read, imported and checked against their own totals.",
   "migration.move_first_company": "Move your first company",
-  "migration.open_sample": "Open the sample company"
+  "migration.open_sample": "Open the sample company",
+  "import.locations_to_create": "New locations will be created: {names}",
+  "import.rows_need_changes": "rows need changes",
+  "import.review_fix_in_file": "These rows cannot be imported as they are. Correct them in your file and upload it again.",
+  "import.col_row": "Row",
+  "import.col_field": "Field",
+  "import.col_problem": "Problem",
+  "import.showing_errors": "Showing {n} of {total} problems",
+  "import.upload_corrected_file": "Upload a corrected file",
+  "inventory.import_review_changed": "The rows changed since they were reviewed. Check the review below and import again."
 }

@@ -3429,5 +3429,14 @@
   "migration.sample_done_title": "C'était l'ensemble de la migration.",
   "migration.sample_done_body": "Les données d'exemple ont été lues, importées puis vérifiées par rapport à leurs propres totaux.",
   "migration.move_first_company": "Transférez votre première société",
-  "migration.open_sample": "Ouvrir la société d'exemple"
+  "migration.open_sample": "Ouvrir la société d'exemple",
+  "import.locations_to_create": "De nouveaux emplacements seront créés : {names}",
+  "import.rows_need_changes": "lignes à corriger",
+  "import.review_fix_in_file": "Ces lignes ne peuvent pas être importées telles quelles. Corrigez-les dans votre fichier et téléversez-le à nouveau.",
+  "import.col_row": "Ligne",
+  "import.col_field": "Champ",
+  "import.col_problem": "Problème",
+  "import.showing_errors": "Affichage de {n} problèmes sur {total}",
+  "import.upload_corrected_file": "Téléverser un fichier corrigé",
+  "inventory.import_review_changed": "Les lignes ont changé depuis leur vérification. Consultez le récapitulatif ci-dessous et importez à nouveau."
 }

@@ -3429,5 +3429,14 @@
   "migration.sample_done_title": "Esa fue la migración completa.",
   "migration.sample_done_body": "Los datos de ejemplo se leyeron, se importaron y se verificaron contra sus propios totales.",
   "migration.move_first_company": "Traslade su primera empresa",
-  "migration.open_sample": "Abrir la empresa de ejemplo"
+  "migration.open_sample": "Abrir la empresa de ejemplo",
+  "import.locations_to_create": "Se crearán nuevas ubicaciones: {names}",
+  "import.rows_need_changes": "filas necesitan cambios",
+  "import.review_fix_in_file": "Estas filas no se pueden importar tal como están. Corríjalas en su archivo y vuelva a subirlo.",
+  "import.col_row": "Fila",
+  "import.col_field": "Campo",
+  "import.col_problem": "Problema",
+  "import.showing_errors": "Mostrando {n} de {total} problemas",
+  "import.upload_corrected_file": "Subir un archivo corregido",
+  "inventory.import_review_changed": "Las filas cambiaron desde que se revisaron. Revise el resumen de abajo e importe de nuevo."
 }

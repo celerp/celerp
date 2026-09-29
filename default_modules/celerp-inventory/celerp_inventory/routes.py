@@ -12,13 +12,14 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.events.schemas import reject_comma_sku
+from celerp.importers.tabular import MAX_CELLS, MAX_ROWS
 from celerp.inventory_codes import (
     PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES,
     normalize_rfid_epc,
@@ -32,11 +33,12 @@ from .services import (
     BatchImportResult,
     adjust_item_quantity,
     allocate_internal_codes,
-    build_import_records,
     build_item_import_spec,
     commit_import_batch,
     import_items,
     lot_fields,
+    import_preview_hash,
+    preview_import_rows,
 )
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
@@ -1511,11 +1513,71 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
 # batch (/import/batch). All converge on services.import_items / commit_import_batch.
 
 
+def _bounded_rows(rows: list[dict]) -> list[dict]:
+    """Hold mapped rows to the same cell budget as a parsed upload."""
+    if sum(len(r) for r in rows) > MAX_CELLS:
+        raise ValueError(f"Too many cells: the limit is {MAX_CELLS}")
+    return rows
+
+
+def _rows_preview_hash(rows: list[dict], upsert: bool, idempotency_key: str | None) -> str:
+    return import_preview_hash({"rows": rows, "upsert": upsert, "idempotency_key": idempotency_key})
+
+
 class InventoryImportRows(BaseModel):
-    rows: list[dict] = Field(..., max_length=500)
+    # The writer commits in batches of 500 internally; the envelope carries the
+    # whole import so it is previewed and committed as one operation.
+    rows: list[dict] = Field(..., max_length=MAX_ROWS)
     upsert: bool = False
     filename: str | None = None
     idempotency_key: str | None = None
+    preview_hash: str | None = Field(None, min_length=64, max_length=64)
+
+    @field_validator("rows")
+    @classmethod
+    def _check_rows(cls, rows: list[dict]) -> list[dict]:
+        return _bounded_rows(rows)
+
+
+class InventoryImportRowsPreviewRequest(BaseModel):
+    rows: list[dict] = Field(..., max_length=MAX_ROWS)
+    upsert: bool = False
+    idempotency_key: str | None = None
+
+    @field_validator("rows")
+    @classmethod
+    def _check_rows(cls, rows: list[dict]) -> list[dict]:
+        return _bounded_rows(rows)
+
+
+class InventoryImportRowsPreview(BaseModel):
+    errors: list[dict]
+    locations_to_create: list[str]
+    preview_hash: str
+
+
+@router.post(
+    "/import/rows/preview", response_model=InventoryImportRowsPreview,
+    dependencies=[require_permission("import_export_data")],
+)
+async def import_rows_preview(
+    body: InventoryImportRowsPreviewRequest,
+    company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    session: AsyncSession = Depends(get_session),
+) -> InventoryImportRowsPreview:
+    """Semantic preview of mapped browser rows; nothing is written.
+
+    The returned hash binds the rows, the update-existing choice, and the
+    operation key, and /import/rows refuses a commit whose hash no longer matches.
+    """
+    preview = await preview_import_rows(session, company_id, role, settings, body.rows, upsert=body.upsert)
+    return InventoryImportRowsPreview(
+        errors=preview.errors,
+        locations_to_create=preview.locations_to_create,
+        preview_hash=_rows_preview_hash(body.rows, body.upsert, body.idempotency_key),
+    )
 
 
 @router.post(
@@ -1536,7 +1598,17 @@ async def import_rows(
     resolution and creation, unit and quantity derivation, monetary conversion,
     idempotency, and the category-schema follow-up. Unmarked: this is the browser
     transport, not an agent capability (the agent commits through /import/commit).
+
+    With ``preview_hash`` the commit is bound to /import/rows/preview: the preview
+    is recomputed, a changed hash is refused with 409 and any row error with 422,
+    before anything is written.
     """
+    if body.preview_hash is not None:
+        if _rows_preview_hash(body.rows, body.upsert, body.idempotency_key) != body.preview_hash:
+            raise HTTPException(status_code=409, detail={"code": "preview_stale"})
+        preview = await preview_import_rows(session, company_id, role, settings, body.rows, upsert=body.upsert)
+        if preview.errors:
+            raise HTTPException(status_code=422, detail={"code": "validation_failed", "errors": preview.errors})
     return await import_items(
         session, company_id, user.id, role, settings, body.rows,
         upsert=body.upsert, filename=body.filename, idempotency_key=body.idempotency_key,
@@ -1586,7 +1658,6 @@ async def _build_item_preview(
     company; 422 when the bytes cannot be read as a table.
     """
     import hashlib
-    import json
 
     from celerp.ai.files import load_file
     from celerp.importers.tabular import (
@@ -1594,7 +1665,6 @@ async def _build_item_preview(
         read_table,
         remap_rows,
         suggest_mapping,
-        validate_cell,
     )
 
     if not _AI_FILE_ID_RE.match(file_id):
@@ -1621,40 +1691,26 @@ async def _build_item_preview(
     mapping = {col: mapping.get(col, "__attr__") for col in cols}
     new_cols, mapped_rows = remap_rows(cols, rows, mapping)
 
-    errors: list[dict] = []
-    for i, mapped in enumerate(mapped_rows):
-        for col in spec.cols:
-            if not validate_cell(spec, col, str(mapped.get(col, "")), mapped):
-                errors.append({"row": i + 1, "field": col, "message": f"Invalid or missing {col}"})
-    build = await build_import_records(
-        session, company_id, mapped_rows, upsert=upsert, dry_run=True,
-        create_missing_locations=role_has_permission(settings, role, "manage_company_settings"),
-    )
-    errors.extend(build.errors)
-    errors = errors[:50]
+    preview = await preview_import_rows(session, company_id, role, settings, mapped_rows, upsert=upsert)
+    errors = preview.errors[:50]
 
     unmapped_required = sorted(r for r in spec.required if r not in set(new_cols))
     row_count = len(rows)
-    canonical = json.dumps(
-        {
-            "file_id": file_id,
-            "sheet": sheet,
-            "upsert": upsert,
-            "mapping": mapping,
-            "row_count": row_count,
-            "file_sha256": hashlib.sha256(data).hexdigest(),
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    preview_hash = hashlib.sha256(canonical.encode()).hexdigest()
+    preview_hash = import_preview_hash({
+        "file_id": file_id,
+        "sheet": sheet,
+        "upsert": upsert,
+        "mapping": mapping,
+        "row_count": row_count,
+        "file_sha256": hashlib.sha256(data).hexdigest(),
+    })
 
     return {
         "payload": InventoryImportPreview(
             file_id=file_id, sheet=sheet, upsert=upsert, columns=cols,
             mapping=mapping, unmapped_required=unmapped_required, row_count=row_count,
             sample=mapped_rows[:5], errors=errors,
-            locations_to_create=build.locations_to_create, preview_hash=preview_hash,
+            locations_to_create=preview.locations_to_create, preview_hash=preview_hash,
         ),
         "errors": errors,
         "mapped_rows": mapped_rows,

@@ -30,7 +30,7 @@ from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import round_basis
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
-from celerp.importers.tabular import CsvImportSpec
+from celerp.importers.tabular import CsvImportSpec, validate_cell
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.permissions import role_has_permission
@@ -1845,7 +1845,7 @@ def build_item_import_spec(price_lists: list[dict]) -> CsvImportSpec:
 @dataclass
 class ImportBuild:
     records: list[dict]              # ImportRecord-shaped dicts ready for the committer
-    errors: list[dict]              # {"row", "field", "message"}
+    errors: list[dict]              # {"row", "field", "code", "message"}
     locations_to_create: list[str]
 
 
@@ -1965,6 +1965,7 @@ async def build_import_records(
                     errors.append({
                         "row": i + 1,
                         "field": "barcode",
+                        "code": "barcode_ambiguous",
                         "message": (
                             f"Barcode '{barcode}' is shared by {len(barcode_holders)} items; "
                             "include a SKU that identifies one of them"
@@ -1978,6 +1979,7 @@ async def build_import_records(
                     errors.append({
                         "row": i + 1,
                         "field": "sku",
+                        "code": "sku_barcode_conflict",
                         "message": "SKU and barcode resolve to different existing items",
                     })
                     continue
@@ -1988,6 +1990,7 @@ async def build_import_records(
                 errors.append({
                     "row": i + 1,
                     "field": "sku",
+                    "code": "sku_ambiguous",
                     "message": f"SKU '{sku}' matches multiple lots; include a barcode to choose one",
                 })
                 continue
@@ -2001,6 +2004,7 @@ async def build_import_records(
                 errors.append({
                     "row": i + 1,
                     "field": "location_name",
+                    "code": "location_create_denied",
                     "message": f"Location '{loc_name}' does not exist and your role cannot create locations",
                 })
                 continue
@@ -2012,6 +2016,7 @@ async def build_import_records(
                 errors.append({
                     "row": i + 1,
                     "field": "location_name",
+                    "code": "location_unresolved",
                     "message": "No location resolved: add a location_name column or set a default location",
                 })
                 continue
@@ -2123,6 +2128,7 @@ async def build_import_records(
             errors.append({
                 "row": i + 1,
                 "field": "sell_by",
+                "code": "sell_by_change_needs_quantity",
                 "message": "Changing sell_by during upsert requires quantity, pieces, or weight",
             })
             continue
@@ -2166,6 +2172,59 @@ async def build_import_records(
         })
 
     return ImportBuild(records=records, errors=errors, locations_to_create=locations_to_create)
+
+
+def import_preview_hash(inputs: dict) -> str:
+    """Stable hash of every input that can change an import's result.
+
+    One canonical serialization for every preview and the commit that echoes it,
+    so key order and whitespace never make an unchanged import look stale.
+    """
+    canonical = json.dumps(inputs, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+@dataclass
+class ImportRowsPreview:
+    errors: list[dict]              # {"row", "field", "code", "message"}
+    locations_to_create: list[str]
+
+
+async def preview_import_rows(
+    session: AsyncSession,
+    company_id,
+    role: str,
+    settings: dict,
+    rows: list[dict],
+    *,
+    upsert: bool,
+) -> ImportRowsPreview:
+    """The one semantic preview of mapped item rows, with nothing written.
+
+    Checks each mapped cell against the item spec, then dry-runs the importer.
+    The file preview, the browser row preview, and the commit that binds to
+    either all call this, so they cannot disagree about a row.
+    """
+    price_lists, _default_list, _currency = await get_price_config(session, company_id)
+    spec = build_item_import_spec(price_lists)
+    errors: list[dict] = []
+    for i, row in enumerate(rows):
+        for col in spec.cols:
+            value = str(row.get(col, "") or "")
+            if not validate_cell(spec, col, value, row):
+                missing = col in spec.required and not value.strip()
+                errors.append({
+                    "row": i + 1,
+                    "field": col,
+                    "code": "required" if missing else "invalid_value",
+                    "message": f"Missing {col}" if missing else f"Invalid {col}",
+                })
+    build = await build_import_records(
+        session, company_id, rows, upsert=upsert, dry_run=True,
+        create_missing_locations=role_has_permission(settings, role, "manage_company_settings"),
+    )
+    errors.extend(build.errors)
+    return ImportRowsPreview(errors=errors, locations_to_create=build.locations_to_create)
 
 
 async def import_items(

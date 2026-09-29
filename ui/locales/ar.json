@@ -3429,5 +3429,14 @@
   "migration.sample_done_title": "كانت تلك عملية الترحيل بأكملها.",
   "migration.sample_done_body": "تمت قراءة الدفاتر النموذجية واستيرادها والتحقق منها مقارنةً بإجمالياتها الخاصة.",
   "migration.move_first_company": "انقل شركتك الأولى",
-  "migration.open_sample": "فتح الشركة النموذجية"
+  "migration.open_sample": "فتح الشركة النموذجية",
+  "import.locations_to_create": "سيتم إنشاء مواقع جديدة: {names}",
+  "import.rows_need_changes": "صفوف تحتاج إلى تعديل",
+  "import.review_fix_in_file": "لا يمكن استيراد هذه الصفوف كما هي. صححها في ملفك ثم ارفعه مرة أخرى.",
+  "import.col_row": "الصف",
+  "import.col_field": "الحقل",
+  "import.col_problem": "المشكلة",
+  "import.showing_errors": "عرض {n} من {total} مشكلة",
+  "import.upload_corrected_file": "رفع ملف مصحح",
+  "inventory.import_review_changed": "تغيرت الصفوف منذ مراجعتها. راجع الملخص أدناه ثم استورد مرة أخرى."
 }

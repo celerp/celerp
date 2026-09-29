@@ -104,11 +104,17 @@ async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes):
         else:
             form_data[f"map__{col}"] = MAPPING_ATTRIBUTE
 
-    return await ui_client.post(
-        "/inventory/import/mapped",
-        cookies=_authed(),
-        data=form_data,
-    )
+    with patch("ui.api_client.preview_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)):
+        return await ui_client.post(
+            "/inventory/import/mapped",
+            cookies=_authed(),
+            data=form_data,
+        )
+
+
+# A clean server review of mapped inventory rows, and the hash its import echoes.
+_PREVIEW_HASH = "c" * 64
+_CLEAN_ROWS_PREVIEW = {"errors": [], "locations_to_create": [], "preview_hash": _PREVIEW_HASH}
 
 
 async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url: str, mapped_url: str, spec_cols: list):
@@ -7761,7 +7767,7 @@ class TestInventoryImportFlow:
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                data={"csv_data": csv_data, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"import-card--success" in r.content
@@ -7775,7 +7781,7 @@ class TestInventoryImportFlow:
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                data={"csv_data": csv_data, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"import-card--success" in r.content
@@ -7788,7 +7794,7 @@ class TestInventoryImportFlow:
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                data={"csv_data": csv_data, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"import-card--success" in r.content
@@ -7805,38 +7811,33 @@ class TestInventoryImportFlow:
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                data={"csv_data": csv_data, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"import-card--error" in r.content
         assert b"location" in r.content.lower()
 
     @pytest.mark.asyncio
-    async def test_import_confirm_chunks_large_csv(self, ui_client):
-        """A 600-row CSV must call import_rows twice (500-row chunk + 100-row chunk).
-
-        The server caps a single import call at 500 rows, so the browser transport
-        chunks the mapped rows before forwarding them.
-        """
+    async def test_import_confirm_sends_whole_import_once(self, ui_client):
+        """A 600-row CSV is one import call carrying one operation key and the
+        reviewed hash; the server batches its own writes."""
         rows = "\n".join(f"SKU{i:04d},Item {i},Main Office,piece" for i in range(600))
         csv_data = f"sku,name,location_name,sell_by\n{rows}\n"
 
-        import_rows_mock = AsyncMock(return_value={"created": 0, "skipped": 0, "updated": 0, "errors": []})
+        import_rows_mock = AsyncMock(return_value={"created": 600, "skipped": 0, "updated": 0, "errors": []})
         with patch("ui.api_client.import_rows", new=import_rows_mock):
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                data={"csv_data": csv_data, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
-        assert import_rows_mock.call_count == 2, (
-            f"Expected 2 import_rows calls for 600 rows, got {import_rows_mock.call_count}"
-        )
-        # First call: 500 rows, second call: 100 rows (positional arg 1 is the row chunk)
-        first_rows = import_rows_mock.call_args_list[0].args[1]
-        second_rows = import_rows_mock.call_args_list[1].args[1]
-        assert len(first_rows) == 500
-        assert len(second_rows) == 100
+        assert import_rows_mock.await_count == 1
+        call = import_rows_mock.await_args
+        assert len(call.args[1]) == 600
+        assert call.kwargs["preview_hash"] == _PREVIEW_HASH
+        assert call.kwargs["idempotency_key"].startswith("ui-import:")
+        assert ":chunk:" not in call.kwargs["idempotency_key"]
 
     @pytest.mark.asyncio
     async def test_import_confirm_timeout_shows_friendly_error(self, ui_client):
@@ -7847,7 +7848,7 @@ class TestInventoryImportFlow:
             r = await ui_client.post(
                 "/inventory/import/confirm",
                 cookies=_authed(),
-                data={"csv_data": csv_data},
+                data={"csv_data": csv_data, "preview_hash": _PREVIEW_HASH},
             )
         assert r.status_code == 200
         assert b"timed out" in r.content.lower() or b"504" in r.content or b"failed" in r.content.lower()
@@ -13308,7 +13309,9 @@ class TestCsvImportSellByValidation:
         p_units = patch("ui.api_client.get_units", new=AsyncMock(return_value=units))
         p_vert = patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[]))
 
-        with p_price, p_schema, p_units, p_vert:
+        p_review = patch("ui.api_client.preview_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW))
+
+        with p_price, p_schema, p_units, p_vert, p_review:
             # Step 1: upload CSV
             r = await ui_client.post(
                 "/inventory/import/preview",
@@ -16777,7 +16780,8 @@ class TestUnknownUnitRendererInFixTable:
         fixes = {"0__sell_by": "gram"}
 
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)), \
-             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])), \
+             patch("ui.api_client.preview_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)):
             resp = await ui_client.post(
                 "/inventory/import/revalidate",
                 data={"csv_ref": csv_ref, "fixes_json": _json.dumps(fixes)},
@@ -16788,6 +16792,7 @@ class TestUnknownUnitRendererInFixTable:
         html = resp.text
         # Should reach confirm step, not show fix-errors panel
         assert "csv-fix-panel" not in html, "Fix panel must not show after valid unit is selected"
+        assert _PREVIEW_HASH in html, "Clean rows must reach the reviewed import button"
 
     @pytest.mark.asyncio
     async def test_revalidate_after_catalog_unit_added_clears_error(self, ui_client):
@@ -16808,7 +16813,8 @@ class TestUnknownUnitRendererInFixTable:
         units_now = self._UNITS + [{"name": "carat", "label": "Carat", "decimals": 2}]
 
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=units_now)), \
-             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])), \
+             patch("ui.api_client.preview_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)):
             resp = await ui_client.post(
                 "/inventory/import/revalidate",
                 data={"csv_ref": csv_ref, "fixes_json": "{}"},
@@ -16818,6 +16824,7 @@ class TestUnknownUnitRendererInFixTable:
         assert resp.status_code == 200
         html = resp.text
         assert "csv-fix-panel" not in html, "Error must clear when unit now exists in catalog"
+        assert _PREVIEW_HASH in html, "Clean rows must reach the reviewed import button"
 
     @pytest.mark.asyncio
     async def test_revalidate_still_unknown_unit_keeps_error(self, ui_client):

@@ -3429,5 +3429,14 @@
   "migration.sample_done_title": "Đó là toàn bộ quá trình di chuyển.",
   "migration.sample_done_body": "Sổ sách mẫu đã được đọc, nhập vào và đối chiếu với tổng số của chính chúng.",
   "migration.move_first_company": "Chuyển công ty đầu tiên của bạn",
-  "migration.open_sample": "Mở công ty mẫu"
+  "migration.open_sample": "Mở công ty mẫu",
+  "import.locations_to_create": "Các vị trí mới sẽ được tạo: {names}",
+  "import.rows_need_changes": "hàng cần sửa",
+  "import.review_fix_in_file": "Không thể nhập các hàng này như hiện tại. Hãy sửa chúng trong tệp và tải lên lại.",
+  "import.col_row": "Hàng",
+  "import.col_field": "Trường",
+  "import.col_problem": "Vấn đề",
+  "import.showing_errors": "Đang hiển thị {n} trên {total} vấn đề",
+  "import.upload_corrected_file": "Tải lên tệp đã sửa",
+  "inventory.import_review_changed": "Các hàng đã thay đổi kể từ khi được xem lại. Hãy kiểm tra bên dưới và nhập lại."
 }

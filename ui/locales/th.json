@@ -3429,5 +3429,14 @@
   "migration.sample_done_title": "นั่นคือการย้ายข้อมูลทั้งหมด",
   "migration.sample_done_body": "สมุดบัญชีตัวอย่างถูกอ่าน นำเข้า และตรวจสอบเทียบกับยอดรวมของตนเองแล้ว",
   "migration.move_first_company": "ย้ายบริษัทแรกของคุณ",
-  "migration.open_sample": "เปิดบริษัทตัวอย่าง"
+  "migration.open_sample": "เปิดบริษัทตัวอย่าง",
+  "import.locations_to_create": "จะสร้างสถานที่ใหม่: {names}",
+  "import.rows_need_changes": "แถวที่ต้องแก้ไข",
+  "import.review_fix_in_file": "ไม่สามารถนำเข้าแถวเหล่านี้ได้ตามที่เป็นอยู่ แก้ไขในไฟล์ของคุณแล้วอัปโหลดอีกครั้ง",
+  "import.col_row": "แถว",
+  "import.col_field": "ฟิลด์",
+  "import.col_problem": "ปัญหา",
+  "import.showing_errors": "แสดง {n} จาก {total} ปัญหา",
+  "import.upload_corrected_file": "อัปโหลดไฟล์ที่แก้ไขแล้ว",
+  "inventory.import_review_changed": "แถวมีการเปลี่ยนแปลงหลังจากตรวจทาน ตรวจสอบด้านล่างแล้วนำเข้าอีกครั้ง"
 }

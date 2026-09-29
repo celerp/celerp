@@ -1567,23 +1567,10 @@ def setup_routes(app):
 
         rows = list(csv.DictReader(io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else spec.cols)
-        validate, cell_renderers = await _build_item_validator(token)
 
         return await base_shell(
             page_header(t("page.import_inventory", lang)),
-            _csv_validation_result(
-                csv_ref=csv_ref,
-                rows=rows,
-                cols=cols,
-                validate=validate,
-                confirm_action="/inventory/import/confirm",
-                error_report_action="/inventory/import/errors",
-                back_href="/inventory/import",
-                revalidate_action="/inventory/import/revalidate",
-                has_mapping=True,
-                upsert_label=t("inventory.upsert_sku_barcode"),
-                cell_renderers=cell_renderers,
-            ),
+            await _item_import_check(token, csv_ref, rows, cols),
             title=page_title("page.import_inventory"),
             nav_active="inventory",
             lang=lang,
@@ -1607,20 +1594,24 @@ def setup_routes(app):
         rows = _apply_fixes(form, rows, cols)
         # Re-stash the patched CSV so downstream confirm/errors can read it
         csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols))
-        validate, cell_renderers = await _build_item_validator(token)
-        return _csv_validation_result(
-            csv_ref=csv_ref,
-            rows=rows,
-            cols=cols,
-            validate=validate,
-            confirm_action="/inventory/import/confirm",
-            error_report_action="/inventory/import/errors",
-            back_href="/inventory/import",
-            revalidate_action="/inventory/import/revalidate",
-            has_mapping=True,
-            upsert_label=t("inventory.upsert_sku_barcode"),
-            cell_renderers=cell_renderers,
-        )
+        return await _item_import_check(token, csv_ref, rows, cols)
+
+    @app.post("/inventory/import/review")
+    async def inventory_import_review(request: Request):
+        """Re-run the final review, e.g. after 'Update existing records' changes."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if not await _import_export_allowed(request, token):
+            return RedirectResponse("/inventory", status_code=302)
+        form = await request.form()
+        csv_data = await resolve_import_csv(token, form)
+        if not csv_data:
+            return _import_upload_form(error=t("inventory.csv_expired"))
+        rows = list(csv.DictReader(io.StringIO(csv_data)))
+        cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
+        csv_ref = str(form.get("csv_ref") or "") or await stash_import_csv(token, csv_data)
+        return await _item_import_review(token, csv_ref, rows, cols, upsert=form.get("upsert") == "1")
 
     @app.post("/inventory/import/errors")
     async def inventory_import_errors(request: Request):
@@ -1647,54 +1638,38 @@ def setup_routes(app):
         form = await request.form()
         upsert = form.get("upsert") == "1"
         csv_data = await resolve_import_csv(token, form)
+        if not csv_data:
+            return _import_upload_form(error=t("inventory.csv_expired"))
         rows = list(csv.DictReader(io.StringIO(csv_data)))
+        cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
+        csv_ref = str(form.get("csv_ref") or "") or await stash_import_csv(token, csv_data)
+        preview_hash = str(form.get("preview_hash") or "")
+        if not preview_hash:
+            return await _item_import_review(token, csv_ref, rows, cols, upsert=upsert)
 
-        # Rows arrive mapped and validated by the revalidate cycle. The server owns
+        # The server recomputes its preview of exactly these rows and this choice
+        # and refuses the import if it no longer matches what was reviewed. It owns
         # location resolution and creation, unit and quantity derivation, monetary
-        # conversion, command idempotency, and the category-schema follow-up (one
-        # committer for the browser, the agent, and the raw batch). The browser
-        # transport only chunks to the per-call cap and renders the outcome.
-        _CHUNK = 500
-        merged: dict = {"created": 0, "skipped": 0, "updated": 0, "errors": [], "batch_id": None}
+        # conversion, idempotency, and the category-schema follow-up.
         try:
-            import_fingerprint = hashlib.sha256(
-                json.dumps({"upsert": upsert, "rows": rows}, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()
-            import_key = f"ui-import:{import_fingerprint}"
-            for i in range(0, max(len(rows), 1), _CHUNK):
-                chunk = rows[i : i + _CHUNK]
-                if not chunk:
-                    break
-                r = await api.import_rows(
-                    token, chunk, upsert=upsert, idempotency_key=f"{import_key}:chunk:{i // _CHUNK}"
-                )
-                merged["created"] += r.get("created", 0)
-                merged["skipped"] += r.get("skipped", 0)
-                merged["updated"] += r.get("updated", 0)
-                merged["errors"].extend(r.get("errors") or [])
-                if r.get("batch_id"):
-                    merged["batch_id"] = r["batch_id"]
-        except APIError as e:
-            if e.status == 401:
-                return import_abort_panel(
-                    message=t("error.session_expired"),
-                    import_more_href="/login",
-                    back_href="/inventory",
-                    has_mapping=True,
-                )
-            return import_abort_panel(
-                message=t("inventory.import_failed", detail=e.detail),
-                import_more_href="/inventory/import",
-                back_href="/inventory",
-                has_mapping=True,
+            result = await api.import_rows(
+                token, rows, upsert=upsert,
+                idempotency_key=_import_operation_key(rows, upsert), preview_hash=preview_hash,
             )
+        except APIError as e:
+            if e.status in (409, 422):
+                return await _item_import_review(
+                    token, csv_ref, rows, cols, upsert=upsert,
+                    notice=t("inventory.import_review_changed") if e.status == 409 else "",
+                )
+            return _item_import_api_error(e)
 
         await discard_import_csv(token, form)
         return import_result_panel(
-            created=int(merged.get("created", 0) or 0),
-            skipped=int(merged.get("skipped", 0) or 0),
-            updated=int(merged.get("updated", 0) or 0),
-            errors=list(merged.get("errors", []) or []),
+            created=int(result.get("created", 0) or 0),
+            skipped=int(result.get("skipped", 0) or 0),
+            updated=int(result.get("updated", 0) or 0),
+            errors=list(result.get("errors", []) or []),
             entity_label="inventory",
             back_href="/inventory",
             import_more_href="/inventory/import",
@@ -7457,11 +7432,82 @@ from ui.routes.csv_import import (
     import_abort_panel,
     import_result_panel,
     read_csv_upload,
+    rows_have_errors,
+    semantic_review_panel,
     upload_form as _csv_upload_form,
     validate_cell as _csv_validate_cell,
     validate_column_mapping,
     validation_result as _csv_validation_result,
 )
+
+def _import_operation_key(rows: list[dict], upsert: bool) -> str:
+    """One idempotency key for a whole browser import: same rows and choice, same key."""
+    fingerprint = hashlib.sha256(
+        json.dumps({"upsert": upsert, "rows": rows}, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return f"ui-import:{fingerprint}"
+
+
+def _item_import_api_error(e: APIError):
+    if e.status == 401:
+        return import_abort_panel(
+            message=t("error.session_expired"),
+            import_more_href="/login",
+            back_href="/inventory",
+            has_mapping=True,
+        )
+    return import_abort_panel(
+        message=t("inventory.import_failed", detail=e.detail),
+        import_more_href="/inventory/import",
+        back_href="/inventory",
+        has_mapping=True,
+    )
+
+
+async def _item_import_review(token: str, csv_ref: str, rows: list[dict], cols: list[str], *,
+                              upsert: bool, notice: str = ""):
+    """The server's semantic preview of the mapped rows, rendered as the final review."""
+    try:
+        preview = await api.preview_import_rows(
+            token, rows, upsert=upsert, idempotency_key=_import_operation_key(rows, upsert),
+        )
+    except APIError as e:
+        return _item_import_api_error(e)
+    return semantic_review_panel(
+        rows=rows,
+        cols=cols,
+        csv_ref=csv_ref,
+        upsert=upsert,
+        upsert_label=t("inventory.upsert_sku_barcode"),
+        errors=list(preview.get("errors") or []),
+        locations_to_create=list(preview.get("locations_to_create") or []),
+        preview_hash=str(preview.get("preview_hash") or ""),
+        review_action="/inventory/import/review",
+        confirm_action="/inventory/import/confirm",
+        upload_href="/inventory/import",
+        back_href="/inventory",
+        notice=notice,
+    )
+
+
+async def _item_import_check(token: str, csv_ref: str, rows: list[dict], cols: list[str]):
+    """Cell fixes first; once every cell is valid, the server's final review."""
+    validate, cell_renderers = await _build_item_validator(token)
+    if rows_have_errors(rows, cols, validate):
+        return _csv_validation_result(
+            csv_ref=csv_ref,
+            rows=rows,
+            cols=cols,
+            validate=validate,
+            confirm_action="/inventory/import/confirm",
+            error_report_action="/inventory/import/errors",
+            back_href="/inventory/import",
+            revalidate_action="/inventory/import/revalidate",
+            has_mapping=True,
+            cell_renderers=cell_renderers,
+        )
+    return await _item_import_review(token, csv_ref, rows, cols, upsert=False)
+
 
 def _union_category_attr_keys(cat_schemas: dict) -> list[str]:
     """Extract the deduplicated union of all attribute keys across all category schemas.
