@@ -59,7 +59,7 @@ def test_manager_source_expectations_are_independent_of_cif(monkeypatch):
     assert actual_rows(manifest.reconciliation_expectations) == actual_rows(full)
 
 
-def test_manager_foreign_currency_records_block_at_scan():
+def test_manager_multicurrency_requires_proven_fx_treatment():
     manager = adapter()
     art = artifact(FX)
     coverage = {row.source_type: row for row in manager.inspect([art]).coverage}
