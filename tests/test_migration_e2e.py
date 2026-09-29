@@ -4,6 +4,11 @@
 
 from __future__ import annotations
 
+import ipaddress
+import logging
+import socket
+
+import httpx
 import pytest
 from sqlalchemy import select
 
@@ -13,7 +18,8 @@ pytestmark = pytest.mark.asyncio
 
 
 async def migrate(engine, data: bytes, name: str, decisions: dict, monkeypatch, tmp_path):
-    """Scan, decide and run one source file into a staged company.
+    """Scan, decide and run one source file into a staged company named as the source
+    names itself, as the wizard proposes.
 
     Returns the finished run and every record a sink rejected, as
     (source_type, source_external_id, message).
@@ -40,7 +46,7 @@ async def migrate(engine, data: bytes, name: str, decisions: dict, monkeypatch, 
         scan = await store.create_scan(upload_parts((name, data)), owner=owner)
         chosen = migrations.validate_decisions(scan, decisions)
         scan = store.save_decisions(scan.token, owner=owner, decisions=chosen)
-        company = await provisioning.provision_migration_company(s, owner=user, company_name="Example Books Co")
+        company = await provisioning.provision_migration_company(s, owner=user, company_name=scan.scan.company_name)
         run = await migrations.create_run(s, company=company, user=user, scan=scan, decisions=chosen)
         await migrations.request_start(s, run)
         await s.commit()
@@ -101,3 +107,221 @@ async def test_default_location_is_settled_once_and_deterministically(real_engin
         )).scalars().all()
         assert [loc.id for loc in defaults] == [first.id]
         await s.commit()
+
+
+# ── Manager fixtures end to end ───────────────────────────────────────────────
+
+# Contact names, emails and memo text of the synthetic books: none may reach a log line.
+_PRIVATE_TEXT = ("Acme Trading", "accounts@acme.example.com", "2 Example Road", "Owner funding", "Walk-in sale",
+                 "Consulting hours", "Price adjustment")
+_APP_LOGGERS = ("celerp", "celerp_accounting", "celerp_contacts", "celerp_docs", "celerp_inventory")
+_FINANCIAL_GROUPS = {"documents", "settlements", "journals", "bank_transfers"}
+
+
+def _loopback(host) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
+
+
+@pytest.fixture
+def outbound(monkeypatch) -> list[str]:
+    """Refuse every connection that leaves the machine and record the attempt."""
+    attempts: list[str] = []
+    connect, connect_ex = socket.socket.connect, socket.socket.connect_ex
+
+    def _guard(address) -> None:
+        if isinstance(address, tuple) and not _loopback(address[0]):
+            attempts.append(str(address[0]))
+            raise OSError("Outbound network access is blocked in this test.")
+
+    def guarded_connect(sock, address):
+        _guard(address)
+        return connect(sock, address)
+
+    def guarded_connect_ex(sock, address):
+        _guard(address)
+        return connect_ex(sock, address)
+
+    def refuse(request):
+        attempts.append(str(request.url))
+        raise httpx.ConnectError("Outbound network access is blocked in this test.", request=request)
+
+    async def guarded_async_send(client, request, *args, **kwargs):
+        refuse(request)
+
+    def guarded_send(client, request, *args, **kwargs):
+        refuse(request)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+    monkeypatch.setattr(httpx.AsyncClient, "send", guarded_async_send)
+    monkeypatch.setattr(httpx.Client, "send", guarded_send)
+    return attempts
+
+
+async def _maps(engine, run) -> list:
+    from celerp.models.migration import MigrationEntityMap
+
+    async with maker(engine)() as s:
+        return list((await s.execute(
+            select(MigrationEntityMap).where(MigrationEntityMap.migration_run_id == run.id)
+        )).scalars())
+
+
+async def _projections(engine, run, entity_type: str) -> dict:
+    from celerp.models.projections import Projection
+
+    async with maker(engine)() as s:
+        return {p.entity_id: p.state for p in (await s.execute(select(Projection).where(
+            Projection.company_id == run.company_id, Projection.entity_type == entity_type,
+        ))).scalars()}
+
+
+def _passing(run) -> None:
+    assert run.status == "ready_to_finalize", run.error_summary
+    assert run.reconciliation["blockers"] == 0
+    assert [r for r in run.reconciliation["rows"] if r["result"] not in ("pass", "rounding")] == []
+
+
+@pytest.mark.parametrize("fixture, decisions", [
+    ("basic", {"mode": "full_history"}),
+    ("basic", {"mode": "cutover", "cutover_date": "2026-02-28"}),
+    ("sample", {"mode": "full_history"}),
+])
+async def test_source_financial_effect_has_exactly_one_representation(
+    real_engine, monkeypatch, tmp_path, fixture, decisions,
+):
+    """Every source financial effect lands once, as a native Celerp record or as a
+    journal fallback, never both; every fallback is listed as mapped with loss in
+    the run's coverage report."""
+    from celerp.importers.sample import SAMPLE_ARTIFACT
+    from celerp.services import migrations
+    from fixtures.manager_io.support import BASIC
+
+    source = BASIC if fixture == "basic" else SAMPLE_ARTIFACT
+    run, rejected = await migrate(real_engine, source.read_bytes(), source.name, decisions, monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    maps = await _maps(real_engine, run)
+    async with maker(real_engine)() as s:
+        report = await migrations.run_view(s, run)
+    coverage = {(e["source_type"], e["coverage_class"]) for e in report["coverage"]}
+
+    financial = [m for m in maps if m.meta["group"] in _FINANCIAL_GROUPS]
+    assert {m.meta["representation"] for m in maps} <= {"native", "journal_fallback"}
+    fallbacks = [m for m in financial if m.meta["representation"] == "journal_fallback"]
+    # One Celerp record per effect: no journal carries two source effects.
+    journals = [m.target_entity_id for m in financial if m.target_entity_type == "journal_entry"]
+    assert len(journals) == len(set(journals))
+    # A fallback effect is never also a document, and a document effect is never also a journal.
+    docs = await _projections(real_engine, run, "doc")
+    assert set(docs) == {m.target_entity_id for m in maps if m.target_entity_type == "doc"}
+    doc_sources = {m.source_external_id for m in financial if m.target_entity_type == "doc"}
+    journal_sources = {m.source_external_id.removesuffix(":journal")
+                       for m in financial if m.target_entity_type == "journal_entry"}
+    assert doc_sources.isdisjoint(journal_sources)
+    # The split lines of a receipt or payment never touch the balances its settlement posts.
+    control_accounts = {m.target_entity_id for m in maps
+                        if m.source_type in ("BalanceSheetAccountsReceivableAccount",
+                                             "BalanceSheetAccountsPayableAccount")}
+    entries = await _projections(real_engine, run, "journal_entry")
+    for m in fallbacks:
+        if m.source_external_id.endswith(":journal"):
+            assert {e["account"] for e in entries[m.target_entity_id]["entries"]}.isdisjoint(control_accounts)
+    for m in fallbacks:
+        assert ((m.source_type, "mapped_with_loss") in coverage
+                or (f"{m.source_type} (journal fallback)", "mapped_with_loss") in coverage), m.source_type
+    if fixture == "basic" and decisions["mode"] == "full_history":
+        assert {m.source_type for m in fallbacks} == {"DebitNote", "Receipt"}
+
+
+async def test_manager_full_history_reconciles_synthetic_fixture(real_engine, monkeypatch, tmp_path, caplog, outbound):
+    """The synthetic Manager books migrate in full with nothing blocking, no outbound
+    connection, and no contact or memo text in the logs."""
+    from fixtures.manager_io.support import BASIC, ref
+
+    for name in _APP_LOGGERS:
+        caplog.set_level(logging.DEBUG, logger=name)
+    run, rejected = await migrate(real_engine, BASIC.read_bytes(), "basic.manager", {"mode": "full_history"},
+                                  monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    assert outbound == []
+    for text in _PRIVATE_TEXT:
+        assert text not in caplog.text
+
+    # The source attachment is stored and attached to the invoice it belongs to.
+    maps = {(m.source_type, m.source_external_id): m for m in await _maps(real_engine, run)}
+    invoice = maps[("SalesInvoice", ref("INV1"))].target_entity_id
+    stored = maps[("Attachment", ref("ATT1"))].target_entity_id
+    files = (await _projections(real_engine, run, "doc"))[invoice]["files"]
+    assert [(f["id"], f["filename"]) for f in files] == [(stored, "receipt-scan.png")]
+
+
+async def test_manager_cutover_reconciles_synthetic_fixture(real_engine, monkeypatch, tmp_path):
+    """A cutover migration carries one opening journal at the cutover date, and every
+    opening figure traces to the source account or item whose balance it reconciles."""
+    from fixtures.manager_io.support import BASIC
+
+    run, rejected = await migrate(real_engine, BASIC.read_bytes(), "basic.manager",
+                                  {"mode": "cutover", "cutover_date": "2026-02-28"}, monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    maps = await _maps(real_engine, run)
+    opening = [m for m in maps if m.source_type == "OpeningBalances" and m.target_entity_type == "journal_entry"]
+    assert len(opening) == 1
+    entries = await _projections(real_engine, run, "journal_entry")
+    migrated_journals = [m for m in maps if m.target_entity_type == "journal_entry"]
+    assert migrated_journals == opening
+    journal = entries[opening[0].target_entity_id]
+    assert str(journal["ts"])[:10] == "2026-02-28"
+
+    passed = {(r["check"], r["key"]) for r in run.reconciliation["rows"] if r["result"] == "pass"}
+    source_account = {m.target_entity_id: m.source_external_id for m in maps if m.target_entity_type == "account"}
+    for line in journal["entries"]:
+        assert line["account"] in source_account, line
+        assert ("trial_balance", source_account[line["account"]]) in passed, line
+    source_item = {m.target_entity_id: m.source_external_id for m in maps
+                   if m.target_entity_type == "item" and m.meta["group"] == "items"}
+    stock = [m for m in maps if m.source_type == "OpeningBalances" and m.meta["group"] == "inventory_adjustments"]
+    assert stock
+    for m in stock:
+        item = source_item[m.target_entity_id]
+        assert {("inventory_quantity", item), ("inventory_value", item)} <= passed
+
+
+async def test_sample_migration_finalizes_and_reconciles(real_engine, monkeypatch, tmp_path):
+    """The shipped sample migrates and finalizes into a company named as the sample,
+    and its completion page says so."""
+    from fasthtml.common import to_xml
+    from starlette.requests import Request
+
+    from celerp.importers.sample import SAMPLE_ARTIFACT, SAMPLE_COMPANY_NAME
+    from celerp.models.company import Company
+    from celerp.models.migration import MigrationRun
+    from celerp.services import migrations
+    from ui.routes.migrations import _complete_page
+
+    run, rejected = await migrate(real_engine, SAMPLE_ARTIFACT.read_bytes(), SAMPLE_ARTIFACT.name,
+                                  {"mode": "full_history"}, monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    async with maker(real_engine)() as s:
+        run = await s.get(MigrationRun, run.id)
+        await migrations.finalize(s, run)
+    async with maker(real_engine)() as s:
+        run = await s.get(MigrationRun, run.id)
+        company = await s.get(Company, run.company_id)
+        view = await migrations.run_view(s, run)
+    assert run.status == "completed"
+    assert run.reconciliation["blockers"] == 0
+    assert company.is_active and company.name == SAMPLE_COMPANY_NAME
+    assert view["is_sample"] and view["company_name"] == SAMPLE_COMPANY_NAME
+
+    request = Request({"type": "http", "method": "GET", "path": f"/migrations/{run.id}/complete",
+                       "query_string": b"", "headers": []})
+    page = to_xml(await _complete_page(request, view))
+    assert "That&#x27;s the whole migration." in page or "That's the whole migration." in page
+    assert "Move your first company" in page
