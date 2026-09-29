@@ -7,7 +7,7 @@ from copy import deepcopy
 from decimal import Decimal
 
 from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
-from celerp_docs.doc_constants import LEGACY_CONTACT_FIELDS
+from celerp_docs.doc_constants import LEGACY_CONTACT_FIELDS, PAID_TOLERANCE
 
 
 def _fold_legacy_list_contact(state: dict) -> None:
@@ -65,7 +65,8 @@ def _payment_balances(state: dict, paid) -> tuple[Decimal, Decimal]:
 
 
 def _payment_status(paid: Decimal, outstanding: Decimal) -> str:
-    return "paid" if outstanding == 0 else ("partial" if paid > 0 else "final")
+    """Paid once the balance is within ``PAID_TOLERANCE``; partial while some payment stands."""
+    return "paid" if outstanding <= PAID_TOLERANCE else ("partial" if paid > 0 else "final")
 
 
 def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
@@ -189,7 +190,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current, to_decimal(current.get("amount_paid", 0)) + to_decimal(data["amount"]))
         current["amount_paid"] = to_stored_float(paid)
         current["amount_outstanding"] = to_stored_float(outstanding)
-        current["status"] = "paid" if outstanding == 0 else "partial"
+        current["status"] = _payment_status(paid, outstanding)
         # Build payments list
         current.setdefault("payments", [])
         current["payments"].append({

@@ -51,7 +51,7 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
+from celerp_docs.doc_constants import AWAITING_PAYMENT_STATUSES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, PAID_TOLERANCE, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES, is_overdue_document
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )
@@ -1016,7 +1016,7 @@ def _doc_row(r: Projection) -> dict:
 
 
 # The state keys the row-by-row filters of ``_doc_filter`` read, before display fallbacks.
-_DOC_FILTER_KEYS = ("status", "due_date", "fulfillment_status", "return_received_items", "received_items")
+_DOC_FILTER_KEYS = ("doc_type", "status", "due_date", "amount_outstanding", "total", "fulfillment_status", "return_received_items", "received_items")
 
 
 def _doc_filter(f: DocListFilters, today: str):
@@ -1024,7 +1024,7 @@ def _doc_filter(f: DocListFilters, today: str):
     or None when none is set and every filter is in the SQL WHERE."""
     checks = []
     if f.overdue_only:
-        checks.append(lambda x: x.get("due_date") and x["due_date"] < today and x.get("status") not in ("draft", "void"))
+        checks.append(lambda x: is_overdue_document(x, today))
     if f.unfulfilled_only:
         checks.append(lambda x: x.get("status") not in ("draft", "void", "closed") and x.get("fulfillment_status") != "fulfilled")
     if f.not_restocked:
@@ -1160,7 +1160,6 @@ async def get_doc_summary(
     ), Decimal(0))
     count_by_status: dict[str, int] = {}
     invoice_count = 0
-    _AWAITING_STATUSES = {"final", "sent", "awaiting_payment", "partial"}
     awaiting_payment_count = 0
     overdue_count = 0
     paid_count = 0
@@ -1195,11 +1194,10 @@ async def get_doc_summary(
             if state.get("fulfillment_status") != "fulfilled":
                 unfulfilled_count += 1
                 add("unfulfilled", amounts, "total")
-            if st in _AWAITING_STATUSES:
+            if st in AWAITING_PAYMENT_STATUSES:
                 awaiting_payment_count += 1
                 add("awaiting_payment", amounts, "amount_outstanding")
-                due = _doc_value(state, "due_date") or ""
-                if due and due < today:
+                if is_overdue_document(_doc_display(state), today):
                     overdue_count += 1
                     add("overdue", amounts, "amount_outstanding")
                 if st == "sent":
@@ -1215,10 +1213,8 @@ async def get_doc_summary(
                 if amounts is None:
                     unvalued_count += 1
                 add("memo", amounts, "total")
-            if dt in ("memo", "consignment_in"):
-                due = _doc_value(state, "due_date") or ""
-                if due and due < today:
-                    overdue_count += 1
+            if is_overdue_document(_doc_display(state), today):
+                overdue_count += 1
             if dt == "credit_note":
                 if not (state.get("return_received_items") or []):
                     not_restocked_count += 1
@@ -3404,12 +3400,12 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
 
     payable = []
     for doc_id, state in docs:
-        if state.get("status") not in {"sent", "final", "partial", "awaiting_payment"}:
+        if state.get("status") not in AWAITING_PAYMENT_STATUSES:
             continue
         currency = str(state.get("currency") or "USD").upper()
         outstanding = round_money(
             state.get("amount_outstanding", state.get("total", 0)) or 0, currency)
-        if outstanding > 0:
+        if outstanding > PAID_TOLERANCE:
             payable.append((doc_id, state, currency, outstanding))
     if not payable:
         raise HTTPException(status_code=409, detail="No documents in payable status")
