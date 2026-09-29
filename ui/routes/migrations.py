@@ -107,7 +107,7 @@ def _clear_scan_cookie(resp, mode: WizardMode, request: Request) -> None:
 async def _read_scan(request: Request, mode: WizardMode, token: str) -> dict:
     """The scan entry for a token: the API's scan view plus the Prepared by name, or
     ``{"run_id"}`` when a run was already started from the scan. Raises APIError."""
-    body = await api.migration_scan_read(_api_token(request, mode), token)
+    body = await api.migration_scan_read(api_token(request, mode), token)
     if "run_id" in body:
         return {"run_id": body["run_id"]}
     scan = body["scan"]
@@ -204,17 +204,21 @@ async def gate(request: Request, mode: WizardMode):
     return None
 
 
-def _api_token(request: Request, mode: WizardMode) -> str | None:
+def api_token(request: Request, mode: WizardMode) -> str | None:
+    """The session token for the API, or None in bootstrap mode, where no user exists yet."""
     return None if mode.bootstrap else get_token(request)
 
 
+def upload_again_page(request: Request, mode: WizardMode, title: str, message: str) -> HTMLResponse:
+    """An upload that is gone: the reason, and the way to upload the file again."""
+    resp = wizard_page(request, auth_header(title), flash(message),
+                       A(t("migration.upload_again"), href=mode.base, cls="btn btn--primary btn--full"),
+                       back_link(mode.back))
+    return resp if isinstance(resp, HTMLResponse) else HTMLResponse(to_xml(resp))
+
+
 def _expired(request: Request, mode: WizardMode, message: str | None = None):
-    resp = wizard_page(request, auth_header(t("migration.title")),
-                 flash(message or t("migration.scan_expired")),
-                 A(t("migration.upload_again"), href=mode.base, cls="btn btn--primary btn--full"),
-                 back_link(mode.back))
-    if not isinstance(resp, HTMLResponse):
-        resp = HTMLResponse(to_xml(resp))
+    resp = upload_again_page(request, mode, t("migration.title"), message or t("migration.scan_expired"))
     _clear_scan_cookie(resp, mode, request)
     return resp
 
@@ -394,7 +398,7 @@ def _with_cleared_scan(resp, request: Request, mode: WizardMode):
 async def _scan_and_continue(request: Request, mode: WizardMode, files: list, source: str | None,
                              prepared_by: str, setup_code: str | None):
     try:
-        result = await api.migration_scan(_api_token(request, mode), files, source, setup_code=setup_code)
+        result = await api.migration_scan(api_token(request, mode), files, source, setup_code=setup_code)
     except APIError as e:
         return await _source_page(request, mode, selected=source or "", prepared_by=prepared_by,
                                   error=str(e.detail))
@@ -633,7 +637,7 @@ async def _save_decisions(request: Request, mode: WizardMode):
     }
     render = _mapping_page if step == "mapping" else _coverage_page
     try:
-        new_scan = await api.migration_save_decisions(_api_token(request, mode), token, decisions)
+        new_scan = await api.migration_save_decisions(api_token(request, mode), token, decisions)
     except APIError as e:
         if e.status == 410:
             return _expired(request, mode, str(e.detail))
@@ -729,8 +733,9 @@ async def _review(request: Request, mode: WizardMode):
 
 
 def account_error(values: dict) -> str | None:
+    """The first owner's account fields, checked before the API is called."""
     from celerp.services.auth import MIN_PASSWORD_LENGTH
-    if not all(values.get(k) for k in ("company_name", "name", "email", "password")):
+    if not all(values.get(k) for k in ("name", "email", "password")):
         return t("settings.all_fields_required")
     if values["password"] != values.get("confirm_password"):
         return t("settings.passwords_do_not_match")
@@ -974,13 +979,14 @@ def _register_wizard(app, mode: WizardMode) -> None:
         ("post", "/decisions", _save_decisions), ("get", "/review", _review), ("post", "/start", _start),
     )
     for method, suffix, handler in steps:
-        getattr(app, method)(f"{mode.base}{suffix}")(_bind(handler, mode))
+        getattr(app, method)(f"{mode.base}{suffix}")(bind(handler, mode, "migrate"))
 
 
-def _bind(handler, mode: WizardMode):
+def bind(handler, mode: WizardMode, prefix: str):
+    """A route calling ``handler`` in ``mode``, named ``<prefix>_<mode><handler>``."""
     async def route(request: Request):
         return await handler(request, mode)
-    route.__name__ = f"migrate_{mode.key}{handler.__name__}"
+    route.__name__ = f"{prefix}_{mode.key}{handler.__name__}"
     return route
 
 

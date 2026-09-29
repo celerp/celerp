@@ -157,6 +157,16 @@ async def test_open_page_shows_why_a_file_is_refused(ui, real_engine):
     assert await _companies(real_engine) == before
 
 
+async def test_make_page_bad_run_id_shows_plain_message(ui, real_engine):
+    user = await _owner(real_engine)
+    alpha = await _company(real_engine, user, "Alpha Trading", "alpha-marker")
+    ui.cookies.set("celerp_token", await _token(real_engine, user, alpha))
+    r = await ui.get("/company-copy?from_run=not-a-uuid")
+    page = _page(r)
+    assert "Invalid value" in page
+    assert "uuid_parsing" not in page and "'loc'" not in page
+
+
 async def test_copy_pages_are_owner_only(ui, real_engine):
     from celerp.models.accounting import UserCompany
     user = await _owner(real_engine)

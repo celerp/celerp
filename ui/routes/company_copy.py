@@ -32,11 +32,15 @@ from ui.routes.auth import auth_header
 from ui.routes.migrations import (
     COMPANY,
     WizardMode,
+    account_error,
     account_fields,
+    api_token,
     back_link,
+    bind,
     gate,
     setup_code_field,
     setup_code_required,
+    upload_again_page,
     wizard_page,
 )
 
@@ -51,6 +55,13 @@ _PREVIEW_FIELDS = ("company_name", "prepared_by", "created_at", "records", "atta
 
 def _html(page, status_code: int = 200) -> HTMLResponse:
     return page if isinstance(page, HTMLResponse) else HTMLResponse(to_xml(page), status_code=status_code)
+
+
+def _message(e: APIError) -> str:
+    """An API refusal as one plain sentence: field problems joined, anything else not shown raw."""
+    if isinstance(e.detail, dict):
+        return " ".join(str(v) for v in e.detail.values())
+    return e.detail if isinstance(e.detail, str) else t("error.invalid_value")
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +80,7 @@ async def _source(request: Request, run_id: str) -> tuple[dict | None, str | Non
         company = await api.get_company(token)
         return {"name": company.get("name", ""), "prepared_by": "", "company_id": get_company_id(request)}, None
     except APIError as e:
-        return None, str(e.detail)
+        return None, _message(e)
 
 
 def _make_page(request: Request, source: dict, run_id: str, *, prepared_by: str, error: str | None = None):
@@ -129,7 +140,7 @@ async def _make(request: Request):
             token = tokens[0]
         made = await api.company_copy_create(token, prepared_by or None)
     except APIError as e:
-        return _make_page(request, source, run_id, prepared_by=prepared_by, error=str(e.detail))
+        return _make_page(request, source, run_id, prepared_by=prepared_by, error=_message(e))
     resp = _html(wizard_page(
         request,
         auth_header(t("company_copy.ready_title"), made["company_name"]),
@@ -150,7 +161,7 @@ async def _download(request: Request, copy_id: str):
     try:
         chunks, headers = await api.company_copy_download(get_token(request), copy_id)
     except APIError as e:
-        return wizard_page(request, auth_header(t("company_copy.make_title")), flash(str(e.detail)),
+        return wizard_page(request, auth_header(t("company_copy.make_title")), flash(_message(e)),
                            A(t("company_copy.make_new"), href=MAKE.base, cls="btn btn--primary btn--full"),
                            back_link("/"), status_code=e.status if e.status >= 400 else 502)
     return StreamingResponse(chunks, media_type="application/octet-stream",
@@ -160,10 +171,6 @@ async def _download(request: Request, copy_id: str):
 # ---------------------------------------------------------------------------
 # Open a copy
 # ---------------------------------------------------------------------------
-
-def _api_token(request: Request, mode: WizardMode) -> str | None:
-    return None if mode.bootstrap else get_token(request)
-
 
 def _set_upload_cookie(resp, token: str, mode: WizardMode, request: Request) -> None:
     resp.set_cookie(UPLOAD_COOKIE, token, max_age=UPLOAD_TTL_SECONDS, path=mode.base, httponly=True,
@@ -196,11 +203,7 @@ async def _upload_page(request: Request, mode: WizardMode, error: str | None = N
 
 
 def _upload_again(request: Request, mode: WizardMode, message: str):
-    resp = _html(wizard_page(
-        request, auth_header(t("company_copy.open_title")), flash(message),
-        A(t("migration.upload_again"), href=mode.base, cls="btn btn--primary btn--full"),
-        back_link(mode.back),
-    ))
+    resp = upload_again_page(request, mode, t("company_copy.open_title"), message)
     _clear_upload_cookie(resp, mode, request)
     return resp
 
@@ -247,24 +250,13 @@ async def _read(request: Request, mode: WizardMode):
         return await _upload_page(request, mode, t("migration.choose_file"))
     setup_code = str(form.get("setup_code", "")).strip() or None
     try:
-        preview = await api.company_copy_read(_api_token(request, mode), upload.filename, upload.file,
+        preview = await api.company_copy_read(api_token(request, mode), upload.filename, upload.file,
                                               setup_code=setup_code)
     except APIError as e:
-        return await _upload_page(request, mode, str(e.detail), status_code=e.status if e.status >= 400 else 502)
+        return await _upload_page(request, mode, _message(e), status_code=e.status if e.status >= 400 else 502)
     resp = _html(await _preview_page(request, mode, preview))
     _set_upload_cookie(resp, preview["upload_token"], mode, request)
     return resp
-
-
-def _bootstrap_error(values: dict) -> str | None:
-    from celerp.services.auth import MIN_PASSWORD_LENGTH
-    if not all(values.get(k) for k in ("name", "email", "password")):
-        return t("settings.all_fields_required")
-    if values["password"] != values.get("confirm_password"):
-        return t("settings.passwords_do_not_match")
-    if len(values["password"]) < MIN_PASSWORD_LENGTH:
-        return t("settings.password_min_length")
-    return None
 
 
 async def _open(request: Request, mode: WizardMode):
@@ -281,7 +273,7 @@ async def _open(request: Request, mode: WizardMode):
     setup_code = str(form.get("setup_code", "")).strip() or None
     try:
         if mode.bootstrap:
-            if (problem := _bootstrap_error(values)) is not None:
+            if (problem := account_error(values)) is not None:
                 return await _preview_page(request, mode, preview, values=values, error=problem)
             if await setup_code_required(mode) and not setup_code:
                 return await _preview_page(request, mode, preview, values=values,
@@ -294,9 +286,8 @@ async def _open(request: Request, mode: WizardMode):
             tokens = await api.switch_company(get_token(request), opened["company_id"])
     except APIError as e:
         if e.status == 409:
-            return _upload_again(request, mode, str(e.detail))
-        detail = " ".join(str(v) for v in e.detail.values()) if isinstance(e.detail, dict) else str(e.detail)
-        return await _preview_page(request, mode, preview, values=values, error=detail)
+            return _upload_again(request, mode, _message(e))
+        return await _preview_page(request, mode, preview, values=values, error=_message(e))
     # The new company is opened for the user: the ready page names it and its totals.
     resp = RedirectResponse(f"{mode.base}/done", status_code=303)
     set_session_cookies(resp, tokens[0], tokens[1], request)
@@ -348,13 +339,6 @@ async def _done(request: Request, mode: WizardMode):
 # Registration
 # ---------------------------------------------------------------------------
 
-def _bind(handler, mode: WizardMode):
-    async def route(request: Request):
-        return await handler(request, mode)
-    route.__name__ = f"company_copy_{mode.key}{handler.__name__}"
-    return route
-
-
 def company_copy_routes(app) -> None:
     app.get(MAKE.base)(_make_confirm)
     app.post(MAKE.base)(_make)
@@ -362,4 +346,4 @@ def company_copy_routes(app) -> None:
     for mode in (OPEN_BOOTSTRAP, OPEN_COMPANY):
         for method, suffix, handler in (("get", "", _open_start), ("post", "/read", _read),
                                         ("post", "/open", _open), ("get", "/done", _done)):
-            getattr(app, method)(f"{mode.base}{suffix}")(_bind(handler, mode))
+            getattr(app, method)(f"{mode.base}{suffix}")(bind(handler, mode, "company_copy"))
