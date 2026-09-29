@@ -142,7 +142,7 @@ async def test_alert_transition_idempotency_and_rearm(session):
     await ProjectionEngine.rebuild(session)
 
     # First run: exactly one digest listing the below item; latch records it.
-    notif = await run_all_alerts(session, co)
+    notif = await run_all_alerts(session, co.id)
     assert notif is not None
     assert notif.category == "inventory"
     assert notif.action_url == "/dashboard"
@@ -151,20 +151,20 @@ async def test_alert_transition_idempotency_and_rearm(session):
     assert await _notif_count(session, co.id) == 1
 
     # Second run, no change: no new notification (idempotent).
-    assert await run_all_alerts(session, co) is None
+    assert await run_all_alerts(session, co.id) is None
     assert await _notif_count(session, co.id) == 1
 
     # Rise back above the reorder point -> no alert, latch cleared (re-arm).
     await _emit(session, co.id, low, "item.quantity.adjusted", {"new_qty": 10})
     await ProjectionEngine.rebuild(session)
-    assert await run_all_alerts(session, co) is None
+    assert await run_all_alerts(session, co.id) is None
     assert await _notif_count(session, co.id) == 1
     assert co.settings.get("reorder_alerted_ids") == []
 
     # Drop below again -> alerts again (proves re-arm).
     await _emit(session, co.id, low, "item.quantity.adjusted", {"new_qty": 1})
     await ProjectionEngine.rebuild(session)
-    notif2 = await run_all_alerts(session, co)
+    notif2 = await run_all_alerts(session, co.id)
     assert notif2 is not None
     assert await _notif_count(session, co.id) == 2
 
@@ -174,7 +174,7 @@ async def test_alert_digest_is_high_priority(session):
     co = await _company(session, "ZeroCo")
     await _emit(session, co.id, "item:z", "item.created", {"sku": "Z", "name": "Z", "quantity": 0, "reorder_point": 5})
     await ProjectionEngine.rebuild(session)
-    notif = await run_all_alerts(session, co)
+    notif = await run_all_alerts(session, co.id)
     assert notif is not None and notif.priority == "high"
 
 
@@ -185,7 +185,7 @@ async def test_below_reorder_but_in_stock_is_medium_priority(session):
     co = await _company(session, "SoftCo")
     await _emit(session, co.id, "item:s", "item.created", {"sku": "S", "name": "S", "quantity": 2, "reorder_point": 5})
     await ProjectionEngine.rebuild(session)
-    notif = await run_all_alerts(session, co)
+    notif = await run_all_alerts(session, co.id)
     assert notif is not None and notif.priority == "medium"
 
 
@@ -197,7 +197,7 @@ async def test_low_stock_disabled_setting_is_noop(session):
     await session.flush()
     await _emit(session, co.id, "item:o", "item.created", {"sku": "O", "name": "O", "quantity": 0, "reorder_point": 5})
     await ProjectionEngine.rebuild(session)
-    assert await run_all_alerts(session, co) is None
+    assert await run_all_alerts(session, co.id) is None
     assert await _notif_count(session, co.id) == 0
 
 
@@ -220,18 +220,18 @@ async def test_expiring_alert_and_rearm(session):
     await _emit(session, co.id, "item:e", "item.created", {"sku": "E", "name": "Milk", "quantity": 5, "expires_at": soon})
     await ProjectionEngine.rebuild(session)
 
-    n = await run_all_alerts(session, co)
+    n = await run_all_alerts(session, co.id)
     assert n is not None and "Expiring soon" in n.body and "Milk" in n.body
-    assert await run_all_alerts(session, co) is None  # idempotent
+    assert await run_all_alerts(session, co.id) is None  # idempotent
 
     await _emit(session, co.id, "item:e", "item.quantity.adjusted", {"new_qty": 0})
     await ProjectionEngine.rebuild(session)
-    assert await run_all_alerts(session, co) is None
+    assert await run_all_alerts(session, co.id) is None
     assert co.settings.get("expiring_alerted_ids") == []  # re-armed
 
     await _emit(session, co.id, "item:e", "item.quantity.adjusted", {"new_qty": 5})
     await ProjectionEngine.rebuild(session)
-    assert await run_all_alerts(session, co) is not None
+    assert await run_all_alerts(session, co.id) is not None
 
 
 @pytest.mark.asyncio
@@ -243,9 +243,9 @@ async def test_overdue_invoice_alert(session):
         "due_date": "2020-01-01", "status": "awaiting_payment"})
     await ProjectionEngine.rebuild(session)
 
-    n = await run_all_alerts(session, co)
+    n = await run_all_alerts(session, co.id)
     assert n is not None and "Overdue invoices" in n.body and "INV-1" in n.body
-    assert await run_all_alerts(session, co) is None  # idempotent
+    assert await run_all_alerts(session, co.id) is None  # idempotent
 
 
 @pytest.mark.asyncio
@@ -261,7 +261,55 @@ async def test_combined_digest_is_one_notification(session):
         "due_date": "2020-01-01", "status": "awaiting_payment"})
     await ProjectionEngine.rebuild(session)
 
-    n = await run_all_alerts(session, co)
+    n = await run_all_alerts(session, co.id)
     assert n is not None
     assert await _notif_count(session, co.id) == 1  # ONE combined digest
     assert "Low stock" in n.body and "Expiring soon" in n.body and "Overdue invoices" in n.body
+
+
+@pytest.mark.asyncio
+async def test_one_failing_company_does_not_stop_the_daily_scan(committed_engine, monkeypatch):
+    """The daily scan keeps going after a company whose scan fails: every other due company is still
+    scanned and stamped that day."""
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    import celerp.db
+    from celerp.services import reorder
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    ids = [uuid.uuid4(), uuid.uuid4()]
+    async with factory() as s:
+        for cid in ids:
+            s.add(Company(id=cid, name="ScanCo", slug=f"scan-{cid.hex[:8]}", settings={}))
+        await s.commit()
+
+    scanned: list = []
+
+    async def _detect(session, company):
+        scanned.append(company.id)
+        if len(scanned) == 1:
+            raise RuntimeError("scan failed")
+        return []
+
+    @asynccontextmanager
+    async def _session_ctx():
+        async with factory() as s:
+            yield s
+
+    async def _stop(_seconds):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(reorder, "_CHECKS", (reorder._AlertCheck(None, "test_alerted_ids", "Test", _detect, str),))
+    monkeypatch.setattr(reorder, "_scan_due", lambda company, now: True)
+    monkeypatch.setattr(celerp.db, "get_session_ctx", _session_ctx)
+    monkeypatch.setattr(reorder.asyncio, "sleep", _stop)
+    with pytest.raises(asyncio.CancelledError):
+        await reorder.reorder_alert_loop()
+
+    assert sorted(scanned) == sorted(ids)
+    async with factory() as s:
+        stamped = [(await s.get(Company, cid)).settings.get("reorder_last_scan_at") for cid in scanned]
+    assert stamped[0] is None and stamped[1] is not None

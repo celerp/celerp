@@ -251,14 +251,14 @@ def _digest_lines(items: list[dict], line, limit: int = 5) -> str:
     return "\n".join(out)
 
 
-async def run_all_alerts(session: AsyncSession, company) -> object | None:
+async def run_all_alerts(session: AsyncSession, company_id) -> object | None:
     """Run every enabled proactive check and, on newly-alerting items, emit ONE
     combined digest (notification + optional email). Idempotent per latch; each
     check re-arms independently when an item leaves its alert set."""
     from celerp.notifications import service as notif_service
     from celerp.services.company_lock import locked_company
 
-    company = await locked_company(session, company.id)
+    company = await locked_company(session, company_id)
     settings = dict(company.settings or {})
     sections: list[tuple[str, list[dict], object]] = []
     urgent = False
@@ -339,15 +339,15 @@ async def reorder_alert_loop() -> None:
                 companies = (await session.execute(
                     select(Company).where(Company.is_active.is_(True))
                 )).scalars().all()
-                due = [company for company in companies if _scan_due(company, now)]
+                due = [company.id for company in companies if _scan_due(company, now)]
                 await session.commit()
-                for company in due:
+                for company_id in due:
                     try:
-                        await run_all_alerts(session, company)
+                        await run_all_alerts(session, company_id)
                         await session.commit()
                     except Exception as exc:
                         await session.rollback()
-                        log.error("alerts: scan failed for %s: %s", company.id, exc)
+                        log.error("alerts: scan failed for %s: %s", company_id, exc)
         except Exception as exc:
             log.error("alerts: loop error: %s", exc)
         await asyncio.sleep(_CHECK_INTERVAL_SECONDS)

@@ -164,3 +164,31 @@ async def test_identity_backfill_address_taxid_phone(client, session):
 
     # Idempotent: re-run changes nothing.
     assert await backfill_self_contact_identity(session, cid) is False
+
+
+@pytest.mark.asyncio
+async def test_migrate_all_continues_after_a_failing_company(committed_engine, monkeypatch):
+    """One company failing the migration does not stop the others."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from celerp_contacts import migrations
+
+    factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as s:
+        for _ in range(2):
+            cid = uuid.uuid4()
+            s.add(Company(id=cid, name="MigCo", slug=f"mig-{cid.hex[:8]}", settings={}))
+        await s.commit()
+
+    calls: list = []
+
+    async def _migrate(session, company_id, actor_id=None):
+        calls.append(company_id)
+        if len(calls) == 1:
+            raise RuntimeError("migration failed")
+        return {"company_id": str(company_id), "status": "noop"}
+
+    monkeypatch.setattr(migrations, "migrate_self_contacts", _migrate)
+    async with factory() as s:
+        results = await migrations.migrate_all_self_contacts(s)
+    assert [r["status"] for r in results] == ["error", "noop"]

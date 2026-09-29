@@ -170,18 +170,18 @@ async def migrate_all_self_contacts(session: AsyncSession, actor_id=None) -> lis
     """Run migrate_self_contacts for every company, committing per company so one failure does not abort
     the batch. Idempotent and cheap on re-run: companies whose self_contact_id is already cached (new
     seed or previously migrated) are skipped without touching the ledger. Returns per-company summaries."""
-    companies = (await session.execute(select(Company))).scalars().all()
+    companies = (await session.execute(select(Company.id, Company.settings))).all()
     results: list[dict] = []
-    for company in companies:
-        if (company.settings or {}).get("self_contact_id"):
+    for company_id, settings in companies:
+        if (settings or {}).get("self_contact_id"):
             continue  # already seeded under the new model, or already migrated - nothing to do
         try:
-            res = await migrate_self_contacts(session, company.id, actor_id)
+            res = await migrate_self_contacts(session, company_id, actor_id)
             await session.commit()
         except Exception as exc:  # one bad company must not abort the batch
             await session.rollback()
-            _log.warning("migrate_self_contacts failed for company %s: %s", company.id, exc)
-            res = {"company_id": str(company.id), "status": "error", "error": str(exc)}
+            _log.warning("migrate_self_contacts failed for company %s: %s", company_id, exc)
+            res = {"company_id": str(company_id), "status": "error", "error": str(exc)}
         results.append(res)
     return results
 
