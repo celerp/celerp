@@ -19,7 +19,7 @@ from celerp.services.units import default_receive_as
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
-from celerp.services.doc_balance import PAID_TOLERANCE, awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
+from celerp.services.doc_balance import awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.payment_terms import due_date_for_terms
@@ -5407,8 +5407,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         )
     else:
         paid_label = t("documents.total_paid", paid=fmt_money(amount_paid, currency), total=fmt_money(total_val, currency))
-        outstanding_label = t("documents.paid_in_full") if outstanding_d <= PAID_TOLERANCE else t("documents.outstanding_amount", amount=fmt_money(outstanding, currency))
-        outstanding_cls = "total-value--success" if outstanding_d <= PAID_TOLERANCE else "total-value--alert"
+        outstanding_label = t("documents.paid_in_full") if outstanding_d == 0 else t("documents.outstanding_amount", amount=fmt_money(outstanding, currency))
+        outstanding_cls = "total-value--success" if outstanding_d == 0 else "total-value--alert"
         summary_line = Div(
             Span(paid_label, cls="total-label"),
             Span(outstanding_label, cls=f"total-value {outstanding_cls}"),
@@ -5418,7 +5418,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     # --- Add Payment / Apply Credit form ---
     # Only show form if there's outstanding balance
     add_form = ""
-    if outstanding_d > PAID_TOLERANCE:
+    if outstanding_d > 0:
         _methods = [Option(t("doc.cash"), value="cash"), Option(t("doc.bank_transfer"), value="transfer"),
                     Option(t("doc.card"), value="card"), Option(t("doc.check"), value="check"), Option(t("doc.other"), value="other")]
         _bank_opts = _bank_account_options(bank_accounts, default_code=bank_accounts[0].get("chart_account_code") if bank_accounts else None)

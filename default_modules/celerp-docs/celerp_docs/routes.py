@@ -52,7 +52,7 @@ from celerp.services.payment_terms import company_payment_terms, due_date_for_te
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
-from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, PAID_TOLERANCE, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance, today_iso
+from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance, today_iso
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )

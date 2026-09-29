@@ -12,11 +12,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from celerp.services.money import to_decimal
-
-# An outstanding balance at or below this is settled: the payment projection marks the
-# document paid, and nothing counts it as owed.
-PAID_TOLERANCE = Decimal("0.005")
+from celerp.services.money import round_money, to_decimal
 
 # Older keys a document may carry a displayed value under (imported documents store their
 # number, dates and amounts this way). A field that is missing or empty is read from its first
@@ -96,9 +92,10 @@ def outstanding_balance(state: dict) -> Decimal | None:
 
 
 def is_owed(state: dict) -> bool:
-    """Whether a document's balance is above ``PAID_TOLERANCE``."""
+    """Whether a document's balance is above zero at its currency's precision, the rule the
+    payment projection marks a document paid by."""
     balance = outstanding_balance(state)
-    return balance is not None and balance > PAID_TOLERANCE
+    return balance is not None and round_money(balance, str(state.get("currency") or "USD")) > 0
 
 
 def is_awaiting_payment(doc_type: str | None, status: str | None) -> bool:
