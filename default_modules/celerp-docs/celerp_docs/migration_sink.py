@@ -8,7 +8,9 @@ document posts the entry its source books carry, on the accounts its lines name,
 in place of Celerp's default posting. An issued document arrives unpaid; its paid
 state comes from the settlements imported after it and from the credit and debit
 notes applied to it. A debit note has no Celerp document: its entry posts on the
-bill it notes as a journal fallback, applied to the bill as a payment.
+bill it notes as a journal fallback, applied to the bill as a payment. A migration's
+stock arrives only as inventory positions, so an issued bill's goods are recorded as
+already received, moving no stock, and cannot be received a second time.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ from celerp.services.migration_core_sink import (
 from celerp.services.money import round_money, to_stored_float
 from celerp_docs import import_service
 from celerp_docs.import_service import DOC_CREATED
-from celerp_docs.routes import DocImportRecord, apply_credit_note, apply_doc_payment
+from celerp_docs.routes import DocImportRecord, apply_credit_note, apply_doc_payment, record_historical_receipt
 
 DOC = "doc"
 JOURNAL = "journal_entry"
@@ -296,7 +298,8 @@ async def _post_document(
     context: SinkContext, record: CIFDocument, base: str, contacts: dict[str, str], accounts: dict[str, str],
     imported: dict[str, str], outcome: RecordOutcome,
 ) -> RecordOutcome:
-    """Post an issued document's entry and apply a credit note to its invoice."""
+    """Post an issued document's entry, record an issued bill's goods as received, and
+    apply a credit note to its invoice."""
     if not _posts(record):
         return outcome
     label = f"Document {record.ref or record.source_external_id}"
@@ -309,6 +312,11 @@ async def _post_document(
                 contact_id=contacts.get(record.contact_external_id or ""),
                 entries=_entries(record, base, accounts), ts=_date(record),
             )
+            if record.doc_type == DocumentType.BILL and any(li.item_external_id for li in record.line_items):
+                await record_historical_receipt(
+                    context.session, context.company_id, outcome.entity_id, actor_id=context.user_id,
+                    source="migration", idempotency_key=context.idempotency_key(record, "received"),
+                )
             if record.doc_type == DocumentType.CREDIT_NOTE and applies_to:
                 if applies_to not in imported:
                     raise ValueError(f"invoice {applies_to} was not imported.")

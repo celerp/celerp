@@ -3923,6 +3923,42 @@ def _line_quantities_received(doc: dict) -> dict[int, float]:
     return received
 
 
+async def record_historical_receipt(session: AsyncSession, company_id, entity_id: str, *, actor_id,
+                                   source: str, idempotency_key: str):
+    """Record an issued bill's goods as received when they are already in stock, brought in
+    before the books came to Celerp: what each line still has to receive is marked received,
+    with no parcel, no stock movement and no journal entry. Returns the doc.received entry,
+    the earlier one when ``idempotency_key`` was already used for this receipt, or None when
+    nothing was left to receive."""
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    replay = await find_event_by_idempotency(session, company_id, idempotency_key)
+    if replay is not None:
+        if replay.event_type != "doc.received" or replay.entity_id != entity_id:
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        replay.was_deduped = True
+        return replay
+    if row.state.get("doc_type") != "bill" or row.state.get("status") in ("draft", "void"):
+        raise HTTPException(status_code=409, detail="Only an issued bill can be recorded as already received")
+    held = _line_quantities_received(row.state)
+    received_items = []
+    for index, line in enumerate(row.state.get("line_items") or []):
+        remaining = float(line.get("quantity") or 0) - held.get(index, 0.0)
+        if remaining > 1e-9:
+            received_items.append({
+                "po_line_index": index, "quantity_received": remaining,
+                "receive_as": auto_je.bill_line_kind(line),
+                **{k: line[k] for k in ("sku", "name") if line.get(k)},
+            })
+    if not received_items:
+        return None
+    return await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.received",
+        data={"received_items": received_items, "location_id": "",
+              "received_by": str(actor_id) if actor_id else None, "created_item_ids": []},
+        actor_id=actor_id, location_id=None, source=source, idempotency_key=idempotency_key,
+    )
+
+
 async def _returnable_quantities(session: AsyncSession, company_id, doc: dict) -> dict[str, float]:
     """Item id -> stock units the document's receipts brought in and it has not sent back."""
     from celerp.models.ledger import LedgerEntry
