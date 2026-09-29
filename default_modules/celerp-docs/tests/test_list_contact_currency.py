@@ -16,7 +16,7 @@ def _h(token: str) -> dict:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("currency", "line_total"), [("EUR", 100.01), ("JPY", 100.0)])
-async def test_draft_list_takes_customer_currency_and_reprices_in_it(client, currency, line_total):
+async def test_draft_list_selection_takes_customer_currency_and_reprices_in_it(client, currency, line_total):
     r = await client.post("/auth/register", json={
         "company_name": "Currency Co",
         "email": f"list-currency-{uuid.uuid4().hex[:8]}@test.example",
@@ -33,10 +33,13 @@ async def test_draft_list_takes_customer_currency_and_reprices_in_it(client, cur
     item_id = r.json()["id"]
     r = await client.post("/crm/contacts", headers=h, json={
         "name": "Euro Customer", "contact_type": "customer", "currency": currency,
-        "price_list": "Wholesale",
     })
     assert r.status_code == 200, r.text
     contact_id = r.json()["id"]
+    r = await client.patch(f"/crm/contacts/{contact_id}", headers=h, json={
+        "fields_changed": {"price_list": {"old": None, "new": "Wholesale"}},
+    })
+    assert r.status_code == 200, r.text
     r = await client.post("/lists", headers=h, json={
         "list_type": "quotation", "price_list": "Retail", "currency": "USD",
         "line_items": [{"item_id": item_id, "sku": "CUR-1", "description": "Cur", "quantity": 3,
@@ -45,22 +48,17 @@ async def test_draft_list_takes_customer_currency_and_reprices_in_it(client, cur
     assert r.status_code == 200, r.text
     list_id = r.json()["id"]
 
-    # The header patch the List customer picker sends for a money List.
-    r = await client.patch(f"/lists/{list_id}", headers=h, json={"fields_changed": {
-        "contact_id": {"old": None, "new": contact_id},
-        "contact_name": {"old": None, "new": "Euro Customer"},
-        "currency": {"old": "USD", "new": currency},
-    }})
+    # The List customer picker sends only the customer and the version the page shows.
+    version = (await client.get(f"/lists/{list_id}", headers=h)).json()["version"]
+    r = await client.patch(f"/lists/{list_id}", headers=h, json={
+        "fields_changed": {"contact_id": {"old": None, "new": contact_id}},
+        "expected_version": version,
+    })
     assert r.status_code == 200, r.text
     state = (await client.get(f"/lists/{list_id}", headers=h)).json()
-    assert state["currency"] == currency
     assert state["contact_id"] == contact_id
-
-    r = await client.post(f"/lists/{list_id}/reprice", headers=h,
-                          json={"price_list": "Wholesale", "expected_version": r.json()["version"]})
-    assert r.status_code == 200, r.text
-    state = (await client.get(f"/lists/{list_id}", headers=h)).json()
     assert state["currency"] == currency
+    assert state["price_list"] == "Wholesale"
     line = state["line_items"][0]
     # 3 x 33.335 = 100.005, rounded at the customer's currency precision.
     assert line["unit_price"] == 33.335

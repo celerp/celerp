@@ -20,6 +20,7 @@ from ui.components.shell import base_shell, page_header, toast_header, page_titl
 from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
+from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import role_has_permission
 from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
@@ -280,7 +281,7 @@ logger = logging.getLogger(__name__)
 # Lists constants
 # ---------------------------------------------------------------------------
 from celerp.services.list_behavior import (
-    behavior as _list_behavior, status_label as _list_status_label, is_money_list,
+    behavior as _list_behavior, status_label as _list_status_label,
     LIST_TYPES as _REG_LIST_TYPES, DRAFT as _LD, FINALIZED as _LF, CLOSED as _LC,
 )
 # Selectable list types come straight from the behaviour registry (one source — adding a type
@@ -902,27 +903,10 @@ def _doc_singular_label(doc_type: str) -> str:
 
 
 
-from datetime import date as _date, timedelta as _timedelta
-
-
-def _calculate_due_date(issue_date: str | None, payment_terms_name: str | None, terms_list: list[dict]) -> str | None:
-    """Return ISO due_date string given an issue_date + payment_terms name + company terms list.
-
-    Returns None if any input is missing/invalid so callers can skip the patch.
-    """
-    if not issue_date or not payment_terms_name:
-        return None
-    term = next((item for item in terms_list if item.get("name") == payment_terms_name), None)
-    if term is None:
-        return None
-    days = term.get("days")
-    if days is None:
-        return None
-    try:
-        base = _date.fromisoformat(str(issue_date)[:10])
-    except (ValueError, TypeError):
-        return None
-    return (base + _timedelta(days=int(days))).isoformat()
+def _form_version(form) -> int | None:
+    """The entity version a page posted with a guarded edit, or None when it sent none."""
+    raw = str(form.get("expected_version") or "").strip()
+    return int(raw) if raw.isdigit() else None
 
 
 async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = DEFAULT_PRICE_LIST_NAME) -> list[dict]:
@@ -2507,7 +2491,8 @@ celerpUpdateBulkAlloc();
         elif field in ("contact_id", "commission_contact_id", "contact_company_name"):
             # Commission agents are always vendors; the party is a vendor on purchase-side
             # documents and a customer everywhere else.
-            is_vendor = field == "commission_contact_id" or doc.get("doc_type", "") in ("purchase_order", "bill", "consignment_in")
+            from celerp_docs.doc_constants import VENDOR_DOC_TYPES
+            is_vendor = field == "commission_contact_id" or doc.get("doc_type", "") in VENDOR_DOC_TYPES
             input_el = await _contact_picker(
                 token, resource="doc", entity_id=entity_id, field=field,
                 value=value if field == "commission_contact_id" else str(doc.get("contact_id") or ""),
@@ -2578,49 +2563,25 @@ celerpUpdateBulkAlloc();
         if value == "__new__":
             from starlette.responses import Response as _R
             # Route to vendors page for vendor doc types and commission contacts
-            _VENDOR_TYPES = ("purchase_order", "bill", "consignment_in")
+            from celerp_docs.doc_constants import VENDOR_DOC_TYPES
             try:
                 doc = await api.get_doc(token, entity_id)
-                is_vendor_context = field == "commission_contact_id" or doc.get("doc_type") in _VENDOR_TYPES
+                is_vendor_context = field == "commission_contact_id" or doc.get("doc_type") in VENDOR_DOC_TYPES
             except APIError:
                 is_vendor_context = field == "commission_contact_id"
             target = "/contacts/vendors" if is_vendor_context else "/contacts/customers"
             return _R("", status_code=204, headers={"HX-Redirect": target})
         try:
             patch = {field: value}
-            # Auto-populate payment_terms and price_list from contact when contact_id changes
-            if field == "contact_id" and value:
-                try:
-                    doc = await api.get_doc(token, entity_id)
-                    is_draft_doc = doc.get("status", "draft") == "draft"
-                    contact = await api.get_contact(token, value)
-                    patch.update(_contact_snapshot(contact))
-                    contact_pt = contact.get("payment_terms")
-                    if contact_pt:
-                        patch["payment_terms"] = contact_pt
-                        # Recalculate due_date only on draft docs (finalized due_date is locked)
-                        if is_draft_doc:
-                            terms_list = await api.get_payment_terms(token)
-                            new_due = _calculate_due_date(doc.get("issue_date"), contact_pt, terms_list)
-                            if new_due:
-                                patch["due_date"] = new_due
-                    if is_draft_doc:
-                        # Price from the contact's price list (fallback to company default) - draft only
-                        contact_pl = await _contact_price_list(token, contact)
-                        if contact_pl:
-                            patch["price_list"] = contact_pl
-                        # Propagate contact currency to draft doc only
-                        contact_currency = contact.get("currency")
-                        if contact_currency:
-                            patch["currency"] = contact_currency
-                except APIError:
-                    pass  # contact fetch failure → skip auto-populate
+            # A contact change sends only the contact: the backend copies its details, terms,
+            # currency and prices onto the document in the same save.
+            expected_version = _form_version(form) if field == "contact_id" else None
             # Auto-calculate due_date when payment_terms changes
-            elif field == "payment_terms" and value:
+            if field == "payment_terms" and value:
                 try:
                     doc_pre = await api.get_doc(token, entity_id)
                     terms_list = await api.get_payment_terms(token)
-                    new_due = _calculate_due_date(doc_pre.get("issue_date"), value, terms_list)
+                    new_due = due_date_for_terms(doc_pre.get("issue_date"), value, terms_list)
                     if new_due:
                         patch["due_date"] = new_due
                 except APIError:
@@ -2643,23 +2604,16 @@ celerpUpdateBulkAlloc();
                         patch["commission_contact_name"] = name
                 except APIError:
                     pass
-            # Price-list changes are one domain operation: remove the header field
-            # from the ordinary patch and let the backend repricer update header + lines
-            # atomically. This also covers contact-driven/default price-list changes.
+            # A price-list change is one domain operation: the backend repricer updates
+            # the header and the lines atomically.
             new_pl = patch.pop("price_list", None)
-            version = None
             # ref_id edits go through /renumber (works on finalized docs; patch_doc rejects them)
             if field == "ref_id":
                 await api.renumber_doc(token, entity_id, value)
             elif patch:
-                # Pin repricing to the exact version this patch produced. A version read
-                # afterwards could be another user's newer contact, which this reprice
-                # must not overwrite; with the patch's own version it is refused instead.
-                version = (await api.patch_doc(token, entity_id, patch)).get("version")
+                await api.patch_doc(token, entity_id, patch, expected_version=expected_version)
             if new_pl:
-                if not patch:
-                    # A direct price-list change writes nothing before the reprice.
-                    version = (await api.get_doc(token, entity_id)).get("version")
+                version = (await api.get_doc(token, entity_id)).get("version")
                 if version is None:
                     raise APIError(409, "Reload the document before repricing")
                 await api.reprice_doc(token, entity_id, new_pl, int(version))
@@ -4474,7 +4428,8 @@ celerpUpdateBulkAlloc();
             if value == "__new__":
                 return _R("", status_code=204, headers={"HX-Redirect": "/contacts/customers"})
             try:
-                await _select_list_contact(token, entity_id, value)
+                # The backend copies the customer's details, currency and prices in the same save.
+                await api.patch_list(token, entity_id, {"contact_id": value}, expected_version=_form_version(form))
             except APIError as e:
                 return _action_error(str(e.detail))
             # Customer details and repriced lines change together - re-render the page.
@@ -5166,80 +5121,6 @@ def _resolve_contact_display(doc: dict, field: str) -> str:
     return raw
 
 
-def _contact_snapshot(contact: dict) -> dict:
-    """Header fields a document or List copies from its selected contact.
-
-    Address precedence (billing and shipping alike): the default address of that type,
-    else the first address of that type, else the contact's top-level address field.
-    The shipping attention comes from the same address the shipping text does.
-    """
-    addresses = contact.get("addresses") or []
-
-    def _pick(addr_type: str) -> dict | None:
-        typed = [a for a in addresses if a.get("address_type") == addr_type]
-        return next((a for a in typed if a.get("is_default")), typed[0] if typed else None)
-
-    def _text(addr_type: str) -> str:
-        a = _pick(addr_type)
-        if a:
-            return a.get("full_address") or a.get("address") or a.get("label") or ""
-        return contact.get(f"{addr_type}_address") or ""
-
-    shipping = _pick("shipping")
-    snapshot = {
-        "contact_company_name": contact.get("company_name") or "",
-        "contact_email": contact.get("email") or "",
-        "contact_phone": contact.get("phone") or "",
-        "contact_tax_id": contact.get("tax_id") or "",
-        "contact_billing_address": _text("billing"),
-        "contact_shipping_address": _text("shipping"),
-        "shipping_attn": (shipping.get("attn") or "") if shipping else "",
-    }
-    name = contact.get("name") or contact.get("display_name")
-    if name:
-        snapshot["contact_name"] = name
-    return snapshot
-
-
-async def _contact_price_list(token: str, contact: dict) -> str | None:
-    """The price list a newly selected contact prices a draft at: its own, else the company default."""
-    if contact.get("price_list"):
-        return contact["price_list"]
-    try:
-        return await api.get_default_price_list(token) or None
-    except Exception:
-        return None
-
-
-async def _select_list_contact(token: str, entity_id: str, contact_id: str) -> None:
-    """Set a draft List's customer the way a draft document sets its contact.
-
-    Copies the contact snapshot; a money List also takes the contact's currency and is
-    repriced at the contact's price list (else the company default) by the backend
-    repricer, pinned to the version the header patch produced. A contact that does not
-    resolve locally (an imported or historical reference) keeps just its id, as on documents.
-    """
-    lst = await api.get_list(token, entity_id)
-    patch: dict = {"contact_id": contact_id}
-    price_list = None
-    if contact_id:
-        try:
-            contact = await api.get_contact(token, contact_id)
-        except APIError:
-            contact = None
-        if contact:
-            patch.update(_contact_snapshot(contact))
-            if is_money_list(lst.get("list_type")):
-                if contact.get("currency"):
-                    patch["currency"] = contact["currency"]
-                price_list = await _contact_price_list(token, contact)
-    version = (await api.patch_list(token, entity_id, patch)).get("version")
-    if price_list:
-        if version is None:
-            raise APIError(409, "Reload the list before repricing")
-        await api.reprice_list(token, entity_id, price_list, int(version))
-
-
 async def _contact_picker(token: str, *, resource: str, entity_id: str, field: str, value: str,
                           contact_type: str) -> FT:
     """Searchable contact selector for a document or List header contact cell.
@@ -5268,7 +5149,9 @@ async def _contact_picker(token: str, *, resource: str, entity_id: str, field: s
         save_attrs = {"onchange": f"_celerpPatchListField(this, {_json.dumps(patch_url)}, true)"}
     else:
         save_attrs = {"hx_patch": patch_url, "hx_target": "closest .editable-cell",
-                      "hx_swap": "outerHTML", "hx_trigger": "change"}
+                      "hx_swap": "outerHTML", "hx_trigger": "change",
+                      # The page's current version pins the selection to the document it shows.
+                      "hx_vals": "js:{expected_version: window._celerpEntityVersion}"}
     restore_url = f"{prefix}/{entity_id}/field/{field}/display"
     # The wrapper catches ESC bubbling out of the combobox and restores the display cell.
     return Div(
@@ -7295,7 +7178,8 @@ function _celerpPatchListField(input, url, persistFirst=false) {{
             const ok = await _celerpPersistOnce();
             if (!ok) return false;
         }}
-        await htmx.ajax('PATCH', url, {{target: target, swap: swap, values: {{value: value}}}});
+        await htmx.ajax('PATCH', url, {{target: target, swap: swap,
+            values: {{value: value, expected_version: window._celerpEntityVersion}}}});
         return true;
     }}).catch(() => false);
 }}

@@ -1372,11 +1372,14 @@ async def _wrap_fields_changed(c, get_path: str, data: dict) -> dict:
     }
 
 
-async def patch_doc(token: str, entity_id: str, data: dict) -> dict:
+async def patch_doc(token: str, entity_id: str, data: dict, expected_version: int | None = None) -> dict:
     """data is a flat dict of field->value; wraps into fields_changed format."""
     async with _api_client(token) as c:
         fields_changed = await _wrap_fields_changed(c, f"/docs/{entity_id}", data)
-        return _raise(await c.patch(f"/docs/{entity_id}", json={"fields_changed": fields_changed})).json()
+        body: dict = {"fields_changed": fields_changed}
+        if expected_version is not None:
+            body["expected_version"] = expected_version
+        return _raise(await c.patch(f"/docs/{entity_id}", json=body)).json()
 
 
 async def renumber_doc(token: str, entity_id: str, ref_id: str) -> dict:

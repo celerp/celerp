@@ -11076,116 +11076,62 @@ class TestCompanySettingsCardMoved:
         assert "/settings/company/language" not in card_html
 
 
-class TestCalculateDueDate:
-    """Unit tests for _calculate_due_date pure function."""
+class TestDueDateForTerms:
+    """Unit tests for the due_date_for_terms pure function."""
 
     def test_basic_net30(self):
-        from ui.routes.documents import _calculate_due_date
+        from celerp.services.payment_terms import due_date_for_terms
         terms = [{"name": "Net 30", "days": 30}]
-        result = _calculate_due_date("2026-01-01", "Net 30", terms)
+        result = due_date_for_terms("2026-01-01", "Net 30", terms)
         assert result == "2026-01-31"
 
     def test_cash_zero_days(self):
-        from ui.routes.documents import _calculate_due_date
+        from celerp.services.payment_terms import due_date_for_terms
         terms = [{"name": "Cash", "days": 0}]
-        result = _calculate_due_date("2026-03-15", "Cash", terms)
+        result = due_date_for_terms("2026-03-15", "Cash", terms)
         assert result == "2026-03-15"
 
     def test_unknown_term_returns_none(self):
-        from ui.routes.documents import _calculate_due_date
+        from celerp.services.payment_terms import due_date_for_terms
         terms = [{"name": "Net 30", "days": 30}]
-        assert _calculate_due_date("2026-01-01", "Net 60", terms) is None
+        assert due_date_for_terms("2026-01-01", "Net 60", terms) is None
 
     def test_missing_issue_date_returns_none(self):
-        from ui.routes.documents import _calculate_due_date
+        from celerp.services.payment_terms import due_date_for_terms
         terms = [{"name": "Net 30", "days": 30}]
-        assert _calculate_due_date(None, "Net 30", terms) is None
+        assert due_date_for_terms(None, "Net 30", terms) is None
 
     def test_missing_payment_terms_returns_none(self):
-        from ui.routes.documents import _calculate_due_date
+        from celerp.services.payment_terms import due_date_for_terms
         terms = [{"name": "Net 30", "days": 30}]
-        assert _calculate_due_date("2026-01-01", None, terms) is None
+        assert due_date_for_terms("2026-01-01", None, terms) is None
 
     def test_empty_terms_list_returns_none(self):
-        from ui.routes.documents import _calculate_due_date
-        assert _calculate_due_date("2026-01-01", "Net 30", []) is None
+        from celerp.services.payment_terms import due_date_for_terms
+        assert due_date_for_terms("2026-01-01", "Net 30", []) is None
 
     def test_invalid_issue_date_returns_none(self):
-        from ui.routes.documents import _calculate_due_date
+        from celerp.services.payment_terms import due_date_for_terms
         terms = [{"name": "Net 30", "days": 30}]
-        assert _calculate_due_date("not-a-date", "Net 30", terms) is None
+        assert due_date_for_terms("not-a-date", "Net 30", terms) is None
 
     def test_month_boundary(self):
-        from ui.routes.documents import _calculate_due_date
+        from celerp.services.payment_terms import due_date_for_terms
         terms = [{"name": "Net 14", "days": 14}]
         # Jan 25 + 14 = Feb 8
-        result = _calculate_due_date("2026-01-25", "Net 14", terms)
+        result = due_date_for_terms("2026-01-25", "Net 14", terms)
         assert result == "2026-02-08"
 
     def test_leap_year(self):
-        from ui.routes.documents import _calculate_due_date
+        from celerp.services.payment_terms import due_date_for_terms
         terms = [{"name": "Net 30", "days": 30}]
         # 2024 is leap year; Feb 1 + 30 = Mar 2
-        result = _calculate_due_date("2024-02-01", "Net 30", terms)
+        result = due_date_for_terms("2024-02-01", "Net 30", terms)
         assert result == "2024-03-02"
 
 
 class TestDocPaymentTermsAutoPopulate:
-    """doc_field_patch: contact_id change → auto-populate payment_terms + due_date."""
-
-    @pytest.mark.asyncio
-    async def test_contact_with_payment_terms_auto_populates(self, ui_client):
-        """Selecting a contact with payment_terms patches doc with terms + computed due_date."""
-        contact = {"entity_id": "ct:1", "name": "Alice", "payment_terms": "Net 30", "email": "alice@test.example", "phone": "555-1234"}
-        doc_pre = {**_DOC_DETAIL, "status": "draft", "version": 10, "issue_date": "2026-01-01", "payment_terms": None, "due_date": None}
-        doc_post = {**doc_pre, "version": 11, "payment_terms": "Net 30", "due_date": "2026-01-31", "contact_id": "ct:1", "price_list": "Retail"}
-        with (
-            patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
-            patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc_pre, doc_post])),
-            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
-            patch("ui.api_client.patch_doc", new=AsyncMock(return_value={"event_id": 11, "version": 11})) as mock_patch,
-            patch("ui.api_client.reprice_doc", new=AsyncMock(return_value={
-                "ok": True, "version": 12, "repriced": 0, "skipped": [], "price_list": "Retail",
-            })) as mock_reprice,
-            patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
-        ):
-            r = await ui_client.patch(
-                "/docs/d:1/field/contact_id",
-                data={"value": "ct:1"},
-                cookies=_authed(),
-            )
-        assert r.status_code == 204  # HX-Redirect on contact change
-        called_patch = mock_patch.call_args[0][2]
-        assert called_patch.get("payment_terms") == "Net 30"
-        assert called_patch.get("due_date") == "2026-01-31"
-        assert called_patch.get("contact_name") == "Alice"
-        assert called_patch.get("contact_email") == "alice@test.example"
-        assert mock_reprice.await_args.args[1:] == ("d:1", "Retail", 11)
-
-    @pytest.mark.asyncio
-    async def test_contact_without_payment_terms_no_auto_populate(self, ui_client):
-        """Contact without payment_terms - only contact_id patched."""
-        contact = {"entity_id": "ct:2", "name": "Bob"}
-        doc_pre = {**_DOC_DETAIL, "issue_date": "2026-01-01"}
-        doc_post = {**doc_pre, "contact_id": "ct:2"}
-        with (
-            patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
-            patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc_post)),
-            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
-            patch("ui.api_client.patch_doc", new=AsyncMock()) as mock_patch,
-            patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
-        ):
-            r = await ui_client.patch(
-                "/docs/d:1/field/contact_id",
-                data={"value": "ct:2"},
-                cookies=_authed(),
-            )
-        assert r.status_code == 204  # HX-Redirect on contact change
-        called_patch = mock_patch.call_args[0][2]
-        assert "payment_terms" not in called_patch
-        assert "due_date" not in called_patch
-        assert called_patch.get("contact_id") == "ct:2"
-        assert called_patch.get("contact_name") == "Bob"
+    """doc_field_patch: a payment_terms change recalculates the due date."""
 
     @pytest.mark.asyncio
     async def test_payment_terms_change_calculates_due_date(self, ui_client):
@@ -11420,26 +11366,6 @@ class TestDocContactBoxLayout:
             r = await ui_client.get("/docs/d:1/field/contact_billing_address/edit", cookies=_authed())
         assert r.status_code == 200
         assert b'type="text"' in r.content
-
-    @pytest.mark.asyncio
-    async def test_doc_contact_id_patch_auto_populates_company_name(self, ui_client):
-        """Patching contact_id auto-populates contact_company_name on the doc."""
-        contact = {
-            "entity_id": "ct:1", "name": "Alice", "company_name": "Acme Corp",
-            "email": "alice@acme.example", "phone": "555-0001",
-        }
-        doc = {**_DOC_DETAIL, "contact_id": "ct:1"}
-        with (
-            patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
-            patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
-            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
-            patch("ui.api_client.patch_doc", new=AsyncMock()) as mock_patch,
-            patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
-        ):
-            r = await ui_client.patch("/docs/d:1/field/contact_id", data={"value": "ct:1"}, cookies=_authed())
-        assert r.status_code == 204
-        called = mock_patch.call_args[0][2]
-        assert called.get("contact_company_name") == "Acme Corp"
 
 
 # ── Inventory item detail fixes ───────────────────────────────────────────────

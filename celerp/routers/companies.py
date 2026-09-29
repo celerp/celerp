@@ -41,6 +41,7 @@ from celerp.services.permissions import (
 )
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 from celerp.services.terms import terms_templates
+from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -1249,24 +1250,13 @@ async def import_taxes_batch(
 # Payment terms
 # ---------------------------------------------------------------------------
 
-DEFAULT_PAYMENT_TERMS: list[dict] = [
-    {"name": "Pay in Advance", "days": 0, "description": "Full payment before delivery"},
-    {"name": "Cash on Delivery", "days": 0, "description": "Payment on receipt of goods"},
-    {"name": "Deposit (50%)", "days": 0, "description": "50% deposit upfront, balance on delivery"},
-    {"name": "Net 7", "days": 7, "description": "Due within 7 days"},
-    {"name": "Net 15", "days": 15, "description": "Due within 15 days"},
-    {"name": "Net 30", "days": 30, "description": "Due within 30 days"},
-    {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
-    {"name": "Net 90", "days": 90, "description": "Due within 90 days"},
-]
-
 
 @router.get("/me/payment-terms")
 async def get_payment_terms(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
-    return company.settings.get("payment_terms") or DEFAULT_PAYMENT_TERMS
+    return company_payment_terms(company.settings)
 
 
 @router.patch("/me/payment-terms")
@@ -1308,7 +1298,7 @@ async def import_payment_terms_batch(
     res = BatchImportResult(created=0, skipped=0, errors=[])
 
     settings = dict(company.settings)
-    terms = list(settings.get("payment_terms") or DEFAULT_PAYMENT_TERMS)
+    terms = list(company_payment_terms(settings))
     existing_names = {str(t.get("name", "")).strip().lower() for t in terms if t.get("name")}
 
     records = [rec.data for rec in (payload.records or [])]

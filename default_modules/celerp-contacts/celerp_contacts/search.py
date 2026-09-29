@@ -11,12 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.projections import Projection
-
-_CONTACT_TYPE_FILTER: dict[str, tuple[str, ...]] = {
-    "customer": ("customer", "both"),
-    "vendor": ("vendor", "both"),
-    "both": ("both",),
-}
+from celerp_contacts.references import CONTACT_TYPE_FILTER, contact_accepts
 
 
 def _match(contact: dict, q_lower: str) -> bool:
@@ -56,9 +51,8 @@ async def search_contacts(
     if q:
         q_lower = q.lower()
         results = [c for c in results if _match(c, q_lower)]
-    if contact_type and contact_type in _CONTACT_TYPE_FILTER:
-        allowed = _CONTACT_TYPE_FILTER[contact_type]
-        results = [c for c in results if (c.get("contact_type") or "customer") in allowed]
+    if contact_type and contact_type in CONTACT_TYPE_FILTER:
+        results = [c for c in results if contact_accepts(c, contact_type)]
     results.sort(key=lambda c: ((c.get("name") or "").lower(), c.get("id") or ""))
     return results
 

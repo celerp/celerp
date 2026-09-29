@@ -41,6 +41,10 @@ SALES_PRICED_DOC_TYPES: frozenset[str] = frozenset({
     "invoice", "proforma", "quotation", "credit_note", "memo", "subscription_invoice",
 })
 
+# Purchase-side document types: their contact is a vendor (vendor or both), every
+# other document's contact is a customer (customer or both).
+VENDOR_DOC_TYPES: frozenset[str] = frozenset({"purchase_order", "bill", "consignment_in"})
+
 # State that only lifecycle operations write: finalize, send, payment, receive,
 # fulfil, convert, close and void, plus the record identity the ledger assigns.
 # Ordinary creation never carries any of it, since a new document or list is an

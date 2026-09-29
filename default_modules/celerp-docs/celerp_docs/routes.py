@@ -47,8 +47,10 @@ from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_li
 from celerp.services.money import checked_exchange_rate, discount_from_inputs, doc_rate, require_doc_rate, round_money, round_rate, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, resolve_price
 from celerp.services.terms import resolve_document_terms
+from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
+from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES
+from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )
@@ -1568,12 +1570,20 @@ async def create_doc(
 
 @router.patch("/{entity_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if payload.idempotency_key:
-        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+    fields_changed = dict(payload.fields_changed)
+    selecting = "contact_id" in fields_changed
+    new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
+    idem_key = payload.idempotency_key
+    if selecting and payload.expected_version is not None:
+        idem_key = _contact_selection_key("doc", entity_id, payload.expected_version, new_contact_id)
+    if idem_key:
+        replay = await find_event_by_idempotency(session, company_id, idem_key)
         if replay is not None:
             if replay.event_type != "doc.updated" or replay.entity_id != entity_id:
                 raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
             return {"event_id": replay.id, "version": replay.id}
+    if selecting and "line_items" in fields_changed:
+        raise HTTPException(status_code=422, detail="Change the contact and the line items in separate saves.")
     # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
     _FINALIZED_EDITABLE_FIELDS = {
         "description", "customer_note", "internal_note",
@@ -1585,29 +1595,35 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     }
     _LI_FINALIZED_EDITABLE = {"description", "account_code"}
     _PROTECTED_FIELDS = {"status", "entity_type", "company_id"}
-    protected_attempted = _PROTECTED_FIELDS & set(payload.fields_changed)
+    protected_attempted = _PROTECTED_FIELDS & set(fields_changed)
     if protected_attempted:
         raise HTTPException(
             status_code=422,
             detail=f"Fields {sorted(protected_attempted)} cannot be changed via patch. Use the appropriate lifecycle endpoints.",
         )
+    # The selected contact is locked before the document, the order merge and delete use.
+    contact = await _lock_selected_contact(session, company_id, settings, role, new_contact_id) if selecting else None
     # Locked load so the version check and the emit are one compare-and-set, as for lists.
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     if payload.expected_version is not None and row.version != payload.expected_version:
         raise HTTPException(status_code=409, detail="This document was changed by someone else; reload to get the latest before saving")
-    new_contact_id = (payload.fields_changed.get("contact_id") or {}).get("new")
-    if new_contact_id:
-        await _validate_doc_contact_reference(session, company_id, str(new_contact_id))
+    if selecting:
+        client_values = {k: (v or {}).get("new") for k, v in fields_changed.items()}
+        selection = await _contact_selection_values(
+            session, company_id, settings, role, row.state,
+            kind="doc", contact_id=new_contact_id, contact=contact, client_values=client_values,
+        )
+        fields_changed.update({f: {"new": v} for f, v in selection.items()})
     # Price-override gate: on a sales document, reject unit_price changes when the
     # caller lacks set_sales_doc_prices, comparing incoming lines against the stored
     # lines by index. Runs for drafts and finalized documents alike, before the draft branch.
-    _incoming_lines = (payload.fields_changed.get("line_items") or {}).get("new")
+    _incoming_lines = (fields_changed.get("line_items") or {}).get("new")
     if isinstance(_incoming_lines, list) and row.state.get("doc_type") in SALES_PRICED_DOC_TYPES:
         _stored_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
         await _assert_sales_line_price_permission(session, company_id, settings, role, _incoming_lines, _stored_by_idx)
     is_draft = row.state.get("status") == "draft"
     if not is_draft:
-        locked_fields = set(payload.fields_changed) - _FINALIZED_EDITABLE_FIELDS
+        locked_fields = set(fields_changed) - _FINALIZED_EDITABLE_FIELDS
         if locked_fields:
             status_label = (row.state.get("status") or "finalized").replace("_", " ").title()
             raise HTTPException(
@@ -1615,8 +1631,8 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
                 detail=f"This document is in {status_label} status and cannot be edited. To make changes, revert it to Draft first.",
             )
         # Guard: line_items patch on finalized doc may only touch _LI_FINALIZED_EDITABLE fields
-        if "line_items" in payload.fields_changed:
-            incoming_lis = (payload.fields_changed["line_items"].get("new") or [])
+        if "line_items" in fields_changed:
+            incoming_lis = (fields_changed["line_items"].get("new") or [])
             existing_lis = row.state.get("line_items") or []
             existing_by_idx = {i: li for i, li in enumerate(existing_lis)}
             for i, incoming in enumerate(incoming_lis):
@@ -1631,15 +1647,15 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
                             detail=f"Field '{k}' in line item {i} cannot be changed on a finalized document.",
                         )
     # Uniqueness check when ref_id is being changed
-    new_ref = (payload.fields_changed.get("ref_id") or {}).get("new")
+    new_ref = (fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
         await _assert_ref_id_unique(session, company_id, new_ref, exclude_entity_id=entity_id)
     # Validate issue/due date ordering against the merged resulting state
-    patch_flat = {k: v.get("new") for k, v in payload.fields_changed.items() if v.get("new") is not None}
+    patch_flat = {k: v.get("new") for k, v in fields_changed.items() if v.get("new") is not None}
     _assert_date_order(patch_flat, row.state)
 
     # Validate patched line items when present
-    new_line_items = (payload.fields_changed.get("line_items") or {}).get("new")
+    new_line_items = (fields_changed.get("line_items") or {}).get("new")
     if new_line_items is not None and isinstance(new_line_items, list):
         # Documents are never audits: the positive rule always applies. The document validator
         # preserves the unit captured on each line (submitted sell_by wins, stored is the
@@ -1679,11 +1695,13 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     # raw JS floats and legacy values may already carry IEEE-754 tails, so round both old and new
     # here - the single chokepoint for every doc edit - so the ledger and history never record
     # values like "346.50000000000006".
-    _currency = row.state.get("currency")
+    # Stored values round at the stored currency, incoming ones at the currency this patch leaves.
+    _old_currency = row.state.get("currency")
+    _new_currency = (fields_changed.get("currency") or {}).get("new") or _old_currency
     _MONEY_FIELDS = {"subtotal", "tax", "total", "discount_amount"}
     def _round_field(field: str, value, *, incoming: bool = False):
         if field in _MONEY_FIELDS and value is not None:
-            return to_stored_float(round_money(value, _currency))
+            return to_stored_float(round_money(value, _new_currency if incoming else _old_currency))
         if field == "conversion_rate" and incoming:
             # The inline rate field posts a form value, so an edit arrives as a
             # string: normalised here to the same number create stores, at the
@@ -1704,7 +1722,7 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     # field to its current value must emit no event - otherwise it records an empty
     # `doc.updated` that renders as a ghost activity row (#155).
     effective = {}
-    for k, change in payload.fields_changed.items():
+    for k, change in fields_changed.items():
         old = _round_field(k, change.get("old") if change.get("old") is not None else row.state.get(k))
         new = _round_field(k, change.get("new"), incoming=True)
         if old != new:
@@ -1713,13 +1731,13 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
         return {"event_id": None, "version": row.version}
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
-        data={"fields_changed": effective, "idempotency_key": payload.idempotency_key},
+        data={"fields_changed": effective, "idempotency_key": idem_key},
         actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=idem_key or str(uuid.uuid4()), metadata_={},
     )
     await session.commit()
-    # entry.id is the document's new version, so a follow-up versioned write (a contact-driven
-    # reprice) pins exactly the state this patch produced, as patch_list does.
+    # entry.id is the document's new version, so the client's next versioned write pins
+    # exactly the state this patch produced, as patch_list does.
     return {"event_id": entry.id, "version": entry.id}
 
 
@@ -4747,12 +4765,22 @@ async def patch_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    if payload.idempotency_key:
-        replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
+    fields_changed = dict(payload.fields_changed)
+    selecting = "contact_id" in fields_changed
+    new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
+    idem_key = payload.idempotency_key
+    if selecting and payload.expected_version is not None:
+        idem_key = _contact_selection_key("list", entity_id, payload.expected_version, new_contact_id)
+    if idem_key:
+        replay = await find_event_by_idempotency(session, company_id, idem_key)
         if replay is not None:
             if replay.event_type != "list.updated" or replay.entity_id != entity_id:
                 raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
             return {"event_id": replay.id, "version": replay.id}
+    if selecting and "line_items" in fields_changed:
+        raise HTTPException(status_code=422, detail="Change the customer and the line items in separate saves.")
+    # The selected contact is locked before the List, the order merge and delete use.
+    contact = await _lock_selected_contact(session, company_id, settings, role, new_contact_id) if selecting else None
     # Locked load so the version check and the emit are one atomic compare-and-set: two concurrent
     # patches cannot both read version N, both pass the check, and both write (the second clobbering
     # the first). The second waits, re-reads the advanced version, and its stale expected_version fails.
@@ -4763,14 +4791,22 @@ async def patch_list(
     # scan and a line edit) would each save their own full array and the second would silently drop the
     # first's lines. Require expected_version for it so the stale writer is rejected; scalar-only patches
     # touch independent fields and stay backward compatible without a version.
-    _new_lines = (payload.fields_changed.get("line_items") or {}).get("new")
+    _new_lines = (fields_changed.get("line_items") or {}).get("new")
     if isinstance(_new_lines, list) and payload.expected_version is None:
         raise HTTPException(status_code=409, detail="Reload the list to get its latest version before saving line changes")
     if payload.expected_version is not None and row.version != payload.expected_version:
         raise HTTPException(status_code=409, detail="This list was changed by someone else; reload to get the latest before saving")
-    _new_values = {f: (c or {}).get("new") for f, c in payload.fields_changed.items()}
-    if _new_values.get("contact_id"):
-        await _validate_doc_contact_reference(session, company_id, str(_new_values["contact_id"]))
+    _new_values = {f: (c or {}).get("new") for f, c in fields_changed.items()}
+    if selecting:
+        # Lines a selection reprices are computed from the locked List, so they cannot
+        # clobber a concurrent edit and need no client version; their price gate runs below.
+        selection = await _contact_selection_values(
+            session, company_id, settings, role, row.state,
+            kind="list", contact_id=new_contact_id, contact=contact, client_values=_new_values,
+        )
+        fields_changed.update({f: {"old": row.state.get(f), "new": v} for f, v in selection.items()})
+        _new_values.update(selection)
+        _new_lines = _new_values.get("line_items")
     try:
         _validate_shipment_values(_new_values)
     except ValueError as e:
@@ -4795,8 +4831,7 @@ async def patch_list(
             )
     # expected_version is a concurrency guard, not list data - it never enters the event payload.
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
-                             payload.model_dump(exclude_none=True, exclude={"expected_version"}),
-                             user, payload.idempotency_key)
+                             {"fields_changed": fields_changed}, user, idem_key)
     await session.commit()
     # entry.id is the list's new version (the projection version tracks the latest entry id), so the
     # client refreshes its cached version from here and its next save pins the value it just wrote.
@@ -4922,6 +4957,122 @@ async def _reprice_catalog_lines(
         updated_lines.append(line)
 
     return updated_lines, repriced, skipped, effective_currency
+
+
+_CONTACT_SNAPSHOT_FIELDS: tuple[str, ...] = tuple(contact_snapshot({}))
+
+
+def _contact_selection_key(kind: str, entity_id: str, expected_version: int, contact_id: str) -> str:
+    """Idempotency identity of one contact selection, so a retried request after a lost
+    response replays the committed result instead of failing the version check."""
+    canonical = json.dumps([kind, entity_id, expected_version, contact_id], separators=(",", ":"), ensure_ascii=False)
+    return f"{kind}:select-contact:{hashlib.sha256(canonical.encode()).hexdigest()}"
+
+
+async def _lock_selected_contact(session: AsyncSession, company_id, settings: dict, role: str, contact_id: str) -> Projection | None:
+    """Authorize and lock the contact a patch selects, before the Document or List row is locked.
+
+    Contact rows are always locked before the records that reference them (merge and delete
+    take the same order), so a selection cannot commit a reference to a contact that a
+    concurrent merge or delete has retired. Returns None when clearing the contact or when
+    the id has no local contact record (an imported or external reference).
+    """
+    if not contact_id:
+        return None
+    # The selection copies the contact's addresses, email and phone onto the record.
+    assert_role_permission(settings, role, "view_contacts")
+    contact = (await lock_contacts(session, company_id, [contact_id])).get(contact_id)
+    if contact is None:
+        await _validate_doc_contact_reference(session, company_id, contact_id)
+    return contact
+
+
+async def _contact_selection_values(
+    session: AsyncSession,
+    company_id,
+    settings: dict,
+    role: str,
+    state: dict,
+    *,
+    kind: Literal["doc", "list"],
+    contact_id: str,
+    contact: Projection | None,
+    client_values: dict,
+) -> dict:
+    """The complete header transition for selecting contact_id on a Document or List.
+
+    Returns {field: new value} for the contact, its snapshot, and on drafts the commercial
+    defaults, prices and totals that follow from it, all computed from the locked record so
+    they are written as one event. Client-sent snapshot fields are ignored for a local
+    contact. Raises before anything is written when the contact is the wrong type, its
+    currency is invalid, the price list is unknown, or the caller may not set the prices.
+    """
+    values: dict = {"contact_id": contact_id, **{f: "" for f in _CONTACT_SNAPSHOT_FIELDS}}
+    if not contact_id:
+        return values
+    if contact is None:
+        # No local record to copy from: the caller's snapshot is the only source.
+        values.update({f: client_values[f] for f in _CONTACT_SNAPSHOT_FIELDS if f in client_values})
+        return values
+
+    cstate = contact.state or {}
+    if cstate.get("deleted"):
+        raise HTTPException(status_code=422, detail="This contact has been deleted and cannot be used on documents.")
+    vendor_side = kind == "doc" and state.get("doc_type") in VENDOR_DOC_TYPES
+    role_name = "vendor" if vendor_side else "customer"
+    if not contact_accepts(cstate, role_name):
+        raise HTTPException(
+            status_code=422,
+            detail=f"{cstate.get('name') or 'This contact'} is not a {role_name}. "
+                   f"Choose a {role_name}, or change the contact's type to {role_name} or both.",
+        )
+    values.update(contact_snapshot(cstate))
+    if kind == "doc":
+        # A contact without terms takes the configured contact default, else none:
+        # the previous contact's terms are never carried over.
+        values["payment_terms"] = (
+            cstate.get("payment_terms")
+            or (settings.get("contact_defaults") or {}).get("default_payment_terms")
+            or None
+        )
+    if state.get("status") != "draft":
+        return values
+
+    priced = (state.get("doc_type") in SALES_PRICED_DOC_TYPES) if kind == "doc" else is_money_list(state.get("list_type"))
+    if kind == "doc" and values["payment_terms"]:
+        due = due_date_for_terms(state.get("issue_date"), values["payment_terms"], company_payment_terms(settings))
+        if due:
+            values["due_date"] = due
+    currency = state.get("currency")
+    if kind == "doc" or priced:
+        contact_currency = cstate.get("currency")
+        if contact_currency and contact_currency != currency:
+            if contact_currency not in CURRENCY_CODES:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"The contact's currency {contact_currency!r} is not a valid currency code. Correct it on the contact first.",
+                )
+            currency = values["currency"] = contact_currency
+            if kind == "doc":
+                # A rate quoted for the old currency is meaningless for the new one.
+                values["conversion_rate"] = None
+    lines = None
+    if priced:
+        price_list = cstate.get("price_list") or settings.get("default_price_list") or DEFAULT_PRICE_LIST_NAME
+        _assert_reprice_access(settings, role, price_list)
+        stored_lines = list(state.get("line_items") or [])
+        lines, _repriced, _skipped, currency = await _reprice_catalog_lines(
+            session, company_id, stored_lines, price_list, currency=currency,
+        )
+        await _assert_sales_line_price_permission(
+            session, company_id, settings, role, lines, dict(enumerate(stored_lines)),
+        )
+        values["price_list"] = price_list
+        values["line_items"] = lines
+    if kind == "doc" and (lines is not None or "currency" in values):
+        merged = {**state, **values}
+        values.update(document_money(merged, merged.get("line_items") or [], currency, keep_unrated_tax=True))
+    return values
 
 
 @router.post("/{entity_id}/reprice")

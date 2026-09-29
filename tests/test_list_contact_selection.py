@@ -118,141 +118,97 @@ async def test_list_contact_display_shows_name_not_id(ui_client):
     assert "contact:alice" not in r.text.replace("/lists/list:Q-1", "")
 
 
-# ── Selection: snapshot, precedence, repricing ─────────────────────────────
+# ── Selection: the page sends only the contact and the version it shows ──
 
 @pytest.mark.asyncio
-async def test_list_contact_selection_snapshots_customer_and_reprices_at_patch_version(ui_client):
-    # A read after the patch would see version 12 (another user's newer customer); the
-    # reprice must pin 11, the version this patch produced, so a stale reprice is refused.
-    pre, newer = _list(version=10), _list(version=12, contact_id="contact:bob")
+async def test_list_contact_selection_sends_only_contact_and_version(ui_client):
     with (
-        patch("ui.api_client.get_list", new=AsyncMock(side_effect=[pre, newer])) as mock_get,
-        patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACT)),
         patch("ui.api_client.patch_list", new=AsyncMock(return_value={"version": 11})) as mock_patch,
-        patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
-        patch("ui.api_client.reprice_list", new=AsyncMock(return_value={"ok": True})) as mock_reprice,
+        patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACT)) as mock_contact,
+        patch("ui.api_client.reprice_list", new=AsyncMock()) as mock_reprice,
     ):
-        r = await ui_client.patch("/lists/list:Q-1/field/contact_id", data={"value": "contact:alice"},
+        r = await ui_client.patch("/lists/list:Q-1/field/contact_id",
+                                  data={"value": "contact:alice", "expected_version": "10"},
                                   cookies=_authed())
     assert r.status_code == 204
     # Whole page refresh so customer details and repriced lines update together.
     assert r.headers["HX-Redirect"] == "/lists/list:Q-1"
-    sent = mock_patch.await_args.args[2]
-    assert sent == {
-        "contact_id": "contact:alice",
-        "contact_name": "Alice",
-        "contact_company_name": "Acme Corp",
-        "contact_email": "alice@acme.example",
-        "contact_phone": "555-0001",
-        "contact_tax_id": "TX-1",
-        "contact_billing_address": "Default billing",
-        "contact_shipping_address": "Default shipping",
-        "shipping_attn": "Dock B",
-        "currency": "EUR",
-    }
-    # The price list is not a header write: the repricer owns header + lines.
-    assert mock_reprice.await_args.args[1:] == ("list:Q-1", "Wholesale", 11)
-    assert mock_get.await_count == 1
-
-
-@pytest.mark.asyncio
-async def test_list_contact_without_price_list_falls_back_to_company_default(ui_client):
-    contact = {k: v for k, v in _CONTACT.items() if k != "price_list"}
-    with (
-        patch("ui.api_client.get_list", new=AsyncMock(return_value=_list())),
-        patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
-        patch("ui.api_client.patch_list", new=AsyncMock(return_value={"version": 12})),
-        patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
-        patch("ui.api_client.reprice_list", new=AsyncMock(return_value={"ok": True})) as mock_reprice,
-    ):
-        r = await ui_client.patch("/lists/list:Q-1/field/contact_id", data={"value": "contact:alice"},
-                                  cookies=_authed())
-    assert r.status_code == 204
-    assert mock_reprice.await_args.args[1:] == ("list:Q-1", "Retail", 12)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("list_type", ["transfer", "audit", "writeoff", "shipping_doc"])
-async def test_non_money_list_takes_customer_but_never_reprices(ui_client, list_type):
-    with (
-        patch("ui.api_client.get_list", new=AsyncMock(return_value=_list(list_type=list_type))),
-        patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACT)),
-        patch("ui.api_client.patch_list", new=AsyncMock(return_value={"version": 11})) as mock_patch,
-        patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
-        patch("ui.api_client.reprice_list", new=AsyncMock()) as mock_reprice,
-    ):
-        r = await ui_client.patch("/lists/list:Q-1/field/contact_id", data={"value": "contact:alice"},
-                                  cookies=_authed())
-    assert r.status_code == 204
-    sent = mock_patch.await_args.args[2]
-    assert sent["contact_name"] == "Alice"
-    assert "currency" not in sent and "price_list" not in sent
+    assert mock_patch.await_args.args[1:] == ("list:Q-1", {"contact_id": "contact:alice"})
+    assert mock_patch.await_args.kwargs == {"expected_version": 10}
+    # Snapshot, currency and prices are the backend's job, in the same save.
+    mock_contact.assert_not_awaited()
     mock_reprice.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_list_reprice_error_is_reported(ui_client):
-    """A rejected reprice (stale version, missing price permission) surfaces, never a silent redirect."""
+async def test_list_selection_error_is_reported(ui_client):
+    """A refused selection (stale version, missing price permission) surfaces, never a silent redirect."""
     from ui.api_client import APIError
-    with (
-        patch("ui.api_client.get_list", new=AsyncMock(return_value=_list())),
-        patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACT)),
-        patch("ui.api_client.patch_list", new=AsyncMock(return_value={"version": 11})),
-        patch("ui.api_client.reprice_list", new=AsyncMock(side_effect=APIError(403, "Missing permission: set_sales_doc_prices"))),
-    ):
-        r = await ui_client.patch("/lists/list:Q-1/field/contact_id", data={"value": "contact:alice"},
+    with patch("ui.api_client.patch_list",
+               new=AsyncMock(side_effect=APIError(403, "Requires the set_sales_doc_prices permission"))):
+        r = await ui_client.patch("/lists/list:Q-1/field/contact_id",
+                                  data={"value": "contact:alice", "expected_version": "10"},
                                   cookies=_authed())
     assert "HX-Redirect" not in r.headers
     assert "set_sales_doc_prices" in r.headers["HX-Trigger"]
 
 
+@pytest.mark.asyncio
+async def test_document_contact_selection_sends_only_contact_and_version(ui_client):
+    doc = {"entity_id": "doc:INV-1", "doc_type": "invoice", "status": "draft", "version": 6}
+    with (
+        patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
+        patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACT)) as mock_contact,
+        patch("ui.api_client.patch_doc", new=AsyncMock(return_value={"event_id": 6, "version": 6})) as mock_patch,
+        patch("ui.api_client.reprice_doc", new=AsyncMock()) as mock_reprice,
+    ):
+        r = await ui_client.patch("/docs/doc:INV-1/field/contact_id",
+                                  data={"value": "contact:alice", "expected_version": "5"},
+                                  cookies=_authed())
+    assert r.status_code == 204
+    assert r.headers["HX-Redirect"] == "/docs/doc:INV-1"
+    assert mock_patch.await_args.args[1:] == ("doc:INV-1", {"contact_id": "contact:alice"})
+    assert mock_patch.await_args.kwargs == {"expected_version": 5}
+    mock_contact.assert_not_awaited()
+    mock_reprice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_contact_pickers_post_the_page_version(ui_client):
+    doc = {"entity_id": "doc:INV-1", "doc_type": "invoice", "status": "draft", "contact_id": "contact:3"}
+    with (
+        patch("ui.api_client.get_company", new=_company()),
+        patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
+        patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS})),
+    ):
+        html = (await ui_client.get("/docs/doc:INV-1/field/contact_id/edit", cookies=_authed())).text
+    assert "js:{expected_version: window._celerpEntityVersion}" in html
+
+
 # ── One canonical snapshot for documents and Lists ─────────────────────────
 
 def test_contact_snapshot_address_precedence():
-    from ui.routes.documents import _contact_snapshot
+    from celerp_contacts.references import contact_snapshot
 
-    snap = _contact_snapshot(_CONTACT)
+    snap = contact_snapshot(_CONTACT)
+    assert snap["contact_name"] == "Alice"
     assert snap["contact_billing_address"] == "Default billing"
     assert snap["contact_shipping_address"] == "Default shipping"
     assert snap["shipping_attn"] == "Dock B"
 
     no_default = {**_CONTACT, "addresses": [a for a in _CONTACT["addresses"] if not a.get("is_default")]}
-    snap = _contact_snapshot(no_default)
+    snap = contact_snapshot(no_default)
     assert snap["contact_billing_address"] == "First billing"
     assert snap["contact_shipping_address"] == "First shipping"
     assert snap["shipping_attn"] == "Dock A"
 
     legacy = {**_CONTACT, "addresses": []}
-    snap = _contact_snapshot(legacy)
+    snap = contact_snapshot(legacy)
     assert snap["contact_billing_address"] == "Legacy billing"
     assert snap["contact_shipping_address"] == "Legacy shipping"
     assert snap["shipping_attn"] == ""
 
-
-@pytest.mark.asyncio
-async def test_document_contact_selection_uses_the_same_snapshot(ui_client):
-    from ui.routes.documents import _contact_snapshot
-
-    doc = {"entity_id": "doc:INV-1", "doc_type": "invoice", "status": "draft", "version": 5,
-           "issue_date": "2026-01-01"}
-    # After the patch (version 6) another user's contact change moved the document to 7.
-    newer = {**doc, "version": 7, "contact_id": "contact:bob"}
-    with (
-        patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc, newer, newer])),
-        patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACT)),
-        patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[{"name": "Net 30", "days": 30}])),
-        patch("ui.api_client.patch_doc", new=AsyncMock(return_value={"event_id": 6, "version": 6})) as mock_patch,
-        patch("ui.api_client.reprice_doc", new=AsyncMock(return_value={"ok": True})) as mock_reprice,
-    ):
-        r = await ui_client.patch("/docs/doc:INV-1/field/contact_id", data={"value": "contact:alice"},
-                                  cookies=_authed())
-    assert r.status_code == 204
-    sent = mock_patch.await_args.args[2]
-    for key, value in _contact_snapshot(_CONTACT).items():
-        assert sent[key] == value
-    assert sent["payment_terms"] == "Net 30"
-    assert sent["due_date"] == "2026-01-31"
-    assert sent["currency"] == "EUR"
-    # Repriced at the version the contact patch produced, never a later read.
-    assert mock_reprice.await_args.args[1:] == ("doc:INV-1", "Wholesale", 6)
-    assert mock_reprice.await_count == 1
+    structured = {**_CONTACT, "addresses": [
+        {"address_type": "billing", "line1": "1 Main St", "city": "Springfield", "is_default": True},
+    ]}
+    assert "1 Main St" in contact_snapshot(structured)["contact_billing_address"]
