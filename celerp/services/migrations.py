@@ -68,8 +68,10 @@ from celerp.models.migration import (
 )
 from celerp.services import attachments
 from celerp.services import migration_scan_store as store
+from celerp.services.auth import normalize_role
 from celerp.services.company_lock import lock_company
 from celerp.services.csv_export import csv_safe
+from celerp.services.permissions import role_has_permission
 from celerp.services.provisioning import add_missing_required_defaults
 
 logger = logging.getLogger(__name__)
@@ -368,12 +370,21 @@ def remove_source(run_id: uuid.UUID) -> None:
         logger.warning("Migration source for run %s could not be removed", run_id, exc_info=True)
 
 
-async def get_run_for_company(session: AsyncSession, run_id: uuid.UUID, company_id: uuid.UUID) -> MigrationRun:
-    run = await session.scalar(
-        select(MigrationRun).where(MigrationRun.id == run_id, MigrationRun.company_id == company_id))
-    if run is None:
+async def get_owned_migration_run(session: AsyncSession, run_id: uuid.UUID, user_id: uuid.UUID) -> MigrationRun:
+    """The run, if *user_id* started it and still owns its company; otherwise not found.
+
+    Control follows the user's own membership, never the company their current token is
+    scoped to, so the owner watches and acts on a staged company from their working session."""
+    row = (await session.execute(
+        select(MigrationRun, UserCompany.role, Company.settings)
+        .join(UserCompany, (UserCompany.company_id == MigrationRun.company_id)
+              & (UserCompany.user_id == user_id) & UserCompany.is_active.is_(True))
+        .join(Company, Company.id == MigrationRun.company_id)
+        .where(MigrationRun.id == run_id, MigrationRun.created_by_user_id == user_id)
+    )).first()
+    if row is None or not role_has_permission(row.settings, normalize_role(row.role), "manage_company_lifecycle"):
         raise MigrationError(404, NOT_FOUND)
-    return run
+    return row[0]
 
 
 async def _lock_run(session: AsyncSession, run: MigrationRun, *, company: bool = True) -> None:
@@ -800,6 +811,7 @@ async def finalize(session: AsyncSession, run: MigrationRun) -> MigrationRun:
         company = await session.get(Company, run.company_id)
         await add_missing_required_defaults(session, run.company_id)
         company.is_active = True
+        company.is_migration_staged = False
         run.reconciliation = report
         run.status = _S.COMPLETED.value
         run.current_phase = _P.READY_TO_FINALIZE.value
@@ -844,7 +856,7 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     """Delete a staged company, its runs and their files; returns where the user goes next."""
     await _lock_run(session, run)
     company = await session.get(Company, run.company_id)
-    if run.status == _S.COMPLETED or company.is_active:
+    if run.status == _S.COMPLETED or not company.is_migration_staged:
         raise MigrationError(409, NO_UNFINISHED)
     if not await _try_xact_lock(session, run.id):
         raise MigrationError(409, ALREADY_RUNNING)

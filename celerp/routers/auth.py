@@ -167,6 +167,31 @@ from slowapi.util import get_remote_address
 limiter = Limiter(key_func=get_remote_address)
 
 
+async def _issue_login_tokens(session: AsyncSession, user: User) -> dict:
+    """Sign *user* in to one of their active company links.
+
+    A user in several companies uses /switch-company after login. A company still
+    being moved in is picked only when the user has no other company, so a login
+    never lands on a staged company while a working one exists."""
+    link = (
+        await session.execute(
+            select(UserCompany)
+            .join(Company, Company.id == UserCompany.company_id)
+            .where(
+                UserCompany.user_id == user.id,
+                UserCompany.is_active == True,  # noqa: E712
+            )
+            .order_by(Company.is_migration_staged, UserCompany.id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if link is None:
+        raise HTTPException(status_code=401, detail="No active company membership")
+
+    company = await session.get(Company, link.company_id)
+    return await _issue_tokens(session, user, company, link.role)
+
+
 @router.post("/login")
 @limiter.limit("10/minute")
 async def login(request: Request, payload: LoginRequest, session: AsyncSession = Depends(get_session)) -> dict:
@@ -181,21 +206,7 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
         if active:
             raise HTTPException(status_code=409, detail="direct_connection_limit")
 
-    # Pick the user's active company link. If they belong to multiple companies
-    # they must use /switch-company after login; we pick the first active one here.
-    link = (
-        await session.execute(
-            select(UserCompany).where(
-                UserCompany.user_id == user.id,
-                UserCompany.is_active == True,  # noqa: E712
-            ).order_by(UserCompany.id).limit(1)
-        )
-    ).scalar_one_or_none()
-    if link is None:
-        raise HTTPException(status_code=401, detail="No active company membership")
-
-    company = await session.get(Company, link.company_id)
-    return await _issue_tokens(session, user, company, link.role)
+    return await _issue_login_tokens(session, user)
 
 
 @router.post("/login-force")
@@ -210,19 +221,7 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
     evicting_ip = request.client.host if request.client else None
     await _invalidate_all(session, str(user.id), evicting_ip=evicting_ip)
 
-    link = (
-        await session.execute(
-            select(UserCompany).where(
-                UserCompany.user_id == user.id,
-                UserCompany.is_active == True,  # noqa: E712
-            ).order_by(UserCompany.id).limit(1)
-        )
-    ).scalar_one_or_none()
-    if link is None:
-        raise HTTPException(status_code=401, detail="No active company membership")
-
-    company = await session.get(Company, link.company_id)
-    return await _issue_tokens(session, user, company, link.role)
+    return await _issue_login_tokens(session, user)
 
 
 class RefreshRequest(BaseModel):

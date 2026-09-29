@@ -191,7 +191,9 @@ class FakeMigrationAPI:
             data = json.loads(body)
             if data.get("scan_token") not in self.scans:
                 return _json(410, {"detail": "This scan has expired. Upload the file again."})
-            run_id = self.add_run("ready", company_name=data.get("company_name") or "")
+            run_id = self.add_run("running", company_name=data.get("company_name") or "")
+            if path == "/migrations/start-from-scan":
+                return _json(201, {"run_id": run_id})
             return _json(201, {"access_token": make_test_token("owner"),
                                "refresh_token": "refresh-new", "run_id": run_id})
         m = re.fullmatch(r"/migrations/([0-9a-f-]{36})(/[a-z/]+)?", path)
@@ -717,7 +719,9 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     for total in ("48210.55", "3120.00", "1875.40"):
         assert total in complete
     assert _link(complete, f"/migrations/{run_id}/pack", "Download reconciliation pack")
-    assert _link(complete, "/dashboard", "Open company")
+    company_id = fake_api.runs[run_id]["company_id"]
+    assert _link(complete, f"/switch-company/{company_id}", "Open company")
+    assert not _link(complete, "/dashboard")
     assert _link(complete, f"/setup/new-company/migrate?from_run={run_id}", "Move another company")
 
     r = await ui.get(f"/migrations/{run_id}/pack")
@@ -735,7 +739,43 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
     page = _visible(r)
     assert "That's the whole migration." in page
     assert _link(page, "/setup/new-company/migrate", "Move your first company")
+    assert _link(page, f"/switch-company/{fake_api.runs[sample_id]['company_id']}", "Open")
     assert "Create independent company copy" not in page
+
+
+@pytest.mark.asyncio
+async def test_company_mode_start_keeps_the_working_session(ui, router, fake_api):
+    """Starting another company's migration never replaces the session cookies."""
+    _owner(ui)
+    working = ui.cookies.get("celerp_token")
+    base = "/setup/new-company/migrate"
+    r = await ui.post(f"{base}/scan", files=_UPLOAD, data={"source": "manager_io"})
+    ui.cookies.set(SCAN_COOKIE, _cookie_value(r, SCAN_COOKIE))
+    router.calls.clear()
+    r = await ui.post(f"{base}/start", data={"company_name": "Harbor Goods Ltd"})
+    assert r.status_code == 303, r.text
+    run_id = r.headers["location"].rsplit("/", 1)[1]
+    assert r.headers["location"] == f"/migrations/{run_id}"
+    assert _cookie_header(r, "celerp_token") is None
+    assert _cookie_header(r, "celerp_refresh") is None
+    assert _cleared(r, SCAN_COOKIE)
+    assert [c for c in router.migration_calls() if "start" in c[2]] == [("POST", "api", "/migrations/start-from-scan")]
+    assert ui.cookies.get("celerp_token") == working
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_start_signs_in_the_new_owner(ui, router, fake_api):
+    """With no working session to keep, bootstrap signs the first owner in."""
+    r = await ui.post("/setup/migrate/scan", files=_UPLOAD, data={"source": "manager_io"})
+    assert r.status_code == 303, r.text
+    ui.cookies.set(SCAN_COOKIE, _cookie_value(r, SCAN_COOKIE))
+    router.calls.clear()
+    r = await ui.post("/setup/migrate/start", data={
+        "company_name": "Harbor Goods Ltd", "name": "Owner", "email": "owner@example.com",
+        "password": "ownerpw123", "confirm_password": "ownerpw123"})
+    assert r.status_code == 303, r.text
+    assert _cookie_value(r, "celerp_token")
+    assert [c for c in router.migration_calls() if "start" in c[2]] == [("POST", "api", "/migrations/bootstrap/start")]
 
 
 # ---------------------------------------------------------------------------

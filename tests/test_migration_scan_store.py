@@ -19,6 +19,7 @@ import pytest
 from sqlalchemy import func, select, text
 
 from migration_support import (
+    creator_run,
     FAKE_KEY,
     code_config,  # noqa: F401 - fixture
     count,
@@ -319,13 +320,12 @@ async def test_migration_source_retention_and_cleanup(real_engine, migration_env
 
     async def view(run_id):
         async with maker(real_engine)() as s:
-            run = await migrations.get_run_for_company(s, run_id, (await load_run(real_engine, run_id)).company_id)
+            run = await creator_run(s, run_id)
             return await migrations.run_view(s, run)
 
     async def finish(run_id):
         async with maker(real_engine)() as s:
-            await migrations.finalize(s, await migrations.get_run_for_company(
-                s, run_id, (await load_run(real_engine, run_id)).company_id))
+            await migrations.finalize(s, await creator_run(s, run_id))
 
     # Completion deletes the source.
     done, _, _ = await staged_run(real_engine, email="done@example.com")
@@ -338,7 +338,7 @@ async def test_migration_source_retention_and_cleanup(real_engine, migration_env
     # Discard deletes the source.
     dropped, _, _ = await staged_run(real_engine, email="dropped@example.com")
     async with maker(real_engine)() as s:
-        run = await migrations.get_run_for_company(s, dropped, (await load_run(real_engine, dropped)).company_id)
+        run = await creator_run(s, dropped)
         await migrations.discard(s, run)
     assert not _run_dir(migration_env, dropped).exists()
 

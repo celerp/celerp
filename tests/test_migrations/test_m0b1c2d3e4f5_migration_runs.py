@@ -92,3 +92,28 @@ def test_migration_runs_schema_upgrade_integrity(base_db):
         conn.execute(text("DELETE FROM migration_runs WHERE id = :id"), {"id": run_id})
     with base_db.connect() as conn:
         assert conn.execute(text("SELECT count(*) FROM migration_entity_maps")).scalar_one() == 0
+
+
+def test_migration_runs_schema_stages_companies_and_downgrades_cleanly(base_db):
+    existing = uuid.uuid4()
+    with base_db.begin() as conn:
+        conn.execute(text("INSERT INTO companies (id, name) VALUES (:id, 'Live')"), {"id": existing})
+    run_migration_ops(base_db, MODULE)
+
+    staged = uuid.uuid4()
+    with base_db.begin() as conn:
+        conn.execute(text("INSERT INTO companies (id, name, is_migration_staged) VALUES (:id, 'Staged', true)"),
+                     {"id": staged})
+    with base_db.connect() as conn:
+        flags = dict(conn.execute(text("SELECT id, is_migration_staged FROM companies")).all())
+    assert flags == {existing: False, staged: True}
+
+    run_migration_ops(base_db, MODULE, "downgrade")
+    with base_db.connect() as conn:
+        columns = set(conn.execute(text(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema()"
+            " AND table_name = 'companies'")).scalars())
+        tables = set(conn.execute(text(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()")).scalars())
+    assert columns == {"id", "name"}
+    assert tables == {"companies", "users"}

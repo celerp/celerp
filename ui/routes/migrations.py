@@ -759,13 +759,11 @@ async def _start(request: Request, mode: _Mode):
         if isinstance(e.detail, dict):
             return await _review_page(request, mode, entry, values=values, errors=e.detail)
         return await _review_page(request, mode, entry, values=values, error=str(e.detail))
-    run_id = started["run_id"]
-    try:
-        await api.migration_run_action(started["access_token"], run_id, "start")
-    except APIError:
-        pass  # the progress page shows the run as ready with its Start action
-    resp = RedirectResponse(f"/migrations/{run_id}", status_code=303)
-    set_session_cookies(resp, started["access_token"], started["refresh_token"], request)
+    resp = RedirectResponse(f"/migrations/{started['run_id']}", status_code=303)
+    if mode.bootstrap:
+        # The first owner has no working session yet. A company-mode start keeps the
+        # current session: the new company is opened only after the migration finishes.
+        set_session_cookies(resp, started["access_token"], started["refresh_token"], request)
     _clear_scan_cookie(resp, mode, request)
     return resp
 
@@ -1021,14 +1019,15 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None):
 async def _complete_page(request: Request, run: dict):
     run_id = run["id"]
     pack = P(A(t("migration.download_pack"), href=f"/migrations/{run_id}/pack", cls="auth-link"))
-    open_company = A(t("migration.open_company"), href="/dashboard", cls="btn btn--primary btn--full")
+    open_href = f"/switch-company/{run['company_id']}"
+    open_company = A(t("migration.open_company"), href=open_href, cls="btn btn--primary btn--full")
     if run.get("is_sample"):
         return _page(
             request,
             auth_header(t("migration.sample_done_title"), t("migration.sample_done_body")),
             pack,
             A(t("migration.move_first_company"), href=COMPANY.base, cls="btn btn--primary btn--full"),
-            A(t("migration.open_sample"), href="/dashboard", cls="btn btn--secondary btn--full mt-sm"),
+            A(t("migration.open_sample"), href=open_href, cls="btn btn--secondary btn--full mt-sm"),
         )
     try:
         rows = (await api.migration_reconciliation(get_token(request), run_id)).get("rows") or []

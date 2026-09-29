@@ -48,6 +48,10 @@ from celerp.importers.schema import (
 from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, SinkEntityMapping
 from test_helpers import DATABASE_URL
 
+# Every run-scoped endpoint, as (method, path suffix).
+RUN_ROUTES = (("get", ""), ("get", "/reconciliation"), ("get", "/reconciliation/pack"),
+              ("post", "/start"), ("post", "/cancel"), ("post", "/finalize"), ("post", "/discard"))
+
 FAKE_MAGIC = b"FAKESRC1\n"
 FAKE_KEY = "fake_source"
 OWNER_EMAIL = "owner@example.com"
@@ -350,6 +354,15 @@ async def load_run(engine, run_id):
         return await s.get(MigrationRun, run_id)
 
 
+async def creator_run(session, run_id):
+    """The run as its creator controls it, through the service's ownership check."""
+    from celerp.models.migration import MigrationRun
+    from celerp.services import migrations
+    run_id = uuid.UUID(str(run_id))
+    creator = (await session.get(MigrationRun, run_id)).created_by_user_id
+    return await migrations.get_owned_migration_run(session, run_id, creator)
+
+
 @pytest_asyncio.fixture
 async def real_client(real_engine):
     """An API client whose request sessions commit for real on `real_engine`, so
@@ -403,7 +416,7 @@ async def save_decisions(client, scan_token: str, *, token: str | None = None, *
 
 async def migrate_as_owner(client, owner_token: str, spec: dict | None = None,
                            company_name: str = "Moved Co", **decisions):
-    """Scan, decide and start from an owner's session. Returns (new company token, run id)."""
+    """Scan, decide and start from an owner's session, which stays on its own company. Returns the run id."""
     r = await scan_upload(client, fake_bytes(spec), token=owner_token)
     assert r.status_code == 200, r.text
     scan_token = r.json()["scan_token"]
@@ -412,4 +425,4 @@ async def migrate_as_owner(client, owner_token: str, spec: dict | None = None,
     r = await client.post("/migrations/start-from-scan", headers=auth(owner_token),
                           json={"scan_token": scan_token, "company_name": company_name})
     assert r.status_code == 201, r.text
-    return r.json()["access_token"], r.json()["run_id"]
+    return r.json()["run_id"]

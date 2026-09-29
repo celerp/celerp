@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Add migration_runs and migration_entity_maps for durable company migrations.
+"""Add migration_runs and migration_entity_maps for durable company migrations, and the
+server-controlled companies.is_migration_staged flag.
 
 Revision ID: m0b1c2d3e4f5
 Revises: l9a0b1c2d3e4
@@ -18,6 +19,8 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.add_column("companies", sa.Column("is_migration_staged", sa.Boolean(), nullable=False,
+                                         server_default=sa.false()))
     op.create_table(
         "migration_runs",
         sa.Column("id", sa.Uuid(as_uuid=True), primary_key=True),
@@ -74,3 +77,4 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_table("migration_entity_maps")
     op.drop_table("migration_runs")
+    op.drop_column("companies", "is_migration_staged")

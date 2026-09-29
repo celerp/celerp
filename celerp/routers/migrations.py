@@ -7,10 +7,12 @@ Two entry modes share one flow (scan, decide, start, watch, verify, finish):
 - bootstrap: a fresh install with no user yet. The routes are public, closed for good
   once any user exists, and gated by the one-time setup code where one is configured.
   Start creates the first owner and the staged company in one transaction.
-- company: an authenticated company owner moves another company in.
+- company: an authenticated company owner moves another company in. Their session stays
+  on the company they are working in; they open the new company only after finishing.
 
-Run routes are scoped to the caller's company: a run of another company is not found.
-Any member can read a run and its verification; only the owner acts on it.
+Run routes belong to the run's creator while they own its company, whichever company
+their current token is scoped to (``migrations.get_owned_migration_run``); to anyone
+else a run is not found.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.importers.adapters.registry import list_adapters
-from celerp.models.company import User
+from celerp.models.company import Company, User
 from celerp.models.migration import MigrationRun
 from celerp.routers.auth import limiter
 from celerp.services import bootstrap
@@ -170,13 +172,9 @@ async def _upload_parts(request: Request) -> AsyncIterator[store.UploadPart]:
             pass
 
 
-def _require_owner(ctx: AuthContext) -> None:
+async def _user_owner(ctx: AuthContext = Depends(get_auth_context)) -> AuthContext:
     if not role_has_permission(ctx.company.settings, ctx.role, "manage_company_lifecycle"):
         raise HTTPException(status_code=403, detail=OWNER_ONLY)
-
-
-async def _user_owner(ctx: AuthContext = Depends(get_auth_context)) -> AuthContext:
-    _require_owner(ctx)
     return ctx
 
 
@@ -205,31 +203,22 @@ async def _save_decisions(owner: store.ScanOwner, payload: DecisionsIn) -> dict:
 
 
 async def _start(session: AsyncSession, *, user: User, company_name: str, scan: store.ScanSession,
-                 decisions, expected_snonce: str | None) -> dict:
-    """Stage the company, claim the scan and persist the run as running, in one commit.
-
-    Returns the token pair for the new company plus the run id; the caller schedules the runner."""
+                 decisions) -> MigrationRun:
+    """Stage the company, claim the scan and persist the run as running. The caller commits,
+    then schedules the runner."""
     await migrations.lock_scan_for_start(session, scan)
     company = await provision_migration_company(session, owner=user, company_name=company_name)
     run = await migrations.create_run(session, company=company, user=user, scan=scan, decisions=decisions)
     try:
         await migrations.request_start(session, run)
-        tokens = await issue_token_pair(session, user=user, company=company, role="owner",
-                                        expected_snonce=expected_snonce)
     except BaseException:
         migrations.remove_source(run.id)
         raise
-    return {**tokens, "run_id": str(run.id)}
-
-
-async def _run(session: AsyncSession, run_id: uuid.UUID, ctx: AuthContext) -> MigrationRun:
-    return await migrations.get_run_for_company(session, run_id, ctx.company_id)
+    return run
 
 
 async def _owned_run(session: AsyncSession, run_id: uuid.UUID, ctx: AuthContext) -> MigrationRun:
-    run = await _run(session, run_id, ctx)  # another company's run is not found, before any role check
-    _require_owner(ctx)
-    return run
+    return await migrations.get_owned_migration_run(session, run_id, ctx.user.id)
 
 
 # ── Sources ──────────────────────────────────────────────────────────────────
@@ -296,8 +285,15 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
         if errors:
             raise HTTPException(status_code=422, detail=errors)
         user = await create_install_owner(session, name=name, email=email, password=payload.password)
-        result = await _start(session, user=user, company_name=company_name, scan=scan, decisions=decisions,
-                              expected_snonce=None)
+        run = await _start(session, user=user, company_name=company_name, scan=scan, decisions=decisions)
+        try:
+            # The first owner has no other company, so they are signed in to the staged one;
+            # its token reaches the migration routes only.
+            tokens = await issue_token_pair(session, user=user, company=await session.get(Company, run.company_id),
+                                            role="owner")
+        except BaseException:
+            migrations.remove_source(run.id)
+            raise
     except HTTPException:
         await session.rollback()
         raise
@@ -310,8 +306,8 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
             await asyncio.to_thread(bootstrap.clear_setup_code)
         except Exception:
             logger.warning("Setup-code cleanup failed after bootstrap migration start", exc_info=True)
-    migrations.schedule_run(uuid.UUID(result["run_id"]))
-    return result
+    migrations.schedule_run(run.id)
+    return {**tokens, "run_id": str(run.id)}
 
 
 # ── Company owner ────────────────────────────────────────────────────────────
@@ -342,8 +338,8 @@ async def start_from_scan(payload: StartFromScanIn, ctx: AuthContext = Depends(_
     if errors:
         raise HTTPException(status_code=422, detail=errors)
     try:
-        result = await _start(session, user=ctx.user, company_name=company_name, scan=scan, decisions=decisions,
-                              expected_snonce=ctx.snonce)
+        run = await _start(session, user=ctx.user, company_name=company_name, scan=scan, decisions=decisions)
+        await session.commit()
     except HTTPException:
         await session.rollback()
         raise
@@ -351,23 +347,42 @@ async def start_from_scan(payload: StartFromScanIn, ctx: AuthContext = Depends(_
         await session.rollback()
         logger.exception("Migration start failed")
         raise HTTPException(status_code=500, detail="Migration could not start.") from None
-    migrations.schedule_run(uuid.UUID(result["run_id"]))
-    return result
+    migrations.schedule_run(run.id)
+    return {"run_id": str(run.id)}
 
 
 # ── Runs ─────────────────────────────────────────────────────────────────────
 
+async def _run_view(session: AsyncSession, run_id: uuid.UUID, ctx: AuthContext) -> dict:
+    run = await _owned_run(session, run_id, ctx)
+    await migrations.mark_stale_runs_interrupted(session, run.company_id)
+    await session.refresh(run)
+    return await migrations.run_view(session, run)
+
+
+@router.get("/staged")
+async def get_staged_run(ctx: AuthContext = Depends(get_auth_context),
+                         session: AsyncSession = Depends(get_session)) -> dict:
+    """The latest run of the staged company this session is scoped to: where the session belongs."""
+    run_id = None
+    if ctx.company.is_migration_staged:
+        run_id = await session.scalar(select(MigrationRun.id).where(MigrationRun.company_id == ctx.company_id)
+                                      .order_by(MigrationRun.created_at.desc()).limit(1))
+    if run_id is None:
+        raise migrations.MigrationError(404, migrations.NOT_FOUND)
+    return await _run_view(session, run_id, ctx)
+
+
 @router.get("/{run_id}")
 async def get_run(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                   session: AsyncSession = Depends(get_session)) -> dict:
-    await migrations.mark_stale_runs_interrupted(session, ctx.company_id)
-    return await migrations.run_view(session, await _run(session, run_id, ctx))
+    return await _run_view(session, run_id, ctx)
 
 
 @router.get("/{run_id}/reconciliation")
 async def get_reconciliation(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                              session: AsyncSession = Depends(get_session)) -> dict:
-    run = await _run(session, run_id, ctx)
+    run = await _owned_run(session, run_id, ctx)
     if not run.reconciliation:
         raise HTTPException(status_code=409, detail="Verification has not run yet.")
     return run.reconciliation
@@ -376,7 +391,7 @@ async def get_reconciliation(run_id: uuid.UUID, ctx: AuthContext = Depends(get_a
 @router.get("/{run_id}/reconciliation/pack")
 async def get_reconciliation_pack(run_id: uuid.UUID, ctx: AuthContext = Depends(get_auth_context),
                                   session: AsyncSession = Depends(get_session)) -> Response:
-    run = await _run(session, run_id, ctx)
+    run = await _owned_run(session, run_id, ctx)
     if not run.reconciliation:
         raise HTTPException(status_code=409, detail="Verification has not run yet.")
     try:

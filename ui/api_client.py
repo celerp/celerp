@@ -3542,6 +3542,12 @@ async def get_migration_run(token: str, run_id: str) -> dict:
         return _raise(await c.get(f"/migrations/{run_id}")).json()
 
 
+async def migration_staged_run(token: str) -> dict:
+    """The run moving the token's company in, while that company is still staged."""
+    async with _api_client(token) as c:
+        return _raise(await c.get("/migrations/staged")).json()
+
+
 async def migration_reconciliation(token: str, run_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get(f"/migrations/{run_id}/reconciliation")).json()

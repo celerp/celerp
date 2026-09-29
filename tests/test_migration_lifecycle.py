@@ -18,6 +18,8 @@ from sqlalchemy import select, text
 
 from fixtures.manager_io.support import BASIC, FX, artifact
 from migration_support import (
+    RUN_ROUTES,
+    creator_run,
     auth,
     count,
     fake_bytes,
@@ -101,7 +103,7 @@ async def _member_token(engine_or_session, company_id, role: str, email: str) ->
 async def _finalize(engine, run_id):
     from celerp.services import migrations
     async with maker(engine)() as s:
-        run = await migrations.get_run_for_company(s, run_id, (await load_run(engine, run_id)).company_id)
+        run = await creator_run(s, run_id)
         return await migrations.finalize(s, run)
 
 
@@ -215,20 +217,21 @@ async def test_mapping_decisions_are_validated_at_function_boundary(client, migr
 
 @pytest.mark.asyncio
 async def test_migration_run_company_isolation(client, session, migration_env):
+    """Only the run's creator, as an owner of its company, sees or controls it."""
     from celerp.models.company import Company
     from celerp.models.migration import MigrationRun
 
     admin_token = await register_admin(client)
     admin_company_id = (await session.execute(select(Company.id).where(Company.name == "Perm Co"))).scalar_one()
-    moved_token, run_id = await migrate_as_owner(client, admin_token)
+    run_id = await migrate_as_owner(client, admin_token)
 
-    r = await client.get("/migrations/not-a-uuid", headers=auth(moved_token))
+    r = await client.get("/migrations/not-a-uuid", headers=auth(admin_token))
     assert r.status_code == 422
 
-    # The first company's session cannot see or touch the moved company's run.
-    for method, path in (("get", ""), ("get", "/reconciliation"), ("get", "/reconciliation/pack"),
-                         ("post", "/start"), ("post", "/cancel"), ("post", "/finalize"), ("post", "/discard")):
-        r = await getattr(client, method)(f"/migrations/{run_id}{path}", headers=auth(admin_token))
+    # Another owner of the creator's working company cannot see or touch the run.
+    co_owner_token = await _member_token(session, admin_company_id, "owner", "co-owner@example.com")
+    for method, path in RUN_ROUTES:
+        r = await getattr(client, method)(f"/migrations/{run_id}{path}", headers=auth(co_owner_token))
         assert r.status_code == 404 and r.json() == {"detail": NOT_FOUND}, (path, r.text)
     run = await session.get(MigrationRun, uuid.UUID(run_id))
     await session.refresh(run)
@@ -242,18 +245,19 @@ async def test_migration_run_company_isolation(client, session, migration_env):
                           json={"scan_token": "x" * 43, "company_name": "Nope"})
     assert r.status_code == 403 and r.json()["detail"] == OWNER_ONLY
 
-    # Inside the run's company a non-owner member reads status and verification, never acts.
+    # Once finished, a member of the moved company still has no view of the run; the creator keeps it.
     company = await session.get(Company, run.company_id)
-    company.is_active = True
+    company.is_active, company.is_migration_staged = True, False
     run.status = "completed"
     run.reconciliation = {"generated_at": datetime.now(timezone.utc).isoformat(), "rows": [], "blockers": 0}
     await session.commit()
     member_token = await _member_token(session, run.company_id, "admin", "member@example.com")
-    assert (await client.get(f"/migrations/{run_id}", headers=auth(member_token))).status_code == 200
-    assert (await client.get(f"/migrations/{run_id}/reconciliation", headers=auth(member_token))).status_code == 200
-    for action in ("start", "cancel", "finalize", "discard"):
-        r = await client.post(f"/migrations/{run_id}/{action}", headers=auth(member_token))
-        assert r.status_code == 403 and r.json()["detail"] == OWNER_ONLY, (action, r.text)
+    for method, path in RUN_ROUTES:
+        r = await getattr(client, method)(f"/migrations/{run_id}{path}", headers=auth(member_token))
+        assert r.status_code == 404 and r.json() == {"detail": NOT_FOUND}, (path, r.text)
+    assert (await client.get(f"/migrations/{run_id}", headers=auth(admin_token))).status_code == 200
+    r = await client.get(f"/migrations/{run_id}/reconciliation", headers=auth(admin_token))
+    assert r.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -274,8 +278,8 @@ async def test_migration_state_machine_rejects_illegal_transitions(real_client, 
     assert await count(real_engine, "companies") == companies
     assert await count(real_engine, "migration_runs") == 0
 
-    token, run_id = await migrate_as_owner(real_client, admin_token)
-    headers = auth(token)
+    run_id = await migrate_as_owner(real_client, admin_token)
+    headers = auth(admin_token)
     assert (await load_run(real_engine, uuid.UUID(run_id))).status == "running"
     r = await real_client.post(f"/migrations/{run_id}/start", headers=headers)
     assert r.status_code == 409 and r.json()["detail"] == "Cannot start a migration that is running."
@@ -354,7 +358,7 @@ async def test_migration_advisory_lock_prevents_double_runner(real_engine, migra
         async with real_engine.begin() as conn:
             await conn.execute(text("UPDATE migration_runs SET status = 'failed' WHERE id = :r"), {"r": run_id})
         async with maker(real_engine)() as s:
-            run = await migrations.get_run_for_company(s, run_id, company_id)
+            run = await creator_run(s, run_id)
             with pytest.raises(MigrationError) as exc:
                 await migrations.request_start(s, run)
             assert (exc.value.status_code, exc.value.detail) == (409, "Migration is already running.")
@@ -412,7 +416,7 @@ async def test_migration_resume_is_idempotent_after_phase_failure(real_engine, m
 
     async def resume(rid):
         async with maker(real_engine)() as s:
-            run = await migrations.get_run_for_company(s, rid, (await load_run(real_engine, rid)).company_id)
+            run = await creator_run(s, rid)
             await migrations.request_start(s, run)
             await s.commit()
         await migrations.run_migration(rid)
@@ -470,9 +474,9 @@ async def test_discard_staged_company_is_complete_or_noop(real_client, real_engi
         return await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
 
     # A staged company with nothing imported yet is removed completely.
-    token, run_id = await migrate_as_owner(real_client, admin_token, company_name="First Move")
+    run_id = await migrate_as_owner(real_client, admin_token, company_name="First Move")
     company_id = (await load_run(real_engine, uuid.UUID(run_id))).company_id
-    r = await discard(token, run_id)
+    r = await discard(admin_token, run_id)
     assert r.status_code == 200 and r.json() == {"redirect": "/"}
     assert await count(real_engine, "companies", "id = :c", c=company_id) == 0
     assert await count(real_engine, "migration_runs") == 0
@@ -481,7 +485,7 @@ async def test_discard_staged_company_is_complete_or_noop(real_client, real_engi
     assert await count(real_engine, "companies") == admin_companies
 
     # Unsafe discards fail closed and leave the staged company intact and inactive.
-    token, run_id = await migrate_as_owner(real_client, admin_token, company_name="Second Move")
+    run_id = await migrate_as_owner(real_client, admin_token, company_name="Second Move")
     rid = uuid.UUID(run_id)
     await migrations.run_migration(rid)
     company_id = (await load_run(real_engine, rid)).company_id
@@ -495,7 +499,7 @@ async def test_discard_staged_company_is_complete_or_noop(real_client, real_engi
         await conn.execute(text("CREATE TABLE mystery_rows (company_id uuid)"))
         await conn.execute(text("INSERT INTO mystery_rows VALUES (:c)"), {"c": company_id})
     try:
-        r = await discard(token, run_id)
+        r = await discard(admin_token, run_id)
         assert r.status_code == 409 and "mystery_rows" in r.json()["detail"]
         await intact()
     finally:
@@ -505,13 +509,13 @@ async def test_discard_staged_company_is_complete_or_noop(real_client, real_engi
     async with real_engine.connect() as holder:
         await holder.execute(text("SELECT pg_advisory_lock(hashtext('migration:' || :r))"), {"r": run_id})
         await holder.commit()
-        r = await discard(token, run_id)
+        r = await discard(admin_token, run_id)
         assert r.status_code == 409 and r.json()["detail"] == "Migration is already running."
         await intact()
         await holder.execute(text("SELECT pg_advisory_unlock(hashtext('migration:' || :r))"), {"r": run_id})
         await holder.commit()
 
-    r = await discard(token, run_id)
+    r = await discard(admin_token, run_id)
     assert r.status_code == 200 and r.json() == {"redirect": "/"}
     for table in ("companies", "locations", "user_companies", "ledger", "projections"):
         column = "id" if table == "companies" else "company_id"
@@ -519,12 +523,12 @@ async def test_discard_staged_company_is_complete_or_noop(real_client, real_engi
     assert await count(real_engine, "migration_entity_maps") == 0
 
     # An active or finalized company is never discarded.
-    token, run_id = await migrate_as_owner(real_client, admin_token, company_name="Third Move")
+    run_id = await migrate_as_owner(real_client, admin_token, company_name="Third Move")
     rid = uuid.UUID(run_id)
     await migrations.run_migration(rid)
     await _finalize(real_engine, rid)
     company_id = (await load_run(real_engine, rid)).company_id
-    r = await discard(token, run_id)
+    r = await discard(admin_token, run_id)
     assert r.status_code == 409 and r.json()["detail"] == "This company has no unfinished migration to discard."
     assert await count(real_engine, "companies", "id = :c AND is_active", c=company_id) == 1
 
@@ -632,13 +636,16 @@ async def test_reconciliation_pack_matches_stored_verification(client, session, 
     from celerp.services import migrations
 
     admin_token = await register_admin(client)
-    token, run_id = await migrate_as_owner(client, admin_token, prepared_by="Example Accountant")
+    run_id = await migrate_as_owner(client, admin_token, prepared_by="Example Accountant")
     pack = f"/migrations/{run_id}/reconciliation/pack"
+    token = admin_token
 
     r = await client.get(pack, headers=auth(token))
     assert r.status_code == 409 and r.json()["detail"] == "Verification has not run yet."
     assert (await client.get("/migrations/nope/reconciliation/pack", headers=auth(token))).status_code == 422
-    r = await client.get(pack, headers=auth(admin_token))
+    staged_company = (await session.get(MigrationRun, uuid.UUID(run_id))).company_id
+    other_owner = await _member_token(session, staged_company, "owner", "other-owner@example.com")
+    r = await client.get(pack, headers=auth(other_owner))
     assert r.status_code == 404 and r.json()["detail"] == NOT_FOUND
 
     generated = "2026-04-01T10:00:00+00:00"
@@ -710,7 +717,7 @@ async def test_prepared_by_is_validated_and_persisted(client, session, migration
         "Example Accountant"
 
     # The owner is on an inactive staged company; move another company from it with no preparer.
-    _, second_run = await migrate_as_owner(client, owner_token, prepared_by="")
+    second_run = await migrate_as_owner(client, owner_token, prepared_by="")
     assert (await session.get(MigrationRun, uuid.UUID(second_run))).prepared_by is None
 
 
