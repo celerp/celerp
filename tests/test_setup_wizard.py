@@ -819,7 +819,7 @@ class TestSettingsSectionTabs:
 
 
 # ===========================================================================
-# I. settings.py — settings page with modules loaded
+# I. settings.py - settings page with modules loaded
 # ===========================================================================
 
 class TestSettingsModuleTabs:

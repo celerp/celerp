@@ -65,7 +65,7 @@ def test_activating_page_redirects_when_up(page, ui_server):
         };
     }""")
 
-    # Wait for redirect to /onboarding (up to 8s — poll interval is 800ms + 3s stability window)
+    # Wait for redirect to /onboarding (up to 8s; poll interval is 800ms + 3s stability window)
     page.wait_for_url(f"{ui_server}/onboarding", timeout=8000)
     assert "/onboarding" in page.url, f"Expected redirect to /onboarding, got {page.url}"
 
