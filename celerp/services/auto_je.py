@@ -21,6 +21,7 @@ from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.pick import doc_bound_lots, plan_lot_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line
+from sqlalchemy import or_
 from sqlalchemy import select as _select
 
 # Canonical goods-inventory account. Every goods movement - purchase/receive, bill, manufacturing,
@@ -657,35 +658,44 @@ async def create_for_supplier_return(
 ) -> None:
     """Goods sent back to the supplier leave the books at what they carried.
 
-    Dr AP (2110) / Cr goods_account for the goods, and each kind of landed cost they
-    carried goes back to its clearing account (Dr clearing / Cr inventory), the reverse
-    of the receipt's capitalisation."""
+    Dr AP (2110) / Cr goods_account for the goods. Each kind of landed cost they carried
+    goes back to its clearing account (Dr clearing / Cr inventory) in an entry of its own,
+    the reverse of the receipt's capitalisation, so undoing the receipt returns only the
+    landed cost still on the shelf."""
     currency = await company_currency(session, company_id)
     goods_d = round_money(goods or 0, currency)
+    if goods_d > 0:
+        await _emit_auto_posted_je(
+            session,
+            company_id=company_id,
+            user_id=user_id,
+            je_id=f"je:auto:{doc_id}:rtn:{return_key}",
+            idem_create=je_idempotency_key(doc_id, f"items.returned:{return_key}", "c"),
+            idem_posted=je_idempotency_key(doc_id, f"items.returned:{return_key}", "p"),
+            memo=f"Auto JE for {doc_id} goods returned to supplier",
+            ts=return_date,
+            entries=[{"account": "2110", "debit": to_stored_float(goods_d), "credit": 0.0},
+                     {"account": goods_account, "debit": 0.0, "credit": to_stored_float(goods_d)}],
+            metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
+        )
     landed = {kind: round_money(amt or 0, currency) for kind, amt in landed_by_kind.items()}
     landed_total = sum(landed.values(), _Dec(0))
-    entries: list[dict] = []
-    if goods_d > 0:
-        entries += [{"account": "2110", "debit": to_stored_float(goods_d), "credit": 0.0},
-                    {"account": goods_account, "debit": 0.0, "credit": to_stored_float(goods_d)}]
     if landed_total > 0:
-        entries += [{"account": _LANDED_CLEARING_ACCT[kind], "debit": to_stored_float(amt), "credit": 0.0}
-                    for kind, amt in landed.items() if amt]
+        entries = [{"account": _LANDED_CLEARING_ACCT[kind], "debit": to_stored_float(amt), "credit": 0.0}
+                   for kind, amt in landed.items() if amt]
         entries.append({"account": _INVENTORY_ACCT, "debit": 0.0, "credit": to_stored_float(landed_total)})
-    if not entries:
-        return
-    await _emit_auto_posted_je(
-        session,
-        company_id=company_id,
-        user_id=user_id,
-        je_id=f"je:auto:{doc_id}:rtn:{return_key}",
-        idem_create=je_idempotency_key(doc_id, f"items.returned:{return_key}", "c"),
-        idem_posted=je_idempotency_key(doc_id, f"items.returned:{return_key}", "p"),
-        memo=f"Auto JE for {doc_id} goods returned to supplier",
-        ts=return_date,
-        entries=entries,
-        metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
-    )
+        await _emit_auto_posted_je(
+            session,
+            company_id=company_id,
+            user_id=user_id,
+            je_id=f"je:auto:{doc_id}:landed-rtn:{return_key}",
+            idem_create=je_idempotency_key(doc_id, f"landed.returned:{return_key}", "c"),
+            idem_posted=je_idempotency_key(doc_id, f"landed.returned:{return_key}", "p"),
+            memo=f"Auto JE for {doc_id} landed cost returned with goods",
+            ts=return_date,
+            entries=entries,
+            metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
+        )
 
 
 async def create_for_bill_conversion(
@@ -1439,12 +1449,13 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
 
 
 async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: str, undo_key: str) -> None:
-    """Return the landed cost a bill's receipts capitalised to the clearing accounts."""
-    prefix = f"je:auto:{doc_id}:landed-cap:"
+    """Return the landed cost a bill's receipts capitalised, less what went back with returned
+    goods, to the clearing accounts."""
     rows = (await session.execute(_select(Projection).where(
         Projection.company_id == company_id,
         Projection.entity_type == "journal_entry",
-        Projection.entity_id.startswith(prefix, autoescape=True),
+        or_(*(Projection.entity_id.startswith(f"je:auto:{doc_id}:{kind}:", autoescape=True)
+              for kind in ("landed-cap", "landed-rtn"))),
     ))).scalars().all()
     for row in rows:
         await _void_je_if_posted(

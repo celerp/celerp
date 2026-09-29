@@ -945,7 +945,7 @@ async def test_acct_po_receive_creates_inventory_debit(client):
     await client.post(
         f"/docs/{po_id}/receive",
         headers=_h(token),
-        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "sku": "INV-DBT", "name": "INV Debit Test", "quantity_received": 3, "sell_by": "piece"}]},
+        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "sku": "INV-DBT", "name": "INV Debit Test", "quantity_received": 2, "sell_by": "piece"}]},
     )
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     je = next(e for e in ledger if po_id in (e["data"].get("memo") or "") and "received" in (e["data"].get("memo") or ""))
@@ -961,7 +961,7 @@ async def test_acct_po_receive_creates_ap_credit(client):
     await client.post(
         f"/docs/{po_id}/receive",
         headers=_h(token),
-        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "sku": "AP-CRD", "name": "AP Credit Test", "quantity_received": 3, "sell_by": "piece"}]},
+        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "sku": "AP-CRD", "name": "AP Credit Test", "quantity_received": 2, "sell_by": "piece"}]},
     )
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     je = next(e for e in ledger if po_id in (e["data"].get("memo") or "") and "received" in (e["data"].get("memo") or ""))
@@ -1147,10 +1147,10 @@ async def test_wf_full_po_lifecycle_inventory_increment(client):
     await client.post(
         f"/docs/{po_id}/receive",
         headers=h,
-        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "item_id": item_id, "quantity_received": 10}]},
+        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "item_id": item_id, "quantity_received": 2}]},
     )
     updated = (await client.get(f"/items/{item_id}", headers=h)).json()
-    assert updated["quantity"] == 15
+    assert updated["quantity"] == 7
 
 
 @pytest.mark.asyncio
@@ -1162,10 +1162,10 @@ async def test_wf_po_receive_creates_new_item(client):
     await client.post(
         f"/docs/{po_id}/receive",
         headers=h,
-        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "sku": new_sku, "name": "New from PO", "quantity_received": 7, "sell_by": "piece"}]},
+        json={"location_id": "loc:1", "received_items": [{"po_line_index": 0, "sku": new_sku, "name": "New from PO", "quantity_received": 2, "sell_by": "piece"}]},
     )
     items = (await client.get("/items", headers=h)).json()["items"]
-    assert any(i.get("sku") == new_sku and i.get("quantity") == 7 for i in items)
+    assert any(i.get("sku") == new_sku and i.get("quantity") == 2 for i in items)
 
 
 @pytest.mark.asyncio

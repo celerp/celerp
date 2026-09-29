@@ -2534,7 +2534,7 @@ async def test_bill_receive_with_location_sets_location_on_parcel(client, sessio
 
     rec_r = await client.post(f"/docs/{bill_id}/receive", headers=_h(token), json={
         "location_id": location_id,
-        "received_items": [{"po_line_index": 0, "sku": "BILL-LOC-TEST", "name": "Widget", "quantity_received": 3, "receive_as": "stock"}],
+        "received_items": [{"po_line_index": 0, "sku": "BILL-LOC-TEST", "name": "Widget", "quantity_received": 2, "receive_as": "stock"}],
     })
     assert rec_r.status_code == 200, rec_r.text
 

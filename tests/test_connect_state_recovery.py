@@ -319,9 +319,9 @@ async def test_boot_sync_uses_only_persisted_credentials(first_boot, monkeypatch
     with patch(
         "celerp.services.cloud_entitlement.sync_existing_entitlement", new=sync
     ):
-        from celerp.main import _try_sync_existing_entitlement
+        from celerp.main import _BOOT_ID, _try_sync_existing_entitlement
         await _try_sync_existing_entitlement()
-    sync.assert_awaited_once_with(require_persisted_key=True, first_boot=first_boot)
+    sync.assert_awaited_once_with(require_persisted_key=True, first_boot=first_boot, boot_id=_BOOT_ID)
 
 
 @pytest.mark.asyncio
