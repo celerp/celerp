@@ -16,6 +16,7 @@ import pytest
 
 from fasthtml.common import to_xml, Div, Span
 
+import ui.api_client as api_client
 from ui import i18n
 from ui.routes import lists_import as li
 
@@ -133,8 +134,8 @@ async def test_result_panel_entity_label_translates(monkeypatch):
         return {"created": 1, "skipped": 0, "updated": 0, "errors": []}
 
     monkeypatch.setattr(li, "_token", lambda request: "tok")
-    monkeypatch.setattr(li.api, "batch_import", _fake_batch)
-    monkeypatch.setattr(li.api, "numbered_ids", _no_rows)
+    monkeypatch.setattr(api_client, "batch_import", _fake_batch)
+    monkeypatch.setattr(api_client, "numbered_ids", _no_rows)
 
     # entity_label=t("lists_import.entity_lists"), title-cased inside the
     # result panel's "View {label}" button.

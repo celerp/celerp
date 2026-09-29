@@ -11,6 +11,7 @@ import pytest
 
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
+import ui.api_client as api_client
 
 from test_helpers import make_authed_token
 
@@ -250,8 +251,8 @@ async def test_reimporting_a_spreadsheet_updates_the_record_it_created(client, s
         return (await client.get(f"/{resource}", headers=headers, params=params or {})).json()
 
     monkeypatch.setattr(screen, "_token", lambda request: "tok")
-    monkeypatch.setattr(screen.api, "batch_import", _batch)
-    monkeypatch.setattr(screen.api, "numbered_ids", _numbered_via(client, headers))
+    monkeypatch.setattr(api_client, "batch_import", _batch)
+    monkeypatch.setattr(api_client, "numbered_ids", _numbered_via(client, headers))
     routes = _Routes()
     screen.setup_routes(routes)
     confirm = routes.post_routes[f"/{resource}/import/confirm"]
@@ -349,8 +350,8 @@ async def _import_screen(client, session, monkeypatch, resource: str):
         return (await client.post(path, headers=headers, json={"records": records, "upsert": upsert})).json()
 
     monkeypatch.setattr(screen, "_token", lambda request: "tok")
-    monkeypatch.setattr(screen.api, "batch_import", _batch)
-    monkeypatch.setattr(screen.api, "numbered_ids", _numbered_via(client, headers))
+    monkeypatch.setattr(api_client, "batch_import", _batch)
+    monkeypatch.setattr(api_client, "numbered_ids", _numbered_via(client, headers))
     routes = _Routes()
     screen.setup_routes(routes)
     return company_id, headers, routes.post_routes[f"/{resource}/import/confirm"], sent

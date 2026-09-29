@@ -12,7 +12,6 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
-import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
 from ui.config import get_token as _token
