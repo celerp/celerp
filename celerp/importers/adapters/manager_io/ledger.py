@@ -7,10 +7,12 @@ both the CIF conversion and the independent source-side reconciliation
 expectations. Every imported record is in the base currency; amounts are debit
 positive.
 
-Full history imports every record. Cutover imports the documents still open at
-the cutover date, the notes applied to them, the settlement portions allocated
-to them, one opening journal carrying every other balance, and an opening stock
-position per item.
+Full history imports every record. Cutover partitions the records at the cutover
+date: those dated on or before it are pre-cutover, the rest are imported as they
+are. Of the pre-cutover records it imports the documents still open at the
+cutover date or settled by a later record, the notes applied to them and the
+settlement portions allocated to them; one opening journal and an opening stock
+position per item carry the rest of the pre-cutover history.
 """
 
 from __future__ import annotations
@@ -54,9 +56,8 @@ class DocumentState:
 @dataclass
 class Ledger:
     book: Book
-    mode: CIFMode
-    cutover: date | None
-    postings: list[Posting] = field(default_factory=list)          # every posting in scope
+    cutover: date | None                                           # None: full history
+    postings: list[Posting] = field(default_factory=list)          # every posting in the book
     states: dict[str, DocumentState] = field(default_factory=dict)
     documents: list[str] = field(default_factory=list)             # imported document keys
     allocations: dict[str, list[tuple[str, Decimal]]] = field(default_factory=dict)  # imported
@@ -77,9 +78,9 @@ class Ledger:
     def imported_postings(self) -> list[Posting]:
         """Postings the imported records carry, excluding the opening journal."""
         docs = set(self.documents)
-        if self.mode == CIFMode.FULL_HISTORY:
+        if self.cutover is None:
             return list(self.postings)
-        return [p for p in self.postings if (p.part == "document" and p.record in docs)
+        return [p for p in self.postings if p.date > self.cutover or (p.part == "document" and p.record in docs)
                 or (p.part == "settlement" and p.document in docs)]
 
 
@@ -191,46 +192,56 @@ def _check_cutover(book: Book, cutover: date | None) -> date:
     return cutover
 
 
+def _carried(book: Book, records: set[str], cutover: date) -> set[str]:
+    """Pre-cutover documents imported as themselves: those open at the cutover date or
+    settled by a later record, and the notes applied to them."""
+    pre = {k for k in records if _record_date(book, k)[0] <= cutover}
+    carried = {k for k, state in _states(book, pre).items() if state.amount_outstanding != 0}
+    for key in records - pre:
+        if key in book.settlements:
+            carried |= {ln.document for ln in book.settlements[key].party_lines if ln.document}
+        elif key in book.documents and book.documents[key].applies_to:
+            carried.add(book.documents[key].applies_to)
+    carried &= pre
+    return carried | {k for k in pre if k in book.documents and book.documents[k].applies_to in carried}
+
+
 def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
     """The postings and imported records for one migration. The book must carry no blockers."""
     records = {k for _, k in book.dated_records()}
-    if decisions.mode == CIFMode.CUTOVER:
-        cutover = _check_cutover(book, decisions.cutover_date)
-        records = {k for d, k in book.dated_records() if d <= cutover}
-    else:
-        cutover = None
-    ledger = Ledger(book, decisions.mode, cutover)
+    cutover = _check_cutover(book, decisions.cutover_date) if decisions.mode == CIFMode.CUTOVER else None
+    ledger = Ledger(book, cutover)
     ledger.postings = _postings(book, records)
     ledger.states = _states(book, records)
 
     documents = sorted((k for k in records if k in book.documents), key=lambda k: _record_date(book, k))
     if cutover is not None:
-        # Open documents, and the notes applied to them, which carry part of their paid state.
-        open_docs = {k for k in documents if ledger.states[k].amount_outstanding != 0}
-        documents = [k for k in documents if k in open_docs or book.documents[k].applies_to in open_docs]
+        carried = _carried(book, records, cutover)
+        documents = [k for k in documents if k in carried or book.documents[k].date > cutover]
     ledger.documents = documents
     imported = set(documents)
     for key in sorted((k for k in records if k in book.settlements), key=lambda k: _record_date(book, k)):
-        lines = book.settlements[key].party_lines
-        if cutover is not None:
+        s = book.settlements[key]
+        lines = s.party_lines
+        if cutover is not None and s.date <= cutover:
             lines = [ln for ln in lines if ln.document in imported]
         if lines:
             ledger.settlement_amounts[key] = sum((ln.net for ln in lines), ZERO)
             ledger.allocations[key] = [(ln.document, ln.net) for ln in lines if ln.document]
 
     if cutover is not None:
-        carried = ledger.imported_postings()
+        imported_postings = ledger.imported_postings()
         balance: dict[tuple[str, str | None], Decimal] = defaultdict(lambda: ZERO)
         for p in ledger.postings:
             balance[(p.account, p.contact)] += p.amount
-        for p in carried:
+        for p in imported_postings:
             balance[(p.account, p.contact)] -= p.amount
         ledger.opening = [Posting(ledger.opening_key, "opening", cutover, account, amount, contact=contact)
                           for (account, contact), amount in sorted(balance.items(), key=lambda kv: (kv[0][0], kv[0][1] or ""))
                           if amount]
-        held, carried_stock = stock(ledger.postings), stock(carried)
+        held, moved = stock(ledger.postings), stock(imported_postings)
         for item, (qty, value) in sorted(held.items()):
-            c_qty, c_value = carried_stock.get(item, (ZERO, ZERO))
-            if qty - c_qty or value - c_value:
-                ledger.opening_stock[item] = (qty - c_qty, value - c_value)
+            m_qty, m_value = moved.get(item, (ZERO, ZERO))
+            if qty - m_qty or value - m_value:
+                ledger.opening_stock[item] = (qty - m_qty, value - m_value)
     return ledger

@@ -33,7 +33,6 @@ from celerp.importers.schema import (
     CIFJournalEntry,
     CIFJournalLine,
     CIFLineItem,
-    CIFMode,
     CIFSettlement,
     CIFTaxCode,
 )
@@ -158,17 +157,15 @@ def _journal_lines(postings: list[Posting]) -> list[CIFJournalLine]:
 
 
 def _journals(book: Book, ledger: Ledger) -> list[CIFJournalEntry]:
-    if ledger.mode == CIFMode.CUTOVER:
-        if not ledger.opening:
-            return []
-        return [CIFJournalEntry(**_src("OpeningBalances", ledger.opening_key), entry_date=ledger.cutover,
-                                narration="Opening balances at the cutover date.", currency=book.base_code,
-                                lines=_journal_lines(ledger.opening))]
+    out = []
+    if ledger.opening:
+        out.append(CIFJournalEntry(**_src("OpeningBalances", ledger.opening_key), entry_date=ledger.cutover,
+                                   narration="Opening balances at the cutover date.", currency=book.base_code,
+                                   lines=_journal_lines(ledger.opening)))
     groups: dict[tuple[str, str], list[Posting]] = defaultdict(list)
-    for p in ledger.postings:
+    for p in ledger.imported_postings():
         if p.part in JOURNAL_PARTS:
             groups[(p.record, p.part)].append(p)
-    out = []
     for (record, part), postings in groups.items():
         lines = _journal_lines(postings)
         if len(lines) < 2:
@@ -182,11 +179,10 @@ def _journals(book: Book, ledger: Ledger) -> list[CIFJournalEntry]:
 
 
 def _transfers(book: Book, ledger: Ledger) -> list[CIFBankTransfer]:
-    if ledger.mode == CIFMode.CUTOVER:
-        return []
+    imported = {p.record for p in ledger.imported_postings() if p.part == "transfer"}
     return [CIFBankTransfer(**_src("InterAccountTransfer", t.key, t.ref), transfer_date=t.date,
                             from_account_external_id=t.from_bank, to_account_external_id=t.to_bank, amount=t.amount)
-            for t in sorted(book.transfers.values(), key=lambda t: (t.date, t.key))]
+            for t in sorted(book.transfers.values(), key=lambda t: (t.date, t.key)) if t.key in imported]
 
 
 def _stock(book: Book, ledger: Ledger) -> list[CIFInventoryAdjustment]:
@@ -219,10 +215,8 @@ def _attachments(book: Book, screened: Screened) -> list[CIFAttachment]:
 
 def carried(book: Book, ledger: Ledger) -> set[str]:
     """Keys of the source records this migration imports under their own id: attachment targets."""
-    keys = {*book.contacts, *book.items, *ledger.documents, *ledger.settlement_amounts}
-    if ledger.mode == CIFMode.FULL_HISTORY:
-        keys |= {*book.transfers, *book.journals}
-    return keys
+    imported = {p.record for p in ledger.imported_postings() if p.part in ("transfer", "journal")}
+    return {*book.contacts, *book.items, *ledger.documents, *ledger.settlement_amounts, *imported}
 
 
 def build_bundle(book: Book, ledger: Ledger, screened: Screened) -> CIFImportBundle:

@@ -152,27 +152,27 @@
         "OPB": "565.00",
         "PC": "37.00",
         "EQ": "-500.00",
-        "@BalanceSheetAccountsReceivableAccount": "35.00",
-        "S1": "-150.00",
+        "@BalanceSheetAccountsReceivableAccount": "224.00",
+        "S1": "-340.00",
         "S2": "-20.00",
-        "@BalanceSheetTaxPayableAccount": "-13.00",
+        "@BalanceSheetTaxPayableAccount": "-12.40",
         "@BalanceSheetInventoryOnHandAccount": "60.00",
-        "@BalanceSheetAccountsPayableAccount": "-44.00",
-        "OFF": "30.00",
+        "@BalanceSheetAccountsPayableAccount": "-39.60",
+        "OFF": "26.00",
         "@BalanceSheetRetainedEarningsAccount": "0.00",
         "@ProfitAndLossStatementAccountCurrencyGainsLosses": "0.00"
       },
       "ar_control": {
-        "@BalanceSheetAccountsReceivableAccount": "35.00"
+        "@BalanceSheetAccountsReceivableAccount": "224.00"
       },
       "ap_control": {
-        "@BalanceSheetAccountsPayableAccount": "-44.00"
+        "@BalanceSheetAccountsPayableAccount": "-39.60"
       },
       "ar_by_customer": {
-        "CA": "35.00"
+        "CA": "224.00"
       },
       "ap_by_supplier": {
-        "SA": "-44.00"
+        "SA": "-39.60"
       },
       "bank_cash": {
         "OPB": [
@@ -191,10 +191,14 @@
         "WID": "60.00"
       },
       "tax_control": {
-        "@BalanceSheetTaxPayableAccount": "-13.00"
+        "@BalanceSheetTaxPayableAccount": "-12.40"
       },
       "document_count": {
         "invoice": [
+          "USD",
+          2
+        ],
+        "credit_note": [
           "USD",
           1
         ],
@@ -206,7 +210,11 @@
       "document_total": {
         "invoice": [
           "USD",
-          "55.00"
+          "255.00"
+        ],
+        "credit_note": [
+          "USD",
+          "11.00"
         ],
         "bill": [
           "USD",
@@ -214,7 +222,8 @@
         ]
       },
       "document_status": {
-        "invoice:awaiting_payment": 1,
+        "invoice:awaiting_payment": 2,
+        "credit_note:paid": 1,
         "bill:awaiting_payment": 1
       },
       "settlement_allocation": {
@@ -251,6 +260,105 @@
       ],
       "rejected": []
     }
+  },
+  "cutover_fixture": {
+    "cutover_date": "2026-01-31",
+    "debits_equal_credits": "0.00",
+    "trial_balance": {
+      "OPB": "640.00",
+      "PC": "25.00",
+      "EQ": "-500.00",
+      "@BalanceSheetAccountsReceivableAccount": "0.00",
+      "S1": "-200.00",
+      "S2": "0.00",
+      "@BalanceSheetTaxPayableAccount": "-20.00",
+      "@BalanceSheetInventoryOnHandAccount": "60.00",
+      "@BalanceSheetAccountsPayableAccount": "-20.00",
+      "OFF": "15.00",
+      "@BalanceSheetRetainedEarningsAccount": "0.00",
+      "@ProfitAndLossStatementAccountCurrencyGainsLosses": "0.00"
+    },
+    "ar_control": {
+      "@BalanceSheetAccountsReceivableAccount": "0.00"
+    },
+    "ap_control": {
+      "@BalanceSheetAccountsPayableAccount": "-20.00"
+    },
+    "ar_by_customer": {
+      "CA": "0.00"
+    },
+    "ap_by_supplier": {
+      "SA": "-20.00"
+    },
+    "bank_cash": {
+      "OPB": [
+        "USD",
+        "640.00"
+      ],
+      "PC": [
+        "USD",
+        "25.00"
+      ]
+    },
+    "inventory_quantity": {
+      "WID": "15"
+    },
+    "inventory_value": {
+      "WID": "60.00"
+    },
+    "tax_control": {
+      "@BalanceSheetTaxPayableAccount": "-20.00"
+    },
+    "document_count": {
+      "invoice": [
+        "USD",
+        1
+      ],
+      "bill": [
+        "USD",
+        1
+      ]
+    },
+    "document_total": {
+      "invoice": [
+        "USD",
+        "110.00"
+      ],
+      "bill": [
+        "USD",
+        "20.00"
+      ]
+    },
+    "document_status": {
+      "invoice:paid": 1,
+      "bill:awaiting_payment": 1
+    },
+    "settlement_allocation": {
+      "receipt": [
+        "USD",
+        "110.00"
+      ]
+    },
+    "opening_journal": {
+      "OPB": "570.00",
+      "EQ": "-500.00",
+      "S1": "-100.00",
+      "@BalanceSheetTaxPayableAccount": "-10.00",
+      "@BalanceSheetInventoryOnHandAccount": "40.00"
+    },
+    "opening_inventory": {
+      "WID": [
+        "10",
+        "40.00"
+      ]
+    },
+    "native": [
+      "INVB",
+      "RB",
+      "BILLB",
+      "IATB",
+      "JEB"
+    ]
   },
   "fx": {
     "blocked": {

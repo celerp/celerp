@@ -91,13 +91,8 @@ def _chart() -> list[Obj]:
     ]
 
 
-def basic_objects(company: str = "Example Trading") -> list[Obj]:
-    """USD company, 2 decimal places, VAT 10%. Figures are worked out in checkpoints.json."""
-    vat = k("VAT")
-    ca, sa = k("CA"), k("SA")
-    opb, pc = k("OPB"), k("PC")
-    s1, s2, off, eq = k("S1"), k("S2"), k("OFF"), k("EQ")
-    wid = k("WID")
+def masters(company: str = "Example Trading") -> list[Obj]:
+    """USD company, 2 decimal places, VAT 10%: the chart, contacts and item every spec shares."""
     return [
         obj("BusinessDetails", None, {1: company, 2: "1 Example Street, Example City"}),
         obj("BaseCurrency", None, {2: "US dollar", 3: "USD", 5: 2}),
@@ -114,10 +109,27 @@ def basic_objects(company: str = "Example Trading") -> list[Obj]:
         obj("Customer", "CA", {1: "Acme Trading", 13: "C-001", 3: "accounts@acme.example.com", 2: "2 Example Road"}),
         obj("Supplier", "SA", {1: "Acme Trading", 10: "S-001", 2: "accounts@acme.example.com", 7: "2 Example Road"}),
         obj("InventoryItem", "WID", {1: "WID-1", 11: "Widget", 13: "each", 32: True, 3: D("12.50"), 31: True, 2: D("4")}),
-        obj("JournalEntry", "JE1", {1: date(2026, 1, 2), 2: "JE-1", 3: "Owner funding", 14: [
-            {1: CASH_AT_BANK, 29: opb, 13: D("500")},
-            {1: eq, 14: D("500")},
-        ]}),
+    ]
+
+
+def funding(label: str, ref: str, day: date, amount: D) -> Obj:
+    """Owner money paid into the operating bank."""
+    return obj("JournalEntry", label, {1: day, 2: ref, 3: "Owner funding", 14: [
+        {1: CASH_AT_BANK, 29: k("OPB"), 13: amount},
+        {1: k("EQ"), 14: amount},
+    ]})
+
+
+def basic_objects(company: str = "Example Trading") -> list[Obj]:
+    """The masters plus a quarter of trading. Figures are worked out in checkpoints.json."""
+    vat = k("VAT")
+    ca, sa = k("CA"), k("SA")
+    opb, pc = k("OPB"), k("PC")
+    s1, s2, off = k("S1"), k("S2"), k("OFF")
+    wid = k("WID")
+    return [
+        *masters(company),
+        funding("JE1", "JE-1", date(2026, 1, 2), D("500")),
         obj("SalesInvoice", "INV1", {1: date(2026, 1, 10), 2: "INV-1", 3: ca, 22: 30, 12: "Consulting", 49: [
             {2: s1, 17: "Consulting hours", 18: D("2"), 19: D("50"), 21: vat},
         ]}),
@@ -197,6 +209,48 @@ def fx_objects() -> list[Obj]:
     ]
 
 
+# The cutover fixture's boundary: the day its opening position is taken.
+CUTOVER_DATE = date(2026, 1, 31)
+
+
+def cutover_objects() -> list[Obj]:
+    """Trading on both sides of CUTOVER_DATE: a closed sale and a paid purchase before it, an
+    invoice still open at it, and a receipt, purchase, transfer and journal after it. Stock
+    moves on both sides. Figures are worked out in checkpoints.json under "cutover_fixture"."""
+    vat, ca, sa, opb, pc = k("VAT"), k("CA"), k("SA"), k("OPB"), k("PC")
+    s1, off, wid = k("S1"), k("OFF"), k("WID")
+    return [
+        *masters(),
+        funding("JE1", "JE-1", date(2026, 1, 2), D("500")),
+        obj("SalesInvoice", "INVA", {1: date(2026, 1, 10), 2: "INV-A", 3: ca, 49: [
+            {2: s1, 17: "Consulting", 18: D("1"), 19: D("100"), 21: vat},
+        ]}),
+        obj("PurchaseInvoice", "BILLA", {1: date(2026, 1, 15), 2: "BILL-A", 3: sa, 23: [
+            {1: wid, 17: "Widgets", 18: D("10"), 19: D("4")},
+        ]}),
+        obj("Payment", "PA", {1: date(2026, 1, 18), 2: "P-A", 3: PAID_BY_SUPPLIER, 5: sa, 7: opb, 11: [
+            {2: AP, 7: sa, 8: k("BILLA"), 18: D("40")},
+        ]}),
+        obj("Receipt", "RA", {1: date(2026, 1, 20), 2: "R-A", 3: PAID_BY_CUSTOMER, 4: ca, 7: opb, 11: [
+            {2: AR, 3: ca, 4: k("INVA"), 18: D("110")},
+        ]}),
+        obj("SalesInvoice", "INVB", {1: date(2026, 1, 25), 2: "INV-B", 3: ca, 49: [
+            {2: s1, 17: "Support", 18: D("2"), 19: D("50"), 21: vat},
+        ]}),
+        obj("Receipt", "RB", {1: date(2026, 2, 5), 2: "R-B", 3: PAID_BY_CUSTOMER, 4: ca, 7: opb, 11: [
+            {2: AR, 3: ca, 4: k("INVB"), 18: D("110")},
+        ]}),
+        obj("PurchaseInvoice", "BILLB", {1: date(2026, 2, 8), 2: "BILL-B", 3: sa, 23: [
+            {1: wid, 17: "Widgets", 18: D("5"), 19: D("4")},
+        ]}),
+        obj("InterAccountTransfer", "IATB", {1: date(2026, 2, 10), 6: "T-B", 2: opb, 8: D("25"), 3: pc, 9: D("25")}),
+        obj("JournalEntry", "JEB", {1: date(2026, 2, 12), 2: "JE-B", 3: "Stationery", 14: [
+            {1: off, 13: D("15")},
+            {1: CASH_AT_BANK, 29: opb, 14: D("15")},
+        ]}),
+    ]
+
+
 BASIC_CHANGES = 5
 
 
@@ -206,3 +260,7 @@ def build_basic(path: Path, company: str = "Example Trading") -> Path:
 
 def build_fx(path: Path) -> Path:
     return write_manager_file(path, fx_objects())
+
+
+def build_cutover(path: Path) -> Path:
+    return write_manager_file(path, cutover_objects())

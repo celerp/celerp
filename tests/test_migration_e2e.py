@@ -262,35 +262,49 @@ async def test_manager_full_history_reconciles_synthetic_fixture(real_engine, mo
 
 
 async def test_manager_cutover_reconciles_synthetic_fixture(real_engine, monkeypatch, tmp_path):
-    """A cutover migration carries one opening journal at the cutover date, and every
-    opening figure traces to the source account or item whose balance it reconciles."""
-    from fixtures.manager_io.support import BASIC
+    """A cutover migration carries one opening journal at the cutover date, the documents
+    still open at it, and every record after it natively; the migrated company ends at the
+    same position as the source's full history."""
+    from decimal import Decimal
 
-    run, rejected = await migrate(real_engine, BASIC.read_bytes(), "basic.manager",
-                                  {"mode": "cutover", "cutover_date": "2026-02-28"}, monkeypatch, tmp_path)
+    from fixtures.manager_io import specs
+    from fixtures.manager_io.support import CHECKPOINTS, expected_rows, ref
+
+    fixture = CHECKPOINTS["cutover_fixture"]
+    source = specs.build_cutover(tmp_path / "cutover.manager")
+    run, rejected = await migrate(real_engine, source.read_bytes(), source.name,
+                                  {"mode": "cutover", "cutover_date": fixture["cutover_date"]}, monkeypatch, tmp_path)
     assert rejected == []
     _passing(run)
     maps = await _maps(real_engine, run)
-    opening = [m for m in maps if m.source_type == "OpeningBalances" and m.target_entity_type == "journal_entry"]
-    assert len(opening) == 1
-    entries = await _projections(real_engine, run, "journal_entry")
-    migrated_journals = [m for m in maps if m.target_entity_type == "journal_entry"]
-    assert migrated_journals == opening
-    journal = entries[opening[0].target_entity_id]
-    assert str(journal["ts"])[:10] == "2026-02-28"
+    mapped = {m.source_external_id for m in maps}
 
-    passed = {(r["check"], r["key"]) for r in run.reconciliation["rows"] if r["result"] == "pass"}
+    # Every record after the cutover, and the invoice still open at it, is imported as itself.
+    assert {ref(label) for label in fixture["native"]} <= mapped
+    # Records closed before the cutover are carried only by the opening position.
+    assert not {ref(label) for label in ("INVA", "BILLA", "PA", "RA", "JE1")} & mapped
     source_account = {m.target_entity_id: m.source_external_id for m in maps if m.target_entity_type == "account"}
-    for line in journal["entries"]:
-        assert line["account"] in source_account, line
-        assert ("trial_balance", source_account[line["account"]]) in passed, line
-    source_item = {m.target_entity_id: m.source_external_id for m in maps
-                   if m.target_entity_type == "item" and m.meta["group"] == "items"}
+    entries = await _projections(real_engine, run, "journal_entry")
+    journals = {m.source_external_id: entries[m.target_entity_id] for m in maps
+                if m.target_entity_type == "journal_entry"}
+    assert set(journals) == {f"opening:{fixture['cutover_date']}", ref("IATB"), ref("JEB")}
+
+    opening = journals[f"opening:{fixture['cutover_date']}"]
+    assert str(opening["ts"])[:10] == fixture["cutover_date"]
+    lines: dict[str, Decimal] = {}
+    for line in opening["entries"]:
+        account = source_account[line["account"]]
+        lines[account] = lines.get(account, Decimal(0)) + Decimal(str(line["debit"])) - Decimal(str(line["credit"]))
+    assert lines == {ref(label): Decimal(amount) for label, amount in fixture["opening_journal"].items()}
     stock = [m for m in maps if m.source_type == "OpeningBalances" and m.meta["group"] == "inventory_adjustments"]
-    assert stock
-    for m in stock:
-        item = source_item[m.target_entity_id]
-        assert {("inventory_quantity", item), ("inventory_value", item)} <= passed
+    assert [m.source_external_id for m in stock] == [
+        f"opening:{fixture['cutover_date']}:{ref(label)}" for label in fixture["opening_inventory"]]
+
+    # The figures Celerp holds, not just the pass verdicts: trial balance, AR/AP, bank and cash,
+    # stock, and document counts and totals equal the source's full-history position.
+    held = {(r["check"], r["key"], r["currency"]): r["celerp"] for r in run.reconciliation["rows"]}
+    expected = {(check, key, currency): figure for check, key, currency, figure in expected_rows(fixture, "USD")}
+    assert {row: Decimal(held[row]) if held.get(row) is not None else None for row in expected} == expected
 
 
 async def test_sample_migration_finalizes_and_reconciles(real_engine, monkeypatch, tmp_path):

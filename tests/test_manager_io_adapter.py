@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import sqlite3
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from celerp.importers.adapters.base import MigrationDecisions, ScanError
 from celerp.importers.schema import CIFMode, CoverageClass
 from fixtures.manager_io import specs
 from fixtures.manager_io.encoder import Blob, Obj, write_manager_file
-from fixtures.manager_io.support import BASIC, CHECKPOINTS, FX, adapter, artifact, ref
+from fixtures.manager_io.support import BASIC, CHECKPOINTS, FX, actual_rows, adapter, artifact, ref
 
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
 
@@ -328,3 +329,180 @@ def test_check_manager_content_types_all_classified(tmp_path):
     }
     for committed, rebuilt in fresh.items():
         assert rows(committed) == rows(rebuilt), f"{committed.name} is stale; rebuild it with the fixture builder"
+
+
+# ── Cutover partition ─────────────────────────────────────────────────────────
+# Each case writes the shared masters, owner funding on 2026-01-02 and the case's records, then
+# checks the cutover migration against full history at the final date: the opening journal
+# plus every imported record ends at the full-history position, account by account and party
+# by party, and the stock it carries ends at the full-history stock.
+
+CUT = specs.CUTOVER_DATE
+BEFORE, AFTER = date(2026, 1, 30), date(2026, 2, 1)
+_POSITIONS = {"debits_equal_credits", "trial_balance", "ar_control", "ap_control", "ar_by_customer",
+              "ap_by_supplier", "bank_cash", "inventory_quantity", "inventory_value", "tax_control"}
+
+
+def _sale(label: str, day: date, qty: str = "1", price: str = "100") -> Obj:
+    return specs.obj("SalesInvoice", label, {1: day, 2: label, 3: specs.k("CA"), 49: [
+        {2: specs.k("S1"), 17: "Consulting", 18: Decimal(qty), 19: Decimal(price), 21: specs.k("VAT")}]})
+
+
+def _bill(label: str, day: date, qty: str) -> Obj:
+    return specs.obj("PurchaseInvoice", label, {1: day, 2: label, 3: specs.k("SA"), 23: [
+        {1: specs.k("WID"), 17: "Widgets", 18: Decimal(qty), 19: Decimal("4")}]})
+
+
+def _receipt(label: str, day: date, invoice: str, amount: str) -> Obj:
+    ca = specs.k("CA")
+    return specs.obj("Receipt", label, {1: day, 2: label, 3: specs.PAID_BY_CUSTOMER, 4: ca, 7: specs.k("OPB"), 11: [
+        {2: specs.AR, 3: ca, 4: specs.k(invoice), 18: Decimal(amount)}]})
+
+
+def _payment(label: str, day: date, bill: str, amount: str) -> Obj:
+    sa = specs.k("SA")
+    return specs.obj("Payment", label, {1: day, 2: label, 3: specs.PAID_BY_SUPPLIER, 5: sa, 7: specs.k("OPB"), 11: [
+        {2: specs.AP, 7: sa, 8: specs.k(bill), 18: Decimal(amount)}]})
+
+
+def _expense(label: str, day: date, amount: str = "20") -> Obj:
+    return specs.obj("JournalEntry", label, {1: day, 2: label, 3: "Stationery", 14: [
+        {1: specs.k("OFF"), 13: Decimal(amount)},
+        {1: specs.CASH_AT_BANK, 29: specs.k("OPB"), 14: Decimal(amount)}]})
+
+
+def _transfer(label: str, day: date, amount: str = "25") -> Obj:
+    return specs.obj("InterAccountTransfer", label, {1: day, 6: label, 2: specs.k("OPB"), 8: Decimal(amount),
+                                                     3: specs.k("PC"), 9: Decimal(amount)})
+
+
+def _position(postings) -> dict:
+    out: dict = {}
+    for p in postings:
+        out[(p.account, p.contact)] = out.get((p.account, p.contact), Decimal(0)) + p.amount
+    return {key: amount for key, amount in out.items() if amount}
+
+
+def _cutover_case(tmp_path, *records: Obj):
+    """(cutover manifest, its ledger) for one case, after checking it against full history."""
+    from celerp.importers.adapters.manager_io.book import read_book
+    from celerp.importers.adapters.manager_io.ledger import build_ledger, stock
+    from celerp.importers.adapters.manager_io.sqlite_reader import ManagerReader
+
+    path = write_manager_file(tmp_path / "case.manager", [
+        *specs.masters(), specs.funding("JE0", "JE-0", date(2026, 1, 2), Decimal("500")), *records])
+    cutover = MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=CUT)
+    manager, art = adapter(), [artifact(path)]
+    manifest = manager.build_manifest(art, cutover)
+    with ManagerReader(path) as reader:
+        book = read_book(reader)
+    ledger, full = build_ledger(book, cutover), build_ledger(book, FULL)
+
+    assert _position(ledger.opening + ledger.imported_postings()) == _position(full.postings)
+    positions = {r for r in actual_rows(manifest.reconciliation_expectations) if r[0] in _POSITIONS}
+    assert positions == {r for r in actual_rows(manager.source_expectations(art, FULL)) if r[0] in _POSITIONS}
+    carried_stock: dict[str, tuple[Decimal, Decimal]] = {}
+    for adj in manifest.bundle.inventory_adjustments:
+        qty, value = carried_stock.get(adj.item_external_id, (Decimal(0), Decimal(0)))
+        carried_stock[adj.item_external_id] = (qty + adj.quantity, value + adj.value)
+    assert carried_stock == {item: held for item, held in stock(full.postings).items() if any(held)}
+    return manifest, ledger
+
+
+def _ids(manifest) -> set[str]:
+    return {r.source_external_id for r in manifest.bundle.source_records()}
+
+
+def _opening(manifest) -> dict[str, Decimal]:
+    (entry,) = [j for j in manifest.bundle.journals if j.source_type == "OpeningBalances"]
+    assert entry.entry_date == CUT
+    out: dict[str, Decimal] = {}
+    for line in entry.lines:
+        out[line.account_external_id] = out.get(line.account_external_id, Decimal(0)) + line.debit - line.credit
+    return out
+
+
+def test_cutover_record_the_day_before_is_opening_only(tmp_path):
+    manifest, _ = _cutover_case(tmp_path, _expense("JEX", BEFORE))
+    assert ref("JEX") not in _ids(manifest)
+    assert _opening(manifest)[ref("OFF")] == Decimal("20")
+
+
+def test_cutover_record_on_the_cutover_date_is_before_it(tmp_path):
+    # Pre-cutover means on or before the date: a journal on it is in the opening, and an
+    # invoice on it still open is carried with the opening net of it.
+    manifest, ledger = _cutover_case(tmp_path, _expense("JEX", CUT), _sale("INVX", CUT))
+    assert ref("JEX") not in _ids(manifest)
+    assert _opening(manifest)[ref("OFF")] == Decimal("20")
+    assert ledger.documents == [ref("INVX")]
+    assert ref("S1") not in _opening(manifest)
+
+
+def test_cutover_record_the_day_after_is_native(tmp_path):
+    manifest, _ = _cutover_case(tmp_path, _sale("INVX", AFTER))
+    assert ref("INVX") in _ids(manifest)
+    assert ref("S1") not in _opening(manifest)
+
+
+def test_cutover_closed_invoice_before_is_opening_only(tmp_path):
+    manifest, ledger = _cutover_case(tmp_path, _sale("INVX", BEFORE), _receipt("RX", BEFORE, "INVX", "110"))
+    assert not {ref("INVX"), ref("RX")} & _ids(manifest)
+    assert ledger.documents == []
+    assert _opening(manifest)[ref("S1")] == Decimal("-100")
+    assert ref("@BalanceSheetAccountsReceivableAccount") not in _opening(manifest)
+
+
+def test_cutover_open_invoice_before_is_carried_net_of_opening(tmp_path):
+    manifest, ledger = _cutover_case(tmp_path, _sale("INVX", BEFORE), _receipt("RX", BEFORE, "INVX", "30"))
+    (doc,) = manifest.bundle.documents
+    assert doc.source_external_id == ref("INVX")
+    assert (doc.amount_paid, doc.amount_outstanding, doc.status) == (Decimal("30"), Decimal("80"), "awaiting_payment")
+    (settlement,) = manifest.bundle.settlements
+    assert settlement.source_external_id == ref("RX")
+    # The invoice and its part payment are imported, so the opening carries neither.
+    assert ref("S1") not in _opening(manifest)
+    assert ref("@BalanceSheetAccountsReceivableAccount") not in _opening(manifest)
+    assert _opening(manifest)[ref("OPB")] == Decimal("500")
+
+
+def test_cutover_invoice_settled_after_is_carried_and_settlement_imported(tmp_path):
+    manifest, _ = _cutover_case(tmp_path, _sale("INVX", BEFORE), _receipt("RX", AFTER, "INVX", "110"))
+    (doc,) = manifest.bundle.documents
+    assert (doc.source_external_id, doc.status, doc.amount_outstanding) == (ref("INVX"), "paid", Decimal("0"))
+    (settlement,) = manifest.bundle.settlements
+    assert settlement.source_external_id == ref("RX")
+    assert [(a.document_external_id, a.amount) for a in settlement.allocations] == [(ref("INVX"), Decimal("110"))]
+    assert _opening(manifest)[ref("OPB")] == Decimal("500")
+
+
+def test_cutover_journal_after_is_present(tmp_path):
+    manifest, _ = _cutover_case(tmp_path, _expense("JEX", AFTER))
+    (journal,) = [j for j in manifest.bundle.journals if j.source_external_id == ref("JEX")]
+    assert journal.entry_date == AFTER
+    assert ref("OFF") not in _opening(manifest)
+
+
+def test_cutover_transfer_after_is_present(tmp_path):
+    manifest, _ = _cutover_case(tmp_path, _transfer("IATX", AFTER))
+    (transfer,) = manifest.bundle.bank_transfers
+    assert (transfer.source_external_id, transfer.amount) == (ref("IATX"), Decimal("25"))
+    assert ref("PC") not in _opening(manifest)
+
+
+def test_cutover_stock_is_opening_plus_later_movements(tmp_path):
+    # The first bill is paid before the cutover, so its stock is part of the opening position.
+    manifest, _ = _cutover_case(tmp_path, _bill("BILLX", BEFORE, "10"), _payment("PX", BEFORE, "BILLX", "40"),
+                                _bill("BILLY", AFTER, "5"))
+    moves = sorted((a.kind, a.adjustment_date, a.quantity, a.value) for a in manifest.bundle.inventory_adjustments)
+    assert moves == [("adjustment", AFTER, Decimal("5"), Decimal("20")),
+                     ("opening", CUT, Decimal("10"), Decimal("40"))]
+
+
+def test_manifest_refuses_a_mapped_record_it_does_not_carry(monkeypatch):
+    # The adapter checks its own bundle against its verdicts: a mapped source record with no
+    # representation stops the build instead of reaching a destination without it.
+    from celerp.importers.adapters.manager_io import mappings
+
+    monkeypatch.setattr(mappings, "_transfers", lambda book, ledger: [])
+    with pytest.raises(ScanError, match="InterAccountTransfer"):
+        adapter().build_manifest([artifact(BASIC)], FULL)
