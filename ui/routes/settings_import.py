@@ -162,7 +162,7 @@ def setup_routes(app):
             )
 
         original_cols = list(csv.DictReader(io.StringIO(csv_text)).fieldnames or [])
-        mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_LOCATION_SPEC.cols))
+        mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_LOCATION_SPEC.cols), required_targets=_LOCATION_SPEC.required)
         if mapping_errors:
             csv_ref = await stash_import_csv(token, csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
@@ -359,7 +359,7 @@ def setup_routes(app):
             )
 
         original_cols = list(csv.DictReader(io.StringIO(csv_text)).fieldnames or [])
-        mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_TAX_SPEC.cols))
+        mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_TAX_SPEC.cols), required_targets=_TAX_SPEC.required)
         if mapping_errors:
             csv_ref = await stash_import_csv(token, csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
@@ -561,7 +561,7 @@ def setup_routes(app):
             )
 
         original_cols = list(csv.DictReader(io.StringIO(csv_text)).fieldnames or [])
-        mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_TERMS_SPEC.cols))
+        mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_TERMS_SPEC.cols), required_targets=_TERMS_SPEC.required)
         if mapping_errors:
             csv_ref = await stash_import_csv(token, csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))

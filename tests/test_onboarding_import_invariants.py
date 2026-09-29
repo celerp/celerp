@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import json
 import time
+import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -286,3 +287,123 @@ class TestSetupSentinels:
         second = await _apply(client, h, "gemstones")
         for key in ("category_schemas", "category_display_names", "units", "inventory_method"):
             assert first.get(key) == second.get(key)
+
+
+# ---------------------------------------------------------------------------
+# Mapping: every importer states its required targets and the check enforces them
+# ---------------------------------------------------------------------------
+
+def _all_specs() -> dict:
+    """Every browser importer spec, keyed by a readable name."""
+    from ui.routes import accounting_import, docs_import, inventory, lists_import, settings_import, subscriptions_import
+    return {
+        "items": inventory._IMPORT_SPEC,
+        "lists": lists_import._LIST_IMPORT_SPEC,
+        "chart": accounting_import._CHART_SPEC,
+        "docs": docs_import._DOC_IMPORT_SPEC,
+        "subscriptions": subscriptions_import._SUB_IMPORT_SPEC,
+        "locations": settings_import._LOCATION_SPEC,
+        "taxes": settings_import._TAX_SPEC,
+        "terms": settings_import._TERMS_SPEC,
+    }
+
+
+def _mapping_form(targets: dict[str, str]) -> dict:
+    return {f"map__{col}": target for col, target in targets.items()}
+
+
+class TestMappingInvariant:
+    """INV-MAP: required targets are enforced by the one shared mapping check."""
+
+    @pytest.mark.parametrize("name", sorted(_all_specs()))
+    def test_required_targets_matrix(self, name):
+        spec = _all_specs()[name]
+        core = set(spec.cols)
+        cols = [f"c_{c}" for c in spec.cols]
+        full = {f"c_{c}": c for c in spec.cols}
+
+        # Every target mapped exactly once: clean.
+        assert ci.validate_column_mapping(_mapping_form(full), cols, core_fields=core, required_targets=spec.required) == []
+
+        for req in sorted(spec.required):
+            # Missing a required target names it.
+            missing = {k: v for k, v in full.items() if v != req}
+            errs = ci.validate_column_mapping(_mapping_form(missing), cols, core_fields=core, required_targets=spec.required)
+            assert errs, (name, req)
+
+            # Mapped twice is a duplicate, not a pass.
+            dup = dict(full, extra=req)
+            errs = ci.validate_column_mapping(_mapping_form(dup), cols + ["extra"], core_fields=core, required_targets=spec.required)
+            assert errs, (name, req)
+
+    def test_custom_field_named_like_a_core_field_is_rejected(self):
+        spec = _all_specs()["items"]
+        form = {"map__a": "name", "map__b": ci.MAPPING_ATTRIBUTE, "attr_name__b": "Name"}
+        errs = ci.validate_column_mapping(form, ["a", "b"], core_fields=set(spec.cols), required_targets=spec.required)
+        assert errs
+
+    def test_item_spec_requires_only_name(self):
+        from celerp_inventory.services import build_item_import_spec
+        from ui.routes.inventory import _IMPORT_SPEC
+        assert _IMPORT_SPEC.required == {"name"}
+        assert build_item_import_spec([]).required == {"name"}
+
+    def test_every_ui_caller_states_required_targets(self):
+        root = Path(__file__).resolve().parents[1] / "ui" / "routes"
+        seen = 0
+        for path in sorted(root.glob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.Call):
+                    continue
+                fn = node.func
+                fname = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", "")
+                if fname in ("validate_column_mapping", "_csv_validate_column_mapping"):
+                    seen += 1
+                    kws = {k.arg for k in node.keywords}
+                    assert {"core_fields", "required_targets"} <= kws, f"{path.name}:{node.lineno}"
+        assert seen >= 9
+
+
+async def _seed_company(session) -> uuid.UUID:
+    from celerp.models.company import Company, Location
+    company_id = uuid.uuid4()
+    session.add(Company(id=company_id, name="MapCo", slug=f"mapco-{company_id.hex[:8]}", settings={}))
+    await session.flush()
+    session.add(Location(id=uuid.uuid4(), company_id=company_id, name="Main", type="warehouse", is_default=True))
+    await session.commit()
+    return company_id
+
+
+class TestItemSellByResolution:
+    """INV-MAP-03: sell_by is resolved per row, not demanded as a mapped column."""
+
+    @pytest.mark.asyncio
+    async def test_no_sell_by_with_category_default_is_accepted(self, session):
+        from celerp_inventory.services import build_import_records
+        cid = await _seed_company(session)
+        build = await build_import_records(session, cid, [{"name": "Stone", "category": "diamond"}], upsert=False, dry_run=True)
+        assert build.errors == []
+        assert build.records[0]["data"]["sell_by"] == "gram"
+
+    @pytest.mark.asyncio
+    async def test_no_sell_by_and_no_default_is_rejected_on_the_row(self, session):
+        from celerp_inventory.services import build_import_records
+        cid = await _seed_company(session)
+        build = await build_import_records(session, cid, [{"name": "Widget", "pieces": "1"}], upsert=False, dry_run=True)
+        assert build.records == []
+        assert [(e["row"], e["field"], e["code"]) for e in build.errors] == [(1, "sell_by", "sell_by_unresolved")]
+
+    @pytest.mark.asyncio
+    async def test_unknown_sell_by_is_rejected_on_the_row(self, session):
+        from celerp_inventory.services import build_import_records
+        cid = await _seed_company(session)
+        build = await build_import_records(session, cid, [{"name": "Widget", "sell_by": "furlong", "pieces": "1"}], upsert=False, dry_run=True)
+        assert [(e["field"], e["code"]) for e in build.errors] == [("sell_by", "sell_by_invalid")]
+
+    @pytest.mark.asyncio
+    async def test_explicit_valid_sell_by_succeeds(self, session):
+        from celerp_inventory.services import build_import_records
+        cid = await _seed_company(session)
+        build = await build_import_records(session, cid, [{"name": "Widget", "sell_by": "Piece", "pieces": "1"}], upsert=False, dry_run=True)
+        assert build.errors == []
+        assert build.records[0]["data"]["sell_by"] == "piece"

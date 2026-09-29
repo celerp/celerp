@@ -236,17 +236,23 @@ def suggest_mapping(
 def validate_column_mapping(
     form: dict,
     csv_cols: list[str],
-    core_fields: set[str] | None = None,
+    *,
+    core_fields: set[str],
+    required_targets: set[str],
 ) -> list[str]:
     """Validate the user's column mapping choices. Returns list of error messages (empty = valid).
 
     Checks:
-    1. Two CSV columns mapped to the same target field (duplicate targets).
-    2. Attribute names that collide with core/built-in field names.
-    3. Two attribute columns with the same custom name.
+    1. Every required target has a column mapped to it.
+    2. Two CSV columns mapped to the same target field (duplicate targets).
+    3. Attribute names that collide with core/built-in field names.
+    4. Two attribute columns with the same custom name.
+
+    ``required_targets`` is keyword-only and has no default so every importer
+    states which targets it cannot work without (an empty set when none).
     """
     errors: list[str] = []
-    core = core_fields or set()
+    core = core_fields
 
     # Collect all mappings
     target_sources: dict[str, list[str]] = {}  # target -> [csv_col, ...]
@@ -272,6 +278,10 @@ def validate_column_mapping(
             attr_names.setdefault(attr_key, []).append(col)
         else:
             target_sources.setdefault(target, []).append(col)
+
+    for target in sorted(required_targets):
+        if target not in target_sources:
+            errors.append(t("import.err_required_target", target=target.replace("_", " ").title()))
 
     # Check duplicate target fields
     for target, sources in target_sources.items():

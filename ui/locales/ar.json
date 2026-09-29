@@ -2648,6 +2648,7 @@
   "import.processing": "قيد المعالجة…",
   "import.err_custom_name_conflict": "يتعارض اسم الحقل المخصص \"{name}\" (من العمود \"{col}\") مع حقل مدمج. اختر اسمًا مختلفًا.",
   "import.err_duplicate_target": "تم تعيين العمودين {cols} إلى \"{target}\". لا يمكن استخدام كل هدف إلا مرة واحدة.",
+  "import.err_required_target": "لا يوجد عمود مرتبط بـ \"{target}\". اربط عمودًا به قبل المتابعة.",
   "import.err_duplicate_attr": "يحتوي العمودان {cols} على اسم السمة \"{name}\". يجب أن يكون اسم كل سمة فريدًا.",
   "import.upload_first_hint": "يرجى تحميل ملف CSV أولاً.",
   "import.js_skip_badge": "تخطي",

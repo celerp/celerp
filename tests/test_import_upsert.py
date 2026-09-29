@@ -747,17 +747,15 @@ async def test_import_timestamps_stripped_system_generated(client, session):
 
 @pytest.mark.asyncio
 async def test_import_spec_required_fields():
-    """_IMPORT_SPEC.required must contain exactly {name, sell_by}.
+    """_IMPORT_SPEC.required must be exactly {name}.
 
-    location_name and sku are not truly required (auto-resolved / auto-assigned).
-    sell_by is required because post_item raises 422 without it.
+    location_name and sku are auto-resolved / auto-assigned. sell_by is resolved
+    per row (explicit value or category default) and reported as a row error when
+    neither exists, so it is not a required mapped column.
     """
     from ui.routes.inventory import _IMPORT_SPEC
 
-    assert "location_name" not in _IMPORT_SPEC.required
-    assert "sku" not in _IMPORT_SPEC.required
-    assert "name" in _IMPORT_SPEC.required
-    assert "sell_by" in _IMPORT_SPEC.required
+    assert _IMPORT_SPEC.required == {"name"}
 
 
 # ---------------------------------------------------------------------------

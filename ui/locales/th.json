@@ -2648,6 +2648,7 @@
   "import.processing": "กำลังประมวลผล…",
   "import.err_custom_name_conflict": "ชื่อฟิลด์กำหนดเอง \"{name}\" (จากคอลัมน์ \"{col}\") ซ้ำกับฟิลด์มาตรฐานของระบบ กรุณาเลือกชื่ออื่น.",
   "import.err_duplicate_target": "คอลัมน์ {cols} ถูกจับคู่กับ \"{target}\" ซ้ำกัน แต่ละเป้าหมายใช้ได้เพียงครั้งเดียวเท่านั้น.",
+  "import.err_required_target": "ยังไม่มีคอลัมน์ที่จับคู่กับ \"{target}\" โปรดจับคู่คอลัมน์ก่อนดำเนินการต่อ",
   "import.err_duplicate_attr": "คอลัมน์ {cols} มีชื่อแอตทริบิวต์ \"{name}\" ซ้ำกัน ชื่อแอตทริบิวต์ต้องไม่ซ้ำกัน.",
   "import.upload_first_hint": "กรุณาอัปโหลดไฟล์ CSV ก่อน.",
   "import.js_skip_badge": "ข้าม",

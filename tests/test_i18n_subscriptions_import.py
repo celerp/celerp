@@ -115,9 +115,15 @@ async def test_result_panel_entity_label_translates(monkeypatch):
     assert "Zzsub" in html
 
 
+async def _company(token):
+    return {"id": "company-a"}
+
+
 @pytest.mark.asyncio
-async def test_revalidate_upsert_label_translates(monkeypatch):
+async def test_revalidate_upsert_label_translates(monkeypatch, tmp_path):
     monkeypatch.setattr(si, "_token", lambda request: "tok")
+    monkeypatch.setattr("ui.api_client.get_company", _company)
+    monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
 
     handler = _routes()[("POST", "/subscriptions/import/revalidate")]
     req = _FormReq({"csv_data": "name,frequency,start_date\nMonthly,monthly,2026-01-01\n"})

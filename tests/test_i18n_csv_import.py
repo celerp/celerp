@@ -121,5 +121,7 @@ def test_validate_column_mapping_translates_error():
     errors = validate_column_mapping(
         {"map__a": "sku", "map__b": "sku"},
         ["a", "b"],
+        core_fields=set(),
+        required_targets=set(),
     )
     assert any("XX_DUPTARGET" in e for e in errors)

@@ -2648,6 +2648,7 @@
   "import.processing": "処理中…",
   "import.err_custom_name_conflict": "カスタムフィールド名「{name}」（列「{col}」から）が、組み込みフィールドと重複しています。別の名前を選択してください。",
   "import.err_duplicate_target": "列 {cols} は両方とも「{target}」にマッピングされています。各ターゲットは 1 回しか使用できません。",
+  "import.err_required_target": "「{target}」に対応する列がありません。続行する前に列を割り当ててください。",
   "import.err_duplicate_attr": "列 {cols} の両方に属性名「{name}」が設定されています。各属性名は一意である必要があります。",
   "import.upload_first_hint": "まず CSV ファイルをアップロードしてください。",
   "import.js_skip_badge": "スキップ",

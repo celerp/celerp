@@ -1530,7 +1530,7 @@ def setup_routes(app):
 
         # Validate mapping before applying
         mapping_errors = validate_column_mapping(
-            form, original_cols, core_fields=_CORE_ITEM_COLS,
+            form, original_cols, core_fields=_CORE_ITEM_COLS, required_targets=spec.required,
         )
         if mapping_errors:
             # Re-render the mapping form with errors and preserved form values
@@ -7485,7 +7485,7 @@ def _union_category_attr_keys(cat_schemas: dict) -> list[str]:
 # lists) drives the upload form and template before a company's lists are known.
 _IMPORT_SPEC = CsvImportSpec(
     cols=ITEM_IMPORT_BASE_COLS + ["retail_price", "wholesale_price", "cost_price"] + ITEM_IMPORT_TAIL_COLS,
-    required={"name", "sell_by"},
+    required={"name"},
     type_map={"quantity": float, "retail_price": float, "wholesale_price": float,
               "cost_price": float, "weight": float, "purchase_conversion_factor": float},
 )

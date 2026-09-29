@@ -7202,13 +7202,13 @@ class TestColumnMappingValidation:
     def test_valid_mapping_no_errors(self):
         from ui.routes.csv_import import validate_column_mapping
         form = {"map__sku": "sku", "map__name": "name", "map__extra": MAPPING_ATTRIBUTE}
-        errors = validate_column_mapping(form, ["sku", "name", "extra"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["sku", "name", "extra"], core_fields=_CORE_ITEM_COLS, required_targets=set())
         assert errors == []
 
     def test_duplicate_target_detected(self):
         from ui.routes.csv_import import validate_column_mapping
         form = {"map__col_a": "category", "map__col_b": "category"}
-        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_CORE_ITEM_COLS, required_targets=set())
         assert len(errors) == 1
         assert "col_a" in errors[0]
         assert "col_b" in errors[0]
@@ -7218,7 +7218,7 @@ class TestColumnMappingValidation:
         from ui.routes.csv_import import validate_column_mapping
         # "category" column mapped as attribute, no rename -> collides with core field "category"
         form = {"map__category": MAPPING_ATTRIBUTE}
-        errors = validate_column_mapping(form, ["category"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["category"], core_fields=_CORE_ITEM_COLS, required_targets=set())
         assert len(errors) == 1
         assert "category" in errors[0].lower()
         assert "built-in" in errors[0].lower()
@@ -7227,7 +7227,7 @@ class TestColumnMappingValidation:
         from ui.routes.csv_import import validate_column_mapping
         # User renames attribute to "sku" which is a core field
         form = {"map__my_col": MAPPING_ATTRIBUTE, "attr_name__my_col": "sku"}
-        errors = validate_column_mapping(form, ["my_col"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["my_col"], core_fields=_CORE_ITEM_COLS, required_targets=set())
         assert len(errors) == 1
         assert "sku" in errors[0]
 
@@ -7235,7 +7235,7 @@ class TestColumnMappingValidation:
         from ui.routes.csv_import import validate_column_mapping
         # "category" column renamed to "lot_type" -> no collision
         form = {"map__category": MAPPING_ATTRIBUTE, "attr_name__category": "lot_type"}
-        errors = validate_column_mapping(form, ["category"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["category"], core_fields=_CORE_ITEM_COLS, required_targets=set())
         assert errors == []
 
     def test_duplicate_attribute_names_detected(self):
@@ -7245,7 +7245,7 @@ class TestColumnMappingValidation:
             "map__col_a": MAPPING_ATTRIBUTE, "attr_name__col_a": "grade",
             "map__col_b": MAPPING_ATTRIBUTE, "attr_name__col_b": "grade",
         }
-        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_CORE_ITEM_COLS, required_targets=set())
         assert len(errors) == 1
         assert "grade" in errors[0]
         assert "col_a" in errors[0]
@@ -7254,7 +7254,7 @@ class TestColumnMappingValidation:
     def test_skip_columns_ignored(self):
         from ui.routes.csv_import import validate_column_mapping
         form = {"map__col_a": MAPPING_SKIP, "map__col_b": MAPPING_SKIP}
-        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["col_a", "col_b"], core_fields=_CORE_ITEM_COLS, required_targets=set())
         assert errors == []
 
     def test_multiple_errors_reported(self):
@@ -7264,7 +7264,7 @@ class TestColumnMappingValidation:
             "map__a": "sku", "map__b": "sku",  # duplicate target
             "map__category": MAPPING_ATTRIBUTE,  # collides with core
         }
-        errors = validate_column_mapping(form, ["a", "b", "category"], core_fields=_CORE_ITEM_COLS)
+        errors = validate_column_mapping(form, ["a", "b", "category"], core_fields=_CORE_ITEM_COLS, required_targets=set())
         assert len(errors) == 2
 
     # ── apply_column_mapping with attribute rename ───────────────────────────
@@ -16765,13 +16765,13 @@ class TestUnknownUnitRendererInFixTable:
     async def test_revalidate_with_valid_unit_clears_error(self, ui_client):
         """After user picks a valid unit in the fix table, revalidate must succeed."""
         import json as _json
-        from ui.routes.csv_import import _stash_csv, _rows_to_csv
+        from ui.routes.csv_import import _write_stage, _rows_to_csv
 
         units = self._UNITS
         csv_rows = [{"sku": "X1", "name": "Ring", "sell_by": "grams", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _stash_csv(csv_text)
+        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
 
         # User fixes "grams" → "gram" (valid unit)
         fixes = {"0__sell_by": "gram"}
@@ -16797,12 +16797,12 @@ class TestUnknownUnitRendererInFixTable:
         catalog and clicking Fix & Import (without changing the cell) must clear the error.
         """
         import json as _json
-        from ui.routes.csv_import import _stash_csv, _rows_to_csv
+        from ui.routes.csv_import import _write_stage, _rows_to_csv
 
         csv_rows = [{"sku": "X2", "name": "Stone", "sell_by": "carat", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _stash_csv(csv_text)
+        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
 
         # "carat" is now in the catalog (user added it while fix table was open)
         units_now = self._UNITS + [{"name": "carat", "label": "Carat", "decimals": 2}]
@@ -16823,12 +16823,12 @@ class TestUnknownUnitRendererInFixTable:
     async def test_revalidate_still_unknown_unit_keeps_error(self, ui_client):
         """If unit is still not in catalog after revalidate, error persists and value is preserved."""
         import json as _json
-        from ui.routes.csv_import import _stash_csv, _rows_to_csv
+        from ui.routes.csv_import import _write_stage, _rows_to_csv
 
         csv_rows = [{"sku": "X3", "name": "Rock", "sell_by": "fathom", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _stash_csv(csv_text)
+        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
 
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)), \
              patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
@@ -16851,12 +16851,12 @@ class TestUnknownUnitRendererInFixTable:
     async def test_add_new_option_not_saved_as_unit_value(self, ui_client):
         """If __add_new__ somehow reaches revalidate, it must not be stored as a sell_by value."""
         import json as _json
-        from ui.routes.csv_import import _stash_csv, _rows_to_csv
+        from ui.routes.csv_import import _write_stage, _rows_to_csv
 
         csv_rows = [{"sku": "X4", "name": "Bead", "sell_by": "piece", "category": "", "quantity": "1"}]
         csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
         csv_text = _rows_to_csv(csv_rows, csv_cols)
-        csv_ref = _stash_csv(csv_text)
+        csv_ref = _write_stage(_TEST_COMPANY_ID, csv_text)
 
         # Simulate user somehow submitting __add_new__ as the fix value
         fixes = {"0__sell_by": "__add_new__"}

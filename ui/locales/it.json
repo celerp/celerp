@@ -2649,6 +2649,7 @@
   "import.processing": "Elaborazione in corso…",
   "import.err_custom_name_conflict": "Il nome del campo personalizzato \"{name}\" (dalla colonna \"{col}\") è in conflitto con un campo predefinito. Scegliere un nome diverso.",
   "import.err_duplicate_target": "Le colonne {cols} sono entrambe mappate su \"{target}\". Ogni destinazione può essere utilizzata una sola volta.",
+  "import.err_required_target": "Nessuna colonna è associata a «{target}». Associa una colonna prima di continuare.",
   "import.err_duplicate_attr": "Entrambe le colonne {cols} hanno il nome dell’attributo \"{name}\". Ogni nome di attributo deve essere univoco.",
   "import.upload_first_hint": "Caricare prima un file CSV.",
   "import.js_skip_badge": "salta",

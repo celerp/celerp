@@ -1835,7 +1835,9 @@ def build_item_import_spec(price_lists: list[dict]) -> CsvImportSpec:
         type_map[col] = float
     return CsvImportSpec(
         cols=ITEM_IMPORT_BASE_COLS + price_cols + price_total_cols + ITEM_IMPORT_TAIL_COLS,
-        required={"name", "sell_by"},
+        # sell_by may come from the category's default unit, so it is checked
+        # after resolution by build_import_records, not as a mapped column.
+        required={"name"},
         type_map=type_map,
     )
 
@@ -2020,6 +2022,24 @@ async def build_import_records(
             or cat_sell_by.get(str(row.get("category", "") or "").strip())
             or ""
         )
+        # The committer rejects these too; reporting them here keeps preview and
+        # commit in agreement on every row.
+        if target is None and not sell_by:
+            errors.append({
+                "row": i + 1,
+                "field": "sell_by",
+                "code": "sell_by_unresolved",
+                "message": "No selling unit: add a sell_by value or use a category that has a default unit",
+            })
+            continue
+        if sell_by and unit_canonical and sell_by not in unit_canonical.values():
+            errors.append({
+                "row": i + 1,
+                "field": "sell_by",
+                "code": "sell_by_invalid",
+                "message": f"sell_by '{sell_by}' is not one of the company's units",
+            })
+            continue
         qty = _derive_import_qty(row, sell_by, unit_map)
         amount_source = any(_has_value(row, k) for k in ("quantity", "qty", "pieces", "weight", "weight_ct"))
 

@@ -2265,7 +2265,7 @@ def setup_routes(app):
             )
 
         original_cols = list(_csv_mod.DictReader(_io.StringIO(csv_text)).fieldnames or [])
-        mapping_errors = _csv_validate_column_mapping(form, original_cols, core_fields=set(_CONTACT_IMPORT_SPEC.cols))
+        mapping_errors = _csv_validate_column_mapping(form, original_cols, core_fields=set(_CONTACT_IMPORT_SPEC.cols), required_targets=_CONTACT_IMPORT_SPEC.required)
         if mapping_errors:
             csv_ref = await stash_import_csv(token, csv_text)
             rows = list(_csv_mod.DictReader(_io.StringIO(csv_text)))

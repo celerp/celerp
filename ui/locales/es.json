@@ -2648,6 +2648,7 @@
   "import.processing": "Procesando…",
   "import.err_custom_name_conflict": "El nombre del campo personalizado «{name}» (de la columna «{col}») entra en conflicto con un campo integrado. Elige otro nombre.",
   "import.err_duplicate_target": "Las columnas {cols} están asignadas ambas a «{target}». Cada destino solo se puede utilizar una vez.",
+  "import.err_required_target": "Ninguna columna está asignada a «{target}». Asigne una columna antes de continuar.",
   "import.err_duplicate_attr": "Las columnas {cols} tienen ambas el nombre de atributo «{name}». Cada nombre de atributo debe ser único.",
   "import.upload_first_hint": "Por favor, sube primero un archivo CSV.",
   "import.js_skip_badge": "omitir",

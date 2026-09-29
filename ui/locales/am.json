@@ -2752,6 +2752,7 @@
   "import.processing": "በመስራት ላይ…",
   "import.err_custom_name_conflict": "ብጁ የመስክ ስም \"{name}\" (ከአምድ \"{col}\") ከተሰራው መስክ ጋር ይጋጫል። የተለየ ስም ይምረጡ።",
   "import.err_duplicate_target": "አምዶች {cols} ሁለቱም ወደ \"{target}\" ተቀርፀዋል። እያንዳንዱ ዒላማ አንድ ጊዜ ብቻ ጥቅም ላይ ሊውል ይችላል.",
+  "import.err_required_target": "ወደ \"{target}\" የተመደበ አምድ የለም። ከመቀጠልዎ በፊት አምድ ይመድቡ።",
   "import.err_duplicate_attr": "አምዶች {cols} ሁለቱም የባህሪ ስም አላቸው \"{name}\"። እያንዳንዱ መለያ ስም ልዩ መሆን አለበት።",
   "import.upload_first_hint": "እባክዎ መጀመሪያ የCSV ፋይል ይስቀሉ።",
   "import.js_skip_badge": "ዝለል",

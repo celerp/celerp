@@ -2771,6 +2771,7 @@
   "import.processing": "Processing…",
   "import.err_custom_name_conflict": "Custom field name \"{name}\" (from column \"{col}\") conflicts with a built-in field. Choose a different name.",
   "import.err_duplicate_target": "Columns {cols} are both mapped to \"{target}\". Each target can only be used once.",
+  "import.err_required_target": "No column is mapped to \"{target}\". Map a column to it before continuing.",
   "import.err_duplicate_attr": "Columns {cols} both have attribute name \"{name}\". Each attribute name must be unique.",
   "import.upload_first_hint": "Please upload a CSV file first.",
   "import.js_skip_badge": "skip",

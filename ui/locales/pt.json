@@ -2648,6 +2648,7 @@
   "import.processing": "Processando…",
   "import.err_custom_name_conflict": "O nome do campo personalizado “{name}” (da coluna “{col}”) entra em conflito com um campo embutido. Escolha um nome diferente.",
   "import.err_duplicate_target": "As colunas {cols} estão ambas mapeadas para “{target}”. Cada destino só pode ser usado uma vez.",
+  "import.err_required_target": "Nenhuma coluna está mapeada para «{target}». Mapeie uma coluna antes de continuar.",
   "import.err_duplicate_attr": "As colunas {cols} têm, ambas, o nome de atributo “{name}”. Cada nome de atributo deve ser único.",
   "import.upload_first_hint": "Por favor, envie um arquivo CSV primeiro.",
   "import.js_skip_badge": "ignorar",

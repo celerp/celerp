@@ -2649,6 +2649,7 @@
   "import.processing": "Wird verarbeitet…",
   "import.err_custom_name_conflict": "Der benutzerdefinierte Feldname „{name}“ (aus der Spalte „{col}“) steht in Konflikt mit einem integrierten Feld. Wählen Sie einen anderen Namen.",
   "import.err_duplicate_target": "Die Spalten {cols} sind beide „{target}“ zugeordnet. Jedes Ziel darf nur einmal verwendet werden.",
+  "import.err_required_target": "Keine Spalte ist „{target}“ zugeordnet. Ordnen Sie eine Spalte zu, bevor Sie fortfahren.",
   "import.err_duplicate_attr": "Die Spalten {cols} haben beide den Attributnamen „{name}“. Jeder Attributname muss eindeutig sein.",
   "import.upload_first_hint": "Bitte laden Sie zunächst eine CSV-Datei hoch.",
   "import.js_skip_badge": "Überspringen",

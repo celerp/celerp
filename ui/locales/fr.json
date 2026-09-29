@@ -2649,6 +2649,7 @@
   "import.processing": "Traitement en cours…",
   "import.err_custom_name_conflict": "Le nom du champ personnalisé « {name} » (issu de la colonne « {col} ») entre en conflit avec un champ intégré. Choisissez un autre nom.",
   "import.err_duplicate_target": "Les colonnes {cols} sont toutes deux mappées à « {target} ». Chaque valeur cible ne peut être utilisée qu'une seule fois.",
+  "import.err_required_target": "Aucune colonne n’est associée à « {target} ». Associez une colonne avant de continuer.",
   "import.err_duplicate_attr": "Les colonnes {cols} ont toutes deux pour nom d'attribut « {name} ». Chaque nom d'attribut doit être unique.",
   "import.upload_first_hint": "Veuillez d'abord importer un fichier CSV.",
   "import.js_skip_badge": "ignorer",

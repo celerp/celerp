@@ -2648,6 +2648,7 @@
   "import.processing": "Sedang diproses…",
   "import.err_custom_name_conflict": "Nama bidang kustom \"{name}\" (dari kolom \"{col}\") bertabrakan dengan bidang bawaan. Pilih nama yang berbeda.",
   "import.err_duplicate_target": "Kolom {cols} keduanya dipetakan ke \"{target}\". Setiap target hanya dapat digunakan satu kali.",
+  "import.err_required_target": "Tidak ada kolom yang dipetakan ke \"{target}\". Petakan satu kolom sebelum melanjutkan.",
   "import.err_duplicate_attr": "Kolom {cols} keduanya memiliki nama atribut \"{name}\". Setiap nama atribut harus unik.",
   "import.upload_first_hint": "Silakan unggah berkas CSV terlebih dahulu.",
   "import.js_skip_badge": "lewati",

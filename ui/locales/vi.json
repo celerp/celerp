@@ -2648,6 +2648,7 @@
   "import.processing": "Đang xử lý…",
   "import.err_custom_name_conflict": "Tên trường tùy chỉnh \"{name}\" (từ cột \"{col}\") trùng lặp với một trường có sẵn. Vui lòng chọn tên khác.",
   "import.err_duplicate_target": "Cả hai cột {cols} đều được ánh xạ đến \"{target}\". Mỗi mục đích chỉ có thể được sử dụng một lần.",
+  "import.err_required_target": "Chưa có cột nào được ánh xạ tới \"{target}\". Hãy ánh xạ một cột trước khi tiếp tục.",
   "import.err_duplicate_attr": "Cả hai cột {cols} đều có tên thuộc tính là \"{name}\". Mỗi tên thuộc tính phải là duy nhất.",
   "import.upload_first_hint": "Vui lòng tải lên tệp CSV trước.",
   "import.js_skip_badge": "bỏ qua",
