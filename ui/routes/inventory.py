@@ -1405,7 +1405,7 @@ def setup_routes(app):
             nav_active="inventory",
             lang=lang,
             request=request,
-        )
+        ), onboarding_entry_cookie(request)
 
     @app.get("/inventory/import/template")
     async def inventory_import_template(request: Request):
@@ -1678,6 +1678,7 @@ def setup_routes(app):
             back_href="/inventory",
             import_more_href="/inventory/import",
             has_mapping=True,
+            from_onboarding=entered_from_onboarding(request),
         )
 
     # ── Blank-create: /inventory/create-blank ──────────────────────────────────
@@ -7436,6 +7437,8 @@ from ui.routes.csv_import import (
     error_report_response,
     import_abort_panel,
     import_result_panel,
+    entered_from_onboarding,
+    onboarding_entry_cookie,
     read_tabular_upload,
     rows_have_errors,
     semantic_review_panel,

@@ -2155,6 +2155,8 @@ def setup_routes(app):
         validate_column_mapping as _csv_validate_column_mapping,
         apply_column_mapping as _csv_apply_column_mapping,
         import_result_panel as _csv_import_result_panel,
+        entered_from_onboarding as _csv_entered_from_onboarding,
+        onboarding_entry_cookie as _csv_onboarding_entry_cookie,
     )
 
     _CONTACT_IMPORT_SPEC = CsvImportSpec(
@@ -2179,7 +2181,7 @@ def setup_routes(app):
             title=page_title("contacts.import_contacts"),
             nav_active="customers",
             request=request,
-        )
+        ), _csv_onboarding_entry_cookie(request)
 
     @app.get("/crm/import/contacts/template")
     async def crm_import_contacts_template(request: Request):
@@ -2420,6 +2422,7 @@ def setup_routes(app):
             back_href="/contacts/customers",
             import_more_href="/crm/import/contacts",
             has_mapping=True,
+            from_onboarding=_csv_entered_from_onboarding(request),
         )
 
     # ── Backward compat: /crm/{contact_id:path} → /contacts/{contact_id} ──

@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from fasthtml.common import to_xml
+
 from test_helpers import make_test_token
 from ui.routes import csv_import as ci
 
@@ -1124,7 +1126,7 @@ class TestTabularParityInvariant:
         rows, err = await _read(data, "stock.xlsx")
         assert rows == []
         assert err.sheets == ["Rings", "Stones"]
-        html = str(ci.upload_form(template_href="/t", preview_action="/p", error=err))
+        html = to_xml(ci.upload_form(template_href="/t", preview_action="/p", error=err))
         assert 'name="sheet"' in html and "Rings" in html and "Stones" in html
         assert 'value="Rings"' not in html.split('name="sheet"')[1].split(">")[0]
 
@@ -1154,7 +1156,7 @@ class TestTabularParityInvariant:
         assert rows == [] and "Formula" in err
 
     def test_upload_form_accepts_csv_and_xlsx(self):
-        html = str(ci.upload_form(template_href="/t", preview_action="/p"))
+        html = to_xml(ci.upload_form(template_href="/t", preview_action="/p"))
         assert 'accept=".csv,.xlsx"' in html and "xlsx" in html
         assert 'name="sheet"' not in html
 
@@ -1180,3 +1182,201 @@ class TestTabularParityInvariant:
             staged[fmt] = stash.await_args.args[1]
         assert staged["xlsx"] == staged["csv"]
         assert "Ruby, oval" in staged["csv"]
+
+
+# ---------------------------------------------------------------------------
+# INV-ONBOARD-01 / INV-USER-01 - onboarding pending is a resumability hint, not a gate
+# ---------------------------------------------------------------------------
+
+
+def _company(settings: dict) -> dict:
+    return {"id": _COMPANY_A, "name": "Acme", "currency": "USD", "settings": settings}
+
+
+async def _ui_request(method: str, path: str, *, role: str = "owner", settings: dict | None = None,
+                      cookies: dict | None = None, **kwargs):
+    from ui.app import app as ui_app
+    company = _company(settings or {})
+    with patch("ui.routes.auth.api_get_company", new=AsyncMock(return_value=company)), \
+         patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+            return await c.request(method, path, cookies={"celerp_token": make_test_token(role=role), **(cookies or {})}, **kwargs)
+
+
+class TestOnboardingStateInvariant:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("settings,role,destination", [
+        ({}, "owner", "/dashboard"),
+        ({"onboarding_pending": False}, "owner", "/dashboard"),
+        ({"onboarding_pending": True}, "owner", "/onboarding"),
+        ({"onboarding_pending": True}, "admin", "/onboarding"),
+        ({"onboarding_pending": True}, "manager", "/dashboard"),
+        ({"onboarding_pending": True}, "viewer", "/dashboard"),
+    ])
+    async def test_root_resumes_onboarding_only_when_pending_and_role_can_set_up(self, settings, role, destination):
+        r = await _ui_request("GET", "/", role=role, settings=settings)
+        assert r.status_code == 302 and r.headers["location"] == destination
+
+    @pytest.mark.asyncio
+    async def test_invited_user_in_an_established_company_reaches_the_app(self):
+        r = await _ui_request("GET", "/", role="operator", settings={})
+        assert r.headers["location"] == "/dashboard"
+
+    @pytest.mark.asyncio
+    async def test_dashboard_remains_directly_accessible_while_onboarding_pending(self):
+        from contextlib import ExitStack
+        from ui.app import app as ui_app
+        company = _company({"onboarding_pending": True})
+        with ExitStack() as stack:
+            for target, value in (
+                ("get_company", company), ("get_valuation", {}), ("get_doc_summary", {}),
+                ("get_dashboard_kpis", {}), ("my_companies", {"items": [company], "total": 1}),
+                ("get_ar_aging", {"buckets": {}}), ("get_activity", []),
+            ):
+                stack.enter_context(patch(f"ui.api_client.{target}", new=AsyncMock(return_value=value)))
+            async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+                r = await c.get("/dashboard", cookies=_owner_cookies())
+        assert r.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_onboarding_complete_clears_flag(self):
+        patch_company = AsyncMock(return_value={})
+        with patch("ui.api_client.patch_company", new=patch_company):
+            r = await _ui_request("POST", "/onboarding/complete", settings={"onboarding_pending": True})
+        assert r.status_code == 303 and r.headers["location"] == "/dashboard"
+        patch_company.assert_awaited_once()
+        assert patch_company.await_args.args[1] == {"onboarding_pending": False}
+        after = await _ui_request("GET", "/", settings={"onboarding_pending": False})
+        assert after.headers["location"] == "/dashboard"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("role,settings,writes", [
+        ("owner", {"onboarding_pending": True}, True),
+        ("admin", {"onboarding_pending": True}, True),
+        ("manager", {"onboarding_pending": True}, False),
+        ("admin", {"onboarding_pending": True, "role_grants": {"manage_company_settings": ["owner"]}}, False),
+    ])
+    async def test_onboarding_complete_uses_canonical_company_settings_permission(self, role, settings, writes):
+        patch_company = AsyncMock(return_value={})
+        with patch("ui.api_client.patch_company", new=patch_company):
+            r = await _ui_request("POST", "/onboarding/complete", role=role, settings=settings)
+        assert r.headers["location"] == "/dashboard"
+        assert patch_company.await_count == (1 if writes else 0)
+
+    @pytest.mark.asyncio
+    async def test_root_uses_the_same_permission_as_completion(self):
+        settings = {"onboarding_pending": True, "role_grants": {"manage_company_settings": ["owner"]}}
+        assert (await _ui_request("GET", "/", role="admin", settings=settings)).headers["location"] == "/dashboard"
+        assert (await _ui_request("GET", "/", role="owner", settings=settings)).headers["location"] == "/onboarding"
+
+    @pytest.mark.asyncio
+    async def test_failed_completion_still_reaches_the_dashboard(self):
+        from ui.api_client import APIError
+        with patch("ui.api_client.patch_company", new=AsyncMock(side_effect=APIError(500, "down"))):
+            r = await _ui_request("POST", "/onboarding/complete", settings={"onboarding_pending": True})
+        assert r.status_code == 303 and r.headers["location"] == "/dashboard"
+
+
+# ---------------------------------------------------------------------------
+# INV-ONBOARD-02/03, INV-ORCH-01/02, INV-CONNECT-01 - the hub routes, it does not own semantics
+# ---------------------------------------------------------------------------
+
+
+def _hub_links(html: str) -> list[str]:
+    import re
+    return re.findall(r'class="quick-link-card"[^>]*href="([^"]+)"|href="([^"]+)"[^>]*class="quick-link-card"', html)
+
+
+def _card_hrefs(html: str) -> list[str]:
+    return [a or b for a, b in _hub_links(html)]
+
+
+def _registered_paths() -> set[str]:
+    from ui.app import app as ui_app
+    return {getattr(r, "path", None) for r in ui_app.routes}
+
+
+async def _confirm_inventory_import(stage_dir, *, cookies: dict | None = None):
+    """Run the inventory confirm step against a stubbed server that accepts the import."""
+    from ui.app import app as ui_app
+    ref = ci._write_stage(_COMPANY_A, "name,sell_by\nWidget,piece\n")
+    company = _company({})
+    with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
+         patch("ui.api_client.import_rows", new=AsyncMock(return_value={"created": 1, "skipped": 0, "updated": 0, "errors": []})):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+            return await c.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": "h"},
+                                cookies={**_owner_cookies(), **(cookies or {})})
+
+
+class TestEntryOrchestrationInvariant:
+    @pytest.mark.asyncio
+    async def test_every_rendered_hub_action_is_a_registered_route(self):
+        r = await _ui_request("GET", "/onboarding", settings={"onboarding_pending": True})
+        hrefs = _card_hrefs(r.text)
+        assert hrefs, r.text
+        registered = _registered_paths()
+        for href in hrefs:
+            assert href.split("?")[0] in registered, href
+
+    @pytest.mark.asyncio
+    async def test_hub_does_not_offer_whole_company_migration_yet(self):
+        r = await _ui_request("GET", "/onboarding")
+        assert "Move from another system" not in r.text
+        assert "/onboarding/upload/cif" not in r.text
+
+    def test_hub_omits_actions_whose_page_is_not_installed(self):
+        from fasthtml.common import to_xml
+        from ui.routes.auth import _onboarding_view
+        assert _card_hrefs(to_xml(_onboarding_view({"/inventory/import"}))) == ["/inventory/import?from_onboarding=1"]
+
+    def test_hub_actions_hand_off_to_the_canonical_import_and_connector_pages(self):
+        from ui.routes.auth import _ONBOARDING_ACTIONS
+        assert {path for path, *_ in _ONBOARDING_ACTIONS} == {
+            "/inventory/import", "/crm/import/contacts", "/docs/import", "/settings/cloud",
+        }
+
+    @pytest.mark.asyncio
+    async def test_start_working_is_a_form_post_to_complete(self):
+        r = await _ui_request("GET", "/onboarding")
+        assert 'action="/onboarding/complete"' in r.text and 'method="post"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_import_entered_from_onboarding_offers_back_to_setup(self, stage_dir):
+        page = await _ui_request("GET", "/inventory/import?from_onboarding=1")
+        assert page.status_code == 200
+        assert page.cookies.get("celerp_import_from_onboarding") == "1"
+        r = await _confirm_inventory_import(stage_dir, cookies={"celerp_import_from_onboarding": "1"})
+        assert r.status_code == 200, r.text
+        assert 'href="/onboarding"' in r.text
+        assert 'href="/inventory/import?from_onboarding=1"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_normal_inventory_import_keeps_its_own_result_flow(self, stage_dir):
+        page = await _ui_request("GET", "/inventory/import", cookies={"celerp_import_from_onboarding": "1"})
+        assert page.status_code == 200
+        assert 'celerp_import_from_onboarding=""' in page.headers.get("set-cookie", "")
+        r = await _confirm_inventory_import(stage_dir)
+        assert r.status_code == 200, r.text
+        assert 'href="/onboarding"' not in r.text
+        assert 'href="/inventory"' in r.text and 'href="/inventory/import"' in r.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("marker", ["https://evil.example", "//evil.example", "/settings", "true"])
+    async def test_onboarding_marker_cannot_become_a_redirect_target(self, marker, stage_dir):
+        page = await _ui_request("GET", f"/inventory/import?from_onboarding={marker}")
+        assert page.cookies.get("celerp_import_from_onboarding") in (None, "")
+        assert "evil.example" not in page.text
+        r = await _confirm_inventory_import(stage_dir, cookies={"celerp_import_from_onboarding": marker})
+        assert 'href="/onboarding"' not in r.text and "evil.example" not in r.text
+
+    def test_back_to_setup_destination_is_fixed(self):
+        html = to_xml(ci.import_result_panel(created=1, skipped=0, errors=[], entity_label="x",
+                                          back_href="/x", import_more_href="/x/import", from_onboarding=True))
+        assert 'href="/onboarding"' in html
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["/crm/import/contacts", "/docs/import"])
+    async def test_every_hub_import_page_records_the_marker(self, path):
+        r = await _ui_request("GET", f"{path}?from_onboarding=1")
+        assert r.status_code == 200
+        assert r.cookies.get("celerp_import_from_onboarding") == "1"

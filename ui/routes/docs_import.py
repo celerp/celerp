@@ -30,6 +30,8 @@ from ui.routes.csv_import import (
     error_report_response,
     import_result_panel,
     import_numbered,
+    entered_from_onboarding,
+    onboarding_entry_cookie,
     read_tabular_upload,
     upload_form,
     validate_cell,
@@ -281,7 +283,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         # A link handed over from the accept page fills the field; importing it stays a click.
-        return await _import_page(request, link=link)
+        return await _import_page(request, link=link), onboarding_entry_cookie(request)
 
     @app.get("/docs/received")
     async def received_list_page(request: Request):
@@ -676,4 +678,5 @@ def setup_routes(app):
             back_href="/docs",
             import_more_href="/docs/import",
             has_mapping=True,
+            from_onboarding=entered_from_onboarding(request),
         )

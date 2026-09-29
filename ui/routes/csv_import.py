@@ -177,6 +177,27 @@ async def resolve_import_csv(token: str, form) -> str:
 # ---------------------------------------------------------------------------
 
 
+# ── Onboarding entry marker ──────────────────────────────────────────────────
+# An import opened from the getting-started hub carries ``?from_onboarding=1``.
+# The import page records that in a short-lived cookie (and clears it when opened
+# any other way), so the result can offer "Back to setup". The destination is
+# always /onboarding; nothing the user supplies becomes a redirect target.
+
+ONBOARDING_MARKER = "from_onboarding"
+_ONBOARDING_COOKIE = "celerp_import_from_onboarding"
+
+
+def onboarding_entry_cookie(request) -> Any:
+    """Set-Cookie header recording whether this import page was opened from onboarding."""
+    if request.query_params.get(ONBOARDING_MARKER) == "1":
+        return cookie(_ONBOARDING_COOKIE, "1", max_age=3600, httponly=True, samesite="lax", path="/")
+    return cookie(_ONBOARDING_COOKIE, "", max_age=0, httponly=True, samesite="lax", path="/")
+
+
+def entered_from_onboarding(request) -> bool:
+    return request.cookies.get(_ONBOARDING_COOKIE) == "1"
+
+
 def _mapping_js_labels() -> dict[str, str]:
     """Translated labels the mapping dropdown JS reads at render time.
 
@@ -1451,12 +1472,14 @@ def import_result_panel(
     has_mapping: bool = False,
     extra: Any = "",
     updated: int = 0,
+    from_onboarding: bool = False,
 ) -> FT:
     """Shared import result panel with summary cards.
 
     ``extra`` is an optional FT element inserted after the summary cards
     (e.g. schema-merge info for inventory).
     ``updated`` shows a blue "Updated" card when > 0 (upsert mode).
+    ``from_onboarding`` adds "Back to setup" and keeps "Import more" in onboarding.
     """
     cards = [
         Div(
@@ -1500,7 +1523,10 @@ def import_result_panel(
         error_block,
         Div(
             A(t("import.view_entity", label=label_title), href=back_href, cls="btn btn--primary"),
-            A(t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
+            A(t("import.back_to_setup"), href="/onboarding", cls="btn btn--secondary") if from_onboarding else "",
+            A(t("msg.import_more"),
+              href=f"{import_more_href}?{ONBOARDING_MARKER}=1" if from_onboarding else import_more_href,
+              cls="btn btn--secondary"),
             cls="flex-row gap-sm mt-md",
         ),
         id="import-preview",

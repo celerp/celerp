@@ -75,6 +75,7 @@ class _FormReq:
     def __init__(self, form: dict):
         self._form = form
         self.cookies: dict = {}
+        self.query_params: dict = {}
 
     async def form(self):
         return self._form
@@ -94,7 +95,8 @@ async def test_import_page_header_and_title_translate(monkeypatch):
     monkeypatch.setattr(di, "_token", lambda request: "tok")
 
     handler = _routes()[("GET", "/docs/import")]
-    html = to_xml(await handler(_FormReq({})))
+    page, _cookie = await handler(_FormReq({}))
+    html = to_xml(page)
 
     # page_header(t(...)) renders the sentinel as the H1 text.
     assert "XX_IMPORT_DOCS" in html
