@@ -51,7 +51,8 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import AWAITING_PAYMENT_STATUSES, INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, PAID_TOLERANCE, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES, is_overdue_document
+from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
+from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, PAID_TOLERANCE, doc_value, is_awaiting_payment, is_overdue_document, is_owed, outstanding_balance, today_iso
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )
@@ -952,20 +953,6 @@ def _doc_sort_field(f: DocListFilters) -> str:
     return field
 
 
-# Older keys a document may carry a displayed value under (imported documents store their
-# number, dates and amounts this way). The list row is filled from them when the current key
-# is missing or empty, and the sort orders by them, so the order on the page is the order of
-# what the page shows. A stored 0 is a value, not a gap.
-_DOC_DISPLAY_FALLBACKS = {
-    "doc_number": ("ref", "ref_id"),
-    "contact_name": ("contact_id", "contact_external_id"),
-    "issue_date": ("created_at",),
-    "due_date": ("payment_due_date",),
-    "total": ("total_amount",),
-    "amount_outstanding": ("outstanding_balance",),
-}
-
-
 _SQL_NUMBER_PATTERN = r"^[+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?$"
 
 
@@ -985,7 +972,7 @@ def _doc_sql_order(field: str, descending: bool) -> list:
     else:
         values = [
             _func.nullif(Projection.state[k].as_string(), "")
-            for k in (field, *_DOC_DISPLAY_FALLBACKS.get(field, ()))
+            for k in (field, *DOC_FIELD_FALLBACKS.get(field, ()))
         ]
         expr = _func.coalesce(*values) if len(values) > 1 else values[0]
         if field in _DOC_NUMERIC_SORT_FIELDS:
@@ -995,18 +982,10 @@ def _doc_sql_order(field: str, descending: bool) -> list:
     return [expr.asc().nulls_first(), Projection.entity_id.asc()]
 
 
-def _doc_value(state: dict, field: str):
-    """The value a document shows for ``field``: the field itself, else its first non-empty older
-    key (``_DOC_DISPLAY_FALLBACKS``)."""
-    value = state.get(field)
-    if value in (None, ""):
-        value = next((state[k] for k in _DOC_DISPLAY_FALLBACKS.get(field, ()) if state.get(k) not in (None, "")), value)
-    return value
-
-
 def _doc_display(state: dict) -> dict:
-    """``state`` with each displayed field filled from its older keys (``_doc_value``)."""
-    return state | {field: _doc_value(state, field) for field in _DOC_DISPLAY_FALLBACKS}
+    """``state`` with each displayed field filled from its older keys (``doc_value``). The sort
+    orders by the same keys, so the order on the page is the order of what the page shows."""
+    return state | {field: doc_value(state, field) for field in DOC_FIELD_FALLBACKS}
 
 
 def _doc_row(r: Projection) -> dict:
@@ -1035,20 +1014,34 @@ def _doc_filter(f: DocListFilters, today: str):
 
 
 def _doc_base_amounts(state: dict, fields: tuple[str, ...], base_currency: str) -> dict[str, Decimal] | None:
-    """``fields`` of a document (``_doc_value``; missing is 0) in the company currency, each
-    rounded at its precision, or None when the document cannot be valued there: its exchange
-    rate is unknown or invalid (``doc_rate``), or an amount is not a number. None is never
-    counted as 0 or at a rate of 1."""
+    """``fields`` of a document (``doc_value``; missing is 0, and ``amount_outstanding`` is what
+    it still owes, ``outstanding_balance``) in the company currency, each rounded at its
+    precision, or None when the document cannot be valued there: its exchange rate is unknown or
+    invalid (``doc_rate``), or an amount is not a number. None is never counted as 0 or at a rate
+    of 1."""
     try:
         rate = doc_rate(state, base_currency)
         if rate is None:
             return None
-        amounts = {f: to_decimal(_doc_value(state, f) or 0) for f in fields}
+        amounts = {
+            f: outstanding_balance(state) if f == "amount_outstanding" else to_decimal(doc_value(state, f) or 0)
+            for f in fields
+        }
     except (ArithmeticError, TypeError, ValueError):
         return None
-    if not all(a.is_finite() for a in amounts.values()):
+    if not all(a is not None and a.is_finite() for a in amounts.values()):
         return None
     return {f: round_money(a * rate, base_currency) for f, a in amounts.items()}
+
+
+def _payable_balance(state: dict) -> Decimal:
+    """What a document still owes (``outstanding_balance``) at its currency's precision, for a
+    payment, credit or refund to be checked against; 409 when the recorded balance is not a
+    number."""
+    balance = outstanding_balance(state)
+    if balance is None:
+        raise HTTPException(status_code=409, detail="The document's outstanding balance is not a number")
+    return round_money(balance, str(state.get("currency") or "USD").upper())
 
 
 async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, *, limit: int | None, offset: int = 0) -> dict:
@@ -1059,7 +1052,7 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     # in Python over the SQL-ordered rows, so both paths share one ORDER BY.
     base_where = _doc_sql_where(company_id, f)
     order_by = _doc_sql_order(_doc_sort_field(f), f.dir == "desc")
-    keep = _doc_filter(f, _date.today().isoformat())
+    keep = _doc_filter(f, today_iso())
 
     if keep is not None:
         rows = (await session.execute(select(Projection).where(*base_where).order_by(*order_by))).scalars().all()
@@ -1149,7 +1142,7 @@ async def get_doc_summary(
 
     Totals are in the company currency (``_doc_base_amounts``). A document that cannot be valued
     there is left out of every total and counted in ``unvalued_count``."""
-    today = _date.today().isoformat()
+    today = today_iso()
     company = await session.get(Company, company_id)
     base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
     summary_where = _doc_sql_where(company_id, _dc_replace(filters, status=None, status_in=None, exclude_status=None, all_issued=False))
@@ -1194,10 +1187,10 @@ async def get_doc_summary(
             if state.get("fulfillment_status") != "fulfilled":
                 unfulfilled_count += 1
                 add("unfulfilled", amounts, "total")
-            if st in AWAITING_PAYMENT_STATUSES:
+            if is_awaiting_payment(dt, st):
                 awaiting_payment_count += 1
                 add("awaiting_payment", amounts, "amount_outstanding")
-                if is_overdue_document(_doc_display(state), today):
+                if is_overdue_document(state, today):
                     overdue_count += 1
                     add("overdue", amounts, "amount_outstanding")
                 if st == "sent":
@@ -1213,7 +1206,9 @@ async def get_doc_summary(
                 if amounts is None:
                     unvalued_count += 1
                 add("memo", amounts, "total")
-            if is_overdue_document(_doc_display(state), today):
+            if is_awaiting_payment(dt, st):
+                awaiting_payment_count += 1
+            if is_overdue_document(state, today):
                 overdue_count += 1
             if dt == "credit_note":
                 if not (state.get("return_received_items") or []):
@@ -1740,7 +1735,8 @@ async def create_doc(
 
     if payload.doc_type == "credit_note" and payload.original_doc_id:
         inv = await _get_doc(session, company_id, payload.original_doc_id)
-        outstanding = max(0.0, float(inv.state.get("amount_outstanding", inv.state.get("total", 0)) or 0) - float(payload.total))
+        outstanding = to_stored_float(max(Decimal(0), _payable_balance(inv.state) - round_money(
+            payload.total, str(inv.state.get("currency") or "USD").upper())))
         await emit_event(
             session,
             company_id=company_id,
@@ -2024,7 +2020,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
 
     sent_to = payload.sent_to
     view_url = pay_url = None
-    amount_due = float(row.state.get("amount_outstanding", row.state.get("total", 0)) or 0)
+    amount_due = float(outstanding_balance(row.state) or 0)
     if sent_to:
         # Emailing a document always shares it (an email with no viewable
         # document is pointless); send_view_url returns None only when no link
@@ -2675,8 +2671,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
             detail=f"Payment currency {payment_currency} does not match document currency {doc_currency}",
         )
     body["currency"] = doc_currency
-    outstanding_d = round_money(
-        doc_state.get("amount_outstanding", doc_state.get("total", 0)) or 0, doc_currency)
+    outstanding_d = _payable_balance(doc_state)
     if outstanding_d <= 0:
         raise HTTPException(status_code=409, detail="Invoice already fully paid")
     amount_d = round_money(body["amount"], doc_currency)
@@ -3220,10 +3215,8 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
     amount_d = round_money(payload.amount, cn_currency)
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail="Application amount must be positive")
-    cn_outstanding = round_money(
-        cn.get("amount_outstanding", cn.get("total", 0)) or 0, cn_currency)
-    inv_outstanding = round_money(
-        inv.get("amount_outstanding", inv.get("total", 0)) or 0, inv_currency)
+    cn_outstanding = _payable_balance(cn)
+    inv_outstanding = _payable_balance(inv)
     if amount_d > cn_outstanding:
         raise HTTPException(status_code=409, detail="Amount exceeds credit note balance")
     if amount_d > inv_outstanding:
@@ -3319,8 +3312,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
     amount_d = round_money(payload.amount, currency)
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail="Refund amount must be positive")
-    cn_outstanding = round_money(
-        cn.get("amount_outstanding", cn.get("total", 0)) or 0, currency)
+    cn_outstanding = _payable_balance(cn)
     if amount_d > cn_outstanding:
         raise HTTPException(status_code=409, detail="Refund amount exceeds credit note balance")
     amount = to_stored_float(amount_d)
@@ -3400,13 +3392,10 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
 
     payable = []
     for doc_id, state in docs:
-        if state.get("status") not in AWAITING_PAYMENT_STATUSES:
+        if not (is_awaiting_payment(state.get("doc_type"), state.get("status")) and is_owed(state)):
             continue
         currency = str(state.get("currency") or "USD").upper()
-        outstanding = round_money(
-            state.get("amount_outstanding", state.get("total", 0)) or 0, currency)
-        if outstanding > PAID_TOLERANCE:
-            payable.append((doc_id, state, currency, outstanding))
+        payable.append((doc_id, state, currency, _payable_balance(state)))
     if not payable:
         raise HTTPException(status_code=409, detail="No documents in payable status")
 
@@ -4816,10 +4805,10 @@ async def export_docs_csv(
     out_cols = resolve_export_cols(cols, _DOC_EXPORT_COLS, _DOC_EXPORT_COLS)
     base_where = _doc_sql_where(company_id, filters)
     order_by = _doc_sql_order(_doc_sort_field(filters), filters.dir == "desc")
-    keep = _doc_filter(filters, _date.today().isoformat())
+    keep = _doc_filter(filters, today_iso())
     # Read only the state keys the exported columns and the row filters need, never whole documents.
     fields = {c for c in out_cols if c != "entity_id"} | (set(_DOC_FILTER_KEYS) if keep else set())
-    keys = sorted(fields | {k for field in fields for k in _DOC_DISPLAY_FALLBACKS.get(field, ())})
+    keys = sorted(fields | {k for field in fields for k in DOC_FIELD_FALLBACKS.get(field, ())})
 
     async def _rows():
         stmt = (

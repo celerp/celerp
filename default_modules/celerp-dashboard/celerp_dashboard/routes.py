@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.doc_balance import is_awaiting_payment, is_overdue_document, outstanding_balance, today_iso
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role
 from celerp.services.permissions import get_current_company_settings
 from celerp.services.reorder import is_below_reorder
@@ -29,16 +30,22 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
     deals = [r for r in rows if r.entity_type == "deal"]
     subscriptions = [r for r in rows if r.entity_type == "doc" and r.state.get("doc_type") in {"subscription_invoice", "subscription_po"}]
 
-    now = datetime.now(timezone.utc).date().isoformat()
+    now = today_iso()
     month_prefix = now[:7]  # "YYYY-MM"
     year_prefix = now[:4]   # "YYYY"
 
-    # AR: only non-void, non-draft invoices count as outstanding.
-    # Exclude pro-forma (draft/sent pre-approval), void, and fully-paid with no balance.
-    _AR_STATUSES = {"final", "sent", "awaiting_payment", "partial", "paid"}
-    ar_docs = [d for d in docs if d.state.get("doc_type") == "invoice" and d.state.get("status") in _AR_STATUSES]
-    ar_outstanding = sum(float(d.state.get("amount_outstanding", 0) or 0) for d in ar_docs)
-    ap_outstanding = sum(float(d.state.get("amount_outstanding", d.state.get("total", 0)) or 0) for d in docs if d.state.get("doc_type") == "purchase_order" and d.state.get("status") not in {"void", "draft"})
+    # Receivables and payables: what the invoices and purchase orders awaiting payment still owe,
+    # the same documents the invoice list's Awaiting Payment and Overdue cards count.
+    def _owed(doc_type: str) -> list[Projection]:
+        return [d for d in docs if d.state.get("doc_type") == doc_type and is_awaiting_payment(doc_type, d.state.get("status"))]
+
+    def _balance(rows: list[Projection]) -> float:
+        return float(sum(outstanding_balance(d.state) or 0 for d in rows))
+
+    ar_docs = _owed("invoice")
+    overdue_docs = [d for d in ar_docs if is_overdue_document(d.state, now)]
+    ar_outstanding = _balance(ar_docs)
+    ap_outstanding = _balance(_owed("purchase_order"))
 
     # Inventory: delegate entirely to the canonical valuation endpoint.
     # This is the single source of truth for item counts and price totals.
@@ -104,9 +111,10 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
             "revenue_mtd": revenue_mtd,
             "revenue_ytd": revenue_ytd,
             "revenue_trend": revenue_trend,
-            "invoices_outstanding": sum(1 for d in ar_docs if float(d.state.get("amount_outstanding", 0) or 0) > 0),
+            "invoices_outstanding": len(ar_docs),
+            "invoices_overdue": len(overdue_docs),
             "ar_outstanding": ar_outstanding,
-            "ar_overdue": sum(float(d.state.get("amount_outstanding", 0) or 0) for d in ar_docs if d.state.get("due_date") and d.state.get("due_date") < now and float(d.state.get("amount_outstanding", 0) or 0) > 0),
+            "ar_overdue": _balance(overdue_docs),
         },
         "purchasing": {
             "spend_mtd": sum(float(d.state.get("total", 0) or 0) for d in docs if d.state.get("doc_type") == "purchase_order" and _doc_month(d) == month_prefix),

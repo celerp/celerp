@@ -19,6 +19,7 @@ from celerp.services.units import default_receive_as
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.components.table import search_bar, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
+from celerp.services.doc_balance import PAID_TOLERANCE, awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.payment_terms import due_date_for_terms
@@ -1999,15 +2000,7 @@ def setup_routes(app):
         contact_name = docs[0].get("contact_name") or ""
         doc_type = docs[0].get("doc_type") or "invoice"
 
-        payable = []
-        for d in docs:
-            if d.get("status") in ("draft", "void", "paid"):
-                continue
-            cur = str(d.get("currency") or "USD").upper()
-            amount = round_money(
-                d.get("amount_outstanding") or d.get("outstanding_balance") or 0, cur)
-            if amount > 0:
-                payable.append(d)
+        payable = [d for d in docs if is_awaiting_payment(d.get("doc_type"), d.get("status")) and is_owed(d)]
         currencies = {str(d.get("currency") or "USD").upper() for d in payable}
         if len(currencies) > 1:
             return Div(
@@ -2020,8 +2013,7 @@ def setup_routes(app):
         payable.sort(key=lambda d: d.get("due_date") or d.get("issue_date") or "")
         skipped = len(docs) - len(payable)
         total_outstanding_d = round_money(
-            sum((to_decimal(d.get("amount_outstanding") or d.get("outstanding_balance") or 0)
-                 for d in payable), to_decimal(0)),
+            sum((outstanding_balance(d) for d in payable), to_decimal(0)),
             currency,
         )
         total_outstanding = to_stored_float(total_outstanding_d)
@@ -2031,8 +2023,7 @@ def setup_routes(app):
             eid = d.get("entity_id") or d.get("id", "")
             doc_num = d.get("doc_number") or d.get("ref_id") or eid
             due = d.get("due_date") or "--"
-            outstanding = to_stored_float(round_money(
-                d.get("amount_outstanding") or d.get("outstanding_balance") or 0, currency))
+            outstanding = to_stored_float(round_money(outstanding_balance(d), currency))
             alloc_rows.append(Tr(
                 Td(doc_num),
                 Td(str(due)[:10]),
@@ -3471,7 +3462,7 @@ celerpUpdateBulkAlloc();
             # Filter to open invoices with outstanding > 0
             open_inv = []
             for inv in invoices:
-                outstanding = float(inv.get("amount_outstanding") or inv.get("outstanding_balance") or 0)
+                outstanding = float(outstanding_balance(inv) or 0)
                 if inv.get("status") not in ("draft", "void", "paid") and outstanding > 0:
                     open_inv.append({
                         "id": inv.get("entity_id") or inv.get("id", ""),
@@ -5263,8 +5254,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     payments = [p for p in (doc.get("payments") or []) if p.get("status") != "deleted"]
     total_val = float(doc.get("total") or doc.get("total_amount") or 0)
     amount_paid = float(doc.get("amount_paid") or 0)
-    outstanding_d = round_money(
-        doc.get("amount_outstanding") or doc.get("outstanding_balance") or 0, currency)
+    outstanding_d = round_money(outstanding_balance(doc) or 0, currency)
     outstanding = to_stored_float(outstanding_d)
     money_dp = currency_dp(currency)
     money_step = "1" if money_dp == 0 else "0." + ("0" * (money_dp - 1)) + "1"
@@ -5366,8 +5356,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         )
     else:
         paid_label = t("documents.total_paid", paid=fmt_money(amount_paid, currency), total=fmt_money(total_val, currency))
-        outstanding_label = t("documents.paid_in_full") if outstanding_d == 0 else t("documents.outstanding_amount", amount=fmt_money(outstanding, currency))
-        outstanding_cls = "total-value--success" if outstanding_d == 0 else "total-value--alert"
+        outstanding_label = t("documents.paid_in_full") if outstanding_d <= PAID_TOLERANCE else t("documents.outstanding_amount", amount=fmt_money(outstanding, currency))
+        outstanding_cls = "total-value--success" if outstanding_d <= PAID_TOLERANCE else "total-value--alert"
         summary_line = Div(
             Span(paid_label, cls="total-label"),
             Span(outstanding_label, cls=f"total-value {outstanding_cls}"),
@@ -5377,7 +5367,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     # --- Add Payment / Apply Credit form ---
     # Only show form if there's outstanding balance
     add_form = ""
-    if outstanding_d > 0:
+    if outstanding_d > PAID_TOLERANCE:
         _methods = [Option(t("doc.cash"), value="cash"), Option(t("doc.bank_transfer"), value="transfer"),
                     Option(t("doc.card"), value="card"), Option(t("doc.check"), value="check"), Option(t("doc.other"), value="other")]
         _bank_opts = _bank_account_options(bank_accounts, default_code=bank_accounts[0].get("chart_account_code") if bank_accounts else None)
@@ -5847,10 +5837,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     is_draft = status == "draft"
     # Remaining balance (net of applied payments/credits) - what a Pay button
     # would charge; all payment hints/labels use this, never the face total.
-    try:
-        _pay_due = float(doc.get("amount_outstanding", doc.get("total", 0)) or 0)
-    except (TypeError, ValueError):
-        _pay_due = 0.0
+    _pay_due = float(outstanding_balance(doc) or 0)
     list_type = (doc.get("list_type") or "") if doc_type == "list" else ""
     pol = _list_column_policy(doc_type, list_type, status)
     # Write-off entry columns (qty_out / account / comment). Built once for every render path (draft
@@ -9562,7 +9549,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         _active_key = ""
 
     if doc_type == "invoice":
-        _AWAITING_STATUSES = "final,sent,awaiting_payment,partial"
+        _AWAITING_STATUSES = awaiting_status_param("invoice")
         _PAID_STATUSES = "paid"
         _ALL_ISSUED_STATUSES = "final,sent,awaiting_payment,paid,partial"
 
@@ -9680,13 +9667,14 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             _active_key = "overdue"
         elif active_status:
             _active_key = active_status
+        elif status_in == awaiting_status_param("bill"):
+            _active_key = "awaiting_payment"
 
-        _AWAITING_STATUSES_BILL = "final,sent,awaiting_payment,partial"
         cards = [
             {"label": t("status.draft", lang),           "count": draft_cnt,       "total": None, "status": "draft",        "color": "gray",   "_url": f"{base_url}&status=draft",                        "_active_key": "draft"},
             {"label": t("status.all_issued", lang),      "count": all_issued_cnt,  "total": None, "status": "all_issued",   "color": "blue",   "_url": f"{base_url}&all_issued=1",                        "_active_key": "all_issued"},
             {"label": t("documents.not_stocked_goods", lang), "count": not_stocked_cnt, "total": None, "status": "not_stocked",  "color": "orange", "_url": f"{base_url}&not_stocked=1",                       "_active_key": "not_stocked"},
-            {"label": t("status.awaiting_payment", lang),"count": awaiting,        "total": None, "status": "awaiting_payment","color": "yellow","_url": f"{base_url}&status_in={_AWAITING_STATUSES_BILL}","_active_key": "awaiting_payment"},
+            {"label": t("status.awaiting_payment", lang),"count": awaiting,        "total": None, "status": "awaiting_payment","color": "yellow","_url": f"{base_url}&status_in={awaiting_status_param('bill')}","_active_key": "awaiting_payment"},
             {"label": t("status.overdue", lang),         "count": overdue,         "total": None, "status": "overdue",      "color": "red",    "_url": f"{base_url}&overdue_only=1",                      "_active_key": "overdue"},
             {"label": t("label.paid", lang),             "count": paid_cnt,        "total": None, "status": "paid",         "color": "green"},
             {"label": t("btn.void", lang),               "count": void_cnt,        "total": None, "status": "void",         "color": "gray"},
@@ -9744,11 +9732,12 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=True)
 
     # Generic fallback for remaining doc types (receipt, etc.)
+    # No document has the status "overdue": its card counts and links the overdue filter, and
+    # stays out of the All count, since each overdue document is already counted by its status.
     _DEFAULT_CARDS = [
         ("draft", t("status.draft", lang), "gray"),
         ("awaiting_payment", t("status.awaiting_payment", lang), "yellow"),
         ("paid", t("label.paid", lang), "green"),
-        ("overdue", t("status.overdue", lang), "red"),
         ("void", t("btn.void", lang), "gray"),
     ]
     card_defs = _DEFAULT_CARDS
@@ -9769,7 +9758,9 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         {"label": label, "count": counts[s], "total": totals[s], "status": s, "color": color}
         for s, label, color in card_defs
     ]
-    return status_cards(cards, base_url, active_status or None, currency=currency)
+    cards.insert(3, {"label": t("status.overdue", lang), "count": _sm.get("overdue_count", 0), "total": None, "status": "overdue",
+                     "color": "red", "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"})
+    return status_cards(cards, base_url, "overdue" if overdue_only else (active_status or None), total_override=sum(counts.values()), currency=currency)
 
 
 def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None, lang: str = "en") -> FT:

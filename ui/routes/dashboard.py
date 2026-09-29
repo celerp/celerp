@@ -13,8 +13,13 @@ from ui.components.shell import base_shell, page_header, star_supporter_card, pa
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
+from celerp.services.doc_balance import awaiting_status_param
 from celerp.services.permissions import role_has_permission as _role_has_permission
 from urllib.parse import urlencode as _urlencode
+
+# The invoice lists the receivables cards open: what is overdue, and what still awaits payment.
+_AR_OVERDUE_HREF = "/docs?type=invoice&overdue_only=1"
+_AR_OUTSTANDING_HREF = f"/docs?type=invoice&status_in={awaiting_status_param('invoice')}"
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +175,8 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo",                        "alert_fn": "memo_exposure_high"},
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
             {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub", "href": "/docs?type=invoice&status=outstanding",         "alert_fn": "ar_positive"},
-            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub", "href": _AR_OUTSTANDING_HREF,         "alert_fn": "ar_positive"},
+            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": _AR_OVERDUE_HREF,                "alert_fn": "ar_overdue_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
         ],
         "secondary_kpis": [
@@ -194,7 +199,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "kpis": [
             {"key": "stock_cost",     "label": "Stock Value (Cost)","value_fn": "cost_total",       "sub_fn": "active_items_sub",      "href": "/inventory"},
             {"key": "stock_retail",   "label": "Stock Value (Retail)","value_fn": "retail_total",  "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "edit_inventory"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",   "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",   "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
             {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",     "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count","sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",      "sub_fn": None,                    "href": "/reports"},
@@ -216,7 +221,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_pieces_sub",     "href": "/inventory"},
             {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo",                        "alert_fn": "memo_positive"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
             {"key": "pipeline",       "label": "Pipeline",         "value_fn": "deal_value_pipeline","sub_fn": "active_deals_sub",     "href": "/crm"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order"},
         ],
@@ -236,7 +241,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "kpis": [
             {"key": "works_avail",    "label": "Works Available",  "value_fn": "active_items_count","sub_fn": "retail_total_sub",      "href": "/inventory"},
             {"key": "memo_out",       "label": "On Approval",      "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo",                        "alert_fn": "memo_positive"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",       "sub_fn": "gross_sales_sub",       "href": "/reports"},
             {"key": "pipeline",       "label": "Pipeline",         "value_fn": "deal_value_pipeline","sub_fn": "active_deals_sub",     "href": "/crm"},
             {"key": "pos_pending",    "label": "Acquisitions",     "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order"},
@@ -258,8 +263,8 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             {"key": "expiring",       "label": "Expiring Soon",    "value_fn": "items_expiring_30d","sub_fn": "within_30d_sub",        "href": "/inventory?filter=expiring_soon",                  "alert_fn": "expiring_positive"},
             {"key": "low_stock",      "label": "Low / Out of Stock","value_fn": "low_stock_items",  "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
             {"key": "inv_value",      "label": "Inventory Value",  "value_fn": "cost_total",        "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
-            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
+            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": _AR_OVERDUE_HREF,                "alert_fn": "ar_overdue_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
         ],
         "secondary_kpis": [
@@ -281,8 +286,8 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             {"key": "active_stock",   "label": "Active Stock",     "value_fn": "active_items_count","sub_fn": "retail_total_sub",      "href": "/inventory"},
             {"key": "cost_basis",     "label": "Cost Value",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "low_stock",      "label": "Low Stock",        "value_fn": "low_stock_items",   "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
-            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
+            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": _AR_OVERDUE_HREF,                "alert_fn": "ar_overdue_positive"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",       "sub_fn": "ytd_sub",               "href": "/reports"},
         ],
         "secondary_kpis": [],
@@ -302,8 +307,8 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             {"key": "inv_value",      "label": "Inventory Value",  "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
             {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "low_stock",      "label": "Low / Out of Stock","value_fn": "low_stock_items",  "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
-            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
+            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": _AR_OVERDUE_HREF,                "alert_fn": "ar_overdue_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
         ],
         "secondary_kpis": [
@@ -323,8 +328,8 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     },
     "consulting": {
         "kpis": [
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
-            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "action_needed_sub",     "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
+            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "action_needed_sub",     "href": _AR_OVERDUE_HREF,                "alert_fn": "ar_overdue_positive"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",       "sub_fn": "ytd_sub",               "href": "/reports"},
             {"key": "pipeline",       "label": "Pipeline Value",   "value_fn": "deal_value_pipeline","sub_fn": "active_deals_sub",     "href": "/crm"},
             {"key": "subscriptions",  "label": "Retainer / Recurring","value_fn": "subscriptions_active","sub_fn": "active_subs_sub",  "href": "/subscriptions"},
@@ -336,7 +341,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         ],
         "quick_links": [
             ("/docs?type=invoice",         "Invoices",        "All invoices"),
-            ("/docs?type=invoice&status=overdue","Overdue",   "Past due invoices"),
+            (_AR_OVERDUE_HREF,"Overdue",   "Past due invoices"),
             ("/crm",                       "Pipeline",        "CRM deals"),
             ("/subscriptions",             "Retainers",       "Recurring subscriptions"),
             ("/docs?type=purchase_order",  "Vendor Bills",    "AP"),
@@ -349,8 +354,8 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "saas": {
         "kpis": [
             {"key": "subscriptions",  "label": "Active Subscriptions","value_fn": "subscriptions_active","sub_fn": "mrr_sub",          "href": "/subscriptions"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "failed_pending_sub",    "href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
-            {"key": "ar_overdue",     "label": "Billing Issues",   "value_fn": "ar_overdue",        "sub_fn": "billing_issues_sub",    "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "failed_pending_sub",    "href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
+            {"key": "ar_overdue",     "label": "Billing Issues",   "value_fn": "ar_overdue",        "sub_fn": "billing_issues_sub",    "href": _AR_OVERDUE_HREF,                "alert_fn": "ar_overdue_positive"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",       "sub_fn": "ytd_sub",               "href": "/reports"},
             {"key": "pipeline",       "label": "Pipeline",         "value_fn": "deal_value_pipeline","sub_fn": "active_deals_sub",     "href": "/crm"},
             {"key": "deals_won",      "label": "New Customers MTD","value_fn": "deals_won_mtd",     "sub_fn": None,                    "href": "/crm"},
@@ -362,7 +367,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             ("/crm",                       "Pipeline",        "CRM"),
             ("/reports",                   "Reports",         "Analytics"),
             ("/reports/ar-aging",          "AR Aging",        "Receivables"),
-            ("/docs?type=invoice&status=overdue","Billing Issues","Failed payments"),
+            (_AR_OVERDUE_HREF,"Billing Issues","Failed payments"),
         ],
         "charts": ["ar_aging"],
         "show_activity": True,
@@ -372,8 +377,8 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "kpis": [
             {"key": "tenancies",      "label": "Active Tenancies", "value_fn": "subscriptions_active","sub_fn": "occupied_units_sub",  "href": "/subscriptions"},
             {"key": "rent_collected", "label": "Rent Collected MTD","value_fn": "revenue_mtd",       "sub_fn": "ytd_sub",               "href": "/reports"},
-            {"key": "ar_overdue",     "label": "Overdue Rent",     "value_fn": "ar_overdue",        "sub_fn": "invoices_past_due_sub", "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
-            {"key": "ar_outstanding", "label": "Total Receivable", "value_fn": "ar_outstanding",    "sub_fn": None,                    "href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
+            {"key": "ar_overdue",     "label": "Overdue Rent",     "value_fn": "ar_overdue",        "sub_fn": "invoices_past_due_sub", "href": _AR_OVERDUE_HREF,                "alert_fn": "ar_overdue_positive"},
+            {"key": "ar_outstanding", "label": "Total Receivable", "value_fn": "ar_outstanding",    "sub_fn": None,                    "href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
             {"key": "maintenance",    "label": "Maintenance Spend","value_fn": "ap_outstanding",    "sub_fn": "open_orders_sub",       "href": "/docs?type=purchase_order"},
             {"key": "pipeline",       "label": "Prospects",        "value_fn": "deal_value_pipeline","sub_fn": "active_deals_sub",     "href": "/crm"},
         ],
@@ -381,7 +386,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "quick_links": [
             ("/subscriptions",             "Tenancies",       "Active leases"),
             ("/docs?type=invoice",         "Invoices",        "Rent invoices"),
-            ("/docs?type=invoice&status=overdue","Overdue Rent","Past due rent"),
+            (_AR_OVERDUE_HREF,"Overdue Rent","Past due rent"),
             ("/docs?type=purchase_order",  "Maintenance",     "Repair/maintenance orders"),
             ("/crm",                       "Prospects",       "CRM"),
             ("/reports/ar-aging",          "Rent Aging",      "Receivables aging"),
@@ -394,8 +399,8 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "kpis": [
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
             {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
-            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
+            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": _AR_OVERDUE_HREF,                "alert_fn": "ar_overdue_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",       "sub_fn": "ytd_sub",               "href": "/reports"},
         ],
@@ -416,8 +421,8 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             {"key": "expiring",       "label": "Expiring Soon",    "value_fn": "items_expiring_30d","sub_fn": "within_30d_sub",        "href": "/inventory?filter=expiring_soon",                  "alert_fn": "expiring_positive"},
             {"key": "low_stock",      "label": "Low Stock",        "value_fn": "low_stock_items",   "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "cost_total",        "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
-            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
+            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": _AR_OVERDUE_HREF,                "alert_fn": "ar_overdue_positive"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",       "sub_fn": "ytd_sub",               "href": "/reports"},
         ],
         "secondary_kpis": [],
@@ -436,8 +441,8 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "kpis": [
             {"key": "expiring",       "label": "Expiring Soon",    "value_fn": "items_expiring_30d","sub_fn": "within_30d_sub",        "href": "/inventory?filter=expiring_soon",                  "alert_fn": "expiring_positive"},
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "cost_total",        "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
-            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
+            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": _AR_OVERDUE_HREF,                "alert_fn": "ar_overdue_positive"},
             {"key": "revenue_ytd",    "label": "Revenue YTD",      "value_fn": "revenue_ytd",       "sub_fn": "mtd_sub",               "href": "/reports"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
         ],
@@ -458,7 +463,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
             {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "low_stock",      "label": "Low Stock",        "value_fn": "low_stock_items",   "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
             {"key": "pipeline",       "label": "Pipeline",         "value_fn": "deal_value_pipeline","sub_fn": "active_deals_sub",     "href": "/crm"},
         ],
@@ -478,8 +483,8 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "kpis": [
             {"key": "low_stock",      "label": "Low / Out of Stock","value_fn": "low_stock_items",  "sub_fn": "reorder_needed_sub",    "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "cost_total",        "sub_fn": "active_items_sub",      "href": "/inventory"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
-            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
+            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": _AR_OVERDUE_HREF,                "alert_fn": "ar_overdue_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",       "sub_fn": "ytd_sub",               "href": "/reports"},
         ],
@@ -500,7 +505,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_titles_sub",     "href": "/inventory"},
             {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",       "sub_fn": "ytd_sub",               "href": "/reports"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
             {"key": "memo_out",       "label": "Consignment",      "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo"},
             {"key": "pos_pending",    "label": "Orders Pending",   "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order"},
         ],
@@ -521,8 +526,8 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             {"key": "low_stock",      "label": "Low Stock",        "value_fn": "low_stock_items",   "sub_fn": "items_at_zero_sub",     "href": "/inventory?filter=low_stock",                      "alert_fn": "low_stock_positive"},
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
             {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
-            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding",          "alert_fn": "ar_positive"},
-            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": "/docs?type=invoice&status=overdue",                "alert_fn": "ar_overdue_positive"},
+            {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
+            {"key": "ar_overdue",     "label": "AR Overdue",       "value_fn": "ar_overdue",        "sub_fn": "past_due_sub",          "href": _AR_OVERDUE_HREF,                "alert_fn": "ar_overdue_positive"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
         ],
         "secondary_kpis": [],
@@ -594,6 +599,7 @@ def _kpi_values(kpis: dict, valuation: dict, doc_summary: dict,
     ar_outstanding = float(sales.get("ar_outstanding", doc_summary.get("ar_outstanding", 0)) or 0)
     ar_overdue = float(sales.get("ar_overdue", 0) or 0)
     invoices_outstanding = int(sales.get("invoices_outstanding", 0) or 0)
+    invoices_overdue = int(sales.get("invoices_overdue", 0) or 0)
     revenue_mtd = float(sales.get("revenue_mtd", 0) or 0)
     revenue_ytd = float(sales.get("revenue_ytd", 0) or 0)
 
@@ -656,7 +662,7 @@ def _kpi_values(kpis: dict, valuation: dict, doc_summary: dict,
         "failed_pending_sub":       t("dashboard.sub.failed_pending"),
         "billing_issues_sub":       t("dashboard.sub.billing_issues"),
         "occupied_units_sub":       t("dashboard.sub.occupied_units"),
-        "invoices_past_due_sub":    t("dashboard.sub.invoices_past_due", n=invoices_outstanding),
+        "invoices_past_due_sub":    t("dashboard.sub.invoices_past_due", n=invoices_overdue),
         "open_orders_sub":          t("dashboard.sub.open_orders", n=pending_pos),
         "action_needed_sub":        t("dashboard.sub.action_needed"),
         "vendor_invoices_sub":      t("dashboard.sub.vendor_invoices", n=pending_pos),

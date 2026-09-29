@@ -21,6 +21,7 @@ from fasthtml.common import (
 
 from celerp.output.branding import BRAND_TEXT as _BRAND_LABEL, brand_url as _brand_url
 from celerp.output.document_context import prepare_document_output
+from celerp.services.doc_balance import outstanding_balance
 from celerp.services.line_measures import line_identifier as _line_identifier, measure_sublines, qty_label
 from celerp.services.shipping import REASON_EXPORT_LABELS, SHIPPING_LIST_TYPE
 from celerp.services.units import DEFAULT_UNITS, build_unit_map
@@ -219,10 +220,7 @@ def _pay_bar(pay_url: str | None, doc: dict, currency: str):
     buttons."""
     if not pay_url:
         return None
-    try:
-        outstanding = float(doc.get("amount_outstanding", doc.get("total", 0)) or 0)
-    except (TypeError, ValueError):
-        outstanding = 0.0
+    outstanding = float(outstanding_balance(doc) or 0)
     if outstanding <= 0:
         return None
     amount = fmt_money(outstanding, currency)

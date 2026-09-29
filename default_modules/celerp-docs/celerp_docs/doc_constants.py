@@ -2,9 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Shared constants for the docs module."""
 
-from decimal import Decimal, InvalidOperation
-
-from celerp.services.money import to_decimal
+from celerp.services.doc_balance import MEMO_LIVE_STATUSES
 
 # Per-doc-type allowlist: maps doc_type → set of statuses where fulfill-lines is permitted.
 # Only doc types listed here support the fulfill-lines / revert-lines endpoints.
@@ -13,7 +11,7 @@ from celerp.services.money import to_decimal
 # is handled by POST /receive (creates parcels). fulfill-lines is outbound-only.
 # UI counterpart: ui/routes/documents.py _fin_show_fulfill — keep in sync manually (different package).
 FULFILLABLE_STATUSES: dict[str, frozenset[str]] = {
-    "memo":    frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"}),
+    "memo":    MEMO_LIVE_STATUSES,
     "invoice": frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
 }
 
@@ -106,42 +104,3 @@ NON_FINANCIAL_DOC_TYPES: frozenset[str] = frozenset({"production_order"})
 # Statuses where Send is suppressed even for sendable doc types. A closed memo is
 # settled paperwork: re-sending it would silently un-close it, so Send is hidden.
 NO_SEND_STATUSES: frozenset[str] = frozenset({"paid", "void", "closed"})
-
-
-# An outstanding balance at or below this is settled: the payment projection marks the
-# document paid, and nothing counts it as owed.
-PAID_TOLERANCE = Decimal("0.005")
-
-# Issued invoice statuses still awaiting payment.
-AWAITING_PAYMENT_STATUSES: frozenset[str] = frozenset({"final", "sent", "awaiting_payment", "partial"})
-
-# Per-doc-type statuses in which a past due date means the document is overdue: an invoice
-# or bill still awaiting payment, a memo with goods still out, a consignment still holding
-# goods. Draft, void, paid, closed, converted and fully returned documents never are.
-OVERDUE_STATUSES: dict[str, frozenset[str]] = {
-    "invoice": AWAITING_PAYMENT_STATUSES,
-    "bill": frozenset({"final", "awaiting_payment", "partial", "received", "partially_received"}),
-    "memo": FULFILLABLE_STATUSES["memo"],
-    "consignment_in": frozenset({"final", "received", "partially_received", "partial_returned"}),
-}
-
-# Doc types whose overdue state also needs an unpaid balance.
-_BALANCE_DOC_TYPES: frozenset[str] = frozenset({"invoice", "bill"})
-
-
-def is_overdue_document(state: dict, today: str) -> bool:
-    """Whether a document, as displayed, is overdue on ``today`` (ISO date): due strictly
-    before today, in a live status of its type (``OVERDUE_STATUSES``), and for an invoice or
-    bill with a balance above ``PAID_TOLERANCE`` (a document with no recorded balance still
-    owes its total, as the payment projection starts it)."""
-    doc_type = state.get("doc_type")
-    due = state.get("due_date")
-    if not due or str(due) >= today or state.get("status") not in OVERDUE_STATUSES.get(doc_type, ()):
-        return False
-    if doc_type not in _BALANCE_DOC_TYPES:
-        return True
-    outstanding = state.get("amount_outstanding")
-    try:
-        return to_decimal(state.get("total") if outstanding is None else outstanding) > PAID_TOLERANCE
-    except (InvalidOperation, TypeError, ValueError):
-        return False

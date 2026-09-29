@@ -6,8 +6,9 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal
 
+from celerp.services.doc_balance import PAID_TOLERANCE
 from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
-from celerp_docs.doc_constants import LEGACY_CONTACT_FIELDS, PAID_TOLERANCE
+from celerp_docs.doc_constants import LEGACY_CONTACT_FIELDS
 
 
 def _fold_legacy_list_contact(state: dict) -> None:
