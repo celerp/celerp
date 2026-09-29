@@ -26,6 +26,7 @@ from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_section as _shared_doc_files_section
+from ui.components.operation_key import operation_key_input, operation_key_vals, submitted_operation_key
 
 
 from celerp.output.doc_print import (
@@ -861,6 +862,7 @@ def _render_receive_return_section(doc: dict):
     return Div(
         Form(
             *hidden_fields,
+            operation_key_input(),
             Button(t("btn.receive_returns"),
                 cls="btn btn--primary btn--sm",
                 title=t("documents.receive_returns_tooltip"),
@@ -2110,6 +2112,7 @@ def setup_routes(app):
             Form(
                 *hidden_ids,
                 Input(type="hidden", name="doc_type", value=doc_type),
+                operation_key_input(),
                 Div(
                     Div(Label(t("label.amount"), cls="form-label"),
                         Input(type="number", name="amount", value=f"{total_outstanding_d:.{money_dp}f}", step=money_step,
@@ -3003,6 +3006,7 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
             form = await request.form()
+            op_key = submitted_operation_key(form)
             if action == "finalize":
                 await api.finalize_doc(token, entity_id)
             elif action == "send":
@@ -3017,24 +3021,24 @@ celerpUpdateBulkAlloc();
                     "subject": str(form.get("subject", "")).strip() or None,
                     "message": str(form.get("message", "")).strip() or None,
                 }
-                await api.send_doc(token, entity_id, data=data)
+                await api.send_doc(token, entity_id, data={**data, **op_key})
             elif action == "mark_sent":
-                await api.send_doc(token, entity_id, data={"sent_via": "manual"})
+                await api.send_doc(token, entity_id, data={"sent_via": "manual", **op_key})
             elif action == "unmark_sent":
-                await api.revert_doc_to_draft(token, entity_id, reason=None)
+                await api.revert_doc_to_draft(token, entity_id, reason=None, **op_key)
             elif action == "void":
                 reason = str(form.get("reason", "")).strip() or None
-                await api.void_doc(token, entity_id, reason)
+                await api.void_doc(token, entity_id, reason, **op_key)
             elif action == "revert_to_draft":
                 reason = str(form.get("reason", "")).strip() or None
-                await api.revert_doc_to_draft(token, entity_id, reason)
+                await api.revert_doc_to_draft(token, entity_id, reason, **op_key)
             elif action == "unvoid":
-                await api.unvoid_doc(token, entity_id)
+                await api.unvoid_doc(token, entity_id, **op_key)
             elif action == "close":
                 reason = str(form.get("reason", "")).strip() or None
-                await api.close_doc(token, entity_id, reason)
+                await api.close_doc(token, entity_id, reason, **op_key)
             elif action == "reopen":
-                await api.reopen_doc(token, entity_id)
+                await api.reopen_doc(token, entity_id, **op_key)
             elif action == "delete":
                 await api.delete_doc(token, entity_id)
                 doc_type = str(form.get("doc_type", "")).strip() or "invoice"
@@ -3106,6 +3110,7 @@ celerpUpdateBulkAlloc();
                 "payment_date": payment_date,
                 "bank_account": bank_account,
                 "conversion_rate": conversion_rate,
+                **submitted_operation_key(form),
             })
         except APIError as e:
             if e.status == 401:
@@ -3163,7 +3168,7 @@ celerpUpdateBulkAlloc();
                         item["name"] = name
                     received_items.append(item)
                 idx += 1
-            data = {"location_id": location_id, "received_items": received_items}
+            data = {"location_id": location_id, "received_items": received_items, **submitted_operation_key(form)}
             if notes:
                 data["notes"] = notes
             await api.receive_po(token, entity_id, data)
@@ -3197,6 +3202,7 @@ celerpUpdateBulkAlloc();
                 "payment_date": str(form.get("payment_date", "")).strip() or _d.today().isoformat(),
                 "method": str(form.get("method", "")).strip() or None,
                 "reference": str(form.get("reference", "")).strip() or None,
+                **submitted_operation_key(form),
             })
         except APIError as e:
             if e.status == 401:
@@ -3216,7 +3222,7 @@ celerpUpdateBulkAlloc();
             form = await request.form()
             payment_index = int(form.get("payment_index", -1))
             void_reason = str(form.get("void_reason", "")).strip()
-            await api.void_payment(token, entity_id, payment_index, void_reason)
+            await api.void_payment(token, entity_id, payment_index, void_reason, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3234,7 +3240,7 @@ celerpUpdateBulkAlloc();
             target_doc_id = str(form.get("target_doc_id", "")).strip()
             amount = float(form.get("amount", 0))
             date = str(form.get("date", "")).strip() or None
-            await api.apply_credit_note(token, entity_id, target_doc_id, amount, date)
+            await api.apply_credit_note(token, entity_id, target_doc_id, amount, date, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3254,7 +3260,8 @@ celerpUpdateBulkAlloc();
             method = str(form.get("method", "")).strip() or None
             bank_account = str(form.get("bank_account", "")).strip() or None
             reference = str(form.get("reference", "")).strip() or None
-            await api.refund_credit_note(token, entity_id, amount, date, method, bank_account, reference)
+            await api.refund_credit_note(token, entity_id, amount, date, method, bank_account, reference,
+                                         **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3315,7 +3322,8 @@ celerpUpdateBulkAlloc();
             method = str(form.get("method", "")).strip() or None
             bank_account = str(form.get("bank_account", "")).strip() or None
             reference = str(form.get("reference", "")).strip() or None
-            result = await api.bulk_payment(token, doc_ids, amount, payment_date, method, bank_account, reference)
+            result = await api.bulk_payment(token, doc_ids, amount, payment_date, method, bank_account, reference,
+                                            **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3734,7 +3742,7 @@ celerpUpdateBulkAlloc();
         if not items:
             return _action_error(t("doc.no_valid_quantities_entered"))
         try:
-            await api.receive_return(token, entity_id, items)
+            await api.receive_return(token, entity_id, items, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -5383,6 +5391,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                     Summary(t("btn.refund"), cls="btn btn--ghost btn--xs", title=t("documents.refund_this_payment")),
                     Form(
                         Input(type="hidden", name="payment_index", value=str(p.get("index", 0))),
+                        operation_key_input(),
                         Input(type="number", name="amount", value=f"{p_left:.{money_dp}f}", step=money_step,
                               min=money_step, max=f"{p_left:.{money_dp}f}", cls="form-input form-input--sm"),
                         Input(type="date", name="payment_date", value=today, cls="form-input form-input--sm"),
@@ -5398,6 +5407,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                     Summary("🗑", cls="btn btn--ghost btn--xs", title=t("documents.void_this_payment")),
                     Form(
                         Input(type="hidden", name="payment_index", value=str(p.get("index", 0))),
+                        operation_key_input(),
                         Input(type="text", name="void_reason", placeholder=t("documents.reason_placeholder"), cls="form-input form-input--sm"),
                         Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger btn--xs"),
                         hx_post=f"/docs/{entity_id}/void-payment", hx_swap="none",
@@ -5476,6 +5486,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                                 Input(type="date", name="date", value=today, cls="form-input"), cls="form-group"),
                             cls="form-row",
                         ),
+                        operation_key_input(),
                         Button(t("btn.apply"), type="submit", cls="btn btn--primary btn--sm"),
                         hx_post=f"/docs/{entity_id}/apply-credit",
                         hx_swap="none",
@@ -5505,6 +5516,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                                 Input(type="text", name="reference", cls="form-input"), cls="form-group"),
                             cls="form-row",
                         ),
+                        operation_key_input(),
                         Button(t("btn.refund"), type="submit", cls="btn btn--secondary btn--sm"),
                         hx_post=f"/docs/{entity_id}/refund-credit", hx_swap="none", cls="form-card",
                     ),
@@ -5561,6 +5573,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                             Input(type="text", name="reference", cls="form-input"), cls="form-group"),
                         cls="form-row",
                     ),
+                    operation_key_input(),
                     Button(t("btn.save_payment"), type="submit", cls="btn btn--primary btn--sm"),
                     hx_post=f"/docs/{entity_id}/payment", hx_swap="none", cls="form-card",
                 ),
@@ -5849,6 +5862,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
             children += [
                 Form(
                     *line_inputs,
+                    operation_key_input(),
                     Div(
                         loc_el,
                         Button(_fulfill_label, type="submit", cls="btn btn--primary btn--sm"),
@@ -6060,6 +6074,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Form(
                     Input(type="text", name="reason", placeholder=t("documents.reason_optional_placeholder"), cls="form-input form-input--inline",
                           onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
+                    operation_key_input(),
                     Button(t("btn.confirm_close_memo"), type="submit", cls="btn btn--secondary", style="margin-top:0.5rem;"),
                     hx_post=f"{_base}/action/close", hx_swap="none", cls="inline-form",
                 ),
@@ -6073,6 +6088,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                         title=t("documents.tip_reopen_memo")),
                 Form(
                     P(t("documents.reopen_memo_confirm"), cls="text-muted"),
+                    operation_key_input(),
                     Button(t("btn.confirm_reopen"), type="submit", cls="btn btn--secondary"),
                     hx_post=f"{_base}/action/reopen", hx_swap="none", cls="inline-form",
                 ),
@@ -6208,6 +6224,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Form(
                     Input(type="text", name="reason", placeholder=t("documents.void_reason_placeholder"), cls="form-input form-input--inline",
                           onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
+                    operation_key_input() if not is_list else "",
                     Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger", style="margin-top:0.5rem;"),
                     hx_post=f"{_base}/action/void", hx_swap="none", cls="inline-form",
                 ),
@@ -6233,6 +6250,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Form(
                     Input(type="text", name="reason", placeholder=t("documents.reason_optional_placeholder"), cls="form-input form-input--inline",
                           onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
+                    operation_key_input() if not is_list else "",
                     Button(t("btn.confirm_revert"), type="submit", cls="btn btn--secondary", style="margin-top:0.5rem;"),
                     hx_post=f"{_base}/action/revert_to_draft", hx_swap="none", cls="inline-form",
                 ),
@@ -6246,6 +6264,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Summary(t("doc.unvoid"), cls="btn btn--secondary"),
                 Form(
                     P(t("documents.restore_to_status", status=doc['pre_void_status']), cls="text-muted"),
+                    operation_key_input() if not is_list else "",
                     Button(t("btn.confirm_unvoid"), type="submit", cls="btn btn--secondary"),
                     hx_post=f"{_base}/action/unvoid", hx_swap="none", cls="inline-form",
                 ),
@@ -6323,6 +6342,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                         cls="modal-dialog__header",
                     ),
                     Form(
+                        operation_key_input() if not is_list else "",
                         Div(
                             Label(t("label.to_email"), cls="form-label"),
                             Input(type="text", name="sent_to", value=contact_email,
@@ -6425,6 +6445,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _mark_ok:
             action_btns_left.append(
                 Button(t("btn.mark_as_sent"), hx_post=f"{_base}/action/mark_sent",
+                       hx_vals=operation_key_vals() if not is_list else None,
                        hx_swap="none", cls="btn btn--secondary",
                        title=t("documents.tip_mark_sent"))
             )
@@ -6433,6 +6454,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _unmark_ok:
             action_btns_left.append(
                 Button(t("btn.unmark_sent"), hx_post=f"{_base}/action/unmark_sent",
+                       hx_vals=operation_key_vals() if not is_list else None,
                        hx_swap="none", cls="btn btn--secondary",
                        title=t("documents.tip_unmark_sent"))
             )
