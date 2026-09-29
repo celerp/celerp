@@ -2448,12 +2448,21 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     if reference and any(p.get("reference") == reference and p.get("status") != "deleted"
                          for p in doc_state.get("payments", [])):
         raise HTTPException(status_code=409, detail="Payment already recorded")
-    doc_currency = str(doc_state.get("currency") or "USD")
+    doc_currency = str(doc_state.get("currency") or "USD").upper()
+    payment_currency = str(body.get("currency") or doc_currency).upper()
+    if payment_currency != doc_currency:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Payment currency {payment_currency} does not match document currency {doc_currency}",
+        )
+    body["currency"] = doc_currency
     outstanding_d = round_money(
         doc_state.get("amount_outstanding", doc_state.get("total", 0)) or 0, doc_currency)
     if outstanding_d <= 0:
         raise HTTPException(status_code=409, detail="Invoice already fully paid")
     amount_d = round_money(body["amount"], doc_currency)
+    if amount_d <= 0:
+        raise HTTPException(status_code=422, detail="Payment amount must be positive")
     if amount_d > outstanding_d:
         if source == "stripe":
             body["charged_amount"] = to_stored_float(amount_d)
@@ -2474,7 +2483,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     bank_code = body.get("bank_account")
     if not bank_code:
         raise HTTPException(status_code=422, detail="bank_account is required")
-    body.setdefault("currency", doc_state.get("currency", "USD"))
+    body["currency"] = doc_currency
     # A payment carries its own rate because the rate moves between issuing a
     # foreign-currency document and being paid for it. On a document in the
     # company's own currency there is nothing to convert, so any rate other
@@ -3043,101 +3052,96 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
     if not payload.doc_ids:
         raise HTTPException(status_code=422, detail="No documents specified")
 
-    # Fetch all docs
     docs = []
     for doc_id in payload.doc_ids:
         row = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
         if row and row.entity_type == "doc":
             docs.append((doc_id, row.state))
-
     if not docs:
         raise HTTPException(status_code=404, detail="No valid documents found")
 
-    # Validate same contact
     contact_ids = {s.get("contact_id") for _, s in docs if s.get("contact_id")}
     if len(contact_ids) > 1:
         raise HTTPException(status_code=422, detail="All documents must belong to the same contact")
 
-    # Filter to payable docs
-    _PAYABLE = {"sent", "final", "partial", "awaiting_payment"}
-    payable = [(did, s) for did, s in docs if s.get("status") in _PAYABLE and float(s.get("amount_outstanding", s.get("total", 0)) or 0) > 0.005]
+    payable = []
+    for doc_id, state in docs:
+        if state.get("status") not in {"sent", "final", "partial", "awaiting_payment"}:
+            continue
+        currency = str(state.get("currency") or "USD").upper()
+        outstanding = round_money(
+            state.get("amount_outstanding", state.get("total", 0)) or 0, currency)
+        if outstanding > 0:
+            payable.append((doc_id, state, currency, outstanding))
     if not payable:
         raise HTTPException(status_code=409, detail="No documents in payable status")
 
-    # Sort by due_date asc (oldest first), then issue_date, then doc_id. The doc_id
-    # tie-breaker gives every request one canonical acquisition order over docs that
-    # share due/issue dates, so two concurrent bulk runs over an overlapping set take
-    # the shared rows in the same order and cannot form a cross-request lock cycle.
-    payable.sort(key=lambda x: (x[1].get("due_date") or x[1].get("issue_date") or "9999", x[1].get("issue_date") or "9999", x[0]))
+    currencies = {currency for _, _, currency, _ in payable}
+    if len(currencies) != 1:
+        raise HTTPException(
+            status_code=422,
+            detail="Bulk payment requires all payable documents to use the same currency",
+        )
+    currency = next(iter(currencies))
+    tender = round_money(payload.amount, currency)
+    if tender <= 0:
+        raise HTTPException(status_code=422, detail="Payment amount must be positive")
 
-    # Allocate amount oldest-first. The unlocked pre-read above only orders and caps the
-    # tender; apply_doc_payment re-reads each doc under its row lock and re-validates, so
-    # a doc concurrently closed, paid, or shrunk - or one whose plain reference overshoots
-    # its fresh outstanding - is skipped honestly (its 409 is caught, the lock released by
-    # rollback, the doc recorded in skipped with its reason) rather than paid off a stale
-    # read. remaining and total_allocated track the amount apply_doc_payment reports as
-    # actually applied under the lock, so a doc that shrank is reported at its real share.
+    payable.sort(key=lambda x: (
+        x[1].get("due_date") or x[1].get("issue_date") or "9999",
+        x[1].get("issue_date") or "9999",
+        x[0],
+    ))
+
     from sqlalchemy.exc import DBAPIError
-    remaining = payload.amount
+    remaining = tender
     allocations = []
     skipped: list[dict] = []
-    payment_date = payload.payment_date
     if not payload.bank_account:
         raise HTTPException(status_code=422, detail="bank_account is required")
-    bank_code = payload.bank_account
 
-    for doc_id, state in payable:
-        if remaining <= 0.005:
+    for doc_id, state, _, outstanding in payable:
+        if remaining <= 0:
             break
-        outstanding = float(state.get("amount_outstanding", state.get("total", 0)) or 0)
         alloc = min(remaining, outstanding)
-        if alloc <= 0.005:
+        if alloc <= 0:
             continue
-
         body = {
-            "amount": alloc,
+            "amount": to_stored_float(alloc),
             "method": payload.method,
             "reference": payload.reference,
-            "payment_date": payment_date,
-            "bank_account": bank_code,
-            "currency": state.get("currency", "USD"),
+            "payment_date": payload.payment_date,
+            "bank_account": payload.bank_account,
+            "currency": currency,
         }
-        # Bound this doc's row-lock wait transaction-locally. apply_doc_payment commits
-        # per doc, so the prior iteration's commit reset the timeout; reapply every loop so
-        # a contended doc raises 55P03 and is skipped below rather than blocking the worker.
-        await session.execute(
-            text(f"SET LOCAL lock_timeout = '{_BULK_DOC_LOCK_TIMEOUT_MS}ms'"))
+        await session.execute(text(f"SET LOCAL lock_timeout = '{_BULK_DOC_LOCK_TIMEOUT_MS}ms'"))
         try:
             _entry, applied = await apply_doc_payment(
                 session, company_id, doc_id, body,
                 source="api", actor_id=user.id, idempotency_key=str(uuid.uuid4()),
                 clamp_overshoot=True)
-        except HTTPException as e:
-            # A doc concurrently closed/paid/shrunk under the row lock: skip it and record
-            # why, so the caller can surface which docs were paid and which were not. Roll
-            # back first so the skipped doc's FOR UPDATE lock is released at once (no write
-            # occurs before the raise; prior per-doc commits are already durable), leaving
-            # no lock held across a skip to seed a cross-request deadlock.
+        except HTTPException as exc:
             await session.rollback()
-            skipped.append({"doc_id": doc_id, "reason": e.detail})
+            skipped.append({"doc_id": doc_id, "reason": exc.detail})
             continue
-        except DBAPIError as e:
-            # A contended doc held past lock_timeout raises SQLSTATE 55P03 (asyncpg surfaces
-            # it as a DBAPIError, not an HTTPException). Treat that ONE state as an honest
-            # skip - roll back and record the doc - so a timeout surfaces as a skip reason,
-            # never a 500 for the whole bulk. Any other DB error is a real fault, re-raised
-            # so it is never dishonestly masked.
-            if getattr(getattr(e, "orig", None), "sqlstate", None) != "55P03":
+        except DBAPIError as exc:
+            if getattr(getattr(exc, "orig", None), "sqlstate", None) != "55P03":
                 raise
             await session.rollback()
             skipped.append({"doc_id": doc_id, "reason": "Document was locked by another operation; try again"})
             continue
-        allocations.append({"doc_id": doc_id, "amount": applied})
-        remaining -= applied
+        applied_d = round_money(applied, currency)
+        allocations.append({"doc_id": doc_id, "amount": to_stored_float(applied_d)})
+        remaining = round_money(max(Decimal(0), remaining - applied_d), currency)
 
     await session.commit()
-    return {"allocations": allocations, "skipped": skipped,
-            "total_allocated": payload.amount - remaining, "remaining": remaining}
+    allocated = round_money(tender - remaining, currency)
+    return {
+        "allocations": allocations,
+        "skipped": skipped,
+        "total_allocated": to_stored_float(allocated),
+        "remaining": to_stored_float(remaining),
+    }
 
 
 async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it: ReceivedItem, stock_qty: float) -> float | None:
@@ -7918,14 +7922,21 @@ async def undo_audit_adjust(
                 detail=f"{l.get('sku') or item_id}: stock changed after this audit; undo would overwrite later activity.",
             )
         recorded_cost = l.get("adjustment_unit_cost")
-        if recorded_cost is not None:
-            current_cost = auto_je.lot_unit_cost(item.state)
-            tolerance = 1e-9 * max(1.0, abs(float(recorded_cost)))
-            if abs(current_cost - float(recorded_cost)) > tolerance:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"{l.get('sku') or item_id}: item cost changed after this audit; undo would misstate inventory value.",
-                )
+        if recorded_cost is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"{l.get('sku') or item_id}: this adjustment predates safe cost tracking; "
+                    "it cannot be undone automatically."
+                ),
+            )
+        current_cost = auto_je.lot_unit_cost(item.state)
+        tolerance = 1e-9 * max(1.0, abs(float(recorded_cost)))
+        if abs(current_cost - float(recorded_cost)) > tolerance:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{l.get('sku') or item_id}: item cost changed after this audit; undo would misstate inventory value.",
+            )
     for l in targets:
         item_id = str(l["item_id"])
         await emit_event(

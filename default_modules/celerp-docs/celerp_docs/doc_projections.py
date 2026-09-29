@@ -58,6 +58,19 @@ def _recalc_list_totals(state: dict) -> dict:
     return state
 
 
+def _payment_balances(state: dict, paid) -> tuple[Decimal, Decimal]:
+    """Return document-currency paid and outstanding balances."""
+    currency = str(state.get("currency") or "USD")
+    total = round_money(state.get("total", 0) or 0, currency)
+    paid_d = round_money(max(Decimal(0), to_decimal(paid)), currency)
+    outstanding = round_money(max(Decimal(0), total - paid_d), currency)
+    return paid_d, outstanding
+
+
+def _payment_status(paid: Decimal, outstanding: Decimal) -> str:
+    return "paid" if outstanding == 0 else ("partial" if paid > 0 else "final")
+
+
 def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
 
@@ -175,12 +188,11 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.pop("pre_close_status", None)
         current.pop("close_reason", None)
     elif event_type == "doc.payment.received":
-        paid = to_decimal(current.get("amount_paid", 0)) + to_decimal(data["amount"])
-        total = to_decimal(current.get("total", 0))
-        outstanding = max(Decimal(0), total - paid)
+        paid, outstanding = _payment_balances(
+            current, to_decimal(current.get("amount_paid", 0)) + to_decimal(data["amount"]))
         current["amount_paid"] = to_stored_float(paid)
         current["amount_outstanding"] = to_stored_float(outstanding)
-        current["status"] = "paid" if outstanding <= Decimal("0.005") else "partial"
+        current["status"] = "paid" if outstanding == 0 else "partial"
         # Build payments list
         current.setdefault("payments", [])
         current["payments"].append({
@@ -225,12 +237,10 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             target["void_reason"] = data.get("void_reason")
             target["refund_date"] = data.get("refund_date")
             active_total = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
-            total = to_decimal(current.get("total", 0))
-            paid = max(Decimal(0), active_total - refunded)
-            outstanding = max(Decimal(0), total - paid)
+            paid, outstanding = _payment_balances(current, active_total - refunded)
             current["amount_paid"] = to_stored_float(paid)
             current["amount_outstanding"] = to_stored_float(outstanding)
-            current["status"] = "paid" if outstanding <= Decimal("0.005") else ("partial" if paid > 0 else "final")
+            current["status"] = _payment_status(paid, outstanding)
     elif event_type == "doc.payment.deleted":
         idx = data["payment_index"]
         payments = current.get("payments", [])
@@ -259,20 +269,17 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
                     p["index"] = i
         if changed:
             active_total = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
-            total = to_decimal(current.get("total", 0))
-            paid = max(Decimal(0), active_total - refunded)
-            outstanding = max(Decimal(0), total - paid)
+            paid, outstanding = _payment_balances(current, active_total - refunded)
             current["amount_paid"] = to_stored_float(paid)
             current["amount_outstanding"] = to_stored_float(outstanding)
-            current["status"] = "paid" if outstanding <= Decimal("0.005") else ("partial" if paid > 0 else "final")
+            current["status"] = _payment_status(paid, outstanding)
     elif event_type == "doc.payment.refunded":
         refunded = to_decimal(data["amount"])
-        total = to_decimal(current.get("total", 0))
-        paid = max(Decimal(0), to_decimal(current.get("amount_paid", 0)) - refunded)
-        outstanding = max(Decimal(0), total - paid)
+        paid, outstanding = _payment_balances(
+            current, to_decimal(current.get("amount_paid", 0)) - refunded)
         current["amount_paid"] = to_stored_float(paid)
         current["amount_outstanding"] = to_stored_float(outstanding)
-        current["status"] = "paid" if outstanding <= Decimal("0.005") else "partial"
+        current["status"] = _payment_status(paid, outstanding)
     elif event_type == "doc.converted":
         current["status"] = "converted"
         current["converted_to"] = data["target_doc_id"]

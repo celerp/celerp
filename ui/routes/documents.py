@@ -2047,20 +2047,42 @@ def setup_routes(app):
 
         contact_name = docs[0].get("contact_name") or ""
         doc_type = docs[0].get("doc_type") or "invoice"
-        currency = docs[0].get("currency") or "USD"
 
-        # Filter to payable docs and sort by due date
-        payable = [d for d in docs if d.get("status") not in ("draft", "void", "paid") and float(d.get("amount_outstanding") or d.get("outstanding_balance") or 0) > 0]
+        payable = []
+        for d in docs:
+            if d.get("status") in ("draft", "void", "paid"):
+                continue
+            cur = str(d.get("currency") or "USD").upper()
+            amount = round_money(
+                d.get("amount_outstanding") or d.get("outstanding_balance") or 0, cur)
+            if amount > 0:
+                payable.append(d)
+        currencies = {str(d.get("currency") or "USD").upper() for d in payable}
+        if len(currencies) > 1:
+            return Div(
+                P("Bulk payment requires all selected payable documents to use the same currency.",
+                  cls="flash flash--error"),
+                id="bulk-payment-panel",
+            )
+        currency = next(iter(currencies), str(docs[0].get("currency") or "USD").upper())
+        money_dp = currency_dp(currency)
+        money_step = "1" if money_dp == 0 else "0." + ("0" * (money_dp - 1)) + "1"
         payable.sort(key=lambda d: d.get("due_date") or d.get("issue_date") or "")
         skipped = len(docs) - len(payable)
-        total_outstanding = sum(float(d.get("amount_outstanding") or d.get("outstanding_balance") or 0) for d in payable)
+        total_outstanding_d = round_money(
+            sum((to_decimal(d.get("amount_outstanding") or d.get("outstanding_balance") or 0)
+                 for d in payable), to_decimal(0)),
+            currency,
+        )
+        total_outstanding = to_stored_float(total_outstanding_d)
 
         alloc_rows = []
         for d in payable:
             eid = d.get("entity_id") or d.get("id", "")
             doc_num = d.get("doc_number") or d.get("ref_id") or eid
             due = d.get("due_date") or "--"
-            outstanding = float(d.get("amount_outstanding") or d.get("outstanding_balance") or 0)
+            outstanding = to_stored_float(round_money(
+                d.get("amount_outstanding") or d.get("outstanding_balance") or 0, currency))
             alloc_rows.append(Tr(
                 Td(doc_num),
                 Td(str(due)[:10]),
@@ -2091,7 +2113,7 @@ def setup_routes(app):
                 Input(type="hidden", name="doc_type", value=doc_type),
                 Div(
                     Div(Label(t("label.amount"), cls="form-label"),
-                        Input(type="number", name="amount", value=f"{total_outstanding:.2f}", step="0.01",
+                        Input(type="number", name="amount", value=f"{total_outstanding_d:.{money_dp}f}", step=money_step,
                               min="0", cls="form-input", id="bulk-pay-amount",
                               oninput="celerpUpdateBulkAlloc()"), cls="form-group"),
                     Div(Label(t("th.date"), cls="form-label"),
@@ -2120,7 +2142,7 @@ function celerpUpdateBulkAlloc() {{
         const outstanding = parseFloat(row.dataset.outstanding || 0);
         const alloc = Math.min(remaining, outstanding);
         remaining = Math.max(0, remaining - alloc);
-        row.querySelector('.alloc-amount').textContent = alloc > 0 ? '{currency_symbol(currency)}' + alloc.toFixed(2) : '--';
+        row.querySelector('.alloc-amount').textContent = alloc > 0 ? '{currency_symbol(currency)}' + alloc.toFixed({money_dp}) : '--';
     }});
 }}
 celerpUpdateBulkAlloc();
@@ -5312,7 +5334,12 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     payments = [p for p in (doc.get("payments") or []) if p.get("status") != "deleted"]
     total_val = float(doc.get("total") or doc.get("total_amount") or 0)
     amount_paid = float(doc.get("amount_paid") or 0)
-    outstanding = float(doc.get("amount_outstanding") or doc.get("outstanding_balance") or 0)
+    outstanding_d = round_money(
+        doc.get("amount_outstanding") or doc.get("outstanding_balance") or 0, currency)
+    outstanding = to_stored_float(outstanding_d)
+    money_dp = currency_dp(currency)
+    money_step = "1" if money_dp == 0 else "0." + ("0" * (money_dp - 1)) + "1"
+    money_value = f"{outstanding_d:.{money_dp}f}"
 
     from datetime import date as _d
     today = _d.today().isoformat()
@@ -5389,8 +5416,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         )
     else:
         paid_label = t("documents.total_paid", paid=fmt_money(amount_paid, currency), total=fmt_money(total_val, currency))
-        outstanding_label = t("documents.paid_in_full") if outstanding <= 0.005 else t("documents.outstanding_amount", amount=fmt_money(outstanding, currency))
-        outstanding_cls = "total-value--success" if outstanding <= 0.005 else "total-value--alert"
+        outstanding_label = t("documents.paid_in_full") if outstanding_d == 0 else t("documents.outstanding_amount", amount=fmt_money(outstanding, currency))
+        outstanding_cls = "total-value--success" if outstanding_d == 0 else "total-value--alert"
         summary_line = Div(
             Span(paid_label, cls="total-label"),
             Span(outstanding_label, cls=f"total-value {outstanding_cls}"),
@@ -5400,7 +5427,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     # --- Add Payment / Apply Credit form ---
     # Only show form if there's outstanding balance
     add_form = ""
-    if outstanding > 0.005:
+    if outstanding_d > 0:
         _methods = [Option(t("doc.cash"), value="cash"), Option(t("doc.bank_transfer"), value="transfer"),
                     Option(t("doc.card"), value="card"), Option(t("doc.check"), value="check"), Option(t("doc.other"), value="other")]
         _bank_opts = _bank_account_options(bank_accounts, default_code=bank_accounts[0].get("chart_account_code") if bank_accounts else None)
@@ -5418,8 +5445,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                                     name="target_doc_id", cls="form-input", id="cn-invoice-picker",
                                 ), cls="form-group"),
                             Div(Label(t("label.amount"), cls="form-label"),
-                                Input(type="number", name="amount", value=f"{outstanding:.2f}",
-                                      step="0.01", min="0", cls="form-input", id="cn-apply-amount"), cls="form-group"),
+                                Input(type="number", name="amount", value=money_value,
+                                      step=money_step, min="0", cls="form-input", id="cn-apply-amount"), cls="form-group"),
                             Div(Label(t("th.date"), cls="form-label"),
                                 Input(type="date", name="date", value=today, cls="form-input"), cls="form-group"),
                             cls="form-row",
@@ -5437,8 +5464,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                     Form(
                         Div(
                             Div(Label(t("label.amount"), cls="form-label"),
-                                Input(type="number", name="amount", value=f"{outstanding:.2f}",
-                                      step="0.01", min="0", cls="form-input"), cls="form-group"),
+                                Input(type="number", name="amount", value=money_value,
+                                      step=money_step, min="0", cls="form-input"), cls="form-group"),
                             Div(Label(t("th.date"), cls="form-label"),
                                 Input(type="date", name="date", value=today, cls="form-input"), cls="form-group"),
                             Div(Label(t("label.method"), cls="form-label"),
@@ -5470,14 +5497,14 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
             invoices.forEach(inv => {{
                 const opt = document.createElement('option');
                 opt.value = inv.id;
-                opt.textContent = inv.doc_number + ' - ' + inv.contact_name + ' - ' + {_json.dumps(t("documents.outstanding_label"))} + inv.outstanding.toFixed(2);
+                opt.textContent = inv.doc_number + ' - ' + inv.contact_name + ' - ' + {_json.dumps(t("documents.outstanding_label"))} + inv.outstanding.toFixed({money_dp});
                 sel.appendChild(opt);
             }});
             sel.addEventListener('change', function() {{
                 const inv = invoices.find(i => i.id === sel.value);
                 if (inv) {{
                     const amtEl = document.getElementById('cn-apply-amount');
-                    if (amtEl) amtEl.value = Math.min({outstanding}, inv.outstanding).toFixed(2);
+                    if (amtEl) amtEl.value = Math.min({outstanding}, inv.outstanding).toFixed({money_dp});
                 }}
             }});
         }})
@@ -5492,8 +5519,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                 Form(
                     Div(
                         Div(Label(t("label.amount"), cls="form-label"),
-                            Input(type="number", name="amount", value=f"{outstanding:.2f}",
-                                  step="0.01", min="0", cls="form-input"), cls="form-group"),
+                            Input(type="number", name="amount", value=money_value,
+                                  step=money_step, min="0", cls="form-input"), cls="form-group"),
                         Div(Label(t("th.date"), cls="form-label"),
                             Input(type="date", name="payment_date", value=today, cls="form-input"), cls="form-group"),
                         Div(Label(t("label.method"), cls="form-label"),
@@ -5501,7 +5528,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                         Div(Label(t("label.bank_account"), cls="form-label"),
                             Select(*_bank_opts, name="bank_account", cls="form-input"), cls="form-group"),
                         Div(Label(t("label.conversion_rate"), cls="form-label", title=t("documents.tip_conversion_rate")),
-                            Input(type="number", name="conversion_rate", value="1",
+                            Input(type="number", name="conversion_rate",
+                                  value=str(doc.get("conversion_rate") or 1),
                                   step="any", min="0", cls="form-input"),
                             cls="form-group"),
                         Div(Label(t("label.reference"), cls="form-label"),

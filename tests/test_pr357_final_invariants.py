@@ -320,3 +320,91 @@ async def test_delete_refuses_contact_named_on_a_deal(client, session):
     assert blocked.status_code == 422, blocked.text
     assert "1 deal(s)" in blocked.json()["detail"]
 
+
+
+def test_kwd_projection_keeps_four_fils_outstanding():
+    from celerp_docs.doc_projections import apply_documents_event
+    result = apply_documents_event(
+        {"doc_type": "invoice", "status": "final", "currency": "KWD",
+         "total": 1.000, "amount_paid": 0.0, "amount_outstanding": 1.000},
+        "doc.payment.received",
+        {"amount": 0.996, "payment_date": "2026-09-29", "index": 0},
+    )
+    assert result["status"] == "partial"
+    assert result["amount_outstanding"] == 0.004
+
+
+@pytest.mark.asyncio
+async def test_bulk_payment_rejects_mixed_document_currencies(client, session):
+    auth = await _auth_company(session, "USD")
+    doc_ids = []
+    for currency in ("USD", "EUR"):
+        doc_id = f"doc:{uuid.uuid4()}"
+        doc_ids.append(doc_id)
+        await emit_event(
+            session, company_id=auth["company_id"], entity_id=doc_id, entity_type="doc",
+            event_type="doc.created",
+            data={"doc_type": "invoice", "status": "final", "currency": currency,
+                  "total": 10.0, "amount_outstanding": 10.0, "line_items": []},
+            actor_id=auth["user_id"], location_id=None, source="test",
+            idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+    await session.commit()
+    r = await client.post("/docs/bulk-payment", headers=auth["headers"], json={
+        "doc_ids": doc_ids, "amount": 10.0, "payment_date": "2026-09-29",
+        "bank_account": "1111",
+    })
+    assert r.status_code == 422, r.text
+    assert "same currency" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_payment_rejects_currency_that_differs_from_document(client, session):
+    auth = await _auth_company(session, "KWD")
+    sku = f"KWD-CUR-{uuid.uuid4().hex[:6]}"
+    item_id = await _api_item(client, auth, sku, 1)
+    doc_id = await _invoice(client, auth, item_id, sku, 1)
+    r = await client.post(f"/docs/{doc_id}/payment", headers=auth["headers"], json={
+        "amount": 1.0, "payment_date": "2026-09-29", "bank_account": "1111",
+        "currency": "USD",
+    })
+    assert r.status_code == 422, r.text
+    assert "does not match document currency" in r.json()["detail"]
+
+
+def test_payment_form_uses_document_currency_precision_and_rate():
+    from fasthtml.common import to_xml
+    from ui.routes.documents import _payment_section
+    html = to_xml(_payment_section({
+        "entity_id": "doc:fx", "doc_type": "invoice", "status": "final",
+        "currency": "KWD", "conversion_rate": 36.5,
+        "total": 1.004, "amount_paid": 0, "amount_outstanding": 1.004,
+        "payments": [],
+    }, bank_accounts=[]))
+    assert 'value="1.004"' in html
+    assert 'step="0.001"' in html
+    assert 'value="36.5"' in html
+
+
+@pytest.mark.asyncio
+async def test_legacy_audit_undo_without_cost_identity_fails_closed(_db_engine):
+    from fastapi import HTTPException
+    from celerp_docs.routes import undo_audit_adjust
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _seed_company(factory)
+    user_id = await _seed_user(factory)
+    item_id, list_id = "item:AUD-LEGACY", "list:AUD-LEGACY"
+    await _seed_item(factory, company_id, item_id, qty=5, cost_total=50)
+    await _seed_audit(
+        factory, company_id, list_id, item_id, status="closed",
+        counted_qty=5, prior_qty=10, adjusted=True)
+    user = types.SimpleNamespace(id=user_id)
+    try:
+        async with factory() as db:
+            with pytest.raises(HTTPException) as exc:
+                await undo_audit_adjust(list_id, company_id=company_id, _=None, user=user, session=db)
+            assert exc.value.status_code == 409
+            assert "predates safe cost tracking" in str(exc.value.detail)
+            await db.rollback()
+    finally:
+        await _cleanup(factory, company_id, user_id)
