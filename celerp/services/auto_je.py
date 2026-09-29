@@ -155,14 +155,17 @@ class CogsResult:
     ambiguous: bool = False
 
 
-def _lot_unit_cost(state: dict) -> float:
+def lot_unit_cost(state: dict) -> float:
     """A lot's per-unit cost: cost_total spread over its own quantity when that
-    quantity is positive, the lot's cost_price otherwise."""
+    quantity is positive; otherwise the unit cost a zero-quantity lot keeps
+    (cost_price) plus its per-unit landed cost, which is what each unit that
+    arrives will be costed at."""
     cost_total = state.get("cost_total")
     qty = float(state.get("quantity") or 0)
     if cost_total is not None and qty > 0:
         return float(cost_total) / qty
-    return float(state.get("cost_price") or 0)
+    landed = sum(float(v or 0) for v in (state.get("landed_contributions") or {}).values())
+    return float(state.get("cost_price") or 0) + landed
 
 
 async def _span_line_lots(
@@ -189,7 +192,7 @@ async def _span_line_lots(
             "quantity": float(state.get("quantity") or 0),
             "created_at": created_at.isoformat() if created_at else "",
             "expires_at": state.get("expires_at"),
-            "unit_cost": _lot_unit_cost(state),
+            "unit_cost": lot_unit_cost(state),
         }
 
     rows = (await session.execute(_select(Projection).where(
@@ -261,7 +264,7 @@ async def compute_doc_cogs(
         state = proj.state
         if is_non_stock_line(state.get("inventory_type"), state.get("sell_by")):
             continue
-        unit_cost = _lot_unit_cost(state)
+        unit_cost = lot_unit_cost(state)
         bound_qty = float(state.get("quantity") or 0)
         spans = line_qty > bound_qty + 1e-9 and splitting_allowed(state)
         if spans:

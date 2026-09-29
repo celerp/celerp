@@ -114,10 +114,10 @@ class CostRestatementConflict(ValueError):
 
 # History that moves part of a lot's cost somewhere today's state cannot trace
 # exactly, so a correction reaching that lot cannot be allocated automatically.
-_UNTRACEABLE_COST_EVENTS = ("item.split", "item.transform", "item.consumed", "item.quantity.adjusted")
+_UNTRACEABLE_COST_EVENTS = frozenset(("item.split", "item.transform", "item.consumed"))
 
 
-def _goods_basis(state: dict) -> float | None:
+def goods_basis(state: dict) -> float | None:
     """The lot's goods cost (before landed cost), or None when it has no cost."""
     basis = state.get("cost_base")
     if basis is None:
@@ -139,20 +139,36 @@ async def _lock_item_row(session: AsyncSession, company_id, entity_id: str) -> P
 
 
 async def _cost_is_traceable(session: AsyncSession, company_id, entity_id: str, state: dict) -> bool:
+    """Whether all of the lot's cost is still on the lot (or went into a merge or sale).
+
+    Replays the lot's history: a split, transform or consumption moves cost elsewhere, and
+    so does a quantity adjustment that lowers stock (an audit shortfall, a manual count, a
+    supplier return), because the units that left took their share of cost with them.
+    Adjustments that add stock keep every cost on the lot. History that cannot be replayed
+    counts as untraceable.
+    """
+    from celerp_inventory.projections import apply_item_event
+
     if state.get("children") or state.get("transformed_into"):
         return False
     rows = (await session.execute(
-        select(LedgerEntry.event_type, LedgerEntry.data).where(
-            LedgerEntry.company_id == company_id,
-            LedgerEntry.entity_id == entity_id,
-            LedgerEntry.event_type.in_(_UNTRACEABLE_COST_EVENTS),
-        )
+        select(LedgerEntry.event_type, LedgerEntry.data)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id)
+        .order_by(LedgerEntry.id)
     )).all()
-    # A plain stock count correction moves no cost; a supplier return carries its cost out.
-    return not any(
-        event_type != "item.quantity.adjusted" or (data or {}).get("cost_base") is not None
-        for event_type, data in rows
-    )
+    replayed: dict = {}
+    for event_type, data in rows:
+        if event_type in _UNTRACEABLE_COST_EVENTS:
+            return False
+        try:
+            before = float(replayed.get("quantity") or 0)
+            replayed = apply_item_event(replayed, event_type, data or {})
+            after = float(replayed.get("quantity") or 0)
+        except (KeyError, TypeError, ValueError):
+            return False
+        if event_type == "item.quantity.adjusted" and before > 0 and after < before:
+            return False
+    return True
 
 
 async def _invoice_line_of_sale(session: AsyncSession, company_id, entity_id: str, state: dict) -> tuple[str, int, str]:
@@ -223,7 +239,7 @@ async def restate_item_cost(
         raise CostRestatementConflict("Item not found")
     old = root.state or {}
     new = apply_item_event(old, event_type, data)
-    old_basis, new_basis = _goods_basis(old), _goods_basis(new)
+    old_basis, new_basis = goods_basis(old), goods_basis(new)
     label = _lot_label(old, entity_id)
     status = str(old.get("status") or "").lower()
     cost_changed = old_basis != new_basis
@@ -262,7 +278,7 @@ async def restate_item_cost(
                 )
             state = row.state or {}
             current = _lot_label(state, next_id)
-            basis = _goods_basis(state)
+            basis = goods_basis(state)
             succ_status = str(state.get("status") or "").lower()
             if not await _cost_is_traceable(session, company_id, next_id, state) or succ_status == "disposed":
                 raise CostRestatementConflict(

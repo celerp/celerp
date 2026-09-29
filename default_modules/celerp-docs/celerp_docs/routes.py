@@ -44,7 +44,7 @@ from celerp.services.permissions import assert_role_permission, get_current_comp
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
-from celerp.services.money import checked_exchange_rate, discount_from_inputs, doc_rate, require_doc_rate, round_money, round_rate, to_decimal, to_stored_float
+from celerp.services.money import checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
@@ -3145,6 +3145,36 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
             "total_allocated": payload.amount - remaining, "remaining": remaining}
 
 
+async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it: ReceivedItem, stock_qty: float) -> float | None:
+    """What the received goods cost in the books' currency, or None when nothing prices them.
+
+    A unit cost on the receipt is per stock unit in the books' currency. Otherwise the
+    purchase order line prices them per purchase unit in the document's currency: the line
+    at po_line_index, else the line naming this item or its SKU.
+    """
+    if it.cost_price is not None:
+        return float(it.cost_price) * stock_qty
+    lines = doc.get("line_items") or []
+    line = lines[it.po_line_index] if 0 <= it.po_line_index < len(lines) else next(
+        (li for li in lines if (it.item_id and li.get("item_id") == it.item_id)
+         or (it.sku and str(li.get("sku") or "").strip() == it.sku.strip())),
+        None,
+    )
+    if line is None:
+        return None
+    currency = str(doc.get("currency") or "").upper()
+    unit = document_line_unit(line, currency)
+    if unit is None:
+        return None
+    company = await session.get(Company, company_id)
+    base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
+    try:
+        rate = require_doc_rate(doc, base_currency)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return to_base(unit * to_decimal(it.quantity_received), rate, base_currency)
+
+
 @router.post("/{entity_id}/receive")
 async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
@@ -3215,6 +3245,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     # commits. The DB unique index is the backstop, not the normal mechanism.
     from celerp_inventory.services import (
         allocate_internal_codes,
+        goods_basis,
         resolve_catalog_anchor_for_item,
     )
 
@@ -3234,9 +3265,22 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             conversion = item_conversion_map.get(it.item_id, 1)
             stock_qty_received = float(it.quantity_received) * conversion
             new_qty = float(item.state.get("quantity", 0) or 0) + stock_qty_received
+            adjustment: dict = {"new_qty": new_qty}
+            # The receipt adds what these goods cost to the lot's basis, so a delivery at a new
+            # price moves the lot's unit cost to the weighted average of old and new stock.
+            old_basis = goods_basis(item.state)
+            received_cost = await _received_goods_cost(session, company_id, row.state, it, stock_qty_received)
+            if received_cost is not None:
+                adjustment["cost_base"] = round((old_basis or 0.0) + received_cost, 2)
+            elif old_basis is not None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(f"{item.state.get('sku') or it.item_id}: no line on this purchase order prices it, "
+                            "so the received stock cannot be costed. Add it to the order first."),
+                )
             await emit_event(
                 session, company_id=company_id, entity_id=it.item_id, entity_type="item", event_type="item.quantity.adjusted",
-                data={"new_qty": new_qty},
+                data=adjustment,
                 actor_id=user.id, location_id=None, source="api",
                 idempotency_key=str(uuid.uuid4()), metadata_={"source_doc": entity_id},
             )
@@ -3455,20 +3499,12 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         if it.quantity_returned > current_qty + 1e-9:
             raise HTTPException(status_code=409, detail=f"Cannot return more than on-hand quantity for {it.item_id}")
         new_qty = max(0.0, current_qty - it.quantity_returned)
-        adjustment: dict = {"new_qty": new_qty, "consignment_flag": None if new_qty == 0 else "in"}
-        # The returned units physically leave, so the lot's goods cost leaves with them:
-        # scale cost_base to what is still on hand. Without this the remaining balance
-        # would keep carrying the whole lot's cost (a partial return is an in-place
-        # quantity reduction, not a split, so nothing else rescales it).
-        _base = item.state.get("cost_base")
-        if _base is None:
-            _base = item.state.get("cost_total")
-        if _base is not None and current_qty > 0:
-            adjustment["cost_base"] = round(float(_base) * (new_qty / current_qty), 2)
+        # The returned units take their share of the lot's cost with them (the projection
+        # scales the basis with the quantity).
         await emit_event(
             session, company_id=company_id, entity_id=it.item_id, entity_type="item",
             event_type="item.quantity.adjusted",
-            data=adjustment,
+            data={"new_qty": new_qty, "consignment_flag": None if new_qty == 0 else "in"},
             actor_id=user.id, location_id=None, source="api",
             idempotency_key=str(uuid.uuid4()), metadata_={"source_return": entity_id},
         )
@@ -7439,20 +7475,6 @@ class ListCountBody(BaseModel):
     counted_qty: float | None = None  # None clears the count (line skipped on adjust)
 
 
-def _audit_unit_cost(state: dict) -> float:
-    cp = state.get("cost_price")
-    try:
-        if cp is not None:
-            return float(cp)
-        total = state.get("cost_total")
-        qty = float(state.get("quantity") or 0)
-        if total is not None and qty > 0:
-            return float(total) / qty
-    except (TypeError, ValueError):
-        return 0.0
-    return 0.0
-
-
 async def _get_audit(session: AsyncSession, company_id, entity_id: str, *, for_update: bool = False) -> Projection:
     row = await (_get_list_for_update if for_update else _get_list)(session, company_id, entity_id)
     if row.state.get("list_type") != "audit":
@@ -7803,7 +7825,7 @@ async def adjust_audit(
         cqf = float(cq)
         if abs(cqf - live) < 1e-9:
             continue  # no change
-        unit_cost = _audit_unit_cost(item.state)
+        unit_cost = auto_je.lot_unit_cost(item.state)
         if cqf < live:
             shrink_val += (live - cqf) * unit_cost
         else:
@@ -8075,7 +8097,7 @@ async def write_off_stock(
         if item is None or item.entity_type != "item" or (item.state.get("status") or "available") != "available":
             raise HTTPException(status_code=422, detail=f"{name}: item is no longer available to write off")
         live_by_item[item.entity_id] = float(item.state.get("quantity") or 0)
-        unit_cost_by_item.setdefault(item.entity_id, _audit_unit_cost(item.state))
+        unit_cost_by_item.setdefault(item.entity_id, auto_je.lot_unit_cost(item.state))
         prepared.append((l, item, float(l.get("qty_out"))))
     # Aggregate availability: the same item can appear on several lines (two destination accounts), so
     # validate the SUM of its write-off quantities against live stock, not each line on its own.
