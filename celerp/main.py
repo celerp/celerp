@@ -4,10 +4,13 @@
 from contextlib import asynccontextmanager
 import asyncio
 import logging
+import math
 import sys
 import uuid
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -531,6 +534,17 @@ async def not_found_handler(request: Request, exc) -> JSONResponse:
 async def unhandled_exception_handler(request: Request, exc: Exception):
     log_unhandled_exception(request, exc)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+def _finite_or_text(value: float) -> float | str:
+    return value if math.isfinite(value) else str(value)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_handler(_request: Request, exc: RequestValidationError):
+    # A rejected NaN or Infinity is echoed back as text, since JSON cannot carry it as a number.
+    return JSONResponse(status_code=422, content={
+        "detail": jsonable_encoder(exc.errors(), custom_encoder={float: _finite_or_text})})
 
 
 @app.exception_handler(RateLimitExceeded)

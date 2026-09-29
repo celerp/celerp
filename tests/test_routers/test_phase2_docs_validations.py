@@ -135,14 +135,15 @@ async def test_auto_je_entries_balanced_and_account_codes(client):
 @pytest.mark.asyncio
 async def test_po_receive_creates_inventory_or_adjusts_and_je(client):
     token = await _register(client, email="admin5@docs.test")
-    item = await client.post("/items", headers=_h(token), json={"sku": "EXIST", "name": "Existing", "quantity": 1, "sell_by": "piece"})
+    item = await client.post("/items", headers=_h(token), json={"status": "available", "sku": "EXIST", "name": "Existing", "quantity": 1, "sell_by": "piece"})
     item_id = item.json()["id"]
 
     po = await client.post(
         "/docs",
         headers=_h(token),
-        json={"doc_type": "purchase_order", "contact_id": "contact:sup", "line_items": [{"quantity": 2, "unit_price": 10}, {"quantity": 3, "unit_price": 10}], "subtotal": 50, "tax": 0, "total": 50},
+        json={"doc_type": "purchase_order", "contact_id": "contact:sup", "line_items": [{"item_id": item_id, "quantity": 2, "unit_price": 10}, {"sku": "NEW-1", "quantity": 3, "unit_price": 10}], "subtotal": 50, "tax": 0, "total": 50},
     )
+    assert po.status_code == 200, po.text
     po_id = po.json()["id"]
 
     loc = await client.post(

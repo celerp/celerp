@@ -92,6 +92,8 @@ class LineItem(BaseModel):
     taxes: list[TaxApplication] = Field(default_factory=list)
     sell_by: str | None = None
     line_total: float | None = None
+    # Purchasing: whether the line's goods are received into stock, as an expense or as an asset.
+    receive_as: Literal["stock", "expense", "asset"] | None = None
     # Invoice fulfillment: how much of the linked parcel this line draws, by piece
     # and by weight. Drive the split-on-fulfill (child_pieces / child_weight). Only
     # editable when the parcel actually tracks that measure and splitting is allowed.
@@ -393,12 +395,12 @@ class DocPaymentBody(BaseModel):
 class ReceivedItem(BaseModel):
     po_line_index: int = -1  # optional; -1 means not specified (e.g. one-click bill receive)
     item_id: str | None = None
-    quantity_received: float
+    quantity_received: float = Field(gt=0, allow_inf_nan=False)
     condition: str = "good"
     sku: str | None = None
     name: str | None = None
     cost_price: float | None = None
-    receive_as: str = "stock"
+    receive_as: str | None = None  # taken from the document line when not given
     category: str | None = None
     attributes: dict | None = None
 
@@ -3365,6 +3367,53 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
 _RECEIVING_DOC_LABEL = {"purchase_order": "purchase order", "bill": "bill"}
 
 
+def _resolve_inbound_line(doc: dict, it: ReceivedItem, item_skus: dict[str, str]) -> None:
+    """Tie received goods to the document line they are for, and take what they are from it.
+
+    The receipt names the line by its index, else by the line's item, SKU or name. Whatever
+    else it says about the goods (item, SKU, stock or expense) must agree with that line.
+    Goods received on a consignment need no line.
+    """
+    doc_type = doc.get("doc_type")
+    label = _RECEIVING_DOC_LABEL.get(doc_type, "document")
+    lines = doc.get("line_items") or []
+    what = it.sku or it.name or it.item_id or "Received item"
+    if it.po_line_index != -1:
+        if not 0 <= it.po_line_index < len(lines):
+            raise HTTPException(status_code=422, detail=f"{what}: line {it.po_line_index + 1} is not on this {label}.")
+        index = it.po_line_index
+    else:
+        index = next((i for i, li in enumerate(lines)
+                      if (it.item_id and li.get("item_id") == it.item_id)
+                      or (it.sku and str(li.get("sku") or "").strip() == it.sku.strip())), None)
+        if index is None and not (it.item_id or it.sku) and (it.name or "").strip():
+            index = next((i for i, li in enumerate(lines)
+                          if str(li.get("name") or li.get("description") or "").strip() == it.name.strip()), None)
+    if index is None:
+        if doc_type == "consignment_in":
+            it.receive_as = it.receive_as or "stock"
+            return
+        raise HTTPException(status_code=422, detail=f"{what}: it is not on this {label}. Add it to the {label} first.")
+    line = lines[index]
+    line_item = line.get("item_id") or None
+    line_sku = str(line.get("sku") or "").strip() or None
+    line_kind = line.get("receive_as") or "stock"
+    if it.item_id and it.item_id != line_item and not (line_item is None and line_sku
+                                                      and item_skus.get(it.item_id) == line_sku):
+        raise HTTPException(status_code=422, detail=f"{what}: that item is not the one on line {index + 1} of this {label}.")
+    if it.sku and it.sku.strip() != (line_sku or item_skus.get(line_item or "")):
+        raise HTTPException(status_code=422, detail=f"{what}: that SKU is not the one on line {index + 1} of this {label}.")
+    if it.receive_as and it.receive_as != line_kind:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{what}: line {index + 1} of this {label} is received as {line_kind}, not {it.receive_as}.")
+    it.po_line_index = index
+    it.item_id = it.item_id or line_item
+    it.sku = line_sku or it.sku
+    it.receive_as = line_kind
+    it.name = it.name or line.get("name") or line.get("description") or None
+
+
 def _doc_line_index(lines: list[dict], po_line_index: int, item_id: str | None, sku: str | None) -> int | None:
     """The document line received goods are for: the line at po_line_index, else the line
     naming their item or SKU."""
@@ -3413,7 +3462,7 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
 
 
 @router.post("/{entity_id}/receive")
-async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("fulfill_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # A receipt adds to the quantity and cost of the lots it reads, so it waits for any
     # receipt or cost change in flight and reads what that one committed.
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -3454,6 +3503,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             )
         )
     ).scalars().all()
+    item_skus = {r.entity_id: str(r.state.get("sku") or "").strip() for r in all_item_rows}
+    for it in payload.received_items:
+        _resolve_inbound_line(row.state, it, item_skus)
     item_conversion_map: dict[str, float] = {
         r.entity_id: float(r.state.get("purchase_conversion_factor") or 1)
         for r in all_item_rows
@@ -3748,6 +3800,36 @@ def _line_quantities_received(doc: dict) -> dict[int, float]:
     return received
 
 
+async def _returnable_quantities(session: AsyncSession, company_id, doc: dict) -> dict[str, float]:
+    """Item id -> stock units the document's receipts brought in and it has not sent back."""
+    from celerp.models.ledger import LedgerEntry
+
+    got: dict[str, float] = {}
+    legacy: dict[str, float] = {}  # purchase order receipts made before lots recorded what they added
+    for x in doc.get("received_items") or []:
+        if "lot_quantity_added" in x:
+            got[x["item_id"]] = got.get(x["item_id"], 0.0) + float(x["lot_quantity_added"] or 0)
+        elif (doc.get("doc_type") == "purchase_order" and x.get("item_id")
+              and (x.get("receive_as") or "stock") == "stock"):
+            legacy[x["item_id"]] = legacy.get(x["item_id"], 0.0) + float(x.get("quantity_received") or 0)
+    if legacy:
+        rows = (await session.execute(select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_id.in_(list(legacy))))).scalars().all()
+        conversion = {r.entity_id: float(r.state.get("purchase_conversion_factor") or 1) for r in rows}
+        for item_id, qty in legacy.items():
+            got[item_id] = got.get(item_id, 0.0) + qty * conversion.get(item_id, 1)
+    created = doc.get("received_item_ids") or []
+    if created:
+        for entry in (await session.execute(select(LedgerEntry).where(
+                LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(created),
+                LedgerEntry.event_type == "item.created"))).scalars():
+            got[entry.entity_id] = got.get(entry.entity_id, 0.0) + float((entry.data or {}).get("quantity") or 0)
+    for x in doc.get("returned_items") or []:
+        if x.get("item_id") in got:
+            got[x["item_id"]] -= float(x.get("quantity_returned") or 0)
+    return got
+
+
 # Item statuses meaning the goods are not on our shelf, so they cannot be handed back to a
 # supplier: they are at a customer, gone, or no longer a live parcel.
 _NOT_ON_HAND_STATUSES: frozenset[str] = frozenset({"memo_out", "sold", "archived", "merged", "disposed"})
@@ -3755,7 +3837,7 @@ _NOT_ON_HAND_STATUSES: frozenset[str] = frozenset({"memo_out", "sold", "archived
 
 class ReturnItem(BaseModel):
     item_id: str
-    quantity_returned: float
+    quantity_returned: float = Field(gt=0, allow_inf_nan=False)
 
 
 class ReturnBody(BaseModel):
@@ -3765,7 +3847,7 @@ class ReturnBody(BaseModel):
 
 
 @router.post("/{entity_id}/return-items")
-async def return_consignment_items(entity_id: str, payload: ReturnBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def return_consignment_items(entity_id: str, payload: ReturnBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("fulfill_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # A return takes goods off the lots it reads, so it waits for any receipt or cost
     # change in flight and reads what that one committed.
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -3780,6 +3862,22 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         raise HTTPException(status_code=409, detail="Document must be in received/partial/awaiting_payment status to return items")
 
     from celerp_inventory.services import goods_basis
+
+    # A document sends back only goods it brought in, and no more than it still holds of them.
+    label = {**_RECEIVING_DOC_LABEL, "consignment_in": "consignment"}[doc_type]
+    returnable = await _returnable_quantities(session, company_id, row.state)
+    for it in payload.items:
+        if not math.isfinite(it.quantity_returned) or it.quantity_returned <= 0:
+            raise HTTPException(status_code=422, detail=f"{it.item_id}: the quantity to return must be more than 0.")
+        left = returnable.get(it.item_id)
+        if left is None:
+            raise HTTPException(status_code=422,
+                                detail=f"{it.item_id} was not received on this {label}, so it cannot be returned on it.")
+        if it.quantity_returned > left + 1e-9:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{it.item_id}: at most {max(0.0, left):g} received on this {label} can still be returned.")
+        returnable[it.item_id] = left - it.quantity_returned
 
     # Owned goods leave the books at what they carried; consigned goods were never on them.
     owned = doc_type != "consignment_in"

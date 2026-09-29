@@ -84,14 +84,14 @@ async def _invoice(
     return r.json()["id"]
 
 
-async def _po(client, token: str, *, subtotal: float = 100, tax: float = 0, total: float = 100) -> str:
+async def _po(client, token: str, *, subtotal: float = 100, tax: float = 0, total: float = 100, **line) -> str:
     r = await client.post(
         "/docs",
         headers=_h(token),
         json={
             "doc_type": "purchase_order",
             "contact_id": "supplier:test",
-            "line_items": [{"name": "Raw", "quantity": 2, "unit_price": subtotal / 2, "line_total": subtotal}],
+            "line_items": [{"name": "Raw", "quantity": 2, "unit_price": subtotal / 2, "line_total": subtotal, **line}],
             "subtotal": subtotal,
             "tax": tax,
             "total": total,
@@ -603,7 +603,7 @@ async def test_crud_po_finalize(client):
 @pytest.mark.asyncio
 async def test_crud_po_receive(client):
     token = await _reg(client)
-    eid = await _po(client, token)
+    eid = await _po(client, token, sku="PO-ITEM-1")
     r = await client.post(
         f"/docs/{eid}/receive",
         headers=_h(token),
@@ -941,7 +941,7 @@ async def test_acct_payment_creates_ar_credit(client):
 @pytest.mark.asyncio
 async def test_acct_po_receive_creates_inventory_debit(client):
     token = await _reg(client)
-    po_id = await _po(client, token, total=300)
+    po_id = await _po(client, token, total=300, sku="INV-DBT")
     await client.post(
         f"/docs/{po_id}/receive",
         headers=_h(token),
@@ -957,7 +957,7 @@ async def test_acct_po_receive_creates_inventory_debit(client):
 @pytest.mark.asyncio
 async def test_acct_po_receive_creates_ap_credit(client):
     token = await _reg(client)
-    po_id = await _po(client, token, total=300)
+    po_id = await _po(client, token, total=300, sku="AP-CRD")
     await client.post(
         f"/docs/{po_id}/receive",
         headers=_h(token),
@@ -1142,7 +1142,7 @@ async def test_wf_full_po_lifecycle_inventory_increment(client):
     h = _h(token)
 
     item_id = await _item(client, token, qty=5)
-    po_id = await _po(client, token, total=100)
+    po_id = await _po(client, token, total=100, item_id=item_id)
 
     await client.post(
         f"/docs/{po_id}/receive",
@@ -1157,8 +1157,8 @@ async def test_wf_full_po_lifecycle_inventory_increment(client):
 async def test_wf_po_receive_creates_new_item(client):
     token = await _reg(client)
     h = _h(token)
-    po_id = await _po(client, token)
     new_sku = f"PO-NEW-{uuid.uuid4().hex[:6]}"
+    po_id = await _po(client, token, sku=new_sku)
     await client.post(
         f"/docs/{po_id}/receive",
         headers=h,

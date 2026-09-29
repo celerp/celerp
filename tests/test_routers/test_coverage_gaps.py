@@ -179,17 +179,16 @@ async def test_docs_send_void_guard(client):
 
 @pytest.mark.asyncio
 async def test_docs_receive_po_item_not_found_and_sku_required(client):
-    """Covers receive_po: item_id not found (404), no sku+name guard (422)."""
+    """Covers receive_po: an item the line does not name (422), no sku+name guard (422)."""
     tok = await _reg(client)
     po_id = await _doc(client, tok, doc_type="purchase_order", total=50)
 
-    # item_id points to nonexistent item → 404
-    # ReceivedItem requires po_line_index (int) field
+    # The line names no item, so a receipt naming one is refused
     r1 = await client.post(f"/docs/{po_id}/receive", headers=_h(tok), json={
         "location_id": str(uuid.uuid4()),
         "received_items": [{"po_line_index": 0, "item_id": "item:nonexistent", "quantity_received": 1}],
     })
-    assert r1.status_code == 404
+    assert r1.status_code == 422
 
     # No item_id + no sku/name → 422
     r2 = await client.post(f"/docs/{po_id}/receive", headers=_h(tok), json={
