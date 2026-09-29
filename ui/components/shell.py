@@ -486,6 +486,14 @@ function initCombobox(wrap) {
     }
     if (e.key === 'Escape') {
       list.classList.remove('open');
+      // Escape abandons the search: put the committed selection back now, so a
+      // form submitted before blur never carries a half-typed query or an
+      // emptied hidden value.
+      if (isMulti) syncMultiLabel();
+      else {
+        input.value = committedLabel;
+        if (hidden) hidden.value = committedValue;
+      }
       // Do NOT preventDefault — let event bubble to parent for display restore
     }
   });
@@ -1621,9 +1629,8 @@ def page_title(label_key: str) -> str:
 def _shell_js_i18n(lang: str = "en") -> dict:
     """Translated strings the static JS bundle needs (R2): resolved here at render
     time and handed to the client as a single config object, never spliced into
-    the JS source. Read by _CLIENT_JS, _NOTIFICATION_JS and _STAR_CTA_JS, which are
-    only ever rendered inside a base_shell()-wrapped page (this config is injected
-    below, before those scripts)."""
+    the JS source. Read by _CLIENT_JS, _NOTIFICATION_JS and _STAR_CTA_JS; the config
+    is injected by client_scripts, before any of them."""
     return {
         "copied": t("shell.copied", lang),
         "copyLabel": t("btn.copy", lang),
@@ -1685,6 +1692,18 @@ def _relay_info_from_request(request) -> dict | None:
     return {"connected": True, "public_url": f"https://{host}"}
 
 
+def client_scripts(lang: str = "en") -> list:
+    """htmx, the translated strings the client bundle reads (R2) and the shared client
+    bundle (searchable select, ESC handling), in that order: the config must come
+    before any script that references window.__shellI18n. Every full-chrome page
+    carries them; a page rendered in auth_shell adds them itself."""
+    return [
+        Script(src="/static/htmx.min.js"),
+        Script(f"window.__shellI18n = {json.dumps(_shell_js_i18n(lang))};"),
+        Script(_CLIENT_JS),
+    ]
+
+
 def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """The outer HTML document shared by every full-chrome page: head assets, the
     supplied nav, top bar, banners, main content, and footer.
@@ -1701,11 +1720,7 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Title(title),
         Link(rel="icon", type="image/png", href="/static/icon.png"),
         Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
-        Script(src="/static/htmx.min.js"),
-        # Config the JS bundle below reads for its translated strings (R2) - must come
-        # before any script that references window.__shellI18n.
-        Script(f"window.__shellI18n = {json.dumps(_shell_js_i18n(lang))};"),
-        Script(_CLIENT_JS),
+        *client_scripts(lang),
         Script(_idle_logout_js()),
         Script(_HEALTH_BANNER_JS),
         Script(_POLL_CONTROLLER_JS),

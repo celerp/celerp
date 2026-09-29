@@ -20,9 +20,6 @@ in request bodies to the API, never in a URL.
 
 from __future__ import annotations
 
-import hashlib
-import json
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,7 +29,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, StreamingRespons
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import auth_shell, flash, page_title
+from ui.components.shell import auth_shell, client_scripts, flash, page_title
 from ui.components.table import searchable_select
 from ui.config import (
     clear_session_cookies,
@@ -88,68 +85,38 @@ COMPANY = _Mode("company", "/setup/new-company/migrate", "/setup/new-company")
 # ---------------------------------------------------------------------------
 # Scan state
 # ---------------------------------------------------------------------------
-# The API returns the scan view only from the scan and decisions calls, so the UI
-# keeps the latest view per token for the step pages. Entries are keyed by a hash
-# of the token and expire with the scan; a missing entry is treated as expired.
+# The scan lives in the API's scan store and every step reads it back by token.
+# The Prepared by name typed at upload rides in its own cookie until the first
+# decisions save stores it with the scan.
 
-_SCANS: dict[str, dict] = {}
-
-
-def _scan_key(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
+PREPARED_BY_COOKIE = "celerp_migration_prepared_by"
 
 
-def _purge_scans() -> None:
-    now = time.time()
-    for key in [k for k, v in _SCANS.items() if v["expires"] <= now]:
-        del _SCANS[key]
-
-
-def _remember_scan(token: str, scan: dict, *, prepared_by: str) -> None:
-    _purge_scans()
-    _SCANS[_scan_key(token)] = {
-        "scan": scan, "prepared_by": prepared_by, "expires": time.time() + SCAN_TTL_SECONDS,
-    }
-
-
-def _cached_scan(token: str | None) -> dict | None:
-    if not token:
-        return None
-    _purge_scans()
-    return _SCANS.get(_scan_key(token))
-
-
-def _forget_scan(token: str | None) -> None:
-    if token:
-        _SCANS.pop(_scan_key(token), None)
-
-
-def _set_scan_cookie(resp, token: str, mode: _Mode, request: Request) -> None:
-    resp.set_cookie(SCAN_COOKIE, token, max_age=SCAN_TTL_SECONDS, path=mode.base, httponly=True,
-                    samesite="strict", secure=session_cookie_secure(request),
-                    domain=cookie_domain(request))
+def _set_scan_cookies(resp, token: str, prepared_by: str, mode: _Mode, request: Request) -> None:
+    for name, value in ((SCAN_COOKIE, token), (PREPARED_BY_COOKIE, prepared_by)):
+        resp.set_cookie(name, value, max_age=SCAN_TTL_SECONDS, path=mode.base, httponly=True,
+                        samesite="strict", secure=session_cookie_secure(request),
+                        domain=cookie_domain(request))
 
 
 def _clear_scan_cookie(resp, mode: _Mode, request: Request) -> None:
-    resp.delete_cookie(SCAN_COOKIE, path=mode.base, domain=cookie_domain(request))
+    for name in (SCAN_COOKIE, PREPARED_BY_COOKIE):
+        resp.delete_cookie(name, path=mode.base, domain=cookie_domain(request))
+
+
+async def _read_scan(request: Request, mode: _Mode, token: str) -> dict:
+    """The scan entry for a token: the API's scan view plus the Prepared by name. Raises APIError."""
+    scan = await api.migration_scan_read(_api_token(request, mode), token)
+    saved = (scan.get("decisions") or {}).get("prepared_by")
+    return {"scan": scan, "prepared_by": saved or request.cookies.get(PREPARED_BY_COOKIE, "")}
 
 
 # ---------------------------------------------------------------------------
 # Shared page pieces
 # ---------------------------------------------------------------------------
 
-def _client_scripts(lang: str) -> list:
-    """htmx plus the shared client bundle (searchable select, ESC handling)."""
-    from ui.components.shell import _CLIENT_JS, _shell_js_i18n
-    return [
-        Script(src="/static/htmx.min.js"),
-        Script(f"window.__shellI18n = {json.dumps(_shell_js_i18n(lang))};"),
-        Script(_CLIENT_JS),
-    ]
-
-
 def _page(request: Request, *content, status_code: int = 200):
-    page = auth_shell(*_client_scripts(get_lang(request)), Div(*content, cls="auth-card migration-wizard"),
+    page = auth_shell(*client_scripts(get_lang(request)), Div(*content, cls="auth-card migration-wizard"),
                       title=page_title("migration.title"))
     if status_code == 200:
         return page
@@ -238,7 +205,6 @@ def _api_token(request: Request, mode: _Mode) -> str | None:
 
 
 def _expired(request: Request, mode: _Mode, message: str | None = None):
-    _forget_scan(request.cookies.get(SCAN_COOKIE))
     resp = _page(request, auth_header(t("migration.title")),
                  flash(message or t("migration.scan_expired")),
                  A(t("migration.upload_again"), href=mode.base, cls="btn btn--primary btn--full"),
@@ -249,13 +215,18 @@ def _expired(request: Request, mode: _Mode, message: str | None = None):
     return resp
 
 
-def _current_scan(request: Request, mode: _Mode):
-    """(token, entry) for the request's scan, or an expired response."""
+async def _current_scan(request: Request, mode: _Mode):
+    """(token, entry) for the request's scan, or (None, the response explaining why not)."""
     token = request.cookies.get(SCAN_COOKIE)
-    entry = _cached_scan(token)
-    if entry is None:
+    if not token:
         return None, _expired(request, mode)
-    return token, entry
+    try:
+        return token, await _read_scan(request, mode, token)
+    except APIError as e:
+        if e.status == 410:
+            return None, _expired(request, mode, str(e.detail))
+        return None, _page(request, auth_header(t("migration.title")), flash(str(e.detail)), _back(mode.back),
+                           status_code=e.status if e.status >= 400 else 502)
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +347,6 @@ async def _choose_source(request: Request, mode: _Mode):
     back = None
     clear = False
     token = request.cookies.get(SCAN_COOKIE)
-    entry = _cached_scan(token)
 
     from_run = q.get("from_run", "") if not mode.bootstrap else ""
     if from_run:
@@ -389,18 +359,22 @@ async def _choose_source(request: Request, mode: _Mode):
         except APIError as e:
             resp = await _source_page(request, mode, selected=source, prepared_by=prepared_by,
                                       error=str(e.detail), back=back)
-            return _with_cleared_scan(resp, request, mode, token)
-    elif source and entry is not None and source != entry["scan"].get("source_system"):
-        if q.get("confirm") != "1":
-            return _change_source_page(request, mode, entry, source)
-        clear = True
+            return _with_cleared_scan(resp, request, mode)
+    elif source and token:
+        try:
+            entry = await _read_scan(request, mode, token)
+        except APIError:
+            entry = None  # no readable scan: nothing to replace
+        if entry is not None and source != entry["scan"].get("source_system"):
+            if q.get("confirm") != "1":
+                return _change_source_page(request, mode, entry, source)
+            clear = True
 
     resp = await _source_page(request, mode, selected=source, prepared_by=prepared_by, back=back)
-    return _with_cleared_scan(resp, request, mode, token) if clear else resp
+    return _with_cleared_scan(resp, request, mode) if clear else resp
 
 
-def _with_cleared_scan(resp, request: Request, mode: _Mode, token: str | None):
-    _forget_scan(token)
+def _with_cleared_scan(resp, request: Request, mode: _Mode):
     if not isinstance(resp, HTMLResponse):
         resp = HTMLResponse(to_xml(resp))
     _clear_scan_cookie(resp, mode, request)
@@ -414,11 +388,8 @@ async def _scan_and_continue(request: Request, mode: _Mode, files: list, source:
     except APIError as e:
         return await _source_page(request, mode, selected=source or "", prepared_by=prepared_by,
                                   error=str(e.detail))
-    _forget_scan(request.cookies.get(SCAN_COOKIE))
-    token = result["scan_token"]
-    _remember_scan(token, result["scan"], prepared_by=prepared_by)
     resp = RedirectResponse(f"{mode.base}/coverage", status_code=303)
-    _set_scan_cookie(resp, token, mode, request)
+    _set_scan_cookies(resp, result["scan_token"], prepared_by, mode, request)
     return resp
 
 
@@ -564,7 +535,7 @@ def _coverage_page(request: Request, mode: _Mode, entry: dict, errors: dict | No
 async def _coverage(request: Request, mode: _Mode):
     if (denied := await _gate(request, mode)) is not None:
         return denied
-    token, entry = _current_scan(request, mode)
+    token, entry = await _current_scan(request, mode)
     if token is None:
         return entry
     return _coverage_page(request, mode, entry)
@@ -619,7 +590,7 @@ def _mapping_page(request: Request, mode: _Mode, entry: dict, errors: dict | Non
 async def _mapping(request: Request, mode: _Mode):
     if (denied := await _gate(request, mode)) is not None:
         return denied
-    token, entry = _current_scan(request, mode)
+    token, entry = await _current_scan(request, mode)
     if token is None:
         return entry
     if not entry["scan"].get("questions"):
@@ -630,7 +601,7 @@ async def _mapping(request: Request, mode: _Mode):
 async def _save_decisions(request: Request, mode: _Mode):
     if (denied := await _gate(request, mode)) is not None:
         return denied
-    token, entry = _current_scan(request, mode)
+    token, entry = await _current_scan(request, mode)
     if token is None:
         return entry
     form = await request.form()
@@ -658,7 +629,6 @@ async def _save_decisions(request: Request, mode: _Mode):
         if isinstance(e.detail, dict):
             return render(request, mode, entry, errors=e.detail)
         return render(request, mode, entry, error=str(e.detail))
-    entry["scan"] = new_scan
     if step == "coverage" and new_scan.get("questions"):
         return RedirectResponse(f"{mode.base}/mapping", status_code=303)
     return RedirectResponse(f"{mode.base}/review", status_code=303)
@@ -739,7 +709,7 @@ async def _review_page(request: Request, mode: _Mode, entry: dict, *, values: di
 async def _review(request: Request, mode: _Mode):
     if (denied := await _gate(request, mode)) is not None:
         return denied
-    token, entry = _current_scan(request, mode)
+    token, entry = await _current_scan(request, mode)
     if token is None:
         return entry
     if not entry["scan"].get("decisions"):
@@ -761,7 +731,7 @@ def _account_error(values: dict) -> str | None:
 async def _start(request: Request, mode: _Mode):
     if (denied := await _gate(request, mode)) is not None:
         return denied
-    token, entry = _current_scan(request, mode)
+    token, entry = await _current_scan(request, mode)
     if token is None:
         return entry
     form = await request.form()
@@ -794,7 +764,6 @@ async def _start(request: Request, mode: _Mode):
         await api.migration_run_action(started["access_token"], run_id, "start")
     except APIError:
         pass  # the progress page shows the run as ready with its Start action
-    _forget_scan(token)
     resp = RedirectResponse(f"/migrations/{run_id}", status_code=303)
     set_session_cookies(resp, started["access_token"], started["refresh_token"], request)
     _clear_scan_cookie(resp, mode, request)
@@ -1049,19 +1018,11 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None):
     )
 
 
-def _is_sample(run: dict) -> bool:
-    try:
-        from celerp.importers.sample import SAMPLE_COMPANY_NAME
-    except ImportError:
-        return False
-    return run.get("company_name") == SAMPLE_COMPANY_NAME
-
-
 async def _complete_page(request: Request, run: dict):
     run_id = run["id"]
     pack = P(A(t("migration.download_pack"), href=f"/migrations/{run_id}/pack", cls="auth-link"))
     open_company = A(t("migration.open_company"), href="/dashboard", cls="btn btn--primary btn--full")
-    if _is_sample(run):
+    if run.get("is_sample"):
         return _page(
             request,
             auth_header(t("migration.sample_done_title"), t("migration.sample_done_body")),

@@ -3499,6 +3499,15 @@ async def migration_scan(token: str | None, files: list[tuple[str, BinaryIO]], s
     return _raise(r).json()
 
 
+async def migration_scan_read(token: str | None, scan_token: str) -> dict:
+    """The current scan view for a scan token."""
+    path = "/migrations/scan/read" if token else "/migrations/bootstrap/scan/read"
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            r = await c.post(path, json={"scan_token": scan_token})
+    return _raise(r).json()["scan"]
+
+
 async def migration_save_decisions(token: str | None, scan_token: str, decisions: dict) -> dict:
     """Save method, cutover date, mappings and Prepared by. Returns the updated scan."""
     path = "/migrations/scan/decisions" if token else "/migrations/bootstrap/decisions"

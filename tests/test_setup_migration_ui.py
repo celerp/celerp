@@ -89,7 +89,8 @@ def _scan_view(source: str, file_name: str, *, suggested: str = _ACCOUNT_OPTIONS
 
 
 def _run_view(run_id: str, *, status: str, source: str = "manager_io",
-              company_name: str = "Harbor Goods Ltd", counters: int = 0) -> dict:
+              company_name: str = "Harbor Goods Ltd", counters: int = 0,
+              is_sample: bool = False) -> dict:
     phases = []
     for i, (phase, label) in enumerate(zip(_PHASES, _PHASE_LABELS)):
         done = status in ("ready_to_finalize", "completed") or i < 3
@@ -105,7 +106,7 @@ def _run_view(run_id: str, *, status: str, source: str = "manager_io",
         "status": status, "current_phase": "inventory_masters", "phases": phases,
         "coverage": [], "error_summary": {}, "retention_until": None,
         "source_deleted": False, "prepared_by": "Example Bookkeeping",
-        "is_bootstrap_run": False,
+        "is_bootstrap_run": False, "is_sample": is_sample,
     }
 
 
@@ -173,6 +174,11 @@ class FakeMigrationAPI:
                 scan["questions"] = []
             self.scans[token] = {"scan": scan}
             return _json(200, {"scan_token": token, "scan": self.scans[token]["scan"]})
+        if method == "POST" and path in ("/migrations/bootstrap/scan/read", "/migrations/scan/read"):
+            data = json.loads(body)
+            if self.expired or data.get("scan_token") not in self.scans:
+                return _json(410, {"detail": "This scan has expired. Upload the file again."})
+            return _json(200, {"scan": self.scans[data["scan_token"]]["scan"]})
         if method == "POST" and path in ("/migrations/bootstrap/decisions", "/migrations/scan/decisions"):
             data = json.loads(body)
             if self.expired or data.get("scan_token") not in self.scans:
@@ -723,7 +729,7 @@ async def test_finalize_success_state_offers_next_actions(ui, router, fake_api, 
         assert "Manager" not in text
         assert re.search(r"\bclient", text, re.I) is None
 
-    sample_id = fake_api.add_run("completed", company_name="Sample company")
+    sample_id = fake_api.add_run("completed", company_name="Sample company", is_sample=True)
     r = await ui.get(f"/migrations/{sample_id}/complete")
     assert r.status_code == 200
     page = _visible(r)
