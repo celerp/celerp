@@ -80,6 +80,10 @@ class _FormReq:
         return self._form
 
 
+async def _company(token):
+    return {"id": "company-a"}
+
+
 async def _fake_base_shell(*content, title="", **kwargs):
     return Div(Span(title), Div(*content))
 
@@ -112,8 +116,10 @@ async def test_expired_csv_error_translates(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_upsert_label_translates(monkeypatch):
+async def test_upsert_label_translates(monkeypatch, tmp_path):
     monkeypatch.setattr(di, "_token", lambda request: "tok")
+    monkeypatch.setattr("ui.api_client.get_company", _company)
+    monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
 
     # Clean rows (required doc_type/doc_number present) -> the confirm panel,
     # whose upsert hint interpolates upsert_label=t("docs_import.upsert_label").

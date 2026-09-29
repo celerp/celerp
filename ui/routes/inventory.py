@@ -1467,7 +1467,7 @@ def setup_routes(app):
 
         # Stash the raw CSV and show column mapping UI
         csv_text = _rows_to_csv(rows, cols)
-        csv_ref = _stash_csv(csv_text)
+        csv_ref = await stash_import_csv(token, csv_text)
 
         # Fetch price lists + category attribute keys
         try:
@@ -1508,7 +1508,7 @@ def setup_routes(app):
             return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         form = await request.form()
-        csv_text = _resolve_csv_text(form)
+        csv_text = await resolve_import_csv(token, form)
         if not csv_text:
             return await base_shell(
                 page_header(t("page.import_inventory", lang)),
@@ -1534,7 +1534,7 @@ def setup_routes(app):
         )
         if mapping_errors:
             # Re-render the mapping form with errors and preserved form values
-            csv_ref = _stash_csv(csv_text)
+            csv_ref = await stash_import_csv(token, csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             cat_schemas = await api.get_all_category_schemas(token)
             cat_attrs = _union_category_attr_keys(cat_schemas)
@@ -1563,7 +1563,7 @@ def setup_routes(app):
         remapped_csv, remapped_cols = apply_column_mapping(form, csv_text)
 
         # Re-stash the remapped CSV for downstream steps
-        csv_ref = _stash_csv(remapped_csv)
+        csv_ref = await stash_import_csv(token, remapped_csv)
 
         rows = list(csv.DictReader(io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else spec.cols)
@@ -1572,6 +1572,7 @@ def setup_routes(app):
         return await base_shell(
             page_header(t("page.import_inventory", lang)),
             _csv_validation_result(
+                csv_ref=csv_ref,
                 rows=rows,
                 cols=cols,
                 validate=validate,
@@ -1598,16 +1599,17 @@ def setup_routes(app):
         if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         if not csv_data:
             return _import_upload_form(error=t("inventory.csv_expired"))
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
         rows = _apply_fixes(form, rows, cols)
         # Re-stash the patched CSV so downstream confirm/errors can read it
-        csv_ref = _stash_csv(_rows_to_csv(rows, cols))
+        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols))
         validate, cell_renderers = await _build_item_validator(token)
         return _csv_validation_result(
+            csv_ref=csv_ref,
             rows=rows,
             cols=cols,
             validate=validate,
@@ -1628,7 +1630,7 @@ def setup_routes(app):
         if not await _import_export_allowed(request, token):
             return RedirectResponse("/inventory", status_code=302)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
         validate, _ = await _build_item_validator(token)
@@ -1644,7 +1646,7 @@ def setup_routes(app):
 
         form = await request.form()
         upsert = form.get("upsert") == "1"
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
 
         # Rows arrive mapped and validated by the revalidate cycle. The server owns
@@ -1687,6 +1689,7 @@ def setup_routes(app):
                 has_mapping=True,
             )
 
+        await discard_import_csv(token, form)
         return import_result_panel(
             created=int(merged.get("created", 0) or 0),
             skipped=int(merged.get("skipped", 0) or 0),
@@ -7443,9 +7446,10 @@ def _ledger_table(ledger: list[dict], entity_id: str | None = None, currency: st
 from ui.routes.csv_import import (
     CsvImportSpec,
     ValidateFn,
-    _resolve_csv_text,
+    discard_import_csv,
+    resolve_import_csv,
     _rows_to_csv,
-    _stash_csv,
+    stash_import_csv,
     apply_column_mapping,
     apply_fixes_to_rows as _apply_fixes,
     column_mapping_form,

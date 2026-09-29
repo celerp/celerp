@@ -20,9 +20,10 @@ from ui.components.table import EMPTY, breadcrumbs, display_enum, format_value
 from ui.config import get_token as _token
 from ui.routes.csv_import import (
     CsvImportSpec,
-    _resolve_csv_text,
+    discard_import_csv,
+    resolve_import_csv,
     _rows_to_csv,
-    _stash_csv,
+    stash_import_csv,
     apply_column_mapping,
     apply_fixes_to_rows,
     column_mapping_form,
@@ -449,7 +450,7 @@ def setup_routes(app):
             )
         cols = list(rows[0].keys()) if rows else []
         csv_text = _rows_to_csv(rows, cols)
-        csv_ref = _stash_csv(csv_text)
+        csv_ref = await stash_import_csv(token, csv_text)
         return await base_shell(
             page_header(t("docs_import.import_documents")),
             column_mapping_form(
@@ -473,7 +474,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        csv_text = _resolve_csv_text(form)
+        csv_text = await resolve_import_csv(token, form)
         if not csv_text:
             return await base_shell(
                 page_header(t("docs_import.import_documents")),
@@ -492,7 +493,7 @@ def setup_routes(app):
         original_cols = list(csv.DictReader(io.StringIO(csv_text)).fieldnames or [])
         mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_DOC_IMPORT_SPEC.cols))
         if mapping_errors:
-            csv_ref = _stash_csv(csv_text)
+            csv_ref = await stash_import_csv(token, csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             return await base_shell(
                 page_header(t("docs_import.import_documents")),
@@ -513,13 +514,14 @@ def setup_routes(app):
             )
 
         remapped_csv, remapped_cols = apply_column_mapping(form, csv_text)
-        csv_ref = _stash_csv(remapped_csv)
+        csv_ref = await stash_import_csv(token, remapped_csv)
         rows = list(csv.DictReader(io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else _DOC_IMPORT_SPEC.cols)
 
         return await base_shell(
             page_header(t("docs_import.import_documents")),
             validation_result(
+                csv_ref=csv_ref,
                 rows=rows,
                 cols=cols,
                 validate=lambda c, v, r: validate_cell(_DOC_IMPORT_SPEC, c, v),
@@ -537,10 +539,11 @@ def setup_routes(app):
 
     @app.post("/docs/import/revalidate")
     async def docs_import_revalidate(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         if not csv_data:
             return upload_form(
                 cols=_DOC_IMPORT_SPEC.cols,
@@ -552,8 +555,9 @@ def setup_routes(app):
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _DOC_IMPORT_SPEC.cols
         rows = apply_fixes_to_rows(form, rows, cols)
-        _stash_csv(_rows_to_csv(rows, cols))
+        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols))
         return validation_result(
+            csv_ref=csv_ref,
             rows=rows, cols=cols,
             validate=lambda c, v, r: validate_cell(_DOC_IMPORT_SPEC, c, v),
             confirm_action="/docs/import/confirm",
@@ -566,10 +570,11 @@ def setup_routes(app):
 
     @app.post("/docs/import/errors")
     async def docs_import_errors(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _DOC_IMPORT_SPEC.cols
         return error_report_response(rows, cols, lambda c, v: validate_cell(_DOC_IMPORT_SPEC, c, v), "documents_errors.csv")
@@ -581,7 +586,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
         upsert = form.get("upsert") == "1"
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
 
         def _f(row: dict, key: str) -> float | None:
@@ -661,6 +666,7 @@ def setup_routes(app):
         updated = int(result.get("updated", 0) or 0)
         errors = list(result.get("errors", []) or [])
 
+        await discard_import_csv(token, form)
         return import_result_panel(
             created=created,
             skipped=skipped,

@@ -87,6 +87,7 @@ def test_column_mapping_form_translates_label_js_and_count():
 def test_validation_result_clean_translates_import_button():
     rows = [{"sku": f"S{i}", "name": f"N{i}"} for i in range(6)]
     html = to_xml(validation_result(
+        csv_ref="imp_00000000000000000000000000000000",
         rows=rows,
         cols=["sku", "name"],
         validate=lambda col, val, row: True,
@@ -102,6 +103,7 @@ def test_validation_result_clean_translates_import_button():
 def test_validation_result_errors_translates_summary():
     rows = [{"name": "", "sku": "A"}, {"name": "", "sku": "B"}]
     html = to_xml(validation_result(
+        csv_ref="imp_00000000000000000000000000000000",
         rows=rows,
         cols=["name", "sku"],
         validate=lambda col, val, row: not (col == "name" and val == ""),

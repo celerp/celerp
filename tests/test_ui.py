@@ -33,7 +33,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from ui.routes.csv_import import _load_csv, MAPPING_ATTRIBUTE, MAPPING_SKIP
+from ui.routes.csv_import import _read_stage, MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC, _CORE_ITEM_COLS
 from test_helpers import make_test_token, authed_cookies
 from ui.config import API_BASE as _API_BASE
@@ -90,7 +90,7 @@ async def _inventory_import_with_mapping(ui_client, csv_bytes: bytes):
     m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
     assert m, "csv_ref hidden field not found"
     csv_ref = m.group(1)
-    csv_text = _load_csv(csv_ref)
+    csv_text = _read_stage(_TEST_COMPANY_ID, csv_ref)
     assert csv_text, "stashed CSV missing"
 
     # Build mapping: map known core columns to themselves, others as attributes
@@ -126,7 +126,7 @@ async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url:
     m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
     assert m, f"csv_ref hidden field not found in {preview_url} response"
     csv_ref = m.group(1)
-    csv_text = _load_csv(csv_ref)
+    csv_text = _read_stage(_TEST_COMPANY_ID, csv_ref)
     assert csv_text, "stashed CSV missing"
 
     import csv as _csv, io as _io
@@ -144,6 +144,9 @@ async def _generic_import_with_mapping(ui_client, csv_bytes: bytes, preview_url:
         cookies=_authed(),
         data=form_data,
     )
+
+
+_TEST_COMPANY_ID = "00000000-0000-0000-0000-00000000c0de"
 
 
 def _role_from_token(token: str | None) -> str:
@@ -172,7 +175,7 @@ def _company_stub(base: dict):
 @pytest.fixture(autouse=True)
 def _mock_get_company():
     """Default get_company mock for all UI tests."""
-    _default = {"name": "Test Corp", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01"}
+    _default = {"id": _TEST_COMPANY_ID, "name": "Test Corp", "currency": "THB", "timezone": "Asia/Bangkok", "fiscal_year_start": "01-01"}
     with patch("ui.api_client.get_company", new=AsyncMock(side_effect=_company_stub(_default))), \
          patch("ui.routes.auth.api_get_company", new=AsyncMock(side_effect=_company_stub(_default))):
         yield
@@ -7598,6 +7601,7 @@ class TestCsvImportHelpers:
         spec = CsvImportSpec(cols=["sku", "name"], required={"sku", "name"}, type_map={})
         rows = [{"sku": "S1", "name": "Widget"}]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=["sku", "name"],
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
@@ -7614,6 +7618,7 @@ class TestCsvImportHelpers:
         spec = CsvImportSpec(cols=["sku", "name"], required={"sku", "name"}, type_map={})
         rows = [{"sku": "", "name": "Widget"}]  # sku missing → error
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=["sku", "name"],
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
@@ -7632,6 +7637,7 @@ class TestCsvImportHelpers:
         spec = CsvImportSpec(cols=["sku"], required={"sku"}, type_map={})
         rows = [{"sku": ""}]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=["sku"],
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
@@ -7641,25 +7647,20 @@ class TestCsvImportHelpers:
         assert 'name="csv_ref"' in html
 
     def test_validation_result_clean_includes_csv_data_for_confirm(self):
-        """Clean confirm panel must embed csv_ref so confirm POST can read rows."""
+        """Clean confirm panel must embed the caller's stage ref so confirm POST can read rows."""
         from fasthtml.common import to_xml
-        from ui.routes.csv_import import CsvImportSpec, validate_cell, validation_result, _load_csv
+        from ui.routes.csv_import import CsvImportSpec, validate_cell, validation_result
         spec = CsvImportSpec(cols=["sku"], required={"sku"}, type_map={})
-        rows = [{"sku": "SKU-1"}]
+        ref = "imp_" + "ab" * 16
         html = to_xml(validation_result(
-            rows=rows, cols=["sku"],
+            csv_ref=ref,
+            rows=[{"sku": "SKU-1"}], cols=["sku"],
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
             error_report_action="/x/errors",
             back_href="/x",
         ))
-        assert 'name="csv_ref"' in html
-        # The stashed CSV must contain the row data
-        import re
-        m = re.search(r'name="csv_ref"\s+value="([^"]+)"', html)
-        assert m, "csv_ref hidden field not found"
-        stashed = _load_csv(m.group(1))
-        assert stashed and "SKU-1" in stashed
+        assert f'name="csv_ref" value="{ref}"' in html
 
     def test_error_report_csv_adds_errors_column(self):
         """error_report_csv must append _errors column listing bad fields."""
@@ -8488,6 +8489,7 @@ class TestCsvImportUxErrorTable:
         from ui.routes.csv_import import validate_cell, validation_result
         spec = self._spec()
         return to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows,
             cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
@@ -8853,6 +8855,7 @@ class TestCsvImportIdentifierColumnContract:
         from ui.routes.csv_import import CsvImportSpec, validate_cell, validation_result
         spec = CsvImportSpec(cols=cols, required=required or set(), type_map={})
         return to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/c", error_report_action="/e", back_href="/b",
@@ -12966,6 +12969,7 @@ class TestCsvImportUxOverhaul:
         spec = self._spec()
         rows = [{"sku": "", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
@@ -12983,6 +12987,7 @@ class TestCsvImportUxOverhaul:
             {"sku": "", "name": "B", "quantity": "5", "cost_price": "10"},
         ]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
@@ -12999,6 +13004,7 @@ class TestCsvImportUxOverhaul:
             {"sku": "", "name": "Bad", "quantity": "5", "cost_price": "10"},
         ]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
@@ -13013,6 +13019,7 @@ class TestCsvImportUxOverhaul:
         spec = self._spec()
         rows = [{"sku": "S1", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
@@ -13030,6 +13037,7 @@ class TestCsvImportUxOverhaul:
             {"sku": "S2", "name": "B", "quantity": "2", "cost_price": "2"},
         ]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
@@ -13080,6 +13088,7 @@ class TestCsvImportUxOverhaul:
         spec = self._spec()
         rows = [{"sku": "", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = to_xml(validation_result(
+            csv_ref="imp_00000000000000000000000000000000",
             rows=rows, cols=spec.cols,
             validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",

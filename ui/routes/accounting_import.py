@@ -17,9 +17,10 @@ from ui.config import get_token as _token
 from ui.i18n import t
 from ui.routes.csv_import import (
     CsvImportSpec,
-    _resolve_csv_text,
+    discard_import_csv,
+    resolve_import_csv,
     _rows_to_csv,
-    _stash_csv,
+    stash_import_csv,
     apply_column_mapping,
     apply_fixes_to_rows,
     column_mapping_form,
@@ -105,7 +106,7 @@ def setup_routes(app):
             )
         cols = list(rows[0].keys()) if rows else []
         csv_text = _rows_to_csv(rows, cols)
-        csv_ref = _stash_csv(csv_text)
+        csv_ref = await stash_import_csv(token, csv_text)
         return await base_shell(
             page_header(t("accounting_import.header_chart")),
             column_mapping_form(
@@ -129,7 +130,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        csv_text = _resolve_csv_text(form)
+        csv_text = await resolve_import_csv(token, form)
         if not csv_text:
             return await base_shell(
                 page_header(t("accounting_import.header_chart")),
@@ -148,7 +149,7 @@ def setup_routes(app):
         original_cols = list(csv.DictReader(io.StringIO(csv_text)).fieldnames or [])
         mapping_errors = validate_column_mapping(form, original_cols, core_fields=set(_CHART_SPEC.cols))
         if mapping_errors:
-            csv_ref = _stash_csv(csv_text)
+            csv_ref = await stash_import_csv(token, csv_text)
             rows = list(csv.DictReader(io.StringIO(csv_text)))
             return await base_shell(
                 page_header(t("accounting_import.header_chart")),
@@ -169,13 +170,14 @@ def setup_routes(app):
             )
 
         remapped_csv, remapped_cols = apply_column_mapping(form, csv_text)
-        csv_ref = _stash_csv(remapped_csv)
+        csv_ref = await stash_import_csv(token, remapped_csv)
         rows = list(csv.DictReader(io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else _CHART_SPEC.cols)
 
         return await base_shell(
             page_header(t("accounting_import.header_chart")),
             validation_result(
+                csv_ref=csv_ref,
                 rows=rows,
                 cols=cols,
                 validate=_chart_validate,
@@ -192,10 +194,11 @@ def setup_routes(app):
 
     @app.post("/accounting/import/chart/revalidate")
     async def import_chart_revalidate(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         if not csv_data:
             return upload_form(
                 cols=_CHART_SPEC.cols,
@@ -207,8 +210,9 @@ def setup_routes(app):
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _CHART_SPEC.cols
         rows = apply_fixes_to_rows(form, rows, cols)
-        _stash_csv(_rows_to_csv(rows, cols))
+        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols))
         return validation_result(
+            csv_ref=csv_ref,
             rows=rows, cols=cols,
             validate=_chart_validate,
             confirm_action="/accounting/import/chart/confirm",
@@ -220,10 +224,11 @@ def setup_routes(app):
 
     @app.post("/accounting/import/chart/errors")
     async def import_chart_errors(request: Request):
-        if not _token(request):
+        token = _token(request)
+        if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        rows = list(csv.DictReader(io.StringIO(_resolve_csv_text(form))))
+        rows = list(csv.DictReader(io.StringIO(await resolve_import_csv(token, form))))
         return error_report_response(rows, _CHART_SPEC.cols, _chart_validate, "chart_errors.csv")
 
     @app.post("/accounting/import/chart/confirm")
@@ -233,7 +238,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
 
         form = await request.form()
-        csv_data = _resolve_csv_text(form)
+        csv_data = await resolve_import_csv(token, form)
         if not csv_data:
             return RedirectResponse("/accounting/import/chart", status_code=302)
 
@@ -267,6 +272,7 @@ def setup_routes(app):
         failed = int(result.get("failed", 0) or 0)
         errors = [t("settings_import.records_failed", n=failed)] if failed else []
 
+        await discard_import_csv(token, form)
         return import_result_panel(
             created=created,
             skipped=skipped,
