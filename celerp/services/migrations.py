@@ -82,6 +82,7 @@ ALREADY_RUNNING = "Migration is already running."
 SCAN_ALREADY_STARTED = "This upload was already used to start a migration, or it was replaced."
 NO_UNFINISHED = "This company has no unfinished migration to discard."
 NOTHING_TO_MIGRATE = "The source file contains no records to migrate."
+OLDER_IMPORTER = "This migration was created by an older importer version and must be restarted."
 
 _S = MigrationStatus
 _P = MigrationPhase
@@ -554,6 +555,20 @@ async def _fail(maker, run_id: uuid.UUID, phase: MigrationPhase, cursor: int, ex
         await s.commit()
 
 
+class IncompatibleImporterVersion(Exception):
+    """The run's cursors and mappings were made by an importer whose output may differ now."""
+
+    def __init__(self) -> None:
+        super().__init__(OLDER_IMPORTER)
+
+
+def _require_same_importer(run: MigrationRun, adapter: SourceAdapter) -> None:
+    """A run resumes only under the adapter and migration CIF versions it started with:
+    a changed importer can include, identify or order records differently."""
+    if run.adapter_version != adapter.adapter_version or run.cif_version != CIF_VERSION:
+        raise IncompatibleImporterVersion()
+
+
 async def run_migration(run_id: uuid.UUID) -> None:
     """Run or resume one migration to ready_to_finalize, failed or cancelled.
 
@@ -581,13 +596,15 @@ async def _run_locked(run_id: uuid.UUID) -> None:
             return
         company_id, user_id, state = run.company_id, run.created_by_user_id, dict(run.phase_state)
         first_pending = next((p for p in IMPORT_PHASES if _phase_entry(state, p)["status"] != "done"), None)
+        stopped_at = first_pending or _P.RECONCILIATION
         try:
             adapter, artifacts, decisions = _source(run)
+            _require_same_importer(run, adapter)
             manifest = await asyncio.to_thread(adapter.build_manifest, artifacts, decisions)
             steps = _phase_steps(manifest)
             read_attachment = partial(adapter.read_attachment, artifacts)
-        except Exception as exc:  # a missing source, adapter or module sink: nothing was written
-            await _fail(maker, run_id, first_pending or _P.RECONCILIATION, 0, exc)
+        except Exception as exc:  # a missing source, adapter or module sink, or a changed importer: nothing written
+            await _fail(maker, run_id, stopped_at, _phase_entry(state, stopped_at)["cursor"], exc)
             return
     targets: dict[str, str | None] = {}
     for entry in manifest.coverage:
