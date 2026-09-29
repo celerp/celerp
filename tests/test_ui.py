@@ -10661,7 +10661,7 @@ class TestListScanInPlace:
         # committed, letting a retry duplicate them. The body carries any Unicode safely.
         _bad = "ዕቃ-99"
         _res = {"scanned": 1, "results": [{"code": "A1", "state": "added"}],
-                "failed": [{"code": _bad, "reason": "unknown_code", "label": f"Unknown barcode or SKU: {_bad}"}]}
+                "failed": [{"code": _bad, "reason": "unknown_code", "label": f"{_bad}: no matching barcode or SKU"}]}
         with patch("ui.api_client.scan_list", new=AsyncMock(return_value=_res)), \
              patch("ui.api_client.get_list_page",
                    new=AsyncMock(return_value={"list": self._DRAFT, "version": 1})):

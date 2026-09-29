@@ -6008,9 +6008,7 @@ async def finalize_list(
                     continue
                 seen.add(key)
             lines.append(l)
-        for l in lines:
-            item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
-            l["on_hand"] = float(item.state.get("quantity") or 0) if (item and item.entity_type == "item") else 0.0
+        await _lock_audit_lines(session, company_id, lines)
         data["line_items"] = lines
     elif milestone:
         data[milestone] = now
@@ -8079,7 +8077,58 @@ async def _set_list_fields(session, company_id, entity_id, user, fields: dict):
 
 def _ambiguous_sku_detail(code: str) -> str:
     """The one message for an ambiguous SKU: never silently pick a lot - the operator disambiguates."""
-    return f"Multiple items share SKU '{code}'. Scan its barcode or pick a specific lot."
+    return f"{code}: multiple items share this SKU; scan a barcode or choose a lot"
+
+
+def _unknown_code_detail(code: str) -> str:
+    return f"{code}: no matching barcode or SKU"
+
+
+def _sku_note(code: str, item: Projection) -> str:
+    """The item's SKU as context after the scanned code, unless the code already was that SKU."""
+    sku = (item.state or {}).get("sku")
+    return f" (SKU {sku})" if sku and sku != code else ""
+
+
+def _locked_manifest_failure(code: str, item: Projection | None, lines: list[dict]) -> tuple[str, str]:
+    """(reason, label) for a code that checks off no line of a locked audit. A manifest keys
+    physical identity by item_id; a SKU is only context. A code equal to a line's locked barcode
+    that no longer resolves to that line's item means the identifier moved after locking: counting
+    it against the old line could adjust the wrong stock, so it is reported, never checked off."""
+    item_id = item.entity_id if item is not None else None
+    if any(l.get("barcode") == code and l.get("item_id") != item_id for l in lines):
+        return ("audit_identifier_changed",
+                f"{code}: this barcode changed after the audit was locked; review the audit before counting")
+    if item is None:
+        return "unknown_code", _unknown_code_detail(code)
+    sku = (item.state or {}).get("sku")
+    if sku and any(l.get("sku") == sku for l in lines):
+        return "not_on_audit", f"{code}: not on this audit. SKU {sku} is present on a different lot."
+    return "not_on_audit", f"{code}: not on this audit{_sku_note(code, item)}"
+
+
+# What a locked audit line records about its physical item. Refreshed from the item at lock time;
+# counts, comments and any other line field are left as the user set them.
+_AUDIT_IDENTITY_FIELDS = ("sku", "name", "barcode")
+
+
+async def _lock_audit_lines(session: AsyncSession, company_id: str, lines: list[dict]) -> None:
+    """In place: refresh each linked line's identity from its item and freeze its on-hand, so the
+    locked manifest agrees with the item every later scan resolves to. A line whose item no longer
+    exists blocks the lock: its stock could never be adjusted. Unlinked lines freeze at 0."""
+    for l in lines:
+        key = l.get("item_id")
+        item = await session.get(Projection, {"company_id": company_id, "entity_id": key}) if key else None
+        if key and (item is None or item.entity_type != "item"):
+            label = l.get("sku") or l.get("name") or "A line"
+            raise HTTPException(status_code=409,
+                                detail=f"{label}: its inventory item no longer exists. Remove the line, then try again.")
+        if item is None:
+            l["on_hand"] = 0.0
+            continue
+        fresh = _scan_line_from_item(item, "audit", None)
+        l.update({f: fresh[f] for f in _AUDIT_IDENTITY_FIELDS})
+        l["on_hand"] = float(item.state.get("quantity") or 0)
 
 
 def _normalize_line_item_ids(lines: list) -> None:
@@ -8243,9 +8292,10 @@ async def scan_list(
         else:
             item = res.one if res is not None else None
             if item is None:
-                reason, detail = "unknown_code", f"Unknown barcode or SKU: {code}"
+                reason, detail = (_locked_manifest_failure(code, None, lines) if status == FINALIZED
+                                  else ("unknown_code", _unknown_code_detail(code)))
             elif str((item.state or {}).get("status") or "").lower() == "draft":
-                reason, detail = "draft_item", f"{(item.state or {}).get('sku') or code}: item is a draft - make it available first"
+                reason, detail = "draft_item", f"{code}: item is a draft - make it available first{_sku_note(code, item)}"
         if detail is not None:
             failed.append({"code": code, "reason": reason, "label": detail})
             results.append({"code": code, "state": "error", "reason": reason, "label": detail})
@@ -8268,7 +8318,7 @@ async def scan_list(
                 # against the live `lines`, so this dedups both within-batch and against
                 # persisted lines - matching the audit branch's set semantics above.
                 if idx is not None:
-                    detail = f"{item.state.get('sku') or code}: already on the list"
+                    detail = f"{code}: already on the list{_sku_note(code, item)}"
                     failed.append({"code": code, "reason": "duplicate_scan", "label": detail})
                     results.append({"code": code, "state": "error", "reason": "duplicate_scan", "label": detail})
                     continue
@@ -8296,9 +8346,9 @@ async def scan_list(
             # FINALIZED audit: the manifest is LOCKED - scanning only checks off items already on the
             # list and never adds. An item not on the list is reported (add it while still a draft).
             if idx is None:
-                detail = f"{item.state.get('sku') or code} is not on this audit"
-                failed.append({"code": code, "reason": "not_on_audit", "label": detail})
-                results.append({"code": code, "state": "error", "reason": "not_on_audit", "label": detail})
+                reason, detail = _locked_manifest_failure(code, item, lines)
+                failed.append({"code": code, "reason": reason, "label": detail})
+                results.append({"code": code, "state": "error", "reason": reason, "label": detail})
                 continue
             ln = lines.pop(idx)
             ln["audited_at"] = now        # confirm presence -> the row highlights as accounted for
@@ -8901,10 +8951,7 @@ async def change_list_type(
     fields: dict = {"list_type": new_type}
     if new_type == "audit" and status == FINALIZED:
         lines = [dict(l) for l in (state.get("line_items") or [])]
-        for l in lines:
-            item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
-            l["on_hand"] = (float(item.state.get("quantity") or 0)
-                            if (item and item.entity_type == "item") else l.get("on_hand", 0.0))
+        await _lock_audit_lines(session, company_id, lines)
         fields["line_items"] = lines
     await _set_list_fields(session, company_id, entity_id, user, fields)
     await session.commit()

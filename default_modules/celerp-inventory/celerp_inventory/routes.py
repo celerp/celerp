@@ -1908,7 +1908,7 @@ def _resolve_from_candidates(barcode_matches, rfid_matches, gtin_matches, sku_ma
 def duplicate_barcode_detail(code: str) -> str:
     """The single operator-facing message for a physical code that resolves to more than
     one lot, shared by every scan surface so the wording is sourced in one place."""
-    return f"Duplicate physical code '{code}' exists on multiple inventory items"
+    return f"{code}: more than one inventory item has this physical code"
 
 
 # Statuses whose items are retained for history but are no longer a current physical
