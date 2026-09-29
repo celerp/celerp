@@ -19,7 +19,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -325,7 +325,8 @@ async def staged_run(engine, *, spec: dict | None = None, decisions: dict | None
     from celerp.services import migrations, provisioning
 
     async with maker(engine)() as s:
-        user = User(email=email, name="Owner", is_install_owner=True)
+        first = await s.scalar(select(User.id).limit(1)) is None
+        user = User(email=email, name="Owner", is_install_owner=first)
         s.add(user)
         await s.flush()
         owner = ("user", user.id)

@@ -326,12 +326,13 @@ async def create_run(session: AsyncSession, *, company: Company, user: User, sca
         session.add(run)
         await session.flush()
     except BaseException:
-        _remove_source(run_id)
+        remove_source(run_id)
         raise
     return run
 
 
-def _remove_source(run_id: uuid.UUID) -> None:
+def remove_source(run_id: uuid.UUID) -> None:
+    """Best-effort removal of a run's source files; a failure is logged."""
     try:
         store.remove_run_dir(run_id)
     except OSError:
@@ -692,6 +693,7 @@ async def finalize(session: AsyncSession, run: MigrationRun) -> MigrationRun:
     await _lock_run(session, run)
     if run.status != _S.READY_TO_FINALIZE:
         raise _illegal("finalize", run)
+    run_id = run.id  # read before a rollback expires the row
     try:
         report = await _verification(session, run)
         if report["blockers"]:
@@ -710,7 +712,7 @@ async def finalize(session: AsyncSession, run: MigrationRun) -> MigrationRun:
         raise
     except Exception:
         await session.rollback()
-        logger.exception("Migration %s could not be finalized", run.id)
+        logger.exception("Migration %s could not be finalized", run_id)
         raise MigrationError(500, "Could not finish the migration. Nothing was changed.") from None
     await _cleanup_source(session, run)
     return run
@@ -753,7 +755,7 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         if table in _DISCARD_ORDER:
             continue
         held = await session.scalar(text(f'SELECT 1 FROM "{table}" WHERE company_id = :c LIMIT 1'),
-                                    {"c": company.id})
+                                    {"c": str(company.id)})
         if held:
             raise MigrationError(409, f"This company has data in {table} that discard cannot remove safely. "
                                       "Nothing was deleted.")
@@ -762,18 +764,18 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     owner_id = run.created_by_user_id
     bootstrap = bool(run.source_summary.get("bootstrap"))
     for table in _DISCARD_ORDER:
-        await session.execute(text(f'DELETE FROM "{table}" WHERE company_id = :c'), {"c": company.id})
-    await session.execute(text("DELETE FROM companies WHERE id = :c"), {"c": company.id})
+        await session.execute(text(f'DELETE FROM "{table}" WHERE company_id = :c'), {"c": str(company.id)})
+    await session.execute(text("DELETE FROM companies WHERE id = :c"), {"c": str(company.id)})
     redirect = "/"
     if bootstrap:
         others = await session.scalar(select(UserCompany.id).where(UserCompany.user_id == owner_id).limit(1))
         if others is None:
-            await session.execute(text("DELETE FROM users WHERE id = :u"), {"u": owner_id})
+            await session.execute(text("DELETE FROM users WHERE id = :u"), {"u": str(owner_id)})
             redirect = "/setup"
     await session.commit()
     session.expunge_all()
     for run_id in run_ids:
-        _remove_source(run_id)
+        remove_source(run_id)
     return redirect
 
 
@@ -845,16 +847,17 @@ def reconciliation_pack_csv(run: MigrationRun) -> str:
     report = run.reconciliation
     buf = io.StringIO()
     writer = csv.writer(buf)
+    # Only the preparer's name is user-authored; "--" is Celerp's own empty marker, not a formula.
     for label, value in (
         ("Run id", str(run.id)),
         ("Source", adapter.display_name if adapter else run.source_system),
         ("Mode", _MODE_LABELS[CIFMode(run.mode)]),
         ("Cutover date", decisions.get("cutover_date") or "--"),
         ("Source hash", run.source_artifact_sha256),
-        ("Prepared by", run.prepared_by or "--"),
+        ("Prepared by", csv_safe(run.prepared_by) if run.prepared_by else "--"),
         ("Generated at", report["generated_at"]),
     ):
-        writer.writerow([label, csv_safe(value)])
+        writer.writerow([label, value])
     writer.writerow([])
     writer.writerow(["Check", "Key", "Currency", "Source", "Celerp", "Difference", "Rule", "Result"])
     for row in report["rows"]:
