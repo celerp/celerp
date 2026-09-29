@@ -3,10 +3,9 @@
 """Convert a decoded Manager book and its ledger into a CIF bundle.
 
 Source identity is the Manager object key throughout: two records with the
-same display name stay two records. Amounts on documents and settlements are
-in the record's own currency with its exchange rate; journal amounts are base
-currency, taken from the same postings the source expectations are computed
-from.
+same display name stay two records. Every financial record is in the base
+currency; journal amounts are taken from the same postings the source
+expectations are computed from.
 """
 
 from __future__ import annotations
@@ -42,11 +41,8 @@ from celerp.importers.schema import (
 SOURCE_SYSTEM = "manager_io"
 ZERO = Decimal(0)
 # Journal parts of the ledger, and the source id suffix each part's journal carries.
-JOURNAL_PARTS = {"journal": "", "fallback": ":journal", "fx": ":fx"}
-NARRATION = {
-    "fallback": "Lines of this record that do not settle a customer or supplier balance.",
-    "fx": "Realized exchange difference on settlement.",
-}
+JOURNAL_PARTS = {"journal": "", "fallback": ":journal"}
+FALLBACK_NARRATION = "Lines of this record that do not settle a customer or supplier balance."
 
 
 def _src(source_type: str, key: str, ref: str | None = None) -> dict:
@@ -125,7 +121,6 @@ def _document(book: Book, ledger: Ledger, doc: Document) -> CIFDocument:
     return CIFDocument(**_src(doc.source_type, doc.key, doc.ref), doc_type=doc.doc_type, status=state.status,
                        contact_external_id=doc.contact, ref=doc.ref, issue_date=doc.date, payment_due_date=doc.due,
                        currency=book.currency_code(doc.currency),
-                       exchange_rate=doc.rate if book.is_foreign(doc.currency) else None,
                        total=doc.total, tax_total=doc.tax_total, amount_paid=state.amount_paid,
                        amount_outstanding=state.amount_outstanding, line_items=[_line(ln) for ln in doc.lines],
                        metadata=metadata)
@@ -136,12 +131,12 @@ def _settlements(book: Book, ledger: Ledger) -> list[CIFSettlement]:
     for key, amount in ledger.settlement_amounts.items():
         s = book.settlements[key]
         allocated: dict[str, Decimal] = defaultdict(lambda: ZERO)
-        for document, native in ledger.allocations[key]:
-            allocated[document] += native
+        for document, allocation in ledger.allocations[key]:
+            allocated[document] += allocation
         out.append(CIFSettlement(
             **_src(s.source_type, key, s.ref), settlement_type=s.kind, settlement_date=s.date,
             contact_external_id=s.contact, bank_account_external_id=s.bank, currency=book.currency_code(s.currency),
-            exchange_rate=s.rate if book.is_foreign(s.currency) else None, amount=amount,
+            amount=amount,
             allocations=[CIFAllocation(document_external_id=d, amount=a) for d, a in allocated.items()],
         ))
     return out
@@ -170,7 +165,7 @@ def _journals(book: Book, ledger: Ledger) -> list[CIFJournalEntry]:
         if len(lines) < 2:
             continue
         source = book.journals.get(record) or book.settlements[record]
-        narration = source.narration if part == "journal" else NARRATION[part]
+        narration = source.narration if part == "journal" else FALLBACK_NARRATION
         out.append(CIFJournalEntry(**_src(book.names[record], record + JOURNAL_PARTS[part], source.ref),
                                    entry_date=postings[0].date, narration=narration, currency=book.base_code,
                                    lines=lines))

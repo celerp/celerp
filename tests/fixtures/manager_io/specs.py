@@ -197,13 +197,6 @@ def fx_objects() -> list[Obj]:
     ]
 
 
-def fx_credit_note() -> Obj:
-    """A foreign-currency credit note: a type whose FX treatment has no fixture proof."""
-    return obj("CreditNote", "CNE1", {1: date(2026, 2, 20), 2: "CN-E1", 3: k("ECUST"), 30: D("1.3"), 22: [
-        {2: k("SALES"), 18: D("1"), 19: D("10")},
-    ]})
-
-
 BASIC_CHANGES = 5
 
 

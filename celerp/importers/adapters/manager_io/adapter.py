@@ -87,8 +87,6 @@ class ManagerIOAdapter:
                              for key, reason in sorted(screened.rejected.items())],
             },
         }
-        if any(book.is_foreign(c) for c in book.currencies):
-            summary["fx"] = {"realized": str(ledger.realized), "unrealized": ledger.unrealized}
         return CIFImportManifest(
             source=book.company_name or artifact.original_name,
             source_system=self.key,

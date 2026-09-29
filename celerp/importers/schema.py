@@ -326,7 +326,6 @@ class CIFDocument(CIFSourceRecord):
     issue_date: CIFDate | None = None
     payment_due_date: CIFDate | None = None
     currency: str | None = None
-    exchange_rate: Annotated[CIFDecimal, Field(gt=0)] | None = None
     total: CIFDecimal
     tax_total: CIFDecimal | None = None
     amount_paid: CIFDecimal
@@ -354,7 +353,6 @@ class CIFSettlement(CIFSourceRecord):
     contact_external_id: str | None = None
     bank_account_external_id: NonEmptyStr
     currency: str | None = None
-    exchange_rate: Annotated[CIFDecimal, Field(gt=0)] | None = None
     amount: Annotated[CIFDecimal, Field(gt=0)]
     allocations: list[CIFAllocation] = Field(default_factory=list)
 

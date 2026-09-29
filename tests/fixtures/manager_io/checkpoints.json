@@ -262,99 +262,10 @@
     }
   },
   "fx": {
-    "full_history": {
-      "debits_equal_credits": "0.00",
-      "trial_balance": {
-        "EBANK": "125.00",
-        "SALES": "-120.00",
-        "@ProfitAndLossStatementAccountCurrencyGainsLosses": "-5.00",
-        "PURCH": "100.00",
-        "@BalanceSheetAccountsPayableAccount": "-100.00",
-        "@BalanceSheetAccountsReceivableAccount": "0.00",
-        "MBANK": "0.00",
-        "@BalanceSheetTaxPayableAccount": "0.00",
-        "@BalanceSheetInventoryOnHandAccount": "0.00",
-        "@BalanceSheetRetainedEarningsAccount": "0.00"
-      },
-      "ar_control": {
-        "@BalanceSheetAccountsReceivableAccount": "0.00"
-      },
-      "ap_control": {
-        "@BalanceSheetAccountsPayableAccount": "-100.00"
-      },
-      "ar_by_customer": {
-        "ECUST": "0.00"
-      },
-      "ap_by_supplier": {
-        "ESUPP": "-100.00"
-      },
-      "bank_cash": {
-        "EBANK": [
-          "EUR",
-          "100.00"
-        ],
-        "MBANK": [
-          "USD",
-          "0.00"
-        ]
-      },
-      "document_count": {
-        "invoice": [
-          "EUR",
-          1
-        ],
-        "bill": [
-          "EUR",
-          1
-        ]
-      },
-      "document_total": {
-        "invoice": [
-          "EUR",
-          "100.00"
-        ],
-        "bill": [
-          "EUR",
-          "80.00"
-        ]
-      },
-      "document_status": {
-        "invoice:paid": 1,
-        "bill:awaiting_payment": 1
-      },
-      "settlement_allocation": {
-        "receipt": [
-          "EUR",
-          "100.00"
-        ]
-      },
-      "fx": {
-        "rates": {
-          "INVE1": "1.2",
-          "RE1": "1.25",
-          "BILLE1": "1.25"
-        },
-        "base_amounts": {
-          "INVE1": "120.00",
-          "RE1": "125.00",
-          "BILLE1": "100.00"
-        },
-        "realized": "-5.00",
-        "unrealized": {
-          "as_of": "2026-03-31",
-          "rates": {
-            "EUR": "1.3"
-          },
-          "entries": {
-            "EBANK": "5.00",
-            "ESUPP": "-4.00"
-          },
-          "net": "1.00"
-        }
-      },
-      "tax_control": {
-        "@BalanceSheetTaxPayableAccount": "0.00"
-      }
+    "blocked": {
+      "SalesInvoice (foreign currency)": 1,
+      "PurchaseInvoice (foreign currency)": 1,
+      "Receipt (foreign currency)": 1
     }
   },
   "type_checkpoints": {
@@ -365,10 +276,10 @@
       "basic.company"
     ],
     "ForeignCurrency": [
-      "fx.full_history.bank_cash"
+      "fx.blocked"
     ],
     "ExchangeRate": [
-      "fx.full_history.fx"
+      "fx.blocked"
     ],
     "BalanceSheetAccount": [
       "basic.full_history.trial_balance"
@@ -407,7 +318,7 @@
       "basic.full_history.inventory_value"
     ],
     "ProfitAndLossStatementAccountCurrencyGainsLosses": [
-      "fx.full_history.fx"
+      "basic.full_history.trial_balance"
     ],
     "BankOrCashAccount": [
       "basic.full_history.bank_cash"
@@ -427,11 +338,11 @@
     ],
     "SalesInvoice": [
       "basic.full_history.documents",
-      "fx.full_history.document_total"
+      "fx.blocked"
     ],
     "PurchaseInvoice": [
       "basic.full_history.documents",
-      "fx.full_history.document_total"
+      "fx.blocked"
     ],
     "CreditNote": [
       "basic.full_history.documents"
@@ -441,7 +352,7 @@
     ],
     "Receipt": [
       "basic.full_history.settlement_allocation",
-      "fx.full_history.settlement_allocation"
+      "fx.blocked"
     ],
     "Payment": [
       "basic.full_history.settlement_allocation"

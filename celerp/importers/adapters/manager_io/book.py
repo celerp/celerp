@@ -48,10 +48,6 @@ BUILTINS: dict[str, tuple[str, str | None, str]] = {
 }
 ROOT_TYPES = {ASSETS: "asset", LIABILITIES: "liability", EQUITY: "equity", INCOME: "revenue", EXPENSES: "expense"}
 
-# Foreign-currency record types whose FX treatment a synthetic fixture proves. Any other type in a
-# foreign currency blocks Full history.
-FX_PROVEN = frozenset({"SalesInvoice", "PurchaseInvoice", "Receipt"})
-
 DOC_TYPES = {
     "SalesInvoice": "invoice", "CreditNote": "credit_note", "PurchaseInvoice": "bill", "DebitNote": "debit_note",
 }
@@ -176,7 +172,6 @@ class Document:
     ref: str | None
     contact: str
     currency: str | None                       # currency object key; None is the base currency
-    rate: Decimal | None
     include_tax: bool
     description: str | None
     lines: list[Line]
@@ -203,7 +198,6 @@ class Settlement:
     ref: str | None
     bank: str
     currency: str | None
-    rate: Decimal | None
     description: str | None
     party_lines: list[Line]                    # receivable lines of a receipt, payable lines of a payment
     other_lines: list[Line]                    # everything else: kept as a journal
@@ -406,7 +400,7 @@ def _document(source_type: str, key: str, m: Message) -> Document:
         _line_discounts(m, raw, lines, 31, 32)
         issue = _require_date(m, 1)
         return Document(key, source_type, issue, _due(m, issue, 54, 22, 6), m.str(2), _ref(m.guid(3)), None,
-                        _rate(m.decimal(64), m.bool(65)), m.bool(8), m.str(12), lines)
+                        m.bool(8), m.str(12), lines)
     if source_type == "PurchaseInvoice":
         _unsupported(m, (24, 65, 68), "withholding tax, freight or landed costs")
         raw = m.messages(23)
@@ -414,30 +408,30 @@ def _document(source_type: str, key: str, m: Message) -> Document:
         _line_discounts(m, raw, lines, 14, 15)
         issue = _require_date(m, 1)
         return Document(key, source_type, issue, _due(m, issue, 31, 19, 5), m.str(2), _ref(m.guid(3)), None,
-                        _rate(m.decimal(61), m.bool(62)), m.bool(7), m.str(9), lines)
+                        m.bool(7), m.str(9), lines)
     if source_type == "CreditNote":
         _unsupported(m, (13,), "withholding tax")
         raw = m.messages(22)
         lines = [_doc_line(x, _SALES_LINE_LINKS) for x in raw]
         _line_discounts(m, raw, lines, 15, 16)
         return Document(key, source_type, _require_date(m, 1), None, m.str(2), _ref(m.guid(3)), None,
-                        _rate(m.decimal(30), m.bool(31)), m.bool(6), m.str(9), lines, _ref(m.guid(8)))
+                        m.bool(6), m.str(9), lines, _ref(m.guid(8)))
     raw = m.messages(16)                                            # DebitNote
     lines = [_doc_line(x, _PURCHASE_LINE_LINKS) for x in raw]
     _line_discounts(m, raw, lines, 10, 11)
     return Document(key, source_type, _require_date(m, 1), None, m.str(2), _ref(m.guid(3)), None,
-                    _rate(m.decimal(22), m.bool(23)), m.bool(5), m.str(7), lines, _ref(m.guid(6)))
+                    m.bool(5), m.str(7), lines, _ref(m.guid(6)))
 
 
 def _settlement(source_type: str, key: str, m: Message) -> Settlement:
     receipt = source_type == "Receipt"
     if receipt:
-        bank, rate, qty_col, price_col, exclusive = m.guid(7), _rate(m.decimal(45), m.bool(46)), 32, 33, 31
+        bank, qty_col, price_col, exclusive = m.guid(7), 32, 33, 31
         _unsupported(m, (34, 35, 38, 39), "a discount or a fixed total")
         links, party_account, contact_field, doc_field = _RECEIPT_LINE_LINKS, AR, 3, 4
         other_party = (AP, 7, 8)
     else:
-        bank, rate, qty_col, price_col, exclusive = m.guid(7), _rate(m.decimal(46), m.bool(47)), 33, 34, 32
+        bank, qty_col, price_col, exclusive = m.guid(7), 33, 34, 32
         _unsupported(m, (35, 36, 39, 40), "a discount or a fixed total")
         links, party_account, contact_field, doc_field = _PAYMENT_LINE_LINKS, AP, 7, 8
         other_party = (AR, 3, 4)
@@ -471,7 +465,7 @@ def _settlement(source_type: str, key: str, m: Message) -> Settlement:
     contacts = {ln.contact for ln in party}
     if len(contacts) > 1:
         raise Blocked("several contacts", "One settlement for several customers or suppliers.")
-    return Settlement(key, source_type, _require_date(m, 1), m.str(2), str(bank), None, rate, m.str(10),
+    return Settlement(key, source_type, _require_date(m, 1), m.str(2), str(bank), None, m.str(10),
                       party, other, not m.bool(exclusive))
 
 
@@ -658,26 +652,34 @@ def _resolve_settlement(book: Book, s: Settlement) -> None:
 
 
 def _resolve_journal(book: Book, j: Journal) -> None:
+    _check(j.currency is None or j.currency in book.currencies, "a currency")
     for line in j.lines:
         _check(line.account in book.accounts, "an account")
         if line.account in (AR, AP):
             _check(line.contact in book.contacts, "a customer or supplier")
 
 
-def _foreign_check(book: Book, name: str, key: str) -> None:
-    record = (book.documents.get(key) or book.settlements.get(key) or book.journals.get(key))
+def _foreign_check(book: Book, key: str) -> None:
+    """Block a financial record that touches a foreign currency: its exchange gains and losses
+    cannot be reproduced in Celerp yet, so none of it is imported."""
     currencies: list[str | None] = []
-    if record is not None:
-        currencies.append(record.currency)
+    if key in book.documents:
+        currencies.append(book.documents[key].currency)
+    elif key in book.settlements:
+        s = book.settlements[key]
+        currencies += [s.currency, *(book.contacts[ln.contact].currency for ln in s.other_lines
+                                     if ln.contact in book.contacts)]
     elif key in book.transfers:
         t = book.transfers[key]
         currencies += [book.accounts[t.from_bank].currency, book.accounts[t.to_bank].currency]
-    if not any(book.is_foreign(c) for c in currencies):
-        return
-    if name not in FX_PROVEN:
-        raise Blocked("foreign currency", "Foreign currency treatment of this record type is not proven yet.")
-    if getattr(record, "rate", None) is None:
-        raise Blocked("foreign currency", "A foreign currency record without a stored exchange rate.")
+    else:
+        j = book.journals[key]
+        currencies += [j.currency, *(book.accounts[ln.account].currency for ln in j.lines),
+                       *(book.contacts[ln.contact].currency for ln in j.lines if ln.contact in book.contacts)]
+    if any(book.is_foreign(c) for c in currencies):
+        raise Blocked("foreign currency",
+                      "Celerp migrates base currency records only; exchange gains and losses on foreign "
+                      "currency records cannot be reproduced yet.")
 
 
 def _resolve(book: Book) -> None:
@@ -707,14 +709,14 @@ def _resolve(book: Book) -> None:
         for key, record in list(records.items()):
             try:
                 resolve(book, record)
-                _foreign_check(book, names[key], key)
+                _foreign_check(book, key)
             except Blocked as blocked:
                 book.block(names[key], key, blocked.reason, blocked.note)
     for key, t in book.transfers.items():
         try:
             for bank in (t.from_bank, t.to_bank):
                 _check(bank in book.accounts and book.accounts[bank].control == "bank", "a bank or cash account")
-            _foreign_check(book, "InterAccountTransfer", key)
+            _foreign_check(book, key)
         except Blocked as blocked:
             book.block("InterAccountTransfer", key, blocked.reason, blocked.note)
     # A settlement that pays a blocked document, or a note on a blocked invoice, cannot stand alone.

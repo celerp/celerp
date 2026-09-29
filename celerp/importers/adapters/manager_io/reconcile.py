@@ -38,19 +38,17 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
 
     balances = ledger.balances()
     add(M.DEBITS_EQUAL_CREDITS, "", base, sum(balances.values(), ZERO))
-    bank_native: dict[str, Decimal] = defaultdict(lambda: ZERO)
     party: dict[str, Decimal] = defaultdict(lambda: ZERO)
     for p in ledger.postings:
         if p.account in (AR, AP) and p.contact:
             party[p.contact] += p.amount
-        bank_native[p.account] += p.native
     for key, account in sorted(book.accounts.items()):
         balance = balances.get(key, ZERO)
         add(M.TRIAL_BALANCE, key, base, balance)
         if account.control in CONTROL_MEASURES:
             add(CONTROL_MEASURES[account.control], key, base, balance)
         if account.control == "bank":
-            add(M.BANK_CASH, key, book.currency_code(account.currency), bank_native[key])
+            add(M.BANK_CASH, key, book.currency_code(account.currency), balance)
     for key, contact in sorted(book.contacts.items()):
         add(M.AR_BY_CUSTOMER if contact.source_type == "Customer" else M.AP_BY_SUPPLIER, key, base, party[key])
 
@@ -78,7 +76,7 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
     allocated: dict[tuple[str, str], Decimal] = defaultdict(lambda: ZERO)
     for key, lines in ledger.allocations.items():
         s = book.settlements[key]
-        allocated[(s.kind, book.currency_code(s.currency))] += sum((native for _, native in lines), ZERO)
+        allocated[(s.kind, book.currency_code(s.currency))] += sum((amount for _, amount in lines), ZERO)
     for (kind, currency), amount in sorted(allocated.items()):
         add(M.SETTLEMENT_ALLOCATION, kind, currency, amount)
     return ReconciliationExpectations(expectations=rows)
