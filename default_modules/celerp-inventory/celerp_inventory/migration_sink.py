@@ -4,8 +4,8 @@
 
 Items are written by the same writer as the item batch import route; opening
 positions and adjustments by the same quantity service as the item adjust route.
-Item quantities never post to the ledger: the source's inventory value arrives
-through its journals.
+A position carries its goods cost with its quantity but never posts to the
+ledger: the source's inventory value arrives through its journals and documents.
 """
 
 from __future__ import annotations
@@ -34,12 +34,18 @@ from celerp.services.migration_core_sink import (
     mapped_targets,
     sink_result,
 )
+from celerp.services.money import to_stored_float
 from celerp.services.provisioning import ensure_default_location
 from celerp_inventory import services
 from celerp_inventory.services import BatchImportRequest, ImportRecord
 
 ITEM = "item"
 LOCATION = "location"
+# Item projection field each measure reads.
+_MEASURED = {
+    ReconciliationMeasure.INVENTORY_QUANTITY: "quantity",
+    ReconciliationMeasure.INVENTORY_VALUE: "cost_total",
+}
 
 
 class InventoryMigrationSink:
@@ -55,15 +61,17 @@ class InventoryMigrationSink:
     async def reconcile(
         self, context: SinkContext, expectations: ReconciliationExpectations
     ) -> list[DestinationMeasurement]:
-        wanted = [e for e in expectations.expectations if e.measure == ReconciliationMeasure.INVENTORY_QUANTITY]
+        """Quantity on hand and goods cost per item."""
+        wanted = [e for e in expectations.expectations if e.measure in _MEASURED]
         items = await mapped_targets(context, ITEM, [e.key for e in wanted])
         out = []
         for e in wanted:
             if e.key not in items:
                 continue
             row = await context.session.get(Projection, (context.company_id, items[e.key]))
-            quantity = Decimal(str((row.state or {}).get("quantity") or 0)) if row else Decimal(0)
-            out.append(DestinationMeasurement(e.measure, e.key, e.currency, quantity))
+            state = (row.state or {}) if row else {}
+            value = Decimal(str(state.get(_MEASURED[e.measure]) or 0))
+            out.append(DestinationMeasurement(e.measure, e.key, e.currency, value))
         return out
 
 
@@ -164,14 +172,18 @@ async def _adjust(
                 f"Item {record.item_external_id} is kept at one location in Celerp; "
                 f"its position at {record.location_external_id} cannot be imported.",
             )
+    opening = record.kind == "opening"
     current = Decimal(str(state.get("quantity") or 0))
-    new_qty = record.quantity if record.kind == "opening" else current + record.quantity
+    new_qty = record.quantity if opening else current + record.quantity
     if new_qty < 0:
         return RecordOutcome("", "rejected", f"Item {record.item_external_id} would have a negative quantity.")
+    data = {"new_qty": float(new_qty), "prior_qty": float(current), "reason": f"Migration {record.kind}"}
+    if record.value is not None:
+        cost = Decimal(0) if opening else Decimal(str(state.get("cost_base") or 0))
+        data["cost_base"] = to_stored_float(cost + record.value)
     try:
         await services.adjust_item_quantity(
-            session, context.company_id, context.user_id, item_id,
-            {"new_qty": float(new_qty), "prior_qty": float(current), "reason": f"Migration {record.kind}"},
+            session, context.company_id, context.user_id, item_id, data,
             source="migration", idempotency_key=key,
         )
     except Exception as exc:

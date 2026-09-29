@@ -189,10 +189,25 @@ def _transfers(book: Book, ledger: Ledger) -> list[CIFBankTransfer]:
             for t in sorted(book.transfers.values(), key=lambda t: (t.date, t.key))]
 
 
-def _opening_stock(ledger: Ledger) -> list[CIFInventoryAdjustment]:
-    return [CIFInventoryAdjustment(**_src("OpeningBalances", f"{ledger.opening_key}:{item}"), kind="opening",
-                                   adjustment_date=ledger.cutover, item_external_id=item, quantity=qty, value=value)
-            for item, (qty, value) in ledger.opening_stock.items()]
+def _stock(book: Book, ledger: Ledger) -> list[CIFInventoryAdjustment]:
+    """The opening position per item, then the stock each imported document moves.
+
+    Each carries its value; none posts, since the opening journal and the documents
+    carry the value on the ledger."""
+    opening = [CIFInventoryAdjustment(**_src("OpeningBalances", f"{ledger.opening_key}:{item}"), kind="opening",
+                                      adjustment_date=ledger.cutover, item_external_id=item, quantity=qty, value=value)
+               for item, (qty, value) in ledger.opening_stock.items()]
+    lines: dict[str, int] = defaultdict(int)
+    moved = []
+    for p in ledger.imported_postings():
+        if p.part != "document" or not p.item:
+            continue
+        lines[p.record] += 1
+        doc = book.documents[p.record]
+        moved.append(CIFInventoryAdjustment(**_src(doc.source_type, f"{p.record}:stock:{lines[p.record]}", doc.ref),
+                                            kind="adjustment", adjustment_date=p.date, item_external_id=p.item,
+                                            quantity=p.quantity, value=p.amount))
+    return [*opening, *moved]
 
 
 def _attachments(book: Book, screened: Screened) -> list[CIFAttachment]:
@@ -224,6 +239,6 @@ def build_bundle(book: Book, ledger: Ledger, screened: Screened) -> CIFImportBun
         settlements=_settlements(book, ledger),
         bank_transfers=_transfers(book, ledger),
         journals=_journals(book, ledger),
-        inventory_adjustments=_opening_stock(ledger),
+        inventory_adjustments=_stock(book, ledger),
         attachments=_attachments(book, screened),
     )

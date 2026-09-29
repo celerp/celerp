@@ -177,7 +177,8 @@ async def test_cutover_date_and_opening_scope_validation(migration_env):
     manifest = ManagerIOAdapter().build_manifest([artifact(BASIC)], chosen)
     assert manifest.bundle.bank_transfers == []
     assert {(j.source_type, j.entry_date) for j in manifest.bundle.journals} == {("OpeningBalances", date(2026, 2, 15))}
-    assert all(a.adjustment_date == date(2026, 2, 15) for a in manifest.bundle.inventory_adjustments)
+    openings = [a for a in manifest.bundle.inventory_adjustments if a.kind == "opening"]
+    assert openings and all(a.adjustment_date == date(2026, 2, 15) for a in openings)
 
 
 @pytest.mark.asyncio

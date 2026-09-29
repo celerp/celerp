@@ -290,12 +290,16 @@ def test_manager_mapping_preserves_source_semantics():
         (ref("@BalanceSheetTaxPayableAccount"), Decimal("0"), Decimal("2"))}
     assert _coverage(manifest)["Receipt (journal fallback)"][:2] == (1, CoverageClass.MAPPED_WITH_LOSS)
 
-    # Item stock derives from transactions: purchase lines carry it, full history adds no stock snapshot.
+    # Item stock derives from transactions: each purchase line moves its stock and value, and
+    # full history adds no stock snapshot.
     (item,) = bundle.items
     assert (item.source_external_id, item.sku, item.name, item.status) == (ref("WID"), "WID-1", "Widget", "available")
-    assert not bundle.inventory_adjustments
     bill_lines = [l for d in bundle.documents if d.doc_type == "bill" for l in d.line_items if l.item_external_id]
     assert sorted(l.quantity for l in bill_lines) == [Decimal("5"), Decimal("10")]
+    assert sorted((a.kind, a.source_type, a.item_external_id, a.quantity, a.value)
+                  for a in bundle.inventory_adjustments) == [
+        ("adjustment", "PurchaseInvoice", ref("WID"), l.quantity, l.total_price)
+        for l in sorted(bill_lines, key=lambda l: l.quantity)]
 
     # Source change history is run provenance only: counted, never imported as events or attributed to a user.
     assert manifest.source_summary["audit_history"] == {"changes": specs.BASIC_CHANGES, "emails": 0}
