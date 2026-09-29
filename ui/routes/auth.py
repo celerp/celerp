@@ -187,14 +187,15 @@ def setup_routes(app):
 
     @app.get("/setup")
     async def setup_page(request: Request):
-        if request.cookies.get(COOKIE_NAME):
-            return RedirectResponse("/", status_code=302)
-        try:
-            bootstrapped = await bootstrap_status()
-        except APIError as e:
-            return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
-        if bootstrapped:
-            return RedirectResponse("/login", status_code=302)
+        if (gate := await _unbootstrapped_gate(request)) is not None:
+            return gate
+        from ui.api_client import setup_code_required as _code_req
+        return auth_shell(_setup_chooser(code_required=await _code_req()), title=t("page.setup"))
+
+    @app.get("/setup/fresh")
+    async def setup_fresh_page(request: Request):
+        if (gate := await _unbootstrapped_gate(request)) is not None:
+            return gate
         from ui.api_client import setup_code_required as _code_req
         return auth_shell(_setup_form(setup_code_required=await _code_req()), title=t("page.setup"))
 
@@ -592,6 +593,41 @@ def _login_form(email: str = "", error: str | None = None, notice: str = "", nex
     )
 
 
+async def _unbootstrapped_gate(request: Request):
+    """The response for a request that may not use first-run setup, else None."""
+    if request.cookies.get(COOKIE_NAME):
+        return RedirectResponse("/", status_code=302)
+    try:
+        bootstrapped = await bootstrap_status()
+    except APIError as e:
+        return auth_shell(_api_error_page(str(e.detail)), title=page_title("page.api_unavailable"))
+    if bootstrapped:
+        return RedirectResponse("/login", status_code=302)
+    return None
+
+
+def _setup_chooser(code_required: bool) -> FT:
+    """First-run landing: every way to start, one card each."""
+    from ui.routes.migrations import BOOTSTRAP, chooser, choice_card
+    # The sample run needs the setup code when one is configured; the migration
+    # source page asks for it next to its sample button.
+    sample = (
+        choice_card(t("setup.card_sample"), t("setup.card_sample_desc"), href=BOOTSTRAP.base)
+        if code_required else
+        choice_card(t("setup.card_sample"), t("setup.card_sample_desc"), post_to=f"{BOOTSTRAP.base}/sample")
+    )
+    return chooser(
+        t("page.set_up_your_workspace"),
+        t("msg.you_are_first_admin"),
+        [
+            choice_card(t("setup.card_new"), t("setup.card_new_desc"), href="/setup/fresh"),
+            choice_card(t("setup.card_move"), t("setup.card_move_desc"), href=BOOTSTRAP.base),
+            sample,
+            choice_card(t("setup.card_restore"), t("setup.card_restore_desc"), href="/setup/import-backup"),
+        ],
+    )
+
+
 def _setup_form(
     company_name: str = "", name: str = "", email: str = "", error: str | None = None,
     setup_code_required: bool = False,
@@ -640,12 +676,7 @@ def _setup_form(
             Button(t("btn.create_workspace", lang), type="submit", cls="btn btn--primary btn--full"),
             method="post", action="/setup", cls="auth-form",
         ),
-        P(
-            t("auth.already_have_data"),
-            A(t("auth.restore_from_celerp_backup"), href="/setup/import-backup", cls="auth-link"),
-            ".",
-            cls="auth-alt-action",
-        ),
+        P(A(t("auth.back_to_setup"), href="/setup", cls="auth-link"), cls="auth-alt-action"),
         cls="auth-card",
     )
 
