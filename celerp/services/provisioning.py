@@ -70,18 +70,24 @@ async def _fire_company_created(session: AsyncSession, company_id: uuid.UUID) ->
     await slots.fire_lifecycle("on_company_created", session=session, company_id=company_id)
 
 
+async def create_install_owner(session: AsyncSession, *, name: str, email: str, password: str) -> User:
+    """Create the first user of a fresh install."""
+    user = User(
+        id=uuid.uuid4(), email=email, name=name, auth_hash=hash_password(password),
+        api_key=None, is_active=True, is_install_owner=True,
+    )
+    session.add(user)
+    await session.flush()
+    return user
+
+
 async def provision_registered_company(
     session: AsyncSession, *, company_name: str, owner_name: str, email: str, password: str,
 ) -> tuple[Company, User]:
     """Create the install owner, their first company, the default location and the demo data."""
     from celerp.services import demo
 
-    user = User(
-        id=uuid.uuid4(), email=email, name=owner_name, auth_hash=hash_password(password),
-        api_key=None, is_active=True, is_install_owner=True,
-    )
-    session.add(user)
-    await session.flush()
+    user = await create_install_owner(session, name=owner_name, email=email, password=password)
     company = await _create_company(
         session, owner=user, company_name=company_name,
         settings={"fiscal_year_start": DEFAULT_FISCAL_YEAR_START},

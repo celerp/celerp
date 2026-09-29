@@ -191,7 +191,7 @@ def decisions_json(decisions: MigrationDecisions) -> dict:
     }
 
 
-def _decisions_from_json(data: dict | None) -> MigrationDecisions | None:
+def decisions_from_json(data: dict | None) -> MigrationDecisions | None:
     if data is None:
         return None
     cutover = data.get("cutover_date")
@@ -219,7 +219,7 @@ def _session_from_json(token: str, directory: Path, data: dict) -> ScanSession:
         adapter_key=data["adapter_key"],
         artifacts=artifacts,
         scan=_scan_from_json(data["scan"]),
-        decisions=_decisions_from_json(data.get("decisions")),
+        decisions=decisions_from_json(data.get("decisions")),
         expires_at=datetime.fromtimestamp(float(data["expires_at"]), timezone.utc),
     )
 
