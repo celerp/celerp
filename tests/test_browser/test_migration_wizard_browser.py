@@ -299,3 +299,13 @@ def test_migration_ui_mapping_uses_shared_searchable_select(page, fake_migration
     _to_coverage()
     page.wait_for_url(re.compile(r"/migrate/review$"))
     assert page.locator(".combobox-wrap").count() == 0
+
+
+def test_escape_leaves_wizard_fields(page):
+    """Escape exits a text field on the wizard pages, which carry the shared client script."""
+    page.goto("/company-copy")
+    field = page.locator("#prepared_by")
+    field.click()
+    assert page.evaluate("document.activeElement.id") == "prepared_by"
+    page.keyboard.press("Escape")
+    assert page.evaluate("document.activeElement.id") != "prepared_by"

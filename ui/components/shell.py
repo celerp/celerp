@@ -153,6 +153,14 @@ document.addEventListener('keydown', function(e) {
       var b = p.parentElement.querySelector('.global-search-help');
       if (b) b.setAttribute('aria-expanded', 'false');
     });
+    /* Escape exits a plain form field. Runs after the field's own handlers (this listener
+       is on the document), leaves any Escape they consumed alone, and skips searchable
+       selects, whose own Escape and blur handling restores the committed choice. */
+    var field = e.target;
+    if (!e.defaultPrevented && field && field.matches && field.matches('input, textarea, select')
+        && !field.closest('.combobox-wrap')) {
+      field.blur();
+    }
   }
 });
 /* Select-based edit cells revert on blur via their own onblur handler (blur_restore_js in
