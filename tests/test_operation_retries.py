@@ -190,12 +190,29 @@ async def _receive_return(client, session, auth):
         {"items": [{"sku": sku, "quantity": 1}]}, {"items": [{"sku": sku, "quantity": 2}]}
 
 
+async def _send(client, session, auth):
+    inv = await _final(client, auth, "invoice")
+    return "POST", f"/docs/{inv}/send", {"sent_via": "print"}, {"sent_via": "whatsapp"}
+
+
+async def _close(client, session, auth):
+    memo = await _final(client, auth, "memo")
+    return "POST", f"/docs/{memo}/close", {"reason": "settled"}, {"reason": "other"}
+
+
+async def _reopen(client, session, auth):
+    memo = await _final(client, auth, "memo")
+    r = await client.post(f"/docs/{memo}/close", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    return "POST", f"/docs/{memo}/reopen", {"reason": "not settled"}, {"reason": "other"}
+
+
 DOORS = {
     "payment": _payment, "refund": _refund, "void_payment": _void_payment,
     "delete_payment": _delete_payment, "void": _void, "revert_to_draft": _revert,
     "unvoid": _unvoid, "apply_credit": _apply_credit, "credit_refund": _credit_refund,
     "bulk_payment": _bulk_payment, "receive": _receive, "receive_into_stock": _receive_into_stock, "return_items": _return_items,
-    "receive_return": _receive_return,
+    "receive_return": _receive_return, "send": _send, "close": _close, "reopen": _reopen,
 }
 
 
@@ -306,6 +323,91 @@ async def test_payment_sent_twice_at_once_is_recorded_once(_db_engine):
             row = await s.get(Projection, {"company_id": company_id, "entity_id": inv})
             assert [p["amount"] for p in row.state["payments"]] == [40.0]
             assert await _account_net(s, company_id, "1111") == 40.0
+    finally:
+        await first.close()
+        await second.close()
+        await _cleanup(factory, company_id, user_id)
+
+
+@pytest.mark.asyncio
+async def test_a_document_sent_again_is_emailed_once(client, session, auth, monkeypatch):
+    import celerp_docs.routes as doc_routes
+
+    sent: list[str] = []
+    monkeypatch.setattr(doc_routes, "_email_with_receipt", lambda *a, **k: sent.append(k["to"]))
+    inv = await _final(client, auth, "invoice")
+    body = {"sent_to": "buyer@example.test", "idempotency_key": "send-once"}
+    for _ in range(2):
+        r = await client.post(f"/docs/{inv}/send", headers=auth["headers"], json=body)
+        assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{inv}/send", headers=auth["headers"],
+                          json={**body, "sent_to": "someone-else@example.test"})
+    assert r.status_code == 409, r.text
+    assert sent == ["buyer@example.test"]
+
+
+@pytest.mark.asyncio
+async def test_the_longest_key_works_on_a_document_with_a_long_number(client, session, auth):
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "purchase_order", "ref_id": "PO-" + "7" * 60, "line_items": [
+            {"sku": f"LK-{uuid.uuid4().hex[:6]}", "name": "Beads", "quantity": 10, "unit_price": 14.0}]})
+    assert r.status_code == 200, r.text
+    po = r.json()["id"]
+    sku = (await _state(session, auth, po))["line_items"][0]["sku"]
+    body = {"location_id": "loc:1", "idempotency_key": "k" * 200, "received_items": [
+        {"po_line_index": 0, "sku": sku, "name": "Beads", "quantity_received": 4, "receive_as": "stock"}]}
+    for _ in range(2):
+        r = await client.post(f"/docs/{po}/receive", headers=auth["headers"], json=body)
+        assert r.status_code == 200, r.text
+    assert await _account_net(session, auth["company_id"], "1130-P") == 56.0
+
+
+@pytest.mark.asyncio
+async def test_a_returned_sale_taken_back_twice_at_once_is_taken_back_once(_db_engine):
+    from celerp_docs.routes import undo_receive_return
+
+    factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
+    company_id = await _seed_company(factory)
+    user_id = await _seed_user(factory)
+    await _seed_chart(factory, company_id)
+    item, cn = "item:RET-RACE", "doc:CN-RET-RACE"
+    async with factory() as s:
+        await emit_event(
+            s, company_id=company_id, entity_id=item, entity_type="item", event_type="item.created",
+            data={"sku": "RET-RACE", "name": "Widget", "quantity": 1, "cost_total": 40.0,
+                  "sell_by": "piece", "status": "available"},
+            actor_id=None, location_id=None, source="test", idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+        await emit_event(
+            s, company_id=company_id, entity_id=cn, entity_type="doc", event_type="doc.created",
+            data={"doc_type": "credit_note", "status": "final", "ref_id": "CN-RET-RACE", "currency": "USD",
+                  "line_items": [{"name": "Widget", "quantity": 1, "unit_price": 50.0}], "total": 50.0,
+                  "return_received_items": [{"item_id": item, "sku": "RET-RACE", "quantity": 1, "cost_total": 40.0}]},
+            actor_id=user_id, location_id=None, source="test", idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+        await s.commit()
+
+    first, second = factory(), factory()
+    release = asyncio.Event()
+    commit = first.commit
+
+    async def held_commit() -> None:
+        await release.wait()
+        await commit()
+
+    first.commit = held_commit
+    user = types.SimpleNamespace(id=user_id)
+    try:
+        a = asyncio.create_task(undo_receive_return(cn, company_id=company_id, _=None, user=user, session=first))
+        await asyncio.sleep(0.3)
+        b = asyncio.create_task(undo_receive_return(cn, company_id=company_id, _=None, user=user, session=second))
+        await asyncio.sleep(0.3)
+        release.set()
+        ra, rb = await asyncio.wait_for(asyncio.gather(a, b, return_exceptions=True), timeout=10)
+        assert ra == {"undone": True, "item_ids": [item]}
+        assert getattr(rb, "status_code", None) == 409, rb
+        async with factory() as s:
+            assert await _account_net(s, company_id, "5100") == 40.0
     finally:
         await first.close()
         await second.close()

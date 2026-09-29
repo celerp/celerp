@@ -258,6 +258,58 @@ async def test_reimporting_a_spreadsheet_updates_the_record_it_created(client, s
     assert record["due_date" if resource == "docs" else "notes"] == "2026-02-28"
 
 
+async def _docs_import_screen(client, session, monkeypatch):
+    from ui.routes import docs_import
+
+    _, _, token = await _setup(session)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    async def _batch(_tok, path, records, upsert=False):
+        return (await client.post(path, headers=headers, json={"records": records, "upsert": upsert})).json()
+
+    async def _search(_tok, params=None):
+        return (await client.get("/docs", headers=headers, params=params or {})).json()
+
+    monkeypatch.setattr(docs_import, "_token", lambda request: "tok")
+    monkeypatch.setattr(docs_import.api, "batch_import", _batch)
+    monkeypatch.setattr(docs_import.api, "list_docs", _search)
+    routes = _Routes()
+    docs_import.setup_routes(routes)
+    confirm = routes.post_routes["/docs/import/confirm"]
+
+    async def numbered(number: str) -> list[dict]:
+        rows = (await _search("tok", {"q": number}))["items"]
+        return [(await client.get(f"/docs/{r['id']}", headers=headers)).json() for r in rows]
+
+    return headers, confirm, numbered
+
+
+@pytest.mark.asyncio
+async def test_importing_a_document_made_in_the_app_updates_it(client, session, monkeypatch):
+    headers, confirm, numbered = await _docs_import_screen(client, session, monkeypatch)
+    r = await client.post("/docs", headers=headers, json={
+        "doc_type": "quotation", "line_items": [{"name": "Service", "quantity": 1, "unit_price": 10.0}]})
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    number = (await client.get(f"/docs/{doc_id}", headers=headers)).json()["ref_id"]
+
+    await confirm(_Form({"csv_data": f"doc_type,doc_number,status,due_date\nquotation,{number},draft,2099-02-28\n",
+                         "upsert": "1"}))
+    docs = await numbered(number)
+    assert [d["id"] for d in docs] == [doc_id]
+    assert docs[0]["due_date"] == "2099-02-28"
+
+
+@pytest.mark.asyncio
+async def test_reimporting_with_the_type_written_differently_updates_the_same_document(client, session, monkeypatch):
+    _, confirm, numbered = await _docs_import_screen(client, session, monkeypatch)
+    await confirm(_Form({"csv_data": "doc_type,doc_number,status,due_date\ninvoice,RE-2,draft,2026-01-31\n"}))
+    await confirm(_Form({"csv_data": "doc_type,doc_number,status,due_date\nInvoice,RE-2,draft,2026-02-28\n",
+                         "upsert": "1"}))
+    docs = await numbered("RE-2")
+    assert [(d["doc_type"], d["due_date"]) for d in docs] == [("invoice", "2026-02-28")]
+
+
 # ---------------------------------------------------------------------------
 # Lists upsert
 # ---------------------------------------------------------------------------

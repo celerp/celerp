@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Read-only search over document projections.
 
-The q-grammar (comma-separated OR terms across doc_number/contact_name/
+The q-grammar (comma-separated OR terms across doc_number/ref_id/contact_name/
 contact_id/ref) lives here so the list route and the global-search provider
 share one source of truth for what a search term matches.
 """
@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.projections import Projection
 
-_SEARCH_FIELDS = ("doc_number", "contact_name", "contact_id", "ref")
+_SEARCH_FIELDS = ("doc_number", "ref_id", "contact_name", "contact_id", "ref")
 
 
 def doc_q_clause(q: str | None):

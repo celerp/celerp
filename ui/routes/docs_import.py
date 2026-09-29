@@ -597,7 +597,7 @@ def setup_routes(app):
         from collections import OrderedDict
         doc_map: OrderedDict = OrderedDict()
         for r in rows:
-            doc_type = str(r.get("doc_type", "")).strip()
+            doc_type = str(r.get("doc_type", "")).strip().lower()
             doc_number = str(r.get("doc_number", "")).strip()
             if not doc_type or not doc_number:
                 continue

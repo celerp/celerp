@@ -195,6 +195,9 @@ def _replay_result(replay, *, event_type: str, digest: str, entity_id: str | Non
 
 
 _OPERATION_KEY_MAX = 200
+# Records an operation writes are named from its key and the document, so a long key
+# is shortened to a digest that names them just as uniquely.
+_OPERATION_KEY_KEPT = 64
 
 
 def _operation(kind: str, scope: str | None, payload: BaseModel) -> tuple[str, str]:
@@ -202,6 +205,8 @@ def _operation(kind: str, scope: str | None, payload: BaseModel) -> tuple[str, s
     key = payload.idempotency_key or str(uuid.uuid4())
     if len(key) > _OPERATION_KEY_MAX:
         raise HTTPException(status_code=422, detail=f"idempotency_key is longer than {_OPERATION_KEY_MAX} characters")
+    if len(key) > _OPERATION_KEY_KEPT:
+        key = f"op:{hashlib.sha256(key.encode()).hexdigest()}"
     return key, _request_digest(kind, scope, None, payload.model_dump(mode="json", exclude={"idempotency_key"}))
 
 
@@ -1946,6 +1951,10 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     # close: without it, send and close both read a non-closed memo unlocked and
     # both commit, letting doc.sent silently un-close the memo the close settled.
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("send", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.sent",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Cannot send void document")
     if row.state.get("status") == "closed":
@@ -1959,7 +1968,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.sent",
         data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=key, metadata_={"request": digest},
     )
 
     sent_to = payload.sent_to
@@ -2178,6 +2187,10 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
     Reversible via /reopen. Memo-only, live-status-only, and refused with a
     product count while any line is still out at the customer (memo_out)."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("close", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.closed",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     state = row.state
     if state.get("doc_type") != "memo":
         raise HTTPException(status_code=422, detail="Only memos can be closed")
@@ -2219,7 +2232,7 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.closed",
         data=event_data, actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=key, metadata_={"request": digest},
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -2229,6 +2242,10 @@ async def close_doc(entity_id: str, payload: DocCloseBody, company_id: str = Dep
 async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     """Undo a Close: restore the memo to the status it held before closing."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("reopen", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.reopened",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     if row.state.get("status") != "closed":
         raise HTTPException(status_code=409, detail="Only a closed memo can be reopened")
     restored = row.state.get("pre_close_status") or "final"
@@ -2237,7 +2254,7 @@ async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = D
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.reopened",
         data=event_data, actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=key, metadata_={"request": digest},
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -4429,6 +4446,8 @@ async def batch_import_docs(
             skipped += 1
             continue
 
+        # A row names an existing document either by the key an earlier import gave it or,
+        # for one made in the app, by its id; with upsert on, either is updated.
         if rec.idempotency_key in existing_keys:
             replay = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
             if replay is None or replay.event_type != "doc.created" or replay.entity_id != rec.entity_id:
@@ -4439,9 +4458,13 @@ async def batch_import_docs(
             if not body.upsert:
                 skipped += 1
                 continue
-
+        elif rec.entity_id in existing_entities:
+            if not body.upsert:
+                skipped_existing += 1
+                continue
+        if rec.idempotency_key in existing_keys or rec.entity_id in existing_entities:
             try:
-                row = await _get_doc(session, company_id, replay.entity_id)
+                row = await _get_doc(session, company_id, rec.entity_id)
                 fields_changed = _doc_import_fields_changed(row.state, rec.data)
                 if not fields_changed:
                     skipped += 1
@@ -4452,7 +4475,7 @@ async def batch_import_docs(
                     f"{hashlib.sha256(canonical_patch.encode()).hexdigest()}"
                 )
                 result = await patch_doc(
-                    replay.entity_id,
+                    rec.entity_id,
                     DocPatch(fields_changed=fields_changed, idempotency_key=upsert_idem),
                     company_id=company_id,
                     _=None,
@@ -4467,12 +4490,9 @@ async def batch_import_docs(
                     updated += 1
             except Exception as exc:
                 if len(errors) < 10:
-                    errors.append(f"{replay.entity_id}: {exc}")
+                    errors.append(f"{rec.entity_id}: {exc}")
             continue
 
-        if rec.entity_id in existing_entities:
-            skipped_existing += 1
-            continue
         try:
             await _lock_imported_contact(session, company_id, "doc", rec.data)
             if auto_je.import_auto_je_kind(rec.data) is not None:
@@ -7336,7 +7356,7 @@ async def undo_receive_return(
     Deletes all inventory items created by the return and reverses the COGS JE.
     Clears return_received_items on the CN projection.
     """
-    row = await _get_doc(session, company_id, entity_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("doc_type") != "credit_note":
         raise HTTPException(status_code=409, detail="undo-receive-return is only valid for credit notes")
@@ -7354,14 +7374,7 @@ async def undo_receive_return(
     # Pre-flight: verify every returned item is still "available" before archiving.
     # If an item was re-sold or already archived, we cannot silently remove it.
     if item_ids:
-        rows = await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "item",
-                Projection.entity_id.in_(item_ids),
-            )
-        )
-        item_rows = {r.entity_id: r.state for r in rows.scalars().all()}
+        item_rows = {eid: r.state for eid, r in (await lock_projections(session, company_id, item_ids)).items()}
         blocked: list[str] = []
         for iid in item_ids:
             item_state = item_rows.get(iid)
