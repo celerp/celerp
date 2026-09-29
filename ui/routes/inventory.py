@@ -37,8 +37,10 @@ from celerp_inventory.services import (
     _CORE_ITEM_COLS,
     ITEM_IMPORT_BASE_COLS,
     ITEM_IMPORT_TAIL_COLS,
+    apply_source_semantics,
     build_item_import_spec,
     importable_price_lists,
+    source_header_semantics,
 )
 
 _DEFAULT_PER_PAGE = 50
@@ -1532,6 +1534,9 @@ def setup_routes(app):
         mapping_errors = validate_column_mapping(
             form, original_cols, core_fields=_CORE_ITEM_COLS, required_targets=spec.required,
         )
+        company = await api.get_company(token)
+        semantics = source_header_semantics(form_mapping(form, original_cols), company.get("currency") or "USD")
+        mapping_errors += [t(f"import.err_{e['code']}", col=e["field"]) for e in semantics.errors]
         if mapping_errors:
             # Re-render the mapping form with errors and preserved form values
             csv_ref = await stash_import_csv(token, csv_text)
@@ -1561,12 +1566,11 @@ def setup_routes(app):
             )
 
         remapped_csv, remapped_cols = apply_column_mapping(form, csv_text)
+        rows = apply_source_semantics(list(csv.DictReader(io.StringIO(remapped_csv))), semantics)
+        cols = list(dict.fromkeys([*(remapped_cols or spec.cols), *(k for row in rows for k in row)]))
 
-        # Re-stash the remapped CSV for downstream steps
-        csv_ref = await stash_import_csv(token, remapped_csv)
-
-        rows = list(csv.DictReader(io.StringIO(remapped_csv)))
-        cols = remapped_cols or (list(rows[0].keys()) if rows else spec.cols)
+        # Re-stash the remapped rows for downstream steps
+        csv_ref = await stash_import_csv(token, _rows_to_csv(rows, cols))
 
         return await base_shell(
             page_header(t("page.import_inventory", lang)),
@@ -7426,6 +7430,7 @@ from ui.routes.csv_import import (
     _rows_to_csv,
     stash_import_csv,
     apply_column_mapping,
+    form_mapping,
     apply_fixes_to_rows as _apply_fixes,
     column_mapping_form,
     error_report_response,

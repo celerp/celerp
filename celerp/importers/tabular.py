@@ -349,6 +349,11 @@ def remap_rows(
     return new_cols, remapped
 
 
+def form_mapping(form: dict, cols: list[str]) -> dict[str, str]:
+    """The ``{column: target}`` mapping a mapping form submitted for ``cols``."""
+    return {col: str(form.get(f"map__{col}", MAPPING_ATTRIBUTE) or MAPPING_ATTRIBUTE) for col in cols}
+
+
 def apply_column_mapping(form: dict, csv_text: str) -> tuple[str, list[str]]:
     """Apply user's column mapping to CSV data.
 
@@ -363,11 +368,7 @@ def apply_column_mapping(form: dict, csv_text: str) -> tuple[str, list[str]]:
     original_cols = list(reader.fieldnames or [])
     rows = list(reader)
 
-    # Parse mapping from form
-    mapping: dict[str, str] = {}
-    for col in original_cols:
-        target = str(form.get(f"map__{col}", MAPPING_ATTRIBUTE) or MAPPING_ATTRIBUTE)
-        mapping[col] = target
+    mapping = form_mapping(form, original_cols)
 
     # Build new column list and rename map
     new_cols: list[str] = []

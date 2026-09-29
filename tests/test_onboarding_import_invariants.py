@@ -445,6 +445,13 @@ async def _seed_items(client, h, rows, key):
     assert r.status_code == 200 and not r.json()["errors"], r.text
 
 
+async def _set_company_settings(session, company_id, **values) -> None:
+    from celerp.services.company_lock import locked_company
+    company = await locked_company(session, uuid.UUID(str(company_id)))
+    company.settings = {**(company.settings or {}), **values}
+    await session.commit()
+
+
 @pytest.fixture
 async def perm(client, session):
     from celerp.services.auth import decode_access_token
@@ -452,6 +459,12 @@ async def perm(client, session):
     s = await perm_setup(client, session)
     claims = decode_access_token(s["admin_h"]["Authorization"].split()[1])
     s["company_id"], s["admin_user_id"] = claims["company_id"], claims["sub"]
+    # Two categories share a display label so an ambiguous label can be imported.
+    await _set_company_settings(
+        session, s["company_id"],
+        category_schemas={"red_a": [], "red_b": []},
+        category_display_names={"red_a": "Red", "red_b": "Red"},
+    )
     return s
 
 
@@ -475,7 +488,10 @@ def write_upload():
 # (case id, seed rows, rows, upsert, role header key, expected (row, field, code))
 _PARITY_CASES = [
     ("missing_name", None, [{"sell_by": "piece", "quantity": "1"}], False, "admin_h", [(1, "name", "required")]),
-    ("resolved_sell_by", None, [{"name": "Stone", "category": "diamond", "weight": "1.5"}], False, "admin_h", []),
+    ("resolved_sell_by", None, [{"name": "Stone", "category": "diamond", "weight": "1.5", "weight_unit": "gram"}], False, "admin_h", []),
+    ("weight_unit_mismatch", None, [{"name": "Stone", "category": "diamond", "weight": "1.5", "weight_unit": "carat"}], False, "admin_h", [(1, "weight", "weight_unit_mismatch")]),
+    ("category_ambiguous", None, [{"name": "Stone", "category": "Red", "sell_by": "piece"}], False, "admin_h", [(1, "category", "category_ambiguous")]),
+    ("price_basis_mismatch", None, [{"name": "Stone", "sell_by": "gram", "weight": "2", "weight_unit": "gram", "retail_price": "10", "retail_price_basis": "carat"}], False, "admin_h", [(1, "retail_price", "price_basis_mismatch")]),
     ("unresolved_sell_by", None, [{"name": "Widget", "quantity": "1"}], False, "admin_h", [(1, "sell_by", "sell_by_unresolved")]),
     ("invalid_unit", None, [{"name": "Widget", "sell_by": "furlong", "quantity": "1"}], False, "admin_h", [(1, "sell_by", "sell_by_invalid")]),
     ("default_location", None, [{"name": "Widget", "sell_by": "piece", "quantity": "1"}], False, "admin_h", []),
@@ -760,3 +776,271 @@ class TestPreviewCommitInvariant:
                                       preview=preview, import_rows=stale)
         assert "a" * 64 in html
         assert ci._read_stage(_COMPANY_A, ref) is not None
+
+
+# ---------------------------------------------------------------------------
+# Categories, units and prices mean what the source meant
+# ---------------------------------------------------------------------------
+
+async def _item_states(session, company_id: str) -> list[dict]:
+    from sqlalchemy import select
+
+    from celerp.models.projections import Projection
+    session.expire_all()
+    return [p.state for p in (await session.execute(
+        select(Projection).where(Projection.company_id == uuid.UUID(company_id), Projection.entity_type == "item")
+    )).scalars().all()]
+
+
+async def _import_clean(client, h, rows, key):
+    ph = (await _rows_preview(client, h, rows, key=key))["preview_hash"]
+    r = await _rows_commit(client, h, rows, key=key, preview_hash=ph)
+    assert r.status_code == 200 and r.json()["errors"] == [], r.text
+
+
+_GEM_CATEGORIES = {"ruby": [], "sapphire": []}
+_GEM_NAMES = {"ruby": "Ruby", "sapphire": "Blue Stone"}
+
+
+class TestCategoryInvariant:
+    """INV-CAT-01: known labels resolve to the canonical key; ambiguity fails; unknown stays."""
+
+    @pytest.mark.parametrize("value,expected", [
+        ("ruby", "ruby"),
+        ("RUBY", "ruby"),
+        ("Ruby", "ruby"),
+        ("  ruby  ", "ruby"),
+        ("blue stone", "sapphire"),
+        ("Opal", "Opal"),
+        ("", ""),
+    ])
+    def test_resolver_table(self, value, expected):
+        from celerp_inventory.services import resolve_import_category
+        assert resolve_import_category(value, _GEM_CATEGORIES, _GEM_NAMES) == (expected, None)
+
+    def test_ambiguous_display_label_fails(self):
+        from celerp_inventory.services import resolve_import_category
+        category, error = resolve_import_category("red", ["red_a", "red_b"], {"red_a": "Red", "red_b": "Red"})
+        assert error and "red_a" in error and "red_b" in error
+
+    def test_ambiguous_casefolded_key_fails(self):
+        from celerp_inventory.services import resolve_import_category
+        assert resolve_import_category("RUBY", ["Ruby", "ruby"], {})[1]
+
+    def test_exact_key_beats_another_categorys_label(self):
+        from celerp_inventory.services import resolve_import_category
+        assert resolve_import_category("ruby", ["ruby", "gem"], {"gem": "ruby"}) == ("ruby", None)
+
+    @pytest.mark.asyncio
+    async def test_label_and_slug_drive_the_same_default_unit_and_key(self, session):
+        from celerp_inventory.services import build_import_records
+        cid = await _seed_company(session)
+        await _set_company_settings(session, cid, category_schemas=_GEM_CATEGORIES, category_display_names=_GEM_NAMES)
+        build = await build_import_records(session, cid, [
+            {"name": "A", "category": "Ruby", "quantity": "1"},
+            {"name": "B", "category": "ruby", "quantity": "1"},
+        ], upsert=False, dry_run=True)
+        assert build.errors == []
+        assert [(r["data"]["category"], r["data"]["sell_by"]) for r in build.records] == [("ruby", "gram"), ("ruby", "gram")]
+
+    @pytest.mark.asyncio
+    async def test_unknown_category_is_kept_as_custom(self, session):
+        from celerp_inventory.services import build_import_records
+        cid = await _seed_company(session)
+        await _set_company_settings(session, cid, category_schemas=_GEM_CATEGORIES, category_display_names=_GEM_NAMES)
+        build = await build_import_records(session, cid, [{"name": "A", "category": "Opal", "sell_by": "piece"}], upsert=False, dry_run=True)
+        assert build.records[0]["data"]["category"] == "Opal"
+
+    @pytest.mark.asyncio
+    async def test_inferred_attributes_attach_to_the_canonical_category(self, client, session, perm):
+        from celerp.models.company import Company
+        await _set_company_settings(session, perm["company_id"], category_schemas=_GEM_CATEGORIES, category_display_names=_GEM_NAMES)
+        await _import_clean(client, perm["admin_h"], [{"name": "A", "category": "Ruby", "sell_by": "piece", "quantity": "1", "hue": "pigeon blood"}], "cat-attr")
+        session.expire_all()
+        schemas = (await session.get(Company, uuid.UUID(perm["company_id"]))).settings["category_schemas"]
+        assert "Ruby" not in schemas
+        assert [f["key"] for f in schemas["ruby"]] == ["hue"]
+
+
+class TestUnitAndPriceInvariant:
+    """INV-UNIT-01/02 and INV-PRICE-01: no silent weight or currency conversion."""
+
+    # INV-UNIT-01 -----------------------------------------------------------
+
+    @pytest.mark.parametrize("row,sell_by,expected", [
+        ({"quantity": "3", "weight": "1.5", "weight_unit": "carat"}, "gram", (3.0, None)),
+        ({"weight": "1.5", "weight_unit": "carat"}, "carat", (1.5, None)),
+        ({"weight": "1.5", "weight_unit": "Carat"}, "carat", (1.5, None)),
+        ({"weight_ct": "1.5"}, "carat", (1.5, None)),
+        ({"weight": "1.5", "weight_unit": "carat"}, "gram", (0.0, "weight_unit_mismatch")),
+        ({"weight_ct": "1.5"}, "gram", (0.0, "weight_unit_mismatch")),
+        ({"weight": "1.5"}, "gram", (0.0, "weight_unit_unknown")),
+        ({"weight": "1.5", "weight_unit": "stone"}, "gram", (0.0, "weight_unit_unknown")),
+        ({"pieces": "4", "weight": "1.5"}, "piece", (4.0, None)),
+        ({}, "carat", (0.0, None)),
+    ])
+    def test_quantity_derivation_table(self, row, sell_by, expected):
+        from celerp.services.units import DEFAULT_UNITS, build_unit_map
+        from celerp_inventory.services import _derive_import_qty
+        unit_canonical = {u["name"].lower(): u["name"] for u in DEFAULT_UNITS}
+        qty, error = _derive_import_qty(row, sell_by, build_unit_map(DEFAULT_UNITS), unit_canonical)
+        assert (qty, error and error["code"]) == expected
+
+    @pytest.mark.asyncio
+    async def test_committed_quantity_and_units_mean_what_the_source_meant(self, client, session, perm):
+        await _import_clean(client, perm["admin_h"], [
+            {"name": "Loose", "sell_by": "carat", "weight": "1.5", "weight_unit": "carat"},
+            {"name": "Parcel", "sell_by": "gram", "quantity": "3", "weight": "1.5", "weight_unit": "carat"},
+        ], "units-commit")
+        by_name = {s["name"]: s for s in await _item_states(session, perm["company_id"])}
+        assert (by_name["Loose"]["quantity"], by_name["Loose"]["sell_by"], by_name["Loose"]["weight"], by_name["Loose"]["weight_unit"]) == (1.5, "carat", 1.5, "carat")
+        assert (by_name["Parcel"]["quantity"], by_name["Parcel"]["sell_by"], by_name["Parcel"]["weight"], by_name["Parcel"]["weight_unit"]) == (3.0, "gram", 1.5, "carat")
+
+    @pytest.mark.asyncio
+    async def test_carat_weight_is_not_imported_as_grams(self, client, session, perm):
+        rows = [{"name": "Stone", "category": "ruby", "weight": "1.5", "weight_unit": "carat"}]
+        preview = await _rows_preview(client, perm["admin_h"], rows, key="ct-as-g")
+        assert _codes(preview["errors"]) == [(1, "weight", "weight_unit_mismatch")]
+        before = await _item_count(session, perm["company_id"])
+        r = await _rows_commit(client, perm["admin_h"], rows, key="ct-as-g", preview_hash=preview["preview_hash"])
+        assert r.status_code == 422
+        assert await _item_count(session, perm["company_id"]) == before
+
+    # INV-UNIT-02 -----------------------------------------------------------
+
+    @pytest.mark.parametrize("header,unit", [
+        ("weight_ct", "carat"), ("Carats", "carat"), ("ct", "carat"), ("Weight (ct)", "carat"),
+        ("weight_g", "gram"), ("grams", "gram"),
+        ("weight_kg", "kg"), ("Kilograms", "kg"),
+        ("weight_oz", "oz"), ("ounces", "oz"),
+        ("weight_lb", "lb"), ("Pounds", "lb"),
+        ("weight", None), ("Gross weight g", None), ("mass", None), ("weight_stone", None),
+    ])
+    def test_weight_header_table(self, header, unit):
+        from celerp_inventory.services import weight_unit_from_header
+        assert weight_unit_from_header(header) == unit
+
+    def test_mapped_weight_unit_column_wins_over_the_header(self):
+        from celerp_inventory.services import source_header_semantics
+        assert source_header_semantics({"weight_ct": "weight", "unit": "weight_unit"}, "USD").weight_unit is None
+        assert source_header_semantics({"weight_ct": "weight"}, "USD").weight_unit == "carat"
+
+    @pytest.mark.asyncio
+    async def test_weight_header_means_the_same_in_browser_and_file_preview(self, client, perm, write_upload):
+        from celerp_inventory.services import apply_source_semantics, source_header_semantics
+        from ui.routes.csv_import import apply_column_mapping, form_mapping
+        csv_text = "Title,Carats,Unit\nStone,1.5,carat\n"
+        mapping = {"Title": "name", "Carats": "weight", "Unit": "sell_by"}
+
+        form = {f"map__{c}": t for c, t in mapping.items()}
+        remapped, _cols = apply_column_mapping(form, csv_text)
+        import csv as _csv
+        import io as _io
+        semantics = source_header_semantics(form_mapping(form, list(mapping)), "USD")
+        browser_rows = apply_source_semantics(list(_csv.DictReader(_io.StringIO(remapped))), semantics)
+
+        fid = write_upload(perm, csv_text)
+        r = await client.post("/items/import/preview", json={"file_id": fid, "mapping": mapping}, headers=perm["admin_h"])
+        assert r.status_code == 200, r.text
+        assert r.json()["sample"] == browser_rows == [{"name": "Stone", "weight": "1.5", "sell_by": "carat", "weight_unit": "carat"}]
+        assert r.json()["errors"] == []
+
+    # INV-PRICE-01 ----------------------------------------------------------
+
+    @pytest.mark.parametrize("header,target,currency,code", [
+        ("Retail price", "retail_price", "THB", None),
+        ("Price", "retail_price", "THB", None),
+        ("Price USD", "retail_price", "USD", None),
+        ("price usd", "retail_price", "THB", "price_currency_mismatch"),
+        ("Price (USD)", "retail_price", "THB", "price_currency_mismatch"),
+        ("Price [usd]", "retail_price", "THB", "price_currency_mismatch"),
+        ("Price USD", "retail_price", "THB", "price_currency_mismatch"),
+        ("Price $", "retail_price", "THB", None),
+        ("Top price", "retail_price", "THB", None),
+        ("Price/ct", "retail_price_total", "THB", "price_basis_unsupported"),
+        ("Price per dozen", "retail_price", "THB", "price_basis_unsupported"),
+        ("Price per unit", "retail_price", "THB", None),
+        ("Total cost", "cost_price_total", "THB", None),
+        ("Total cost", "cost_price", "THB", "price_total_as_unit"),
+    ])
+    def test_price_header_matrix(self, header, target, currency, code):
+        from celerp_inventory.services import source_header_semantics
+        errors = source_header_semantics({header: target}, currency).errors
+        assert [e["code"] for e in errors] == ([code] if code else [])
+
+    def test_per_carat_price_carries_its_basis(self):
+        from celerp_inventory.services import source_header_semantics
+        semantics = source_header_semantics({"Price/ct (THB)": "retail_price"}, "THB")
+        assert semantics.errors == [] and semantics.price_basis == {"retail_price": "carat"}
+
+    @pytest.mark.asyncio
+    async def test_per_carat_price_imports_only_for_items_sold_by_carat(self, client, session, perm):
+        ok = [{"name": "Loose", "sell_by": "carat", "quantity": "2", "retail_price": "100", "retail_price_basis": "carat"}]
+        await _import_clean(client, perm["admin_h"], ok, "basis-ok")
+        loose = next(s for s in await _item_states(session, perm["company_id"]) if s["name"] == "Loose")
+        assert loose["retail_price"] == 100.0
+        assert "retail_price_basis" not in (loose.get("attributes") or {})
+
+        blocked = [{"name": "Set", "sell_by": "piece", "quantity": "1", "retail_price": "100", "retail_price_basis": "carat"}]
+        assert _codes((await _rows_preview(client, perm["admin_h"], blocked, key="basis-no"))["errors"]) == [(1, "retail_price", "price_basis_mismatch")]
+
+    @pytest.mark.asyncio
+    async def test_foreign_currency_file_column_blocks_the_file_commit(self, client, session, perm, write_upload):
+        await _set_company_settings(session, perm["company_id"], currency="THB")
+        fid = write_upload(perm, "name,sell_by,quantity,Price (USD)\nWidget,piece,1,10\n")
+        mapping = {"name": "name", "sell_by": "sell_by", "quantity": "quantity", "Price (USD)": "retail_price"}
+        preview = (await client.post("/items/import/preview", json={"file_id": fid, "mapping": mapping}, headers=perm["admin_h"])).json()
+        assert [(e["field"], e["code"]) for e in preview["errors"]] == [("Price (USD)", "price_currency_mismatch")]
+        before = await _item_count(session, perm["company_id"])
+        r = await client.post("/items/import/commit", json={
+            "file_id": fid, "mapping": mapping, "preview_hash": preview["preview_hash"],
+        }, headers=perm["admin_h"])
+        assert r.status_code == 422
+        assert await _item_count(session, perm["company_id"]) == before
+
+    @pytest.mark.asyncio
+    async def test_total_cost_keeps_total_semantics(self, client, session, perm):
+        await _import_clean(client, perm["admin_h"], [{"name": "Lot", "sell_by": "piece", "quantity": "4", "cost_price_total": "100"}], "total-cost")
+        lot = next(s for s in await _item_states(session, perm["company_id"]) if s["name"] == "Lot")
+        assert lot["cost_total"] == 100.0
+
+    # Gemstone acceptance oracle (plan 9.6) ----------------------------------
+
+    @pytest.mark.asyncio
+    async def test_gemstone_file_imports_with_its_meaning_or_is_blocked(self, client, session, perm, write_upload):
+        await _set_company_settings(session, perm["company_id"], currency="THB",
+                                    category_schemas=_GEM_CATEGORIES, category_display_names=_GEM_NAMES)
+        csv_text = "Stone,Type,Carats,Sell by,Price/ct (THB),Price (USD)\nPigeon,Ruby,1.5,carat,1000,700\n"
+        base = {"Stone": "name", "Type": "category", "Carats": "weight", "Sell by": "sell_by", "Price/ct (THB)": "retail_price"}
+
+        fid = write_upload(perm, csv_text)
+        blocked = {**base, "Price (USD)": "cost_price"}
+        errors = (await client.post("/items/import/preview", json={"file_id": fid, "mapping": blocked}, headers=perm["admin_h"])).json()["errors"]
+        assert [(e["field"], e["code"]) for e in errors] == [("Price (USD)", "price_currency_mismatch")]
+
+        clean = {**base, "Price (USD)": "__skip__"}
+        preview = (await client.post("/items/import/preview", json={"file_id": fid, "mapping": clean}, headers=perm["admin_h"])).json()
+        assert preview["errors"] == []
+        r = await client.post("/items/import/commit", json={"file_id": fid, "mapping": clean, "preview_hash": preview["preview_hash"]}, headers=perm["admin_h"])
+        assert r.status_code == 200 and r.json()["created"] == 1, r.text
+        stone = next(s for s in await _item_states(session, perm["company_id"]) if s["name"] == "Pigeon")
+        assert (stone["category"], stone["quantity"], stone["weight"], stone["weight_unit"], stone["sell_by"], stone["retail_price"]) == (
+            "ruby", 1.5, 1.5, "carat", "carat", 1000.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_browser_mapping_blocks_a_foreign_currency_price_column(self, stage_dir):
+        from ui.app import app as ui_app
+        ref = ci._write_stage(_COMPANY_A, "name,sell_by,Price (USD)\nWidget,piece,10\n")
+        company = {"id": _COMPANY_A, "currency": "THB", "current_role": "owner", "settings": {}}
+        form = {"csv_ref": ref, "map__name": "name", "map__sell_by": "sell_by", "map__Price (USD)": "retail_price"}
+        preview = AsyncMock()
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
+             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}])), \
+             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
+             patch("ui.api_client.preview_import_rows", new=preview):
+            async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+                r = await c.post("/inventory/import/mapped", data=form, cookies=_owner_cookies())
+        assert r.status_code == 200, r.text
+        assert "Price (USD)" in r.text and "different currency" in r.text
+        preview.assert_not_awaited()

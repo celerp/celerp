@@ -45,6 +45,7 @@ from celerp.importers.tabular import (  # re-exported for the existing CSV impor
     apply_column_mapping,
     apply_fixes_to_rows,
     error_report_csv,
+    form_mapping,
     suggest_mapping,
     validate_cell,
     validate_column_mapping,

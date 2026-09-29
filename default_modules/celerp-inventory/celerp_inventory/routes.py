@@ -33,12 +33,14 @@ from .services import (
     BatchImportResult,
     adjust_item_quantity,
     allocate_internal_codes,
+    apply_source_semantics,
     build_item_import_spec,
     commit_import_batch,
     import_items,
     lot_fields,
     import_preview_hash,
     preview_import_rows,
+    source_header_semantics,
 )
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
@@ -1690,9 +1692,11 @@ async def _build_item_preview(
     # target claims below through the existing required-field validation.
     mapping = {col: mapping.get(col, "__attr__") for col in cols}
     new_cols, mapped_rows = remap_rows(cols, rows, mapping)
+    semantics = source_header_semantics(mapping, settings.get("currency") or "USD")
+    mapped_rows = apply_source_semantics(mapped_rows, semantics)
 
     preview = await preview_import_rows(session, company_id, role, settings, mapped_rows, upsert=upsert)
-    errors = preview.errors[:50]
+    errors = (semantics.errors + preview.errors)[:50]
 
     unmapped_required = sorted(r for r in spec.required if r not in set(new_cols))
     row_count = len(rows)

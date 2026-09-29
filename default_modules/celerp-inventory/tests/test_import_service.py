@@ -131,7 +131,7 @@ async def test_category_default_sell_by(session):
     company_id, _, _ = await _seed(session, locations=[{"name": "Main"}])
     build = await build_import_records(
         session, company_id,
-        [{"name": "Stone", "category": "diamond", "weight": "1.5"}],
+        [{"name": "Stone", "category": "diamond", "weight": "1.5", "weight_unit": "gram"}],
         upsert=False, dry_run=True,
     )
     assert build.errors == []
@@ -527,14 +527,14 @@ async def test_import_rows_and_import_batch_share_committer(client, session, mon
 
 @pytest.mark.asyncio
 async def test_quantity_derivation(session):
-    """Quantity is taken from an explicit column, else the pieces/weight column for the unit type."""
+    """Quantity is taken from an explicit column, else the pieces column, or the weight when it is in the selling unit."""
     company_id, _, _ = await _seed(session, locations=[{"name": "Main"}])
     build = await build_import_records(
         session, company_id,
         [
             {"name": "A", "sell_by": "piece", "pieces": "7"},                  # pieces unit -> pieces
             {"name": "B", "sell_by": "piece", "pieces": "5", "quantity": "99"},  # explicit qty wins
-            {"name": "C", "sell_by": "carat", "weight": "2.5"},                # weight unit -> weight
+            {"name": "C", "sell_by": "carat", "weight": "2.5", "weight_unit": "carat"},  # same weight unit -> weight
             {"name": "D", "sell_by": "piece"},                                 # no source -> 0
         ],
         upsert=False, dry_run=True,
@@ -553,8 +553,8 @@ async def test_weight_unit_canonicalized(session):
     build = await build_import_records(
         session, company_id,
         [
-            {"name": "A", "sell_by": "carat", "weight": "100", "weight_unit": "Gram"},
-            {"name": "B", "sell_by": "carat", "weight": "100"},
+            {"name": "A", "sell_by": "carat", "quantity": "1", "weight": "100", "weight_unit": "Gram"},
+            {"name": "B", "sell_by": "carat", "quantity": "1", "weight": "100"},
         ],
         upsert=False, dry_run=True,
     )

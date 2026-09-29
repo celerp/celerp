@@ -3,6 +3,7 @@
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.constants import ISO_4217_CURRENCIES
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.importers.results import ImportOutcome
 from celerp.importers.schema import IMPORT_ITEM_STATUSES
@@ -1730,35 +1732,211 @@ _CORE_ITEM_COLS: frozenset[str] = frozenset({
 _DROPDOWN_THRESHOLD = 30
 
 
-def _derive_import_qty(row: dict, sell_by: str, unit_map: dict[str, dict]) -> float:
+def resolve_import_category(value: str, category_keys, display_names: dict) -> tuple[str, str | None]:
+    """Resolve a source category to the company's canonical category key.
+
+    Returns ``(category, error)``. An exact key wins, then a unique case-insensitive
+    key, then a unique case-insensitive display label. Several candidates are an
+    error rather than a guess; an unknown value is kept as a custom category.
+    """
+    value = str(value or "").strip()
+    if not value:
+        return "", None
+    keys = set(category_keys) | set(display_names)
+    if value in keys:
+        return value, None
+    folded = value.casefold()
+    for candidates in (
+        sorted(k for k in keys if k.casefold() == folded),
+        sorted(k for k in keys if str(display_names.get(k) or "").strip().casefold() == folded),
+    ):
+        if len(candidates) == 1:
+            return candidates[0], None
+        if candidates:
+            return value, f"Category '{value}' matches several categories: {', '.join(candidates)}"
+    return value, None
+
+
+# Source header words that name a weight unit, and the canonical unit they mean.
+# Recognised only when the header says nothing else, so an unfamiliar header
+# never invents a unit.
+_WEIGHT_UNIT_WORDS: dict[str, str] = {
+    "ct": "carat", "cts": "carat", "carat": "carat", "carats": "carat",
+    "g": "gram", "gr": "gram", "gram": "gram", "grams": "gram",
+    "kg": "kg", "kgs": "kg", "kilogram": "kg", "kilograms": "kg",
+    "oz": "oz", "ounce": "oz", "ounces": "oz",
+    "lb": "lb", "lbs": "lb", "pound": "lb", "pounds": "lb",
+}
+_BASIS_UNIT_WORDS: dict[str, str] = {
+    **_WEIGHT_UNIT_WORDS,
+    "pc": "piece", "pcs": "piece", "piece": "piece", "pieces": "piece", "each": "piece", "ea": "piece",
+}
+_PRICE_WORDS = frozenset({"price", "cost"})
+# Row key carrying the unit a mapped source price is quoted per, e.g.
+# ``retail_price_basis``; the importer accepts the price only for items sold by it.
+PRICE_BASIS_SUFFIX = "_basis"
+
+
+def weight_unit_from_header(header: str) -> str | None:
+    """The canonical weight unit a source header names (``weight_ct``, ``Grams``), or None."""
+    words = [w for w in re.findall(r"[a-z]+", header.lower()) if w not in ("weight", "wt")]
+    return _WEIGHT_UNIT_WORDS.get(words[0]) if len(words) == 1 else None
+
+
+def _header_currency(header: str) -> str | None:
+    """An ISO currency the header states explicitly: ``(USD)``, ``[usd]``, ``USD``, ``price usd``.
+
+    A symbol such as ``$`` is not read as a currency, and a lowercase word counts
+    only in brackets or right after price/cost, so ordinary words are not mistaken
+    for currency codes.
+    """
+    words = re.findall(r"[A-Za-z]+", header)
+    for i, word in enumerate(words):
+        code = word.upper()
+        if len(word) != 3 or code not in ISO_4217_CURRENCIES:
+            continue
+        bracketed = re.search(rf"[(\[]\s*{word}\s*[)\]]", header) is not None
+        after_price = i > 0 and words[i - 1].lower() in _PRICE_WORDS
+        if word.isupper() or bracketed or after_price:
+            return code
+    return None
+
+
+def _header_basis(header: str) -> str | None:
+    """The unit a price header is quoted per (``Price/ct``, ``price per gram``).
+
+    Returns the canonical unit, the raw word for a basis Celerp has no unit for,
+    or None when the header states no basis (``per unit`` is the normal meaning).
+    """
+    lower = header.lower()
+    slash = re.search(r"/\s*([a-z]+)", lower)
+    if slash and slash.group(1) in _BASIS_UNIT_WORDS:
+        return _BASIS_UNIT_WORDS[slash.group(1)]
+    per = re.search(r"\bper\s+([a-z]+)", lower)
+    if per and per.group(1) != "unit":
+        return _BASIS_UNIT_WORDS.get(per.group(1), per.group(1))
+    return None
+
+
+@dataclass
+class SourceSemantics:
+    errors: list[dict]              # {"row": 0, "field": source column, "code", "message"}
+    weight_unit: str | None         # unit the weight column's header names, when none is mapped
+    price_basis: dict[str, str]     # price target -> unit its source column is quoted per
+
+
+def source_header_semantics(mapping: dict[str, str], currency: str) -> SourceSemantics:
+    """Read what source headers say that their values alone do not.
+
+    Shared by the browser mapping step and the file preview so a header means the
+    same thing on every transport. A foreign currency, a total mapped as a unit
+    price, or a basis Celerp cannot check is an error: the importer never strips
+    the annotation and imports the bare number. ``mapping`` is ``{column: target}``.
+    """
+    errors: list[dict] = []
+    price_basis: dict[str, str] = {}
+    targets = set(mapping.values())
+
+    def _error(col: str, code: str, message: str) -> None:
+        errors.append({"row": 0, "field": col, "code": code, "message": message})
+
+    for col, target in mapping.items():
+        is_total = target.endswith("_price_total")
+        if not (is_total or target.endswith("_price")):
+            continue
+        code = _header_currency(col)
+        if code and code != currency:
+            _error(col, "price_currency_mismatch",
+                   f"Column '{col}' is priced in {code} but the company currency is {currency}")
+            continue
+        basis = _header_basis(col)
+        if basis and (is_total or basis not in _BASIS_UNIT_WORDS.values()):
+            _error(col, "price_basis_unsupported",
+                   f"Column '{col}' is priced per {basis}, which cannot be imported as {target}")
+        elif basis:
+            price_basis[target] = basis
+        elif not is_total and "total" in re.findall(r"[a-z]+", col.lower()):
+            _error(col, "price_total_as_unit",
+                   f"Column '{col}' is a total; map it to {target}_total instead of {target}")
+
+    weight_sources = [col for col, target in mapping.items() if target == "weight"]
+    weight_unit = None
+    if len(weight_sources) == 1 and "weight_unit" not in targets:
+        weight_unit = weight_unit_from_header(weight_sources[0])
+    return SourceSemantics(errors=errors, weight_unit=weight_unit, price_basis=price_basis)
+
+
+def apply_source_semantics(rows: list[dict], semantics: SourceSemantics) -> list[dict]:
+    """Carry header meaning onto mapped rows: the weight unit and each price basis."""
+    out: list[dict] = []
+    for row in rows:
+        row = dict(row)
+        if semantics.weight_unit and str(row.get("weight") or "").strip():
+            row["weight_unit"] = semantics.weight_unit
+        for target, basis in semantics.price_basis.items():
+            row[target + PRICE_BASIS_SUFFIX] = basis
+        out.append(row)
+    return out
+
+
+def _to_float(val) -> float | None:
+    s = str(val).strip() if val is not None else ""
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _source_weight(row: dict, unit_canonical: dict[str, str]) -> tuple[float | None, str]:
+    """The row's weight and its unit as written (canonical when known).
+
+    ``weight_ct`` is a carat weight by name, so it carries its unit.
+    """
+    raw_unit = str(row.get("weight_unit", "") or "").strip()
+    unit = unit_canonical.get(raw_unit.lower()) or raw_unit
+    weight = _to_float(row.get("weight"))
+    if weight is None and _to_float(row.get("weight_ct")) is not None:
+        return _to_float(row.get("weight_ct")), unit or "carat"
+    return weight, unit
+
+
+def _derive_import_qty(
+    row: dict, sell_by: str, unit_map: dict[str, dict], unit_canonical: dict[str, str],
+) -> tuple[float, dict | None]:
     """Derive the stock quantity from an import row.
 
-    Priority:
+    Returns ``(quantity, error)``. Priority:
     1. An explicit ``quantity`` or ``qty`` column is trusted unconditionally.
     2. Otherwise fall back to the semantic field for the unit type:
        - pieces-type (e.g. ``piece``) -> ``pieces`` column
-       - weight-type (e.g. ``carat``, ``gram``) -> ``weight`` or ``weight_ct``
+       - weight-type (e.g. ``carat``, ``gram``) -> the weight, only when its unit
+         is known and is the selling unit; weights are never converted
        - other (service, volume, length, unknown) -> 0.0
-
-    Returns a float; never raises.
     """
-    def _to_float(val) -> float | None:
-        s = str(val).strip() if val is not None else ""
-        if not s:
-            return None
-        try:
-            return float(s)
-        except ValueError:
-            return None
-
     explicit = _to_float(row.get("quantity")) if "quantity" in row else _to_float(row.get("qty"))
     if explicit is not None:
-        return explicit
+        return explicit, None
     if is_pieces_unit(sell_by, unit_map):
-        return _to_float(row.get("pieces")) or 0.0
+        return _to_float(row.get("pieces")) or 0.0, None
     if is_weight_unit(sell_by, unit_map):
-        return _to_float(row.get("weight")) or _to_float(row.get("weight_ct")) or 0.0
-    return 0.0
+        weight, unit = _source_weight(row, unit_canonical)
+        if weight is None:
+            return 0.0, None
+        if unit not in unit_map:
+            return 0.0, {
+                "field": "weight", "code": "weight_unit_unknown",
+                "message": (f"Weight unit '{unit}' is not one of the company's units" if unit
+                            else "Weight has no unit") + f"; add a quantity in {sell_by}",
+            }
+        if unit != sell_by:
+            return 0.0, {
+                "field": "weight", "code": "weight_unit_mismatch",
+                "message": f"Weight is in {unit} but the item sells by {sell_by}; add a quantity in {sell_by}",
+            }
+        return weight, None
+    return 0.0, None
 
 
 def _collect_category_attributes(rows: list[dict]) -> dict[str, dict[str, list[str]]]:
@@ -1769,7 +1947,7 @@ def _collect_category_attributes(rows: list[dict]) -> dict[str, dict[str, list[s
         if cat not in result:
             result[cat] = {}
         for k, v in row.items():
-            if k in _CORE_ITEM_COLS or k.endswith("_price") or k.endswith("_price_total"):
+            if k in _CORE_ITEM_COLS or k.endswith(("_price", "_price_total", "_price" + PRICE_BASIS_SUFFIX)):
                 continue
             v_str = str(v).strip() if v is not None else ""
             if not v_str:
@@ -1847,6 +2025,7 @@ class ImportBuild:
     records: list[dict]              # ImportRecord-shaped dicts ready for the committer
     errors: list[dict]              # {"row", "field", "code", "message"}
     locations_to_create: list[str]
+    rows: list[dict]                # input rows with each category resolved to its canonical key
 
 
 async def build_import_records(
@@ -1898,7 +2077,10 @@ async def build_import_records(
             location_map[name] = str(loc.id)
 
     company = await session.get(Company, company_id)
-    currency = ((company.settings or {}).get("currency") if company else None) or "USD"
+    company_settings = (company.settings or {}) if company else {}
+    currency = company_settings.get("currency") or "USD"
+    category_keys = list(company_settings.get("category_schemas") or {})
+    category_names = dict(company_settings.get("category_display_names") or {})
 
     cat_sell_by = {c["name"]: c["default_sell_by"] for c in list_categories() if c.get("default_sell_by")}
 
@@ -1944,7 +2126,14 @@ async def build_import_records(
 
     records: list[dict] = []
     errors: list[dict] = []
+    resolved_rows: list[dict] = []
     for i, row in enumerate(rows):
+        category, category_error = resolve_import_category(row.get("category"), category_keys, category_names)
+        row = {**row, "category": category} if category else row
+        resolved_rows.append(row)
+        if category_error:
+            errors.append({"row": i + 1, "field": "category", "code": "category_ambiguous", "message": category_error})
+            continue
         sku = str(row.get("sku", "") or "").strip()
         name = str(row.get("name", "") or "").strip()
         barcode = str(row.get("barcode", "") or "").strip()
@@ -2045,7 +2234,29 @@ async def build_import_records(
                 "message": f"sell_by '{sell_by}' is not one of the company's units",
             })
             continue
-        qty = _derive_import_qty(row, sell_by, unit_map)
+        qty, qty_error = _derive_import_qty(row, sell_by, unit_map, unit_canonical)
+        if qty_error:
+            errors.append({"row": i + 1, **qty_error})
+            continue
+        # A price quoted per some unit is the item's unit price only when the item
+        # sells by that unit; anything else would need a conversion Celerp does not make.
+        item_sell_by = sell_by or str(((target.state or {}) if target is not None else {}).get("sell_by") or "")
+        basis_error = next((
+            {
+                "row": i + 1, "field": key[: -len(PRICE_BASIS_SUFFIX)], "code": "price_basis_mismatch",
+                "message": (
+                    f"{key[: -len(PRICE_BASIS_SUFFIX)]} is priced per {basis} "
+                    f"but the item sells by {item_sell_by or 'no unit'}"
+                ),
+            }
+            for key, basis in row.items()
+            if key.endswith("_price" + PRICE_BASIS_SUFFIX)
+            and _to_float(row.get(key[: -len(PRICE_BASIS_SUFFIX)])) is not None
+            and (unit_canonical.get(str(basis or "").strip().lower()) or str(basis or "").strip()) != item_sell_by
+        ), None)
+        if basis_error:
+            errors.append(basis_error)
+            continue
         amount_source = any(_has_value(row, k) for k in ("quantity", "qty", "pieces", "weight", "weight_ct"))
 
         def _flt(key: str, _row: dict = row) -> float | None:
@@ -2059,20 +2270,20 @@ async def build_import_records(
 
         attrs: dict = {}
         for key, value in row.items():
-            if key in _CORE_ITEM_COLS or key.endswith("_price") or key.endswith("_price_total"):
+            if key in _CORE_ITEM_COLS or key.endswith(("_price", "_price_total", "_price" + PRICE_BASIS_SUFFIX)):
                 continue
             value_s = str(value).strip() if value is not None else ""
             if value_s:
                 attrs[key] = value_s
 
+        weight, weight_unit = _source_weight(row, unit_canonical)
         data = {
             "sku": sku,
             "name": name,
             "quantity": qty,
-            "category": str(row.get("category", "") or "").strip() or None,
-            "weight": _flt("weight") or _flt("weight_ct"),
-            "weight_unit": unit_canonical.get(str(row.get("weight_unit", "") or "").strip().lower())
-            or str(row.get("weight_unit", "") or "").strip() or None,
+            "category": category or None,
+            "weight": weight,
+            "weight_unit": weight_unit or None,
             "gross_weight": _flt("gross_weight"),
             "gross_weight_unit": unit_canonical.get(str(row.get("gross_weight_unit", "") or "").strip().lower())
             or str(row.get("gross_weight_unit", "") or "").strip() or None,
@@ -2171,7 +2382,7 @@ async def build_import_records(
             "idempotency_key": idem,
         })
 
-    return ImportBuild(records=records, errors=errors, locations_to_create=locations_to_create)
+    return ImportBuild(records=records, errors=errors, locations_to_create=locations_to_create, rows=resolved_rows)
 
 
 def import_preview_hash(inputs: dict) -> str:
@@ -2305,7 +2516,7 @@ async def import_items(
     # carry manage_company_settings; without it the merge is skipped and the
     # import still succeeds.
     if build.records and role_has_permission(settings, role, "manage_company_settings"):
-        inferred = _infer_category_schemas(_collect_category_attributes(rows))
+        inferred = _infer_category_schemas(_collect_category_attributes(build.rows))
         if inferred:
             await _merge_category_schemas(session, company_id, inferred)
             await session.commit()
