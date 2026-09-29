@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company, User
@@ -379,10 +380,13 @@ async def open_copy(session: AsyncSession, copy: CopyFile, *, owner: User) -> Co
         company = await provision_copied_company(session, owner=owner, company_name=manifest["company"]["name"],
                                                  company_id=uuid.UUID(mapping[manifest["company"]["id"]]),
                                                  settings=settings)
-        for table in COPY_TABLES:
-            if source.get(table):
-                await _insert(session, table, manifest["tables"][table]["columns"],
-                              [_remap(line, mapping) for line in source[table]])
+        try:
+            for table in COPY_TABLES:
+                if source.get(table):
+                    await _insert(session, table, manifest["tables"][table]["columns"],
+                                  [_remap(line, mapping) for line in source[table]])
+        except DBAPIError:
+            raise CopyError(422, DAMAGED) from None
         for table, meta in manifest["tables"].items():
             lines = [_remap(line, back) for line in await _rows(session, table, company.id)]
             if len(lines) != meta["rows"] or _table_hash(lines) != meta["sha256"]:

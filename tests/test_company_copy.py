@@ -394,6 +394,19 @@ def _with_table(data: bytes, table: str, lines: list[bytes]) -> bytes:
     return _rezip(m)
 
 
+def _duplicated_row(data: bytes) -> bytes:
+    row = _members(data)["tables/locations.jsonl"].split(b"\n")[0]
+    return _with_table(data, "locations", [row, row])
+
+
+def _missing_column(data: bytes) -> bytes:
+    m = _members(data)
+    manifest = json.loads(m["manifest.json"])
+    manifest["tables"]["locations"]["columns"].remove("company_id")
+    m["manifest.json"] = json.dumps(manifest).encode()
+    return _rezip(m)
+
+
 @pytest.mark.parametrize("change, message", [
     (_tampered, "damaged or was changed"),
     (lambda d: _with_manifest(d, created_at=None), "damaged or was changed"),
@@ -403,6 +416,8 @@ def _with_table(data: bytes, table: str, lines: list[bytes]) -> bytes:
     (lambda d: _with_table(d, "locations", [b"\xff\xfe"]), "damaged or was changed"),
     (lambda d: _with_table(d, "locations", [b"[1, 2]"]), "damaged or was changed"),
     (lambda d: _with_table(d, "locations", [b"not json"]), "damaged or was changed"),
+    (_duplicated_row, "damaged or was changed"),
+    (_missing_column, "damaged or was changed"),
     (lambda d: b"not a copy", "not a Celerp company copy"),
     (lambda d: _rezip({"manifest.json": b'{"format": "other"}'}), "not a Celerp company copy"),
     (_newer_format, "newer version of Celerp"),

@@ -302,8 +302,9 @@ async def real_engine(_db_engine, monkeypatch):
 
     from celerp.models.base import Base
 
-    # migration_cleanup_tasks has no foreign keys, so the cascade from companies misses it.
-    tables = ", ".join(t for t in ("users", "companies", "migration_cleanup_tasks") if t in Base.metadata.tables)
+    # migration_cleanup_tasks and connector_configs have no foreign keys, so the cascade from companies misses them.
+    tables = ", ".join(t for t in ("users", "companies", "migration_cleanup_tasks", "connector_configs")
+                       if t in Base.metadata.tables)
 
     async def _truncate():
         async with engine.begin() as conn:
