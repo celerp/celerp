@@ -31,6 +31,16 @@ DEFAULT_DP: int = 2
 _MoneyInput = Union[float, str, int, Decimal, None]
 
 
+# Inventory cost basis is internal state, not money: it keeps this precision and becomes
+# money (round_money) only where it leaves as an amount, such as a journal line or a total.
+BASIS_DP: int = 10
+
+
+def round_basis(v: _MoneyInput) -> float:
+    """Round an internal cost basis, only enough to drop float noise."""
+    return round(float(v or 0), BASIS_DP)
+
+
 def currency_dp(currency: str) -> int:
     """Return ISO 4217 decimal places for a currency code. Unknown codes default to 2."""
     return CURRENCY_DP.get((currency or "").upper(), DEFAULT_DP)
@@ -252,6 +262,20 @@ def to_base(amount: _MoneyInput, rate: _MoneyInput, base_currency: str) -> float
     rounded at the base currency, which is what a base-currency document needs.
     """
     return to_stored_float(round_money(to_decimal(amount) * to_decimal(rate), base_currency))
+
+
+def allocate_pro_rata(amount: _MoneyInput, weights: list[Decimal], currency: str) -> list[Decimal]:
+    """Split amount across weights in proportion, each share rounded to the currency.
+
+    The largest weight takes what rounding leaves, so the shares always sum to the
+    rounded amount exactly. Weights must be positive.
+    """
+    total = round_money(amount, currency)
+    weight_sum = sum(weights, Decimal(0))
+    shares = [round_money(total * w / weight_sum, currency) for w in weights]
+    largest = max(range(len(weights)), key=lambda i: weights[i])
+    shares[largest] += total - sum(shares, Decimal(0))
+    return shares
 
 
 def unit_price_from_total(total: _MoneyInput, qty: _MoneyInput, currency: str) -> Decimal:

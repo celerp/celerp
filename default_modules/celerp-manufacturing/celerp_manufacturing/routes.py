@@ -31,6 +31,7 @@ from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import auto_je
 from celerp.services.line_measures import splitting_allowed
+from celerp.services.money import round_basis
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
 
@@ -1359,7 +1360,7 @@ def _run_input_cost(run_state: dict, states: dict[str, dict]) -> float:
         issued = float(inp.get("issued_qty") or 0)
         qty = issued if issued > 0 else float(inp.get("quantity") or 0)
         total += qty * unit
-    return round(total, 2)
+    return round_basis(total)
 
 
 # Namespace for deterministic produced-lot ids: a receipt re-submitted with the same idempotency
@@ -1468,7 +1469,7 @@ async def _receive(session: AsyncSession, company_id, user, order_id: str, run_s
                 "allow_splitting": splitting_allowed(product),
                 "quantity": 0, "location_id": loc, "parent_item_id": out_id, "lot": True,
                 "barcode": lot_barcode,
-                "manufacturing_order_id": order_id, "cost_total": round(unit_cost * qty, 2),
+                "manufacturing_order_id": order_id, "cost_total": round_basis(unit_cost * qty),
             },
             actor_id=user.id, location_id=loc, source="api",
             idempotency_key=f"mfg:{order_id}:receive:{rk}:created",
@@ -1550,7 +1551,7 @@ async def _recost_run_lots(session: AsyncSession, company_id, user, order_id: st
         lot = fresh.get(lot_id)
         if lot is None:
             continue
-        new_total = round(unit_cost * float(lot.get("quantity") or 0), 2)
+        new_total = round_basis(unit_cost * float(lot.get("quantity") or 0))
         event = dict(
             entity_id=lot_id, event_type="item.cost_adjusted",
             data={"cost_total": new_total, "manufacturing_order_id": order_id},

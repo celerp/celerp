@@ -59,7 +59,7 @@ from celerp.services.pricing import (
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.line_measures import splitting_allowed
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.money import round_basis, round_money, to_decimal, to_stored_float
 from celerp_inventory.projections import _is_core_key, _is_image_mime, is_item_available, thumbnail_file_id
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -266,11 +266,11 @@ def flatten_item(state: dict, entity_id: str, location_id: str | None = None, lo
         # Recipe-backed item: derive cost from the rolled standard (single source of truth); never
         # let a lingering build-lot cost_total silently override it. See _recipe_standard_unit_cost.
         flat["cost_price"] = _recipe_unit
-        flat["cost_total"] = round(_recipe_unit * qty, 2) if qty else 0.0
+        flat["cost_total"] = round_basis(_recipe_unit * qty) if qty else 0.0
     elif flat.get("cost_total") is not None:
         flat["cost_price"] = round(float(flat["cost_total"]) / qty, 10) if qty else 0.0
     elif flat.get("cost_price") is not None:
-        flat["cost_total"] = round(float(flat["cost_price"]) * qty, 2)
+        flat["cost_total"] = round_basis(float(flat["cost_price"]) * qty)
     # else: both remain absent (item has no cost set)
     if price_config is not None:
         inject_derived_prices(flat, *price_config)

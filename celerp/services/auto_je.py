@@ -18,7 +18,7 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.je_keys import je_idempotency_key, je_void_data
 from celerp.services.line_measures import splitting_allowed
-from celerp.services.money import checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
+from celerp.services.money import allocate_pro_rata, checked_exchange_rate, require_doc_rate, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.pick import doc_bound_lots, plan_lot_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line
 from sqlalchemy import select as _select
@@ -94,6 +94,17 @@ def _balanced_with_fx_difference(entries: list[dict]) -> list[dict]:
     }]
 
 
+class UnbalancedJournalEntry(ValueError):
+    """An automatic journal entry whose lines do not balance in the company currency."""
+
+
+async def company_currency(session, company_id) -> str:
+    """The currency the company keeps its books in."""
+    from celerp.models.company import Company
+    company = await session.get(Company, company_id)
+    return str((company.settings or {}).get("currency") or "USD").upper() if company else "USD"
+
+
 async def _emit_auto_posted_je(
     session,
     *,
@@ -107,6 +118,22 @@ async def _emit_auto_posted_je(
     metadata_: dict,
     ts: str | None = None,
 ) -> None:
+    """Post an automatic JE. The one place its amounts become money: every line is rounded
+    to the company currency, and an entry that does not balance after rounding is refused,
+    so producers build their lines to balance once rounded."""
+    currency = await company_currency(session, company_id)
+    entries = [
+        {**e,
+         "debit": to_stored_float(round_money(e.get("debit") or 0, currency)),
+         "credit": to_stored_float(round_money(e.get("credit") or 0, currency))}
+        for e in entries
+    ]
+    debits = sum((to_decimal(e["debit"]) for e in entries), _Dec(0))
+    credits = sum((to_decimal(e["credit"]) for e in entries), _Dec(0))
+    if debits != credits:
+        raise UnbalancedJournalEntry(
+            f"{memo}: debits {debits} and credits {credits} {currency} do not balance"
+        )
     payload = {"memo": memo, "entries": entries}
     if ts:
         payload["ts"] = ts
@@ -290,10 +317,11 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     rate = require_doc_rate(doc, base_currency)
     total_d = round_money(doc.get("total", 0), currency)
     tax_d = round_money(doc.get("tax", 0), currency)
-    revenue_d = round_money(total_d - tax_d, currency)
     total = to_base(to_stored_float(total_d), rate, base_currency)
     tax = to_base(to_stored_float(tax_d), rate, base_currency)
-    revenue = to_base(to_stored_float(revenue_d), rate, base_currency)
+    # Revenue is what the receivable leaves after tax, so converting each side separately
+    # cannot leave the entry a unit of rounding apart.
+    revenue = to_stored_float(to_decimal(total) - to_decimal(tax))
     # Use a cycle-aware suffix so re-finalize after revert creates a fresh JE entity
     # rather than hitting the dedup guard on the voided JE from the previous cycle.
     cycle = int(doc.get("revert_count", 0))
@@ -559,14 +587,15 @@ async def create_for_landed_capitalisation(
     the clearing accounts; this draws the received portion down into 1130-P so that COGS, which relieves
     the item's full cost_total (base + landed) from 1130-P, reconciles against the same account.
     """
-    total = round(sum(float(v or 0) for v in landed_by_kind.values()), 2)
+    currency = await company_currency(session, company_id)
+    credits = {kind: round_money(amt or 0, currency) for kind, amt in landed_by_kind.items()}
+    total = sum(credits.values(), _Dec(0))  # the debit is the sum of the rounded credits
     if total <= 0:
         return
-    entries: list[dict] = [{"account": _INVENTORY_ACCT, "debit": total, "credit": 0.0}]
-    for kind, amt in landed_by_kind.items():
-        amt = round(float(amt or 0), 2)
+    entries: list[dict] = [{"account": _INVENTORY_ACCT, "debit": to_stored_float(total), "credit": 0.0}]
+    for kind, amt in credits.items():
         if amt:
-            entries.append({"account": _LANDED_CLEARING_ACCT[kind], "debit": 0.0, "credit": amt})
+            entries.append({"account": _LANDED_CLEARING_ACCT[kind], "debit": 0.0, "credit": to_stored_float(amt)})
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -597,20 +626,20 @@ async def create_for_bill_conversion(
     Line-level account_code takes priority; otherwise defaults to 1130 (inventory)
     for lines with SKU, 6950 (misc expense) for lines without.
     """
-    total = float(doc.get("total", 0) or 0)
     currency = doc.get("currency", "USD")
     rate = require_doc_rate(doc, base_currency)
+    total_d = round_money(doc.get("total", 0) or 0, currency)
     line_items = doc.get("line_items", [])
-    debit_entries: list[dict] = []
+    lines: list[tuple[str, _Dec]] = []  # (account, amount in the document currency)
     tax_total_d = _Dec(0)
 
     if line_items:
         for li in line_items:
-            line_total = to_stored_float(round_money(
+            line_total = round_money(
                 to_decimal(li.get("line_total") or 0) or
                 to_decimal(li.get("quantity", 0)) * to_decimal(li.get("unit_price", 0)),
                 currency,
-            ))
+            )
             if line_total <= 0:
                 continue
             # receive_as overrides SKU-based account selection for bills.
@@ -627,27 +656,42 @@ async def create_for_bill_conversion(
                 account = landed_acct
             else:
                 account = _INVENTORY_ACCT if li.get("sku") else "6950"
-            debit_entries.append({"account": account, "debit": to_base(line_total, rate, base_currency), "credit": 0.0})
+            lines.append((account, line_total))
         # Input VAT: debit the EFFECTIVE tax that create_doc rolled into `total` (line `taxes[].amount`
-        # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets. Using the
-        # wrong source left the bill JE unbalanced (inventory debited net, AP credited gross, no VAT debit).
+        # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets.
         tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
-        if tax_total_d > 0:
-            debit_entries.append({"account": "1150", "debit": to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
 
-    # Doc-level shipping on a bill is inbound freight: debit the freight clearing account so the JE
-    # balances (this closes the legacy gap where shipping inflated the AP credit with no debit).
+    # Doc-level shipping on a bill is inbound freight: debit the freight clearing account.
     shipping_d = round_money(doc.get("shipping", 0) or 0, currency)
+    if total_d <= 0:
+        return
+    # A bill total below its lines, tax and shipping is a discount on those lines: each line's
+    # cost is reduced by its share, so the debits sum to what the bill says is owed. Any other
+    # gap between the parts and the total is refused rather than posted unbalanced.
+    goods_d = sum((a for _, a in lines), _Dec(0))
+    discount_d = goods_d + tax_total_d + shipping_d - total_d
+    if 0 < discount_d <= goods_d:
+        shares = allocate_pro_rata(discount_d, [a for _, a in lines], currency)
+        lines = [(acct, a - share) for (acct, a), share in zip(lines, shares)]
+    if tax_total_d > 0:
+        lines.append(("1150", tax_total_d))
     if shipping_d > 0:
-        debit_entries.append({"account": "1130-FRT", "debit": to_base(to_stored_float(shipping_d), rate, base_currency), "credit": 0.0})
+        lines.append(("1130-FRT", shipping_d))
+    if not lines:
+        lines.append(("6950", total_d))
+    if sum((a for _, a in lines), _Dec(0)) != total_d:
+        raise UnbalancedJournalEntry(
+            f"Bill {doc_id}: its lines, tax and shipping do not add up to its total of {total_d} {currency}"
+        )
 
-    base_total = to_base(total, rate, base_currency)
-    if not debit_entries:
-        if total <= 0:
-            return
-        debit_entries.append({"account": "6950", "debit": base_total, "credit": 0.0})
-
-    entries = debit_entries + [{"account": "2110", "debit": 0.0, "credit": base_total}]
+    # AP is the bill total in base; the debits are converted line by line, and the unit
+    # of rounding that conversion can leave goes to the largest debit so the entry balances.
+    base_total = to_base(to_stored_float(total_d), rate, base_currency)
+    debits = [to_decimal(to_base(to_stored_float(a), rate, base_currency)) for _, a in lines]
+    largest = max(range(len(debits)), key=lambda i: debits[i])
+    debits[largest] += to_decimal(base_total) - sum(debits, _Dec(0))
+    entries = [{"account": acct, "debit": to_stored_float(d), "credit": 0.0} for (acct, _), d in zip(lines, debits)]
+    entries.append({"account": "2110", "debit": 0.0, "credit": base_total})
 
     await _emit_auto_posted_je(
         session,
@@ -902,10 +946,12 @@ async def create_for_doc_cogs_adjustment(
     correction's identity) and a cycle_tag ending in the line (:l{index}), so
     reversing that line voids it like any fulfillment true-up.
     """
-    amount = round(abs(float(delta)), 2)
+    currency = await company_currency(session, company_id)
+    rounded = round_money(delta, currency)  # one amount, used on both sides
+    amount = to_stored_float(abs(rounded))
     if amount <= 0:
         return
-    if delta > 0:
+    if rounded > 0:
         entries = [
             {"account": "5100", "debit": amount, "credit": 0.0},
             {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": amount},
@@ -926,7 +972,7 @@ async def create_for_doc_cogs_adjustment(
         ts=ts,
         entries=entries,
         metadata_={
-            "trigger": trigger, "doc_id": doc_id, "cogs_delta": round(float(delta), 2), **(context or {}),
+            "trigger": trigger, "doc_id": doc_id, "cogs_delta": to_stored_float(rounded), **(context or {}),
         },
     )
 
@@ -1205,7 +1251,10 @@ async def create_for_receive_undone(
 
 
 async def create_for_mfg_completed(session, *, company_id, user_id, order_id: str, input_cost: float, waste_cost: float) -> None:
-    output_cost = max(0.0, float(input_cost) - float(waste_cost))
+    # Input and waste become money first; the output is what is left of them, so the entry balances.
+    currency = await company_currency(session, company_id)
+    input_amt, waste_amt = round_money(input_cost, currency), round_money(waste_cost, currency)
+    output_amt = max(_Dec(0), input_amt - waste_amt)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -1216,9 +1265,9 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
         memo=f"Auto JE for {order_id} completion",
         ts=__import__("datetime").date.today().isoformat(),
         entries=[
-            {"account": _INVENTORY_ACCT, "debit": output_cost, "credit": 0.0},
-            {"account": "5100", "debit": float(waste_cost), "credit": 0.0},
-            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(input_cost)},
+            {"account": _INVENTORY_ACCT, "debit": to_stored_float(output_amt), "credit": 0.0},
+            {"account": "5100", "debit": to_stored_float(waste_amt), "credit": 0.0},
+            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": to_stored_float(input_amt)},
         ],
         metadata_={"trigger": "mfg.order.completed", "order_id": order_id},
     )
@@ -1297,11 +1346,11 @@ async def create_for_audit_adjustment(
     """
     entries: list[dict] = []
     if shrinkage_value > 1e-9:
-        entries.append({"account": _AUDIT_SHRINKAGE_ACCT, "debit": round(float(shrinkage_value), 2), "credit": 0.0})
-        entries.append({"account": _AUDIT_INVENTORY_ACCT, "debit": 0.0, "credit": round(float(shrinkage_value), 2)})
+        entries.append({"account": _AUDIT_SHRINKAGE_ACCT, "debit": float(shrinkage_value), "credit": 0.0})
+        entries.append({"account": _AUDIT_INVENTORY_ACCT, "debit": 0.0, "credit": float(shrinkage_value)})
     if overage_value > 1e-9:
-        entries.append({"account": _AUDIT_INVENTORY_ACCT, "debit": round(float(overage_value), 2), "credit": 0.0})
-        entries.append({"account": _AUDIT_OVERAGE_ACCT, "debit": 0.0, "credit": round(float(overage_value), 2)})
+        entries.append({"account": _AUDIT_INVENTORY_ACCT, "debit": float(overage_value), "credit": 0.0})
+        entries.append({"account": _AUDIT_OVERAGE_ACCT, "debit": 0.0, "credit": float(overage_value)})
     await create_for_line_adjustment(
         session, company_id=company_id, user_id=user_id, list_id=list_id,
         kind="audit", entries=entries, cycle=cycle,

@@ -16,6 +16,7 @@ from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
 from celerp.db import engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import CodeConflictError
+from celerp.services.auto_je import UnbalancedJournalEntry
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 from celerp.gateway.state import load_commercial_context
 load_cloud_config()
@@ -549,6 +550,13 @@ async def code_conflict_handler(_request: Request, exc: CodeConflictError):
     # introduces a physical code another item already holds. One handler on the shared
     # base maps every physical-code collision to 409.
     return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(UnbalancedJournalEntry)
+async def unbalanced_je_handler(_request: Request, exc: UnbalancedJournalEntry):
+    # An automatic journal entry that would not balance is refused, and the write that
+    # produced it rolls back with it; the message names the document and the amounts.
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
 
 
 # Kernel routes — always present regardless of module configuration

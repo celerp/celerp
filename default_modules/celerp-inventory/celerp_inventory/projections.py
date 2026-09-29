@@ -3,6 +3,8 @@
 
 from copy import deepcopy
 
+from celerp.services.money import round_basis
+
 # Maps old weight_unit abbreviations to new unit names
 _WEIGHT_UNIT_MAP: dict[str, str] = {
     "ct": "carat",
@@ -219,15 +221,15 @@ def _recompute_cost(current: dict) -> None:
         elif current.get("cost_price") is not None:
             if qty <= 0:
                 return  # the unit cost waits for stock
-            current["cost_base"] = round(float(current["cost_price"]) * qty, 2)
+            current["cost_base"] = round_basis(float(current["cost_price"]) * qty)
         elif not contribs:
             return  # item has no cost set at all
         else:
             current["cost_base"] = 0.0
     base = float(current.get("cost_base") or 0)
     landed_unit = sum(float(v or 0) for v in contribs.values())
-    current["cost_landed"] = round(landed_unit * qty, 2)
-    current["cost_total"] = round(base + current["cost_landed"], 2)
+    current["cost_landed"] = round_basis(landed_unit * qty)
+    current["cost_total"] = round_basis(base + current["cost_landed"])
     current.pop("cost_price", None)  # always derived from cost_total at read time (flatten_item)
 
 
@@ -242,7 +244,7 @@ def _apply_goods_cost(current: dict, field: str, value) -> None:
         current.pop(key, None)
     if value not in (None, ""):
         if field == "cost_total":
-            current["cost_base"] = round(float(value), 2)
+            current["cost_base"] = round_basis(value)
         else:
             current["cost_price"] = float(value)
     _recompute_cost(current)
@@ -267,12 +269,14 @@ def _set_quantity(current: dict, new_qty, cost_base=None) -> None:
         if basis is None:
             basis = current.get("cost_total")
         if old_qty > 0 and basis is not None:
+            # Unrounded: a basis or unit cost cut to any fixed precision would not scale
+            # back exactly when the units return.
             if qty > 0:
-                current["cost_base"] = round(float(basis) * qty / old_qty, 2)
+                current["cost_base"] = float(basis) * qty / old_qty
             else:
                 for key in ("cost_base", "cost_total", "cost_landed"):
                     current.pop(key, None)
-                current["cost_price"] = round(float(basis) / old_qty, 10)
+                current["cost_price"] = float(basis) / old_qty
     current["quantity"] = new_qty
     _recompute_cost(current)
 

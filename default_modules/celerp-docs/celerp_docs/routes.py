@@ -44,7 +44,7 @@ from celerp.services.permissions import assert_role_permission, get_current_comp
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern, list_sequence_key
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
-from celerp.services.money import checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_money, round_rate, to_base, to_decimal, to_stored_float
+from celerp.services.money import checked_exchange_rate, discount_from_inputs, doc_rate, document_line_unit, require_doc_rate, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, resolve_price
 from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
@@ -3271,7 +3271,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             old_basis = goods_basis(item.state)
             received_cost = await _received_goods_cost(session, company_id, row.state, it, stock_qty_received)
             if received_cost is not None:
-                adjustment["cost_base"] = round((old_basis or 0.0) + received_cost, 2)
+                adjustment["cost_base"] = round_basis((old_basis or 0.0) + received_cost)
             elif old_basis is not None:
                 raise HTTPException(
                     status_code=422,
@@ -3385,7 +3385,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 item_data["landed_contributions"] = {f"{entity_id}::{k}": u for k, u in _landed.items()}
                 _recv_qty_total = float(it.quantity_received) * conversion
                 for _k, _u in _landed.items():
-                    landed_drawdown[_k] = round(landed_drawdown.get(_k, 0.0) + _u * _recv_qty_total, 2)
+                    landed_drawdown[_k] = round_basis(landed_drawdown.get(_k, 0.0) + _u * _recv_qty_total)
             if is_consignment:
                 item_data["consignment_flag"] = "in"
                 # Pair the new parcel with the consignment doc: inventory renders the
@@ -3841,7 +3841,8 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         _consign_company = await session.get(Company, company_id)
         _consign_base_currency = (_consign_company.settings.get("currency", "USD") if _consign_company else "USD")
         await auto_je.create_for_bill_conversion(
-            session, company_id=company_id, user_id=user.id, doc_id=new_doc_id, doc=state, base_currency=_consign_base_currency,
+            session, company_id=company_id, user_id=user.id, doc_id=new_doc_id, doc={**state, "total": bill_total},
+            base_currency=_consign_base_currency,
         )
         entry = await emit_event(
             session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.converted",
@@ -8120,14 +8121,16 @@ async def write_off_stock(
     if status == DRAFT:
         await _emit_list(session, company_id, entity_id, "list.finalized",
                          {"status": FINALIZED, "finalized_at": datetime.now(timezone.utc).isoformat()}, user)
-    debits: dict[str, float] = {}
-    total_value = 0.0
+    # Each line's value is money in the company currency; the account debits and the Inventory
+    # credit are sums of those rounded values, so the entry balances.
+    currency = await auto_je.company_currency(session, company_id)
+    debits: dict[str, Decimal] = {}
     written_off = 0
     remaining: dict[str, float] = dict(live_by_item)
     for l, item, qty_out in prepared:
         account = l.get("account")
         unit_cost = unit_cost_by_item[item.entity_id]
-        value = round(unit_cost * qty_out, 2)
+        value = round_money(unit_cost * qty_out, currency)
         sku = item.state.get("sku") or ""  # read before any rollback expires the ORM row
         rem = remaining[item.entity_id]
         try:
@@ -8152,21 +8155,21 @@ async def write_off_stock(
         await emit_event(
             session, company_id=company_id, entity_id=disposed_eid, entity_type="item",
             event_type="item.written_off",
-            data={"account": account, "qty": qty_out, "unit_cost": unit_cost, "cost_total": value,
+            data={"account": account, "qty": qty_out, "unit_cost": unit_cost, "cost_total": to_stored_float(value),
                   "reason": l.get("comment") or None, "source_list_id": entity_id},
             actor_id=user.id, location_id=None, source="writeoff", idempotency_key=str(uuid.uuid4()),
             metadata_={"writeoff_id": entity_id},
         )
-        debits[account] = round(debits.get(account, 0.0) + value, 2)
-        total_value = round(total_value + value, 2)
+        debits[account] = debits.get(account, Decimal(0)) + value
         l["disposed_entity_id"] = disposed_eid
         l["disposed_qty"] = qty_out
         l["adjusted"] = True
         written_off += 1
         remaining[item.entity_id] = round(rem - qty_out, 10)
-    entries = [{"account": acct, "debit": val, "credit": 0.0} for acct, val in debits.items()]
+    total_value = to_stored_float(sum(debits.values(), Decimal(0)))
+    entries = [{"account": acct, "debit": to_stored_float(val), "credit": 0.0} for acct, val in debits.items()]
     if entries:
-        entries.append({"account": auto_je._INVENTORY_ACCT, "debit": 0.0, "credit": round(total_value, 2)})
+        entries.append({"account": auto_je._INVENTORY_ACCT, "debit": 0.0, "credit": total_value})
     await auto_je.create_for_line_adjustment(
         session, company_id=company_id, user_id=user.id, list_id=entity_id,
         kind="writeoff", entries=entries, cycle=cycle,
@@ -8174,7 +8177,7 @@ async def write_off_stock(
     await _emit_list(session, company_id, entity_id, "list.closed",
                      {"result": "written_off", "line_items": lines, "adjust_count": cycle + 1}, user)
     await session.commit()
-    return {"written_off": written_off, "skipped": skipped, "value": round(total_value, 2)}
+    return {"written_off": written_off, "skipped": skipped, "value": total_value}
 
 
 @lists_router.post("/{entity_id}/undo-write-off")

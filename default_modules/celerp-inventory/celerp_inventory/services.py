@@ -24,6 +24,7 @@ from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.business_time import business_date_at
 from celerp.services.cost_visibility import COST_ITEM_KEYS
+from celerp.services.money import round_basis
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.importers.tabular import CsvImportSpec
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
@@ -122,7 +123,7 @@ def goods_basis(state: dict) -> float | None:
     basis = state.get("cost_base")
     if basis is None:
         basis = state.get("cost_total")
-    return None if basis is None else round(float(basis), 2)
+    return None if basis is None else round_basis(basis)
 
 
 def _lot_label(state: dict, entity_id: str) -> str:
@@ -260,9 +261,9 @@ async def restate_item_cost(
             raise CostRestatementConflict(
                 f"{label} was written off, so a cost correction cannot be carried into the write-off automatically"
             )
-        delta = round(new_basis - old_basis, 2)
+        delta = round_basis(new_basis - old_basis)
         if status == "sold":
-            sold.append((entity_id, old, round(float(new["cost_total"]) - float(old["cost_total"]), 2)))
+            sold.append((entity_id, old, round_basis(float(new["cost_total"]) - float(old["cost_total"]))))
         seen = {entity_id}
         current, next_id = label, old.get("merged_into") if status == "merged" else None
         if status == "merged" and not next_id:
@@ -289,10 +290,10 @@ async def restate_item_cost(
                 raise CostRestatementConflict(
                     f"{label}'s cost went into {current}, whose cost cannot absorb a change of {delta:g}"
                 )
-            successors.append((next_id, round(basis + delta, 2)))
+            successors.append((next_id, round_basis(basis + delta)))
             if succ_status == "sold":
                 after = apply_item_event(state, "item.cost_adjusted", {"cost_total": basis + delta})
-                sold.append((next_id, state, round(float(after["cost_total"]) - float(state["cost_total"]), 2)))
+                sold.append((next_id, state, round_basis(float(after["cost_total"]) - float(state["cost_total"]))))
             next_id = state.get("merged_into") if succ_status == "merged" else None
             if succ_status == "merged" and not next_id:
                 raise CostRestatementConflict(f"{current} is merged, but its merge lineage is not recorded")
