@@ -612,7 +612,7 @@ def test_attachments_move_only_to_records_that_hold_files(tmp_path):
 # ── Master data fidelity ──────────────────────────────────────────────────────
 
 def test_master_attributes_celerp_cannot_hold_are_each_reported(tmp_path):
-    # An inactive item becomes an archived item, which Celerp represents exactly. Celerp
+    # An inactive item with no stock becomes an archived item, which Celerp represents exactly. Celerp
     # has no inactive state for contacts, tax codes or currencies and no default purchase
     # price for items, so each of those is reported as lost, per record.
     art = artifact(specs.build_inactive_masters(tmp_path / "inactive.manager"))
@@ -638,6 +638,22 @@ def test_master_attributes_celerp_cannot_hold_are_each_reported(tmp_path):
     }
     assert coverage["InventoryItem"][:2] == (1, CoverageClass.MAPPED)
     assert coverage["Customer"][:2] == (1, CoverageClass.MAPPED)
+
+
+def test_an_inactive_item_still_holding_stock_is_imported_available_and_reported(tmp_path):
+    # Archiving an item hides its stock from the inventory valuation, which would then no
+    # longer match the inventory account. An inactive item that still holds stock is
+    # therefore imported as available and reported, per record.
+    objects = [o if o.key != specs.k("WID") else Obj(o.key, o.content_type, {**o.fields, 10: True})
+               for o in specs.basic_objects()]
+    art = artifact(write_manager_file(tmp_path / "held.manager", objects, specs.basic_blobs()))
+    manifest = adapter().build_manifest([art], FULL)
+
+    assert {i.source_external_id: i.status for i in manifest.bundle.items} == {ref("WID"): "available"}
+    # One row per record: the item's other loss is reported alongside, never overwritten.
+    count, klass, note = _coverage(manifest)["InventoryItem (inactive with stock, purchase price not moved)"]
+    assert (count, klass) == (1, CoverageClass.MAPPED_WITH_LOSS)
+    assert "Archive it in Celerp" in note and "default purchase price" in note
 
 
 def test_exchange_rates_are_reported_as_not_moved_and_stay_out_of_the_manifest(tmp_path):

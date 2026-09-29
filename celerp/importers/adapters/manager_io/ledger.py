@@ -178,6 +178,14 @@ def stock(postings: list[Posting]) -> dict[str, tuple[Decimal, Decimal]]:
     return held
 
 
+def holding_stock(book: Book) -> set[str]:
+    """Items still holding quantity or value after every readable record. An inactive
+    item among them is imported as available: archiving it would hide stock that the
+    inventory account still carries from the inventory valuation."""
+    keys = {k for _, k in book.dated_records() if not book.is_blocked(k)}
+    return {item for item, (qty, value) in stock(_postings(book, keys)).items() if qty or value}
+
+
 def _check_cutover(book: Book, cutover: date | None) -> date:
     if cutover is None:
         raise ScanError("Choose a cutover date.")

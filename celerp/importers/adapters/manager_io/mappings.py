@@ -15,7 +15,7 @@ from decimal import Decimal
 
 from celerp.importers.adapters.manager_io.attachments import Screened
 from celerp.importers.adapters.manager_io.book import INVENTORY, Book, Document, Line
-from celerp.importers.adapters.manager_io.ledger import Ledger, Posting
+from celerp.importers.adapters.manager_io.ledger import Ledger, Posting, holding_stock
 from celerp.importers.adapters.manager_io.types import GUIDS
 from celerp.importers.schema import (
     CIFAccount,
@@ -86,8 +86,9 @@ def _contacts(book: Book) -> list[CIFContact]:
 
 
 def _items(book: Book) -> list[CIFItem]:
+    held = holding_stock(book)
     return [CIFItem(**_src("InventoryItem", i.key, i.code), sku=i.code, name=i.name, unit=i.unit, sell_by="piece",
-                    retail_price=i.sales_price, status="archived" if i.inactive else "available")
+                    retail_price=i.sales_price, status="archived" if i.inactive and i.key not in held else "available")
             for i in book.items.values()]
 
 

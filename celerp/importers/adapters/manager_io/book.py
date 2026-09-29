@@ -744,7 +744,10 @@ def _document_verdicts(book: Book) -> None:
 
 def _master_verdicts(book: Book) -> None:
     """A master whose attribute Celerp cannot hold is carried without it, reported per record.
-    An inactive item is not listed: it becomes an archived item."""
+    An inactive item with no stock is not listed: it becomes an archived item."""
+    from celerp.importers.adapters.manager_io.ledger import holding_stock  # ledger builds on this module
+
+    held = holding_stock(book)
     lost: list[tuple[str, str, str, str]] = [
         *((c.source_type, c.key, "inactive", "Celerp has no inactive state for customers and suppliers; "
            "this one is imported as active.") for c in book.contacts.values() if c.inactive),
@@ -752,14 +755,20 @@ def _master_verdicts(book: Book) -> None:
            "as active.") for t in book.tax_codes.values() if t.inactive),
         *(("ForeignCurrency", c.key, "inactive", "Celerp has no inactive state for currencies; this one is "
            "imported as active.") for c in book.currencies.values() if c.inactive),
+        *(("InventoryItem", i.key, "inactive with stock", "It still holds stock, so it is imported as available. "
+           "Archive it in Celerp once the stock is gone.") for i in book.items.values() if i.inactive and i.key in held),
         *(("InventoryItem", i.key, "purchase price not moved", "Celerp has no default purchase price for items. "
            "Inventory cost comes from the purchases themselves.") for i in book.items.values()
           if i.purchase_price is not None),
     ]
+    per_record: dict[str, list[tuple[str, str, str]]] = {}
     for type_name, key, what, note in lost:
+        per_record.setdefault(key, []).append((type_name, what, note))
+    for key, losses in per_record.items():
         if not book.is_blocked(key):
-            book.accept(type_name, key, label=f"{type_name} ({what})", klass=CoverageClass.MAPPED_WITH_LOSS,
-                        note=note)
+            type_name = losses[0][0]
+            book.accept(type_name, key, label=f"{type_name} ({', '.join(w for _, w, _ in losses)})",
+                        klass=CoverageClass.MAPPED_WITH_LOSS, note=" ".join(n for _, _, n in losses))
 
 
 def read_book(reader: ManagerReader) -> Book:
