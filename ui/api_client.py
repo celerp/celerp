@@ -3462,3 +3462,89 @@ async def start_connector_sync(token: str, platform: str) -> dict:
     """Start the connector's canonical sync plan in the API process."""
     async with _api_client(token) as c:
         return _raise(await c.post(f"/connectors/{platform}/sync-plan")).json()
+
+
+# ---------------------------------------------------------------------------
+# Company migrations
+# ---------------------------------------------------------------------------
+# A migration runs in one of two modes: bootstrap (no user exists yet, token is
+# None and the setup code travels as X-Setup-Code) or company (an authenticated
+# owner). Every wrapper takes the token first so the mode is chosen in one place.
+
+_MIGRATION_UPLOAD_TIMEOUT = httpx.Timeout(600.0, connect=10.0)
+
+
+def _setup_code_headers(setup_code: str | None) -> dict | None:
+    return {"X-Setup-Code": setup_code} if setup_code else None
+
+
+async def migration_sources() -> list[dict]:
+    """GET /migrations/sources: the source systems this server can read."""
+    async with _anon_api_client() as c:
+        return _raise(await c.get("/migrations/sources")).json()
+
+
+async def migration_scan(token: str | None, files: list[tuple[str, BinaryIO]], source: str | None,
+                         setup_code: str | None = None) -> dict:
+    """Upload source files for analysis. Returns {"scan_token", "scan"}."""
+    path = "/migrations/scan" if token else "/migrations/bootstrap/scan"
+    async with _local_error_mapping():
+        async with _local_client(token, timeout=_MIGRATION_UPLOAD_TIMEOUT, bulk=True,
+                                 headers=None if token else _setup_code_headers(setup_code)) as c:
+            r = await c.post(
+                path,
+                files=[("files", (name, content, "application/octet-stream")) for name, content in files],
+                data={"source": source} if source else None,
+            )
+    return _raise(r).json()
+
+
+async def migration_save_decisions(token: str | None, scan_token: str, decisions: dict) -> dict:
+    """Save method, cutover date, mappings and Prepared by. Returns the updated scan."""
+    path = "/migrations/scan/decisions" if token else "/migrations/bootstrap/decisions"
+    async with _local_error_mapping():
+        async with _local_client(token) as c:
+            r = await c.post(path, json={"scan_token": scan_token, **decisions})
+    return _raise(r).json()["scan"]
+
+
+async def migration_bootstrap_start(scan_token: str, company_name: str, name: str, email: str,
+                                    password: str, setup_code: str | None = None) -> dict:
+    """Create the first owner and company from a scan. Returns tokens and run_id."""
+    async with _local_error_mapping():
+        async with _local_client(None, timeout=30.0, headers=_setup_code_headers(setup_code)) as c:
+            r = await c.post("/migrations/bootstrap/start", json={
+                "scan_token": scan_token, "company_name": company_name,
+                "name": name, "email": email, "password": password,
+            })
+    return _raise(r).json()
+
+
+async def migration_start_from_scan(token: str, scan_token: str, company_name: str) -> dict:
+    """Create a new company for the current owner from a scan. Returns tokens and run_id."""
+    async with _api_client(token, timeout=30.0) as c:
+        return _raise(await c.post("/migrations/start-from-scan", json={
+            "scan_token": scan_token, "company_name": company_name,
+        })).json()
+
+
+async def get_migration_run(token: str, run_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/migrations/{run_id}")).json()
+
+
+async def migration_reconciliation(token: str, run_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/migrations/{run_id}/reconciliation")).json()
+
+
+async def migration_run_action(token: str, run_id: str, action: str) -> dict:
+    """POST start, cancel, finalize or discard on a run; returns the API body."""
+    async with _api_client(token, timeout=30.0) as c:
+        return _raise(await c.post(f"/migrations/{run_id}/{action}")).json()
+
+
+async def migration_pack(token: str, run_id: str):
+    """GET the reconciliation pack CSV, streamed. Returns (chunk_iterator, headers)."""
+    return await _stream_get(token, f"/migrations/{run_id}/reconciliation/pack",
+                             timeout_message=TIMEOUT_MESSAGE)
