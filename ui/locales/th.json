@@ -3267,5 +3267,10 @@
   "enum.received_state.needs_reconciliation": "ต้องกระทบยอด",
   "enum.received_state.source_changed": "ผู้ส่งเปลี่ยนแปลง",
   "enum.received_state.review_only": "เปลี่ยนหลังบันทึก",
-  "enum.received_state.not_bookable": "บันทึกไม่ได้"
+  "enum.received_state.not_bookable": "บันทึกไม่ได้",
+  "setup.choose_business_type": "เลือกประเภทธุรกิจ",
+  "setup.business_type_required": "เลือกประเภทธุรกิจเพื่อดำเนินการต่อ",
+  "setup.unknown_business_type": "ไม่รู้จักประเภทธุรกิจ: {value}",
+  "settings.business_type_saved": "บันทึกประเภทธุรกิจแล้ว",
+  "settings.business_type_saved_restart": "บันทึกประเภทธุรกิจแล้ว รีสตาร์ทจากหน้าโมดูลเพื่อโหลดโมดูลของประเภทนี้"
 }

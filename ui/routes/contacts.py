@@ -1276,7 +1276,8 @@ def setup_routes(app):
         except Exception:
             company = {}
         # Organized like a customer/vendor page: Contact Info card (the company's identity - name, email,
-        # phone, tax id) on the left, a Settings card (currency/timezone/fiscal) on the right, then the
+        # phone, tax id) on the left, a Settings card (currency/timezone/fiscal, plus business
+        # type for roles that may change it) on the right, then the
         # billing/shipping address book, then tabs. Files is the FIRST tab (the company's whole file
         # library, with a quick-upload dropzone); Documents/Notes/Activity follow. No tags / financial cards.
         from ui.routes.settings import _company_settings_card
@@ -1290,7 +1291,12 @@ def setup_routes(app):
                     hide_fields=("currency", "billing_address", "shipping_address"),
                     company_name_help=t("contacts.company_name_help"),
                 ), cls="detail-col-left"),
-                Div(_company_settings_card(company, get_lang(request)), cls="detail-col-right"),
+                Div(_company_settings_card(
+                    company, get_lang(request),
+                    can_change_business_type=role_has_permission(
+                        company.get("settings") or {}, api.role_from_company(company),
+                        "manage_company_lifecycle"),
+                ), cls="detail-col-right"),
                 cls="detail-layout",
             ),
             _addresses_section(contact),

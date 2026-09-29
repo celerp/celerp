@@ -52,7 +52,7 @@ async def test_apply_preset_schemas_stored(client):
 
 @pytest.mark.asyncio
 async def test_apply_preset_idempotent(client):
-    """Applying the same preset twice overwrites without duplicating fields."""
+    """Applying the same preset twice adds nothing the first application did not."""
     tok = await _reg(client)
     r1 = await client.post("/companies/me/apply-preset", params={"vertical": "gemstones"}, headers=_h(tok))
     r2 = await client.post("/companies/me/apply-preset", params={"vertical": "gemstones"}, headers=_h(tok))

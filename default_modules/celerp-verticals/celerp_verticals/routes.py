@@ -2,131 +2,48 @@
 # SPDX-License-Identifier: MIT
 """celerp-verticals API routes.
 
+The preset and category library is read and merged by the core
+celerp.services.vertical_presets service; these routes are the additive
+Inventory > Categories operations on top of it. Applying a preset here never
+changes the company's business type.
+
 Endpoints:
   GET  /companies/verticals/categories          list all categories in the library
   GET  /companies/verticals/categories/{name}   single category definition
-  GET  /companies/verticals/presets             list all presets
-  POST /companies/me/apply-preset               apply a vertical preset (seeds category schemas)
+  GET  /companies/verticals/presets             list the offered presets
+  POST /companies/me/apply-preset               add a preset's missing categories and modules
   POST /companies/me/apply-category             apply a single category schema
 """
 from __future__ import annotations
 
 import asyncio
-import json
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.config import set_enabled_modules
 from celerp.db import get_session
 from celerp.models.company import Company
+from celerp.modules.registry import enable as enable_in_settings
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
-from celerp.services.units import DEFAULT_UNITS
-
-_PRESETS_DIR = Path(__file__).parent / "presets"
-_CATEGORIES_DIR = Path(__file__).parent / "categories"
-
-
-# ---------------------------------------------------------------------------
-# Loaders
-# ---------------------------------------------------------------------------
-
-def _all_categories() -> dict[str, dict]:
-    """Return {name: category_dict} for all categories on disk."""
-    result: dict[str, dict] = {}
-    if _CATEGORIES_DIR.exists():
-        for p in sorted(_CATEGORIES_DIR.glob("*.json")):
-            try:
-                data = json.loads(p.read_text())
-                result[data["name"]] = data
-            except Exception:
-                pass
-    return result
+from celerp.services.vertical_presets import (
+    installed_preset_modules,
+    list_categories as _list_categories,
+    list_presets as _list_presets,
+    load_category,
+    load_preset,
+    merge_missing_preset_categories,
+    seed_category_units,
+)
 
 
-def _load_category(name: str) -> dict:
-    path = _CATEGORIES_DIR / f"{name}.json"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"Category '{name}' not found")
-    return json.loads(path.read_text())
-
-
-def _load_preset(name: str) -> dict:
-    path = _PRESETS_DIR / f"{name}.json"
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"Preset '{name}' not found")
-    return json.loads(path.read_text())
-
-
-def _all_presets() -> list[dict]:
-    result = []
-    if _PRESETS_DIR.exists():
-        for p in sorted(_PRESETS_DIR.glob("*.json")):
-            try:
-                data = json.loads(p.read_text())
-                result.append({
-                    "name": data["name"],
-                    "display_name": data["display_name"],
-                    "categories": data.get("categories", []),
-                })
-            except Exception:
-                pass
-    return result
-
-
-# ---------------------------------------------------------------------------
-# DB helpers
-# ---------------------------------------------------------------------------
-
-async def _apply_category_schema(
-    session: AsyncSession,
-    company_id,
-    category_key: str,
-    display_name: str,
-    fields: list[dict],
-) -> None:
-    """Idempotently write a category field schema into company settings.
-
-    Schemas are keyed by the stable category slug (``name``) - the same key an
-    item's ``category`` value carries - so demo rows and seeded schemas bind. The
-    friendly label is stored in the parallel ``category_display_names`` map, which
-    is the canonical pattern used by the create/rename category endpoints.
-    """
-    import uuid as _uuid
-    cid = _uuid.UUID(str(company_id)) if isinstance(company_id, str) else company_id
-    company = await session.get(Company, cid)
+async def _company(session: AsyncSession, company_id) -> Company:
+    company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found")
-    settings = dict(company.settings or {})
-    cat_schemas = dict(settings.get("category_schemas") or {})
-    cat_schemas[category_key] = fields
-    settings["category_schemas"] = cat_schemas
-    display_names = dict(settings.get("category_display_names") or {})
-    display_names[category_key] = display_name
-    settings["category_display_names"] = display_names
-    company.settings = settings
+    return company
 
-
-def _ensure_unit_seeded(settings: dict, unit_name: str) -> None:
-    """Add unit_name to company units from the default seed if not already present.
-
-    Mutates settings in place. No-op if company already has custom units that include it,
-    or if the unit is not in the default seed. Seeds from the canonical DEFAULT_UNITS so
-    every seeded unit carries its unit_type (weight/pieces classification depends on it).
-    """
-    seed_by_name = {u["name"]: u for u in DEFAULT_UNITS}
-    if unit_name not in seed_by_name:
-        return  # Unknown unit - nothing to seed
-    current_units: list[dict] = list(settings.get("units") or DEFAULT_UNITS)
-    if not any(u["name"] == unit_name for u in current_units):
-        current_units.append(seed_by_name[unit_name])
-        settings["units"] = current_units
-
-
-# ---------------------------------------------------------------------------
-# Router
-# ---------------------------------------------------------------------------
 
 def _build_router() -> APIRouter:
     router = APIRouter()
@@ -135,7 +52,6 @@ def _build_router() -> APIRouter:
 
     @router.get("/verticals/categories", dependencies=read_deps)
     async def list_categories() -> list[dict]:
-        cats = _all_categories()
         return [
             {
                 "name": c["name"],
@@ -145,16 +61,22 @@ def _build_router() -> APIRouter:
                 "default_purchase_unit": c.get("default_purchase_unit"),
                 "default_weight_unit": c.get("default_weight_unit"),
             }
-            for c in cats.values()
+            for c in _list_categories()
         ]
 
     @router.get("/verticals/categories/{name}", dependencies=read_deps)
     async def get_category(name: str) -> dict:
-        return _load_category(name)
+        cat = load_category(name)
+        if cat is None:
+            raise HTTPException(status_code=404, detail=f"Category '{name}' not found")
+        return cat
 
     @router.get("/verticals/presets", dependencies=read_deps)
     async def list_presets() -> list[dict]:
-        return _all_presets()
+        return [
+            {"name": p["name"], "display_name": p["display_name"], "categories": p.get("categories", [])}
+            for p in _list_presets()
+        ]
 
     @router.post("/me/apply-preset", dependencies=write_deps)
     async def apply_preset(
@@ -162,65 +84,24 @@ def _build_router() -> APIRouter:
         company_id=Depends(get_current_company_id),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        import logging as _logging
-        from celerp.modules.registry import enable as _registry_enable
-        from celerp.modules.audit import _installed_package_names
-        from celerp.config import set_enabled_modules
-        import uuid as _uuid
+        preset = load_preset(vertical)
+        if preset is None:
+            raise HTTPException(status_code=404, detail=f"Preset '{vertical}' not found")
+        modules = installed_preset_modules(preset)
 
-        _log = _logging.getLogger(__name__)
-        preset = _load_preset(vertical)
-        cats = _all_categories()
-
-        # Skip module slugs that do not resolve to an installed module (mirror the
-        # category `if cat is None: continue` guard) so a dangling slug is logged
-        # rather than silently persisted into company settings + the config file.
-        installed = _installed_package_names()
-        preset_modules: list[str] = []
-        for mod_name in (preset.get("modules") or []):
-            if mod_name not in installed:
-                _log.warning("apply_preset(%s): skipping unknown module slug %r", vertical, mod_name)
-                continue
-            preset_modules.append(mod_name)
-
-        # Apply category schemas + seed required units
-        applied: list[str] = []
-        for cat_name in (preset.get("categories") or []):
-            cat = cats.get(cat_name)
-            if cat is None:
-                continue
-            await _apply_category_schema(session, company_id, cat["name"], cat["display_name"], cat["fields"])
-            applied.append(cat_name)
-
-        # Enable declared modules in DB (company settings) + config file (survives restart)
-        cid = _uuid.UUID(str(company_id)) if isinstance(company_id, str) else company_id
-        company = await session.get(Company, cid)
-        if company is None:
-            raise HTTPException(status_code=404, detail="Company not found")
-        settings = dict(company.settings or {})
-        for mod_name in preset_modules:
-            settings = _registry_enable(settings, mod_name)
-
-        # Seed units required by any applied category
-        for cat_name in applied:
-            cat = cats.get(cat_name)
-            if cat:
-                for field in ("default_sell_by", "default_purchase_unit", "default_weight_unit"):
-                    val = cat.get(field)
-                    if val:
-                        _ensure_unit_seeded(settings, val)
-
-        # Apply any preset-level company settings (e.g. inventory_method)
+        company = await _company(session, company_id)
+        settings, categories = merge_missing_preset_categories(dict(company.settings or {}), preset)
+        for name in modules:
+            settings = enable_in_settings(settings, name)
         extra = preset.get("company_settings") or {}
         settings.update(extra)
         company.settings = settings
-
         await session.commit()
 
         # Write to config file so the next restart picks up the module list
-        await asyncio.to_thread(set_enabled_modules, preset_modules)
+        await asyncio.to_thread(set_enabled_modules, modules)
 
-        return {"applied": vertical, "categories": len(applied), "modules": preset_modules, "company_settings": extra}
+        return {"applied": vertical, "categories": len(categories), "modules": modules, "company_settings": extra}
 
     @router.post("/me/apply-category", dependencies=write_deps)
     async def apply_category(
@@ -228,25 +109,17 @@ def _build_router() -> APIRouter:
         company_id=Depends(get_current_company_id),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        import uuid as _uuid
-        cat = _load_category(name)
-        await _apply_category_schema(session, company_id, cat["name"], cat["display_name"], cat["fields"])
-
-        # Seed the default_sell_by unit if needed
-        cid = _uuid.UUID(str(company_id)) if isinstance(company_id, str) else company_id
-        company = await session.get(Company, cid)
-        if company is None:
-            raise HTTPException(status_code=404, detail="Company not found")
+        cat = load_category(name)
+        if cat is None:
+            raise HTTPException(status_code=404, detail=f"Category '{name}' not found")
+        company = await _company(session, company_id)
         settings = dict(company.settings or {})
-        dsb = cat.get("default_sell_by")
-        if dsb:
-            _ensure_unit_seeded(settings, dsb)
-        for field in ("default_purchase_unit", "default_weight_unit"):
-            val = cat.get(field)
-            if val:
-                _ensure_unit_seeded(settings, val)
+        settings["category_schemas"] = {**(settings.get("category_schemas") or {}), cat["name"]: cat["fields"]}
+        settings["category_display_names"] = {
+            **(settings.get("category_display_names") or {}), cat["name"]: cat["display_name"],
+        }
+        seed_category_units(settings, cat)
         company.settings = settings
-
         await session.commit()
         return {"applied": name, "display_name": cat["display_name"]}
 

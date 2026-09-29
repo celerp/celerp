@@ -3267,5 +3267,10 @@
   "enum.received_state.needs_reconciliation": "Needs reconciliation",
   "enum.received_state.source_changed": "Changed by sender",
   "enum.received_state.review_only": "Changed after booking",
-  "enum.received_state.not_bookable": "Cannot be booked"
+  "enum.received_state.not_bookable": "Cannot be booked",
+  "setup.choose_business_type": "Choose a business type",
+  "setup.business_type_required": "Choose a business type to continue.",
+  "setup.unknown_business_type": "Unknown business type: {value}",
+  "settings.business_type_saved": "Business type saved.",
+  "settings.business_type_saved_restart": "Business type saved. Restart from the Modules page to load its modules."
 }

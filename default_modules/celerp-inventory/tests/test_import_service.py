@@ -11,8 +11,6 @@ dry-run safety, and the single committer shared by /import/rows and /import/batc
 
 from __future__ import annotations
 
-import sys
-import types
 import uuid
 from types import SimpleNamespace
 
@@ -127,23 +125,17 @@ async def test_unknown_location_created(session):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_category_default_sell_by(session, monkeypatch):
-    """A row without sell_by inherits the category's default_sell_by from the vertical library."""
-    verticals = types.ModuleType("celerp_verticals")
-    routes = types.ModuleType("celerp_verticals.routes")
-    routes._all_categories = lambda: {"gems": {"name": "Gems", "default_sell_by": "carat"}}
-    verticals.routes = routes  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "celerp_verticals", verticals)
-    monkeypatch.setitem(sys.modules, "celerp_verticals.routes", routes)
-
+async def test_category_default_sell_by(session):
+    """A row without sell_by inherits the category's default_sell_by from the shipped
+    vertical library (diamond sells by gram)."""
     company_id, _, _ = await _seed(session, locations=[{"name": "Main"}])
     build = await build_import_records(
         session, company_id,
-        [{"name": "Ruby", "category": "Gems", "weight": "1.5"}],
+        [{"name": "Stone", "category": "diamond", "weight": "1.5"}],
         upsert=False, dry_run=True,
     )
     assert build.errors == []
-    assert build.records[0]["data"]["sell_by"] == "carat"
+    assert build.records[0]["data"]["sell_by"] == "gram"
 
 
 # ---------------------------------------------------------------------------

@@ -58,6 +58,7 @@ from celerp.services.pricing import (
     stored_price,
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
+from celerp.services.vertical_presets import load_category
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.money import round_basis, round_money, to_decimal, to_stored_float
 from celerp.schemas.numbers import FiniteFloat
@@ -2183,20 +2184,14 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
             raise HTTPException(status_code=422, detail=f"{_amt} cannot be negative")
 
     # Apply category defaults for purchase_unit and weight_unit if not explicitly provided
-    if payload.category:
-        try:
-            from celerp_verticals.routes import _all_categories  # type: ignore
-            _cats = _all_categories()
-            _cat = _cats.get(payload.category)
-            if _cat:
-                if payload.purchase_unit is None and _cat.get("default_purchase_unit"):
-                    data["purchase_unit"] = _cat["default_purchase_unit"]
-                if payload.purchase_conversion_factor is None:
-                    data["purchase_conversion_factor"] = 1
-                if data.get("weight_unit") is None and _cat.get("default_weight_unit"):
-                    data["weight_unit"] = _cat["default_weight_unit"]
-        except ImportError:
-            pass
+    _cat = load_category(payload.category) if payload.category else None
+    if _cat:
+        if payload.purchase_unit is None and _cat.get("default_purchase_unit"):
+            data["purchase_unit"] = _cat["default_purchase_unit"]
+        if payload.purchase_conversion_factor is None:
+            data["purchase_conversion_factor"] = 1
+        if data.get("weight_unit") is None and _cat.get("default_weight_unit"):
+            data["weight_unit"] = _cat["default_weight_unit"]
 
     # Ensure status is set (not part of ItemCreate model but required for projections).
     # Manual creation starts as draft: the item stays authorable (amounts and costs

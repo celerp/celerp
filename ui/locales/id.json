@@ -3267,5 +3267,10 @@
   "enum.received_state.needs_reconciliation": "Perlu rekonsiliasi",
   "enum.received_state.source_changed": "Diubah pengirim",
   "enum.received_state.review_only": "Berubah setelah dibukukan",
-  "enum.received_state.not_bookable": "Tidak dapat dibukukan"
+  "enum.received_state.not_bookable": "Tidak dapat dibukukan",
+  "setup.choose_business_type": "Pilih jenis bisnis",
+  "setup.business_type_required": "Pilih jenis bisnis untuk melanjutkan.",
+  "setup.unknown_business_type": "Jenis bisnis tidak dikenal: {value}",
+  "settings.business_type_saved": "Jenis bisnis disimpan.",
+  "settings.business_type_saved_restart": "Jenis bisnis disimpan. Mulai ulang dari halaman Modul untuk memuat modulnya."
 }

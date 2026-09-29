@@ -729,8 +729,10 @@ async def get_commercial_state(token: str, timeout: float = 3.0) -> dict:
 
 
 async def patch_company(token: str, data: dict) -> dict:
-    """Patch company. Settings sub-fields and dashboard preferences are merged into
-    the settings dict; top-level fields (name, slug) are patched directly."""
+    """Patch company. Only the changed settings keys are sent (the API merges them),
+    so keys owned by dedicated endpoints are never echoed back through this door.
+    Dashboard preferences are one nested dict, merged here with its current value;
+    top-level fields (name, slug) are patched directly."""
     _SETTINGS_FIELDS = {"currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "email",
                         "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account", "woocommerce_deposit_account",
                         "line_item_identifier"}
@@ -745,17 +747,25 @@ async def patch_company(token: str, data: dict) -> dict:
     direct_patch = {k: v for k, v in data.items()
                     if k not in _SETTINGS_FIELDS and k not in _DASHBOARD_FIELDS}
     async with _api_client(token) as c:
-        if settings_patch or dashboard_patch:
+        if dashboard_patch:
             current = _raise(await c.get("/companies/me")).json()
-            merged = {**(current.get("settings") or {}), **settings_patch}
-            if dashboard_patch:
-                merged["dashboard"] = {**(merged.get("dashboard") or {}), **dashboard_patch}
-            _raise(await c.patch("/companies/me", json={"settings": merged}))
+            settings_patch["dashboard"] = {**((current.get("settings") or {}).get("dashboard") or {}), **dashboard_patch}
+        if settings_patch:
+            _raise(await c.patch("/companies/me", json={"settings": settings_patch}))
         if direct_patch:
             _raise(await c.patch("/companies/me", json=direct_patch))
         raw = _raise(await c.get("/companies/me")).json()
     _invalidate_inventory_metadata()
     return _flatten_company(raw)
+
+
+async def set_business_type(token: str, vertical: str) -> dict:
+    """Set the company's business type. Returns the API result, including
+    ``restart_required`` when the type's modules are not running yet."""
+    async with _api_client(token) as c:
+        result = _raise(await c.post("/companies/me/business-type", json={"vertical": vertical})).json()
+    _invalidate_inventory_metadata()
+    return result
 
 
 async def create_company(token: str, company_name: str) -> tuple[str, str]:

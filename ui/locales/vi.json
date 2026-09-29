@@ -3267,5 +3267,10 @@
   "enum.received_state.needs_reconciliation": "Cần đối chiếu",
   "enum.received_state.source_changed": "Người gửi đã thay đổi",
   "enum.received_state.review_only": "Thay đổi sau khi ghi sổ",
-  "enum.received_state.not_bookable": "Không thể ghi sổ"
+  "enum.received_state.not_bookable": "Không thể ghi sổ",
+  "setup.choose_business_type": "Chọn loại hình kinh doanh",
+  "setup.business_type_required": "Chọn loại hình kinh doanh để tiếp tục.",
+  "setup.unknown_business_type": "Loại hình kinh doanh không xác định: {value}",
+  "settings.business_type_saved": "Đã lưu loại hình kinh doanh.",
+  "settings.business_type_saved_restart": "Đã lưu loại hình kinh doanh. Khởi động lại từ trang Mô-đun để tải các mô-đun của nó."
 }

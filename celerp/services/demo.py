@@ -11,11 +11,12 @@ import of that entity type.
 from __future__ import annotations
 
 import uuid
+from copy import deepcopy
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event
-from celerp.services.terms import DEFAULT_TERMS_CONDITIONS as _DEFAULT_TERMS_CONDITIONS
+from celerp.services.terms import DEFAULT_TERMS_CONDITIONS as _DEFAULT_TERMS_CONDITIONS, normalize_terms_templates
 
 
 _DEMO_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")  # sentinel, not a real user
@@ -1519,7 +1520,7 @@ _VERTICAL_PAYMENT_TERMS: dict[str, list[dict]] = {
         {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
         {"name": "Net 90", "days": 90, "description": "Due within 90 days"},
     ],
-    "agriculture": [
+    "agricultural": [
         {"name": "Pay in Advance", "days": 0, "description": "Prepayment for seasonal goods"},
         {"name": "Cash on Delivery", "days": 0, "description": "Payment at harvest/delivery"},
         {"name": "Net 14", "days": 14, "description": "Due within 14 days"},
@@ -1604,6 +1605,74 @@ _VERTICAL_TERMS_CONDITIONS: dict[str, list[dict]] = {
 }
 
 
+def payment_terms_for(vertical: str | None) -> list[dict]:
+    """The system default payment terms for a business type (generic when it has none)."""
+    return deepcopy(_VERTICAL_PAYMENT_TERMS.get(vertical or "", _DEFAULT_PAYMENT_TERMS))
+
+
+def terms_conditions_for(vertical: str | None) -> list[dict]:
+    """The system default T&C templates for a business type (generic when it has none)."""
+    return normalize_terms_templates(_VERTICAL_TERMS_CONDITIONS.get(vertical or "", _DEFAULT_TERMS_CONDITIONS))
+
+
+_DEFAULT_GETTERS = (
+    ("payment_terms", payment_terms_for, deepcopy),
+    ("terms_conditions", terms_conditions_for, normalize_terms_templates),
+)
+
+
+def reconcile_vertical_defaults(settings: dict, previous_vertical: str | None, target_vertical: str | None) -> dict:
+    """Move system-owned payment terms and T&C templates to the target business type.
+
+    A list is still system-owned when it is missing or equals the generic defaults
+    or the previous business type's defaults. Those become the target's defaults;
+    anything the user edited is kept."""
+    out = dict(settings)
+    for key, getter, normalize in _DEFAULT_GETTERS:
+        current = out.get(key)
+        untouched = current is None or normalize(current) in (
+            normalize(getter(None)), normalize(getter(previous_vertical)),
+        )
+        if untouched:
+            out[key] = getter(target_vertical)
+    return out
+
+
+async def replace_demo_items(
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    vertical: str | None,
+) -> int:
+    """Swap the company's demo inventory for the given business type's demo set.
+
+    Only ledger rows with source="demo" (and their projections) are removed; real
+    items are never touched. Runs inside the caller's transaction and does not
+    commit. Returns how many demo items were removed."""
+    import sqlalchemy as sa
+    from celerp.models.company import Location
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    demo_rows = (
+        LedgerEntry.company_id == company_id,
+        LedgerEntry.entity_type == "item",
+        LedgerEntry.source == "demo",
+    )
+    demo_ids = [row[0] for row in await session.execute(sa.select(LedgerEntry.entity_id).where(*demo_rows).distinct())]
+    if demo_ids:
+        await session.execute(sa.delete(Projection).where(
+            Projection.company_id == company_id, Projection.entity_id.in_(demo_ids),
+        ))
+        await session.execute(sa.delete(LedgerEntry).where(*demo_rows))
+    default_location = (await session.execute(
+        sa.select(Location).where(Location.company_id == company_id, Location.is_default == True).limit(1)  # noqa: E712
+    )).scalars().first()
+    await seed_demo_items(session, company_id, actor_id, vertical=vertical,
+                          default_location_id=default_location.id if default_location else None)
+    return len(demo_ids)
+
+
 async def seed_demo_items(
     session: AsyncSession,
     company_id: uuid.UUID,
@@ -1626,12 +1695,11 @@ async def seed_demo_items(
             ]
         if "default_price_list" not in settings:
             settings["default_price_list"] = "Retail"
-        # Seed payment terms if not already set
+        # Seed payment terms and T&C templates if not already set
         if "payment_terms" not in settings:
-            settings["payment_terms"] = _VERTICAL_PAYMENT_TERMS.get(vertical or "", _DEFAULT_PAYMENT_TERMS)
-        # Seed T&C templates if not already set
+            settings["payment_terms"] = payment_terms_for(vertical)
         if "terms_conditions" not in settings:
-            settings["terms_conditions"] = _VERTICAL_TERMS_CONDITIONS.get(vertical or "", _DEFAULT_TERMS_CONDITIONS)
+            settings["terms_conditions"] = terms_conditions_for(vertical)
         company.settings = settings
     items = _VERTICAL_ITEMS.get(vertical or "", _GENERIC_ITEMS) if vertical else _GENERIC_ITEMS
     for i, data in enumerate(items, start=1):

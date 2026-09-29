@@ -1,0 +1,237 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
+"""Business type in the UI: the explicit choice on the setup company step, and the
+later change from Company Details. Both go through api.set_business_type only."""
+from __future__ import annotations
+
+import re
+from contextlib import ExitStack
+from unittest.mock import AsyncMock, patch
+
+import httpx
+import pytest
+
+from test_helpers import make_test_token
+from ui.api_client import APIError
+
+
+def _authed(role: str = "owner") -> dict:
+    return {"celerp_token": make_test_token(role=role)}
+
+
+@pytest.fixture()
+def ui_client():
+    from ui.app import app as ui_app
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=ui_app),
+                             base_url="http://testserver", follow_redirects=False)
+
+
+def _vertical_select(html: str) -> str:
+    m = re.search(r'<select[^>]*name="vertical"[^>]*>.*?</select>', html, re.S)
+    assert m, "no business-type select rendered"
+    return m.group(0)
+
+
+def _selected_values(select_html: str) -> list[str]:
+    return [re.search(r'value="([^"]*)"', o).group(1)
+            for o in re.findall(r"<option[^>]*>", select_html) if re.search(r"\sselected", o)]
+
+
+_FULL_FORM = {"vertical": "gemstones", "currency": "EUR", "timezone": "Europe/Paris",
+              "tax_id": "TX-778", "phone": "+33 1 23 45 67 89", "address": "12 Rue Exemple"}
+
+
+def _assert_form_kept(html: str, vertical: str = "gemstones") -> None:
+    assert _selected_values(_vertical_select(html)) == [vertical]
+    for value in ("TX-778", "+33 1 23 45 67 89", "12 Rue Exemple"):
+        assert value in html, value
+    currency_input = re.search(r'<input[^>]*name="currency"[^>]*>', html).group(0)
+    assert 'value="EUR"' in currency_input
+
+
+# -- setup: rendering -------------------------------------------------------------
+
+class TestSetupRender:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored", [None, "general"])
+    async def test_fresh_setup_selects_only_placeholder(self, ui_client, stored):
+        company = {"name": "Co", "settings": {"vertical": stored} if stored else {}}
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
+            r = await ui_client.get("/setup/company", cookies=_authed())
+        select = _vertical_select(r.text)
+        assert _selected_values(select) == [""]
+        placeholder = re.search(r'<option value=""[^>]*>', select).group(0)
+        assert "disabled" in placeholder
+        assert "required" in select.split(">", 1)[0]
+
+    @pytest.mark.asyncio
+    async def test_stored_type_is_selected(self, ui_client):
+        company = {"name": "Co", "vertical": "gemstones", "settings": {"vertical": "gemstones"}}
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
+            r = await ui_client.get("/setup/company", cookies=_authed())
+        assert _selected_values(_vertical_select(r.text)) == ["gemstones"]
+
+    def test_hidden_presets_not_offered(self):
+        from ui.routes.setup import business_type_options
+        values = [v for v, _ in business_type_options()]
+        assert "saas" not in values and "property_rental" not in values
+        assert values[-1] == "blank"
+
+
+# -- setup: submit ----------------------------------------------------------------
+
+class TestSetupSubmit:
+    def _mocks(self, stack: ExitStack, set_type=None, patch_company=None):
+        mocks = {
+            "patch_company": patch_company or AsyncMock(return_value={}),
+            "set_business_type": set_type or AsyncMock(return_value={"restart_required": False}),
+            "restart_system": AsyncMock(return_value={"ok": True}),
+        }
+        for name, mock in mocks.items():
+            stack.enter_context(patch(f"ui.api_client.{name}", new=mock))
+        return mocks
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("vertical, message", [
+        ("", "Choose a business type to continue."),
+        ("no_such_type", "Unknown business type"),
+        ("saas", "Unknown business type"),
+    ])
+    async def test_missing_unknown_or_hidden_rejected_before_mutation(self, ui_client, vertical, message):
+        with ExitStack() as stack:
+            m = self._mocks(stack)
+            r = await ui_client.post("/setup/company", data={**_FULL_FORM, "vertical": vertical},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert message in r.text
+        m["patch_company"].assert_not_awaited()
+        m["set_business_type"].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_invalid_currency_rerender_keeps_every_field(self, ui_client):
+        with ExitStack() as stack:
+            m = self._mocks(stack)
+            r = await ui_client.post("/setup/company", data={**_FULL_FORM, "currency": "XXX"},
+                                     cookies=_authed())
+        assert r.status_code == 200
+        assert _selected_values(_vertical_select(r.text)) == ["gemstones"]
+        for value in ("TX-778", "+33 1 23 45 67 89", "12 Rue Exemple"):
+            assert value in r.text, value
+        m["patch_company"].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_backend_failure_rerender_keeps_submitted_values(self, ui_client):
+        stored = {"name": "Co", "currency": "USD", "settings": {"currency": "USD"}}
+        with ExitStack() as stack:
+            m = self._mocks(stack, patch_company=AsyncMock(side_effect=APIError(500, "save failed")))
+            stack.enter_context(patch("ui.api_client.get_company", new=AsyncMock(return_value=stored)))
+            r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
+        assert r.status_code == 200
+        assert "save failed" in r.text
+        _assert_form_kept(r.text)
+        m["set_business_type"].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_business_type_failure_does_not_advance(self, ui_client):
+        with ExitStack() as stack:
+            m = self._mocks(stack, set_type=AsyncMock(side_effect=APIError(500, "type failed")))
+            r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
+        assert r.status_code == 200
+        assert "type failed" in r.text
+        _assert_form_kept(r.text)
+        m["restart_system"].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_uses_business_type_operation_not_category_or_module_primitives(self, ui_client):
+        import ui.routes.setup as setup_mod
+        for gone in ("_set_enabled_modules", "_seed_vertical_categories", "_PRESETS_DIR", "_CATEGORIES_DIR"):
+            assert not hasattr(setup_mod, gone), gone
+        with ExitStack() as stack:
+            m = self._mocks(stack, set_type=AsyncMock(return_value={"restart_required": True}))
+            schema = stack.enter_context(patch("ui.api_client.patch_category_schema", new=AsyncMock()))
+            r = await ui_client.post("/setup/company", data=_FULL_FORM, cookies=_authed())
+        assert r.headers["location"].endswith("/setup/activating")
+        assert m["set_business_type"].await_args.args[1] == "gemstones"
+        assert "vertical" not in m["patch_company"].await_args.args[1]
+        m["restart_system"].assert_awaited_once()
+        schema.assert_not_awaited()
+
+
+# -- Company Details --------------------------------------------------------------
+
+_SELF = {"id": "contact:self", "entity_id": "contact:self", "name": "My Co",
+         "contact_type": "both", "is_self": True, "addresses": []}
+
+
+def _details_patches(stack: ExitStack, role: str, vertical: str | None = "gemstones") -> None:
+    company = {"name": "My Co", "currency": "USD", "current_role": role, "vertical": vertical,
+               "settings": {"self_contact_id": "contact:self", "vertical": vertical}}
+    stack.enter_context(patch("ui.api_client.get_company", new=AsyncMock(return_value=company)))
+    for name, val in (("get_contact", _SELF), ("list_contacts", {"items": [_SELF]}),
+                      ("list_contact_docs", {"items": []}), ("list_items", {"items": []}),
+                      ("list_docs", {"items": []})):
+        stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
+
+
+class TestCompanyDetails:
+    @pytest.mark.asyncio
+    async def test_owner_sees_business_type(self, ui_client):
+        with ExitStack() as stack:
+            _details_patches(stack, "owner")
+            r = await ui_client.get("/finance/company-details", cookies=_authed("owner"))
+        assert r.status_code == 200, r.text
+        assert "/settings/company/vertical/edit" in r.text
+        assert "Gems &amp; Jewelry" in r.text or "Gems & Jewelry" in r.text
+
+    @pytest.mark.asyncio
+    async def test_admin_without_lifecycle_permission_does_not_see_it(self, ui_client):
+        with ExitStack() as stack:
+            _details_patches(stack, "admin")
+            r = await ui_client.get("/finance/company-details", cookies=_authed("admin"))
+        assert r.status_code == 200, r.text
+        assert "/settings/company/vertical/edit" not in r.text
+
+    @pytest.mark.asyncio
+    async def test_edit_is_searchable_with_esc_cancel(self, ui_client):
+        with ExitStack() as stack:
+            _details_patches(stack, "owner")
+            r = await ui_client.get("/settings/company/vertical/edit", cookies=_authed())
+        assert "combobox-input" in r.text
+        assert 'data-value="agricultural"' in r.text and 'data-value="saas"' not in r.text
+        assert "/settings/company/vertical/display" in r.text
+
+    @pytest.mark.asyncio
+    async def test_save_calls_business_type_and_confirms(self, ui_client):
+        set_type = AsyncMock(return_value={"vertical": "fashion", "restart_required": False})
+        patch_company = AsyncMock()
+        with patch("ui.api_client.set_business_type", new=set_type), \
+             patch("ui.api_client.patch_company", new=patch_company):
+            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"}, cookies=_authed())
+        assert r.status_code == 200
+        assert set_type.await_args.args[1] == "fashion"
+        patch_company.assert_not_awaited()
+        assert "Fashion" in r.text
+        assert "Business type saved." in r.headers["HX-Trigger"]
+        assert 'href="/modules"' not in r.text
+
+    @pytest.mark.asyncio
+    async def test_restart_needed_points_to_modules(self, ui_client):
+        set_type = AsyncMock(return_value={"vertical": "fashion", "restart_required": True})
+        with patch("ui.api_client.set_business_type", new=set_type):
+            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"}, cookies=_authed())
+        assert 'href="/modules"' in r.text
+        assert '"persist": true' in r.headers["HX-Trigger"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_value_rejected_without_call(self, ui_client):
+        set_type = AsyncMock()
+        with patch("ui.api_client.set_business_type", new=set_type):
+            r = await ui_client.patch("/settings/company/vertical", data={"value": "saas"}, cookies=_authed())
+        assert "Unknown business type" in r.text
+        set_type.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_backend_refusal_shown(self, ui_client):
+        with patch("ui.api_client.set_business_type", new=AsyncMock(side_effect=APIError(403, "Forbidden"))):
+            r = await ui_client.patch("/settings/company/vertical", data={"value": "fashion"}, cookies=_authed())
+        assert "Forbidden" in r.text and "cell-error" in r.text

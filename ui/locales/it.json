@@ -3267,5 +3267,10 @@
   "enum.received_state.needs_reconciliation": "Da riconciliare",
   "enum.received_state.source_changed": "Modificato dal mittente",
   "enum.received_state.review_only": "Modificato dopo la registrazione",
-  "enum.received_state.not_bookable": "Non registrabile"
+  "enum.received_state.not_bookable": "Non registrabile",
+  "setup.choose_business_type": "Scegli un tipo di attività",
+  "setup.business_type_required": "Scegli un tipo di attività per continuare.",
+  "setup.unknown_business_type": "Tipo di attività sconosciuto: {value}",
+  "settings.business_type_saved": "Tipo di attività salvato.",
+  "settings.business_type_saved_restart": "Tipo di attività salvato. Riavvia dalla pagina Moduli per caricarne i moduli."
 }

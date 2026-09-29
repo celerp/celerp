@@ -350,7 +350,14 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
                 status_code=422,
                 detail="Role permissions are set through the permissions matrix, not company settings",
             )
-        merged = {**(company.settings or {}), **payload.settings}
+        # Business type carries modules, categories and default terms with it, so it
+        # changes only through POST /companies/me/business-type.
+        if "vertical" in payload.settings:
+            raise HTTPException(
+                status_code=422,
+                detail="Business type is set through POST /companies/me/business-type, not company settings",
+            )
+        merged ={**(company.settings or {}), **payload.settings}
         if "timezone" in payload.settings:
             try:
                 business_timezone(payload.settings.get("timezone"))
@@ -2528,66 +2535,40 @@ async def patch_default_price_list(
     return {"ok": True}
 
 
+class BusinessTypeIn(BaseModel):
+    vertical: str
+
+
+@router.post("/me/business-type", dependencies=[require_permission("manage_company_lifecycle")])
+async def set_company_business_type(
+    payload: BusinessTypeIn,
+    company_id=Depends(get_current_company_id),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set the company's business type. The only way settings["vertical"] changes."""
+    from celerp.services.business_type import UnknownBusinessType, set_business_type
+
+    try:
+        return await set_business_type(session, company_id, user.id, payload.vertical)
+    except UnknownBusinessType:
+        raise HTTPException(status_code=422, detail=f"Unknown business type: {payload.vertical!r}")
+
+
 @router.post("/me/demo/reseed", dependencies=[require_permission("manage_company_lifecycle")])
 async def reseed_demo_items(
     company_id=Depends(get_current_company_id),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-    vertical: str | None = None,
 ) -> dict:
-    """Re-seed demo items using the company's current vertical setting.
+    """Replace the demo items with the set for the company's current business type.
 
-    Wipes all existing demo items (ledger + projections) before seeding so that
-    a vertical change replaces, rather than appends to, the previous demo set.
-
-    `vertical` query param overrides the DB lookup (used by setup wizard to avoid
-    a race between the settings PATCH and this call).
+    Only demo-sourced items are removed, so a reseed never touches real inventory.
     """
-    import sqlalchemy as _sa
-    from celerp.models.ledger import LedgerEntry
-    from celerp.models.projections import Projection
-    from celerp.services.demo import seed_demo_items
+    from celerp.services.demo import replace_demo_items
 
-    # Collect demo item entity_ids so we can delete their projections too
-    demo_entity_ids_result = await session.execute(
-        _sa.select(LedgerEntry.entity_id).where(
-            LedgerEntry.company_id == company_id,
-            LedgerEntry.entity_type == "item",
-            LedgerEntry.source == "demo",
-        ).distinct()
-    )
-    demo_entity_ids = [row[0] for row in demo_entity_ids_result]
-
-    if demo_entity_ids:
-        await session.execute(
-            _sa.delete(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_id.in_(demo_entity_ids),
-            )
-        )
-        await session.execute(
-            _sa.delete(LedgerEntry).where(
-                LedgerEntry.company_id == company_id,
-                LedgerEntry.entity_type == "item",
-                LedgerEntry.source == "demo",
-            )
-        )
-
-    # vertical param takes precedence; fall back to company settings
-    if not vertical:
-        company = await session.get(Company, company_id)
-        vertical = (company.settings or {}).get("vertical") if company else None
-    # Look up the default location so demo items land in it
-    from sqlalchemy import select as _select
-    from celerp.models.company import Location as _Location
-    _loc_result = await session.execute(
-        _select(_Location).where(
-            _Location.company_id == company_id,
-            _Location.is_default == True,
-        ).limit(1)
-    )
-    _default_loc = _loc_result.scalars().first()
-    await seed_demo_items(session, company_id, user.id, vertical=vertical,
-                          default_location_id=_default_loc.id if _default_loc else None)
+    company = await session.get(Company, company_id)
+    vertical = (company.settings or {}).get("vertical") if company else None
+    wiped = await replace_demo_items(session, company_id, user.id, vertical)
     await session.commit()
-    return {"ok": True, "vertical": vertical, "wiped": len(demo_entity_ids)}
+    return {"ok": True, "vertical": vertical, "wiped": wiped}

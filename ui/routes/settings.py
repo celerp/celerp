@@ -26,6 +26,7 @@ from celerp.services.auth import MIN_PASSWORD_LENGTH
 from celerp.services.pricing import ROUNDING_CHOICES
 from ui.i18n import t, get_lang, tier_label
 from ui.routes.documents import _action_error
+from ui.routes.setup import business_type_options
 
 
 async def _check_permission(
@@ -877,6 +878,36 @@ def setup_routes(app):
                 cls="cell cell--editing",
             )
 
+        if field == "vertical":
+            # Searchable combobox: the preset catalog can exceed ten entries.
+            labels = dict(business_type_options())
+            return Td(
+                Div(
+                    Input(
+                        type="text", value=labels.get(val, ""), placeholder=t("setup.choose_business_type"),
+                        cls="cell-input combobox-input", autofocus=True,
+                    ),
+                    Input(type="hidden", name="value", value=val, id=f"company-{field}-input"),
+                    Div(
+                        *[Div(label, cls="combobox-option", data_value=value,
+                              data_search=f"{value} {label}".lower())
+                          for value, label in business_type_options()],
+                        cls="combobox-list",
+                    ),
+                    cls="combobox-wrap",
+                ),
+                Button(t("btn.save"), type="button",
+                       hx_patch=f"/settings/company/{field}",
+                       hx_target="closest td", hx_swap="outerHTML",
+                       hx_include=f"#company-{field}-input",
+                       cls="btn btn--primary btn--xs ml-sm"),
+                Button(t("btn.cancel"), type="button",
+                       hx_get=f"/settings/company/{field}/display",
+                       hx_target="closest td", hx_swap="outerHTML",
+                       cls="btn btn--secondary btn--xs ml-xs"),
+                cls="cell cell--editing",
+            )
+
         if field == "timezone":
             # Searchable combobox - searches both IANA name and UTC offset
             return Td(
@@ -974,6 +1005,24 @@ def setup_routes(app):
                 _zi.ZoneInfo(value)
             except (_zi.ZoneInfoNotFoundError, KeyError):
                 return P(t("error.invalid_timezone", value=repr(value)), cls="cell-error")
+
+        if field == "vertical":
+            if value not in dict(business_type_options()):
+                return P(t("setup.unknown_business_type", value=repr(value)), cls="cell-error")
+            try:
+                result = await api.set_business_type(token, value)
+            except APIError as e:
+                return P(str(e.detail), cls="cell-error")
+            cell = _company_display_cell(field, value)
+            if not result.get("restart_required"):
+                return Response(to_xml(cell), media_type="text/html",
+                                headers=toast_header(t("settings.business_type_saved")))
+            # The type's modules load on the next restart, which is run from the Modules page.
+            cell.children = (*cell.children, A(t("settings.restart_needed"), href="/modules",
+                                               cls="badge badge--warning ml-sm"))
+            return Response(to_xml(cell), media_type="text/html",
+                            headers=toast_header(t("settings.business_type_saved_restart"),
+                                                 "success", persist=True))
 
         try:
             await api.patch_company(token, {field: value})
@@ -2647,6 +2696,8 @@ def _company_display_cell(field: str, value) -> FT:
     elif field == "fiscal_year_start" and raw:
         label_map = {v: t(label) for v, label in _FISCAL_MONTHS}
         display = label_map.get(raw, raw)
+    elif field == "vertical" and raw:
+        display = dict(business_type_options()).get(raw, raw)
     else:
         display = raw or EMPTY
     return Td(
@@ -2913,16 +2964,19 @@ def _password_form(error: str = "", success: str = "", lang: str = "en") -> FT:
     )
 
 
-def _company_settings_card(company: dict, lang: str = "en") -> FT:
-    """The company's regional settings (Currency / Timezone / Fiscal Year Start), edited inline via the
-    existing /settings/company/{field} routes. Sits to the right of the Contact Info card on Company
-    Details, mirroring the customer/vendor settings card. Language is omitted - it is set from the header
-    language switcher, so duplicating it here would be cruft."""
+def _company_settings_card(company: dict, lang: str = "en", can_change_business_type: bool = False) -> FT:
+    """The company's regional settings (Currency / Timezone / Fiscal Year Start), plus Business Type for
+    roles allowed to change it, edited inline via the existing /settings/company/{field} routes. Sits to
+    the right of the Contact Info card on Company Details, mirroring the customer/vendor settings card.
+    Language is omitted - it is set from the header language switcher, so duplicating it here would be
+    cruft."""
     fields = [
         ("currency", t("label.currency", lang)),
         ("timezone", t("label.timezone", lang)),
         ("fiscal_year_start", t("label.fiscal_year_start", lang)),
     ]
+    if can_change_business_type:
+        fields.append(("vertical", t("label.business_type", lang)))
     flat = {**company, **(company.get("settings") or {})}
     return Div(
         H3(t("page.settings", lang), cls="section-title"),

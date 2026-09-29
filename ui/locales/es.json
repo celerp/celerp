@@ -3267,5 +3267,10 @@
   "enum.received_state.needs_reconciliation": "Requiere conciliación",
   "enum.received_state.source_changed": "Cambiado por el remitente",
   "enum.received_state.review_only": "Cambiado tras registrar",
-  "enum.received_state.not_bookable": "No se puede registrar"
+  "enum.received_state.not_bookable": "No se puede registrar",
+  "setup.choose_business_type": "Elija un tipo de negocio",
+  "setup.business_type_required": "Elija un tipo de negocio para continuar.",
+  "setup.unknown_business_type": "Tipo de negocio desconocido: {value}",
+  "settings.business_type_saved": "Tipo de negocio guardado.",
+  "settings.business_type_saved_restart": "Tipo de negocio guardado. Reinicie desde la página Módulos para cargar sus módulos."
 }

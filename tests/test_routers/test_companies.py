@@ -175,8 +175,8 @@ async def test_demo_reseed_vertical(client):
     """POST /companies/me/demo/reseed seeds vertical-aware items."""
     headers = await _headers(client)
 
-    # Set vertical to gemstones
-    await client.patch("/companies/me", json={"settings": {"vertical": "gemstones"}}, headers=headers)
+    r = await client.post("/companies/me/business-type", json={"vertical": "gemstones"}, headers=headers)
+    assert r.status_code == 200, r.text
 
     r = await client.post("/companies/me/demo/reseed", headers=headers)
     assert r.status_code == 200
@@ -204,7 +204,7 @@ async def test_demo_reseed_no_vertical(client):
 
 @pytest.mark.asyncio
 async def test_demo_reseed_full_wizard_flow(client):
-    """Simulate full wizard flow: register (seeds generic), set vertical, reseed.
+    """Simulate full wizard flow: register (seeds generic), set the business type, reseed.
     DEMO-001 must be gone and gemstone items must appear."""
     headers = await _headers(client)
 
@@ -213,18 +213,16 @@ async def test_demo_reseed_full_wizard_flow(client):
     skus = {i["sku"] for i in items}
     assert "DEMO-001" in skus, "Registration should seed DEMO-001"
 
-    # Wizard step: save vertical to company settings
-    company = (await client.get("/companies/me", headers=headers)).json()
-    settings = dict(company.get("settings") or {})
-    settings["vertical"] = "gemstones"
-    await client.patch("/companies/me", json={"name": company.get("name", "Acme"), "settings": settings}, headers=headers)
+    # Wizard step: set the business type, which swaps the demo items
+    r = await client.post("/companies/me/business-type", json={"vertical": "gemstones"}, headers=headers)
+    assert r.status_code == 200, r.text
 
-    # Wizard step: reseed demo items
+    # An explicit reseed afterwards replaces the demo items of the stored type
     r = await client.post("/companies/me/demo/reseed", headers=headers)
     assert r.status_code == 200
     body = r.json()
     assert body["vertical"] == "gemstones"
-    assert body["wiped"] >= 1  # DEMO-001 was wiped
+    assert body["wiped"] >= 1
 
     # DEMO-001 must be gone, gemstone items must appear
     items = (await client.get("/items", headers=headers)).json()["items"]

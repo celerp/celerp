@@ -3267,5 +3267,10 @@
   "enum.received_state.needs_reconciliation": "Rapprochement requis",
   "enum.received_state.source_changed": "Modifié par l'expéditeur",
   "enum.received_state.review_only": "Modifié après enregistrement",
-  "enum.received_state.not_bookable": "Non enregistrable"
+  "enum.received_state.not_bookable": "Non enregistrable",
+  "setup.choose_business_type": "Choisissez un type d'entreprise",
+  "setup.business_type_required": "Choisissez un type d'entreprise pour continuer.",
+  "setup.unknown_business_type": "Type d'entreprise inconnu : {value}",
+  "settings.business_type_saved": "Type d'entreprise enregistré.",
+  "settings.business_type_saved_restart": "Type d'entreprise enregistré. Redémarrez depuis la page Modules pour charger ses modules."
 }

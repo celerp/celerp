@@ -31,6 +31,7 @@ from celerp.importers.tabular import CsvImportSpec
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
 from celerp.services.money import to_stored_float, unit_price_from_total
 from celerp.services.permissions import role_has_permission
+from celerp.services.vertical_presets import list_categories
 from celerp.services.pricing import derived_price_keys, get_price_config, is_derived, price_key
 from celerp.services.units import (
     build_unit_map,
@@ -1860,14 +1861,7 @@ async def build_import_records(
     company = await session.get(Company, company_id)
     currency = ((company.settings or {}).get("currency") if company else None) or "USD"
 
-    cat_sell_by: dict[str, str] = {}
-    try:
-        from celerp_verticals.routes import _all_categories  # type: ignore
-        for cat in _all_categories().values():
-            if cat.get("default_sell_by"):
-                cat_sell_by[cat["name"]] = cat["default_sell_by"]
-    except ImportError:
-        pass
+    cat_sell_by = {c["name"]: c["default_sell_by"] for c in list_categories() if c.get("default_sell_by")}
 
     units = await get_company_units(session, company_id)
     unit_canonical = {u["name"].lower(): u["name"] for u in units}

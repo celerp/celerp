@@ -3267,5 +3267,10 @@
   "enum.received_state.needs_reconciliation": "Abgleich nötig",
   "enum.received_state.source_changed": "Vom Absender geändert",
   "enum.received_state.review_only": "Nach dem Buchen geändert",
-  "enum.received_state.not_bookable": "Nicht buchbar"
+  "enum.received_state.not_bookable": "Nicht buchbar",
+  "setup.choose_business_type": "Unternehmenstyp auswählen",
+  "setup.business_type_required": "Wählen Sie einen Unternehmenstyp, um fortzufahren.",
+  "setup.unknown_business_type": "Unbekannter Unternehmenstyp: {value}",
+  "settings.business_type_saved": "Unternehmenstyp gespeichert.",
+  "settings.business_type_saved_restart": "Unternehmenstyp gespeichert. Starten Sie über die Seite Module neu, um die zugehörigen Module zu laden."
 }

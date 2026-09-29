@@ -313,6 +313,15 @@ def _module_candidates(
     return out
 
 
+def module_search_path() -> str:
+    """Every directory an installed module can live in, as a MODULE_DIR-style string:
+    the MODULE_DIR entries (administrative precedence) followed by the bundled and
+    trusted dirs. Lets a caller locate an installed module's data even when the
+    module system is off or the module is not enabled."""
+    entries = [e.strip() for e in os.environ.get("MODULE_DIR", "").split(",") if e.strip()]
+    return ",".join([*entries, *(str(d) for d in _BUNDLED_MODULES_DIRS)])
+
+
 def resolve_module_path(
     name: str, module_dir: str | Path | None = None,
 ) -> Path | None:
