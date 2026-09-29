@@ -58,3 +58,14 @@ async def lock_projections(session: AsyncSession, company_id, entity_ids) -> dic
         .execution_options(populate_existing=True)
     )).scalars().all()
     return {r.entity_id: r for r in rows}
+
+
+async def locked_company(session: AsyncSession, company_id) -> Company | None:
+    """Take the company lock, then load the company as the previous holder committed it.
+
+    For a read-modify-write of the company row itself (its settings in particular):
+    reading after the lock means a concurrent writer's change is built on, never
+    overwritten by a stale copy.
+    """
+    await lock_company(session, company_id)
+    return await session.get(Company, company_id, populate_existing=True)

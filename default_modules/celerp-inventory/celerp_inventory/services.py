@@ -23,7 +23,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.business_time import business_date_at
-from celerp.services.demo import delete_demo_items, demo_item_ids
+from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.cost_visibility import COST_ITEM_KEYS
 from celerp.services.money import round_basis
 from celerp.services.company_lock import lock_company, lock_projections
@@ -2535,8 +2535,8 @@ async def commit_import_batch(
         session.add(batch)
         batch_id = str(new_batch_id)
 
-        # Auto-wipe demo items on first real import.
-        await delete_demo_items(session, company_id, await demo_item_ids(session, company_id))
+        # The first real import clears the demo items the user never edited or used.
+        await delete_untouched_demo_items(session, company_id)
 
     await session.commit()
     return BatchImportResult(

@@ -44,6 +44,7 @@ from celerp.tax_regimes import get_regime, TAX_REGIMES
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
+from celerp.services.company_lock import locked_company
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -330,7 +331,7 @@ async def commercial_state(_: None = require_permission("manage_integrations")) 
 
 @router.patch("/me")
 async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company_id), _: None = require_permission("manage_company_settings"), session: AsyncSession = Depends(get_session)) -> dict:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Not found")
     if payload.name is not None:
@@ -2565,11 +2566,9 @@ async def reseed_demo_items(
 
     Real inventory and demo items the user edited or used are never removed.
     """
-    from celerp.services.company_lock import lock_company
     from celerp.services.demo import replace_demo_items
 
-    await lock_company(session, company_id)
-    company = await session.get(Company, company_id, populate_existing=True)
+    company = await locked_company(session, company_id)
     vertical = (company.settings or {}).get("vertical") if company else None
     counts = await replace_demo_items(session, company_id, user.id, vertical)
     await session.commit()

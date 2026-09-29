@@ -3914,7 +3914,8 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             page_header(
                 t("page.lists", lang),
-                search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-table", url="/lists/search",
+                search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-table",
+                           url="/lists/search?" + _state_query(state, without=("q",)),
                            label=t("documents.search_lists")),
                 _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
                 A(t("btn.export_csv"), href="/lists/export/csv?" + _state_query(state), cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",

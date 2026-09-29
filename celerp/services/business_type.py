@@ -24,11 +24,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import set_enabled_modules
-from celerp.models.company import Company
+from celerp.services.company_lock import locked_company
 from celerp.modules.loader import is_running, module_label, restart_would_load
 from celerp.modules.registry import enable as enable_in_settings, get_enabled
 from celerp.services.demo import reconcile_vertical_defaults, replace_demo_items
@@ -60,10 +59,7 @@ async def set_business_type(
     modules = installed_preset_modules(target)
     await asyncio.to_thread(set_enabled_modules, modules)
 
-    company = (await session.execute(
-        select(Company).where(Company.id == company_id).with_for_update()
-        .execution_options(populate_existing=True)
-    )).scalar_one()
+    company = await locked_company(session, company_id)
     before = dict(company.settings or {})
     previous_vertical = before.get("vertical")
     previous_preset = load_preset(previous_vertical, allow_hidden=True) if previous_vertical else None

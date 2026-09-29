@@ -103,6 +103,18 @@ async def test_previous_vertical_untouched_defaults_become_target_defaults(clien
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["payment_terms", "purchasing_payment_terms"])
+async def test_earlier_generic_payment_terms_follow_the_type(client, key):
+    """Companies set up before Net 90 joined the generic list still hold the shorter
+    list untouched; it moves to the new type's terms like the current default."""
+    h = await _owner(client)
+    earlier = [t for t in payment_terms_for(None) if t["name"] != "Net 90"]
+    await _patch_settings(client, h, {key: earlier})
+    await _set(client, h, "gemstones")
+    assert (await _settings(client, h))[key] == payment_terms_for("gemstones")
+
+
+@pytest.mark.asyncio
 async def test_customised_terms_survive_switch(client):
     h = await _owner(client)
     mine_terms = [{"name": "House Terms", "days": 45, "description": "Our own"}]
@@ -268,6 +280,28 @@ async def test_demo_item_used_on_a_document_is_kept(client):
     demo = await _demo_by_sku(client, h)
     assert demo.get("DEMO-RUB-001", {}).get("id") == used["id"]
     assert "DEMO-DIA-001" not in demo
+
+
+@pytest.mark.asyncio
+async def test_first_import_keeps_a_demo_item_used_on_a_document(client):
+    h = await _owner(client)
+    await _set(client, h, "gemstones")
+    used = (await _demo_by_sku(client, h))["DEMO-RUB-001"]
+    r = await client.post("/docs", headers=h, json={
+        "doc_type": "invoice", "contact_id": "c:1", "contact_name": "Buyer",
+        "line_items": [{"item_id": used["id"], "sku": used["sku"], "description": "Ruby",
+                        "quantity": 1, "unit_price": 5, "line_total": 5}],
+        "subtotal": 5, "tax": 0, "total": 5,
+    })
+    assert r.status_code == 200, r.text
+    imp = await client.post("/items/import/batch", headers=h, json={"records": [{
+        "entity_id": "item:real-imp-2", "event_type": "item.created", "source": "csv",
+        "idempotency_key": "real-imp-2",
+        "data": {"sku": "REAL-IMP-2", "name": "Imported", "quantity": 1, "sell_by": "piece"},
+    }]})
+    assert imp.status_code == 200, imp.text
+    demo = await _demo_by_sku(client, h)
+    assert set(demo) == {"DEMO-RUB-001"} and demo["DEMO-RUB-001"]["id"] == used["id"]
 
 
 @pytest.mark.asyncio

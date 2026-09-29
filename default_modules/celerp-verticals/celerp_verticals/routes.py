@@ -26,6 +26,7 @@ from celerp.db import get_session
 from celerp.models.company import Company
 from celerp.modules.registry import enable as enable_in_settings
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
 from celerp.services.vertical_presets import (
     installed_preset_modules,
@@ -39,7 +40,7 @@ from celerp.services.vertical_presets import (
 
 
 async def _company(session: AsyncSession, company_id) -> Company:
-    company = await session.get(Company, company_id)
+    company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail="Company not found")
     return company

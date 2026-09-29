@@ -142,13 +142,12 @@ def test_simple_business_onboarding_has_demo_rows(vertical: str):
     assert _VERTICAL_ITEMS.get(vertical), f"{vertical} has no demo rows"
 
 
-def test_agricultural_payment_terms_use_preset_key():
-    """The Agricultural payment terms are keyed by the real preset name, so an
-    Agricultural company actually receives them."""
-    from celerp.services.demo import _VERTICAL_PAYMENT_TERMS
-    assert "agricultural" in {p["name"] for p in _all_presets()}
-    assert "agricultural" in _VERTICAL_PAYMENT_TERMS
-    assert "agriculture" not in _VERTICAL_PAYMENT_TERMS
+@pytest.mark.parametrize("table", ["_VERTICAL_PAYMENT_TERMS", "_VERTICAL_TERMS_CONDITIONS"])
+def test_default_terms_are_keyed_by_preset_name(table: str):
+    """Business-type default terms are keyed by real preset names, so a company of
+    that type actually receives them and no entry is unreachable."""
+    from celerp.services import demo
+    assert set(getattr(demo, table)) <= {p["name"] for p in _all_presets()}
 
 
 def test_setup_catalog_never_defaults_to_first_preset():

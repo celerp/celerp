@@ -283,6 +283,23 @@ class TestPickedPageSize:
         assert shown == {f"{prefix}-{i:03d}" for i in range(100, 150)}, sorted(shown)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("page, search, filter_", [
+        ("/docs?type=invoice", "/docs/search", "type=invoice"),
+        ("/lists?type=audit", "/lists/search", "type=audit"),
+    ])
+    async def test_search_box_keeps_filters_and_page_size(self, ui_client, page, search, filter_):
+        empty = AsyncMock(return_value={"items": [], "total": 0})
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_docs", new=empty), patch("ui.api_client.list_lists", new=empty), \
+             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_SUMMARY)), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
+            r = await ui_client.get(f"{page}&per_page=100", cookies=_cookies())
+        assert r.status_code == 200
+        boxes = [i for i in re.findall(r"<input[^>]*>", r.text) if 'name="q"' in i]
+        urls = [u.replace("&amp;", "&") for b in boxes for u in re.findall(rf'hx-get="({search}[^"]*)"', b)]
+        assert urls and all(filter_ in u and "per_page=100" in u for u in urls), urls
+
+    @pytest.mark.asyncio
     async def test_subscriptions_honor_per_page(self, ui_client):
         subs = [{"entity_id": f"sub:{i}", "ref_id": f"SUB-{i:03d}", "status": "active"} for i in range(60)]
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
