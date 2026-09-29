@@ -1115,7 +1115,9 @@ async def test_manual_je_rejects_non_finite_amounts(client):
         {"account": "4100", "debit": 0, "credit": "nan"},
     ])
     assert r.status_code == 422
-    assert "finite" in r.json()["detail"].lower() or "number" in r.json()["detail"].lower()
+    errors = r.json()["detail"]
+    assert {e["loc"][-1] for e in errors} == {"debit", "credit"}
+    assert all("finite number" in e["msg"] for e in errors)
     assert (await _journal(client, tok))["entries"] == []
 
 
