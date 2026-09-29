@@ -30,6 +30,7 @@ from celerp.models.projections import Projection
 from .services import (
     BatchImportRequest,
     BatchImportResult,
+    adjust_item_quantity,
     allocate_internal_codes,
     build_import_records,
     build_item_import_spec,
@@ -4085,26 +4086,9 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
 @router.post("/{entity_id}/adjust")
 async def adjust_item(entity_id: str, payload: AdjustBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    # Validate new_qty against item's sell_by unit decimals
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if row:
-        current_sell_by = row.state.get("sell_by")
-        units = await _get_company_units(session, company_id)
-        unit_map = {u["name"]: u for u in units}
-        if current_sell_by and current_sell_by in unit_map:
-            validate_quantity(payload.new_qty, unit_map[current_sell_by]["decimals"])
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.quantity.adjusted",
-        data=payload.model_dump(exclude_none=True),
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
+    entry = await adjust_item_quantity(
+        session, company_id, user.id, entity_id, payload.model_dump(exclude_none=True),
+        source="api", idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -4490,4 +4474,7 @@ def setup_api_routes(app) -> None:
     # be registered before the catch-all /{entity_id} route in the main router.
     app.include_router(attachments_router, prefix="/items", tags=["attachments"])
     app.include_router(router, prefix="/items", tags=["items"])
+    from celerp.importers.sinks import register_sink
+    from celerp_inventory.migration_sink import SINK
+    register_sink(SINK)
 
