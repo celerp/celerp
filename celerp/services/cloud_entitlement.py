@@ -248,10 +248,12 @@ async def apply_activation_state(
 
 async def sync_existing_entitlement(
     *, require_persisted_key: bool = False, first_boot: bool | None = None,
+    boot_id: str | None = None,
 ) -> dict | None:
     """Synchronize an existing Connect installation.
 
-    Only the startup call passes ``first_boot``, so the relay can count relaunches.
+    Only the startup call passes ``first_boot`` and ``boot_id``, so retries
+    identify one app process while runtime reconciliation remains observational.
     """
     from celerp.config import ensure_instance_id, settings
     from celerp.gateway.state import (
@@ -279,7 +281,8 @@ async def sync_existing_entitlement(
         target_iid = authenticated_iid or local_iid
         response = await client.post(
             f"{relay_http_url()}/auth/activate",
-            json=activate_payload(target_iid, first_boot=first_boot),
+            json=activate_payload(
+                target_iid, first_boot=first_boot, boot_id=boot_id),
             headers={"Authorization": f"Bearer {bearer}"},
         )
         return response, target_iid

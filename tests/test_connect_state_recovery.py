@@ -142,7 +142,11 @@ async def test_foreign_identity_converges_only_after_successful_activation(monke
               new=AsyncMock(return_value=True)) as apply_state,
     ):
         from celerp.services.cloud_entitlement import sync_existing_entitlement
-        assert await sync_existing_entitlement() is not None
+        assert await sync_existing_entitlement(
+            first_boot=False, boot_id="boot-1") is not None
+    payload = client.post.await_args.kwargs["json"]
+    assert payload["first_boot"] is False
+    assert payload["boot_id"] == "boot-1"
     assert apply_state.await_args.args[:2] == ("key-a", "instance-a")
     assert apply_state.await_args.kwargs["expected_api_key"] == "key-a"
 

@@ -245,8 +245,11 @@ class TestAutoActivateProbe:
         await _try_auto_activate()
         assert route.call_count == 3
         import json as _json
-        body = _json.loads(route.calls[-1].request.content)
+        bodies = [_json.loads(call.request.content) for call in route.calls]
+        body = bodies[-1]
         assert body["activation_verifier"] == verifier
+        boot_ids = {sent.get("boot_id") for sent in bodies}
+        assert len(boot_ids) == 1 and None not in boot_ids and "" not in boot_ids
 
     @respx.mock
     async def test_verifier_recovery_persists_credentials_and_consumes_verifier(self, tmp_path, monkeypatch):

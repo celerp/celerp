@@ -107,7 +107,8 @@ async def _try_auto_activate() -> None:
         r = await relay_post_with_retry(
             f"{relay_base}/auth/activate",
             activate_payload(
-                iid, first_boot=_FIRST_BOOT, activation_verifier=verifier))
+                iid, first_boot=_FIRST_BOOT, activation_verifier=verifier,
+                boot_id=_BOOT_ID))
 
         if r is None or r.status_code != 200:
             return
@@ -134,7 +135,7 @@ async def _try_sync_existing_entitlement() -> None:
     try:
         from celerp.services.cloud_entitlement import sync_existing_entitlement
         await sync_existing_entitlement(
-            require_persisted_key=True, first_boot=_FIRST_BOOT)
+            require_persisted_key=True, first_boot=_FIRST_BOOT, boot_id=_BOOT_ID)
     except Exception as exc:
         logging.getLogger(__name__).debug(
             "Cloud startup reconciliation failed (non-fatal): %s", exc)
