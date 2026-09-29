@@ -697,3 +697,35 @@ def test_document_line_forms_carry_their_exact_fields_and_report_the_rest(tmp_pa
     count, klass, note = coverage["SalesInvoice (amounts including tax)"]
     assert (count, klass) == (1, CoverageClass.MAPPED_WITH_LOSS)
     assert "excluding tax" in note
+
+
+@pytest.mark.parametrize("build, decisions, expected", [
+    (specs.build_basic, FULL, {"BILL1", "BILL2"}),
+    # BILL1 is dated before the cutover and carried because it is still open at it.
+    (specs.build_basic, MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=date(2026, 2, 28)), {"BILL1"}),
+    (specs.build_cutover, FULL, {"BILLA", "BILLB"}),
+    # BILLA was paid before the cutover and stays in the opening position; BILLB comes after it.
+    (specs.build_cutover, MigrationDecisions(mode=CIFMode.CUTOVER, cutover_date=specs.CUTOVER_DATE), {"BILLB"}),
+])
+def test_every_item_line_of_an_imported_bill_has_its_stock_carried_by_an_adjustment(tmp_path, build, decisions,
+                                                                                     expected):
+    # The docs sink records an imported bill's goods as already received, with no stock
+    # movement of its own. That is honest only when the manifest carries every item line's
+    # stock as an inventory adjustment of that bill: in full history, and in cutover for a
+    # post-cutover bill and a pre-cutover bill carried because it is still open.
+    from celerp.importers.schema import DocumentType
+
+    bundle = adapter().build_manifest([artifact(build(tmp_path / "books.manager"))], decisions).bundle
+    bills = [d for d in bundle.documents
+             if d.doc_type == DocumentType.BILL and any(li.item_external_id for li in d.line_items)]
+    assert {d.source_external_id for d in bills} == {ref(label) for label in expected}
+    for bill in bills:
+        lines: dict[str, Decimal] = {}
+        for li in bill.line_items:
+            if li.item_external_id:
+                lines[li.item_external_id] = lines.get(li.item_external_id, Decimal(0)) + li.quantity
+        carried: dict[str, Decimal] = {}
+        for adj in bundle.inventory_adjustments:
+            if adj.kind == "adjustment" and adj.source_external_id.startswith(f"{bill.source_external_id}:stock:"):
+                carried[adj.item_external_id] = carried.get(adj.item_external_id, Decimal(0)) + adj.quantity
+        assert carried == lines, bill.source_external_id
