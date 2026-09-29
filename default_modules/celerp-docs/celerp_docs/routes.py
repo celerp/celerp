@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
-from celerp.models.company import Company
+from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN
@@ -3566,6 +3566,10 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         location_uuid = uuid.UUID(payload.location_id)
     except Exception:
         location_uuid = None
+    if location_uuid is not None and (await session.execute(
+        select(Location.id).where(Location.id == location_uuid, Location.company_id == company_id)
+    )).scalar_one_or_none() is None:
+        raise HTTPException(status_code=422, detail="That location does not exist. Choose one of your locations.")
 
     is_consignment = doc_type == "consignment_in"
     # Inbound docs always create new parcels - never adjust an existing item's qty.

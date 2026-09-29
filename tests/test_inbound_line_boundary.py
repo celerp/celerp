@@ -131,3 +131,19 @@ async def test_a_return_quantity_must_be_a_positive_number(client, session, auth
     assert r.status_code == 422, r.text
     assert await _stock(session, auth, item_id) == before
     assert not (await _state(session, auth, po)).get("returned_items")
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_into_a_location_that_does_not_exist_is_refused(client, session, auth):
+    item_id = await _item(client, auth, 100.0, qty=10)
+    po = await _doc(client, auth, "purchase_order",
+                    [{"item_id": item_id, "name": "Lot", "quantity": 2, "unit_price": 14.0}])
+    before = await _stock(session, auth, item_id)
+
+    r = await client.post(f"/docs/{po}/receive", headers=auth["headers"], json={
+        "location_id": str(uuid.uuid4()),
+        "received_items": [{"po_line_index": 0, "item_id": item_id, "quantity_received": 2}],
+    })
+    assert r.status_code == 422, r.text
+    assert await _stock(session, auth, item_id) == before
+    assert not (await _state(session, auth, po)).get("received_items")
