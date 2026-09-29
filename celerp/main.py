@@ -34,9 +34,11 @@ ensure_instance_id()
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
 
-from celerp.routers import auth, companies, ledger
+from celerp.routers import auth, companies, ledger, migrations
 from celerp.routers import health, notifications, system, events as events_router_mod
 from celerp.routers import stars as stars_router_mod
+from celerp.importers.sinks import register_sink
+from celerp.services.migration_core_sink import SINK as CORE_SINK
 from celerp.routers import search as search_router_mod
 
 import celerp.models  # noqa: F401 - ensures kernel models (UserCompany, ImportBatch, DocShareToken) are registered
@@ -376,6 +378,18 @@ async def lifespan(_app: FastAPI):
     except Exception:
         logging.getLogger(__name__).exception("AI batch job sweep failed (non-fatal)")
 
+    # Company migrations: delete expired scans, mark runs whose runner died with the
+    # last process as interrupted (resumable), and delete source files past retention.
+    try:
+        from celerp.db import LifecycleSessionLocal as _MigrationSweepSession
+        from celerp.services import migration_scan_store, migrations as migration_service
+        migration_scan_store.purge_expired()
+        async with _MigrationSweepSession() as _migration_session:
+            await migration_service.mark_stale_runs_interrupted(_migration_session)
+            await migration_service.purge_run_sources(_migration_session)
+    except Exception:
+        logging.getLogger(__name__).exception("Migration housekeeping failed (non-fatal)")
+
     # Start AI file cleanup background task
     from celerp.ai.cleanup import run_cleanup_loop
     cleanup_task = asyncio.create_task(run_cleanup_loop())
@@ -579,6 +593,8 @@ app.include_router(stars_router_mod.router, prefix="/stars", tags=["stars"])
 app.include_router(notifications.router)
 app.include_router(events_router_mod.router)
 app.include_router(search_router_mod.router, tags=["search"])
+app.include_router(migrations.router)
+register_sink(CORE_SINK)
 
 # Backup router — always registered; individual endpoints gate on cloud connection.
 # celerp_backup lives in default_modules/celerp-backup/ which is not on sys.path

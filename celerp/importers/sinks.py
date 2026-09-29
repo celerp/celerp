@@ -14,6 +14,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
+from pathlib import Path
 from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -109,12 +110,35 @@ class MissingSinkError(Exception):
 
 
 _SINKS: dict[str, MigrationSink] = {}
+_CORE_DIR = Path(__file__).resolve().parents[1]
+
+
+class UntrustedSinkError(ValueError):
+    """A sink offered by code that is not the bundled first-party module owning its groups."""
+
+
+def _defining_module(sink: MigrationSink) -> str | None:
+    """The Celerp module whose code defines `sink`: `celerp` for the core, else the bundled
+    module folder holding its code, or None when that folder is not first-party by content."""
+    from celerp.modules.loader import is_first_party
+
+    origin = Path(type(sink).import_batch.__code__.co_filename).resolve()
+    if origin.is_relative_to(_CORE_DIR):
+        return "celerp"
+    folder = origin.parent.parent
+    return folder.name if is_first_party(folder) else None
 
 
 def register_sink(sink: MigrationSink) -> None:
     unknown = sink.groups - SINK_MODULES.keys()
     if unknown:
         raise ValueError(f"Sink {sink.key!r} declares unknown CIF groups {sorted(unknown)}.")
+    owners = {SINK_MODULES[g] for g in sink.groups}
+    if owners != {sink.key} or _defining_module(sink) != sink.key:
+        raise UntrustedSinkError(
+            f"Sink {sink.key!r} is not the bundled first-party {'/'.join(sorted(owners))} module; "
+            "only bundled Celerp modules can receive a migration."
+        )
     if not 0 < sink.batch_size <= MAX_BATCH_SIZE:
         raise ValueError(f"Sink {sink.key!r} batch size must be between 1 and {MAX_BATCH_SIZE}.")
     taken = {g for s in _SINKS.values() if s.key != sink.key for g in s.groups} & sink.groups

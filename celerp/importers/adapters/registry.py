@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 from celerp.importers.adapters.base import ArtifactSet, SourceAdapter
+from celerp.importers.adapters.manager_io import ManagerIOAdapter
 
-_ADAPTERS: tuple[SourceAdapter, ...] = ()
+_ADAPTERS: tuple[SourceAdapter, ...] = (ManagerIOAdapter(),)
 
 
 def list_adapters() -> tuple[SourceAdapter, ...]:
