@@ -47,12 +47,15 @@ async def import_doc_records(
     records: Sequence[DocImportRecord],
     *,
     upsert: bool = False,
+    post_ledger: bool = True,
 ) -> ImportOutcome:
     """Create imported documents once per per-company idempotency key and entity.
 
     With `upsert`, a replayed key refreshes the document's editable fields through
     the normal document patch. Lifecycle permissions are checked for every record
-    before the first write.
+    before the first write. Without `post_ledger`, an issued document is written
+    without its normal accounting entry, for a caller that posts the entry the
+    source books carry instead.
     """
     outcome = ImportOutcome()
     keys = [r.idempotency_key for r in records]
@@ -147,10 +150,11 @@ async def import_doc_records(
             existing_keys.add(rec.idempotency_key)
             existing_entities.add(entry.entity_id)
             if not getattr(entry, "was_deduped", False):
-                await _import_auto_je(
-                    session, company_id, user.id, entry.entity_id, rec.data,
-                    base_currency=base_currency,
-                )
+                if post_ledger:
+                    await _import_auto_je(
+                        session, company_id, user.id, entry.entity_id, rec.data,
+                        base_currency=base_currency,
+                    )
                 outcome.add(entry.entity_id, "created")
             else:
                 outcome.add(entry.entity_id, "skipped")

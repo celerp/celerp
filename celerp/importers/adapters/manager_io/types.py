@@ -37,7 +37,6 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     ("BusinessDetails", "38cf4712-6e95-4ce1-b53a-bff03edad273", _M),
     ("CreditNote", "245e5943-0092-409d-96ae-e2ee10eac75b", _M),
     ("Customer", "ec37c11e-2b67-49c6-8a58-6eccb7dd75ee", _M),
-    ("DebitNote", "274fc6d0-2eac-43d0-8286-79c856e644aa", _M),
     ("ExchangeRate", "14240c19-3d08-4fe6-94bb-6dd17c4bcda6", _M),
     ("ForeignCurrency", "6116531b-cb3d-4f85-b239-745972943a6b", _M),
     ("InterAccountTransfer", "dea4f923-c498-4504-b3ef-30be3c33175e", _M),
@@ -54,6 +53,7 @@ _ROWS: tuple[tuple[str, str, CoverageClass], ...] = (
     # mapped_with_loss
     ("Assets", "4c05c221-ca57-4c7c-be62-115669302ed4", _L),
     ("BalanceSheetGroup", "c03d1921-7a45-4eda-8742-a2d9082dcf4f", _L),
+    ("DebitNote", "274fc6d0-2eac-43d0-8286-79c856e644aa", _L),
     ("Equity", "9275ff4c-4cff-41d0-b7b5-f31c783f03d8", _L),
     ("Liabilities", "ed5a19f6-12c5-45cc-b4b7-4e79f7ef50bc", _L),
     ("ProfitAndLossStatementGroup", "5770616c-0e01-46ca-a172-f7042275da6c", _L),
@@ -349,6 +349,7 @@ TARGETS: dict[str, str] = {
     "Equity": "account",
 }
 NOTES: dict[str, str] = {
+    "DebitNote": "Posted as a journal on the bill it notes and applied to that bill; Celerp has no debit note document.",
     "BalanceSheetGroup": "Sets the account type of the accounts in the group; the group itself is not carried.",
     "ProfitAndLossStatementGroup": "Sets the account type of the accounts in the group; the group itself is not carried.",
     "Assets": "Sets the account type of the accounts in the group; the group itself is not carried.",

@@ -198,7 +198,7 @@ class FakeSink:
                 ), {"id": target, "cid": context.company_id, "name": record.name})
                 created = inserted.first() is not None
             else:
-                target, entity_type, created = str(uuid.uuid5(context.run_id, record.source_external_id)), "journal", True
+                target, entity_type, created = str(uuid.uuid5(context.run_id, record.source_external_id)), "journal_entry", True
             if created:
                 result.created += 1
             else:

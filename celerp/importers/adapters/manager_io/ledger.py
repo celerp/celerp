@@ -8,8 +8,9 @@ expectations. Every imported record is in the base currency; amounts are debit
 positive.
 
 Full history imports every record. Cutover imports the documents still open at
-the cutover date, the settlement portions allocated to them, one opening
-journal carrying every other balance, and an opening stock position per item.
+the cutover date, the notes applied to them, the settlement portions allocated
+to them, one opening journal carrying every other balance, and an opening stock
+position per item.
 """
 
 from __future__ import annotations
@@ -204,7 +205,9 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
 
     documents = sorted((k for k in records if k in book.documents), key=lambda k: _record_date(book, k))
     if cutover is not None:
-        documents = [k for k in documents if ledger.states[k].amount_outstanding != 0]
+        # Open documents, and the notes applied to them, which carry part of their paid state.
+        open_docs = {k for k in documents if ledger.states[k].amount_outstanding != 0}
+        documents = [k for k in documents if k in open_docs or book.documents[k].applies_to in open_docs]
     ledger.documents = documents
     imported = set(documents)
     for key in sorted((k for k in records if k in book.settlements), key=lambda k: _record_date(book, k)):

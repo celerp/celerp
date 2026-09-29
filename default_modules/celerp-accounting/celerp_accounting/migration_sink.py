@@ -54,11 +54,13 @@ PAYABLE_CODE = "2110"
 
 _CHART = {row["code"]: row for row in THAI_CHART_OF_ACCOUNTS}
 
-# Source control accounts land on the Celerp control account with the same meaning.
+# Source control accounts land on the Celerp control account with the same meaning:
+# inventory on the postable goods account every inventory posting uses, under its
+# 1130 header.
 _CONTROL_CODES = {
     AccountControl.RECEIVABLE: RECEIVABLE_CODE,
     AccountControl.PAYABLE: PAYABLE_CODE,
-    AccountControl.INVENTORY: "1130",
+    AccountControl.INVENTORY: "1130-P",
     AccountControl.RETAINED_EARNINGS: "3200",
 }
 _INPUT_TAX_CODE = "1150"
@@ -204,12 +206,7 @@ async def _write_account(
 
     control_code = _control_code(account)
     if control_code is not None:
-        if control_code not in existing:
-            row = _CHART[control_code]
-            existing[control_code] = await import_service.create_chart_account(
-                session, company_id, code=control_code, name=row["name"],
-                account_type=row["account_type"], parent_code=row["parent_code"],
-            )
+        await _ensure_chart_account(session, company_id, control_code, existing)
         return control_code
 
     code = _free_code(account.code or f"M{deterministic_id(context, ACCOUNT, account.source_external_id).hex[:8]}", taken)
@@ -219,6 +216,18 @@ async def _write_account(
     )
     taken.add(code)
     return code
+
+
+async def _ensure_chart_account(session, company_id, code: str, existing: dict[str, Account]) -> None:
+    """Add a standard chart account, and the standard headers above it, where missing."""
+    row = _CHART[code]
+    if row["parent_code"] in _CHART:
+        await _ensure_chart_account(session, company_id, row["parent_code"], existing)
+    if code not in existing:
+        existing[code] = await import_service.create_chart_account(
+            session, company_id, code=code, name=row["name"],
+            account_type=row["account_type"], parent_code=row["parent_code"],
+        )
 
 
 def _control_code(account: CIFAccount) -> str | None:

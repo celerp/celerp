@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from decimal import Decimal
 
-from celerp.importers.adapters.manager_io.book import AP, AR, Book
+from celerp.importers.adapters.manager_io.book import AP, AR, JOURNAL_DOCUMENTS, Book
 from celerp.importers.adapters.manager_io.ledger import Ledger, stock
 from celerp.importers.schema import (
     CIFTolerance,
@@ -63,6 +63,8 @@ def expectations_from(book: Book, ledger: Ledger) -> ReconciliationExpectations:
     statuses: Counter = Counter()
     for key in ledger.documents:
         doc = book.documents[key]
+        if doc.source_type in JOURNAL_DOCUMENTS:
+            continue
         group = (doc.doc_type, book.currency_code(doc.currency))
         counts[group] += 1
         totals[group] += doc.total

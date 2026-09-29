@@ -14,7 +14,7 @@ from collections import defaultdict
 from decimal import Decimal
 
 from celerp.importers.adapters.manager_io.attachments import Screened
-from celerp.importers.adapters.manager_io.book import Book, Document, Line
+from celerp.importers.adapters.manager_io.book import INVENTORY, Book, Document, Line
 from celerp.importers.adapters.manager_io.ledger import Ledger, Posting
 from celerp.importers.adapters.manager_io.types import GUIDS
 from celerp.importers.schema import (
@@ -37,6 +37,7 @@ from celerp.importers.schema import (
     CIFSettlement,
     CIFTaxCode,
 )
+from celerp.services.money import round_money
 
 SOURCE_SYSTEM = "manager_io"
 ZERO = Decimal(0)
@@ -106,10 +107,18 @@ def _items(book: Book) -> list[CIFItem]:
     return out
 
 
-def _line(line: Line) -> CIFLineItem:
+def _line(book: Book, doc: Document, line: Line) -> CIFLineItem:
+    """One line, tax exclusive: an item line posts to inventory, and a tax-inclusive
+    source price is carried as the tax-exclusive price its net implies."""
+    unit_price, discount = line.unit_price, line.discount or None
+    if doc.include_tax:
+        unit_price = round_money(line.net / line.quantity, book.currency_code(doc.currency)) if line.quantity else line.net
+        discount = None
     return CIFLineItem(item_external_id=line.item, description=line.description,
-                       account_external_id=None if line.item else line.account, tax_code_external_id=line.tax_code,
-                       quantity=line.quantity, unit_price=line.unit_price, discount=line.discount or None,
+                       account_external_id=INVENTORY if line.item else line.account,
+                       tax_code_external_id=line.tax_code,
+                       tax_account_external_id=book.tax_codes[line.tax_code].account if line.tax_code else None,
+                       quantity=line.quantity, unit_price=unit_price, discount=discount,
                        tax_amount=line.tax, total_price=line.net)
 
 
@@ -122,7 +131,7 @@ def _document(book: Book, ledger: Ledger, doc: Document) -> CIFDocument:
                        contact_external_id=doc.contact, ref=doc.ref, issue_date=doc.date, payment_due_date=doc.due,
                        currency=book.currency_code(doc.currency),
                        total=doc.total, tax_total=doc.tax_total, amount_paid=state.amount_paid,
-                       amount_outstanding=state.amount_outstanding, line_items=[_line(ln) for ln in doc.lines],
+                       amount_outstanding=state.amount_outstanding, line_items=[_line(book, doc, ln) for ln in doc.lines],
                        metadata=metadata)
 
 

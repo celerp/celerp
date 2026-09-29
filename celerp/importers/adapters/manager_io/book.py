@@ -53,6 +53,8 @@ DOC_TYPES = {
 }
 # The document a note settles: a credit note reduces a sales invoice, a debit note a purchase invoice.
 NOTE_OF = {"CreditNote": "SalesInvoice", "DebitNote": "PurchaseInvoice"}
+# Documents Celerp has no document type for: each posts as a journal on the document it notes.
+JOURNAL_DOCUMENTS = frozenset({"DebitNote"})
 
 
 class Blocked(Exception):
@@ -620,6 +622,8 @@ def _resolve_document(book: Book, doc: Document) -> None:
             _check(line.account in book.accounts, "an account")
         if line.tax_code:
             _check(line.tax_code in book.tax_codes, "a tax code")
+    if doc.source_type in JOURNAL_DOCUMENTS and not doc.applies_to:
+        raise Blocked("not applied", "A debit note is carried only as applied to the bill it notes.")
     if doc.applies_to:
         target = book.documents.get(doc.applies_to)
         _check(target is not None and target.source_type == NOTE_OF[doc.source_type], "the invoice it settles")

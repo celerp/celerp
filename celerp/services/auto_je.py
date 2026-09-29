@@ -546,6 +546,49 @@ async def _post_po_receipt(session, *, company_id, user_id, po_id: str, receipt_
     )
 
 
+# Party control account and JE id suffix of an imported document's own entry.
+_IMPORTED_DOC_ENTRY = {
+    "invoice": ("1120", "fin"), "credit_note": ("1120", "fin"), "bill": ("2110", "bill"), "debit_note": ("2110", "dn"),
+}
+
+
+async def create_for_imported_document(
+    session, *, company_id, user_id, doc_id: str, doc_type: str, contact_id: str | None,
+    entries: list[dict], ts: str | None, suffix: str | None = None,
+) -> None:
+    """Post the entry an imported document carries in its source books.
+
+    `entries` are the document's own line postings on the accounts the source used,
+    already in base currency; the customer or supplier control account takes the
+    balancing line, named for the contact. The entry takes the id and keys of the
+    document's normal recognition entry (`:fin` for the sales side, `:bill` for the
+    purchase side), so a document can carry exactly one of the two. No cost of sales
+    is recognized: the source's own postings are the whole effect. A debit note has
+    no Celerp document: it posts on the bill it notes, `doc_id`, under its own
+    `suffix`.
+    """
+    party_account, kind = _IMPORTED_DOC_ENTRY[doc_type]
+    suffix = suffix or kind
+    gap = sum(to_decimal(e.get("debit")) for e in entries) - sum(to_decimal(e.get("credit")) for e in entries)
+    party = {"account": party_account, "debit": to_stored_float(max(-gap, _Dec(0))),
+             "credit": to_stored_float(max(gap, _Dec(0)))}
+    if contact_id:
+        party["contact"] = contact_id
+    je_type = {"fin": "invoice.finalized", "bill": "po.converted_to_bill:0"}.get(suffix, f"imported.{suffix}")
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:{suffix}",
+        idem_create=je_idempotency_key(doc_id, je_type, "c"),
+        idem_posted=je_idempotency_key(doc_id, je_type, "p"),
+        memo=f"Imported entry for {doc_id}",
+        ts=ts,
+        entries=[*entries, party],
+        metadata_={"trigger": "doc.imported", "doc_id": doc_id},
+    )
+
+
 async def create_for_po_received(
     session,
     *,

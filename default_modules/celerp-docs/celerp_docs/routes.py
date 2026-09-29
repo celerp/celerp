@@ -3169,21 +3169,33 @@ class ApplyToInvoiceBody(BaseModel):
     _real_date = field_validator("date")(_calendar_date)
 
 
-@router.post("/{entity_id}/apply-to-invoice")
-async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def apply_credit_note(session, company_id, entity_id: str, target_doc_id: str, amount: float, *,
+                            payment_date: str | None, actor_id, source: str, idempotency_key: str,
+                            request: str | None = None):
+    """Apply an issued credit note to an invoice of the same contact: a paired
+    doc.payment.received on each side and the AR-to-AR entry. Shared by the apply
+    route and the migration sink; the caller commits.
+
+    A replayed idempotency key returns the recorded application, marked was_deduped,
+    without writing anything; with ``request`` the replay must also carry the same
+    request digest. The invoice-side event is keyed as a step of the same key."""
     # Lock both docs FOR UPDATE in one ordered batch: the doc-row lock is the single
     # serializer, so two concurrent applications sharing docs acquire them in the same
     # order (no deadlock) and each re-reads the other's committed state before allocating
     # an index. A stale list would allocate a colliding index.
-    locked = await _get_docs_for_update(session, company_id, {entity_id, payload.target_doc_id})
+    locked = await _get_docs_for_update(session, company_id, {entity_id, target_doc_id})
     cn_row = locked.get(entity_id)
-    inv_row = locked.get(payload.target_doc_id)
+    inv_row = locked.get(target_doc_id)
     if cn_row is None or inv_row is None:
         raise HTTPException(status_code=404, detail="Document not found")
-    key, digest = _operation("apply-credit-note", entity_id, payload)
-    if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.received",
-                                   entity_id=entity_id, digest=digest)) is not None:
-        return done
+    replay = await find_event_by_idempotency(session, company_id, idempotency_key)
+    if replay is not None:
+        if request is not None:
+            _check_replay(replay, event_type="doc.payment.received", digest=request, entity_id=entity_id)
+        elif replay.event_type != "doc.payment.received" or replay.entity_id != entity_id:
+            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+        replay.was_deduped = True
+        return replay
     cn = cn_row.state
     if cn.get("doc_type") != "credit_note":
         raise HTTPException(status_code=409, detail="Only credit notes can be applied to invoices")
@@ -3209,7 +3221,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
             status_code=422,
             detail="Credit note and invoice must use the same currency",
         )
-    amount_d = round_money(payload.amount, cn_currency)
+    amount_d = round_money(amount, cn_currency)
     if amount_d <= 0:
         raise HTTPException(status_code=422, detail="Application amount must be positive")
     cn_outstanding = _payable_balance(cn)
@@ -3220,7 +3232,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
         raise HTTPException(status_code=409, detail="Amount exceeds invoice outstanding")
     amount = to_stored_float(amount_d)
 
-    payment_date = payload.date or datetime.now(timezone.utc).date().isoformat()
+    payment_date = payment_date or datetime.now(timezone.utc).date().isoformat()
     _cn_company = await session.get(Company, company_id)
     _cn_base_currency = (_cn_company.settings.get("currency", "USD") if _cn_company else "USD")
     _cn_rate = float(_require_doc_rate_http(cn, _cn_base_currency))
@@ -3231,11 +3243,11 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
     inv_pay_index = await _alloc_payment_index(session, company_id, inv.get("payments", []))
     payment_idx = await _alloc_payment_index(
         session, company_id, cn_row.state.get("payments", []),
-        key_doc_id=payload.target_doc_id, key_type=f"cn.applied:cn_apply_{entity_id}")
+        key_doc_id=target_doc_id, key_type=f"cn.applied:cn_apply_{entity_id}")
 
     # Emit paired events: payment on invoice (credit_note method), payment on CN (applied method)
     await emit_event(
-        session, company_id=company_id, entity_id=payload.target_doc_id, entity_type="doc",
+        session, company_id=company_id, entity_id=target_doc_id, entity_type="doc",
         event_type="doc.payment.received",
         data={
             "amount": amount, "method": "credit_note",
@@ -3247,28 +3259,38 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
             # note is applied to the same invoice more than once.
             "paired_index": payment_idx,
         },
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=_step_key(key, "invoice"), metadata_={},
+        actor_id=actor_id, location_id=None, source=source,
+        idempotency_key=_step_key(idempotency_key, "invoice"), metadata_={},
     )
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.received",
         data={
             "amount": amount, "method": "applied",
-            "target_doc_id": payload.target_doc_id, "payment_date": payment_date,
+            "target_doc_id": target_doc_id, "payment_date": payment_date,
             "currency": cn.get("currency", "USD"),
             "index": payment_idx,
             "paired_index": inv_pay_index,
         },
-        actor_id=user.id, location_id=None, source="api",
-        idempotency_key=key, metadata_={"request": digest},
+        actor_id=actor_id, location_id=None, source=source,
+        idempotency_key=idempotency_key, metadata_={"request": request} if request is not None else {},
     )
     await auto_je.create_for_cn_application(
-        session, company_id=company_id, user_id=user.id,
-        doc_id=payload.target_doc_id, cn_id=entity_id, amount=amount,
+        session, company_id=company_id, user_id=actor_id,
+        doc_id=target_doc_id, cn_id=entity_id, amount=amount,
         payment_index=payment_idx, payment_date=payment_date,
         base_currency=_cn_base_currency,
         conversion_rate=_cn_rate,
+    )
+    return entry
+
+
+@router.post("/{entity_id}/apply-to-invoice")
+async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    key, digest = _operation("apply-credit-note", entity_id, payload)
+    entry = await apply_credit_note(
+        session, company_id, entity_id, payload.target_doc_id, payload.amount,
+        payment_date=payload.date, actor_id=user.id, source="api", idempotency_key=key, request=digest,
     )
     await session.commit()
     return {"event_id": entry.id}

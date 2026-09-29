@@ -302,11 +302,13 @@ class DocumentType(StrEnum):
 
 
 class CIFLineItem(BaseModel):
-    """A document line. Item-less lines post to `account_external_id`."""
+    """A document line, posting its net to `account_external_id` and its tax to
+    `tax_account_external_id`."""
     item_external_id: str | None = None
     description: str | None = None
     account_external_id: str | None = None
     tax_code_external_id: str | None = None
+    tax_account_external_id: str | None = None
     quantity: CIFDecimal
     weight: CIFDecimal | None = None
     weight_unit: str | None = None            # e.g. "kg", "g", "oz", "ct", "lb"

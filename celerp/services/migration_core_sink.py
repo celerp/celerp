@@ -51,11 +51,13 @@ class RecordOutcome:
     """What an import service did with one record.
 
     rejected: refused by validation and counted as skipped with its reason;
-    failed: the write raised, reported but not counted.
+    failed: the write raised, reported but not counted. `entity_type` names the
+    Celerp entity written when it differs from the batch's own.
     """
     entity_id: str
     status: OutcomeStatus
     message: str | None = None
+    entity_type: str | None = None
 
 
 @dataclass
@@ -134,6 +136,16 @@ async def mapped_targets(
     return {ext: target for ext, target in rows}
 
 
+async def run_targets(context: SinkContext, target_entity_type: str) -> list[str]:
+    """Every Celerp id of one entity type this run imported."""
+    return list((await context.session.execute(
+        select(MigrationEntityMap.target_entity_id).where(
+            MigrationEntityMap.migration_run_id == context.run_id,
+            MigrationEntityMap.target_entity_type == target_entity_type,
+        )
+    )).scalars())
+
+
 def sink_result(
     records: Sequence[CIFSourceRecord], outcomes: Sequence[RecordOutcome], target_entity_type: str
 ) -> SinkBatchResult:
@@ -149,7 +161,8 @@ def sink_result(
             else:
                 result.skipped += 1
             result.mappings.append(SinkEntityMapping(
-                record.source_type, record.source_external_id, target_entity_type, outcome.entity_id, status,
+                record.source_type, record.source_external_id, outcome.entity_type or target_entity_type,
+                outcome.entity_id, status,
             ))
         else:
             result.errors.append(sink_error(record, outcome.message or "The record could not be imported."))

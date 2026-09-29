@@ -438,9 +438,16 @@ def _next_batch(steps: list[_Step], cursor: int) -> list[_Step]:
     return batch
 
 
-def _representation(group: str, source_type: str, targets: dict[str, str | None]) -> str:
-    """A journal carrying a transaction whose coverage target is not a journal is a fallback."""
-    if group == "journals" and targets.get(source_type) != "journal":
+# Coverage targets Celerp stores as journal entries natively.
+_JOURNAL_TARGETS = {"journal", "bank_transfer"}
+
+
+def _representation(mapping, targets: dict[str, str | None]) -> str:
+    """A journal written for a record whose coverage target is another entity is a
+    fallback: a settlement's other lines, or a debit note posted on its bill. A record
+    with no coverage row of its own, such as the cutover opening balances, is native."""
+    target = targets.get(mapping.source_type)
+    if mapping.target_entity_type == "journal_entry" and target is not None and target not in _JOURNAL_TARGETS:
         return "journal_fallback"
     return "native"
 
@@ -586,7 +593,7 @@ async def _record_mappings(session: AsyncSession, run_id: uuid.UUID, group: str,
         "id": uuid.uuid4(), "migration_run_id": run_id, "source_type": m.source_type,
         "source_external_id": m.source_external_id, "target_entity_type": m.target_entity_type,
         "target_entity_id": m.target_entity_id, "status": m.status,
-        "metadata": {"group": group, "representation": _representation(group, m.source_type, targets)},
+        "metadata": {"group": group, "representation": _representation(m, targets)},
     } for m in mappings]).on_conflict_do_nothing(constraint="uq_migration_entity_map_source"))
 
 

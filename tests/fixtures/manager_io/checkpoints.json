@@ -60,10 +60,6 @@
         "bill": [
           "USD",
           2
-        ],
-        "debit_note": [
-          "USD",
-          1
         ]
       },
       "document_total": {
@@ -78,10 +74,6 @@
         "bill": [
           "USD",
           "94.00"
-        ],
-        "debit_note": [
-          "USD",
-          "4.40"
         ]
       },
       "document_status": {
@@ -89,8 +81,7 @@
         "invoice:awaiting_payment": 2,
         "credit_note:paid": 1,
         "bill:paid": 1,
-        "bill:awaiting_payment": 1,
-        "debit_note:paid": 1
+        "bill:awaiting_payment": 1
       },
       "settlement_allocation": {
         "receipt": [
