@@ -2115,6 +2115,13 @@ async def export_contacts_csv(token: str, params: dict | None = None) -> bytes:
 # Lists
 # ---------------------------------------------------------------------------
 
+async def numbered_ids(token: str, resource: str, number: str, doc_type: str | None = None) -> list[str]:
+    """Ids of the ``resource`` ("docs" or "lists") records numbered exactly ``number``."""
+    params = {"number": number, **({"doc_type": doc_type} if doc_type else {})}
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/{resource}/numbered", params=params)).json()["ids"]
+
+
 async def list_lists(token: str, params: dict | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/lists", params=params or {})).json()

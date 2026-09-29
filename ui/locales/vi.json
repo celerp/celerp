@@ -969,6 +969,7 @@
   "msg.get_the_ai_plan": "Nhận gói Connect + AI",
   "msg.here_are_some_things_i_can_do": "Dưới đây là một số điều tôi có thể làm",
   "msg.import_more": "Nhập thêm",
+  "msg.import_number_shared": "{number}: {count} bản ghi đã có số này nên dòng này không được nhập. Hãy đặt số khác nhau cho chúng rồi nhập lại.",
   "msg.local_install_no_usage_limits": "Cài đặt cục bộ - không có giới hạn sử dụng.",
   "msg.location_col_hint": "Cột 'location_name' là bắt buộc.",
   "msg.memory_cleared": "Đã xóa bộ nhớ.",

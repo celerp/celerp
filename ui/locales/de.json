@@ -969,6 +969,7 @@
   "msg.get_the_ai_plan": "Connect + AI holen",
   "msg.here_are_some_things_i_can_do": "Hier sind einige Dinge, die ich tun kann",
   "msg.import_more": "Weitere importieren",
+  "msg.import_number_shared": "{number}: {count} Datensätze haben bereits diese Nummer, daher wurde diese Zeile nicht importiert. Vergeben Sie unterschiedliche Nummern und importieren Sie sie erneut.",
   "msg.local_install_no_usage_limits": "Lokale Installation — keine Nutzungsbeschränkungen.",
   "msg.location_col_hint": "Die Spalte 'location_name' ist erforderlich.",
   "msg.memory_cleared": "Speicher geleert.",

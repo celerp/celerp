@@ -1047,6 +1047,7 @@
   "msg.get_the_ai_plan": "Connect + AI ያግኙ",
   "msg.here_are_some_things_i_can_do": "ማድረግ የምችላቸው አንዳንድ ነገሮች እነሆ",
   "msg.import_more": "ተጨማሪ አስገባ",
+  "msg.import_number_shared": "{number}: {count} መዝገቦች ይህ ቁጥር አላቸው፣ ስለዚህ ይህ ረድፍ አልገባም። የተለያዩ ቁጥሮች ስጧቸው፣ ከዚያ እንደገና ያስገቡት።",
   "msg.line_item_identifier_hint": "የመስመር ዕቃዎች የሚያመለክቱትን ቁራጭ እንዴት እንደሚለዩ። በሽያጭ ደረሰኞች፣ ማስታወሻዎች፣ የግዢ ሰነዶች፣ ዝርዝሮች እና በታተሙ ወይም በተጋሩ ቅጂዎች ላይ ይሠራል። ባርኮድ ትክክለኛውን አካላዊ ቁራጭ ይለያል። SKU የምርት ዓይነት ነው።",
   "msg.local_install_no_usage_limits": "በአካባቢው ተጭኗል፦ ምንም የአጠቃቀም ገደብ የለም።",
   "msg.location_col_hint": "'location_name' አምድ ያስፈልጋል።",

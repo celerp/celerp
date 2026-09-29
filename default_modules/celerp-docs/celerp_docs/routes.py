@@ -30,7 +30,7 @@ from celerp.inventory_codes import MAX_SCAN_CODE_LEN
 from celerp_docs.doc_money import document_money
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
-from celerp.services.company_lock import lock_projections
+from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.pick import doc_bound_lots
 from celerp.services.business_time import business_date_at
@@ -1082,6 +1082,44 @@ async def list_docs(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     return await query_docs(session, company_id, filters, limit=limit, offset=offset)
+
+
+async def _ids_numbered(session: AsyncSession, company_id, kind: Literal["doc", "list"], number: str,
+                        doc_type: str | None = None) -> list[str]:
+    """Every Document (of doc_type, when given) or List whose number is exactly ``number``,
+    ignoring case as the import key does."""
+    fields = ("doc_number", "ref_id") if kind == "doc" else ("ref_id",)
+    wanted = number.strip().lower()
+    query = select(Projection.entity_id).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == kind,
+        _sa.or_(*(_func.lower(Projection.state[f].as_string()) == wanted for f in fields)),
+    )
+    if doc_type:
+        query = query.where(Projection.state["doc_type"].as_string() == doc_type)
+    return sorted((await session.execute(query)).scalars().all())
+
+
+async def _assert_import_number_free(session: AsyncSession, company_id, kind: Literal["doc", "list"], data: dict) -> None:
+    """Refuse an imported new Document or List whose number another one of its kind already has."""
+    await lock_company(session, company_id)
+    fields = ("doc_number", "ref_id") if kind == "doc" else ("ref_id",)
+    for number in {str(data[f]).strip() for f in fields if str(data.get(f) or "").strip()}:
+        doc_type = data.get("doc_type") if kind == "doc" else None
+        if await _ids_numbered(session, company_id, kind, number, doc_type):
+            label = "Document" if kind == "doc" else "List"
+            raise HTTPException(status_code=409, detail=f"{label} number '{number}' already exists")
+
+
+@router.get("/numbered", dependencies=[require_permission("view_documents")])
+async def docs_numbered(
+    number: str = Query(min_length=1),
+    doc_type: str | None = None,
+    company_id: str = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The ids of the documents numbered exactly ``number``."""
+    return {"ids": await _ids_numbered(session, company_id, "doc", number, doc_type)}
 
 
 @router.get("/summary", dependencies=[require_permission("view_documents")], openapi_extra={"x-celerp-agent": True})
@@ -4495,6 +4533,7 @@ async def import_doc(
         )
 
     await _lock_imported_contact(session, company_id, "doc", body.data)
+    await _assert_import_number_free(session, company_id, "doc", body.data)
     _imp_company = await session.get(Company, company_id)
     _imp_base_currency = (_imp_company.settings.get("currency", "USD") if _imp_company else "USD")
     if auto_je.import_auto_je_kind(body.data) is not None:
@@ -4696,6 +4735,7 @@ async def batch_import_docs(
 
         try:
             await _lock_imported_contact(session, company_id, "doc", rec.data)
+            await _assert_import_number_free(session, company_id, "doc", rec.data)
             if auto_je.import_auto_je_kind(rec.data) is not None:
                 _require_doc_rate_http(rec.data, _batch_base_currency)
             entry = await emit_event(
@@ -5009,6 +5049,16 @@ async def list_lists(
         "total_weight": float(r.total_weight or 0),
     } for r in rows]
     return {"items": out, "total": total}
+
+
+@lists_router.get("/numbered", dependencies=[require_permission("view_documents")])
+async def lists_numbered(
+    number: str = Query(min_length=1),
+    company_id: str = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The ids of the lists numbered exactly ``number``."""
+    return {"ids": await _ids_numbered(session, company_id, "list", number)}
 
 
 @lists_router.get("/summary", dependencies=[require_permission("view_documents")])
@@ -6243,6 +6293,7 @@ async def import_list(
     if existing is not None:
         raise HTTPException(status_code=409, detail=f"List {body.entity_id} already exists")
     await _lock_imported_contact(session, company_id, "list", body.data)
+    await _assert_import_number_free(session, company_id, "list", body.data)
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=body.entity_id, entity_type="list",
@@ -6349,6 +6400,7 @@ async def batch_import_lists(
             continue
         try:
             await _lock_imported_contact(session, company_id, "list", rec.data)
+            await _assert_import_number_free(session, company_id, "list", rec.data)
             entry = await emit_event(
                 session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
                 event_type="list.created", data=rec.data, actor_id=user.id, location_id=None,

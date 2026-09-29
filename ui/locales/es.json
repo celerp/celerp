@@ -969,6 +969,7 @@
   "msg.get_the_ai_plan": "Obtenga el plan Connect + AI",
   "msg.here_are_some_things_i_can_do": "Aquí hay algunas cosas que puedo hacer",
   "msg.import_more": "Importar más",
+  "msg.import_number_shared": "{number}: {count} registros ya tienen este número, así que esta fila no se importó. Asígneles números distintos e impórtela de nuevo.",
   "msg.local_install_no_usage_limits": "Instalación local: sin límites de uso.",
   "msg.location_col_hint": "La columna 'nombre_ubicación' es obligatoria.",
   "msg.memory_cleared": "Memoria borrada.",

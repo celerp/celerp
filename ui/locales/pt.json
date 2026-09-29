@@ -969,6 +969,7 @@
   "msg.get_the_ai_plan": "Obtenha o plano Connect + AI",
   "msg.here_are_some_things_i_can_do": "Aqui estão algumas coisas que posso fazer",
   "msg.import_more": "Importe mais",
+  "msg.import_number_shared": "{number}: {count} registros já têm este número, por isso esta linha não foi importada. Dê-lhes números diferentes e importe-a novamente.",
   "msg.local_install_no_usage_limits": "Instalação local — sem limites de uso.",
   "msg.location_col_hint": "A coluna 'location_name' é obrigatória.",
   "msg.memory_cleared": "Memória apagada.",

@@ -28,7 +28,7 @@ from ui.routes.csv_import import (
     column_mapping_form,
     error_report_response,
     import_result_panel,
-    record_id_for,
+    import_numbered,
     read_csv_upload,
     upload_form,
     validate_cell,
@@ -650,12 +650,7 @@ def setup_routes(app):
             })
 
         try:
-            for rec in records:
-                rec["entity_id"] = await record_id_for(
-                    lambda params: api.list_docs(token, params), {"doc_type": rec["data"]["doc_type"]},
-                    "doc_number", rec["data"]["doc_number"], "doc",
-                )
-            result = await api.batch_import(token, "/docs/import/batch", records, upsert=upsert)
+            result = await import_numbered(token, "docs", records, "doc_number", "doc", upsert=upsert)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)

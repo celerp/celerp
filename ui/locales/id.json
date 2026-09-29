@@ -969,6 +969,7 @@
   "msg.get_the_ai_plan": "Dapatkan Paket Connect + AI",
   "msg.here_are_some_things_i_can_do": "Berikut beberapa hal yang dapat saya lakukan",
   "msg.import_more": "Impor lebih banyak",
+  "msg.import_number_shared": "{number}: {count} catatan sudah memakai nomor ini, jadi baris ini tidak diimpor. Beri nomor yang berbeda, lalu impor lagi.",
   "msg.local_install_no_usage_limits": "Pemasangan lokal — tidak ada batasan penggunaan.",
   "msg.location_col_hint": "Kolom 'nama_lokasi' wajib diisi.",
   "msg.memory_cleared": "Memori dibersihkan.",

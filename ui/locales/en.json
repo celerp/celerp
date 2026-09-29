@@ -1116,6 +1116,7 @@
   "msg.get_the_ai_plan": "Get Connect + AI",
   "msg.here_are_some_things_i_can_do": "Here are some things I can do",
   "msg.import_more": "Import more",
+  "msg.import_number_shared": "{number}: {count} records already have this number, so this row was not imported. Give them different numbers, then import it again.",
   "msg.line_item_identifier_hint": "How line items identify the piece they refer to. Applies to invoices, memos, purchase documents, lists, and printed or shared copies. Barcode identifies the exact physical piece; SKU is the product type.",
   "msg.local_install_no_usage_limits": "Local install — no usage limits.",
   "msg.location_col_hint": "'location_name' column is required.",

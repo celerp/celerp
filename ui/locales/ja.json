@@ -969,6 +969,7 @@
   "msg.get_the_ai_plan": "Connect + AI プランを取得する",
   "msg.here_are_some_things_i_can_do": "私にできることをいくつか紹介します",
   "msg.import_more": "さらにインポート",
+  "msg.import_number_shared": "{number}: この番号を持つレコードが既に{count}件あるため、この行はインポートされませんでした。番号を別々にしてから、もう一度インポートしてください。",
   "msg.local_install_no_usage_limits": "ローカル インストール — 使用制限なし。",
   "msg.location_col_hint": "「location_name」列は必須です。",
   "msg.memory_cleared": "メモリがクリアされました。",

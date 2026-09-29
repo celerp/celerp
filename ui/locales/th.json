@@ -969,6 +969,7 @@
   "msg.get_the_ai_plan": "รับแผน Connect + AI",
   "msg.here_are_some_things_i_can_do": "นี่คือบางสิ่งที่ฉันสามารถทำได้",
   "msg.import_more": "นำเข้าเพิ่มเติม",
+  "msg.import_number_shared": "{number}: มี {count} รายการที่ใช้เลขนี้อยู่แล้ว จึงไม่ได้นำเข้าแถวนี้ กำหนดเลขให้ต่างกันแล้วนำเข้าอีกครั้ง",
   "msg.local_install_no_usage_limits": "การติดตั้งในเครื่อง — ไม่จำกัดการใช้งาน",
   "msg.location_col_hint": "จำเป็นต้องมีคอลัมน์ 'location_name'",
   "msg.memory_cleared": "ล้างหน่วยความจำแล้ว",
