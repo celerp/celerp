@@ -638,17 +638,17 @@ async def test_revert_bill_with_received_goods_names_return_goods(client, auth, 
     """A bill whose goods were received cannot revert to draft; the 409 names the Return Goods
     action on the bill's lines as the way to clear it."""
     h = auth["headers"]
+    sku = f"RG-{uuid.uuid4().hex[:6]}"
     r = await client.post("/docs", headers=h, json={
         "doc_type": "bill",
         "ref_id": f"BILL-{uuid.uuid4().hex[:6]}",
-        "line_items": [{"name": "Received widget", "sku": f"RG-{uuid.uuid4().hex[:6]}", "quantity": 2,
+        "line_items": [{"name": "Received widget", "sku": sku, "quantity": 2,
                         "unit_price": 15.0, "sell_by": "piece"}],
         "subtotal": 30, "tax": 0, "total": 30,
     })
     assert r.status_code == 200, r.text
     bill_id = r.json()["id"]
     assert (await client.post(f"/docs/{bill_id}/finalize", headers=h)).status_code == 200
-    sku = r.json()["line_items"][0]["sku"] if r.json().get("line_items") else None
     received = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
         "location_id": "",
         "received_items": [{"sku": sku, "name": "Received widget", "quantity_received": 2.0}],
@@ -2098,7 +2098,7 @@ async def test_reserve_lines_on_quotation_list(client, session, auth, _setup_ids
 
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })
@@ -2126,7 +2126,7 @@ async def test_reserve_lines_on_draft_quotation_list(client, session, auth, _set
 
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })
@@ -2177,7 +2177,7 @@ async def test_reserve_lines_rejects_voided_list(client, session, auth, _setup_i
     eid = await _create_item(client, auth, sku, 1, cost_price=100.0)
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })
@@ -2313,7 +2313,7 @@ async def test_create_list_allows_foreign_reserved_line(client, session, auth, _
 
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })
@@ -2390,7 +2390,7 @@ async def test_convert_list_transfers_reservation_to_new_doc(client, session, au
 
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })
@@ -2421,7 +2421,7 @@ async def test_convert_list_rejects_line_reserved_elsewhere(client, session, aut
 
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })
@@ -2504,7 +2504,7 @@ async def test_reserved_conflict_detail_structured(client, session, auth, _setup
     # List-convert path (its own 422 raise from _scan_reserved_lines).
     r = await client.post("/lists", headers=auth["headers"], json={
         "list_type": "quotation",
-        "customer_name": "Buyer",
+        "contact_name": "Buyer",
         "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0,
                         "item_id": eid, "entity_id": eid}],
     })
@@ -3479,7 +3479,7 @@ async def test_split_fulfillment_period_lock_uses_company_timezone(
 
 
 @pytest.mark.asyncio
-async def test_invoice_cross_lot_revert_voids_true_up_and_refulfill_posts_new_cycle(
+async def test_invoice_cross_lot_revert_trues_back_and_refulfill_posts_new_cycle(
     client, session, auth, _setup_ids
 ):
     from celerp.models.projections import Projection
@@ -3516,7 +3516,9 @@ async def test_invoice_cross_lot_revert_voids_true_up_and_refulfill_posts_new_cy
 
     session.expire_all()
     adj0 = await session.get(Projection, {"company_id": cid, "entity_id": adj0_id})
-    assert adj0.state.get("status") == "void"
+    assert adj0.state.get("status") == "posted"
+    back = await session.get(Projection, {"company_id": cid, "entity_id": f"je:auto:{doc1}:cogs-adj:reverse-0:l0"})
+    assert back is not None and back.state.get("status") == "posted"
     assert (await _je_net(client, auth["headers"])).get("5100") == 200.0
 
     rf = await client.post(f"/docs/{doc1}/fulfill-lines", headers=auth["headers"],
@@ -3620,33 +3622,3 @@ async def test_fulfill_two_same_sku_bound_lots_draws_each_lot_once(
 
     nets = await _je_net(client, auth["headers"])
     assert nets.get("5100") == 260.0, nets
-
-
-@pytest.mark.asyncio
-async def test_reversing_adjustments_leaves_similarly_named_documents_alone(client, session, auth, _setup_ids):
-    """Document ids are free text on import, so an id containing _ or % must match
-    only its own fulfillment adjustments."""
-    from celerp.models.projections import Projection
-    from celerp.services import auto_je
-
-    cid = _setup_ids["company_id"]
-    uid = _setup_ids["user_id"]
-    for doc_id in ("doc:IMP-A_", "doc:IMP-AB", "doc:IMP-%", "doc:IMP-XY"):
-        await auto_je.create_for_doc_cogs_adjustment(
-            session, company_id=cid, user_id=uid, doc_id=doc_id, delta=5.0,
-            cycle_tag="fulfill-0:l0", doc_number=doc_id,
-        )
-    await session.commit()
-
-    for doc_id in ("doc:IMP-A_", "doc:IMP-%"):
-        await auto_je.void_for_doc_cogs_adjustments(
-            session, company_id=cid, user_id=uid, doc_id=doc_id, line_indices={0})
-    await session.commit()
-
-    session.expire_all()
-    status = {}
-    for doc_id in ("doc:IMP-A_", "doc:IMP-AB", "doc:IMP-%", "doc:IMP-XY"):
-        je = await session.get(Projection, {"company_id": cid, "entity_id": f"je:auto:{doc_id}:cogs-adj:fulfill-0:l0"})
-        status[doc_id] = je.state.get("status")
-    assert status == {"doc:IMP-A_": "void", "doc:IMP-AB": "posted",
-                      "doc:IMP-%": "void", "doc:IMP-XY": "posted"}

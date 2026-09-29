@@ -23,11 +23,13 @@ import hashlib
 import io
 import json
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
 from fasthtml.common import *
 from starlette.responses import StreamingResponse
+import ui.api_client as api
 from ui.i18n import t, get_lang
 
 from celerp.importers import tabular
@@ -1195,6 +1197,27 @@ def import_abort_panel(
         ),
         id="import-preview",
     )
+
+
+async def import_numbered(token: str, resource: str, records: list[dict], number_field: str, prefix: str,
+                          *, upsert: bool) -> dict:
+    """Send ``records`` to the ``resource`` batch import, each under the id of the one existing
+    record with exactly its number, or a new id when there is none, so a re-imported row updates
+    the record it matched. A row whose number several records already share is reported as an
+    error and not sent."""
+    sendable: list[dict] = []
+    errors: list[str] = []
+    for rec in records:
+        number = rec["data"][number_field]
+        ids = await api.numbered_ids(token, resource, number, rec["data"].get("doc_type"))
+        if len(ids) > 1:
+            errors.append(t("msg.import_number_shared", number=number, count=len(ids)))
+            continue
+        rec["entity_id"] = ids[0] if ids else f"{prefix}:{uuid.uuid4()}"
+        sendable.append(rec)
+    result = (await api.batch_import(token, f"/{resource}/import/batch", sendable, upsert=upsert)
+              if sendable else {"created": 0, "skipped": 0})
+    return {**result, "errors": errors + list(result.get("errors") or [])}
 
 
 def import_result_panel(

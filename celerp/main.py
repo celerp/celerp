@@ -4,9 +4,13 @@
 from contextlib import asynccontextmanager
 import asyncio
 import logging
+import math
 import sys
+import uuid
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -16,12 +20,16 @@ from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
 from celerp.db import engine, lifecycle_engine, mask_db_credentials
 from celerp.inventory_codes import CodeConflictError
+from celerp.services.auto_je import UnbalancedJournalEntry
 from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_cloud_config, load_backup_config
 from celerp.gateway.state import load_commercial_context
 load_cloud_config()
 load_backup_config()
 load_commercial_context()
 assert_secure_jwt()
+# Read before ensure_instance_id() writes the id.
+_FIRST_BOOT = not settings.gateway_instance_id
+_BOOT_ID = uuid.uuid4().hex
 ensure_instance_id()
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
@@ -82,45 +90,28 @@ _MODULE_DIR = _os.environ["MODULE_DIR"]
 
 
 async def _try_auto_activate() -> None:
-    """Recover a challenge-approved activation, otherwise only check in.
-
-    The verifier is durable, so retrying it after response loss returns the same
-    credential. UUID-only activation is intentionally not retried at startup.
-    """
+    """Check in with the relay at startup, or finish a pending activation."""
     _log = logging.getLogger(__name__)
     try:
-        import httpx
-        from celerp.config import (
-            settings as _s, ensure_instance_id, config_path)
+        from celerp.config import settings as _s, ensure_instance_id
         if _s.cloud_disconnected:
             return
-        first_boot = not config_path().exists()
         iid = await asyncio.to_thread(ensure_instance_id)
-        from celerp.gateway.state import activate_payload, relay_http_url as _rhu
+        from celerp.gateway.state import (
+            activate_payload, relay_http_url as _rhu, relay_post_with_retry)
         relay_base = _rhu()
         verifier = _s.activation_verifier or ""
 
         if not verifier:
-            async def _checkin():
-                async with httpx.AsyncClient(timeout=6.0) as c:
-                    return await c.post(
-                        f"{relay_base}/auth/checkin",
-                        json=activate_payload(iid, first_boot=first_boot),
-                    )
-
-            try:
-                await asyncio.wait_for(_checkin(), timeout=6.0)
-            except (httpx.HTTPError, asyncio.TimeoutError):
-                pass
+            await relay_post_with_retry(
+                f"{relay_base}/auth/checkin",
+                activate_payload(iid, first_boot=_FIRST_BOOT, boot_id=_BOOT_ID))
             return
-        else:
-            # Challenge redemption is idempotent for this verifier, so transient
-            # transport retries are safe here.
-            from celerp.gateway.state import relay_post_with_retry
-            r = await relay_post_with_retry(
-                f"{relay_base}/auth/activate",
-                activate_payload(
-                    iid, first_boot=first_boot, activation_verifier=verifier))
+        r = await relay_post_with_retry(
+            f"{relay_base}/auth/activate",
+            activate_payload(
+                iid, first_boot=_FIRST_BOOT, activation_verifier=verifier,
+                boot_id=_BOOT_ID))
 
         if r is None or r.status_code != 200:
             return
@@ -146,7 +137,8 @@ async def _try_sync_existing_entitlement() -> None:
     """Best-effort boot convergence for an already-persisted relay credential."""
     try:
         from celerp.services.cloud_entitlement import sync_existing_entitlement
-        await sync_existing_entitlement(require_persisted_key=True)
+        await sync_existing_entitlement(
+            require_persisted_key=True, first_boot=_FIRST_BOOT, boot_id=_BOOT_ID)
     except Exception as exc:
         logging.getLogger(__name__).debug(
             "Cloud startup reconciliation failed (non-fatal): %s", exc)
@@ -544,6 +536,17 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
+def _finite_or_text(value: float) -> float | str:
+    return value if math.isfinite(value) else str(value)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_handler(_request: Request, exc: RequestValidationError):
+    # A rejected NaN or Infinity is echoed back as text, since JSON cannot carry it as a number.
+    return JSONResponse(status_code=422, content={
+        "detail": jsonable_encoder(exc.errors(), custom_encoder={float: _finite_or_text})})
+
+
 @app.exception_handler(RateLimitExceeded)
 async def rate_limit_handler(_request: Request, _exc: RateLimitExceeded):
     return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
@@ -555,6 +558,13 @@ async def code_conflict_handler(_request: Request, exc: CodeConflictError):
     # introduces a physical code another item already holds. One handler on the shared
     # base maps every physical-code collision to 409.
     return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(UnbalancedJournalEntry)
+async def unbalanced_je_handler(_request: Request, exc: UnbalancedJournalEntry):
+    # An automatic journal entry that would not balance is refused, and the write that
+    # produced it rolls back with it; the message names the document and the amounts.
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
 
 
 # Kernel routes — always present regardless of module configuration

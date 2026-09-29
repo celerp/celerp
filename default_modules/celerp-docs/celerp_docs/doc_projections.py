@@ -7,6 +7,15 @@ from copy import deepcopy
 from decimal import Decimal
 
 from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
+from celerp_docs.doc_constants import LEGACY_CONTACT_FIELDS
+
+
+def _fold_legacy_list_contact(state: dict) -> None:
+    """Move legacy List counterparty fields onto contact_id/contact_name; a canonical value wins."""
+    for legacy, canonical in LEGACY_CONTACT_FIELDS.items():
+        value = state.pop(legacy, None)
+        if value and not state.get(canonical):
+            state[canonical] = value
 
 
 def _recalc_list_totals(state: dict) -> dict:
@@ -44,6 +53,19 @@ def _recalc_list_totals(state: dict) -> dict:
     state["tax_amount"] = to_stored_float(tax_amount)
     state["total"] = to_stored_float(round_money(taxable + tax_amount, currency))
     return state
+
+
+def _payment_balances(state: dict, paid) -> tuple[Decimal, Decimal]:
+    """Return document-currency paid and outstanding balances."""
+    currency = str(state.get("currency") or "USD")
+    total = round_money(state.get("total", 0) or 0, currency)
+    paid_d = round_money(max(Decimal(0), to_decimal(paid)), currency)
+    outstanding = round_money(max(Decimal(0), total - paid_d), currency)
+    return paid_d, outstanding
+
+
+def _payment_status(paid: Decimal, outstanding: Decimal) -> str:
+    return "paid" if outstanding == 0 else ("partial" if paid > 0 else "final")
 
 
 def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
@@ -163,12 +185,11 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.pop("pre_close_status", None)
         current.pop("close_reason", None)
     elif event_type == "doc.payment.received":
-        paid = to_decimal(current.get("amount_paid", 0)) + to_decimal(data["amount"])
-        total = to_decimal(current.get("total", 0))
-        outstanding = max(Decimal(0), total - paid)
+        paid, outstanding = _payment_balances(
+            current, to_decimal(current.get("amount_paid", 0)) + to_decimal(data["amount"]))
         current["amount_paid"] = to_stored_float(paid)
         current["amount_outstanding"] = to_stored_float(outstanding)
-        current["status"] = "paid" if outstanding <= Decimal("0.005") else "partial"
+        current["status"] = "paid" if outstanding == 0 else "partial"
         # Build payments list
         current.setdefault("payments", [])
         current["payments"].append({
@@ -200,25 +221,22 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         # behind on docs compacted by pre-tombstone deletions).
         target = next((p for p in payments if p.get("index") == idx), None)
         if target is not None:
-            # Refunds adjust amount_paid without a payments[] row, so their
-            # effect is derived before this removal: what the actives summed to
-            # minus what amount_paid actually was. Deriving (rather than
-            # storing a counter) also covers docs refunded before this logic
-            # existed. Doc-level refunds cannot be attributed to one payment,
-            # so removing the very payment a refund already returned still
-            # subtracts both - the price of doc-level refund semantics.
+            # Refunds reduce amount_paid, so their effect is derived before
+            # this removal: what the actives summed to minus what amount_paid
+            # actually was. Deriving also covers refunds recorded before they
+            # named a payment. A refund of this payment leaves with it: only refunds
+            # of the other payments still count against what stays paid.
             _prior_active = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
-            refunded = max(Decimal(0), _prior_active - to_decimal(current.get("amount_paid", 0)))
+            refunded = max(Decimal(0), _prior_active - to_decimal(current.get("amount_paid", 0))
+                           - to_decimal(target.get("refunded", 0)))
             target["status"] = "voided"
             target["void_reason"] = data.get("void_reason")
             target["refund_date"] = data.get("refund_date")
             active_total = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
-            total = to_decimal(current.get("total", 0))
-            paid = max(Decimal(0), active_total - refunded)
-            outstanding = max(Decimal(0), total - paid)
+            paid, outstanding = _payment_balances(current, active_total - refunded)
             current["amount_paid"] = to_stored_float(paid)
             current["amount_outstanding"] = to_stored_float(outstanding)
-            current["status"] = "paid" if outstanding <= Decimal("0.005") else ("partial" if paid > 0 else "final")
+            current["status"] = _payment_status(paid, outstanding)
     elif event_type == "doc.payment.deleted":
         idx = data["payment_index"]
         payments = current.get("payments", [])
@@ -247,20 +265,23 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
                     p["index"] = i
         if changed:
             active_total = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
-            total = to_decimal(current.get("total", 0))
-            paid = max(Decimal(0), active_total - refunded)
-            outstanding = max(Decimal(0), total - paid)
+            paid, outstanding = _payment_balances(current, active_total - refunded)
             current["amount_paid"] = to_stored_float(paid)
             current["amount_outstanding"] = to_stored_float(outstanding)
-            current["status"] = "paid" if outstanding <= Decimal("0.005") else ("partial" if paid > 0 else "final")
+            current["status"] = _payment_status(paid, outstanding)
     elif event_type == "doc.payment.refunded":
         refunded = to_decimal(data["amount"])
-        total = to_decimal(current.get("total", 0))
-        paid = max(Decimal(0), to_decimal(current.get("amount_paid", 0)) - refunded)
-        outstanding = max(Decimal(0), total - paid)
+        idx = data.get("payment_index")
+        target = next((p for p in current.get("payments", []) if p.get("index") == idx), None) \
+            if idx is not None else None
+        if target is not None:
+            target["refunded"] = to_stored_float(to_decimal(target.get("refunded", 0)) + refunded)
+            target["refund_count"] = int(target.get("refund_count", 0)) + 1
+        paid, outstanding = _payment_balances(
+            current, to_decimal(current.get("amount_paid", 0)) - refunded)
         current["amount_paid"] = to_stored_float(paid)
         current["amount_outstanding"] = to_stored_float(outstanding)
-        current["status"] = "paid" if outstanding <= Decimal("0.005") else "partial"
+        current["status"] = _payment_status(paid, outstanding)
     elif event_type == "doc.converted":
         current["status"] = "converted"
         current["converted_to"] = data["target_doc_id"]
@@ -342,8 +363,10 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         # Undo a receive-return: clear the received items list
         current["return_received_items"] = []
     elif event_type == "doc.receive_undone":
+        # Returns were made from the received goods, so they go with them.
         current["received_items"] = []
         current["received_item_ids"] = []
+        current["returned_items"] = []
         current["status"] = "final"
         # Clear entity_id from line items so per-line status column resets to "Not Received".
         for li in current.get("line_items", []):
@@ -437,6 +460,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     # --- List events (entity_type="list") ---
     elif event_type == "list.created":
         current.update({"entity_type": "list", **data})
+        _fold_legacy_list_contact(current)
         current.setdefault("status", "draft")
         current.setdefault("line_items", [])
         current.setdefault("subtotal", 0.0)
@@ -447,9 +471,9 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current = _recalc_list_totals(current)
     elif event_type == "list.updated":
         for field, change in data["fields_changed"].items():
-            if field == "currency" and current.get("currency") is not None:
-                continue  # currency is immutable after creation
-            current[field] = change.get("new")
+            if field == "currency" and current.get("currency") is not None and current.get("status") != "draft":
+                continue  # a List's currency is fixed once it leaves draft
+            current[LEGACY_CONTACT_FIELDS.get(field, field)] = change.get("new")
         current = _recalc_list_totals(current)
     elif event_type == "list.finalized":
         # draft -> finalized. Carries status + finalize milestone (sent_at / issued_at) and, for
@@ -477,9 +501,12 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("reason"):
             current["void_reason"] = data["reason"]
 
-    elif event_type in {"doc.patched", "list.patched"}:
+    elif event_type == "doc.patched":
         # CSV upsert: merge data fields into existing state
         current.update(data)
+    elif event_type == "list.patched":
+        # CSV upsert: merge data fields into existing state, legacy counterparty fields as contact fields
+        current.update({LEGACY_CONTACT_FIELDS.get(k, k): v for k, v in data.items()})
 
     else:
         raise ValueError(f"Unsupported event: {event_type}")

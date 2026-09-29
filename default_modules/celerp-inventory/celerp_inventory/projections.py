@@ -3,6 +3,8 @@
 
 from copy import deepcopy
 
+from celerp.services.money import round_basis
+
 # Maps old weight_unit abbreviations to new unit names
 _WEIGHT_UNIT_MAP: dict[str, str] = {
     "ct": "carat",
@@ -205,23 +207,78 @@ def _recompute_cost(current: dict) -> None:
     per-unit contributions keyed by "<source_bill_id>::<kind>"; the total landed = Σ unit × quantity,
     so landed scales as quantity is received. cost_total stays authoritative for valuation/COGS.
 
+    A zero-quantity lot with no basis keeps its unit cost as cost_price, whatever landed cost
+    arrives meanwhile; the first positive quantity turns it into basis = unit × quantity.
+
     Idempotent. Bootstraps cost_base from a legacy cost_total when the split is absent, so existing
     items (cost_total only, no landed) are unaffected: cost_total == cost_base.
     """
     contribs = current.get("landed_contributions") or {}
+    qty = float(current.get("quantity") or 0)
     if current.get("cost_base") is None:
         if current.get("cost_total") is not None:
             current["cost_base"] = float(current["cost_total"])
+        elif current.get("cost_price") is not None:
+            if qty <= 0:
+                return  # the unit cost waits for stock
+            current["cost_base"] = round_basis(float(current["cost_price"]) * qty)
         elif not contribs:
             return  # item has no cost set at all
         else:
             current["cost_base"] = 0.0
     base = float(current.get("cost_base") or 0)
-    qty = float(current.get("quantity") or 0)
     landed_unit = sum(float(v or 0) for v in contribs.values())
-    current["cost_landed"] = round(landed_unit * qty, 2)
-    current["cost_total"] = round(base + current["cost_landed"], 2)
+    current["cost_landed"] = round_basis(landed_unit * qty)
+    current["cost_total"] = round_basis(base + current["cost_landed"])
     current.pop("cost_price", None)  # always derived from cost_total at read time (flatten_item)
+
+
+def _apply_goods_cost(current: dict, field: str, value) -> None:
+    """The one normalization of a manual goods-cost change (cost_price or cost_total).
+
+    cost_total is the goods basis itself. cost_price is a unit cost that _recompute_cost turns
+    into basis = unit x quantity, or keeps as the unit cost of a zero-quantity lot until stock
+    arrives. Clearing either removes the goods cost; landed cost stays and is re-added on top.
+    """
+    for key in ("cost_base", "cost_price", "cost_total", "cost_landed"):
+        current.pop(key, None)
+    if value not in (None, ""):
+        if field == "cost_total":
+            current["cost_base"] = round_basis(value)
+        else:
+            current["cost_price"] = float(value)
+    _recompute_cost(current)
+
+
+def _set_quantity(current: dict, new_qty, cost_base=None) -> None:
+    """Move a lot to new_qty with its goods cost following the units (perpetual costing).
+
+    An explicit cost_base (a receipt adding the received goods' cost) is the new basis.
+    Otherwise the basis scales by new/old quantity, so unit cost stays put: units that leave
+    take their share, units that come back bring it. At zero quantity the unit cost is kept
+    as cost_price, so stock that returns later is costed at it. Landed cost is per-unit and
+    rescales in _recompute_cost.
+    """
+    old_qty = float(current.get("quantity") or 0)
+    qty = float(new_qty or 0)
+    if cost_base is not None:
+        current["cost_base"] = float(cost_base)
+        current.pop("cost_price", None)
+    else:
+        basis = current.get("cost_base")
+        if basis is None:
+            basis = current.get("cost_total")
+        if old_qty > 0 and basis is not None:
+            # Unrounded: a basis or unit cost cut to any fixed precision would not scale
+            # back exactly when the units return.
+            if qty > 0:
+                current["cost_base"] = float(basis) * qty / old_qty
+            else:
+                for key in ("cost_base", "cost_total", "cost_landed"):
+                    current.pop(key, None)
+                current["cost_price"] = float(basis) / old_qty
+    current["quantity"] = new_qty
+    _recompute_cost(current)
 
 
 def _stamp_status_doc(current: dict, data: dict) -> None:
@@ -278,6 +335,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
                     aliases.append(old_sku)
                     current["_catalog_sku_aliases"] = aliases
 
+        cost_changes: list[tuple[str, object]] = []
         for field, change in data["fields_changed"].items():
             if field == "pieces":
                 # pieces always lives in attributes["pieces"] — never at top-level
@@ -290,21 +348,9 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
                 current["attributes"] = attrs
                 current.pop("pieces", None)
             elif field in ("cost_price", "cost_total"):
-                # A manual cost edit sets the BASE cost; landed cost is then re-added on top by
-                # _recompute_cost. cost_price is a unit value (× qty -> base); cost_total is the base
-                # directly. Clearing either removes the base.
-                new_val = change.get("new")
-                if new_val in (None, ""):
-                    current.pop("cost_base", None)
-                    current.pop("cost_price", None)
-                    current.pop("cost_total", None)
-                    current.pop("cost_landed", None)
-                elif field == "cost_price":
-                    qty = float(current.get("quantity") or 0)
-                    current["cost_base"] = round(float(new_val) * qty, 2)
-                    current.pop("cost_price", None)
-                else:  # cost_total
-                    current["cost_base"] = round(float(new_val), 2)
+                # Applied after the other fields, so a unit cost normalizes against the
+                # quantity this same edit sets.
+                cost_changes.append((field, change.get("new")))
             elif _is_core_key(field):
                 # Core / price field — stays TOP-LEVEL. Clearing (None/"") unsets it — remove the key
                 # rather than storing an empty string or null, so it reads as truly absent (issue #202).
@@ -328,18 +374,15 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
                     attrs[field] = new_val
                 current["attributes"] = attrs
                 current.pop(field, None)
+        for field, value in cost_changes:
+            _apply_goods_cost(current, field, value)
         current = _sync_expiry_from_attributes(current)
         _recompute_cost(current)
     elif event_type == "item.pricing.set":
         pt = data["price_type"]
         price = data["new_price"]
-        if pt == "cost_total":
-            # cost_total pricing sets the base; landed is re-added by _recompute_cost.
-            current["cost_base"] = price
-            current.pop("cost_price", None)
-            _recompute_cost(current)
-        elif pt == "cost_price":
-            current["cost_price"] = price   # legacy path - do NOT pop cost_total here
+        if pt in ("cost_price", "cost_total"):
+            _apply_goods_cost(current, pt, price)
         else:
             current[pt] = price
     elif event_type == "item.status.set":
@@ -351,18 +394,13 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         if "updated_at" in data:
             current["updated_at"] = data["updated_at"]
     elif event_type == "item.quantity.adjusted":
-        current["quantity"] = data["new_qty"]
         # Returning consigned goods to their supplier adjusts the quantity and settles the
         # borrowed/owned question in the same breath: the emitter sends consignment_flag
         # (None once nothing is left on hand, "in" while a partial balance remains). Only
         # honour the key when present, so ordinary stock adjustments never touch the flag.
         if "consignment_flag" in data:
             current["consignment_flag"] = data["consignment_flag"]
-        # A return sends the goods cost that left with the units. Only honoured when
-        # present, so a plain stock correction still leaves the lot's cost alone.
-        if "cost_base" in data and data["cost_base"] is not None:
-            current["cost_base"] = float(data["cost_base"])
-        _recompute_cost(current)  # landed cost is per-unit, so it scales with quantity
+        _set_quantity(current, data["new_qty"], data.get("cost_base"))
     elif event_type == "item.cost_adjusted":
         # Restate the goods cost of a lot after the fact: manufacturing re-costs a produced lot to the
         # run's actual input cost once completion knows the true received quantity. cost_total in the
@@ -413,16 +451,9 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         _stamp_status_doc(current, {})
         current["merged_into"] = data.get("merged_into")
     elif event_type == "item.consumed":
-        # Relieve goods cost with the units, so unit cost stays put as a component is drawn down
-        # (perpetual costing: what leaves carries its share of cost_base, exactly as a sale relieves
-        # COGS). Landed cost is per-unit and _recompute_cost rescales it, so only cost_base moves here.
+        # What is drawn down carries its share of cost, exactly as a sale relieves COGS.
         qty = float(current.get("quantity") or 0)
-        consumed = float(data["quantity_consumed"])
-        if qty > 0 and current.get("cost_base") is not None:
-            base_unit = float(current["cost_base"]) / qty
-            current["cost_base"] = round(max(0.0, float(current["cost_base"]) - base_unit * consumed), 2)
-        current["quantity"] = max(0.0, qty - consumed)
-        _recompute_cost(current)
+        _set_quantity(current, max(0.0, qty - float(data["quantity_consumed"])))
     elif event_type == "item.produced":
         current["quantity"] = float(current.get("quantity", 0)) + float(data["quantity_produced"])
     elif event_type == "item.recipe.set":

@@ -135,7 +135,7 @@ async def test_refund_payment_rejected_on_closed_memo(client):
     memo = await _paid_then_closed_memo(client, h)
 
     r = await client.post(f"/docs/{memo}/refund", headers=h,
-                          json={"amount": 4, "payment_date": "2026-06-23", "method": "cash", "bank_account": "1111"})
+                          json={"payment_index": 0, "amount": 4, "payment_date": "2026-06-23", "method": "cash"})
     assert r.status_code == 409, r.text
     assert "reopen" in r.text.lower()
 
@@ -186,10 +186,8 @@ async def test_manual_overpayment_no_reference_still_409(client):
     """POST /docs/{id}/payment for more than outstanding, with NO reference, is a 409;
     the amount is never silently clamped and no payment is recorded.
 
-    The clamp that shrinks an over-tender to the fresh outstanding belongs to the bulk
-    waterfall alone (an explicit clamp_overshoot=True). A hand-entered payment keys the
-    default clamp_overshoot=False, so an overshoot on the manual route must 409 exactly
-    as it always did - it must never fall into a no-reference silent clamp."""
+    Only a confirmed online charge is settled at the outstanding amount; a hand-entered
+    overshoot must 409 exactly as it always did, never fall into a silent clamp."""
     token = await _register(client)
     h = _h(token)
     a = await _item(client, h, f"OV-{uuid.uuid4().hex[:6]}")

@@ -615,10 +615,6 @@ async def view_shared_doc(
     state = dict(row.state or {})
     if row.entity_type == "list":
         state.setdefault("doc_type", "list")
-        if "contact_name" not in state:
-            fallback_name = state.get("receiver") or state.get("customer_name")
-            if fallback_name:
-                state["contact_name"] = fallback_name
         if not state.get("issue_date"):
             state["issue_date"] = state.get("created_at") or state.get("date")
     for key, value in (await _letterhead(session, share_row.company_id)).items():

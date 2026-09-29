@@ -64,8 +64,8 @@ def test_quantity_change_scales_landed():
     s = _new(qty=10, cost_total=100)
     s = _apply_landed(s, unit=2)            # landed 20 at qty 10
     s = apply_item_event(s, "item.quantity.adjusted", {"new_qty": 5})
-    # base is a lot total (unchanged); landed is per-unit -> 2*5 = 10.
-    assert s["cost_landed"] == 10 and s["cost_total"] == 110
+    # Unit cost stays put: base scales with the units (100 * 5/10) and landed is per-unit (2*5).
+    assert s["cost_base"] == 50 and s["cost_landed"] == 10 and s["cost_total"] == 60
 
 
 def test_multiple_kinds_sum():

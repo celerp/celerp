@@ -23,8 +23,10 @@ from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.projections import Projection
 from celerp.services.attachments import local_attachment_url_path, remove_attachment, store_upload
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.currencies import require_currency_code
 from celerp.services.permissions import require_permission
 
+from celerp_contacts.references import lock_contacts, lock_referencing_records
 from celerp_contacts.search import search_contacts
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -147,6 +149,7 @@ async def create_contact(payload: ContactCreate, company_id: str = Depends(get_c
             return {"event_id": replay.id, "id": replay.entity_id}
     if not payload.name or not payload.name.strip():
         raise HTTPException(status_code=422, detail="Contact name is required and must be non-empty")
+    require_currency_code(payload.currency)
     entity_id = f"contact:{uuid.uuid4()}"
     entry = await emit_event(
         session,
@@ -198,6 +201,7 @@ async def update_contact(contact_id: str, payload: ContactUpdate, company_id: st
             if replay.event_type != "crm.contact.updated" or replay.entity_id != contact_id:
                 raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
             return {"event_id": replay.id}
+    require_currency_code((payload.fields_changed.get("currency") or {}).get("new"))
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -746,7 +750,7 @@ async def import_contact(
         raise HTTPException(status_code=422, detail=f"Event type {body.event_type!r} is not import-safe")
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
-        if replay.event_type != "crm.contact.created":
+        if replay.event_type != "crm.contact.created" or replay.entity_id != body.entity_id:
             raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
         return {"event_id": replay.id, "id": replay.entity_id, "idempotency_hit": True}
     existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})
@@ -819,41 +823,33 @@ async def bulk_delete_contacts(
     if not payload.contact_ids:
         raise HTTPException(status_code=422, detail="No contacts selected.")
 
-    # Validate all contacts exist and are not already deleted
+    # Lock the contacts before scanning their references, the order a Document or List
+    # selection takes, so no new reference can commit between the scan and the tombstone.
+    locked = await lock_contacts(session, company_id, payload.contact_ids)
     contact_rows = []
     for cid in payload.contact_ids:
-        try:
-            row = await _get_contact(session, company_id, cid)
-        except HTTPException as exc:
-            raise HTTPException(status_code=404, detail=f"Contact '{cid}' not found.") from exc
-        if row.state.get("deleted"):
+        row = locked.get(cid)
+        if row is None or row.state.get("deleted"):
             raise HTTPException(status_code=404, detail=f"Contact '{cid}' not found.")
         contact_rows.append(row)
 
-    # Block deletion if any contact has ANY documents (regardless of status).
-    # Provide a detailed breakdown by doc_type so the user knows exactly what's linked.
-    doc_rows = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "doc",
-        )
-    )).scalars().all()
-    contact_id_set = set(payload.contact_ids)
-    # blocking: {contact_id: {doc_type: count}}
+    # Block deletion if any Document, List or Deal (regardless of status) names the contact.
+    # Provide a detailed breakdown by type so the user knows exactly what's linked.
+    # blocking: {contact_id: {doc_type or list_type: count}}
     blocking: dict[str, dict[str, int]] = {}
-    for dr in doc_rows:
-        cid = dr.state.get("contact_id")
-        if cid in contact_id_set:
-            doc_type = dr.state.get("doc_type", "document")
-            blocking.setdefault(cid, {})
-            blocking[cid][doc_type] = blocking[cid].get(doc_type, 0) + 1
+    for dr in await lock_referencing_records(
+            session, company_id, payload.contact_ids, entity_types=("doc", "list", "deal")):
+        cid = dr.state["contact_id"]
+        kind = dr.state.get("doc_type") or dr.state.get("list_type") or dr.entity_type
+        blocking.setdefault(cid, {})
+        blocking[cid][kind] = blocking[cid].get(kind, 0) + 1
     if blocking:
         names = {r.entity_id: r.state.get("name", r.entity_id) for r in contact_rows}
         parts = []
         for cid, type_counts in blocking.items():
             summary = ", ".join(f"{n} {dt}(s)" for dt, n in sorted(type_counts.items()))
             parts.append(f"{names.get(cid, cid)}: {summary}")
-        detail = "Cannot delete contact(s) with associated documents: " + "; ".join(parts)
+        detail = "Cannot delete contact(s) with associated documents, lists, or deals: " + "; ".join(parts)
         raise HTTPException(status_code=422, detail=detail)
 
     for row in contact_rows:
@@ -887,7 +883,8 @@ async def merge_contacts_service(
     source_contact_ids: list[str],
 ) -> dict:
     """Merge source contacts into the target: union people/addresses/tags onto the winner, tombstone the
-    sources (deleted + merged_into), and re-point every doc/deal referencing a source to the winner.
+    sources (deleted + merged_into), and re-point every Document, List and deal referencing a source to
+    the winner. Every contact involved is locked first, in sorted id order, then the referencing records.
     Emits events only (the caller commits), so it is replay-safe and reusable by both the merge route
     and the self-contact migration - one merge implementation (DRY)."""
     from types import SimpleNamespace
@@ -899,21 +896,21 @@ async def merge_contacts_service(
     if payload.target_contact_id in payload.source_contact_ids:
         raise HTTPException(status_code=422, detail="target_contact_id must not be in source_contact_ids.")
 
+    locked = await lock_contacts(session, company_id, [payload.target_contact_id, *payload.source_contact_ids])
+
     # 2. Validate target
-    try:
-        target_row = await _get_contact(session, company_id, payload.target_contact_id)
-    except HTTPException as exc:
-        raise HTTPException(status_code=404, detail=f"Target contact '{payload.target_contact_id}' not found.") from exc
+    target_row = locked.get(payload.target_contact_id)
+    if target_row is None:
+        raise HTTPException(status_code=404, detail=f"Target contact '{payload.target_contact_id}' not found.")
     if target_row.state.get("deleted"):
         raise HTTPException(status_code=422, detail="Cannot merge into a deleted contact.")
 
     # 3. Validate sources
     source_rows = []
     for sid in payload.source_contact_ids:
-        try:
-            row = await _get_contact(session, company_id, sid)
-        except HTTPException as exc:
-            raise HTTPException(status_code=404, detail=f"Source contact '{sid}' not found.") from exc
+        row = locked.get(sid)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Source contact '{sid}' not found.")
         if row.state.get("deleted"):
             raise HTTPException(status_code=422, detail=f"Contact '{sid}' is already deleted.")
         if row.state.get("merged_into"):
@@ -1023,59 +1020,47 @@ async def merge_contacts_service(
             metadata_={},
         )
 
-    # 9. Re-point documents (contact_id + contact_name, regardless of doc status)
+    # 9. Re-point Documents and Lists (contact_id + contact_name, regardless of status).
     source_ids = set(payload.source_contact_ids)
-    doc_rows = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "doc",
-        )
-    )).scalars().all()
     docs_updated = 0
-    for dr in doc_rows:
-        if dr.state.get("contact_id") in source_ids:
-            await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=dr.entity_id,
-                entity_type="doc",
-                event_type="doc.updated",
-                data={"fields_changed": {
-                    "contact_id": {"old": dr.state["contact_id"], "new": payload.target_contact_id},
-                    "contact_name": {"old": dr.state.get("contact_name"), "new": winner_name},
-                }},
-                actor_id=user.id,
-                location_id=None,
-                source="api",
-                idempotency_key=str(uuid.uuid4()),
-                metadata_={},
-            )
-            docs_updated += 1
-
-    # 10. Re-point deals
-    deal_rows = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "deal",
+    for dr in await lock_referencing_records(session, company_id, source_ids):
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=dr.entity_id,
+            entity_type=dr.entity_type,
+            event_type=f"{dr.entity_type}.updated",
+            data={"fields_changed": {
+                "contact_id": {"old": dr.state["contact_id"], "new": payload.target_contact_id},
+                "contact_name": {"old": dr.state.get("contact_name"), "new": winner_name},
+            }},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
         )
-    )).scalars().all()
-    for dr in deal_rows:
-        if dr.state.get("contact_id") in source_ids:
-            await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=dr.entity_id,
-                entity_type="deal",
-                event_type="crm.deal.updated",
-                data={"fields_changed": {
-                    "contact_id": {"old": dr.state["contact_id"], "new": payload.target_contact_id},
-                }},
-                actor_id=user.id,
-                location_id=None,
-                source="api",
-                idempotency_key=str(uuid.uuid4()),
-                metadata_={},
-            )
+        docs_updated += 1
+
+    # 10. Deals use their optional module's crm.deal projection handler, but share
+    # the same deterministic reference lock when that projection is present.
+    for dr in await lock_referencing_records(
+            session, company_id, source_ids, entity_types=("deal",)):
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=dr.entity_id,
+            entity_type="deal",
+            event_type="crm.deal.updated",
+            data={"fields_changed": {
+                "contact_id": {"old": dr.state["contact_id"], "new": payload.target_contact_id},
+            }},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
 
     # 11. Notes: NOT re-parented. Contact detail page queries merged_from IDs.
     # No events emitted for notes.

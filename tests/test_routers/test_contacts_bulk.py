@@ -140,16 +140,14 @@ async def test_bulk_delete_contacts_draft_doc_blocks(client):
 async def test_bulk_delete_error_lists_doc_types(client):
     """Error message names each doc type and count."""
     tok = await _register(client, "BulkDelErr")
-    c1 = await _contact(client, tok, name="Detailed Co")
+    c1 = await _contact(client, tok, name="Detailed Co", contact_type="both")
     # Create invoice + bill
-    await client.post("/docs", headers=_h(tok), json={
-        "doc_type": "invoice", "contact_id": c1, "contact_name": "Detailed Co",
-        "total": 100, "issue_date": "2026-01-01", "currency": "USD",
-    })
-    await client.post("/docs", headers=_h(tok), json={
-        "doc_type": "bill", "contact_id": c1, "contact_name": "Detailed Co",
-        "total": 50, "issue_date": "2026-01-01", "currency": "USD",
-    })
+    for doc_type, total in (("invoice", 100), ("bill", 50)):
+        r = await client.post("/docs", headers=_h(tok), json={
+            "doc_type": doc_type, "contact_id": c1, "contact_name": "Detailed Co",
+            "total": total, "issue_date": "2026-01-01", "currency": "USD",
+        })
+        assert r.status_code == 200, r.text
 
     r = await client.post("/crm/contacts/bulk/delete", headers=_h(tok), json={"contact_ids": [c1]})
     assert r.status_code == 422

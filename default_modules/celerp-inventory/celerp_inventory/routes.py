@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -55,11 +55,12 @@ from celerp.services.pricing import (
     inject_derived_prices,
     is_cost_list_name,
     price_key,
-    resolve_price,
+    stored_price,
 )
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.line_measures import splitting_allowed
-from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.services.money import round_basis, round_money, to_decimal, to_stored_float
+from celerp.schemas.numbers import FiniteFloat
 from celerp_inventory.projections import _is_core_key, _is_image_mime, is_item_available, thumbnail_file_id
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -266,11 +267,11 @@ def flatten_item(state: dict, entity_id: str, location_id: str | None = None, lo
         # Recipe-backed item: derive cost from the rolled standard (single source of truth); never
         # let a lingering build-lot cost_total silently override it. See _recipe_standard_unit_cost.
         flat["cost_price"] = _recipe_unit
-        flat["cost_total"] = round(_recipe_unit * qty, 2) if qty else 0.0
+        flat["cost_total"] = round_basis(_recipe_unit * qty) if qty else 0.0
     elif flat.get("cost_total") is not None:
         flat["cost_price"] = round(float(flat["cost_total"]) / qty, 10) if qty else 0.0
     elif flat.get("cost_price") is not None:
-        flat["cost_total"] = round(float(flat["cost_price"]) * qty, 2)
+        flat["cost_total"] = round_basis(float(flat["cost_price"]) * qty)
     # else: both remain absent (item has no cost set)
     if price_config is not None:
         inject_derived_prices(flat, *price_config)
@@ -283,13 +284,13 @@ class ItemCreate(BaseModel):
     sku: str | None = None
     name: str
     sell_by: str                           # required - must be a valid unit name from company settings
-    quantity: float = 0
+    quantity: FiniteFloat = 0
     category: str | None = None
     location_id: uuid.UUID | None = None
-    cost_price: float | None = None  # legacy alias; prefer cost_total
-    cost_total: float | None = None
-    wholesale_price: float | None = None
-    retail_price: float | None = None
+    cost_price: FiniteFloat | None = None  # legacy alias; prefer cost_total
+    cost_total: FiniteFloat | None = None
+    wholesale_price: FiniteFloat | None = None
+    retail_price: FiniteFloat | None = None
     description: str | None = None
     unit: str | None = None
     barcode: str | None = None             # digits only if provided
@@ -301,7 +302,7 @@ class ItemCreate(BaseModel):
     purchase_sku: str | None = None        # vendor's SKU / part number
     purchase_name: str | None = None       # vendor's product name
     purchase_unit: str | None = None       # unit vendor sells in (e.g. "case", "box")
-    purchase_conversion_factor: float | None = None  # sell units per purchase unit (e.g. 24 pcs/case)
+    purchase_conversion_factor: FiniteFloat | None = None  # sell units per purchase unit (e.g. 24 pcs/case)
     allow_splitting: bool = True
     attributes: dict = Field(default_factory=dict)
     idempotency_key: str | None = None
@@ -323,8 +324,8 @@ class TransferBody(BaseModel):
 
 class SplitChild(BaseModel):
     sku: str | None = None    # omitted → keeps the parent SKU (resolved in split_item)
-    quantity: float
-    weight: float | None = None
+    quantity: FiniteFloat
+    weight: FiniteFloat | None = None
     pieces: int | None = None   # complement for weight-unit items (independent of weight)
     barcode: str | None = None  # auto-assigned from shared sequence if omitted
     attributes: dict = Field(default_factory=dict)
@@ -332,16 +333,16 @@ class SplitChild(BaseModel):
 
 class SplitBody(BaseModel):
     children: list[SplitChild]
-    mother_qty: float | None = None    # explicit mother qty override (used when user re-weighed mother)
-    mother_weight: float | None = None # explicit mother weight override
+    mother_qty: FiniteFloat | None = None    # explicit mother qty override (used when user re-weighed mother)
+    mother_weight: FiniteFloat | None = None # explicit mother weight override
     idempotency_key: str | None = None
 
 
 class MergeBody(BaseModel):
     source_entity_ids: list[str]
     target_sku_from: str                       # entity_id of the source whose SKU/barcode to use
-    resulting_quantity: float | None = None    # optional override (default = sum)
-    resulting_cost_total: float | None = None  # optional override (default = sum of source cost_totals)
+    resulting_quantity: FiniteFloat | None = None    # optional override (default = sum)
+    resulting_cost_total: FiniteFloat | None = None  # optional override (default = sum of source cost_totals)
     resulting_name: str | None = None          # optional override (default = target's name)
     resulting_sku: str | None = None           # optional custom SKU (default = target's SKU); issue #190
     resolved_attributes: dict | None = None    # user picks for conflicting string attributes
@@ -352,23 +353,23 @@ class TransformBody(BaseModel):
     child_sku: str
     child_category: str
     child_sell_by: str
-    child_quantity: float
+    child_quantity: FiniteFloat
     child_name: str | None = None
-    child_weight: float | None = None
+    child_weight: FiniteFloat | None = None
     child_weight_unit: str | None = None
     child_pieces: int | None = None
-    child_cost_total: float | None = None  # final cost (permitted override); None or a restricted caller preserves parent cost
+    child_cost_total: FiniteFloat | None = None  # final cost (permitted override); None or a restricted caller preserves parent cost
     idempotency_key: str | None = None
 
 
 class AdjustBody(BaseModel):
-    new_qty: float
+    new_qty: FiniteFloat
     idempotency_key: str | None = None
 
 
 class PriceBody(BaseModel):
     price_type: str
-    new_price: float
+    new_price: FiniteFloat
     idempotency_key: str | None = None
 
 
@@ -378,7 +379,7 @@ class StatusBody(BaseModel):
 
 
 class ReserveBody(BaseModel):
-    quantity: float
+    quantity: FiniteFloat
     idempotency_key: str | None = None
 
 
@@ -819,6 +820,79 @@ def _attr_filters(request: Request) -> list[tuple[str, set[str]]]:
     return out
 
 
+def _list_value(flat: dict, price_list: str, currency: str) -> Decimal | None:
+    """A flattened item's value on one price list in the company currency, or None when
+    it cannot be valued. Totals sum these, so each row is money before it is added.
+
+    Cost values at the lot total (recipe standard x qty when recipe-backed), else the
+    cost list's unit price x quantity; every other list (derived lists included, which
+    flatten_item resolves) is its unit price x quantity."""
+    lot_cost = coerce_price(flat.get("cost_total"))
+    if is_cost_list_name(price_list) and lot_cost is not None:
+        return round_money(lot_cost, currency)
+    unit = stored_price(flat, price_list)
+    qty = coerce_price(flat.get("quantity"))
+    if unit is None or qty is None:
+        return None
+    return round_money(to_decimal(unit) * to_decimal(qty), currency)
+
+
+def _unit_total(total: Decimal, unit: str, unit_map: dict[str, dict]) -> float:
+    """A summed amount at its unit's configured precision; a unit with no configured
+    precision (a legacy name) is reported exactly as summed."""
+    decimals = (unit_map.get(unit) or {}).get("decimals")
+    if decimals is None:
+        return float(total)
+    return float(total.quantize(Decimal(10) ** -int(decimals), rounding=ROUND_HALF_UP))
+
+
+def result_aggregates(
+    result: list[dict], price_lists: list[dict], can_see_costs: bool, currency: str, unit_map: dict[str, dict],
+) -> dict:
+    """Totals of exactly the rows in ``result`` (the filtered, visibility-stripped set).
+
+    Amounts are grouped by their own unit and never added across units; a row whose
+    amount or price the role cannot see is left out of that total, and price totals
+    count the rows they leave out (price_missing) instead of reading them as zero.
+    Cost lists are omitted entirely for a role without view_inventory_costs. Price totals
+    sum each row's value in the company currency, as the store-wide valuation does.
+    Quantities and weights sum exactly and report at each unit's precision."""
+    quantity_by_unit: dict[str, Decimal] = {}
+    weight_by_unit: dict[str, Decimal] = {}
+    pieces_total: Decimal | None = None
+    names = [pl.get("name", "") for pl in price_lists
+             if can_see_costs or not is_cost_list_name(pl.get("name", ""))]
+    price_totals = {name: Decimal(0) for name in names}
+    price_missing = {name: 0 for name in names}
+    for r in result:
+        # coerce_price reads any stored amount as a finite number or None.
+        qty = coerce_price(r.get("quantity"))
+        if qty is not None:
+            unit = str(r.get("sell_by") or "")
+            quantity_by_unit[unit] = quantity_by_unit.get(unit, Decimal(0)) + to_decimal(qty)
+        weight = coerce_price(r.get("weight"))
+        if weight is not None:
+            unit = str(r.get("weight_unit") or "")
+            weight_by_unit[unit] = weight_by_unit.get(unit, Decimal(0)) + to_decimal(weight)
+        pieces = coerce_price(r.get("pieces"))
+        if pieces is not None:
+            pieces_total = (pieces_total or Decimal(0)) + to_decimal(pieces)
+        for name in names:
+            value = _list_value(r, name, currency)
+            if value is None:
+                price_missing[name] += 1
+            else:
+                price_totals[name] += value
+    return {
+        "item_count": len(result),
+        "quantity_by_unit": {k: _unit_total(v, k, unit_map) for k, v in quantity_by_unit.items()},
+        "weight_by_unit": {k: _unit_total(v, k, unit_map) for k, v in weight_by_unit.items()},
+        "pieces_total": None if pieces_total is None else float(pieces_total),
+        "price_totals": {k: to_stored_float(v) for k, v in price_totals.items()},
+        "price_missing": price_missing,
+    }
+
+
 async def query_items(
     session: AsyncSession, company_id, role: str, f: ItemListFilters, attr_filters: list[tuple[str, set[str]]],
 ) -> dict:
@@ -1042,6 +1116,12 @@ async def query_items(
     for r in sold_result:
         r["sold_price"] = sold_price.get(r.get("id"))
 
+    # Totals of the final filtered set, so they describe exactly the rows `total` counts,
+    # on every page and for any combination of filters.
+    aggregates = result_aggregates(
+        result, (await get_price_config(session, company_id))[0], can_see_costs, base_currency,
+        build_unit_map(await get_company_units(session, company_id)))
+
     # Ordering (FEFO / user column sort / default) is single-sourced in
     # celerp_inventory.search so the list and the global-search bar stay in
     # lockstep. Applied AFTER all filtering so pagination is globally correct.
@@ -1058,7 +1138,8 @@ async def query_items(
     for _item in result:
         _item["_channel_state"] = _channel_states.get(_item.get("id"), {})
 
-    resp: dict = {"items": result, "total": len(result), "attribute_facets": attribute_facets}
+    resp: dict = {"items": result, "total": len(result), "attribute_facets": attribute_facets,
+                  "aggregates": aggregates}
     if holding_scoped and not gate_cost:
         # Total over the whole scoped set (post-filter, pre-pagination) so the contact
         # card reads it directly and reconciles with the list at the same value basis; items
@@ -1132,6 +1213,7 @@ async def get_valuation(
         )
     ).scalars().all()
 
+    currency = settings.get("currency") or "USD"
     holding_scope: set[str] | None = None
     if on_memo_to or consigned_from:
         assert_role_permission(settings, role, "view_documents")
@@ -1154,8 +1236,8 @@ async def get_valuation(
             if str((d.state or {}).get("status") or "").lower() not in ("draft", "void")
         ]
         scope_value = (
-            memo_holdings(items_state, issued, settings.get("currency") or "USD") if on_memo_to
-            else consignment_holdings(items_state, issued, settings.get("currency") or "USD")
+            memo_holdings(items_state, issued, currency) if on_memo_to
+            else consignment_holdings(items_state, issued, currency)
         )
         holding_scope = set(scope_value.keys())
 
@@ -1231,31 +1313,19 @@ async def get_valuation(
             continue
 
         active_item_count += 1
-        qty = float(state.get("quantity") or 0)
         # Value from the flattened item so cost (recipe standard / lot total) and derived
         # lists price identically to every other consumer of item state.
         flat = flatten_item(state, row.entity_id, price_config=_price_config)
         for pl in _price_lists:
-            pl_name = pl.get("name", "")
-            try:
-                if is_cost_list_name(pl_name):
-                    # Cost values at the lot total (recipe standard × qty when recipe-backed).
-                    if flat.get("cost_total") is not None:
-                        price_totals[pl_name] += Decimal(str(flat["cost_total"]))
-                    elif flat.get(price_key(pl_name)) is not None:
-                        price_totals[pl_name] += Decimal(str(flat[price_key(pl_name)])) * Decimal(str(qty))
-                else:
-                    v = resolve_price(flat, pl_name)
-                    if v:
-                        price_totals[pl_name] += Decimal(str(v)) * Decimal(str(qty))
-            except Exception:
-                pass
+            value = _list_value(flat, pl.get("name", ""), currency)
+            if value is not None:
+                price_totals[pl.get("name", "")] += value
 
     _cost_pl_names = {pl.get("name", "") for pl in _price_lists if is_cost_list_name(pl.get("name", ""))}
     show_cost = role_has_permission(settings, role, "view_inventory_costs")
 
     price_totals_out = {
-        k: float(v) for k, v in price_totals.items()
+        k: to_stored_float(v) for k, v in price_totals.items()
         if show_cost or k not in _cost_pl_names
     }
 
@@ -1264,8 +1334,8 @@ async def get_valuation(
         "active_item_count": active_item_count,
         "price_totals": price_totals_out,
         # Backward-compatible keys for existing UI
-        "wholesale_total": float(price_totals.get("Wholesale", 0)),
-        "retail_total": float(price_totals.get("Retail", 0)),
+        "wholesale_total": to_stored_float(price_totals.get("Wholesale", Decimal(0))),
+        "retail_total": to_stored_float(price_totals.get("Retail", Decimal(0))),
         "category_counts": dict(sorted(category_counts.items(), key=lambda x: -x[1])),
         # total_scoped_count backs the "All" tab: everything the scoped list shows,
         # which includes drafts even though they carry no stock value yet
@@ -1274,7 +1344,7 @@ async def get_valuation(
         "count_by_status": count_by_status,
     }
     if show_cost:
-        result["cost_total"] = float(price_totals.get("Cost", 0))
+        result["cost_total"] = to_stored_float(price_totals.get("Cost", Decimal(0)))
     return result
 
 
@@ -2395,21 +2465,29 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             session, company_id, entity_id, actor_id=user.id, source="api"
         )
 
-    entry = await emit_event(
-        session,
-        company_id=company_id,
+    event = dict(
         entity_id=entity_id,
-        entity_type="item",
         event_type="item.updated",
         data=payload.model_dump(exclude_none=True),
         actor_id=user.id,
-        location_id=None,
         source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
     )
+    if changed_keys & COST_ITEM_KEYS:
+        entry = await _restate_cost_or_409(session, company_id, **event)
+    else:
+        entry = await emit_event(session, company_id=company_id, entity_type="item", location_id=None, metadata_={}, **event)
     await session.commit()
     return {"event_id": entry.id}
+
+
+async def _restate_cost_or_409(session: AsyncSession, company_id, **event):
+    """Apply a goods-cost change with its merge and COGS consequences (see restate_item_cost)."""
+    from celerp_inventory.services import CostRestatementConflict, restate_item_cost
+    try:
+        return await restate_item_cost(session, company_id, **event)
+    except CostRestatementConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 class BulkStatusBody(BaseModel):
@@ -4066,19 +4144,18 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
                 status_code=403,
                 detail="Setting inventory prices requires the 'set_inventory_prices' permission",
             )
-    entry = await emit_event(
-        session,
-        company_id=company_id,
+    event = dict(
         entity_id=entity_id,
-        entity_type="item",
         event_type="item.pricing.set",
         data=payload.model_dump(exclude_none=True),
         actor_id=user.id,
-        location_id=None,
         source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
     )
+    if is_cost_price_type(payload.price_type):
+        entry = await _restate_cost_or_409(session, company_id, **event)
+    else:
+        entry = await emit_event(session, company_id=company_id, entity_type="item", location_id=None, metadata_={}, **event)
     await session.commit()
     return {"event_id": entry.id}
 

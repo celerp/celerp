@@ -1022,6 +1022,8 @@ async def _inventory_content(
         sold_total = items_resp.get("sold_total")
         sold_total_missing = int(items_resp.get("sold_total_missing") or 0)
         attribute_facets = items_resp.get("attribute_facets", {})
+        # Totals of the same filtered set as the rows, refreshed with them.
+        aggregates = items_resp.get("aggregates") or {}
     except APIError as e:
         # 401 belongs to the caller's auth handler; every other read failure gets
         # an explicit, retryable error - never a blank table pretending the
@@ -1119,7 +1121,7 @@ async def _inventory_content(
         _holdings_scope_banner(p, holdings_total, currency, holdings_missing),
         _category_tabs(category_counts, p, total_scoped=total_scoped, label_map=category_label_map),
         _inventory_type_tabs(p),
-        _valuation_bar(valuation, currency, lang, status=p.get("status", "")),
+        _valuation_bar(aggregates, currency, lang),
         _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p, lang=lang,
                                 sold_total=sold_total, sold_total_missing=sold_total_missing,
                                 currency=currency),
@@ -5266,34 +5268,29 @@ def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = No
     return Div(*tabs, cls="category-tabs", id="category-tabs")
 
 
-def _valuation_bar(valuation: dict, currency: str | None = None, lang: str = "en", status: str = "") -> FT:
+def _valuation_bar(aggregates: dict, currency: str | None = None, lang: str = "en") -> FT:
+    """Totals chips for exactly the rows the current search and filters return
+    (the list endpoint's ``aggregates``). Each unit keeps its own chip; units are
+    never added together."""
+    from ui.components.activity import fmt_qty
     from ui.components.table import fmt_money
-    active_count = valuation.get('active_item_count', valuation.get('item_count', 0))
-    # On a status-filtered view the chip counts that slice, not the committed-stock
-    # count: count_by_status is scoped server-side, and drafts sit outside
-    # active_item_count by design, which would show "Draft: 0" above a listed draft.
-    if status and status != "all" and valuation.get("count_by_status"):
-        active_count = sum(valuation["count_by_status"].values())
-    # Label reflects the active status filter
-    if status == "sold":
-        count_label = t("chip.sold", lang)
-    elif status == "archived":
-        count_label = t("chip.archived", lang)
-    elif status and status != "all":
-        count_label = display_enum(status, domain="item_status")
-    else:
-        count_label = t("chip.available", lang)
-    chips = [Span(f"{count_label}: {active_count:,}", cls="val-chip")]
-    # Dynamic price totals from API
-    price_totals = valuation.get("price_totals", {})
-    if price_totals:
-        for name, total in price_totals.items():
-            chips.append(Span(f"{name}: {fmt_money(total, currency)}", cls="val-chip"))
-    else:
-        # Backward-compatible fallback
-        chips.append(Span(f"{t('th.cost', lang)}: {fmt_money(valuation.get('cost_total', 0.0), currency)}", cls="val-chip"))
-        chips.append(Span(f"{t('th.retail', lang)}: {fmt_money(valuation.get('retail_total', 0.0), currency)}", cls="val-chip"))
-        chips.append(Span(f"{t('th.wholesale', lang)}: {fmt_money(valuation.get('wholesale_total', 0.0), currency)}", cls="val-chip"))
+
+    def _amount(value, unit: str) -> str:
+        return f"{fmt_qty(value)} {unit}".strip()
+
+    chips = [Span(f"{t('th.items', lang)}: {int(aggregates.get('item_count') or 0):,}", cls="val-chip")]
+    for unit, value in (aggregates.get("quantity_by_unit") or {}).items():
+        chips.append(Span(f"{t('th.quantity', lang)}: {_amount(value, unit)}", cls="val-chip"))
+    for unit, value in (aggregates.get("weight_by_unit") or {}).items():
+        chips.append(Span(f"{t('th.weight', lang)}: {_amount(value, unit)}", cls="val-chip"))
+    if aggregates.get("pieces_total") is not None:
+        chips.append(Span(f"{t('inventory.th_pieces', lang)}: {fmt_qty(aggregates['pieces_total'])}", cls="val-chip"))
+    missing = aggregates.get("price_missing") or {}
+    for name, total in (aggregates.get("price_totals") or {}).items():
+        label = f"{name}: {fmt_money(total, currency)}"
+        if missing.get(name):
+            label += " (" + t("inventory.sold_without_price", lang, n=missing[name]) + ")"
+        chips.append(Span(label, cls="val-chip"))
     return Div(*chips, cls="valuation-bar")
 
 

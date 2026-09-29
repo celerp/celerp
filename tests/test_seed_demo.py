@@ -55,7 +55,7 @@ async def test_demo_documents_reach_their_states_through_the_lifecycle(client: A
     bills = await _docs(client, token, "bill")
     assert len(bills) == 1 and bills[0]["finalized"] and bills[0]["source_po_ref"]
 
-    # A second run replays the same documents rather than adding more.
+    # A second run adds no more documents.
     await seed_demo.seed_docs(client, token, contacts, "invoice", 3)
     assert len(await _docs(client, token, "invoice")) == 3
 

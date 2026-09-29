@@ -80,14 +80,15 @@ def test_repricing_business_logic_exists_only_in_backend_primitive():
     assert "api.get_item(" not in doc_proxy
     assert "api.list_items(" not in doc_proxy
 
-    field_start = ui_source.index("# Price-list changes are one domain operation")
+    field_start = ui_source.index("# A price-list change is one domain operation")
     field_snippet = ui_source[field_start:field_start + 1800]
     assert "api.reprice_doc" in field_snippet
     assert "resolve_price(" not in field_snippet
     assert "api.get_item(" not in field_snippet
     assert "api.list_items(" not in field_snippet
 
-    assert backend.count("await _reprice_catalog_lines(") == 2
+    # reprice_doc, reprice_list and the contact selection both PATCH handlers share.
+    assert backend.count("await _reprice_catalog_lines(") == 3
 
 
 def test_reprice_warning_reapplies_after_paged_htmx_swap():

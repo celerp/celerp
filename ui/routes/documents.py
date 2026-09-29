@@ -15,16 +15,19 @@ from urllib.parse import quote_plus, urlencode
 
 import ui.api_client as api
 from ui.api_client import APIError
+from celerp.services.units import default_receive_as
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
+from celerp.services.payment_terms import due_date_for_terms
 from celerp.services.permissions import role_has_permission
 from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_section as _shared_doc_files_section
+from ui.components.operation_key import operation_key_input, operation_key_vals, submitted_operation_key
 
 
 from celerp.output.doc_print import (
@@ -242,6 +245,7 @@ def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
         "cost_price": item.get("cost_price") or None,
         "wholesale_price": item.get("wholesale_price") or None,
         "barcode": item.get("barcode") or None,
+        "receive_as": default_receive_as(item.get("inventory_type"), meta["sell_by"]),
         "weight": meta["weight"],
         "weight_unit": meta["weight_unit"],
         "pieces": meta["pieces"],
@@ -860,6 +864,7 @@ def _render_receive_return_section(doc: dict):
     return Div(
         Form(
             *hidden_fields,
+            operation_key_input(),
             Button(t("btn.receive_returns"),
                 cls="btn btn--primary btn--sm",
                 title=t("documents.receive_returns_tooltip"),
@@ -902,27 +907,10 @@ def _doc_singular_label(doc_type: str) -> str:
 
 
 
-from datetime import date as _date, timedelta as _timedelta
-
-
-def _calculate_due_date(issue_date: str | None, payment_terms_name: str | None, terms_list: list[dict]) -> str | None:
-    """Return ISO due_date string given an issue_date + payment_terms name + company terms list.
-
-    Returns None if any input is missing/invalid so callers can skip the patch.
-    """
-    if not issue_date or not payment_terms_name:
-        return None
-    term = next((item for item in terms_list if item.get("name") == payment_terms_name), None)
-    if term is None:
-        return None
-    days = term.get("days")
-    if days is None:
-        return None
-    try:
-        base = _date.fromisoformat(str(issue_date)[:10])
-    except (ValueError, TypeError):
-        return None
-    return (base + _timedelta(days=int(days))).isoformat()
+def _form_version(form) -> int | None:
+    """The entity version a page posted with a guarded edit, or None when it sent none."""
+    raw = str(form.get("expected_version") or "").strip()
+    return int(raw) if raw.isdigit() else None
 
 
 async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = DEFAULT_PRICE_LIST_NAME) -> list[dict]:
@@ -1112,7 +1100,7 @@ def _send_to_option_list(items: list[dict], kind: str) -> FT:
             label = t("documents.memo_ref", ref=ref)
         elif kind == "list":
             ref = d.get("ref_id") or eid.split(":")[-1][:8]
-            contact = d.get("customer_name") or d.get("receiver") or ""
+            contact = d.get("contact_name") or ""
             label = t("documents.list_ref", ref=ref)
         else:
             ref = d.get("ref_id") or d.get("doc_number") or eid.split(":")[-1][:8]
@@ -1960,8 +1948,6 @@ def setup_routes(app):
             return _HR(f"<p>Error: {e.detail}</p>", status_code=e.status)
         layout = request.query_params.get("layout") or None
         lst.setdefault("doc_type", "list")
-        if not lst.get("contact_name"):
-            lst["contact_name"] = lst.get("receiver") or lst.get("customer_name") or ""
         if not lst.get("issue_date"):
             lst["issue_date"] = lst.get("created_at") or lst.get("date")
         if lst.get("contact_id"):
@@ -2065,20 +2051,41 @@ def setup_routes(app):
 
         contact_name = docs[0].get("contact_name") or ""
         doc_type = docs[0].get("doc_type") or "invoice"
-        currency = docs[0].get("currency") or "USD"
 
-        # Filter to payable docs and sort by due date
-        payable = [d for d in docs if d.get("status") not in ("draft", "void", "paid") and float(d.get("amount_outstanding") or d.get("outstanding_balance") or 0) > 0]
+        payable = []
+        for d in docs:
+            if d.get("status") in ("draft", "void", "paid"):
+                continue
+            cur = str(d.get("currency") or "USD").upper()
+            amount = round_money(
+                d.get("amount_outstanding") or d.get("outstanding_balance") or 0, cur)
+            if amount > 0:
+                payable.append(d)
+        currencies = {str(d.get("currency") or "USD").upper() for d in payable}
+        if len(currencies) > 1:
+            return Div(
+                P(t("doc.bulk_payment_same_currency"), cls="flash flash--error"),
+                id="bulk-payment-panel",
+            )
+        currency = next(iter(currencies), str(docs[0].get("currency") or "USD").upper())
+        money_dp = currency_dp(currency)
+        money_step = "1" if money_dp == 0 else "0." + ("0" * (money_dp - 1)) + "1"
         payable.sort(key=lambda d: d.get("due_date") or d.get("issue_date") or "")
         skipped = len(docs) - len(payable)
-        total_outstanding = sum(float(d.get("amount_outstanding") or d.get("outstanding_balance") or 0) for d in payable)
+        total_outstanding_d = round_money(
+            sum((to_decimal(d.get("amount_outstanding") or d.get("outstanding_balance") or 0)
+                 for d in payable), to_decimal(0)),
+            currency,
+        )
+        total_outstanding = to_stored_float(total_outstanding_d)
 
         alloc_rows = []
         for d in payable:
             eid = d.get("entity_id") or d.get("id", "")
             doc_num = d.get("doc_number") or d.get("ref_id") or eid
             due = d.get("due_date") or "--"
-            outstanding = float(d.get("amount_outstanding") or d.get("outstanding_balance") or 0)
+            outstanding = to_stored_float(round_money(
+                d.get("amount_outstanding") or d.get("outstanding_balance") or 0, currency))
             alloc_rows.append(Tr(
                 Td(doc_num),
                 Td(str(due)[:10]),
@@ -2107,9 +2114,10 @@ def setup_routes(app):
             Form(
                 *hidden_ids,
                 Input(type="hidden", name="doc_type", value=doc_type),
+                operation_key_input(),
                 Div(
                     Div(Label(t("label.amount"), cls="form-label"),
-                        Input(type="number", name="amount", value=f"{total_outstanding:.2f}", step="0.01",
+                        Input(type="number", name="amount", value=f"{total_outstanding_d:.{money_dp}f}", step=money_step,
                               min="0", cls="form-input", id="bulk-pay-amount",
                               oninput="celerpUpdateBulkAlloc()"), cls="form-group"),
                     Div(Label(t("th.date"), cls="form-label"),
@@ -2138,7 +2146,7 @@ function celerpUpdateBulkAlloc() {{
         const outstanding = parseFloat(row.dataset.outstanding || 0);
         const alloc = Math.min(remaining, outstanding);
         remaining = Math.max(0, remaining - alloc);
-        row.querySelector('.alloc-amount').textContent = alloc > 0 ? '{currency_symbol(currency)}' + alloc.toFixed(2) : '--';
+        row.querySelector('.alloc-amount').textContent = alloc > 0 ? '{currency_symbol(currency)}' + alloc.toFixed({money_dp}) : '--';
     }});
 }}
 celerpUpdateBulkAlloc();
@@ -2416,11 +2424,6 @@ celerpUpdateBulkAlloc();
         )
         enter_js = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
         blur_restore = f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}})"
-        combobox_esc_js = (
-            f"if(event.key==='Escape'){{"
-            f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}});"
-            f"event.preventDefault();}}"
-        )
         if field == "company_address":
             # Re-editing the From address must re-open the location picker (the same control shown on
             # initial render), not a bare text box - otherwise the user can't switch back to a saved
@@ -2510,52 +2513,14 @@ celerpUpdateBulkAlloc();
                 onkeydown=esc_js,
             )
         elif field in ("contact_id", "commission_contact_id", "contact_company_name"):
-            # Searchable contact picker.
-            # - commission_contact_id: always vendor-only
-            # - contact_id: customer docs → customers; vendor docs → vendors
-            # - contact_company_name: same filtering as contact_id but selects by company_name → resolves contact_id
-            _VENDOR_TYPES = ("purchase_order", "bill", "consignment_in")
-            doc_type_for_filter = doc.get("doc_type", "")
-            if field == "commission_contact_id":
-                contact_filter = "vendor"
-            elif doc_type_for_filter in _VENDOR_TYPES:
-                contact_filter = "vendor"
-            else:
-                contact_filter = "customer"
-            try:
-                contact_resp = await api.list_contacts(token, {"limit": 500, "contact_type": contact_filter})
-                contacts = contact_resp.get("items", [])
-            except APIError:
-                contacts = []
-            if field == "contact_company_name":
-                # Options are (entity_id, company_name) so selecting a company resolves the contact
-                contact_opts = [
-                    (c.get("entity_id") or c.get("id") or "", c.get("company_name") or c.get("name") or "")
-                    for c in contacts if c.get("company_name")
-                ]
-                # Current value is the company_name string; find current contact_id for pre-selection
-                current_contact_id = doc.get("contact_id") or ""
-                pre_val = current_contact_id
-                patch_url = f"/docs/{entity_id}/field/contact_id"
-            else:
-                contact_opts = [(c.get("entity_id") or c.get("id") or "", c.get("name") or c.get("entity_id") or c.get("id") or "") for c in contacts]
-                contact_opts.append(("__new__", t("documents.add_new_contact")))
-                pre_val = value
-                patch_url = f"/docs/{entity_id}/field/{field}"
-            # Fix #1: wrap combobox in div so ESC keydown bubbles up and can restore the display cell
-            input_el = Div(
-                searchable_select(
-                    name="value",
-                    options=contact_opts,
-                    value=pre_val,
-                    placeholder=t("documents.search_contacts"),
-                    hx_patch=patch_url,
-                    hx_target="closest .editable-cell",
-                    hx_swap="outerHTML",
-                    hx_trigger="change",
-                    search_url=f"/contacts/search-options?contact_type={contact_filter}&field={field}",
-                ),
-                onkeydown=combobox_esc_js,
+            # Commission agents are always vendors; the party is a vendor on purchase-side
+            # documents and a customer everywhere else.
+            from celerp_docs.doc_constants import VENDOR_DOC_TYPES
+            is_vendor = field == "commission_contact_id" or doc.get("doc_type", "") in VENDOR_DOC_TYPES
+            input_el = await _contact_picker(
+                token, resource="doc", entity_id=entity_id, field=field,
+                value=value if field == "commission_contact_id" else str(doc.get("contact_id") or ""),
+                contact_type="vendor" if is_vendor else "customer",
             )
         elif field in ("contact_billing_address", "contact_shipping_address"):
             # Address dropdown from contact's saved addresses
@@ -2622,81 +2587,25 @@ celerpUpdateBulkAlloc();
         if value == "__new__":
             from starlette.responses import Response as _R
             # Route to vendors page for vendor doc types and commission contacts
-            _VENDOR_TYPES = ("purchase_order", "bill", "consignment_in")
+            from celerp_docs.doc_constants import VENDOR_DOC_TYPES
             try:
                 doc = await api.get_doc(token, entity_id)
-                is_vendor_context = field == "commission_contact_id" or doc.get("doc_type") in _VENDOR_TYPES
+                is_vendor_context = field == "commission_contact_id" or doc.get("doc_type") in VENDOR_DOC_TYPES
             except APIError:
                 is_vendor_context = field == "commission_contact_id"
             target = "/contacts/vendors" if is_vendor_context else "/contacts/customers"
             return _R("", status_code=204, headers={"HX-Redirect": target})
         try:
             patch = {field: value}
-            # Auto-populate payment_terms and price_list from contact when contact_id changes
-            if field == "contact_id" and value:
-                try:
-                    doc = await api.get_doc(token, entity_id)
-                    is_draft_doc = doc.get("status", "draft") == "draft"
-                    contact = await api.get_contact(token, value)
-                    # Store contact details for display on the doc
-                    contact_name = contact.get("name") or contact.get("display_name")
-                    if contact_name:
-                        patch["contact_name"] = contact_name
-                    patch["contact_company_name"] = contact.get("company_name") or ""
-                    patch["contact_email"] = contact.get("email") or ""
-                    patch["contact_phone"] = contact.get("phone") or ""
-                    # Billing address: prefer default billing address from addresses list, fall back to billing_address field
-                    addresses = contact.get("addresses") or []
-                    def _default_addr(addr_type: str) -> str:
-                        default = next((a for a in addresses if a.get("address_type") == addr_type and a.get("is_default")), None)
-                        if default:
-                            return default.get("full_address") or default.get("address") or default.get("label") or ""
-                        first = next((a for a in addresses if a.get("address_type") == addr_type), None)
-                        if first:
-                            return first.get("full_address") or first.get("address") or first.get("label") or ""
-                        return contact.get(f"{addr_type}_address") or ""
-                    def _default_attn(addr_type: str) -> str:
-                        default = next((a for a in addresses if a.get("address_type") == addr_type and a.get("is_default")), None)
-                        if default and default.get("attn"):
-                            return default["attn"]
-                        first = next((a for a in addresses if a.get("address_type") == addr_type), None)
-                        return (first.get("attn") or "") if first else ""
-                    patch["contact_billing_address"] = _default_addr("billing")
-                    patch["contact_shipping_address"] = _default_addr("shipping")
-                    patch["shipping_attn"] = _default_attn("shipping")
-                    patch["contact_tax_id"] = contact.get("tax_id") or ""
-                    contact_pt = contact.get("payment_terms")
-                    if contact_pt:
-                        patch["payment_terms"] = contact_pt
-                        # Recalculate due_date only on draft docs (finalized due_date is locked)
-                        if is_draft_doc:
-                            terms_list = await api.get_payment_terms(token)
-                            new_due = _calculate_due_date(doc.get("issue_date"), contact_pt, terms_list)
-                            if new_due:
-                                patch["due_date"] = new_due
-                    if is_draft_doc:
-                        # Auto-populate price_list from contact (fallback to company default) - draft only
-                        contact_pl = contact.get("price_list")
-                        if contact_pl:
-                            patch["price_list"] = contact_pl
-                        else:
-                            try:
-                                default_pl = await api.get_default_price_list(token)
-                                patch["price_list"] = default_pl
-                            except Exception:
-                                pass
-                        # Propagate contact currency to draft doc only
-                        contact_currency = contact.get("currency")
-                        if contact_currency:
-                            patch["currency"] = contact_currency
-                except APIError:
-                    pass  # contact fetch failure → skip auto-populate
+            # A contact change sends only the contact: the backend copies its details, terms,
+            # currency and prices onto the document in the same save.
+            expected_version = _form_version(form) if field == "contact_id" else None
             # Auto-calculate due_date when payment_terms changes
-            elif field == "payment_terms" and value:
+            if field == "payment_terms" and value:
                 try:
                     doc_pre = await api.get_doc(token, entity_id)
                     terms_list = await api.get_payment_terms(token)
-                    new_due = _calculate_due_date(doc_pre.get("issue_date"), value, terms_list)
+                    new_due = due_date_for_terms(doc_pre.get("issue_date"), value, terms_list)
                     if new_due:
                         patch["due_date"] = new_due
                 except APIError:
@@ -2719,24 +2628,19 @@ celerpUpdateBulkAlloc();
                         patch["commission_contact_name"] = name
                 except APIError:
                     pass
-            # Price-list changes are one domain operation: remove the header field
-            # from the ordinary patch and let the backend repricer update header + lines
-            # atomically. This also covers contact-driven/default price-list changes.
+            # A price-list change is one domain operation: the backend repricer updates
+            # the header and the lines atomically.
             new_pl = patch.pop("price_list", None)
             # ref_id edits go through /renumber (works on finalized docs; patch_doc rejects them)
             if field == "ref_id":
                 await api.renumber_doc(token, entity_id, value)
             elif patch:
-                await api.patch_doc(token, entity_id, patch)
+                await api.patch_doc(token, entity_id, patch, expected_version=expected_version)
             if new_pl:
-                # Read the projection after any companion patch and pin repricing to
-                # that authoritative version. Do not infer projection state from a
-                # transport return value.
-                current = await api.get_doc(token, entity_id)
-                expected_version = current.get("version")
-                if expected_version is None:
+                version = (await api.get_doc(token, entity_id)).get("version")
+                if version is None:
                     raise APIError(409, "Reload the document before repricing")
-                await api.reprice_doc(token, entity_id, new_pl, int(expected_version))
+                await api.reprice_doc(token, entity_id, new_pl, int(version))
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return _action_error(str(e.detail))
@@ -3063,7 +2967,7 @@ celerpUpdateBulkAlloc();
             if isinstance(e.data, dict) and e.data.get("conflicts"):
                 payload["reserved_conflicts"] = e.data["conflicts"]
             return JSONResponse(payload, status_code=400)
-        return JSONResponse({"ok": True, "version": result.get("event_id")})
+        return JSONResponse({"ok": True, "version": result.get("version")})
 
     async def _proxy_reprice(request: Request, entity_id: str, reprice_fn):
         """Transport-only Web UI adapter; all repricing semantics live in celerp-docs."""
@@ -3104,6 +3008,7 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
             form = await request.form()
+            op_key = submitted_operation_key(form)
             if action == "finalize":
                 await api.finalize_doc(token, entity_id)
             elif action == "send":
@@ -3118,24 +3023,24 @@ celerpUpdateBulkAlloc();
                     "subject": str(form.get("subject", "")).strip() or None,
                     "message": str(form.get("message", "")).strip() or None,
                 }
-                await api.send_doc(token, entity_id, data=data)
+                await api.send_doc(token, entity_id, data={**data, **op_key})
             elif action == "mark_sent":
-                await api.send_doc(token, entity_id, data={"sent_via": "manual"})
+                await api.send_doc(token, entity_id, data={"sent_via": "manual", **op_key})
             elif action == "unmark_sent":
-                await api.revert_doc_to_draft(token, entity_id, reason=None)
+                await api.revert_doc_to_draft(token, entity_id, reason=None, **op_key)
             elif action == "void":
                 reason = str(form.get("reason", "")).strip() or None
-                await api.void_doc(token, entity_id, reason)
+                await api.void_doc(token, entity_id, reason, **op_key)
             elif action == "revert_to_draft":
                 reason = str(form.get("reason", "")).strip() or None
-                await api.revert_doc_to_draft(token, entity_id, reason)
+                await api.revert_doc_to_draft(token, entity_id, reason, **op_key)
             elif action == "unvoid":
-                await api.unvoid_doc(token, entity_id)
+                await api.unvoid_doc(token, entity_id, **op_key)
             elif action == "close":
                 reason = str(form.get("reason", "")).strip() or None
-                await api.close_doc(token, entity_id, reason)
+                await api.close_doc(token, entity_id, reason, **op_key)
             elif action == "reopen":
-                await api.reopen_doc(token, entity_id)
+                await api.reopen_doc(token, entity_id, **op_key)
             elif action == "delete":
                 await api.delete_doc(token, entity_id)
                 doc_type = str(form.get("doc_type", "")).strip() or "invoice"
@@ -3207,6 +3112,7 @@ celerpUpdateBulkAlloc();
                 "payment_date": payment_date,
                 "bank_account": bank_account,
                 "conversion_rate": conversion_rate,
+                **submitted_operation_key(form),
             })
         except APIError as e:
             if e.status == 401:
@@ -3239,7 +3145,7 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
             form = await request.form()
-            location_id = str(form.get("location_id", "") or form.get("location_name", "")).strip()
+            location_id = str(form.get("location_id", "")).strip()
             notes = str(form.get("notes", "")).strip() or None
             received_items = []
             idx = 0
@@ -3251,9 +3157,11 @@ celerpUpdateBulkAlloc();
                     qty = float(str(form.get(f"qty_{idx}", "0")))
                 except ValueError:
                     qty = 0.0
-                receive_as = str(form.get(f"receive_as_{idx}", "stock")).strip() or "stock"
+                receive_as = str(form.get(f"receive_as_{idx}", "")).strip()
                 if qty > 0:
-                    item = {"po_line_index": idx, "quantity_received": qty, "receive_as": receive_as}
+                    item = {"po_line_index": idx, "quantity_received": qty}
+                    if receive_as:
+                        item["receive_as"] = receive_as
                     if item_id:
                         item["item_id"] = item_id
                     if sku:
@@ -3262,7 +3170,7 @@ celerpUpdateBulkAlloc();
                         item["name"] = name
                     received_items.append(item)
                 idx += 1
-            data = {"location_id": location_id, "received_items": received_items}
+            data = {"location_id": location_id, "received_items": received_items, **submitted_operation_key(form)}
             if notes:
                 data["notes"] = notes
             await api.receive_po(token, entity_id, data)
@@ -3280,17 +3188,23 @@ celerpUpdateBulkAlloc();
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
+            from datetime import date as _d
             form = await request.form()
             try:
                 amount = float(str(form.get("amount", "0")))
             except ValueError:
                 amount = 0.0
-            method = str(form.get("method", "")).strip() or None
-            reference = str(form.get("reference", "")).strip() or None
+            try:
+                payment_index = int(str(form.get("payment_index", "")))
+            except ValueError:
+                payment_index = -1
             await api.refund_payment(token, entity_id, {
+                "payment_index": payment_index,
                 "amount": amount,
-                "method": method,
-                "reference": reference,
+                "payment_date": str(form.get("payment_date", "")).strip() or _d.today().isoformat(),
+                "method": str(form.get("method", "")).strip() or None,
+                "reference": str(form.get("reference", "")).strip() or None,
+                **submitted_operation_key(form),
             })
         except APIError as e:
             if e.status == 401:
@@ -3310,7 +3224,7 @@ celerpUpdateBulkAlloc();
             form = await request.form()
             payment_index = int(form.get("payment_index", -1))
             void_reason = str(form.get("void_reason", "")).strip()
-            await api.void_payment(token, entity_id, payment_index, void_reason)
+            await api.void_payment(token, entity_id, payment_index, void_reason, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3328,7 +3242,7 @@ celerpUpdateBulkAlloc();
             target_doc_id = str(form.get("target_doc_id", "")).strip()
             amount = float(form.get("amount", 0))
             date = str(form.get("date", "")).strip() or None
-            await api.apply_credit_note(token, entity_id, target_doc_id, amount, date)
+            await api.apply_credit_note(token, entity_id, target_doc_id, amount, date, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3348,7 +3262,8 @@ celerpUpdateBulkAlloc();
             method = str(form.get("method", "")).strip() or None
             bank_account = str(form.get("bank_account", "")).strip() or None
             reference = str(form.get("reference", "")).strip() or None
-            await api.refund_credit_note(token, entity_id, amount, date, method, bank_account, reference)
+            await api.refund_credit_note(token, entity_id, amount, date, method, bank_account, reference,
+                                         **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3409,7 +3324,8 @@ celerpUpdateBulkAlloc();
             method = str(form.get("method", "")).strip() or None
             bank_account = str(form.get("bank_account", "")).strip() or None
             reference = str(form.get("reference", "")).strip() or None
-            result = await api.bulk_payment(token, doc_ids, amount, payment_date, method, bank_account, reference)
+            result = await api.bulk_payment(token, doc_ids, amount, payment_date, method, bank_account, reference,
+                                            **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -3828,7 +3744,7 @@ celerpUpdateBulkAlloc();
         if not items:
             return _action_error(t("doc.no_valid_quantities_entered"))
         try:
-            await api.receive_return(token, entity_id, items)
+            await api.receive_return(token, entity_id, items, **submitted_operation_key(form))
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -4353,9 +4269,6 @@ celerpUpdateBulkAlloc();
         # Inject doc_type so _doc_detail() treats it as a list
         lst.setdefault("doc_type", "list")
 
-        # Map list "receiver"/"customer_name" → standard contact fields
-        if not lst.get("contact_name"):
-            lst["contact_name"] = lst.get("receiver") or lst.get("customer_name") or lst.get("customer_id") or ""
         if not lst.get("issue_date"):
             lst["issue_date"] = lst.get("created_at") or lst.get("date")
 
@@ -4489,6 +4402,12 @@ celerpUpdateBulkAlloc();
                 onblur=f"setTimeout(()=>_celerpPatchListField(this, {_json.dumps(patch_url)}), 200)",
                 onkeydown=esc_js + enter_js,
             )
+        elif field in ("contact_id", "contact_company_name"):
+            # A List's party is a customer, chosen exactly as on a sales document.
+            input_el = await _contact_picker(
+                token, resource="list", entity_id=entity_id, field=field,
+                value=str(lst.get("contact_id") or ""), contact_type="customer",
+            )
         elif field == "status":
             # Status is lifecycle-driven (finalize / terminal actions), not freely set; this branch
             # only survives for any legacy cell that still mounts it. Offer the uniform spine.
@@ -4518,7 +4437,8 @@ celerpUpdateBulkAlloc();
             lst = await api.get_list(token, entity_id)
         except APIError as e:
             return P(t("documents.error_detail", detail=e.detail), cls="cell-error")
-        return _doc_display_cell(entity_id, field, lst.get(field), "list")
+        value = _resolve_contact_display(lst, field) if field == "contact_id" else lst.get(field)
+        return _doc_display_cell(entity_id, field, value, "list")
 
     @app.patch("/lists/{entity_id}/field/{field}")
     async def list_field_patch(request: Request, entity_id: str, field: str):
@@ -4536,6 +4456,16 @@ celerpUpdateBulkAlloc();
                 await api.change_list_type(token, entity_id, value)
             except APIError as e:
                 return _action_error(str(e.detail))
+            return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
+        if field == "contact_id":
+            if value == "__new__":
+                return _R("", status_code=204, headers={"HX-Redirect": "/contacts/customers"})
+            try:
+                # The backend copies the customer's details, currency and prices in the same save.
+                await api.patch_list(token, entity_id, {"contact_id": value}, expected_version=_form_version(form))
+            except APIError as e:
+                return _action_error(str(e.detail))
+            # Customer details and repriced lines change together - re-render the page.
             return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         try:
             result = await api.patch_list(token, entity_id, {field: value})
@@ -5224,6 +5154,56 @@ def _resolve_contact_display(doc: dict, field: str) -> str:
     return raw
 
 
+async def _contact_picker(token: str, *, resource: str, entity_id: str, field: str, value: str,
+                          contact_type: str) -> FT:
+    """Searchable contact selector for a document or List header contact cell.
+
+    field is contact_id (options by name, with Add new) or contact_company_name (options by
+    company, still saving contact_id). A document saves through htmx; a List saves through
+    its mutation queue, persisting pending line edits first because the save reloads the page.
+    """
+    try:
+        contacts = (await api.list_contacts(token, {"limit": 500, "contact_type": contact_type})).get("items", [])
+    except APIError:
+        contacts = []
+    if field == "contact_company_name":
+        options = [
+            (c.get("entity_id") or c.get("id") or "", c.get("company_name") or c.get("name") or "")
+            for c in contacts if c.get("company_name")
+        ]
+        save_field = "contact_id"
+    else:
+        options = [(c.get("entity_id") or c.get("id") or "", c.get("name") or c.get("entity_id") or c.get("id") or "") for c in contacts]
+        options.append(("__new__", t("documents.add_new_contact")))
+        save_field = field
+    prefix = "/lists" if resource == "list" else "/docs"
+    patch_url = f"{prefix}/{entity_id}/field/{save_field}"
+    if resource == "list":
+        save_attrs = {"onchange": f"_celerpPatchListField(this, {_json.dumps(patch_url)}, true)"}
+    else:
+        save_attrs = {"hx_patch": patch_url, "hx_target": "closest .editable-cell",
+                      "hx_swap": "outerHTML", "hx_trigger": "change",
+                      # The page's current version pins the selection to the document it shows.
+                      "hx_vals": "js:{expected_version: window._celerpEntityVersion}"}
+    restore_url = f"{prefix}/{entity_id}/field/{field}/display"
+    # The wrapper catches ESC bubbling out of the combobox and restores the display cell.
+    return Div(
+        searchable_select(
+            name="value",
+            options=options,
+            value=value,
+            placeholder=t("documents.search_contacts"),
+            search_url=f"/contacts/search-options?contact_type={contact_type}&field={field}",
+            **save_attrs,
+        ),
+        onkeydown=(
+            f"if(event.key==='Escape'){{"
+            f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}});"
+            f"event.preventDefault();}}"
+        ),
+    )
+
+
 def _li_field_display_cell(entity_id: str, li_index: str, field: str, value: str) -> FT:
     """Finalized line-item cell: double-click to edit description or account_code."""
     cell_id = f"li-{li_index}-{field}"
@@ -5370,7 +5350,12 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     payments = [p for p in (doc.get("payments") or []) if p.get("status") != "deleted"]
     total_val = float(doc.get("total") or doc.get("total_amount") or 0)
     amount_paid = float(doc.get("amount_paid") or 0)
-    outstanding = float(doc.get("amount_outstanding") or doc.get("outstanding_balance") or 0)
+    outstanding_d = round_money(
+        doc.get("amount_outstanding") or doc.get("outstanding_balance") or 0, currency)
+    outstanding = to_stored_float(outstanding_d)
+    money_dp = currency_dp(currency)
+    money_step = "1" if money_dp == 0 else "0." + ("0" * (money_dp - 1)) + "1"
+    money_value = f"{outstanding_d:.{money_dp}f}"
 
     from datetime import date as _d
     today = _d.today().isoformat()
@@ -5401,11 +5386,30 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
             void_reason = p.get("void_reason") or ""
             void_cell = Td(Span(t("doc.voided"), cls="badge badge--void", title=void_reason))
         elif not voided and is_operator:
+            refund_form = ""
+            p_left = round_money(p_amount, currency) - round_money(p.get("refunded") or 0, currency)
+            if p_method not in ("credit_note", "applied") and p_left > 0:
+                refund_form = Details(
+                    Summary(t("btn.refund"), cls="btn btn--ghost btn--xs", title=t("documents.refund_this_payment")),
+                    Form(
+                        Input(type="hidden", name="payment_index", value=str(p.get("index", 0))),
+                        operation_key_input(),
+                        Input(type="number", name="amount", value=f"{p_left:.{money_dp}f}", step=money_step,
+                              min=money_step, max=f"{p_left:.{money_dp}f}", cls="form-input form-input--sm"),
+                        Input(type="date", name="payment_date", value=today, cls="form-input form-input--sm"),
+                        Button(t("btn.refund"), type="submit", cls="btn btn--secondary btn--xs"),
+                        hx_post=f"/docs/{entity_id}/refund", hx_swap="none",
+                        cls="inline-form inline-form--compact",
+                    ),
+                    cls="void-inline",
+                )
             void_cell = Td(
+                refund_form,
                 Details(
                     Summary("🗑", cls="btn btn--ghost btn--xs", title=t("documents.void_this_payment")),
                     Form(
                         Input(type="hidden", name="payment_index", value=str(p.get("index", 0))),
+                        operation_key_input(),
                         Input(type="text", name="void_reason", placeholder=t("documents.reason_placeholder"), cls="form-input form-input--sm"),
                         Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger btn--xs"),
                         hx_post=f"/docs/{entity_id}/void-payment", hx_swap="none",
@@ -5422,7 +5426,9 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
             Td(format_value(p_method, "badge")),
             link_col,
             Td(p_ref or EMPTY),
-            Td(fmt_money(p_amount, currency), cls="cell--number"),
+            Td(fmt_money(p_amount, currency),
+               Div(t("documents.refunded_amount", amount=fmt_money(float(p["refunded"]), currency)), cls="text-muted small")
+               if p.get("refunded") else "", cls="cell--number"),
             void_cell,
             cls=row_cls,
         ))
@@ -5447,8 +5453,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         )
     else:
         paid_label = t("documents.total_paid", paid=fmt_money(amount_paid, currency), total=fmt_money(total_val, currency))
-        outstanding_label = t("documents.paid_in_full") if outstanding <= 0.005 else t("documents.outstanding_amount", amount=fmt_money(outstanding, currency))
-        outstanding_cls = "total-value--success" if outstanding <= 0.005 else "total-value--alert"
+        outstanding_label = t("documents.paid_in_full") if outstanding_d == 0 else t("documents.outstanding_amount", amount=fmt_money(outstanding, currency))
+        outstanding_cls = "total-value--success" if outstanding_d == 0 else "total-value--alert"
         summary_line = Div(
             Span(paid_label, cls="total-label"),
             Span(outstanding_label, cls=f"total-value {outstanding_cls}"),
@@ -5458,7 +5464,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     # --- Add Payment / Apply Credit form ---
     # Only show form if there's outstanding balance
     add_form = ""
-    if outstanding > 0.005:
+    if outstanding_d > 0:
         _methods = [Option(t("doc.cash"), value="cash"), Option(t("doc.bank_transfer"), value="transfer"),
                     Option(t("doc.card"), value="card"), Option(t("doc.check"), value="check"), Option(t("doc.other"), value="other")]
         _bank_opts = _bank_account_options(bank_accounts, default_code=bank_accounts[0].get("chart_account_code") if bank_accounts else None)
@@ -5476,12 +5482,13 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                                     name="target_doc_id", cls="form-input", id="cn-invoice-picker",
                                 ), cls="form-group"),
                             Div(Label(t("label.amount"), cls="form-label"),
-                                Input(type="number", name="amount", value=f"{outstanding:.2f}",
-                                      step="0.01", min="0", cls="form-input", id="cn-apply-amount"), cls="form-group"),
+                                Input(type="number", name="amount", value=money_value,
+                                      step=money_step, min="0", cls="form-input", id="cn-apply-amount"), cls="form-group"),
                             Div(Label(t("th.date"), cls="form-label"),
                                 Input(type="date", name="date", value=today, cls="form-input"), cls="form-group"),
                             cls="form-row",
                         ),
+                        operation_key_input(),
                         Button(t("btn.apply"), type="submit", cls="btn btn--primary btn--sm"),
                         hx_post=f"/docs/{entity_id}/apply-credit",
                         hx_swap="none",
@@ -5495,8 +5502,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                     Form(
                         Div(
                             Div(Label(t("label.amount"), cls="form-label"),
-                                Input(type="number", name="amount", value=f"{outstanding:.2f}",
-                                      step="0.01", min="0", cls="form-input"), cls="form-group"),
+                                Input(type="number", name="amount", value=money_value,
+                                      step=money_step, min="0", cls="form-input"), cls="form-group"),
                             Div(Label(t("th.date"), cls="form-label"),
                                 Input(type="date", name="date", value=today, cls="form-input"), cls="form-group"),
                             Div(Label(t("label.method"), cls="form-label"),
@@ -5511,6 +5518,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                                 Input(type="text", name="reference", cls="form-input"), cls="form-group"),
                             cls="form-row",
                         ),
+                        operation_key_input(),
                         Button(t("btn.refund"), type="submit", cls="btn btn--secondary btn--sm"),
                         hx_post=f"/docs/{entity_id}/refund-credit", hx_swap="none", cls="form-card",
                     ),
@@ -5528,14 +5536,14 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
             invoices.forEach(inv => {{
                 const opt = document.createElement('option');
                 opt.value = inv.id;
-                opt.textContent = inv.doc_number + ' - ' + inv.contact_name + ' - ' + {_json.dumps(t("documents.outstanding_label"))} + inv.outstanding.toFixed(2);
+                opt.textContent = inv.doc_number + ' - ' + inv.contact_name + ' - ' + {_json.dumps(t("documents.outstanding_label"))} + inv.outstanding.toFixed({money_dp});
                 sel.appendChild(opt);
             }});
             sel.addEventListener('change', function() {{
                 const inv = invoices.find(i => i.id === sel.value);
                 if (inv) {{
                     const amtEl = document.getElementById('cn-apply-amount');
-                    if (amtEl) amtEl.value = Math.min({outstanding}, inv.outstanding).toFixed(2);
+                    if (amtEl) amtEl.value = Math.min({outstanding}, inv.outstanding).toFixed({money_dp});
                 }}
             }});
         }})
@@ -5550,8 +5558,8 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                 Form(
                     Div(
                         Div(Label(t("label.amount"), cls="form-label"),
-                            Input(type="number", name="amount", value=f"{outstanding:.2f}",
-                                  step="0.01", min="0", cls="form-input"), cls="form-group"),
+                            Input(type="number", name="amount", value=money_value,
+                                  step=money_step, min="0", cls="form-input"), cls="form-group"),
                         Div(Label(t("th.date"), cls="form-label"),
                             Input(type="date", name="payment_date", value=today, cls="form-input"), cls="form-group"),
                         Div(Label(t("label.method"), cls="form-label"),
@@ -5559,13 +5567,15 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                         Div(Label(t("label.bank_account"), cls="form-label"),
                             Select(*_bank_opts, name="bank_account", cls="form-input"), cls="form-group"),
                         Div(Label(t("label.conversion_rate"), cls="form-label", title=t("documents.tip_conversion_rate")),
-                            Input(type="number", name="conversion_rate", value="1",
+                            Input(type="number", name="conversion_rate",
+                                  value=str(doc.get("conversion_rate") or 1),
                                   step="any", min="0", cls="form-input"),
                             cls="form-group"),
                         Div(Label(t("label.reference"), cls="form-label"),
                             Input(type="text", name="reference", cls="form-input"), cls="form-group"),
                         cls="form-row",
                     ),
+                    operation_key_input(),
                     Button(t("btn.save_payment"), type="submit", cls="btn btn--primary btn--sm"),
                     hx_post=f"/docs/{entity_id}/payment", hx_swap="none", cls="form-card",
                 ),
@@ -5845,18 +5855,16 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                     Input(type="hidden", name=f"item_id_{i}", value=li.get("entity_id") or li.get("item_id") or ""),
                     Input(type="hidden", name=f"sku_{i}", value=li.get("sku") or ""),
                     Input(type="hidden", name=f"name_{i}", value=li.get("description") or li.get("name") or li.get("sku") or ""),
-                    Input(type="hidden", name=f"receive_as_{i}", value=li.get("receive_as") or "stock"),
+                    Input(type="hidden", name=f"receive_as_{i}", value=li.get("receive_as") or ""),
                     Input(type="hidden", name=f"qty_{i}", value=str(float(li.get("quantity") or 0))),
                 ]
-            loc_opts = [Option(loc.get("name", ""), value=loc.get("name", "")) for loc in (locations or [])]
-            loc_el = (
-                Select(*loc_opts, name="location_name", cls="form-input form-input--sm", id="li-bulk-location")
-                if loc_opts else
-                Input(type="text", name="location_name", placeholder=t("documents.location_optional"), cls="form-input form-input--sm", id="li-bulk-location")
-            )
+            loc_opts = [Option(loc.get("name", ""), value=loc.get("id", "")) for loc in (locations or [])]
+            loc_el = (Select(*loc_opts, name="location_id", cls="form-input form-input--sm", id="li-bulk-location")
+                      if loc_opts else "")
             children += [
                 Form(
                     *line_inputs,
+                    operation_key_input(),
                     Div(
                         loc_el,
                         Button(_fulfill_label, type="submit", cls="btn btn--primary btn--sm"),
@@ -6068,6 +6076,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Form(
                     Input(type="text", name="reason", placeholder=t("documents.reason_optional_placeholder"), cls="form-input form-input--inline",
                           onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
+                    operation_key_input(),
                     Button(t("btn.confirm_close_memo"), type="submit", cls="btn btn--secondary", style="margin-top:0.5rem;"),
                     hx_post=f"{_base}/action/close", hx_swap="none", cls="inline-form",
                 ),
@@ -6081,6 +6090,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                         title=t("documents.tip_reopen_memo")),
                 Form(
                     P(t("documents.reopen_memo_confirm"), cls="text-muted"),
+                    operation_key_input(),
                     Button(t("btn.confirm_reopen"), type="submit", cls="btn btn--secondary"),
                     hx_post=f"{_base}/action/reopen", hx_swap="none", cls="inline-form",
                 ),
@@ -6216,6 +6226,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Form(
                     Input(type="text", name="reason", placeholder=t("documents.void_reason_placeholder"), cls="form-input form-input--inline",
                           onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
+                    operation_key_input() if not is_list else "",
                     Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger", style="margin-top:0.5rem;"),
                     hx_post=f"{_base}/action/void", hx_swap="none", cls="inline-form",
                 ),
@@ -6241,6 +6252,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Form(
                     Input(type="text", name="reason", placeholder=t("documents.reason_optional_placeholder"), cls="form-input form-input--inline",
                           onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
+                    operation_key_input() if not is_list else "",
                     Button(t("btn.confirm_revert"), type="submit", cls="btn btn--secondary", style="margin-top:0.5rem;"),
                     hx_post=f"{_base}/action/revert_to_draft", hx_swap="none", cls="inline-form",
                 ),
@@ -6254,6 +6266,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Summary(t("doc.unvoid"), cls="btn btn--secondary"),
                 Form(
                     P(t("documents.restore_to_status", status=doc['pre_void_status']), cls="text-muted"),
+                    operation_key_input() if not is_list else "",
                     Button(t("btn.confirm_unvoid"), type="submit", cls="btn btn--secondary"),
                     hx_post=f"{_base}/action/unvoid", hx_swap="none", cls="inline-form",
                 ),
@@ -6331,6 +6344,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                         cls="modal-dialog__header",
                     ),
                     Form(
+                        operation_key_input() if not is_list else "",
                         Div(
                             Label(t("label.to_email"), cls="form-label"),
                             Input(type="text", name="sent_to", value=contact_email,
@@ -6433,6 +6447,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _mark_ok:
             action_btns_left.append(
                 Button(t("btn.mark_as_sent"), hx_post=f"{_base}/action/mark_sent",
+                       hx_vals=operation_key_vals() if not is_list else None,
                        hx_swap="none", cls="btn btn--secondary",
                        title=t("documents.tip_mark_sent"))
             )
@@ -6441,6 +6456,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _unmark_ok:
             action_btns_left.append(
                 Button(t("btn.unmark_sent"), hx_post=f"{_base}/action/unmark_sent",
+                       hx_vals=operation_key_vals() if not is_list else None,
                        hx_swap="none", cls="btn btn--secondary",
                        title=t("documents.tip_unmark_sent"))
             )
@@ -7231,7 +7247,8 @@ function _celerpPatchListField(input, url, persistFirst=false) {{
             const ok = await _celerpPersistOnce();
             if (!ok) return false;
         }}
-        await htmx.ajax('PATCH', url, {{target: target, swap: swap, values: {{value: value}}}});
+        await htmx.ajax('PATCH', url, {{target: target, swap: swap,
+            values: {{value: value, expected_version: window._celerpEntityVersion}}}});
         return true;
     }}).catch(() => false);
 }}
@@ -7630,7 +7647,7 @@ function celerpFillRow(row, data) {{
         barcodeDisp.style.display = data.barcode ? '' : 'none';
     }}
     const receiveAsEl = row.querySelector('[data-name="receive_as"]');
-    if (receiveAsEl) receiveAsEl.value = data.entity_id ? 'stock' : 'expense';
+    if (receiveAsEl) receiveAsEl.value = data.receive_as || 'expense';
     const categoryEl = row.querySelector('[data-name="category"]');
     if (categoryEl && data.category) {{
         // Ensure option exists before setting value (category may not be in inventory yet)

@@ -7,12 +7,13 @@ from decimal import Decimal
 from pydantic import BaseModel
 
 from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp.schemas.numbers import FiniteFloat
 
 
 class TaxApplication(BaseModel):
     code: str            # references company tax registry by name
-    rate: float          # rate snapshot at doc creation time
-    amount: float = 0.0  # computed signed amount (+liability / -offset like WHT); server recomputes if 0
+    rate: FiniteFloat          # rate snapshot at doc creation time
+    amount: FiniteFloat = 0.0  # computed signed amount (+liability / -offset like WHT); server recomputes if 0
     order: int = 0       # sequencing for stacking
     is_compound: bool = False  # if True: applies to (base + sum of preceding tax amounts)
     label: str = ""      # optional display override; if empty, derived from code or "Tax"

@@ -5,6 +5,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from pydantic import BaseModel, Field
@@ -18,7 +19,13 @@ from celerp.inventory_codes import (
     validate_rfid_epc,
 )
 from celerp.models.company import Company, Location
+from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services import auto_je
+from celerp.services.business_time import business_date_at
+from celerp.services.cost_visibility import COST_ITEM_KEYS
+from celerp.services.money import round_basis
+from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.importers.tabular import CsvImportSpec
 from celerp.services.field_schema import AMOUNT_ITEM_KEYS, SYSTEM_ITEM_KEYS
@@ -101,6 +108,293 @@ async def create_item(session, company_id: str, data: dict, actor_id: str | None
         metadata_={},
     )
 
+
+
+class CostRestatementConflict(ValueError):
+    """A cost change whose downstream consequences cannot be reconciled exactly."""
+
+
+# History that moves part of a lot's cost somewhere today's state cannot trace
+# exactly, so a correction reaching that lot cannot be allocated automatically.
+_UNTRACEABLE_COST_EVENTS = frozenset(("item.split", "item.transform", "item.consumed"))
+
+
+def goods_basis(state: dict) -> float | None:
+    """The lot's goods cost (before landed cost), or None when it has no cost."""
+    basis = state.get("cost_base")
+    if basis is None:
+        basis = state.get("cost_total")
+    return None if basis is None else round_basis(basis)
+
+
+def _lot_label(state: dict, entity_id: str) -> str:
+    return str(state.get("sku") or state.get("name") or entity_id)
+
+
+async def _cost_is_traceable(session: AsyncSession, company_id, entity_id: str, state: dict) -> bool:
+    """Whether all of the lot's cost is still on the lot (or went into a merge or sale).
+
+    Replays the lot's history: a split, transform or consumption moves cost elsewhere, and
+    so does a quantity adjustment that lowers stock (an audit shortfall, a manual count, a
+    supplier return), because the units that left took their share of cost with them. An
+    audit that was later undone left nothing behind, so the history is judged by what
+    survives: the audit and its undo cancel out. Adjustments that add stock keep every
+    cost on the lot. History that cannot be replayed counts as untraceable.
+    """
+    from celerp_inventory.projections import apply_item_event
+
+    if state.get("children") or state.get("transformed_into"):
+        return False
+    rows = (await session.execute(
+        select(LedgerEntry.event_type, LedgerEntry.data)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id)
+        .order_by(LedgerEntry.id)
+    )).all()
+    replayed: dict = {}
+    audits_lowering: dict[str, bool] = {}   # standing audit list -> whether it lowered stock
+    for event_type, data in rows:
+        if event_type in _UNTRACEABLE_COST_EVENTS:
+            return False
+        data = data or {}
+        try:
+            before = float(replayed.get("quantity") or 0)
+            replayed = apply_item_event(replayed, event_type, data)
+            after = float(replayed.get("quantity") or 0)
+        except (KeyError, TypeError, ValueError):
+            return False
+        if event_type != "item.quantity.adjusted":
+            continue
+        list_id = data.get("source_list_id")
+        if data.get("reason") == "audit_undo" and list_id in audits_lowering:
+            del audits_lowering[list_id]
+        elif data.get("reason") == "audit" and list_id:
+            audits_lowering[list_id] = before > 0 and after < before
+        elif before > 0 and after < before:
+            return False
+    return not any(audits_lowering.values())
+
+
+async def _invoice_line_of_sale(session: AsyncSession, company_id, entity_id: str, state: dict) -> tuple[str, int, str]:
+    """(doc_id, line_index, doc_number) of the invoice line that sold this lot.
+
+    Only a sale fulfilled from one line of a finalized invoice whose recognized
+    COGS is on record is exact enough to adjust."""
+    sale = (await session.execute(
+        select(LedgerEntry).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id == entity_id,
+            LedgerEntry.event_type == "item.fulfilled",
+        ).order_by(LedgerEntry.id.desc()).limit(1)
+    )).scalars().first()
+    data = (sale.data or {}) if sale is not None else {}
+    doc_id = data.get("source_doc_id")
+    line_index = (sale.metadata_ or {}).get("line_index") if sale is not None else None
+    if (
+        data.get("doc_type") != "invoice"
+        or not doc_id
+        or state.get("status_doc_id") != doc_id
+        or not isinstance(line_index, int)
+        or isinstance(line_index, bool)
+        or await auto_je.recognized_cogs(session, company_id, doc_id) is None
+    ):
+        raise CostRestatementConflict(
+            f"{_lot_label(state, entity_id)} is sold, but the sale cannot be matched to one invoice "
+            "line, so its cost of goods sold cannot be adjusted automatically"
+        )
+    return doc_id, line_index, data.get("doc_number") or doc_id
+
+
+@dataclass
+class _Restatement:
+    label: str
+    successors: list[tuple[str, float]]      # (entity_id, new goods basis)
+    repriced: dict[str, list[dict]]          # lot id -> per-invoice-line COGS changes
+    lots: list[str]                          # the item and every merge result it reads
+    docs: list[str]                          # the invoices it adjusts
+
+
+async def _restatement(session: AsyncSession, company_id, entity_id: str, event_type: str, data: dict,
+                       locked: dict[str, Projection]) -> _Restatement:
+    """Work out a goods-cost change and its consequences without writing anything.
+
+    Reads each lot from locked when it is there, else as currently committed.
+    Raises CostRestatementConflict when the change cannot be carried."""
+    from celerp_inventory.projections import apply_item_event
+
+    async def _read(eid: str) -> Projection | None:
+        if eid in locked:
+            return locked[eid]
+        return (await session.execute(
+            select(Projection).where(Projection.company_id == company_id, Projection.entity_id == eid)
+            .execution_options(populate_existing=True)
+        )).scalars().first()
+
+    root = await _read(entity_id)
+    if root is None or root.entity_type != "item":
+        raise CostRestatementConflict("Item not found")
+    old = root.state or {}
+    new = apply_item_event(old, event_type, data)
+    old_basis, new_basis = goods_basis(old), goods_basis(new)
+    label = _lot_label(old, entity_id)
+    status = str(old.get("status") or "").lower()
+    cost_changed = old_basis != new_basis
+    if cost_changed and not await _cost_is_traceable(session, company_id, entity_id, old):
+        raise CostRestatementConflict(
+            f"{label}'s cost was already split, transformed, or used, so the correction "
+            "cannot be carried automatically"
+        )
+
+    successors: list[tuple[str, float]] = []
+    restated: list[tuple[str, dict, dict]] = [(entity_id, old, new)]   # (entity_id, before, after)
+    if status in ("merged", "sold", "disposed") and old_basis != new_basis:
+        if old_basis is None or new_basis is None:
+            raise CostRestatementConflict(
+                f"{label} is {status}; its cost can be corrected but not added or cleared"
+            )
+        if status == "disposed":
+            raise CostRestatementConflict(
+                f"{label} was written off, so a cost correction cannot be carried into the write-off automatically"
+            )
+        delta = round_basis(new_basis - old_basis)
+        seen = {entity_id}
+        current, next_id = label, old.get("merged_into") if status == "merged" else None
+        if status == "merged" and not next_id:
+            raise CostRestatementConflict(f"{label} is merged, but its merge lineage is not recorded")
+        while next_id:
+            if next_id in seen:
+                raise CostRestatementConflict(f"{label}: the merge lineage loops back on itself at {next_id}")
+            seen.add(next_id)
+            row = await _read(next_id)
+            if row is None or row.entity_type != "item":
+                raise CostRestatementConflict(
+                    f"{current} was merged into {next_id}, which is not an item; the merge lineage is broken"
+                )
+            state = row.state or {}
+            current = _lot_label(state, next_id)
+            basis = goods_basis(state)
+            succ_status = str(state.get("status") or "").lower()
+            if not await _cost_is_traceable(session, company_id, next_id, state) or succ_status == "disposed":
+                raise CostRestatementConflict(
+                    f"{label}'s cost went into {current}, which was later split, transformed, used, or "
+                    "written off, so the correction cannot be carried through it automatically"
+                )
+            if basis is None or basis + delta < 0:
+                raise CostRestatementConflict(
+                    f"{label}'s cost went into {current}, whose cost cannot absorb a change of {delta:g}"
+                )
+            successors.append((next_id, round_basis(basis + delta)))
+            restated.append((next_id, state, apply_item_event(state, "item.cost_adjusted", {"cost_total": basis + delta})))
+            next_id = state.get("merged_into") if succ_status == "merged" else None
+            if succ_status == "merged" and not next_id:
+                raise CostRestatementConflict(f"{current} is merged, but its merge lineage is not recorded")
+
+    # What each invoice recognizes for these lots changes with their cost: the invoice
+    # that shipped a sold lot by the change in its cost of sale, and every invoice that
+    # allocated a lot to a line it has not shipped by the allocated quantity times the
+    # change in its unit cost. Two invoices can both allocate one lot before either
+    # ships it, so a sold lot can still be allocated on another invoice.
+    repriced: dict[str, list[dict]] = {}
+    if cost_changed:
+        for lot_id, before, after in restated:
+            lot_status = str(before.get("status") or "").lower()
+            if lot_status in ("merged", "memo_out"):
+                continue
+            records: list[dict] = []
+            sold_on = None
+            if lot_status == "sold":
+                sold_on, line_index, _ = await _invoice_line_of_sale(session, company_id, lot_id, before)
+                cycle = (await auto_je.recognized_cogs(session, company_id, sold_on)).cycle
+                records.append({"doc_id": sold_on, "cycle": cycle, "line": line_index,
+                                "amount": auto_je.lot_cost_of_sale(after) - auto_je.lot_cost_of_sale(before)})
+            unit_delta = auto_je.lot_unit_cost(after) - auto_je.lot_unit_cost(before)
+            for (doc_id, cycle, line_index), qty in sorted(
+                    (await auto_je.allocations_naming_lot(session, company_id, lot_id)).items()):
+                if doc_id != sold_on:
+                    records.append({"doc_id": doc_id, "cycle": cycle, "line": line_index, "amount": qty * unit_delta})
+            records = [r for r in records if r["amount"]]
+            if records:
+                repriced[lot_id] = records
+    return _Restatement(
+        label=label, successors=successors, repriced=repriced,
+        lots=[eid for eid, _, _ in restated],
+        docs=sorted({r["doc_id"] for records in repriced.values() for r in records}),
+    )
+
+
+async def restate_item_cost(
+    session: AsyncSession,
+    company_id,
+    entity_id: str,
+    *,
+    event_type: str,
+    data: dict,
+    actor_id,
+    source: str,
+    idempotency_key: str,
+) -> LedgerEntry:
+    """Apply a goods-cost change to an item and carry its consequences.
+
+    A late correction changes a lot's historical cost by a delta. The delta
+    follows the cost into each merge result (merged_into, generation after
+    generation), restated with item.cost_adjusted, so later adjustments made
+    to a result are kept. Every invoice that recognizes one of these lots - sold
+    on one of its lines, or allocated to a line not yet shipped - has the change
+    recorded against that line and its COGS trued up by one adjustment JE dated
+    today, leaving the invoice's own entries untouched. Every check runs before
+    the first event is written: the change lands with all of its consequences in
+    the caller's transaction, or raises CostRestatementConflict.
+    """
+    replay = await find_event_by_idempotency(session, company_id, idempotency_key)
+    if replay is not None:
+        if replay.event_type != event_type or replay.entity_id != entity_id:
+            raise CostRestatementConflict("Idempotency key was already used for another operation")
+        return replay
+
+    # Company, then the invoices the change adjusts, then the lots: the order every
+    # invoice lifecycle action takes. The first reading names the invoices and lots;
+    # the second repeats it under their locks and must name no others.
+    await lock_company(session, company_id)
+    unlocked = await _restatement(session, company_id, entity_id, event_type, data, {})
+    await lock_projections(session, company_id, unlocked.docs)
+    lots = await lock_projections(session, company_id, unlocked.lots)
+    plan = await _restatement(session, company_id, entity_id, event_type, data, lots)
+    if not set(plan.docs) <= set(unlocked.docs) or not set(plan.lots) <= set(unlocked.lots):
+        raise CostRestatementConflict(
+            f"{plan.label} changed while the correction was being applied; try again")
+    successors, repriced, label = plan.successors, plan.repriced, plan.label
+
+    def _metadata(lot_id: str, base: dict) -> dict:
+        return {**base, "cogs_repriced": repriced[lot_id]} if lot_id in repriced else base
+
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="item",
+        event_type=event_type, data=data, actor_id=actor_id, location_id=None,
+        source=source, idempotency_key=idempotency_key, metadata_=_metadata(entity_id, {}),
+    )
+    identity = hashlib.sha256(idempotency_key.encode()).hexdigest()[:24]
+    for succ_id, basis in successors:
+        await emit_event(
+            session, company_id=company_id, entity_id=succ_id, entity_type="item",
+            event_type="item.cost_adjusted", data={"cost_total": basis},
+            actor_id=actor_id, location_id=None, source=source,
+            idempotency_key=f"cost-restate:{identity}:{succ_id}",
+            metadata_=_metadata(succ_id, {"restated_from": entity_id}),
+        )
+    if plan.docs:
+        company = await session.get(Company, company_id)
+        today = business_date_at(datetime.now(timezone.utc), ((company.settings if company else None) or {}).get("timezone"))
+        for doc_id in plan.docs:
+            try:
+                await auto_je.reconcile_doc_cogs(
+                    session, company_id=company_id, user_id=actor_id, doc_id=doc_id,
+                    cycle_tag=f"restate-{hashlib.sha256(f'{identity}:{doc_id}'.encode()).hexdigest()[:16]}",
+                    ts=today, trigger="item.cost_restated",
+                    memo=f"COGS adjustment: cost of {label} corrected",
+                    context={"item_id": entity_id, "restatement": identity},
+                )
+            except ValueError as exc:
+                raise CostRestatementConflict(str(exc)) from exc
+    return entry
 
 
 def _legacy_external_link(platform: str, idem_key: str) -> dict:
@@ -1867,8 +2161,9 @@ async def import_items(
         batch_key = f"csv:{hashlib.sha256(canonical_batch.encode()).hexdigest()}"
     for rec in build.records:
         if rec["event_type"] == "item.created":
-            rec["idempotency_key"] = f"{batch_key}:{rec['idempotency_key']}"
-            rec["data"]["idempotency_key"] = rec["idempotency_key"]
+            key = f"{batch_key}:{rec['idempotency_key']}"
+            rec["idempotency_key"] = rec["data"]["idempotency_key"] = key
+            rec["entity_id"] = f"item:{uuid.uuid5(uuid.NAMESPACE_URL, f'{company_id}:{key}')}"
 
     user = SimpleNamespace(id=actor_id)
 
@@ -1952,10 +2247,9 @@ async def commit_import_batch(
     """Commit item import records through one bounded, company-scoped writer.
 
     Exact retries resolve through the ledger before any allocation or uniqueness
-    check. ``body.upsert`` keeps the legacy raw-CIF contract, but binds a replay to
-    the entity created by the original ledger event rather than trusting a newly
-    supplied entity id. Semantic upserts arrive as ``item.patched`` records whose
-    idempotency key is already target+content aware.
+    check. With ``body.upsert`` a record whose key created an item updates that
+    item, and only when it names the same entity id. Semantic upserts arrive as
+    ``item.patched`` records whose idempotency key is already target+content aware.
     """
     from sqlalchemy import delete as _delete
 
@@ -2026,16 +2320,13 @@ async def commit_import_batch(
                 continue
         elif event_type == "item.created":
             if primary is not None:
-                if primary.event_type != "item.created":
+                if primary.event_type != "item.created" or primary.entity_id != entity_id:
                     errors.append(f"{entity_id}: idempotency key was already used for another operation")
                     skipped += 1
                     continue
                 if not body.upsert:
                     skipped += 1
                     continue
-                # Legacy raw-CIF upsert: the ledger, not the caller's fresh UUID,
-                # owns the identity of the item created on the first import.
-                entity_id = primary.entity_id
                 event_type = "item.patched"
                 canonical_patch = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str)
                 idem_key = (
@@ -2176,21 +2467,48 @@ async def commit_import_batch(
                 skipped += 1
                 continue
 
+        # A patched goods cost is restated like an edit on the item page (merge and
+        # COGS consequences included); the row applies whole or not at all.
+        # The cost is applied after the patch, as the same item.updated cost edit the item
+        # page makes, so it normalizes against the row's resulting quantity.
+        cost_change = None
+        if event_type == "item.patched" and stored_proj is not None and COST_ITEM_KEYS & set(data):
+            cost_total, cost_price = data.pop("cost_total", None), data.pop("cost_price", None)
+            field, value = ("cost_total", cost_total) if cost_total not in (None, "") else ("cost_price", cost_price)
+            if value not in (None, ""):
+                try:
+                    cost_change = {field: {"new": float(value)}}
+                except (TypeError, ValueError):
+                    errors.append(f"Row (SKU={data.get('sku', '?')}): cost must be a number")
+                    skipped += 1
+                    continue
+
         try:
-            entry = await emit_event(
-                session,
-                preserve_external_code_conflicts=True,
-                company_id=company_id,
-                entity_id=entity_id,
-                entity_type="item",
-                event_type=event_type,
-                data=data,
-                actor_id=user.id,
-                location_id=loc_id,
-                source=rec.source,
-                idempotency_key=idem_key,
-                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
-            )
+            async with session.begin_nested():
+                entry = await emit_event(
+                    session,
+                    preserve_external_code_conflicts=True,
+                    company_id=company_id,
+                    entity_id=entity_id,
+                    entity_type="item",
+                    event_type=event_type,
+                    data=data,
+                    actor_id=user.id,
+                    location_id=loc_id,
+                    source=rec.source,
+                    idempotency_key=idem_key,
+                    metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
+                )
+                if cost_change is not None and not getattr(entry, "was_deduped", False):
+                    await restate_item_cost(
+                        session, company_id, entity_id,
+                        event_type="item.updated", data={"fields_changed": cost_change},
+                        actor_id=user.id, source=rec.source, idempotency_key=f"{idem_key}:cost",
+                    )
+        except CostRestatementConflict as exc:
+            errors.append(f"Row (SKU={data.get('sku', '?')}): {exc}")
+            skipped += 1
+            continue
         except Exception as exc:
             if len(errors) < 10:
                 errors.append(f"{entity_id}: {exc}")

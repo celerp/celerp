@@ -427,8 +427,9 @@ async def test_fractional_quantity_holds_end_to_end(client):
     assert item["trade_price"] == 10.0             # 15.285 x 0.7 = 10.6995, rounded to nearest 5
 
     after = (await client.get("/items/valuation", headers=h)).json()["price_totals"]
-    assert after["Retail"] - before.get("Retail", 0) == pytest.approx(15.285 * 35.56)
-    assert after["Trade"] - before.get("Trade", 0) == pytest.approx(10.0 * 35.56)
+    # Valuation totals are rounded to the company currency (USD cents).
+    assert after["Retail"] - before.get("Retail", 0) == pytest.approx(15.285 * 35.56, abs=0.01)
+    assert after["Trade"] - before.get("Trade", 0) == pytest.approx(10.0 * 35.56, abs=0.01)
 
 
 @pytest.mark.asyncio

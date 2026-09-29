@@ -31,8 +31,10 @@ from celerp.models.projections import Projection
 from celerp.notifications import service as notif_svc
 from celerp.services import auto_je
 from celerp.services.line_measures import splitting_allowed
+from celerp.services.money import round_basis
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.permissions import require_permission
+from celerp.schemas.numbers import FiniteFloat
 
 from .costing import RecipeError, labor_hours, roll_up_cost, where_used
 
@@ -54,13 +56,13 @@ log = logging.getLogger(__name__)
 
 class MfgInput(BaseModel):
     item_id: str
-    quantity: float
+    quantity: FiniteFloat
 
 
 class MfgOutput(BaseModel):
     sku: str
     name: str
-    quantity: float
+    quantity: FiniteFloat
     category: str | None = None
 
 
@@ -72,7 +74,7 @@ class MfgOrderCreate(BaseModel):
     location_id: str | None = None
     assigned_to: str | None = None
     due_date: str | None = None
-    estimated_cost: float | None = None
+    estimated_cost: FiniteFloat | None = None
     notes: str | None = None
     idempotency_key: str | None = None
 
@@ -94,16 +96,16 @@ class IssueBody(BaseModel):
 
 class ReceiveBody(BaseModel):
     # Finished-goods quantity to receive. Omit `quantity` to receive everything still outstanding.
-    quantity: float | None = None
+    quantity: FiniteFloat | None = None
     idempotency_key: str | None = None
 
 
 class CompleteBody(BaseModel):
     actual_outputs: list[MfgOutput] | None = None
-    waste_quantity: float | None = Field(default=None, ge=0)
+    waste_quantity: FiniteFloat | None = Field(default=None, ge=0)
     waste_unit: str | None = None
     waste_reason: str | None = None
-    labor_hours: float | None = None
+    labor_hours: FiniteFloat | None = None
     idempotency_key: str | None = None
 
 
@@ -325,7 +327,7 @@ async def _apply_standard_cost(session: AsyncSession, company_id, user, item_id:
 
 
 class BuildBody(BaseModel):
-    quantity: float = 1.0
+    quantity: FiniteFloat = 1.0
     # One-tap build: create the run and immediately issue components + receive output + complete,
     # all in one action (restaurant / simple make-to-stock). False leaves a Planned run to be
     # issued/received step by step (jewelry stock room / WIP).
@@ -1116,17 +1118,17 @@ async def backfill_default_work_center_hook(*, session: AsyncSession) -> None:
 class WorkCenterCreate(BaseModel):
     name: str
     wip_location_id: str | None = None
-    labor_rate: float | None = None
-    capacity: float | None = None
-    hours_per_day: float | None = None
+    labor_rate: FiniteFloat | None = None
+    capacity: FiniteFloat | None = None
+    hours_per_day: FiniteFloat | None = None
 
 
 class WorkCenterPatch(BaseModel):
     name: str | None = None
     wip_location_id: str | None = None
-    labor_rate: float | None = None
-    capacity: float | None = None
-    hours_per_day: float | None = None
+    labor_rate: FiniteFloat | None = None
+    capacity: FiniteFloat | None = None
+    hours_per_day: FiniteFloat | None = None
     is_default: bool | None = None
 
 
@@ -1359,7 +1361,7 @@ def _run_input_cost(run_state: dict, states: dict[str, dict]) -> float:
         issued = float(inp.get("issued_qty") or 0)
         qty = issued if issued > 0 else float(inp.get("quantity") or 0)
         total += qty * unit
-    return round(total, 2)
+    return round_basis(total)
 
 
 # Namespace for deterministic produced-lot ids: a receipt re-submitted with the same idempotency
@@ -1468,7 +1470,7 @@ async def _receive(session: AsyncSession, company_id, user, order_id: str, run_s
                 "allow_splitting": splitting_allowed(product),
                 "quantity": 0, "location_id": loc, "parent_item_id": out_id, "lot": True,
                 "barcode": lot_barcode,
-                "manufacturing_order_id": order_id, "cost_total": round(unit_cost * qty, 2),
+                "manufacturing_order_id": order_id, "cost_total": round_basis(unit_cost * qty),
             },
             actor_id=user.id, location_id=loc, source="api",
             idempotency_key=f"mfg:{order_id}:receive:{rk}:created",
@@ -1545,18 +1547,24 @@ async def _recost_run_lots(session: AsyncSession, company_id, user, order_id: st
         return  # nothing received: no lot to re-cost, and never divide by a zero yield
     unit_cost = float(output_cost) / total_received
     fresh = await _all_item_states(session, company_id)
+    from celerp_inventory.services import CostRestatementConflict, restate_item_cost
     for lot_id in run_state.get("received_lots") or []:
         lot = fresh.get(lot_id)
         if lot is None:
             continue
-        new_total = round(unit_cost * float(lot.get("quantity") or 0), 2)
-        await emit_event(
-            session, company_id=company_id, entity_id=lot_id, entity_type="item",
-            event_type="item.cost_adjusted",
+        new_total = round_basis(unit_cost * float(lot.get("quantity") or 0))
+        event = dict(
+            entity_id=lot_id, event_type="item.cost_adjusted",
             data={"cost_total": new_total, "manufacturing_order_id": order_id},
-            actor_id=user.id, location_id=lot.get("location_id"), source="api",
-            idempotency_key=f"mfg:{order_id}:recost:{lot_id}", metadata_={"manufacturing_order_id": order_id},
+            actor_id=user.id, source="api", idempotency_key=f"mfg:{order_id}:recost:{lot_id}",
         )
+        # Manufacturing re-cost is a historical cost correction regardless of the lot's
+        # current state. The canonical restater either carries that delta through merge/COGS
+        # consequences or refuses the operation before anything is written.
+        try:
+            await restate_item_cost(session, company_id, **event)
+        except CostRestatementConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

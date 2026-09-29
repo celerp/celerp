@@ -627,10 +627,23 @@ class DocPaymentReceived(BaseModel):
     paired_index: int | None = None
 
 
+class PaymentBatchRecorded(BaseModel):
+    doc_ids: list[str]
+    amount: float
+    currency: str
+    payment_date: str
+    allocations: list[dict]
+    skipped: list[dict]
+    total_allocated: float
+    remaining: float
+
+
 class DocPaymentRefunded(BaseModel):
     amount: float
     reason: str | None = None
     method: str | None = None
+    payment_index: int | None = None  # the payment the money is given back from
+    refund_date: str | None = None
 
 
 class DocPaymentVoided(BaseModel):
@@ -1100,7 +1113,7 @@ class ListCreated(BaseModel):
     model_config = {"extra": "allow"}
     list_type: str | None = None
     ref_id: str | None = None
-    customer_id: str | None = None
+    contact_id: str | None = None
     status: str = "draft"
 
 
@@ -1259,6 +1272,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.sent": DocSent,
     "doc.payment.received": DocPaymentReceived,
     "doc.payment.refunded": DocPaymentRefunded,
+    "payment_batch.recorded": PaymentBatchRecorded,
     "doc.payment.voided": DocPaymentVoided,
     "doc.payment.deleted": DocPaymentDeleted,
     "doc.converted": DocConverted,

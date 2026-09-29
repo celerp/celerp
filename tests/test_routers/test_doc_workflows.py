@@ -334,7 +334,7 @@ async def test_po_receive_quotation_convert_and_credit_note_adjustment(client, s
     po = await client.post(
         "/docs",
         headers=_h(token),
-        json={"doc_type": "purchase_order", "contact_id": "supplier:1", "line_items": [{"quantity": 2}, {"quantity": 3}], "subtotal": 50, "tax": 0, "total": 50},
+        json={"doc_type": "purchase_order", "contact_id": "supplier:1", "line_items": [{"item_id": item_id, "quantity": 2, "unit_price": 10}, {"sku": "NEW-PO", "quantity": 3, "unit_price": 10}], "subtotal": 50, "tax": 0, "total": 50},
     )
     po_id = po.json()["id"]
 
@@ -342,7 +342,7 @@ async def test_po_receive_quotation_convert_and_credit_note_adjustment(client, s
         f"/docs/{po_id}/receive",
         headers=_h(token),
         json={
-            "location_id": "loc:1",
+            "location_id": "",
             "received_items": [
                 {"po_line_index": 0, "item_id": item_id, "quantity_received": 2},
                 {"po_line_index": 1, "sku": "NEW-PO", "name": "New PO Item", "quantity_received": 3},
@@ -1550,7 +1550,7 @@ async def test_receive_as_expense_skips_inventory_creation(client, session):
         "doc_type": "bill",
         "line_items": [
             {"name": "Stock Widget", "sku": "SW-001", "quantity": 2, "unit_price": 10.0},
-            {"name": "Shipping Fee", "sku": "SHP-001", "quantity": 1, "unit_price": 5.0},
+            {"name": "Shipping Fee", "sku": "SHP-001", "quantity": 1, "unit_price": 5.0, "receive_as": "expense"},
         ],
         "subtotal": 25, "tax": 0, "total": 25,
     })
@@ -2417,7 +2417,7 @@ async def test_po_receive_known_item_still_adjusts_qty(client, session):
     rec_r = await client.post(
         f"/docs/{po_id}/receive", headers=_h(token),
         json={
-            "location_id": "loc:1",
+            "location_id": "",
             "received_items": [
                 {"po_line_index": 0, "item_id": item_id, "quantity_received": 5, "receive_as": "stock"},
             ],
@@ -2534,7 +2534,7 @@ async def test_bill_receive_with_location_sets_location_on_parcel(client, sessio
 
     rec_r = await client.post(f"/docs/{bill_id}/receive", headers=_h(token), json={
         "location_id": location_id,
-        "received_items": [{"po_line_index": 0, "sku": "BILL-LOC-TEST", "name": "Widget", "quantity_received": 3, "receive_as": "stock"}],
+        "received_items": [{"po_line_index": 0, "sku": "BILL-LOC-TEST", "name": "Widget", "quantity_received": 2, "receive_as": "stock"}],
     })
     assert rec_r.status_code == 200, rec_r.text
 

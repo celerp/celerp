@@ -680,7 +680,7 @@ class TestWorkflows:
     async def test_payment_refund(self, ui):
         with _Patches({"ui.api_client.refund_payment": AsyncMock(return_value={"ok": True})}):
             r = await ui.post("/docs/doc:inv2/refund", cookies=_c(),
-                             data={"amount": "1000", "method": "cash"})
+                             data={"payment_index": "0", "amount": "1000", "payment_date": "2026-01-15", "method": "cash"})
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio

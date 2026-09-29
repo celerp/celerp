@@ -3,6 +3,8 @@
 """Supported currencies: the one list every screen and route validates against."""
 from __future__ import annotations
 
+from fastapi import HTTPException
+
 # Ordered list of (ISO-4217 code, human label). Add new currencies here only.
 CURRENCIES: list[tuple[str, str]] = [
     ("AED", "AED – UAE Dirham"),
@@ -63,3 +65,9 @@ _LABEL_MAP: dict[str, str] = {c: lbl for c, lbl in CURRENCIES}
 def currency_label(code: str) -> str:
     """Return the human-readable label for a currency code, or the code itself if unknown."""
     return _LABEL_MAP.get(code, code)
+
+
+def require_currency_code(code: str | None) -> None:
+    """Refuse a currency outside the supported list at a write boundary. Empty means no currency."""
+    if code and code not in CURRENCY_CODES:
+        raise HTTPException(status_code=422, detail=f"Invalid currency code: {code}")

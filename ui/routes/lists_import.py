@@ -7,13 +7,11 @@ from __future__ import annotations
 
 import csv
 import io
-import uuid
 
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
-import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
 from ui.config import get_token as _token
@@ -27,6 +25,7 @@ from ui.routes.csv_import import (
     column_mapping_form,
     error_report_response,
     import_result_panel,
+    import_numbered,
     read_csv_upload,
     upload_form,
     validate_cell,
@@ -263,17 +262,15 @@ def setup_routes(app):
                 "total_weight": _f("total_weight") or 0.0,
                 "notes": str(r.get("notes", "")).strip() or None,
             }
-            idem = f"csv:list:{ref_id}".lower()
             records.append({
-                "entity_id": f"list:{uuid.uuid4()}",
                 "event_type": "list.created",
                 "data": data,
                 "source": "csv_import",
-                "idempotency_key": idem,
+                "idempotency_key": f"csv:list:{ref_id}".lower(),
             })
 
         try:
-            result = await api.batch_import(token, "/lists/import/batch", records, upsert=upsert)
+            result = await import_numbered(token, "lists", records, "ref_id", "list", upsert=upsert)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)

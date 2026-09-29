@@ -84,6 +84,24 @@ async def test_crm_import_contact_single(client):
 
 
 @pytest.mark.asyncio
+async def test_crm_import_key_of_another_contact_is_refused(client):
+    tok = await _reg(client)
+    first = {
+        "entity_id": f"contact:{uuid.uuid4()}",
+        "event_type": "crm.contact.created",
+        "data": {"name": "First Import"},
+        "source": "test",
+        "idempotency_key": str(uuid.uuid4()),
+    }
+    assert (await client.post("/crm/contacts/import", headers=_h(tok), json=first)).status_code == 200
+    other = {**first, "entity_id": f"contact:{uuid.uuid4()}", "data": {"name": "Second Import"}}
+    r = await client.post("/crm/contacts/import", headers=_h(tok), json=other)
+    assert r.status_code == 409, r.text
+    replay = await client.post("/crm/contacts/import", headers=_h(tok), json=first)
+    assert replay.status_code == 200 and replay.json()["id"] == first["entity_id"]
+
+
+@pytest.mark.asyncio
 async def test_crm_batch_import_contacts_error_path(client):
     """Batch import contacts with duplicate idempotency_key → skipped (lines 638-640)."""
     tok = await _reg(client)

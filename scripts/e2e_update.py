@@ -353,6 +353,8 @@ class Install:
             "APPDATA": str(self.root / "config"),
             "CELERP_DATA_DIR": str(self.root / "data"),
             "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            # A closed loopback port: test installs never check in to the production relay.
+            "GATEWAY_HTTP_URL": "http://127.0.0.1:9099",
         }
         for key in ("CELERP_INSTALL_CHANNEL", "CELERP_APP_VERSION", "DATABASE_URL", "PIP_FIND_LINKS",
                     "PIP_NO_INDEX", "VIRTUAL_ENV"):

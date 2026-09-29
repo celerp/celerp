@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import csv
 import io
-import uuid
 from urllib.parse import parse_qs, urlsplit
 
 from fasthtml.common import *
@@ -29,6 +28,7 @@ from ui.routes.csv_import import (
     column_mapping_form,
     error_report_response,
     import_result_panel,
+    import_numbered,
     read_csv_upload,
     upload_form,
     validate_cell,
@@ -597,7 +597,7 @@ def setup_routes(app):
         from collections import OrderedDict
         doc_map: OrderedDict = OrderedDict()
         for r in rows:
-            doc_type = str(r.get("doc_type", "")).strip()
+            doc_type = str(r.get("doc_type", "")).strip().lower()
             doc_number = str(r.get("doc_number", "")).strip()
             if not doc_type or not doc_number:
                 continue
@@ -642,17 +642,15 @@ def setup_routes(app):
 
         records: list[dict] = []
         for (doc_type, doc_number), data in doc_map.items():
-            idem = f"csv:doc:{doc_type}:{doc_number}".lower()
             records.append({
-                "entity_id": f"doc:{uuid.uuid4()}",
                 "event_type": "doc.created",
                 "data": data,
                 "source": "csv_import",
-                "idempotency_key": idem,
+                "idempotency_key": f"csv:doc:{doc_type}:{doc_number}".lower(),
             })
 
         try:
-            result = await api.batch_import(token, "/docs/import/batch", records, upsert=upsert)
+            result = await import_numbered(token, "docs", records, "doc_number", "doc", upsert=upsert)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)

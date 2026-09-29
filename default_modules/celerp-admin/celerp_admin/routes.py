@@ -68,17 +68,18 @@ async def _documents_with_posting_event(
     """Documents whose own history holds the event that posts their entry.
 
     Keyed by posting kind: "invoice" for a finalize (or a snapshot import that
-    posts an invoice on create), "purchase_order" for a receipt (or a snapshot
-    import that posts a received purchase order on create). Only a doc.created
-    the import routes recorded as a snapshot import counts; the status in any
-    other doc.created payload is not evidence.
+    posts an invoice on create), "purchase_order" for a snapshot import that
+    posts a received purchase order on create, "receipt" for goods received on
+    the document (each receipt posts its own entry for what it brought in). Only
+    a doc.created the import routes recorded as a snapshot import counts; the
+    status in any other doc.created payload is not evidence.
 
     The second map holds documents created already issued with no such record:
     imports from before the record existed look exactly like this, so their
     entries are neither owed nor safe to void without review."""
     from celerp.services.auto_je import IMPORTED_SNAPSHOT, import_auto_je_kind
 
-    posted_by: dict[str, set[str]] = {"invoice": set(), "purchase_order": set()}
+    posted_by: dict[str, set[str]] = {"invoice": set(), "purchase_order": set(), "receipt": set()}
     unrecorded: dict[str, set[str]] = {"invoice": set(), "purchase_order": set()}
     for entity_id, event_type, data, meta in (await session.execute(
         select(
@@ -93,7 +94,7 @@ async def _documents_with_posting_event(
         if event_type == "doc.finalized":
             posted_by["invoice"].add(entity_id)
         elif event_type == "doc.received":
-            posted_by["purchase_order"].add(entity_id)
+            posted_by["receipt"].add(entity_id)
         else:
             kind = import_auto_je_kind(data or {})
             if kind not in posted_by:
@@ -268,12 +269,12 @@ async def _check_missing_jes(
 
 
 # Auto-JE triggers that recognise a document's sale or receipt, and the posting
-# kind whose event has to be in the document's own history for the entry to
-# be owed. The COGS backfill only ever followed a finalize entry.
+# kinds one of whose events has to be in the document's own history for the
+# entry to be owed. The COGS backfill only ever followed a finalize entry.
 _RECOGNITION_CAUSE = {
-    "doc.finalized": "invoice",
-    "doc.cogs_backfill": "invoice",
-    "doc.received": "purchase_order",
+    "doc.finalized": ("invoice",),
+    "doc.cogs_backfill": ("invoice",),
+    "doc.received": ("purchase_order", "receipt"),
 }
 
 
@@ -302,16 +303,16 @@ async def _check_uncaused_recognition_jes(
     fixed = 0
     for je_id, meta in created:
         meta = meta or {}
-        kind = _RECOGNITION_CAUSE.get(meta.get("trigger"))
+        kinds = _RECOGNITION_CAUSE.get(meta.get("trigger"))
         doc_id = meta.get("doc_id")
-        if kind is None or not doc_id or doc_id in caused[kind]:
+        if kinds is None or not doc_id or any(doc_id in caused[k] for k in kinds):
             continue
         je = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
         if je is None or je.state.get("status") != "posted":
             continue
         detail = {"je_id": je_id, "doc_id": doc_id, "trigger": meta["trigger"]}
         found.append(detail)
-        if doc_id in unrecorded[kind]:
+        if any(doc_id in unrecorded[k] for k in kinds if k in unrecorded):
             detail["blocked_reason"] = (
                 "The document was created already issued, as an import made before imports "
                 "were recorded, so the entry may be owed. Review it and void it by hand if not."

@@ -1694,7 +1694,7 @@ async def seed_self_contacts(
 
     The company is its own customer AND vendor, so it gets a single contact typed `both` and flagged
     `is_self`. `both` is already routed into both the customer and vendor pickers (see
-    `_CONTACT_TYPE_FILTER`), so this one record appears wherever either is expected and editing it edits
+    `CONTACT_TYPE_FILTER`), so this one record appears wherever either is expected and editing it edits
     every context at once - no duplicated, divergeable records. The id is cached on
     `company.settings.self_contact_id` so the Company Details page can load it directly.
 

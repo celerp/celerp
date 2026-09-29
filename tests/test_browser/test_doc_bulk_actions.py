@@ -198,7 +198,7 @@ def test_bulk_ship_mixed_customers_confirms_first(page, ui_server, api):
     ship_id = page.url.split("/lists/")[1].split("?")[0]
     state = api.get(f"/lists/{ship_id}").json()
     assert state["list_type"] == "shipping_doc"
-    assert not state.get("contact_name") and not state.get("customer_name")
+    assert not state.get("contact_name")
     # ids arrive in table (DOM) order, not click order - compare as a set
     assert sorted(state["source_docs"]) == sorted([id_a, id_b])
 
@@ -222,7 +222,7 @@ def test_bulk_ship_single_customer_needs_no_confirm(page, ui_server, api):
     assert "/lists/" in page.url
     ship_id = page.url.split("/lists/")[1].split("?")[0]
     state = api.get(f"/lists/{ship_id}").json()
-    assert state.get("contact_name") == "Gamma Co" or state.get("customer_name") == "Gamma Co"
+    assert state.get("contact_name") == "Gamma Co"
 
 
 def test_auto_redirect_drafts_when_no_finals(page, ui_server, fresh_company):

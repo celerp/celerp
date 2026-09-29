@@ -1372,11 +1372,14 @@ async def _wrap_fields_changed(c, get_path: str, data: dict) -> dict:
     }
 
 
-async def patch_doc(token: str, entity_id: str, data: dict) -> dict:
+async def patch_doc(token: str, entity_id: str, data: dict, expected_version: int | None = None) -> dict:
     """data is a flat dict of field->value; wraps into fields_changed format."""
     async with _api_client(token) as c:
         fields_changed = await _wrap_fields_changed(c, f"/docs/{entity_id}", data)
-        return _raise(await c.patch(f"/docs/{entity_id}", json={"fields_changed": fields_changed})).json()
+        body: dict = {"fields_changed": fields_changed}
+        if expected_version is not None:
+            body["expected_version"] = expected_version
+        return _raise(await c.patch(f"/docs/{entity_id}", json=body)).json()
 
 
 async def renumber_doc(token: str, entity_id: str, ref_id: str) -> dict:
@@ -1410,14 +1413,14 @@ async def send_doc(token: str, entity_id: str, data: dict | None = None) -> dict
         return _raise(await c.post(f"/docs/{entity_id}/send", json=data or {})).json()
 
 
-async def void_doc(token: str, entity_id: str, reason: str | None = None) -> dict:
+async def void_doc(token: str, entity_id: str, reason: str | None = None, idempotency_key: str | None = None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/void", json={"reason": reason})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/void", json={"reason": reason, "idempotency_key": idempotency_key})).json()
 
 
-async def revert_doc_to_draft(token: str, entity_id: str, reason: str | None = None) -> dict:
+async def revert_doc_to_draft(token: str, entity_id: str, reason: str | None = None, idempotency_key: str | None = None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/revert-to-draft", json={"reason": reason})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/revert-to-draft", json={"reason": reason, "idempotency_key": idempotency_key})).json()
 
 
 async def revert_list_to_draft(token: str, entity_id: str, reason: str | None = None) -> dict:
@@ -1425,19 +1428,19 @@ async def revert_list_to_draft(token: str, entity_id: str, reason: str | None = 
         return _raise(await c.post(f"/lists/{entity_id}/revert-to-draft", json={"reason": reason})).json()
 
 
-async def unvoid_doc(token: str, entity_id: str) -> dict:
+async def unvoid_doc(token: str, entity_id: str, idempotency_key: str | None = None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/unvoid", json={})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/unvoid", json={"idempotency_key": idempotency_key})).json()
 
 
-async def close_doc(token: str, entity_id: str, reason: str | None = None) -> dict:
+async def close_doc(token: str, entity_id: str, reason: str | None = None, idempotency_key: str | None = None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/close", json={"reason": reason})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/close", json={"reason": reason, "idempotency_key": idempotency_key})).json()
 
 
-async def reopen_doc(token: str, entity_id: str) -> dict:
+async def reopen_doc(token: str, entity_id: str, idempotency_key: str | None = None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/reopen", json={})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/reopen", json={"idempotency_key": idempotency_key})).json()
 
 
 async def fulfill_lines(token: str, entity_id: str, line_entity_ids: list[str]) -> dict:
@@ -1466,9 +1469,12 @@ async def reserve_lines(token: str, entity_id: str, line_entity_ids: list[str],
                                    json={"line_entity_ids": line_entity_ids, "new_status": new_status})).json()
 
 
-async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None) -> dict:
+async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None,
+                         idempotency_key: str | None = None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/receive-return", json={"items": items, "notes": notes})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/receive-return", json={
+            "items": items, "notes": notes, "idempotency_key": idempotency_key,
+        })).json()
 
 
 async def undo_receive_return(token: str, entity_id: str) -> dict:
@@ -1479,27 +1485,6 @@ async def undo_receive_return(token: str, entity_id: str) -> dict:
 async def undo_receive_goods(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}/receive")).json()
-
-
-async def receive_goods(token: str, entity_id: str, line_items: list[dict], location_id: str | None = None) -> dict:
-    payload = {
-        "received_items": [
-            {
-                "sku": li.get("sku", ""),
-                "name": li.get("name", "") or li.get("description", ""),
-                "quantity_received": float(li.get("quantity", 0) or 0),
-                "unit_price": float(li.get("unit_price", 0) or 0),
-                "cost_price": float(li.get("cost_price") or li.get("unit_price", 0) or 0),
-                "receive_as": li.get("receive_as", "stock"),
-                **({"category": li["category"]} if li.get("category") else {}),
-                **({"attributes": li["attributes"]} if li.get("attributes") else {}),
-            }
-            for li in line_items
-        ],
-        "location_id": location_id or "",
-    }
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/receive", json=payload)).json()
 
 
 async def delete_doc(token: str, entity_id: str) -> dict:
@@ -2112,6 +2097,13 @@ async def export_contacts_csv(token: str, params: dict | None = None) -> bytes:
 # Lists
 # ---------------------------------------------------------------------------
 
+async def numbered_ids(token: str, resource: str, number: str, doc_type: str | None = None) -> list[str]:
+    """Ids of the ``resource`` ("docs" or "lists") records numbered exactly ``number``."""
+    params = {"number": number, **({"doc_type": doc_type} if doc_type else {})}
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/{resource}/numbered", params=params)).json()["ids"]
+
+
 async def list_lists(token: str, params: dict | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/lists", params=params or {})).json()
@@ -2366,10 +2358,6 @@ async def receive_po(token: str, entity_id: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/receive", json=data)).json()
 
-
-async def return_consignment_items(token: str, entity_id: str, data: dict) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/return-items", json=data)).json()
 
 
 # ---------------------------------------------------------------------------
@@ -2734,37 +2722,40 @@ async def refund_payment(token: str, entity_id: str, data: dict) -> dict:
         return _raise(await c.post(f"/docs/{entity_id}/refund", json=data)).json()
 
 
-async def void_payment(token: str, entity_id: str, payment_index: int, void_reason: str = "") -> dict:
+async def void_payment(token: str, entity_id: str, payment_index: int, void_reason: str = "",
+                       idempotency_key: str | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/void-payment", json={
-            "payment_index": payment_index, "void_reason": void_reason,
+            "payment_index": payment_index, "void_reason": void_reason, "idempotency_key": idempotency_key,
         })).json()
 
 
-async def apply_credit_note(token: str, cn_id: str, target_doc_id: str, amount: float, date: str | None = None) -> dict:
+async def apply_credit_note(token: str, cn_id: str, target_doc_id: str, amount: float, date: str | None = None,
+                            idempotency_key: str | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{cn_id}/apply-to-invoice", json={
-            "target_doc_id": target_doc_id, "amount": amount, "date": date,
+            "target_doc_id": target_doc_id, "amount": amount, "date": date, "idempotency_key": idempotency_key,
         })).json()
 
 
 async def refund_credit_note(token: str, cn_id: str, amount: float, date: str | None = None,
                              method: str | None = None, bank_account: str | None = None,
-                             reference: str | None = None) -> dict:
+                             reference: str | None = None, idempotency_key: str | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{cn_id}/cn-refund", json={
             "amount": amount, "date": date, "method": method,
-            "bank_account": bank_account, "reference": reference,
+            "bank_account": bank_account, "reference": reference, "idempotency_key": idempotency_key,
         })).json()
 
 
 async def bulk_payment(token: str, doc_ids: list[str], amount: float, payment_date: str | None = None,
                        method: str | None = None, bank_account: str | None = None,
-                       reference: str | None = None) -> dict:
+                       reference: str | None = None, idempotency_key: str | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/docs/bulk-payment", json={
             "doc_ids": doc_ids, "amount": amount, "payment_date": payment_date,
             "method": method, "bank_account": bank_account, "reference": reference,
+            "idempotency_key": idempotency_key,
         })).json()
 
 

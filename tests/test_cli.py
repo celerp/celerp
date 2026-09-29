@@ -19,9 +19,11 @@ from celerp.cli import _config_path, _read_config, _write_config, main
 
 @pytest.fixture()
 def tmp_config(tmp_path, monkeypatch):
-    """Point config path to a temp dir."""
+    """Point config path and data folder to a temp dir, so `init --force` wipes only the test's own files."""
+    from celerp.config import settings
     config_file = tmp_path / "celerp" / "config.toml"
     monkeypatch.setenv("CELERP_CONFIG", str(config_file))
+    monkeypatch.setattr(settings, "data_dir", tmp_path / "data")
     return config_file
 
 

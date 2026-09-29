@@ -813,7 +813,7 @@ async def test_void_recompute_keeps_refunds(client):
                               json={"payment_date": d, "amount": amt, "bank_account": "1111"})
         assert r.status_code == 200
     r = await client.post(f"/docs/{inv}/refund", headers=_h(token),
-                          json={"amount": 30.0, "payment_date": "2026-01-20"})
+                          json={"payment_index": 0, "amount": 30.0, "payment_date": "2026-01-20"})
     assert r.status_code == 200, r.text
     doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
     assert doc["amount_paid"] == pytest.approx(120.0, abs=0.01)

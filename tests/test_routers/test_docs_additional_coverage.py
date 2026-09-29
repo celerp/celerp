@@ -29,8 +29,8 @@ async def test_docs_list_filters_and_refund_guard_and_import_paths(client):
     await client.post(f"/docs/{inv}/send", headers=_h(token), json={})
     await client.post(f"/docs/{inv}/finalize", headers=_h(token))
     await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 4, "bank_account": "1111"})
-    bad_refund = await client.post(f"/docs/{inv}/refund", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 5, "bank_account": "1111"})
-    assert bad_refund.status_code == 409
+    bad_refund = await client.post(f"/docs/{inv}/refund", headers=_h(token), json={"payment_index": 0, "payment_date": "2026-01-15", "amount": 5})
+    assert bad_refund.status_code == 422
 
     # import single + batch (skip existing key)
     imp1 = await client.post("/docs/import", headers=_h(token), json={"entity_id": "doc:IMP-1", "event_type": "doc.created", "data": {"doc_type": "invoice", "total": 1}, "source": "test", "idempotency_key": "doc-import-1"})

@@ -123,7 +123,7 @@ async def test_revert_blocked_when_items_received(client):
     _loc = await default_location_id(client, _h(token))
     await client.post(f"/docs/{po}/receive", headers=_h(token), json={
         "location_id": _loc,
-        "received_items": [{"po_line_index": 0, "quantity_received": 1, "sku": "P1", "name": "Part"}],
+        "received_items": [{"po_line_index": 0, "quantity_received": 1, "name": "Part"}],
     })
 
     doc = (await client.get(f"/docs/{po}", headers=_h(token))).json()

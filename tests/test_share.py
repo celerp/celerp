@@ -601,7 +601,6 @@ async def test_list_share_preserves_explicit_blank_contact_name(client: AsyncCli
         json={
             "list_type": "quote",
             "contact_id": contact_id,
-            "contact_name": "",
             "line_items": [],
             "currency": "THB",
         },
@@ -609,6 +608,12 @@ async def test_list_share_preserves_explicit_blank_contact_name(client: AsyncCli
     )
     assert created.status_code == 200, created.text
     list_id = created.json()["id"]
+    blanked = await client.patch(
+        f"/lists/{list_id}",
+        json={"fields_changed": {"contact_name": {"old": "Hidden Live List Customer", "new": ""}}},
+        headers=_h(tok),
+    )
+    assert blanked.status_code == 200, blanked.text
     token = (await client.post(f"/docs/{list_id}/share", headers=_h(tok))).json()["token"]
 
     view = await client.get(f"/share/{token}")
@@ -928,8 +933,8 @@ async def test_import_link_fetches_the_bundle_next_to_the_share_page(client: Asy
 
 
 @pytest.mark.asyncio
-async def test_import_bundle_file_retry_opens_the_same_doc(client: AsyncClient):
-    """Uploading the same .celerp file twice (a retry) does not create a second received doc."""
+async def test_import_bundle_file_again_opens_the_same_doc(client: AsyncClient):
+    """Uploading the same .celerp file twice does not create a second received doc."""
     tok = await _token(client)
     content = json.dumps({"version": 1, "doc": {"doc_type": "invoice", "currency": "USD", "ref_id": "EXT-7", "total": 7.0}}).encode()
     locations = []
