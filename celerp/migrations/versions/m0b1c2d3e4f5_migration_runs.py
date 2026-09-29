@@ -3,16 +3,16 @@
 
 """Add migration_runs and migration_entity_maps for durable company migrations.
 
-Revision ID: l9a0b1c2d3e4
-Revises: k8f9a0b1c2d3
+Revision ID: m0b1c2d3e4f5
+Revises: l9a0b1c2d3e4
 Create Date: 2026-09-29
 """
 
 from alembic import op
 import sqlalchemy as sa
 
-revision = "l9a0b1c2d3e4"
-down_revision = "k8f9a0b1c2d3"
+revision = "m0b1c2d3e4f5"
+down_revision = "l9a0b1c2d3e4"
 branch_labels = None
 depends_on = None
 

@@ -44,6 +44,7 @@ from celerp.models.company import Company, Location, User
 from celerp.models.migration import MigrationEntityMap
 from celerp.models.projections import Projection
 from celerp.services.attachments import FILE_ATTACHED_EVENTS, attach_file, item_file_role, store_file
+from celerp.services.company_lock import locked_company
 from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.money import currency_dp
 
@@ -217,7 +218,8 @@ class CoreMigrationSink:
 
     async def import_batch(self, context: SinkContext, records: Sequence[CIFSourceRecord]) -> SinkBatchResult:
         result = SinkBatchResult()
-        company = await context.session.get(Company, context.company_id)
+        # Company settings change only under the company lock (tax codes, currency, fiscal year).
+        company = await locked_company(context.session, context.company_id)
         for record in records:
             target_type, target_id, error = await self._import_one(context, company, record)
             if error is not None:

@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .conftest import run_migration_ops
 
-MODULE = "l9a0b1c2d3e4_migration_runs"
+MODULE = "m0b1c2d3e4f5_migration_runs"
 
 
 @pytest.fixture()

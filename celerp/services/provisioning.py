@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
 from celerp.services.auth import hash_password
+from celerp.services.company_lock import locked_company
 
 DEFAULT_LOCATION_NAME = "Head Office"
 DEFAULT_LOCATION_TYPE = "office"
@@ -146,8 +147,8 @@ async def ensure_default_location(session: AsyncSession, company_id: uuid.UUID) 
 
 async def add_missing_required_defaults(session: AsyncSession, company_id: uuid.UUID) -> None:
     """Fill in only what a migrated company still lacks: a default location and a fiscal year start."""
+    company = await locked_company(session, company_id)
     await ensure_default_location(session, company_id)
-    company = await session.get(Company, company_id)
     if not (company.settings or {}).get("fiscal_year_start"):
         company.settings = {**(company.settings or {}), "fiscal_year_start": DEFAULT_FISCAL_YEAR_START}
     await session.flush()
