@@ -698,10 +698,12 @@ class TestPreviewCommitInvariant:
 
     @pytest.mark.asyncio
     async def test_file_preview_hash_changes_when_file_bytes_change(self, client, perm, write_upload):
-        a = write_upload(perm, "name,sell_by\nWidget,piece\n")
-        b = write_upload(perm, "name,sell_by\nWidget,gram\n")
-        ha = (await client.get(f"/items/import/preview?file_id={a}", headers=perm["admin_h"])).json()["preview_hash"]
-        hb = (await client.get(f"/items/import/preview?file_id={b}", headers=perm["admin_h"])).json()["preview_hash"]
+        from celerp.ai.files import upload_dir
+        fid = write_upload(perm, "name,sell_by\nWidget,piece\n")
+        ha = (await client.get(f"/items/import/preview?file_id={fid}", headers=perm["admin_h"])).json()["preview_hash"]
+        # Same file id and size, different content.
+        (upload_dir() / f"{fid}.bin").write_bytes(b"name,sell_by\nWidget,pound\n")
+        hb = (await client.get(f"/items/import/preview?file_id={fid}", headers=perm["admin_h"])).json()["preview_hash"]
         assert ha != hb
 
     @pytest.mark.asyncio
