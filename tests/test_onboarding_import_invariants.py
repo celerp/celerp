@@ -1044,3 +1044,139 @@ class TestUnitAndPriceInvariant:
         assert r.status_code == 200, r.text
         assert "Price (USD)" in r.text and "different currency" in r.text
         preview.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# INV-TABULAR-01 - CSV and XLSX are parser variants, not business variants
+# ---------------------------------------------------------------------------
+
+
+class _Upload:
+    def __init__(self, data: bytes, filename: str):
+        self._data = data
+        self.filename = filename
+
+    async def read(self) -> bytes:
+        return self._data
+
+
+def _xlsx(sheets: dict[str, list[list]]) -> bytes:
+    import io
+    import openpyxl
+    workbook = openpyxl.Workbook()
+    workbook.remove(workbook.active)
+    for name, rows in sheets.items():
+        worksheet = workbook.create_sheet(title=name)
+        for row in rows:
+            worksheet.append(row)
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+_PARITY_CSV = "sku,name,quantity,weight,retail_price,note\n007,\"Ruby, oval\",2,1.25,1500,\nB-2,Café,10,0.5,99.5,x\n"
+_PARITY_XLSX_ROWS = [
+    ["sku", "name", "quantity", "weight", "retail_price", "note"],
+    ["007", "Ruby, oval", 2, 1.25, 1500, None],
+    ["B-2", "Café", 10, 0.5, 99.5, "x"],
+]
+
+
+async def _read(data: bytes, filename: str, **fields):
+    return await ci.read_tabular_upload({"csv_file": _Upload(data, filename), **fields})
+
+
+class TestTabularParityInvariant:
+    @pytest.mark.asyncio
+    async def test_csv_and_xlsx_produce_identical_rows(self):
+        csv_rows, csv_err = await _read(_PARITY_CSV.encode(), "items.csv")
+        xlsx_rows, xlsx_err = await _read(_xlsx({"Items": _PARITY_XLSX_ROWS}), "items.xlsx")
+        assert csv_err is None and xlsx_err is None
+        assert xlsx_rows == csv_rows
+        assert csv_rows[0] == {"sku": "007", "name": "Ruby, oval", "quantity": "2", "weight": "1.25", "retail_price": "1500", "note": ""}
+
+    @pytest.mark.asyncio
+    async def test_bom_csv_still_reads_its_first_header(self):
+        rows, err = await _read(("﻿" + _PARITY_CSV).encode(), "items.csv")
+        assert err is None and list(rows[0])[0] == "sku"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fmt", ["csv", "xlsx"])
+    async def test_row_bound_applies_to_both_formats(self, fmt, monkeypatch):
+        from celerp.importers import tabular
+        monkeypatch.setattr(tabular, "MAX_ROWS", 1)
+        data = _PARITY_CSV.encode() if fmt == "csv" else _xlsx({"Items": _PARITY_XLSX_ROWS})
+        rows, err = await _read(data, f"items.{fmt}")
+        assert rows == [] and "Too many rows" in err
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("fmt", ["csv", "xlsx"])
+    async def test_cell_bound_applies_to_both_formats(self, fmt, monkeypatch):
+        from celerp.importers import tabular
+        monkeypatch.setattr(tabular, "MAX_CELLS", 6)
+        data = _PARITY_CSV.encode() if fmt == "csv" else _xlsx({"Items": _PARITY_XLSX_ROWS})
+        rows, err = await _read(data, f"items.{fmt}")
+        assert rows == [] and "Too many cells" in err
+
+    @pytest.mark.asyncio
+    async def test_several_sheets_with_data_require_a_choice(self):
+        data = _xlsx({"Rings": [["sku"], ["R1"]], "Notes": [], "Stones": [["sku"], ["S1"]]})
+        rows, err = await _read(data, "stock.xlsx")
+        assert rows == []
+        assert err.sheets == ["Rings", "Stones"]
+        html = str(ci.upload_form(template_href="/t", preview_action="/p", error=err))
+        assert 'name="sheet"' in html and "Rings" in html and "Stones" in html
+        assert 'value="Rings"' not in html.split('name="sheet"')[1].split(">")[0]
+
+    @pytest.mark.asyncio
+    async def test_selected_sheet_is_read_deterministically(self):
+        data = _xlsx({"Rings": [["sku"], ["R1"]], "Stones": [["sku"], ["S1"]]})
+        first = await _read(data, "stock.xlsx", sheet="Stones")
+        second = await _read(data, "stock.xlsx", sheet="Stones")
+        assert first == second == ([{"sku": "S1"}], None)
+        rows, err = await _read(data, "stock.xlsx", sheet="Missing")
+        assert rows == [] and err.sheets == ["Rings", "Stones"]
+
+    @pytest.mark.asyncio
+    async def test_one_sheet_with_data_is_read_without_asking(self):
+        data = _xlsx({"Cover": [], "Items": [["sku"], ["A"]]})
+        assert await _read(data, "items.xlsx") == ([{"sku": "A"}], None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("filename", ["items.xls", "items.xlsm", "items.pdf"])
+    async def test_unsupported_formats_are_refused_with_a_reason(self, filename):
+        rows, err = await _read(b"whatever", filename)
+        assert rows == [] and ("not supported" in err or "Unsupported" in err)
+
+    @pytest.mark.asyncio
+    async def test_formula_cells_are_refused_with_their_position(self):
+        rows, err = await _read(_xlsx({"Items": [["sku", "qty"], ["A", "=1+1"]]}), "items.xlsx")
+        assert rows == [] and "Formula" in err
+
+    def test_upload_form_accepts_csv_and_xlsx(self):
+        html = str(ci.upload_form(template_href="/t", preview_action="/p"))
+        assert 'accept=".csv,.xlsx"' in html and "xlsx" in html
+        assert 'name="sheet"' not in html
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("route,module", [
+        ("/inventory/import/preview", "ui.routes.inventory"),
+        ("/lists/import/preview", "ui.routes.lists_import"),
+    ])
+    async def test_importers_stage_the_same_rows_from_csv_and_xlsx(self, route, module):
+        from ui.app import app as ui_app
+        company = {"id": _COMPANY_A, "currency": "USD", "current_role": "owner", "settings": {}}
+        staged: dict[str, str] = {}
+        for fmt, data in (("csv", _PARITY_CSV.encode()), ("xlsx", _xlsx({"Items": _PARITY_XLSX_ROWS}))):
+            stash = AsyncMock(return_value="imp_" + "0" * 32)
+            with patch(f"{module}.stash_import_csv", new=stash), \
+                 patch("ui.api_client.get_company", new=AsyncMock(return_value=company)), \
+                 patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}])), \
+                 patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})):
+                async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
+                    r = await c.post(route, files={"csv_file": (f"items.{fmt}", data)}, cookies=_owner_cookies())
+            assert r.status_code == 200, r.text
+            stash.assert_awaited_once()
+            staged[fmt] = stash.await_args.args[1]
+        assert staged["xlsx"] == staged["csv"]
+        assert "Ruby, oval" in staged["csv"]

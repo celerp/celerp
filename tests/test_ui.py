@@ -12930,7 +12930,7 @@ class TestCsvImportUxOverhaul:
             preview_action="/x/preview",
         ))
         assert "import-dropzone" in html
-        assert "Drag your CSV" in html
+        assert "Drag your file" in html
 
     def test_upload_form_has_step_indicator(self):
         from fasthtml.common import to_xml

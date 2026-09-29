@@ -2149,7 +2149,7 @@ def setup_routes(app):
     from ui.routes.csv_import import (
         CsvImportSpec, discard_import_csv, resolve_import_csv, _rows_to_csv, stash_import_csv,
         upload_form as _csv_upload_form, validate_cell as _csv_validate_cell,
-        read_csv_upload as _csv_read_upload, validation_result as _csv_validation_result,
+        read_tabular_upload as _read_tabular_upload, validation_result as _csv_validation_result,
         error_report_response as _csv_error_report, apply_fixes_to_rows as _csv_apply_fixes,
         column_mapping_form as _csv_column_mapping_form,
         validate_column_mapping as _csv_validate_column_mapping,
@@ -2205,7 +2205,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        rows, err = await _csv_read_upload(form)
+        rows, err = await _read_tabular_upload(form)
         if err:
             return await base_shell(
                 page_header(t("contacts.import_contacts"), A(t("btn.back_to_settings"), href="/contacts/customers", cls="btn btn--secondary")),

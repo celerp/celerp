@@ -27,7 +27,7 @@ from ui.routes.csv_import import (
     column_mapping_form,
     error_report_response,
     import_result_panel,
-    read_csv_upload,
+    read_tabular_upload,
     upload_form,
     validate_cell,
     validate_column_mapping,
@@ -107,7 +107,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        rows, err = await read_csv_upload(form)
+        rows, err = await read_tabular_upload(form)
         if err:
             return await base_shell(
                 page_header(t("settings_import.hdr_locations")),
@@ -304,7 +304,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        rows, err = await read_csv_upload(form)
+        rows, err = await read_tabular_upload(form)
         if err:
             return await base_shell(
                 page_header(t("settings_import.hdr_taxes")),
@@ -506,7 +506,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        rows, err = await read_csv_upload(form)
+        rows, err = await read_tabular_upload(form)
         if err:
             return await base_shell(
                 page_header(t("settings_import.hdr_payment_terms")),

@@ -1445,7 +1445,7 @@ def setup_routes(app):
             return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         form = await request.form()
-        rows, err = await read_csv_upload(form)
+        rows, err = await read_tabular_upload(form)
         if err:
             return await base_shell(
                 page_header(t("page.import_inventory", lang)),
@@ -7436,7 +7436,7 @@ from ui.routes.csv_import import (
     error_report_response,
     import_abort_panel,
     import_result_panel,
-    read_csv_upload,
+    read_tabular_upload,
     rows_have_errors,
     semantic_review_panel,
     upload_form as _csv_upload_form,

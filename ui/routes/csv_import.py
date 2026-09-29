@@ -31,6 +31,7 @@ from starlette.responses import StreamingResponse
 import ui.api_client as api
 from celerp.config import settings
 from ui.i18n import t, get_lang
+from ui.components.table import searchable_select
 
 from celerp.importers import tabular
 from celerp.importers.tabular import (  # re-exported for the existing CSV importers
@@ -732,6 +733,17 @@ _DROPZONE_JS = """
 """
 
 
+def _sheet_picker(sheets: list[str] | None) -> FT | str:
+    if not sheets:
+        return ""
+    return Label(
+        t("import.sheet_label"),
+        searchable_select("sheet", sheets, aria_label=t("import.sheet_label")),
+        cls="form-label",
+        style="display:block; margin-bottom: 12px;",
+    )
+
+
 def upload_form(
     *,
     cols: list[str] | None = None,
@@ -745,12 +757,13 @@ def upload_form(
         _step_indicator(1, has_mapping=has_mapping),
         P(error, cls="flash flash--error") if error else "",
         Form(
-            Input(type="file", id="csv_file", name="csv_file", accept=".csv",
+            Input(type="file", id="csv_file", name="csv_file", accept=".csv,.xlsx",
                   required=True, style="display:none"),
+            _sheet_picker(getattr(error, "sheets", None)),
             Div(
                 Div("📄", cls="import-dropzone-icon"),
-                Div(t("msg.drag_your_csv_here_or_click_to_browse"), cls="import-dropzone-text"),
-                Div(t("msg.accepted_formats_csv_utf8"), cls="import-dropzone-hint"),
+                Div(t("msg.drag_your_file_here_or_click_to_browse"), cls="import-dropzone-text"),
+                Div(t("msg.accepted_formats_import"), cls="import-dropzone-hint"),
                 Span(id="dropzone-file-info", cls="import-dropzone-file", style="display:none"),
                 Div(
                     A(t("btn.download_template"), href=template_href, cls="link",
@@ -770,31 +783,43 @@ def upload_form(
     )
 
 
-async def read_csv_upload(form: Any) -> tuple[list[dict], str | None]:
-    """Return (rows, error).
+class UploadError(str):
+    """An upload error message. ``sheets`` lists the workbook sheets to choose
+    from when the file had more than one sheet with data."""
 
-    Handles four failure classes explicitly:
-    1. Encoding errors  → "Could not decode file. Use UTF-8 encoding."
-    2. Structurally malformed CSV (csv.Error, e.g. unbalanced quotes, NUL bytes)
-       → "Could not parse file. Please check it is a valid CSV."
-    3. Empty or header-only / None-fieldname output from DictReader
-       → "CSV file is empty or has no valid header row."
-    4. Header-only file (valid header, zero data rows)
-       → "CSV file is empty or invalid."
+    sheets: list[str]
+
+    def __new__(cls, message: str, sheets: list[str] | None = None) -> "UploadError":
+        obj = super().__new__(cls, message)
+        obj.sheets = list(sheets or [])
+        return obj
+
+
+async def read_tabular_upload(form: Any) -> tuple[list[dict], str | None]:
+    """Return (rows, error) for an uploaded .csv or .xlsx file.
+
+    Both formats go through ``tabular.read_table``, so a workbook and the same
+    data saved as CSV yield identical rows. A workbook with several sheets that
+    hold data is never read until the user picks one (``sheet`` form field); the
+    error then carries the sheet names so the upload form can offer them.
     """
     file_obj = form.get("csv_file")
     if not file_obj or not hasattr(file_obj, "read"):
         return [], t("import.err_select_file")
     content = await file_obj.read()
+    filename = getattr(file_obj, "filename", None) or "upload.csv"
+    sheet = (form.get("sheet") or "").strip() or None
     try:
-        text = content.decode("utf-8-sig")
-    except Exception:
+        fieldnames, rows = tabular.read_table(content, filename, sheet=sheet)
+    except UnicodeDecodeError:
         return [], t("import.err_decode")
-    try:
-        fieldnames, rows = tabular.read_csv(text)
-    except (csv.Error, tabular.TabularError):
+    except csv.Error:
         return [], t("import.err_parse")
-    if not fieldnames or any(f is None for f in fieldnames):
+    except tabular.TabularError as exc:
+        if exc.sheets:
+            return [], UploadError(t("import.err_choose_sheet"), sheets=exc.sheets)
+        return [], t("import.err_read_file", detail=str(exc))
+    if not fieldnames or any(f is None or str(f).strip() == "" for f in fieldnames):
         return [], t("import.err_no_header")
     if rows and any(None in row for row in rows):
         return [], t("import.err_extra_columns")
