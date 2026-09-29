@@ -7186,7 +7186,7 @@ class TestSprint5NoPopups:
 #       after first HTMX swap; class attr changes no longer trigger observer
 #   B2: Error counter not updating → MutationObserver infinite loop on
 #       attribute changes (disabled button toggle re-fires observer)
-#   B3: Cell edits silently ignored on confirm (csv_data was a static snapshot)
+#   B3: Cell edits silently ignored on confirm (the hidden CSV field was a static snapshot)
 # =============================================================================
 
 import io as _io
@@ -7983,7 +7983,7 @@ class TestInventoryImportFlow:
 #       (MutationObserver watching `disabled` attribute it sets itself)
 #
 #   P3: Static snapshots used as ground truth while live DOM diverges
-#       (csv_data hidden field not updated when user edits cells)
+#       (hidden CSV field not updated when user edits cells)
 #
 #   P4: Currency/context threading gaps — page fetches company but forgets to
 #       pass currency/timezone into sub-renderers
