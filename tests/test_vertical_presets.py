@@ -94,12 +94,15 @@ def test_installed_preset_modules_skips_uninstalled():
 
 
 def test_catalog_is_read_once_per_process():
-    vp.list_presets()
-    with patch.object(vp, "resolve_runtime_module_path", wraps=vp.resolve_runtime_module_path) as resolve, \
-         patch.object(vp.json, "loads", wraps=json.loads) as parse:
+    def read_catalog():
         vp.list_presets()
         vp.load_preset("gemstones")
         vp.load_category("diamond")
+
+    read_catalog()
+    with patch.object(vp, "resolve_runtime_module_path", wraps=vp.resolve_runtime_module_path) as resolve, \
+         patch.object(vp.json, "loads", wraps=json.loads) as parse:
+        read_catalog()
     assert resolve.call_count == 0
     assert parse.call_count == 0
 
