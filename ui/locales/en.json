@@ -507,6 +507,7 @@
   "doc.0_rows_selected": "0 rows selected",
   "doc.0_selected": "0 selected",
   "doc._all_selected_documents_must_be_from_the_same_cont": "⚠ All selected documents must be from the same contact. You selected documents from multiple contacts.",
+  "doc.bulk_payment_same_currency": "Bulk payment requires all selected payable documents to use the same currency.",
   "doc._default": "— Default —",
   "doc._labels": "🏷 Labels",
   "doc.action": "Action",

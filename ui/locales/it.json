@@ -449,6 +449,7 @@
   "doc.0_rows_selected": "0 righe selezionate",
   "doc.0_selected": "0 selezionati",
   "doc._all_selected_documents_must_be_from_the_same_cont": "⚠ Tutti i documenti selezionati devono essere dello stesso contatto. Hai selezionato documenti di contatti multipli.",
+  "doc.bulk_payment_same_currency": "Il pagamento cumulativo richiede che tutti i documenti da pagare selezionati usino la stessa valuta.",
   "doc._default": "— Predefinito —",
   "doc._labels": "🏷 Etichette",
   "doc.action": "Azione",

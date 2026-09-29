@@ -449,6 +449,7 @@
   "doc.0_rows_selected": "0 صفوف محددة",
   "doc.0_selected": "0 مختارة",
   "doc._all_selected_documents_must_be_from_the_same_cont": "⚠ يجب أن تكون جميع المستندات المحددة من نفس جهة الاتصال. لقد قمت بتحديد المستندات من جهات اتصال متعددة.",
+  "doc.bulk_payment_same_currency": "يتطلب الدفع المجمع أن تستخدم جميع المستندات المستحقة الدفع المحددة العملة نفسها.",
   "doc._default": "- تقصير -",
   "doc._labels": "🏷 التسميات",
   "doc.action": "إجراء",

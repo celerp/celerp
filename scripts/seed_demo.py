@@ -216,12 +216,16 @@ async def seed_docs(client: httpx.AsyncClient, token: str, contacts: list[dict],
     lifecycles = _LIFECYCLES[doc_type]
     today = date.today()
     for i in range(count):
-        doc_date = (today - timedelta(days=random.randint(0, 180))).isoformat()
-        due_date = (today + timedelta(days=random.randint(7, 60))).isoformat()
-        contact = random.choice(pool)
+        # A re-run seeds the same documents instead of adding more, and the actions
+        # below skip whatever step already happened.
+        key = f"seed:{doc_type}:{i + 1}"
+        rng = random.Random(key)
+        doc_date = (today - timedelta(days=rng.randint(0, 180))).isoformat()
+        due_date = (today + timedelta(days=rng.randint(7, 60))).isoformat()
+        contact = rng.choice(pool)
         line_items = []
-        for item in random.sample(all_items, min(random.randint(1, 4), len(all_items))):
-            qty = random.randint(1, 10)
+        for item in rng.sample(all_items, min(rng.randint(1, 4), len(all_items))):
+            qty = rng.randint(1, 10)
             price_key = "wholesale_price" if doc_type == "purchase_order" else "retail_price"
             price = float(item.get(price_key) or 100)
             line_items.append({
@@ -231,9 +235,6 @@ async def seed_docs(client: httpx.AsyncClient, token: str, contacts: list[dict],
                 "unit_price": price,
                 "line_total": qty * price,
             })
-        # The key makes a re-run replay the same draft instead of adding another,
-        # and the actions below skip or replay whatever step already happened.
-        key = f"seed:{doc_type}:{i + 1}"
         r = _require(await client.post("/docs", json={
             "doc_type": doc_type,
             "contact_id": contact.get("entity_id", ""),

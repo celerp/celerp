@@ -449,6 +449,7 @@
   "doc.0_rows_selected": "0 ligne sélectionnée",
   "doc.0_selected": "0 sélectionné",
   "doc._all_selected_documents_must_be_from_the_same_cont": "⚠ Tous les documents sélectionnés doivent provenir du même contact. Vous avez sélectionné des documents provenant de plusieurs contacts.",
+  "doc.bulk_payment_same_currency": "Le paiement groupé exige que tous les documents à payer sélectionnés utilisent la même devise.",
   "doc._default": "— Par défaut —",
   "doc._labels": "🏷 Étiquettes",
   "doc.action": "Action",

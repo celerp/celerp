@@ -449,6 +449,7 @@
   "doc.0_rows_selected": "0 Zeilen ausgewählt",
   "doc.0_selected": "0 ausgewählt",
   "doc._all_selected_documents_must_be_from_the_same_cont": "⚠ Alle ausgewählten Dokumente müssen vom selben Kontakt stammen. Sie haben Dokumente von mehreren Kontakten ausgewählt.",
+  "doc.bulk_payment_same_currency": "Für eine Sammelzahlung müssen alle ausgewählten offenen Dokumente dieselbe Währung verwenden.",
   "doc._default": "— Standard —",
   "doc._labels": "🏷 Etiketten",
   "doc.action": "Aktion",

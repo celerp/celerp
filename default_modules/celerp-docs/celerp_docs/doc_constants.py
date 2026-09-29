@@ -45,6 +45,12 @@ SALES_PRICED_DOC_TYPES: frozenset[str] = frozenset({
 # other document's contact is a customer (customer or both).
 VENDOR_DOC_TYPES: frozenset[str] = frozenset({"purchase_order", "bill", "consignment_in"})
 
+# Older records named their counterparty customer_id/customer_name (transfers: receiver).
+# Writes take them as the contact fields, and replay folds stored ones the same way.
+LEGACY_CONTACT_FIELDS: dict[str, str] = {
+    "customer_id": "contact_id", "customer_name": "contact_name", "receiver": "contact_name",
+}
+
 # State that only lifecycle operations write: finalize, send, payment, receive,
 # fulfil, convert, close and void, plus the record identity the ledger assigns.
 # Ordinary creation never carries any of it, since a new document or list is an

@@ -601,7 +601,6 @@ async def test_list_share_preserves_explicit_blank_contact_name(client: AsyncCli
         json={
             "list_type": "quote",
             "contact_id": contact_id,
-            "contact_name": "",
             "line_items": [],
             "currency": "THB",
         },
@@ -609,6 +608,12 @@ async def test_list_share_preserves_explicit_blank_contact_name(client: AsyncCli
     )
     assert created.status_code == 200, created.text
     list_id = created.json()["id"]
+    blanked = await client.patch(
+        f"/lists/{list_id}",
+        json={"fields_changed": {"contact_name": {"old": "Hidden Live List Customer", "new": ""}}},
+        headers=_h(tok),
+    )
+    assert blanked.status_code == 200, blanked.text
     token = (await client.post(f"/docs/{list_id}/share", headers=_h(tok))).json()["token"]
 
     view = await client.get(f"/share/{token}")

@@ -449,6 +449,7 @@
   "doc.0_rows_selected": "0 filas seleccionadas",
   "doc.0_selected": "0 seleccionado",
   "doc._all_selected_documents_must_be_from_the_same_cont": "⚠ Todos los documentos seleccionados deben ser del mismo contacto. Seleccionó documentos de múltiples contactos.",
+  "doc.bulk_payment_same_currency": "El pago masivo requiere que todos los documentos pendientes seleccionados usen la misma moneda.",
   "doc._default": "- Por defecto -",
   "doc._labels": "🏷 Etiquetas",
   "doc.action": "Acción",

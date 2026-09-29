@@ -482,6 +482,7 @@
   "doc.0_rows_selected": "0 ረድፎች ተመርጠዋል",
   "doc.0_selected": "0 ተመርጠዋል",
   "doc._all_selected_documents_must_be_from_the_same_cont": "⚠ ሁሉም የተመረጡ ሰነዶች ከአንድ ዕውቂያ መሆን አለባቸው። ከብዙ ዕውቂያዎች ሰነዶችን መርጠዋል።",
+  "doc.bulk_payment_same_currency": "የጅምላ ክፍያ ሁሉም የተመረጡ የሚከፈሉ ሰነዶች አንድ አይነት ምንዛሬ እንዲጠቀሙ ይጠይቃል።",
   "doc._default": "- ነባሪ -",
   "doc._labels": "🏷 መለያዎች",
   "doc.action": "እርምጃ",

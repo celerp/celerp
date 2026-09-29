@@ -449,6 +449,7 @@
   "doc.0_rows_selected": "Đã chọn 0 hàng",
   "doc.0_selected": "0 đã chọn",
   "doc._all_selected_documents_must_be_from_the_same_cont": "⚠ Tất cả các tài liệu được chọn phải từ cùng một địa chỉ liên hệ. Bạn đã chọn tài liệu từ nhiều địa chỉ liên hệ.",
+  "doc.bulk_payment_same_currency": "Thanh toán hàng loạt yêu cầu tất cả tài liệu cần thanh toán đã chọn dùng cùng một loại tiền tệ.",
   "doc._default": "- Mặc định -",
   "doc._labels": "🏷 Nhãn",
   "doc.action": "Thao tác",

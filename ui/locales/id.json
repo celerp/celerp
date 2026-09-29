@@ -449,6 +449,7 @@
   "doc.0_rows_selected": "0 baris dipilih",
   "doc.0_selected": "0 dipilih",
   "doc._all_selected_documents_must_be_from_the_same_cont": "⚠ Semua dokumen yang dipilih harus berasal dari kontak yang sama. Anda memilih dokumen dari beberapa kontak.",
+  "doc.bulk_payment_same_currency": "Pembayaran massal mengharuskan semua dokumen terutang yang dipilih menggunakan mata uang yang sama.",
   "doc._default": "- Bawaan -",
   "doc._labels": "🏷 Label",
   "doc.action": "Tindakan",

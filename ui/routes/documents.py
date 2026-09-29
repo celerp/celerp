@@ -2060,8 +2060,7 @@ def setup_routes(app):
         currencies = {str(d.get("currency") or "USD").upper() for d in payable}
         if len(currencies) > 1:
             return Div(
-                P("Bulk payment requires all selected payable documents to use the same currency.",
-                  cls="flash flash--error"),
+                P(t("doc.bulk_payment_same_currency"), cls="flash flash--error"),
                 id="bulk-payment-panel",
             )
         currency = next(iter(currencies), str(docs[0].get("currency") or "USD").upper())

@@ -50,7 +50,7 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.payment_terms import company_payment_terms, due_date_for_terms
 from celerp_contacts.references import contact_accepts, contact_snapshot, lock_contacts
 from celerp.output.document_context import prepare_document_output
-from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
+from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, SALES_PRICED_DOC_TYPES, VENDOR_DOC_TYPES
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )
@@ -156,6 +156,70 @@ def _reject_lifecycle_fields(data):
     return data
 
 
+def _change_new(change):
+    return change.get("new") if isinstance(change, dict) else change
+
+
+def _canonical_contact(values: dict, new=lambda v: v) -> dict:
+    """Name the counterparty by contact_id and contact_name only. An older field name is
+    taken as the current one; an older and a current field that disagree are refused."""
+    out = dict(values)
+    for legacy, canonical in LEGACY_CONTACT_FIELDS.items():
+        if legacy not in out:
+            continue
+        value = out.pop(legacy)
+        current = new(out.get(canonical))
+        if current in (None, ""):
+            out[canonical] = value
+        elif new(value) not in (None, "") and new(value) != current:
+            raise ValueError(f"{legacy} and {canonical} disagree. Send {canonical} only.")
+    return out
+
+
+def _canonical_contact_payload(data):
+    return _canonical_contact(data) if isinstance(data, dict) else data
+
+
+def _request_digest(kind: str, entity_id: str | None, expected_version: int | None, body: dict) -> str:
+    canonical = json.dumps([kind, entity_id, expected_version, body], sort_keys=True,
+                           separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _replay_result(replay, *, event_type: str, digest: str, entity_id: str | None = None) -> dict:
+    if (
+        replay.event_type != event_type
+        or (entity_id is not None and replay.entity_id != entity_id)
+        or (replay.metadata_ or {}).get("request") != digest
+    ):
+        raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+    return {"event_id": replay.id, "id": replay.entity_id, "version": replay.id}
+
+
+_PROTECTED_FIELDS = frozenset({"status", "entity_type", "company_id"})
+
+
+def _refuse_protected_fields(fields_changed: dict) -> None:
+    attempted = _PROTECTED_FIELDS & set(fields_changed)
+    if attempted:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Fields {sorted(attempted)} cannot be changed via patch. Use the appropriate lifecycle endpoints.",
+        )
+
+
+def _patch_identity(kind: str, entity_id: str, payload: "DocPatch") -> tuple[str, str | None]:
+    digest = _request_digest(kind, entity_id, payload.expected_version, payload.fields_changed)
+    if payload.idempotency_key:
+        return digest, payload.idempotency_key
+    return digest, (f"{kind}:patch:{digest}" if payload.expected_version is not None else None)
+
+
+def _patch_replay(replay, event_type: str, entity_id: str, digest: str) -> dict:
+    done = _replay_result(replay, event_type=event_type, digest=digest, entity_id=entity_id)
+    return {"event_id": done["event_id"], "version": done["version"]}
+
+
 def _created_as_draft(v):
     if v != "draft":
         raise ValueError(
@@ -204,6 +268,7 @@ class DocCreatePayload(BaseModel):
     idempotency_key: str | None = None
     model_config = {"extra": "allow"}
 
+    _contact_fields = model_validator(mode="before")(_canonical_contact_payload)
     _no_lifecycle_state = model_validator(mode="before")(_reject_lifecycle_fields)
     _draft_only = field_validator("status", mode="before")(_created_as_draft)
 
@@ -220,6 +285,13 @@ class DocPatch(BaseModel):
     # version (its latest ledger-entry id). A mismatch means another editor moved the record on since
     # this client last read it, so the write is a stale clobber and is rejected 409. Omitted = no check.
     expected_version: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _canonical_contact_fields(cls, data):
+        if isinstance(data, dict) and isinstance(data.get("fields_changed"), dict):
+            data = {**data, "fields_changed": _canonical_contact(data["fields_changed"], new=_change_new)}
+        return data
 
 
 class DocSendBody(BaseModel):
@@ -303,6 +375,8 @@ class DocImportRecord(BaseModel):
     idempotency_key: str
     source_ts: str | None = None
 
+    _contact_fields = field_validator("data", mode="before")(_canonical_contact_payload)
+
 
 class BatchImportResult(BaseModel):
     created: int
@@ -384,6 +458,30 @@ async def _get_doc(session: AsyncSession, company_id, entity_id: str, *, for_upd
     if row is None or row.entity_type != "doc":
         raise HTTPException(status_code=404, detail="Document not found")
     return row
+
+
+async def _lock_copied_contacts(session: AsyncSession, company_id, entity_ids) -> dict[str, str]:
+    """Lock the contacts that the records about to be copied name, before the records.
+
+    Returns {entity_id: contact_id} as read before the lock; the caller locks the records
+    and passes them to _assert_contacts_unchanged.
+    """
+    named: dict[str, str] = {}
+    for eid in entity_ids:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
+        if row is not None:
+            named[eid] = (row.state or {}).get("contact_id") or ""
+    await lock_contacts(session, company_id, [c for c in named.values() if c])
+    return named
+
+
+def _assert_contacts_unchanged(named: dict[str, str], rows) -> None:
+    for row in rows:
+        if row is not None and ((row.state or {}).get("contact_id") or "") != named.get(row.entity_id, ""):
+            raise HTTPException(
+                status_code=409,
+                detail="The contact on this record changed while it was being copied. Reload and try again.",
+            )
 
 
 async def _lock_contact_reference(session: AsyncSession, company_id, contact_id: str) -> Projection | None:
@@ -1387,12 +1485,11 @@ async def create_doc(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     idem_key = payload.idempotency_key or str(uuid.uuid4())
+    digest = _request_digest("doc", None, None, payload.model_dump(mode="json", exclude={"idempotency_key"}))
     if payload.idempotency_key:
         replay = await find_event_by_idempotency(session, company_id, idem_key)
         if replay is not None:
-            if replay.event_type != "doc.created":
-                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
-            return {"event_id": replay.id, "id": replay.entity_id}
+            return _replay_result(replay, event_type="doc.created", digest=digest)
 
     if payload.doc_type == "credit_note" and payload.original_doc_id:
         inv = await _get_doc(session, company_id, payload.original_doc_id)
@@ -1400,8 +1497,8 @@ async def create_doc(
         if payload.total > original_total + 1e-9:
             raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
 
-    if payload.contact_id:
-        await _lock_contact_reference(session, company_id, payload.contact_id)
+    # Contact before company, the lock order every contact-reference writer takes.
+    contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
     require_currency_code(payload.currency)
 
     _assert_date_order(payload.model_dump(exclude_none=True))
@@ -1448,9 +1545,7 @@ async def create_doc(
     # second document number.
     replay = await find_event_by_idempotency(session, company_id, idem_key)
     if replay is not None:
-        if replay.event_type != "doc.created":
-            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
-        return {"event_id": replay.id, "id": replay.entity_id}
+        return _replay_result(replay, event_type="doc.created", digest=digest)
     # Invoices get proforma numbering at draft stage; real INV number assigned on finalize
     seq_type = "proforma" if payload.doc_type == "invoice" and not payload.ref_id else payload.doc_type
     ref_id = payload.ref_id or next_doc_ref(company, seq_type)
@@ -1462,6 +1557,10 @@ async def create_doc(
         raise HTTPException(status_code=409, detail=f"Document number '{ref_id}' already exists")
 
     data = payload.model_dump(exclude_none=True)
+    chosen = _chosen_terms(data)
+    if payload.doc_type == "credit_note" and payload.original_doc_id:
+        # A credit note refunds its invoice's amounts, which the contact's prices do not change.
+        chosen |= {"currency", "price_list"}
     # Canonicalize the historical `terms` alias at the API boundary so every
     # newly-created document stores one customer-facing terms field.
     data.pop("terms", None)
@@ -1528,6 +1627,12 @@ async def create_doc(
         # overstating revenue and understating the VAT liability. total = subtotal + tax + shipping.
         data["tax"] = to_stored_float(round_money(effective_tax_d, currency))
 
+    if contact is not None:
+        data.update(await _contact_selection_values(
+            session, company_id, settings, role, data,
+            kind="doc", contact_id=payload.contact_id, contact=contact, client_values=data, chosen=chosen,
+        ))
+
     data["amount_paid"] = 0.0
     data["amount_outstanding"] = float(data.get("total", 0))
 
@@ -1542,7 +1647,7 @@ async def create_doc(
         location_id=None,
         source="api",
         idempotency_key=idem_key,
-        metadata_={},
+        metadata_={"request": digest},
     )
 
     if getattr(entry, "was_deduped", False):
@@ -1572,19 +1677,16 @@ async def create_doc(
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
+    _refuse_protected_fields(fields_changed)
     selecting = "contact_id" in fields_changed
     new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
-    idem_key = payload.idempotency_key
-    if selecting and payload.expected_version is not None:
-        idem_key = _contact_selection_key("doc", entity_id, payload.expected_version, new_contact_id)
+    if selecting and "line_items" in fields_changed:
+        raise HTTPException(status_code=422, detail="Change the contact and the line items in separate saves.")
+    digest, idem_key = _patch_identity("doc", entity_id, payload)
     if idem_key:
         replay = await find_event_by_idempotency(session, company_id, idem_key)
         if replay is not None:
-            if replay.event_type != "doc.updated" or replay.entity_id != entity_id:
-                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
-            return {"event_id": replay.id, "version": replay.id}
-    if selecting and "line_items" in fields_changed:
-        raise HTTPException(status_code=422, detail="Change the contact and the line items in separate saves.")
+            return _patch_replay(replay, "doc.updated", entity_id, digest)
     # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
     _FINALIZED_EDITABLE_FIELDS = {
         "description", "customer_note", "internal_note",
@@ -1595,13 +1697,6 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
         "contact_phone", "contact_email", "contact_tax_id", "payment_terms",
     }
     _LI_FINALIZED_EDITABLE = {"description", "account_code"}
-    _PROTECTED_FIELDS = {"status", "entity_type", "company_id"}
-    protected_attempted = _PROTECTED_FIELDS & set(fields_changed)
-    if protected_attempted:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Fields {sorted(protected_attempted)} cannot be changed via patch. Use the appropriate lifecycle endpoints.",
-        )
     # The selected contact is locked before the document, the order merge and delete use.
     contact = await _lock_selected_contact(session, company_id, settings, role, new_contact_id) if selecting else None
     # Locked load so the version check and the emit are one compare-and-set, as for lists.
@@ -1734,7 +1829,7 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
         data={"fields_changed": effective, "idempotency_key": idem_key},
         actor_id=user.id, location_id=None, source="api",
-        idempotency_key=idem_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=idem_key or str(uuid.uuid4()), metadata_={"request": digest},
     )
     await session.commit()
     # entry.id is the document's new version, so the client's next versioned write pins
@@ -3587,7 +3682,9 @@ async def create_shipment_from_docs(
     # Lock every source doc FOR UPDATE in one sorted batch before validating, so a
     # concurrent close cannot slip a status change between this read and the shipment
     # commit (TOCTOU). Validate in the caller's selection order off the locked rows.
+    named = await _lock_copied_contacts(session, company_id, doc_ids)
     locked = await _get_docs_for_update(session, company_id, doc_ids)
+    _assert_contacts_unchanged(named, locked.values())
     states = []
     for eid in doc_ids:
         row = locked.get(eid)
@@ -3670,7 +3767,9 @@ async def create_shipment_from_docs(
 
 @router.post("/{entity_id}/convert")
 async def convert_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    named = await _lock_copied_contacts(session, company_id, [entity_id])
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    _assert_contacts_unchanged(named, [row])
     state = row.state
     if state.get("doc_type") == "quotation":
         if state.get("status") in {"void", "converted"}:
@@ -4038,6 +4137,8 @@ async def import_doc(
             f"Use PATCH to update or lifecycle endpoints to advance its state.",
         )
 
+    if body.data.get("contact_id"):
+        await _lock_contact_reference(session, company_id, str(body.data["contact_id"]))
     _imp_company = await session.get(Company, company_id)
     _imp_base_currency = (_imp_company.settings.get("currency", "USD") if _imp_company else "USD")
     if auto_je.import_auto_je_kind(body.data) is not None:
@@ -4235,6 +4336,8 @@ async def batch_import_docs(
             skipped_existing += 1
             continue
         try:
+            if rec.data.get("contact_id"):
+                await _lock_contact_reference(session, company_id, str(rec.data["contact_id"]))
             if auto_je.import_auto_je_kind(rec.data) is not None:
                 _require_doc_rate_http(rec.data, _batch_base_currency)
             entry = await emit_event(
@@ -4356,6 +4459,7 @@ class ListCreatePayload(BaseModel):
     idempotency_key: str | None = None
     model_config = {"extra": "allow"}
 
+    _contact_fields = model_validator(mode="before")(_canonical_contact_payload)
     _no_lifecycle_state = model_validator(mode="before")(_reject_lifecycle_fields)
     _draft_only = field_validator("status", mode="before")(_created_as_draft)
 
@@ -4767,6 +4871,7 @@ async def create_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     idem_key = payload.idempotency_key or str(uuid.uuid4())
+    digest = _request_digest("list", None, None, payload.model_dump(mode="json", exclude={"idempotency_key"}))
 
     async def _replay() -> dict | None:
         if not payload.idempotency_key:
@@ -4774,16 +4879,13 @@ async def create_list(
         replay = await find_event_by_idempotency(session, company_id, idem_key)
         if replay is None:
             return None
-        if replay.event_type != "list.created":
-            raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
-        return {"event_id": replay.id, "id": replay.entity_id}
+        return _replay_result(replay, event_type="list.created", digest=digest)
 
     if (done := await _replay()) is not None:
         return done
     require_currency_code(payload.currency)
     # Contact before company, the lock order every contact-reference writer takes.
-    if payload.contact_id:
-        await _lock_contact_reference(session, company_id, payload.contact_id)
+    contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
     # Lock the company row so concurrent creates cannot read the same numbering counter, then
     # re-check the key under that lock: a retry racing the first request returns the original
     # list instead of consuming a second number. Mirrors create_doc.
@@ -4802,7 +4904,13 @@ async def create_list(
 
     data = payload.model_dump(exclude_none=True)
     data["ref_id"] = ref_id
+    chosen = _chosen_terms(data)
     data.setdefault("currency", company.settings.get("currency", "USD"))
+    if contact is not None:
+        data.update(await _contact_selection_values(
+            session, company_id, settings, role, data,
+            kind="list", contact_id=payload.contact_id, contact=contact, client_values=data, chosen=chosen,
+        ))
     await _assert_no_draft_items(
         session, company_id,
         (li.get("item_id") or li.get("entity_id") for li in data.get("line_items") or []),
@@ -4815,7 +4923,8 @@ async def create_list(
         await _assert_sales_line_price_permission(
             session, company_id, settings, role, data.get("line_items") or [], None,
         )
-    entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, idem_key)
+    entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, idem_key,
+                             meta={"request": digest})
     await session.commit()
     return {"event_id": entry.id, "id": entity_id}
 
@@ -4833,19 +4942,16 @@ async def patch_list(
 ) -> dict:
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
+    _refuse_protected_fields(fields_changed)
     selecting = "contact_id" in fields_changed
     new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
-    idem_key = payload.idempotency_key
-    if selecting and payload.expected_version is not None:
-        idem_key = _contact_selection_key("list", entity_id, payload.expected_version, new_contact_id)
+    if selecting and "line_items" in fields_changed:
+        raise HTTPException(status_code=422, detail="Change the customer and the line items in separate saves.")
+    digest, idem_key = _patch_identity("list", entity_id, payload)
     if idem_key:
         replay = await find_event_by_idempotency(session, company_id, idem_key)
         if replay is not None:
-            if replay.event_type != "list.updated" or replay.entity_id != entity_id:
-                raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
-            return {"event_id": replay.id, "version": replay.id}
-    if selecting and "line_items" in fields_changed:
-        raise HTTPException(status_code=422, detail="Change the customer and the line items in separate saves.")
+            return _patch_replay(replay, "list.updated", entity_id, digest)
     # The selected contact is locked before the List, the order merge and delete use.
     contact = await _lock_selected_contact(session, company_id, settings, role, new_contact_id) if selecting else None
     # Locked load so the version check and the emit are one atomic compare-and-set: two concurrent
@@ -4898,7 +5004,7 @@ async def patch_list(
             )
     # expected_version is a concurrency guard, not list data - it never enters the event payload.
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
-                             {"fields_changed": fields_changed}, user, idem_key)
+                             {"fields_changed": fields_changed}, user, idem_key, meta={"request": digest})
     await session.commit()
     # entry.id is the list's new version (the projection version tracks the latest entry id), so the
     # client refreshes its cached version from here and its next save pins the value it just wrote.
@@ -5029,11 +5135,12 @@ async def _reprice_catalog_lines(
 _CONTACT_SNAPSHOT_FIELDS: tuple[str, ...] = tuple(contact_snapshot({}))
 
 
-def _contact_selection_key(kind: str, entity_id: str, expected_version: int, contact_id: str) -> str:
-    """Idempotency identity of one contact selection, so a retried request after a lost
-    response replays the committed result instead of failing the version check."""
-    canonical = json.dumps([kind, entity_id, expected_version, contact_id], separators=(",", ":"), ensure_ascii=False)
-    return f"{kind}:select-contact:{hashlib.sha256(canonical.encode()).hexdigest()}"
+def _chosen_terms(values: dict) -> frozenset[str]:
+    """The commercial terms a new record's caller set itself, which its contact does not replace."""
+    chosen = {f for f in ("currency", "price_list", "payment_terms", "due_date") if values.get(f) not in (None, "")}
+    if values.get("terms") not in (None, ""):
+        chosen.add("payment_terms")
+    return frozenset(chosen)
 
 
 async def _lock_selected_contact(session: AsyncSession, company_id, settings: dict, role: str, contact_id: str) -> Projection | None:
@@ -5062,14 +5169,16 @@ async def _contact_selection_values(
     contact_id: str,
     contact: Projection | None,
     client_values: dict,
+    chosen: frozenset[str] = frozenset(),
 ) -> dict:
     """The complete header transition for selecting contact_id on a Document or List.
 
     Returns {field: new value} for the contact, its snapshot, and on drafts the commercial
     defaults, prices and totals that follow from it, all computed from the locked record so
     they are written as one event. Client-sent snapshot fields are ignored for a local
-    contact. Raises before anything is written when the contact is the wrong type, its
-    currency is invalid, the price list is unknown, or the caller may not set the prices.
+    contact. Terms named in *chosen* were set by the caller of a create and are kept.
+    Raises before anything is written when the contact is the wrong type, its currency
+    is invalid, the price list is unknown, or the caller may not set the prices.
     """
     values: dict = {"contact_id": contact_id, **{f: "" for f in _CONTACT_SNAPSHOT_FIELDS}}
     if not contact_id:
@@ -5089,7 +5198,9 @@ async def _contact_selection_values(
                    f"Choose a {role_name}, or change the contact's type to {role_name} or both.",
         )
     values.update(contact_snapshot(cstate))
-    if kind == "doc":
+    if kind == "doc" and "payment_terms" in chosen:
+        values["payment_terms"] = state.get("payment_terms")
+    elif kind == "doc":
         # A contact without terms takes the configured contact default, else none:
         # the previous contact's terms are never carried over.
         values["payment_terms"] = (
@@ -5101,12 +5212,12 @@ async def _contact_selection_values(
         return values
 
     priced = (state.get("doc_type") in SALES_PRICED_DOC_TYPES) if kind == "doc" else is_money_list(state.get("list_type"))
-    if kind == "doc" and values["payment_terms"]:
+    if kind == "doc" and values["payment_terms"] and "due_date" not in chosen:
         due = due_date_for_terms(state.get("issue_date"), values["payment_terms"], company_payment_terms(settings))
         if due:
             values["due_date"] = due
     currency = state.get("currency")
-    if kind == "doc" or priced:
+    if (kind == "doc" or priced) and "currency" not in chosen:
         contact_currency = cstate.get("currency")
         if contact_currency and contact_currency != currency:
             if contact_currency not in CURRENCY_CODES:
@@ -5119,7 +5230,9 @@ async def _contact_selection_values(
                 # A rate quoted for the old currency is meaningless for the new one.
                 values["conversion_rate"] = None
     lines = None
-    if priced:
+    if priced and "price_list" in chosen:
+        _assert_reprice_access(settings, role, state.get("price_list") or "")
+    elif priced:
         price_list = cstate.get("price_list") or settings.get("default_price_list") or DEFAULT_PRICE_LIST_NAME
         _assert_reprice_access(settings, role, price_list)
         stored_lines = list(state.get("line_items") or [])
@@ -5541,7 +5654,9 @@ async def convert_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_list(session, company_id, entity_id)
+    named = await _lock_copied_contacts(session, company_id, [entity_id])
+    row = await _get_list_for_update(session, company_id, entity_id)
+    _assert_contacts_unchanged(named, [row])
     state = row.state
     lt = state.get("list_type") or DEFAULT_LIST_TYPE
     if payload.target_type not in ("invoice", "memo"):
@@ -5601,7 +5716,9 @@ async def duplicate_list(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_list(session, company_id, entity_id)
+    named = await _lock_copied_contacts(session, company_id, [entity_id])
+    row = await _get_list_for_update(session, company_id, entity_id)
+    _assert_contacts_unchanged(named, [row])
     state = row.state
     company = await session.get(Company, company_id)
     ref_id = next_doc_ref(company, list_sequence_key(state.get("list_type")))
@@ -5754,6 +5871,8 @@ async def import_list(
     existing = await session.get(Projection, {"company_id": company_id, "entity_id": body.entity_id})
     if existing is not None:
         raise HTTPException(status_code=409, detail=f"List {body.entity_id} already exists")
+    if body.data.get("contact_id"):
+        await _lock_contact_reference(session, company_id, str(body.data["contact_id"]))
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=body.entity_id, entity_type="list",
@@ -5845,7 +5964,7 @@ async def batch_import_lists(
                         idempotency_key=upsert_idem,
                         expected_version=row.version if "line_items" in fields_changed else None,
                     ),
-                    company_id=company_id, _=None, user=user, session=session,
+                    company_id=company_id, _=None, role=role, settings=settings, user=user, session=session,
                 )
                 if result.get("event_id") is None:
                     skipped += 1
@@ -5859,6 +5978,8 @@ async def batch_import_lists(
             skipped += 1
             continue
         try:
+            if rec.data.get("contact_id"):
+                await _lock_contact_reference(session, company_id, str(rec.data["contact_id"]))
             entry = await emit_event(
                 session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
                 event_type="list.created", data=rec.data, actor_id=user.id, location_id=None,

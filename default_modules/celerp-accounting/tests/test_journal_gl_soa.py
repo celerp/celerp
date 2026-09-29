@@ -2285,7 +2285,7 @@ async def test_every_statement_sums_back_to_the_control_accounts(client):
     tok = await _reg(client)
     alpha = await _contact(client, tok, name="Alpha")
     beta = await _contact(client, tok, name="Beta")
-    gamma = await _contact(client, tok, name="Gamma", ctype="supplier")
+    gamma = await _contact(client, tok, name="Gamma", ctype="vendor")
 
     inv_a = await _invoice(client, tok, total=100.0, contact_id=alpha, issue_date="2026-01-05")
     assert (await client.post(f"/docs/{inv_a}/finalize", headers=_h(tok))).status_code == 200
