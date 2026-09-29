@@ -3345,15 +3345,17 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
     return result
 
 
-async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it: ReceivedItem, stock_qty: float) -> float | None:
-    """What the received goods cost in the books' currency, or None when nothing prices them.
+_RECEIVING_DOC_LABEL = {"purchase_order": "purchase order", "bill": "bill"}
 
-    A unit cost on the receipt is per stock unit in the books' currency. Otherwise the
-    purchase order line prices them per purchase unit in the document's currency: the line
-    at po_line_index, else the line naming this item or its SKU.
+
+async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it: ReceivedItem, stock_qty: float) -> float | None:
+    """What the received goods cost in the books' currency, or None when no line prices them.
+
+    The document line prices them per purchase unit in the document's currency: the line
+    at po_line_index, else the line naming this item or its SKU. A unit cost given on the
+    receipt (per stock unit, in the books' currency) must agree with that line, since the
+    bill books the line.
     """
-    if it.cost_price is not None:
-        return float(it.cost_price) * stock_qty
     lines = doc.get("line_items") or []
     line = lines[it.po_line_index] if 0 <= it.po_line_index < len(lines) else next(
         (li for li in lines if (it.item_id and li.get("item_id") == it.item_id)
@@ -3372,7 +3374,18 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
         rate = require_doc_rate(doc, base_currency)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return to_base(unit * to_decimal(it.quantity_received), rate, base_currency)
+    cost = to_base(unit * to_decimal(it.quantity_received), rate, base_currency)
+    if it.cost_price is not None:
+        given, priced = (round_money(v, base_currency) for v in (float(it.cost_price) * stock_qty, cost))
+        if given != priced:
+            doc_label = _RECEIVING_DOC_LABEL.get(doc.get("doc_type"), "document")
+            raise HTTPException(
+                status_code=422,
+                detail=(f"{it.sku or it.name or it.item_id}: the receipt cost {to_stored_float(given)} differs "
+                        f"from the {doc_label} line ({to_stored_float(priced)}). Receive the goods at the "
+                        f"{doc_label} price, then add a landed cost or correct the item's cost."),
+            )
+    return cost
 
 
 @router.post("/{entity_id}/receive")
@@ -3460,7 +3473,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
 
     # One pricing for the whole receipt: what each received line cost is both what it adds
     # to its lot and what a purchase order receipt books, so the two cannot disagree.
-    doc_label = {"purchase_order": "purchase order", "bill": "bill"}.get(doc_type, "document")
+    doc_label = _RECEIVING_DOC_LABEL.get(doc_type, "document")
     priced: list[tuple[float, float, float | None]] = []  # (conversion, stock quantity, cost)
     for it in payload.received_items:
         if it.item_id and not is_inbound:
@@ -3493,6 +3506,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     _new_parcel_count = sum(1 for it in payload.received_items if _creates_parcel(it))
     _recv_barcodes = await allocate_internal_codes(session, company_id, _new_parcel_count) if _new_parcel_count else []
     _recv_barcode_idx = 0
+    added_to_lot: dict[int, dict] = {}  # line -> what it added to a lot already on hand
 
     for line_no, (it, (conversion, stock_qty_received, received_cost)) in enumerate(zip(payload.received_items, priced)):
         if it.item_id and not is_inbound:
@@ -3511,6 +3525,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 actor_id=user.id, location_id=None, source="api",
                 idempotency_key=_step_key(key, "line", line_no), metadata_={"source_doc": entity_id},
             )
+            added_to_lot[line_no] = {"lot_quantity_added": stock_qty_received, "lot_cost_added": received_cost}
         else:
             # Inbound doc (bill, consignment_in): always create a new parcel.
             # If item_id is set it refers to a catalog template - use it for attribute inheritance only.
@@ -3626,7 +3641,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.received",
         data={
-            "received_items": [x.model_dump(exclude_none=True) for x in payload.received_items],
+            "received_items": [{**x.model_dump(exclude_none=True), **added_to_lot.get(i, {})}
+                               for i, x in enumerate(payload.received_items)],
             "location_id": payload.location_id,
             "received_by": str(user.id),
             "notes": payload.notes,
@@ -3662,6 +3678,16 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     return {"event_id": entry.id}
 
 
+def _lot_additions(doc: dict) -> dict[str, tuple[float, float]]:
+    """Lot id -> (stock quantity, cost) the document's receipts added to lots already on hand."""
+    added: dict[str, tuple[float, float]] = {}
+    for x in doc.get("received_items") or []:
+        if "lot_quantity_added" in x:
+            qty, cost = added.get(x["item_id"], (0.0, 0.0))
+            added[x["item_id"]] = (qty + float(x["lot_quantity_added"]), cost + float(x["lot_cost_added"] or 0))
+    return added
+
+
 # Item statuses meaning the goods are not on our shelf, so they cannot be handed back to a
 # supplier: they are at a customer, gone, or no longer a live parcel.
 _NOT_ON_HAND_STATUSES: frozenset[str] = frozenset({"memo_out", "sold", "archived", "merged", "disposed"})
@@ -3693,9 +3719,17 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
     if row.state.get("status") not in ("received", "partially_received", "partial_returned", "awaiting_payment"):
         raise HTTPException(status_code=409, detail="Document must be in received/partial/awaiting_payment status to return items")
 
+    from celerp_inventory.services import goods_basis
+
+    # Owned goods leave the books at what they carried; consigned goods were never on them.
+    owned = doc_type != "consignment_in"
+    lots = await lock_projections(session, company_id, [it.item_id for it in payload.items])
+    added = _lot_additions(row.state)
+    goods_cost = 0.0
+    landed_by_kind: dict[str, float] = {}
     for line_no, it in enumerate(payload.items):
-        item = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
-        if item is None:
+        item = lots.get(it.item_id)
+        if item is None or item.entity_type != "item":
             raise HTTPException(status_code=404, detail=f"Item not found: {it.item_id}")
         # Only goods actually on the shelf can go back to a supplier. Anything out on memo
         # is at a customer's site and anything sold has left; shrinking those here would
@@ -3711,16 +3745,36 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
         if it.quantity_returned > current_qty + 1e-9:
             raise HTTPException(status_code=409, detail=f"Cannot return more than on-hand quantity for {it.item_id}")
         new_qty = max(0.0, current_qty - it.quantity_returned)
-        # The returned units take their share of the lot's cost with them (the projection
-        # scales the basis with the quantity).
+        adjustment: dict = {"new_qty": new_qty}
+        if not owned:
+            adjustment["consignment_flag"] = None if new_qty == 0 else "in"
+        else:
+            # Units this document added to a lot already on hand go back at what they were
+            # received for; any other units take their share of the lot's cost (the
+            # projection scales the basis with the quantity).
+            basis = goods_basis(item.state) or 0.0
+            share = basis * it.quantity_returned / current_qty if current_qty else 0.0
+            if it.item_id in added and new_qty > 0:
+                qty_added, cost_added = added[it.item_id]
+                share = min(basis, cost_added / qty_added * it.quantity_returned) if qty_added else share
+                adjustment["cost_base"] = round_basis(basis - share)
+            goods_cost += share
+            for contribution, unit in (item.state.get("landed_contributions") or {}).items():
+                kind = contribution.rsplit("::", 1)[-1]
+                landed_by_kind[kind] = landed_by_kind.get(kind, 0.0) + float(unit or 0) * it.quantity_returned
         await emit_event(
             session, company_id=company_id, entity_id=it.item_id, entity_type="item",
-            event_type="item.quantity.adjusted",
-            data={"new_qty": new_qty, "consignment_flag": None if new_qty == 0 else "in"},
+            event_type="item.quantity.adjusted", data=adjustment,
             actor_id=user.id, location_id=None, source="api",
             idempotency_key=_step_key(key, "line", line_no), metadata_={"source_return": entity_id},
         )
 
+    if owned:
+        await auto_je.create_for_supplier_return(
+            session, company_id=company_id, user_id=user.id, doc_id=entity_id, return_key=key,
+            goods_account=auto_je.po_receipt_account(row.state), goods=goods_cost,
+            landed_by_kind=landed_by_kind, return_date=datetime.now(timezone.utc).date().isoformat(),
+        )
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.items_returned",
@@ -7386,36 +7440,41 @@ async def undo_receive(
 ) -> dict:
     """Undo a goods-received on a bill.
 
-    Archives the parcels the receipts created and returns the landed cost they
-    capitalised. The bill still stands, so what it booked stays booked. Clears
-    received_items and received_item_ids on the bill projection.
+    Archives the parcels the receipts created, takes back off each lot already on hand
+    what the receipts added to it, and returns the landed cost they capitalised. The
+    bill still stands, so what it booked stays booked. Clears received_items and
+    received_item_ids on the bill projection.
     """
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("doc_type") != "bill":
         raise HTTPException(status_code=409, detail="undo-receive is only valid for bills")
     received_item_ids = state.get("received_item_ids") or []
-    if not received_item_ids:
+    added = _lot_additions(state)
+    if not received_item_ids and not added:
         raise HTTPException(status_code=409, detail="No received goods to revert")
-    stock_lines = sum(1 for x in state.get("received_items") or [] if (x.get("receive_as") or "stock") == "stock")
+    stock_lines = sum(1 for x in state.get("received_items") or []
+                      if (x.get("receive_as") or "stock") == "stock" and "lot_quantity_added" not in x)
     if stock_lines != len(received_item_ids):
         raise HTTPException(
             status_code=409,
-            detail=("Some goods on this document were added to stock already on hand, so the receipt "
-                    "cannot be reverted here. Correct those quantities with a stock adjustment."),
+            detail=("Some goods on this document were added to stock already on hand by an earlier "
+                    "version, so the receipt cannot be reverted here. Correct those quantities with a "
+                    "stock adjustment."),
         )
+    # What is still on the document from each lot: what the receipts added, less what went back.
+    returned: dict[str, float] = {}
+    for x in state.get("returned_items") or []:
+        returned[x["item_id"]] = returned.get(x["item_id"], 0.0) + float(x.get("quantity_returned") or 0)
+    remaining = {lot: (max(0.0, qty - returned.get(lot, 0.0)), qty, cost) for lot, (qty, cost) in added.items()}
+
+    from celerp_inventory.services import goods_basis
 
     now = datetime.now(timezone.utc).isoformat()
 
-    # Pre-flight: verify every created item is still "available" before disposing
-    rows_result = await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "item",
-            Projection.entity_id.in_(received_item_ids),
-        )
-    )
-    item_rows = {r.entity_id: r.state for r in rows_result.scalars().all()}
+    # Pre-flight: every parcel is still available and every lot still holds what came in.
+    item_rows = {eid: r.state for eid, r in
+                 (await lock_projections(session, company_id, [*received_item_ids, *added])).items()}
     blocked: list[str] = []
     for iid in received_item_ids:
         item_state = item_rows.get(iid)
@@ -7425,6 +7484,11 @@ async def undo_receive(
             sku = item_state.get("sku") or iid
             status = item_state.get("status") or "unknown"
             blocked.append(f"SKU '{sku}' is '{status}' - cannot archive")
+    for lot, (qty, _, _) in remaining.items():
+        lot_state = item_rows.get(lot) or {}
+        on_hand = float(lot_state.get("quantity") or 0)
+        if str(lot_state.get("status") or "").lower() in _NOT_ON_HAND_STATUSES or on_hand + 1e-9 < qty:
+            blocked.append(f"SKU '{lot_state.get('sku') or lot}' has {on_hand:g} on hand, {qty:g} came in on this document")
     if blocked:
         raise HTTPException(
             status_code=409,
@@ -7450,6 +7514,22 @@ async def undo_receive(
             source="receive_undo",
             idempotency_key=str(uuid.uuid4()),
             metadata_={"source_doc": entity_id},
+        )
+
+    for lot, (qty, qty_added, cost_added) in remaining.items():
+        if qty <= 0:
+            continue
+        lot_state = item_rows[lot]
+        new_qty = float(lot_state.get("quantity") or 0) - qty
+        adjustment: dict = {"new_qty": new_qty}
+        if new_qty > 0:
+            # The receipt added its goods' cost to the lot, so undoing it takes that cost back.
+            adjustment["cost_base"] = round_basis(max(0.0, (goods_basis(lot_state) or 0.0) - cost_added / qty_added * qty))
+        await emit_event(
+            session, company_id=company_id, entity_id=lot, entity_type="item",
+            event_type="item.quantity.adjusted", data=adjustment,
+            actor_id=user.id, location_id=None, source="receive_undo",
+            idempotency_key=str(uuid.uuid4()), metadata_={"source_receive_undo": entity_id},
         )
 
     await emit_event(

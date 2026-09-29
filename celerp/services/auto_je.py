@@ -651,6 +651,43 @@ async def create_for_landed_capitalisation(
     )
 
 
+async def create_for_supplier_return(
+    session, *, company_id, user_id, doc_id: str, return_key: str, goods_account: str,
+    goods: float, landed_by_kind: dict[str, float], return_date: str | None = None,
+) -> None:
+    """Goods sent back to the supplier leave the books at what they carried.
+
+    Dr AP (2110) / Cr goods_account for the goods, and each kind of landed cost they
+    carried goes back to its clearing account (Dr clearing / Cr inventory), the reverse
+    of the receipt's capitalisation."""
+    currency = await company_currency(session, company_id)
+    goods_d = round_money(goods or 0, currency)
+    landed = {kind: round_money(amt or 0, currency) for kind, amt in landed_by_kind.items()}
+    landed_total = sum(landed.values(), _Dec(0))
+    entries: list[dict] = []
+    if goods_d > 0:
+        entries += [{"account": "2110", "debit": to_stored_float(goods_d), "credit": 0.0},
+                    {"account": goods_account, "debit": 0.0, "credit": to_stored_float(goods_d)}]
+    if landed_total > 0:
+        entries += [{"account": _LANDED_CLEARING_ACCT[kind], "debit": to_stored_float(amt), "credit": 0.0}
+                    for kind, amt in landed.items() if amt]
+        entries.append({"account": _INVENTORY_ACCT, "debit": 0.0, "credit": to_stored_float(landed_total)})
+    if not entries:
+        return
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:rtn:{return_key}",
+        idem_create=je_idempotency_key(doc_id, f"items.returned:{return_key}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"items.returned:{return_key}", "p"),
+        memo=f"Auto JE for {doc_id} goods returned to supplier",
+        ts=return_date,
+        entries=entries,
+        metadata_={"trigger": "doc.items_returned", "doc_id": doc_id},
+    )
+
+
 async def create_for_bill_conversion(
     session,
     *,
@@ -697,7 +734,7 @@ async def create_for_bill_conversion(
                 # Landed-cost charge (freight/insurance/duty/import_vat): clearing or 1150.
                 account = landed_acct
             else:
-                account = _INVENTORY_ACCT if li.get("sku") else "6950"
+                account = _INVENTORY_ACCT if (li.get("sku") or li.get("item_id")) else "6950"
             lines.append((account, line_total))
         # Input VAT: debit the EFFECTIVE tax that create_doc rolled into `total` (line `taxes[].amount`
         # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets.
@@ -829,6 +866,17 @@ async def _doc_recognition_jes(session, company_id, doc_id: str) -> dict[str, Pr
     return jes
 
 
+async def _doc_goods_movement_jes(session, company_id, doc_id: str) -> list[str]:
+    """JE id suffixes of the doc's receipt (rcv) and supplier-return (rtn) entries."""
+    prefix = f"je:auto:{doc_id}:"
+    rows = (await session.execute(_select(Projection.entity_id).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+        Projection.entity_id.startswith(prefix, autoescape=True),
+    ))).scalars().all()
+    return [eid[len(prefix):] for eid in rows if eid[len(prefix):].split(":")[0] in ("rcv", "rtn")]
+
+
 async def _doc_void_events(session, company_id, doc_id: str) -> list:
     """Every acc.journal_entry.voided ledger event on the doc's auto-JEs, oldest
     first (ledger id order)."""
@@ -856,10 +904,14 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, r
     fixed list to fall out of date. _void_je_if_posted skips anything already
     void, so the sweep only ever reverses what is live.
 
+    A document reverts only once no received goods remain on it, so the entries
+    that booked its receipts and its returns to the supplier reverse with it.
+
     revert_count: the current revert_count from doc state (before this revert
     increments it), scoping the void idempotency keys per revert cycle.
     """
-    for suffix in await _doc_recognition_jes(session, company_id, doc_id):
+    for suffix in [*await _doc_recognition_jes(session, company_id, doc_id),
+                   *await _doc_goods_movement_jes(session, company_id, doc_id)]:
         await _void_je_if_posted(
             session,
             company_id=company_id,

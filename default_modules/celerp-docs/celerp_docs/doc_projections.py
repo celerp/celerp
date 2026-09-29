@@ -358,8 +358,10 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         # Undo a receive-return: clear the received items list
         current["return_received_items"] = []
     elif event_type == "doc.receive_undone":
+        # Returns were made from the received goods, so they go with them.
         current["received_items"] = []
         current["received_item_ids"] = []
+        current["returned_items"] = []
         current["status"] = "final"
         # Clear entity_id from line items so per-line status column resets to "Not Received".
         for li in current.get("line_items", []):

@@ -159,7 +159,7 @@ async def test_undoing_a_bill_receipt_keeps_the_bill_booked(client, session, aut
 
 
 @pytest.mark.asyncio
-async def test_undo_refuses_a_receipt_that_added_to_existing_stock(client, session, auth):
+async def test_goods_added_to_stock_on_hand_can_be_sent_back_and_the_bill_reverted(client, session, auth):
     item_id = await _item(client, auth, 100.0, qty=10)
     po = await _doc(client, auth, "purchase_order", [
         {"item_id": item_id, "name": "Lot", "quantity": 5, "unit_price": 14.0},
@@ -170,12 +170,137 @@ async def test_undo_refuses_a_receipt_that_added_to_existing_stock(client, sessi
                        {"po_line_index": 1, "sku": "FRESH", "name": "Fresh", "quantity_received": 2})
     assert r.status_code == 200, r.text
     await _finalize(client, auth, po)
+    [parcel_id] = (await _state(session, auth, po))["received_item_ids"]
+    booked = {"1130-P": 76.0, "2110": -76.0}
+    assert await _books(session, auth, *booked) == booked
 
     r = await client.delete(f"/docs/{po}/receive", headers=auth["headers"])
-    assert r.status_code == 409, r.text
-    [parcel] = await _parcels(session, auth, po)
-    assert parcel["status"] == "available"
-    assert (await _state(session, auth, item_id))["quantity"] == 15
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, parcel_id))["status"] == "archived"
+    lot = await _state(session, auth, item_id)
+    assert (lot["quantity"], lot["cost_base"]) == (10, 100.0)
+    assert await _books(session, auth, *booked) == booked
+
+    r = await client.post(f"/docs/{po}/revert-to-draft", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    doc = await _state(session, auth, po)
+    assert (doc["doc_type"], doc["status"]) == ("purchase_order", "draft")
+    assert await _books(session, auth, *booked) == {"1130-P": 0.0, "2110": 0.0}
+
+
+@pytest.mark.asyncio
+async def test_undoing_a_receipt_after_a_return_takes_back_only_what_is_left(client, session, auth):
+    item_id = await _item(client, auth, 100.0, qty=10)
+    po = await _doc(client, auth, "purchase_order",
+                    [{"item_id": item_id, "name": "Lot", "quantity": 5, "unit_price": 14.0}])
+    r = await _receive(client, auth, po, {"po_line_index": 0, "item_id": item_id, "quantity_received": 5})
+    assert r.status_code == 200, r.text
+    r = await _return(client, auth, po, item_id, 2)
+    assert r.status_code == 200, r.text
+    await _finalize(client, auth, po)
+    kept = {"1130-P": 42.0, "2110": -42.0}
+    assert await _books(session, auth, *kept) == kept
+
+    r = await client.delete(f"/docs/{po}/receive", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    lot = await _state(session, auth, item_id)
+    assert (lot["quantity"], lot["cost_base"]) == (10, 100.0)
+    assert await _books(session, auth, *kept) == kept
+
+    r = await client.post(f"/docs/{po}/revert-to-draft", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
+    assert await _books(session, auth, *kept) == {"1130-P": 0.0, "2110": 0.0}
+
+
+@pytest.mark.parametrize("doc_type", ["purchase_order", "bill"])
+@pytest.mark.asyncio
+async def test_a_receipt_cost_other_than_the_document_line_is_refused(client, session, auth, doc_type):
+    doc = await _doc(client, auth, doc_type, [{"sku": "PRICED", "name": "Priced", "quantity": 1, "unit_price": 100.0}])
+    if doc_type == "bill":
+        await _finalize(client, auth, doc)
+    before = await _books(session, auth, "1130-P", "2110")
+    r = await _receive(client, auth, doc, {"po_line_index": 0, "sku": "PRICED", "name": "Priced",
+                                           "quantity_received": 1, "cost_price": 120})
+    assert r.status_code == 422, r.text
+    assert "landed cost" in r.json()["detail"]
+    assert (await _state(session, auth, doc)).get("received_item_ids") in (None, [])
+    assert await _books(session, auth, "1130-P", "2110") == before
+
+    r = await _receive(client, auth, doc, {"po_line_index": 0, "sku": "PRICED", "name": "Priced",
+                                           "quantity_received": 1, "cost_price": 100})
+    assert r.status_code == 200, r.text
+    [parcel] = await _parcels(session, auth, doc)
+    assert parcel["cost_total"] == 100.0
+
+
+async def _return(client, auth, doc_id: str, item_id: str, qty: float, key: str | None = None):
+    body = {"items": [{"item_id": item_id, "quantity_returned": qty}]}
+    if key:
+        body["idempotency_key"] = key
+    return await client.post(f"/docs/{doc_id}/return-items", headers=auth["headers"], json=body)
+
+
+@pytest.mark.asyncio
+async def test_goods_sent_back_to_the_supplier_leave_the_books(client, session, auth):
+    po = await _doc(client, auth, "purchase_order", [
+        {"sku": f"NEW-{uuid.uuid4().hex[:6]}", "name": "Beads", "quantity": 10, "unit_price": 14.0},
+    ])
+    sku = (await _state(session, auth, po))["line_items"][0]["sku"]
+    r = await _receive(client, auth, po, {"po_line_index": 0, "sku": sku, "name": "Beads", "quantity_received": 10})
+    assert r.status_code == 200, r.text
+    [parcel_id] = (await _state(session, auth, po))["received_item_ids"]
+
+    key = str(uuid.uuid4())
+    for _ in range(2):
+        r = await _return(client, auth, po, parcel_id, 4, key=key)
+        assert r.status_code == 200, r.text
+    kept = {"1130-P": 84.0, "2110": -84.0}
+    assert await _books(session, auth, *kept) == kept
+    parcel = await _state(session, auth, parcel_id)
+    assert (parcel["quantity"], parcel["cost_total"]) == (6, 84.0)
+
+    await _finalize(client, auth, po)
+    assert await _books(session, auth, *kept) == kept
+
+
+@pytest.mark.asyncio
+async def test_goods_sent_back_from_stock_on_hand_leave_at_what_they_were_received_for(client, session, auth):
+    item_id = await _item(client, auth, 100.0, qty=10)
+    po = await _doc(client, auth, "purchase_order",
+                    [{"item_id": item_id, "name": "Lot", "quantity": 5, "unit_price": 14.0}])
+    r = await _receive(client, auth, po, {"po_line_index": 0, "item_id": item_id, "quantity_received": 5})
+    assert r.status_code == 200, r.text
+
+    r = await _return(client, auth, po, item_id, 5)
+    assert r.status_code == 200, r.text
+    lot = await _state(session, auth, item_id)
+    assert (lot["quantity"], lot["cost_base"], lot.get("consignment_flag")) == (10, 100.0, None)
+    assert await _books(session, auth, "1130-P", "2110") == {"1130-P": 0.0, "2110": 0.0}
+
+    await _finalize(client, auth, po)
+    assert await _books(session, auth, "1130-P", "2110") == {"1130-P": 0.0, "2110": 0.0}
+
+
+@pytest.mark.asyncio
+async def test_goods_sent_back_on_a_bill_return_their_landed_cost(client, session, auth):
+    r = await client.post("/items", headers=auth["headers"], json={
+        "status": "available", "sku": "FRT", "name": "Freight", "quantity": 0, "sell_by": "piece",
+        "inventory_type": "freight", "landed_cost_kind": "freight"})
+    assert r.status_code == 200, r.text
+    bill = await _doc(client, auth, "bill", [
+        {"sku": "GOODS", "name": "Goods", "quantity": 2, "unit_price": 15.0},
+        {"entity_id": r.json()["id"], "sku": "FRT", "name": "Freight", "quantity": 1, "unit_price": 10.0},
+    ])
+    await _finalize(client, auth, bill)
+    r = await _receive(client, auth, bill, {"po_line_index": 0, "sku": "GOODS", "name": "Goods", "quantity_received": 2})
+    assert r.status_code == 200, r.text
+    [parcel_id] = (await _state(session, auth, bill))["received_item_ids"]
+
+    r = await _return(client, auth, bill, parcel_id, 1)
+    assert r.status_code == 200, r.text
+    assert (await _state(session, auth, parcel_id))["cost_total"] == 20.0
+    assert await _books(session, auth, "1130-P", "1130-FRT", "2110") == {
+        "1130-P": 20.0, "1130-FRT": 5.0, "2110": -25.0}
 
 
 @pytest.mark.asyncio
