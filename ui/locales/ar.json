@@ -1230,7 +1230,6 @@
   "settings._local_filesystem_no_connection_needed": "✓ نظام الملفات المحلي - لا حاجة للاتصال.",
   "settings._restored_previous_db_url_restarting": "↩ تمت استعادة عنوان URL لقاعدة البيانات السابقة. جارٍ إعادة التشغيل...",
   "settings._saved": "✓ المحفوظة.",
-  "settings._setup_complete_your_workspace_is_ready": "🎉 اكتمل الإعداد! مساحة العمل الخاصة بك جاهزة.",
   "settings.activating": "جارٍ التنشيط...",
   "settings.admin": "مسؤل",
   "settings.all_fields_required": "جميع الحقول مطلوبة",

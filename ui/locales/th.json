@@ -1230,7 +1230,6 @@
   "settings._local_filesystem_no_connection_needed": "✓ ระบบไฟล์ในเครื่อง - ไม่จำเป็นต้องเชื่อมต่อ",
   "settings._restored_previous_db_url_restarting": "↩ คืนค่า URL ฐานข้อมูลก่อนหน้าแล้ว กำลังรีสตาร์ท...",
   "settings._saved": "✓ บันทึกแล้ว",
-  "settings._setup_complete_your_workspace_is_ready": "🎉 ติดตั้งเสร็จสมบูรณ์! พื้นที่ทำงานของคุณพร้อมแล้ว",
   "settings.activating": "กำลังเปิดใช้งาน...",
   "settings.admin": "ผู้ดูแลระบบ",
   "settings.all_fields_required": "กรุณากรอกข้อมูลทุกช่อง",

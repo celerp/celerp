@@ -1230,7 +1230,6 @@
   "settings._local_filesystem_no_connection_needed": "✓ Hệ thống tập tin cục bộ - không cần kết nối.",
   "settings._restored_previous_db_url_restarting": "↩ Đã khôi phục URL DB trước đó. Đang khởi động lại...",
   "settings._saved": "✓ Đã lưu.",
-  "settings._setup_complete_your_workspace_is_ready": "🎉 Thiết lập hoàn tất! Không gian làm việc của bạn đã sẵn sàng.",
   "settings.activating": "Đang kích hoạt...",
   "settings.admin": "Quản trị viên",
   "settings.all_fields_required": "Tất cả các trường là bắt buộc",

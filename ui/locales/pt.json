@@ -1230,7 +1230,6 @@
   "settings._local_filesystem_no_connection_needed": "✓ Sistema de arquivos local - não é necessária conexão.",
   "settings._restored_previous_db_url_restarting": "↩ URL de BD anterior restaurada. Reiniciando...",
   "settings._saved": "✓ Salvo.",
-  "settings._setup_complete_your_workspace_is_ready": "🎉 Configuração concluída! Seu espaço de trabalho está pronto.",
   "settings.activating": "Ativando...",
   "settings.admin": "Administrador",
   "settings.all_fields_required": "Todos os campos são obrigatórios",

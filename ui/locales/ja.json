@@ -1230,7 +1230,6 @@
   "settings._local_filesystem_no_connection_needed": "✓ ローカル ファイル システム - 接続は必要ありません。",
   "settings._restored_previous_db_url_restarting": "↩ 以前の DB URL を復元しました。再起動中...",
   "settings._saved": "✓ 保存されました。",
-  "settings._setup_complete_your_workspace_is_ready": "🎉 セットアップ完了！ワークスペースの準備ができました。",
   "settings.activating": "アクティブ化中...",
   "settings.admin": "管理者",
   "settings.all_fields_required": "すべての項目を入力してください",

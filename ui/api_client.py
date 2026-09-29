@@ -735,7 +735,7 @@ async def patch_company(token: str, data: dict) -> dict:
     top-level fields (name, slug) are patched directly."""
     _SETTINGS_FIELDS = {"currency", "timezone", "fiscal_year_start", "tax_id", "phone", "address", "email",
                         "reorder_alerts_enabled", "reorder_alert_email", "inventory_method", "stripe_deposit_account", "woocommerce_deposit_account",
-                        "line_item_identifier"}
+                        "line_item_identifier", "onboarding_pending"}
     _DASHBOARD_FIELDS = {"docs_default_preset", "default_per_page"}
     settings_patch = {k: v for k, v in data.items() if k in _SETTINGS_FIELDS}
     dashboard_patch = {}

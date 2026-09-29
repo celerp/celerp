@@ -13,7 +13,7 @@ Coverage:
   F.  business_type_options()       preset loading, blank-last ordering, error tolerance
   G.  celerp/main.py                ENABLED_MODULES env var vs config.toml fallback
   H.  settings.py                   module-gated tabs
-  I.  settings.py                   setup_done banner with modules loaded
+  I.  settings.py                   settings page with modules loaded
   J.  Company tab                   flat dict field display
   K.  Fringe cases                  unauthenticated, API errors, partial company data
 """
@@ -139,7 +139,7 @@ class TestSetupCompanyPost:
         assert "/login" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
-    async def test_blank_vertical_redirects_to_cloud(self, ui_client):
+    async def test_blank_vertical_redirects_to_onboarding(self, ui_client):
         """Choosing blank is a deliberate valid type: it is set, needs no restart, and setup moves on."""
         set_type = AsyncMock(return_value={"vertical": "blank", "restart_required": False})
         with (
@@ -152,7 +152,7 @@ class TestSetupCompanyPost:
                 cookies=_authed(),
             )
         assert r.status_code in (302, 303)
-        assert r.headers.get("location", "").endswith("/setup/cloud")
+        assert r.headers.get("location", "").endswith("/onboarding")
         set_type.assert_awaited_once()
         assert set_type.await_args.args[1] == "blank"
 
@@ -190,7 +190,7 @@ class TestSetupCompanyPost:
             r = await ui_client.post(
                 "/setup/company", data={"vertical": "gemstones", "currency": "USD"}, cookies=_authed(),
             )
-        assert r.headers.get("location", "").endswith("/setup/cloud")
+        assert r.headers.get("location", "").endswith("/onboarding")
         restart.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -309,10 +309,11 @@ class TestSetupActivating:
         assert b"activating-status" in r.content
 
     @pytest.mark.asyncio
-    async def test_page_redirects_to_dashboard_after_poll(self, ui_client):
-        """Poll script must redirect to /dashboard on success."""
+    async def test_page_redirects_to_onboarding_after_poll(self, ui_client):
+        """Poll script must redirect to the getting-started hub on success."""
         r = await ui_client.get("/setup/activating", cookies=_authed())
-        assert b"/dashboard" in r.content
+        assert b"window.location.href = '/onboarding'" in r.content
+        assert b"/dashboard" not in r.content
 
     @pytest.mark.asyncio
     async def test_unauthenticated_redirects_to_login(self, ui_client):
@@ -446,19 +447,19 @@ class TestSetupLegacyRedirects:
     async def test_get_setup_users_redirects(self, ui_client):
         r = await ui_client.get("/setup/users", cookies=_authed())
         assert r.status_code in (302, 303)
-        assert "/setup/cloud" in r.headers.get("location", "")
+        assert r.headers.get("location", "").endswith("/onboarding")
 
     @pytest.mark.asyncio
     async def test_post_setup_users_redirects(self, ui_client):
         r = await ui_client.post("/setup/users", cookies=_authed())
         assert r.status_code in (302, 303)
-        assert "/setup/cloud" in r.headers.get("location", "")
+        assert r.headers.get("location", "").endswith("/onboarding")
 
     @pytest.mark.asyncio
     async def test_post_setup_users_done_redirects(self, ui_client):
         r = await ui_client.post("/setup/users/done", cookies=_authed())
         assert r.status_code in (302, 303)
-        assert "/setup/cloud" in r.headers.get("location", "")
+        assert r.headers.get("location", "").endswith("/onboarding")
 
     @pytest.mark.asyncio
     async def test_get_setup_vertical_redirects(self, ui_client):
@@ -470,19 +471,19 @@ class TestSetupLegacyRedirects:
     async def test_post_setup_vertical_redirects(self, ui_client):
         r = await ui_client.post("/setup/vertical", cookies=_authed())
         assert r.status_code in (302, 303)
-        assert "/setup/cloud" in r.headers.get("location", "")
+        assert r.headers.get("location", "").endswith("/onboarding")
 
     @pytest.mark.asyncio
     async def test_get_setup_modules_redirects(self, ui_client):
         r = await ui_client.get("/setup/modules", cookies=_authed())
         assert r.status_code in (302, 303)
-        assert "/setup/cloud" in r.headers.get("location", "")
+        assert r.headers.get("location", "").endswith("/onboarding")
 
     @pytest.mark.asyncio
     async def test_post_setup_modules_redirects(self, ui_client):
         r = await ui_client.post("/setup/modules", cookies=_authed())
         assert r.status_code in (302, 303)
-        assert "/setup/cloud" in r.headers.get("location", "")
+        assert r.headers.get("location", "").endswith("/onboarding")
 
 
 # ===========================================================================
@@ -818,29 +819,11 @@ class TestSettingsSectionTabs:
 
 
 # ===========================================================================
-# I. settings.py — setup_done banner + settings page with modules loaded
+# I. settings.py — settings page with modules loaded
 # ===========================================================================
 
-class TestSettingsSetupDoneBanner:
-    """Settings page shows a welcome banner when ?setup=done is in the URL."""
-
-    @pytest.mark.asyncio
-    async def test_setup_done_banner_present_with_param(self, ui_client):
-        """GET /settings?setup=done shows a setup-complete banner."""
-        with (
-            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
-            patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
-            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
-            patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": []})),
-            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])),
-            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
-            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
-            patch("ui.api_client.get_modules", new=AsyncMock(return_value=[])),
-        ):
-            r = await ui_client.get("/settings/general?setup=done", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Setup complete" in r.content or b"setup-done-banner" in r.content
+class TestSettingsModuleTabs:
+    """Settings tabs follow the enabled modules."""
 
     @pytest.mark.asyncio
     async def test_settings_page_tabs_filtered_by_enabled_modules(self, ui_client):

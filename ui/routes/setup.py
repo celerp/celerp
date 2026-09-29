@@ -6,8 +6,8 @@
 Flow:
     /setup           → step 1: create first admin + company name
     /setup/company   → step 2: company details + business type (vertical)
-    /setup/cloud     → step 3: cloud upsell (optional)
-    /onboarding      → data integration landing
+    /onboarding      → getting-started hub (bring in data or start manually)
+    /setup/cloud     → optional cloud offer, reachable from the hub and settings
 """
 
 from __future__ import annotations
@@ -143,6 +143,13 @@ def setup_routes(app):
             result = await api.set_business_type(token, vertical)
         except APIError as e:
             return _rerender(e.detail)
+        # The business type is applied; mark the company's getting-started hub as the
+        # landing page until the user finishes or dismisses it. It is a hint only,
+        # so failing to store it never undoes the completed setup.
+        try:
+            await api.patch_company(token, {"onboarding_pending": True})
+        except APIError:
+            pass
         if result.get("restart_required"):
             # The type's modules load on restart; the activating page waits for them.
             # The server may drop this request as it goes down, so its outcome is not
@@ -152,7 +159,7 @@ def setup_routes(app):
             except Exception:
                 pass
             return RedirectResponse("/setup/activating", status_code=302)
-        return RedirectResponse("/setup/cloud", status_code=302)
+        return RedirectResponse("/onboarding", status_code=302)
 
     @app.get("/setup/activating")
     async def activating_page(request: Request):
@@ -218,15 +225,15 @@ def setup_routes(app):
     # Redirect legacy setup steps to the correct current step
     @app.get("/setup/users")
     async def users_redirect(request: Request):
-        return RedirectResponse("/setup/cloud", status_code=302)
+        return RedirectResponse("/onboarding", status_code=302)
 
     @app.post("/setup/users")
     async def users_post_redirect(request: Request):
-        return RedirectResponse("/setup/cloud", status_code=302)
+        return RedirectResponse("/onboarding", status_code=302)
 
     @app.post("/setup/users/done")
     async def users_done_redirect(request: Request):
-        return RedirectResponse("/setup/cloud", status_code=302)
+        return RedirectResponse("/onboarding", status_code=302)
 
     @app.get("/setup/vertical")
     async def vertical_redirect(request: Request):
@@ -234,15 +241,15 @@ def setup_routes(app):
 
     @app.post("/setup/vertical")
     async def vertical_post_redirect(request: Request):
-        return RedirectResponse("/setup/cloud", status_code=302)
+        return RedirectResponse("/onboarding", status_code=302)
 
     @app.get("/setup/modules")
     async def modules_redirect(request: Request):
-        return RedirectResponse("/setup/cloud", status_code=302)
+        return RedirectResponse("/onboarding", status_code=302)
 
     @app.post("/setup/modules")
     async def modules_post_redirect(request: Request):
-        return RedirectResponse("/setup/cloud", status_code=302)
+        return RedirectResponse("/onboarding", status_code=302)
 
     # ------------------------------------------------------------------
     # Step 3: cloud upsell (optional)
@@ -323,7 +330,7 @@ def setup_routes(app):
 # ---------------------------------------------------------------------------
 
 def _wizard_steps(current: int, lang: str = "en") -> FT:
-    steps = [t("setup.welcome", lang), t("setup.company_details", lang), t("setup.cloud", lang)]
+    steps = [t("setup.welcome", lang), t("setup.company_details", lang)]
     return Div(
         *[
             Div(
@@ -520,7 +527,7 @@ def _activating_form(lang: str = "en") -> FT:
           if (!readyAt) {{ readyAt = Date.now(); }}
           // Wait for the UI itself to be stable after its own restart
           if (Date.now() - readyAt >= readyStableMs) {{
-            window.location.href = '/dashboard';
+            window.location.href = '/onboarding';
           }} else {{
             setTimeout(poll, 600);
           }}
@@ -613,7 +620,7 @@ def _cloud_form() -> FT:
             ),
             A(
                 t("setup.skip_for_now"),
-                href="/settings?setup=done",
+                href="/onboarding",
                 cls="cloud-upsell-skip",
             ),
             # The see-all-plans link points at direct Celerp pricing, so it is

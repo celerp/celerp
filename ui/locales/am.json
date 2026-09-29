@@ -1318,7 +1318,6 @@
   "settings._local_filesystem_no_connection_needed": "✓ የአካባቢ ፋይል ስርዓት - ግንኙነት አያስፈልግም።",
   "settings._restored_previous_db_url_restarting": "↩ ቀደም ያለው የመረጃ ቋት URL ተመልሷል። እንደገና በማስጀመር ላይ...",
   "settings._saved": "✓ ተቀምጧል።",
-  "settings._setup_complete_your_workspace_is_ready": "🎉 ማዋቀር ተጠናቅቋል! የስራ ቦታዎ ዝግጁ ነው።",
   "settings.activating": "በማንቃት ላይ...",
   "settings.admin": "አስተዳዳሪ",
   "settings.all_fields_required": "ሁሉም መስኮች ያስፈልጋሉ",

@@ -1390,7 +1390,6 @@
   "settings._local_filesystem_no_connection_needed": "✓ Local filesystem - no connection needed.",
   "settings._restored_previous_db_url_restarting": "↩ Restored previous DB URL. Restarting...",
   "settings._saved": "✓ Saved.",
-  "settings._setup_complete_your_workspace_is_ready": "🎉 Setup complete! Your workspace is ready.",
   "settings.activating": "Activating...",
   "settings.admin": "Admin",
   "settings.all_fields_required": "All fields are required",

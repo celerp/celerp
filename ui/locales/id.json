@@ -1230,7 +1230,6 @@
   "settings._local_filesystem_no_connection_needed": "✓ Sistem file lokal - tidak diperlukan koneksi.",
   "settings._restored_previous_db_url_restarting": "↩ URL DB sebelumnya dipulihkan. Memulai ulang...",
   "settings._saved": "✓ Disimpan.",
-  "settings._setup_complete_your_workspace_is_ready": "🎉 Penyiapan selesai! Ruang kerja Anda sudah siap.",
   "settings.activating": "Mengaktifkan...",
   "settings.admin": "Admin",
   "settings.all_fields_required": "Semua kolom wajib diisi",
