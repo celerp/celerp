@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -18,8 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
-from celerp.models.company import Company, Location, User
+from celerp.models.company import Company, User
 from celerp.services import bootstrap
+from celerp.services.provisioning import provision_registered_company
 from celerp.services.auth import (
     AuthContext,
     decode_refresh_token,
@@ -59,11 +59,6 @@ async def _issue_tokens(
     return await issue_token_pair(
         session, user=user, company=company, role=role, jti=jti, expected_snonce=expected_snonce
     )
-
-
-def _slugify(name: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
-    return slug or str(uuid.uuid4())
 
 
 class RegisterRequest(BaseModel):
@@ -134,55 +129,16 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
                 detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.",
             )
 
-        slug = _slugify(payload.company_name)
-        company = Company(id=uuid.uuid4(), name=payload.company_name, slug=slug, settings={"fiscal_year_start": "01-01"})
-        user = User(
-            id=uuid.uuid4(),
-            email=payload.email,
-            name=payload.name,
-            auth_hash=hash_password(payload.password),
-            api_key=None,
-            is_active=True,
-            is_install_owner=True,
-        )
-        session.add(company)
-        session.add(user)
-        await session.flush()  # persist company + user first (Postgres FK enforcement)
-        # Link user to company - UserCompany is the single source of role+company truth
-        link = UserCompany(id=uuid.uuid4(), user_id=user.id, company_id=company.id, role="owner")
-        session.add(link)
-        await session.flush()  # ensure IDs are set before module hooks
-        # Module lifecycle hooks intentionally remain best-effort: a module error is
-        # logged by fire_lifecycle without changing Celerp's established registration
-        # behavior. Core/direct seed failures below still roll back the transaction.
-        from celerp.modules.slots import fire_lifecycle
-        await fire_lifecycle("on_company_created", session=session, company_id=company.id)
-        # Seed a default "Head Office" location before demo items so items land in it
-        head_office = Location(
-            id=uuid.uuid4(),
-            company_id=company.id,
-            name="Head Office",
-            type="office",
-            address=None,
-            is_default=True,
-        )
-        session.add(head_office)
-        await session.flush()
-        from celerp.services.demo import seed_demo_items
-        await seed_demo_items(session, company.id, user.id, default_location_id=head_office.id)
-        # Seed the company's single self-contact (typed `both`) with company name, owner name + admin email
-        from celerp.services.demo import seed_self_contacts
-        await seed_self_contacts(
+        company, user = await provision_registered_company(
             session,
-            company_id=company.id,
-            actor_id=user.id,
-            person_name=payload.name,
             company_name=payload.company_name,
+            owner_name=payload.name,
             email=payload.email,
+            password=payload.password,
         )
         # Single commit point: the central issuer locks the auth state, registers the
         # initial access JTI, and commits the whole bootstrap as one transaction.
-        tokens = await _issue_tokens(session, user, company, link.role)
+        tokens = await _issue_tokens(session, user, company, "owner")
     except HTTPException:
         await session.rollback()
         raise

@@ -41,6 +41,7 @@ from celerp.services.permissions import (
 )
 from celerp.schemas.numbers import FiniteFloat
 from celerp.tax_regimes import get_regime, TAX_REGIMES
+from celerp.services.provisioning import provision_additional_company
 from celerp.services.terms import terms_templates
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS, company_payment_terms
 from celerp.services.business_time import business_timezone
@@ -239,37 +240,7 @@ async def create_company(
 ) -> dict:
     """Create a new company linked to the current user. Returns JWT scoped to new company."""
     user = ctx.user
-    import re
-    slug = re.sub(r"[^a-z0-9]+", "-", payload.name.strip().lower()).strip("-") or str(uuid.uuid4())
-    company = Company(id=uuid.uuid4(), name=payload.name, slug=slug, settings={})
-    link = UserCompany(id=uuid.uuid4(), user_id=user.id, company_id=company.id, role="owner")
-    session.add(company)
-    await session.flush()  # persist company row before FK reference in user_companies
-    session.add(link)
-    await session.flush()
-    # Fire module lifecycle hooks (e.g. celerp-accounting seeds chart of accounts)
-    from celerp.modules.slots import fire_lifecycle
-    await fire_lifecycle("on_company_created", session=session, company_id=company.id)
-    # Seed the company's single self-contact (typed `both`, mirrors registration flow)
-    from celerp.services.demo import seed_self_contacts
-    await seed_self_contacts(
-        session,
-        company_id=company.id,
-        actor_id=user.id,
-        person_name=user.name,
-        company_name=payload.name,
-        email=user.email,
-    )
-    # Seed a default "Head Office" location (mirrors registration flow)
-    head_office = Location(
-        id=uuid.uuid4(),
-        company_id=company.id,
-        name="Head Office",
-        type="office",
-        address=None,
-        is_default=True,
-    )
-    session.add(head_office)
+    company = await provision_additional_company(session, user=user, company_name=payload.name)
     try:
         await session.commit()
     except Exception as e:
