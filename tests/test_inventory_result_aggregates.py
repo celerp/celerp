@@ -259,6 +259,49 @@ async def test_filtered_totals_agree_with_store_valuation(client, seeded_currenc
     assert agg["price_totals"] == valuation["price_totals"]
 
 
+async def _set_rings(session, seeded, states: dict[str, dict], **settings) -> None:
+    from celerp.models.company import Company
+    from celerp.models.projections import Projection
+
+    company_id = uuid.UUID(str(get_token_claims(seeded["admin_h"]["Authorization"].split()[1])["company_id"]))
+    company = await session.get(Company, company_id)
+    company.settings = {**company.settings, **settings}
+    for entity_id, patch in states.items():
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+        row.state = {**row.state, **patch}
+    await session.flush()
+
+
+async def test_money_totals_round_each_row_before_summing(client, session, seeded):
+    # Each half-cent lot is worth a cent in USD, so two of them are worth two cents.
+    await _set_rings(session, seeded, {
+        "item:agg-ring-1": {"cost_total": 0.005}, "item:agg-ring-2": {"cost_total": 0.005},
+    }, currency="USD")
+    h = seeded["admin_h"]
+    assert (await _list(client, h, category="ring"))["aggregates"]["price_totals"]["Cost"] == 0.02
+    r = await client.get("/items/valuation", headers=h, params={"category": "ring"})
+    assert r.status_code == 200, r.text
+    assert r.json()["price_totals"]["Cost"] == 0.02
+
+
+async def test_quantities_keep_each_unit_precision(client, session, seeded):
+    from celerp.services.units import DEFAULT_UNITS
+
+    units = [*DEFAULT_UNITS,
+             {"name": "micro", "label": "Micro", "decimals": 6, "unit_type": "quantity"},
+             {"name": "fine", "label": "Fine", "decimals": 5, "unit_type": "weight"}]
+    await _set_rings(session, seeded, {
+        "item:agg-ring-1": {"sell_by": "micro", "quantity": 0.000001, "weight_unit": "fine", "weight": 0.00001},
+        "item:agg-ring-2": {"sell_by": "micro", "quantity": 1.123456, "weight_unit": "fine", "weight": 2.12345},
+        "item:agg-gem-1": {"category": "ring", "sell_by": "legacy", "quantity": 1.123456,
+                           "weight_unit": "legacy", "weight": 0.123456},
+    }, units=units)
+    agg = (await _list(client, seeded["admin_h"], category="ring"))["aggregates"]
+    assert agg["quantity_by_unit"] == {"micro": 1.123457, "legacy": 1.123456}
+    assert agg["weight_by_unit"] == {"fine": 2.12346, "legacy": 0.123456}
+    assert agg["pieces_total"] == 5
+
+
 # UI: the chip bar renders the list endpoint's aggregates for the current search.
 
 _UI_AGGREGATES = {

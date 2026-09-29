@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -819,33 +819,46 @@ def _attr_filters(request: Request) -> list[tuple[str, set[str]]]:
     return out
 
 
-def _list_value(flat: dict, price_list: str) -> Decimal | None:
-    """A flattened item's value on one price list, or None when it cannot be valued.
+def _list_value(flat: dict, price_list: str, currency: str) -> Decimal | None:
+    """A flattened item's value on one price list in the company currency, or None when
+    it cannot be valued. Totals sum these, so each row is money before it is added.
 
     Cost values at the lot total (recipe standard x qty when recipe-backed), else the
     cost list's unit price x quantity; every other list (derived lists included, which
     flatten_item resolves) is its unit price x quantity."""
     lot_cost = coerce_price(flat.get("cost_total"))
     if is_cost_list_name(price_list) and lot_cost is not None:
-        return Decimal(str(lot_cost))
+        return round_money(lot_cost, currency)
     unit = stored_price(flat, price_list)
     qty = coerce_price(flat.get("quantity"))
     if unit is None or qty is None:
         return None
-    return Decimal(str(unit)) * Decimal(str(qty))
+    return round_money(to_decimal(unit) * to_decimal(qty), currency)
 
 
-def result_aggregates(result: list[dict], price_lists: list[dict], can_see_costs: bool, currency: str) -> dict:
+def _unit_total(total: Decimal, unit: str, unit_map: dict[str, dict]) -> float:
+    """A summed amount at its unit's configured precision; a unit with no configured
+    precision (a legacy name) is reported exactly as summed."""
+    decimals = (unit_map.get(unit) or {}).get("decimals")
+    if decimals is None:
+        return float(total)
+    return float(total.quantize(Decimal(10) ** -int(decimals), rounding=ROUND_HALF_UP))
+
+
+def result_aggregates(
+    result: list[dict], price_lists: list[dict], can_see_costs: bool, currency: str, unit_map: dict[str, dict],
+) -> dict:
     """Totals of exactly the rows in ``result`` (the filtered, visibility-stripped set).
 
     Amounts are grouped by their own unit and never added across units; a row whose
     amount or price the role cannot see is left out of that total, and price totals
     count the rows they leave out (price_missing) instead of reading them as zero.
     Cost lists are omitted entirely for a role without view_inventory_costs. Price totals
-    round at the company currency's precision, as the store-wide valuation does."""
-    quantity_by_unit: dict[str, float] = {}
-    weight_by_unit: dict[str, float] = {}
-    pieces_total: float | None = None
+    sum each row's value in the company currency, as the store-wide valuation does.
+    Quantities and weights sum exactly and report at each unit's precision."""
+    quantity_by_unit: dict[str, Decimal] = {}
+    weight_by_unit: dict[str, Decimal] = {}
+    pieces_total: Decimal | None = None
     names = [pl.get("name", "") for pl in price_lists
              if can_see_costs or not is_cost_list_name(pl.get("name", ""))]
     price_totals = {name: Decimal(0) for name in names}
@@ -855,26 +868,26 @@ def result_aggregates(result: list[dict], price_lists: list[dict], can_see_costs
         qty = coerce_price(r.get("quantity"))
         if qty is not None:
             unit = str(r.get("sell_by") or "")
-            quantity_by_unit[unit] = quantity_by_unit.get(unit, 0.0) + qty
+            quantity_by_unit[unit] = quantity_by_unit.get(unit, Decimal(0)) + to_decimal(qty)
         weight = coerce_price(r.get("weight"))
         if weight is not None:
             unit = str(r.get("weight_unit") or "")
-            weight_by_unit[unit] = weight_by_unit.get(unit, 0.0) + weight
+            weight_by_unit[unit] = weight_by_unit.get(unit, Decimal(0)) + to_decimal(weight)
         pieces = coerce_price(r.get("pieces"))
         if pieces is not None:
-            pieces_total = (pieces_total or 0.0) + pieces
+            pieces_total = (pieces_total or Decimal(0)) + to_decimal(pieces)
         for name in names:
-            value = _list_value(r, name)
+            value = _list_value(r, name, currency)
             if value is None:
                 price_missing[name] += 1
             else:
                 price_totals[name] += value
     return {
         "item_count": len(result),
-        "quantity_by_unit": {k: round(v, 4) for k, v in quantity_by_unit.items()},
-        "weight_by_unit": {k: round(v, 4) for k, v in weight_by_unit.items()},
-        "pieces_total": None if pieces_total is None else round(pieces_total, 4),
-        "price_totals": {k: to_stored_float(round_money(v, currency)) for k, v in price_totals.items()},
+        "quantity_by_unit": {k: _unit_total(v, k, unit_map) for k, v in quantity_by_unit.items()},
+        "weight_by_unit": {k: _unit_total(v, k, unit_map) for k, v in weight_by_unit.items()},
+        "pieces_total": None if pieces_total is None else float(pieces_total),
+        "price_totals": {k: to_stored_float(v) for k, v in price_totals.items()},
         "price_missing": price_missing,
     }
 
@@ -1105,7 +1118,8 @@ async def query_items(
     # Totals of the final filtered set, so they describe exactly the rows `total` counts,
     # on every page and for any combination of filters.
     aggregates = result_aggregates(
-        result, (await get_price_config(session, company_id))[0], can_see_costs, base_currency)
+        result, (await get_price_config(session, company_id))[0], can_see_costs, base_currency,
+        build_unit_map(await get_company_units(session, company_id)))
 
     # Ordering (FEFO / user column sort / default) is single-sourced in
     # celerp_inventory.search so the list and the global-search bar stay in
@@ -1302,11 +1316,10 @@ async def get_valuation(
         # lists price identically to every other consumer of item state.
         flat = flatten_item(state, row.entity_id, price_config=_price_config)
         for pl in _price_lists:
-            value = _list_value(flat, pl.get("name", ""))
+            value = _list_value(flat, pl.get("name", ""), currency)
             if value is not None:
                 price_totals[pl.get("name", "")] += value
 
-    price_totals = {k: round_money(v, currency) for k, v in price_totals.items()}
     _cost_pl_names = {pl.get("name", "") for pl in _price_lists if is_cost_list_name(pl.get("name", ""))}
     show_cost = role_has_permission(settings, role, "view_inventory_costs")
 
