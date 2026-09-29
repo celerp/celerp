@@ -23,6 +23,7 @@ from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
 from celerp.services.line_measures import line_label
 from celerp.services.money import (
@@ -616,10 +617,6 @@ def _journal_filter(q: str | None) -> _JournalFilter:
 # unknown type of a code with no chart entry, is reported on the debit side.
 _CREDIT_NORMAL_TYPES = frozenset({"liability", "equity", "revenue"})
 
-# Legacy doc_type spellings normalised to their canonical names, so a statement
-# row and the AR/AP aging call the same document the same thing.
-_DOC_TYPE_ALIASES = {"Invoice": "invoice", "PO": "purchase_order"}
-
 
 def _is_debit_normal(account_type: str) -> bool:
     """Whether an account's balance is signed positive on the debit side.
@@ -885,7 +882,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             "doc_ref": state.get("ref_id") or state.get("doc_number") or doc_id,
             "fx": fx,
             "contact_id": contact_id,
-            "doc_type": _DOC_TYPE_ALIASES.get(doc_type, doc_type),
+            "doc_type": canonical_doc_type(doc_type),
             "is_payment": isinstance(payment_index, int),
             "is_cost_posting": meta.get("trigger") == "doc.fulfilled",
             "doc": state,

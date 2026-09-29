@@ -30,6 +30,15 @@ DOC_FIELD_FALLBACKS: dict[str, tuple[str, ...]] = {
     "amount_outstanding": ("outstanding_balance",),
 }
 
+# Document type spellings older imports carry, by the type they are.
+_DOC_TYPE_ALIASES: dict[str, str] = {"Invoice": "invoice", "PO": "purchase_order"}
+
+
+def canonical_doc_type(doc_type: str) -> str:
+    """``doc_type`` under its current name, so an imported document counts as the type it is."""
+    return _DOC_TYPE_ALIASES.get(doc_type, doc_type)
+
+
 # Memo statuses in which goods are still out with the customer.
 MEMO_LIVE_STATUSES: frozenset[str] = frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"})
 

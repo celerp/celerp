@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
-from celerp.services.doc_balance import doc_value, is_awaiting_payment, is_owed, outstanding_balance, today_iso
+from celerp.services.doc_balance import canonical_doc_type, doc_value, is_awaiting_payment, is_owed, outstanding_balance, today_iso
 from celerp.services.permissions import require_permission
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -30,15 +30,10 @@ def _parse_d(val: str | None) -> Decimal:
         return Decimal(0)
 
 
-# Document type spellings older imports carry, by the type they are.
-_DOC_TYPE_ALIASES = {"Invoice": "invoice", "PO": "purchase_order"}
-
-
 def _aged_balance(state: dict, doc_types: tuple[str, ...]) -> Decimal | None:
     """What a document of one of ``doc_types`` awaiting payment still owes, or None when it is not
     aged: another type, not awaiting payment, or settled."""
-    doc_type = state.get("doc_type", state.get("type", ""))
-    doc_type = _DOC_TYPE_ALIASES.get(doc_type, doc_type)
+    doc_type = canonical_doc_type(state.get("doc_type", state.get("type", "")))
     if doc_type not in doc_types or not is_awaiting_payment(doc_type, state.get("status")) or not is_owed(state):
         return None
     return outstanding_balance(state)
