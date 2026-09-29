@@ -627,6 +627,17 @@ class DocPaymentReceived(BaseModel):
     paired_index: int | None = None
 
 
+class PaymentBatchRecorded(BaseModel):
+    doc_ids: list[str]
+    amount: float
+    currency: str
+    payment_date: str
+    allocations: list[dict]
+    skipped: list[dict]
+    total_allocated: float
+    remaining: float
+
+
 class DocPaymentRefunded(BaseModel):
     amount: float
     reason: str | None = None
@@ -1259,6 +1270,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.sent": DocSent,
     "doc.payment.received": DocPaymentReceived,
     "doc.payment.refunded": DocPaymentRefunded,
+    "payment_batch.recorded": PaymentBatchRecorded,
     "doc.payment.voided": DocPaymentVoided,
     "doc.payment.deleted": DocPaymentDeleted,
     "doc.converted": DocConverted,

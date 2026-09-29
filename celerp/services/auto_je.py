@@ -1341,8 +1341,7 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, c
 async def create_for_return_received(session, *, company_id, user_id, cn_id: str, total_cogs: float, je_suffix: str) -> None:
     """Reversing COGS JE when goods are returned via credit note: Debit Inventory (1130-P) / Credit COGS (5100).
 
-    je_suffix must be unique per receive-return call (e.g. first item_id) to avoid idempotency key collisions
-    when receive-return is called multiple times on the same CN.
+    je_suffix names the receive-return call, so each return received on the credit note has its own entry.
     """
     if total_cogs <= 0:
         return

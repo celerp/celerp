@@ -61,13 +61,6 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # Longest explicit id list the list route accepts; a batch of AI drafts is far below it.
 MAX_IDS_FILTER = 500
 
-# Bulk payment bounds each per-doc row-lock wait so a contended doc skips rather than
-# blocking the worker. 3s sits above a normal per-doc lock hold (no false skip under
-# ordinary load) and well under typical client/proxy request timeouts. Applied
-# transaction-local before each acquisition and reapplied every iteration, since
-# apply_doc_payment commits per doc and the prior commit resets the setting.
-_BULK_DOC_LOCK_TIMEOUT_MS = 3000
-
 # Closed-set shipment fields: unknown values never reach the event log ('' clears).
 _SHIPMENT_ENUM_FIELDS: dict[str, frozenset[str]] = {
     "incoterms": frozenset(INCOTERMS_2020),
@@ -186,14 +179,49 @@ def _request_digest(kind: str, entity_id: str | None, expected_version: int | No
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _replay_result(replay, *, event_type: str, digest: str, entity_id: str | None = None) -> dict:
+def _check_replay(replay, *, event_type: str, digest: str, entity_id: str | None = None) -> None:
     if (
         replay.event_type != event_type
         or (entity_id is not None and replay.entity_id != entity_id)
         or (replay.metadata_ or {}).get("request") != digest
     ):
         raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
+
+
+def _replay_result(replay, *, event_type: str, digest: str, entity_id: str | None = None) -> dict:
+    _check_replay(replay, event_type=event_type, digest=digest, entity_id=entity_id)
     return {"event_id": replay.id, "id": replay.entity_id, "version": replay.id}
+
+
+_OPERATION_KEY_MAX = 200
+
+
+def _operation(kind: str, scope: str | None, payload: BaseModel) -> tuple[str, str]:
+    """The key and request digest of one call of an operation on ``scope``."""
+    key = payload.idempotency_key or str(uuid.uuid4())
+    if len(key) > _OPERATION_KEY_MAX:
+        raise HTTPException(status_code=422, detail=f"idempotency_key is longer than {_OPERATION_KEY_MAX} characters")
+    return key, _request_digest(kind, scope, None, payload.model_dump(mode="json", exclude={"idempotency_key"}))
+
+
+def _step_key(key: str, *parts) -> str:
+    """The key of one step of the operation ``key``."""
+    return ":".join((key, *map(str, parts)))
+
+
+def _step_id(key: str, *parts) -> uuid.UUID:
+    """The id of a record one step of the operation ``key`` creates."""
+    return uuid.uuid5(uuid.NAMESPACE_OID, _step_key(key, *parts))
+
+
+async def _earlier_run(session: AsyncSession, company_id, key: str, *, event_type: str,
+                       entity_id: str | None, digest: str) -> dict | None:
+    """What an earlier call of this same request returned, or None when there was none."""
+    replay = await find_event_by_idempotency(session, company_id, key)
+    if replay is None:
+        return None
+    _check_replay(replay, event_type=event_type, digest=digest, entity_id=entity_id)
+    return (replay.metadata_ or {}).get("result") or {"event_id": replay.id}
 
 
 _PROTECTED_FIELDS = frozenset({"status", "entity_type", "company_id"})
@@ -2116,6 +2144,10 @@ async def finalize_doc(
 @router.post("/{entity_id}/void")
 async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("void", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.voided",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     _reject_if_closed(row.state, "void it")
     current_status = row.state.get("status")
     if current_status in ("paid", "partial"):
@@ -2142,7 +2174,7 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.voided",
         data=event_data, actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=key, metadata_={"request": digest},
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -2223,6 +2255,10 @@ async def reopen_doc(entity_id: str, payload: DocReopenBody, company_id: str = D
 @router.post("/{entity_id}/revert-to-draft")
 async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("revert-to-draft", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.reverted_to_draft",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     state = row.state
     previous_status = state.get("status")
     # Inbound docs (bill, consignment_in) can also revert from received/fulfilled statuses.
@@ -2286,7 +2322,7 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         event_type="doc.reverted_to_draft",
         data={**event_data, **extra_data},
         actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=key, metadata_={"request": digest},
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -2355,6 +2391,10 @@ async def renumber_doc(
 async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     await lock_item_code_namespace(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("unvoid", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.unvoided",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     state = row.state
     if state.get("status") != "void":
         raise HTTPException(status_code=409, detail="Can only unvoid documents in 'void' status")
@@ -2367,7 +2407,7 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
         event_type="doc.unvoided",
         data={"unvoided_by": str(user.id), "restored_status": restored_status},
         actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=key, metadata_={"request": digest},
     )
     # Restore the JEs the void reversed (idempotent - uses doc-scoped keys)
     await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
@@ -2396,7 +2436,7 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
                 **({"total_cogs": 0.0} if pre_void_fulfillment == "fulfilled" else {"unfulfilled_items": []}),
             },
             actor_id=user.id, location_id=None, source="api",
-            idempotency_key=str(uuid.uuid4()), metadata_={"restored_from_unvoid": True},
+            idempotency_key=_step_key(key, "fulfillment"), metadata_={"restored_from_unvoid": True},
         )
 
     await session.commit()
@@ -2534,7 +2574,7 @@ async def _alloc_payment_index(session, company_id, payments: list,
 
 async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                             *, source: str, actor_id, idempotency_key: str,
-                            clamp_overshoot: bool = False, commit: bool = True):
+                            request: str | None = None, commit: bool = True):
     """Record a payment against a doc: guard, emit doc.payment.received, post the cash
     JE, fire the payment lifecycle hook. Shared by the manual route and online payment
     so a Stripe payment lands identically to a hand-entered one. Commits per success and
@@ -2548,7 +2588,9 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
-        if replay.event_type != "doc.payment.received" or replay.entity_id != entity_id:
+        if request is not None:
+            _check_replay(replay, event_type="doc.payment.received", digest=request, entity_id=entity_id)
+        elif replay.event_type != "doc.payment.received" or replay.entity_id != entity_id:
             raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
         # Match emit_event's duplicate-race contract so callers can distinguish a
         # replay from a newly applied payment without changing this function's return shape.
@@ -2585,8 +2627,6 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     if amount_d > outstanding_d:
         if source == "stripe":
             body["charged_amount"] = to_stored_float(amount_d)
-            amount_d = outstanding_d
-        elif clamp_overshoot:
             amount_d = outstanding_d
         else:
             raise HTTPException(
@@ -2627,7 +2667,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
         data=body, actor_id=actor_id, location_id=None, source=source,
-        idempotency_key=idempotency_key, metadata_={},
+        idempotency_key=idempotency_key, metadata_={"request": request} if request else {},
     )
     if getattr(entry, "was_deduped", False):
         return entry, float((entry.data or {}).get("amount") or 0)
@@ -2667,9 +2707,10 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
     # apply_doc_payment takes the doc row FOR UPDATE and validates against that fresh
     # read, rejecting a closed memo via its status allowlist; the row lock serializes
     # this payment against a concurrent close or a second recorder on the same doc.
+    key, digest = _operation("payment", entity_id, payload)
     entry, _amount = await apply_doc_payment(
         session, company_id, entity_id, payload.model_dump(exclude_none=True),
-        source="api", actor_id=user.id, idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
+        source="api", actor_id=user.id, idempotency_key=key, request=digest,
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -2678,6 +2719,10 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
 @router.post("/{entity_id}/refund")
 async def refund_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("refund", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.refunded",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     _reject_if_closed(row.state, "refund a payment")
     currency = str(row.state.get("currency") or "USD").upper()
     if payload.currency and str(payload.currency).upper() != currency:
@@ -2697,7 +2742,7 @@ async def refund_payment(entity_id: str, payload: DocPaymentBody, company_id: st
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.refunded",
         data=refund_data, actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=key, metadata_={"request": digest},
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -2718,6 +2763,10 @@ class VoidPaymentBody(BaseModel):
 @router.post("/{entity_id}/void-payment")
 async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("void-payment", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.voided",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     _reject_if_closed(row.state, "void a payment")
     payments = row.state.get("payments", [])
     # Payments are identified by their index FIELD, not list position.
@@ -2733,7 +2782,7 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
         data={"payment_index": payload.payment_index, "void_reason": payload.void_reason,
               "refund_date": payload.refund_date, "amount": payment.get("amount"), "method": payment.get("method")},
         actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=key, metadata_={"request": digest},
     )
     doc_type = row.state.get("doc_type", "invoice")
     if payment.get("method") not in ("credit_note", "applied"):
@@ -2806,7 +2855,7 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
                         data={"payment_index": pp.get("index", pi), "void_reason": payload.void_reason or "Paired void",
                               "amount": pp.get("amount"), "method": pp.get("method")},
                         actor_id=user.id, location_id=None, source="api",
-                        idempotency_key=str(uuid.uuid4()), metadata_={},
+                        idempotency_key=_step_key(key, "paired"), metadata_={},
                     )
                 # Applications of this CN to this invoice still active after
                 # this void (governs whether the legacy shared entry may be
@@ -2880,6 +2929,10 @@ async def delete_payment(
     from celerp_accounting.models import ReconciliationSession, BankStatementLine  # noqa: PLC0415
 
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("delete-payment", f"{entity_id}:{payment_index}", payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.deleted",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     _reject_if_closed(row.state, "delete a payment")
     payments = row.state.get("payments", [])
     # Payments are identified by their index FIELD, not list position.
@@ -2988,7 +3041,7 @@ async def delete_payment(
               "amount": payment.get("amount"), "method": payment.get("method"),
               "tombstone": True, "ts": payment.get("payment_date")},
         actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=key, metadata_={"request": digest},
     )
 
     await session.commit()
@@ -3018,6 +3071,10 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
     inv_row = locked.get(payload.target_doc_id)
     if cn_row is None or inv_row is None:
         raise HTTPException(status_code=404, detail="Document not found")
+    key, digest = _operation("apply-credit-note", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.received",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     cn = cn_row.state
     if cn.get("doc_type") != "credit_note":
         raise HTTPException(status_code=409, detail="Only credit notes can be applied to invoices")
@@ -3084,7 +3141,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
             "paired_index": payment_idx,
         },
         actor_id=user.id, location_id=None, source="api",
-        idempotency_key=str(uuid.uuid4()), metadata_={},
+        idempotency_key=_step_key(key, "invoice"), metadata_={},
     )
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -3097,7 +3154,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
             "paired_index": inv_pay_index,
         },
         actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=key, metadata_={"request": digest},
     )
     await auto_je.create_for_cn_application(
         session, company_id=company_id, user_id=user.id,
@@ -3130,6 +3187,10 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
     # doc-row lock is the single serializer, so a concurrent application/refund on this
     # credit note is ordered at the row and cannot mint a colliding index.
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("credit-note-refund", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.received",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     cn = row.state
     if cn.get("doc_type") != "credit_note":
         raise HTTPException(status_code=409, detail="Only credit notes can be refunded")
@@ -3165,7 +3226,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
             "index": payment_index,
         },
         actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=key, metadata_={"request": digest},
     )
     # JE: debit AR, credit bank
     await auto_je.create_for_doc_payment(
@@ -3202,12 +3263,13 @@ class BulkPaymentBody(BaseModel):
 async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.doc_ids:
         raise HTTPException(status_code=422, detail="No documents specified")
+    key, digest = _operation("bulk-payment", None, payload)
+    rows = await _get_docs_for_update(session, company_id, payload.doc_ids)
+    if (done := await _earlier_run(session, company_id, key, event_type="payment_batch.recorded",
+                                   entity_id=None, digest=digest)) is not None:
+        return done
 
-    docs = []
-    for doc_id in payload.doc_ids:
-        row = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
-        if row and row.entity_type == "doc":
-            docs.append((doc_id, row.state))
+    docs = [(doc_id, dict(rows[doc_id].state)) for doc_id in dict.fromkeys(payload.doc_ids) if doc_id in rows]
     if not docs:
         raise HTTPException(status_code=404, detail="No valid documents found")
 
@@ -3237,6 +3299,8 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
     tender = round_money(payload.amount, currency)
     if tender <= 0:
         raise HTTPException(status_code=422, detail="Payment amount must be positive")
+    if not payload.bank_account:
+        raise HTTPException(status_code=422, detail="bank_account is required")
 
     payable.sort(key=lambda x: (
         x[1].get("due_date") or x[1].get("issue_date") or "9999",
@@ -3244,19 +3308,13 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
         x[0],
     ))
 
-    from sqlalchemy.exc import DBAPIError
     remaining = tender
     allocations = []
     skipped: list[dict] = []
-    if not payload.bank_account:
-        raise HTTPException(status_code=422, detail="bank_account is required")
-
-    for doc_id, state, _, outstanding in payable:
+    for doc_id, _state, _, outstanding in payable:
         if remaining <= 0:
             break
         alloc = min(remaining, outstanding)
-        if alloc <= 0:
-            continue
         body = {
             "amount": to_stored_float(alloc),
             "method": payload.method,
@@ -3265,34 +3323,36 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
             "bank_account": payload.bank_account,
             "currency": currency,
         }
-        await session.execute(text(f"SET LOCAL lock_timeout = '{_BULK_DOC_LOCK_TIMEOUT_MS}ms'"))
+        # A document that refuses its share is reported and leaves the rest of the batch intact.
         try:
-            _entry, applied = await apply_doc_payment(
-                session, company_id, doc_id, body,
-                source="api", actor_id=user.id, idempotency_key=str(uuid.uuid4()),
-                clamp_overshoot=True)
+            async with session.begin_nested():
+                _entry, applied = await apply_doc_payment(
+                    session, company_id, doc_id, body,
+                    source="api", actor_id=user.id, idempotency_key=_step_key(key, doc_id),
+                    commit=False)
         except HTTPException as exc:
-            await session.rollback()
             skipped.append({"doc_id": doc_id, "reason": exc.detail})
-            continue
-        except DBAPIError as exc:
-            if getattr(getattr(exc, "orig", None), "sqlstate", None) != "55P03":
-                raise
-            await session.rollback()
-            skipped.append({"doc_id": doc_id, "reason": "Document was locked by another operation; try again"})
             continue
         applied_d = round_money(applied, currency)
         allocations.append({"doc_id": doc_id, "amount": to_stored_float(applied_d)})
         remaining = round_money(max(Decimal(0), remaining - applied_d), currency)
 
-    await session.commit()
-    allocated = round_money(tender - remaining, currency)
-    return {
+    result = {
         "allocations": allocations,
         "skipped": skipped,
-        "total_allocated": to_stored_float(allocated),
+        "total_allocated": to_stored_float(round_money(tender - remaining, currency)),
         "remaining": to_stored_float(remaining),
     }
+    await emit_event(
+        session, company_id=company_id, entity_id=f"payment_batch:{_step_id(key)}",
+        entity_type="payment_batch", event_type="payment_batch.recorded",
+        data={"doc_ids": payload.doc_ids, "amount": to_stored_float(tender), "currency": currency,
+              "payment_date": payload.payment_date, **result},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=key, metadata_={"request": digest, "result": result},
+    )
+    await session.commit()
+    return result
 
 
 async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it: ReceivedItem, stock_qty: float) -> float | None:
@@ -3331,6 +3391,10 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     # receipt or cost change in flight and reads what that one committed.
     await lock_item_code_namespace(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("receive", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.received",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     doc_type = row.state.get("doc_type")
     if doc_type not in ("purchase_order", "bill", "consignment_in"):
         raise HTTPException(status_code=409, detail="receive is only valid for bills, purchase orders, and consignment_in documents")
@@ -3441,7 +3505,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     _recv_barcodes = await allocate_internal_codes(session, company_id, _new_parcel_count) if _new_parcel_count else []
     _recv_barcode_idx = 0
 
-    for it, (conversion, stock_qty_received, received_cost) in zip(payload.received_items, priced):
+    for line_no, (it, (conversion, stock_qty_received, received_cost)) in enumerate(zip(payload.received_items, priced)):
         if it.item_id and not is_inbound:
             # PO (outbound-style): adjust quantity on the canonical catalog item.
             item = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
@@ -3456,7 +3520,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 session, company_id=company_id, entity_id=it.item_id, entity_type="item", event_type="item.quantity.adjusted",
                 data=adjustment,
                 actor_id=user.id, location_id=None, source="api",
-                idempotency_key=str(uuid.uuid4()), metadata_={"source_doc": entity_id},
+                idempotency_key=_step_key(key, "line", line_no), metadata_={"source_doc": entity_id},
             )
         else:
             # Inbound doc (bill, consignment_in): always create a new parcel.
@@ -3554,7 +3618,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 # number in the status cell and q-search matches it.
                 item_data["status_doc_id"] = entity_id
                 item_data["status_doc_number"] = row.state.get("doc_number") or row.state.get("ref_id") or ""
-            new_eid = f"item:{uuid.uuid4()}"
+            new_eid = f"item:{_step_id(key, 'line', line_no)}"
             created_item_ids.append(new_eid)
             await emit_event(
                 session,
@@ -3566,7 +3630,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 actor_id=user.id,
                 location_id=location_uuid,
                 source="api",
-                idempotency_key=str(uuid.uuid4()),
+                idempotency_key=_step_key(key, "line", line_no),
                 metadata_={"source_doc": entity_id},
             )
 
@@ -3580,7 +3644,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             "created_item_ids": created_item_ids,
         },
         actor_id=user.id, location_id=location_uuid, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=key, metadata_={"request": digest},
     )
 
     if doc_type == "purchase_order":
@@ -3592,7 +3656,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             debits[account] = debits.get(account, 0.0) + received_cost
         await auto_je.create_for_po_receipt(
             session, company_id=company_id, user_id=user.id, po_id=entity_id,
-            receipt_key=str(uuid.uuid4()), debits=debits,
+            receipt_key=key, debits=debits,
             receive_date=datetime.now(timezone.utc).date().isoformat(),
         )
     elif doc_type == "bill" and landed_drawdown:
@@ -3601,7 +3665,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         # received landed cost from the clearing accounts into 1130-P (Dr 1130-P / Cr clearing).
         await auto_je.create_for_landed_capitalisation(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-            landed_by_kind=landed_drawdown, receive_suffix=str(uuid.uuid4()),
+            landed_by_kind=landed_drawdown, receive_suffix=key,
             receive_date=datetime.now(timezone.utc).date().isoformat(),
         )
     # consignment_in: no JE (goods not owned).
@@ -3627,14 +3691,21 @@ class ReturnBody(BaseModel):
 
 @router.post("/{entity_id}/return-items")
 async def return_consignment_items(entity_id: str, payload: ReturnBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    # A return takes goods off the lots it reads, so it waits for any receipt or cost
+    # change in flight and reads what that one committed.
+    await lock_item_code_namespace(session, company_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("return-items", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.items_returned",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     doc_type = row.state.get("doc_type")
     if doc_type not in ("consignment_in", "bill", "purchase_order"):
         raise HTTPException(status_code=409, detail="return-items is only valid for bills, POs, and consignment_in documents")
     if row.state.get("status") not in ("received", "partially_received", "partial_returned", "awaiting_payment"):
         raise HTTPException(status_code=409, detail="Document must be in received/partial/awaiting_payment status to return items")
 
-    for it in payload.items:
+    for line_no, it in enumerate(payload.items):
         item = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
         if item is None:
             raise HTTPException(status_code=404, detail=f"Item not found: {it.item_id}")
@@ -3659,7 +3730,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             event_type="item.quantity.adjusted",
             data={"new_qty": new_qty, "consignment_flag": None if new_qty == 0 else "in"},
             actor_id=user.id, location_id=None, source="api",
-            idempotency_key=str(uuid.uuid4()), metadata_={"source_return": entity_id},
+            idempotency_key=_step_key(key, "line", line_no), metadata_={"source_return": entity_id},
         )
 
     entry = await emit_event(
@@ -3671,7 +3742,7 @@ async def return_consignment_items(entity_id: str, payload: ReturnBody, company_
             "notes": payload.notes,
         },
         actor_id=user.id, location_id=None, source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+        idempotency_key=key, metadata_={"request": digest},
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -7001,7 +7072,12 @@ async def receive_return(
     """
     from celerp_inventory.routes import flatten_item
 
-    row = await _get_doc(session, company_id, entity_id)
+    await lock_item_code_namespace(session, company_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
+    key, digest = _operation("receive-return", entity_id, payload)
+    if (done := await _earlier_run(session, company_id, key, event_type="doc.return_received",
+                                   entity_id=entity_id, digest=digest)) is not None:
+        return done
     state = row.state
     if state.get("doc_type") != "credit_note":
         raise HTTPException(status_code=409, detail="receive-return is only valid for credit notes")
@@ -7149,7 +7225,7 @@ async def receive_return(
             "created_at": now,
         }
 
-        item_id = f"item:{uuid.uuid4()}"
+        item_id = f"item:{_step_id(key, 'line', _ridx)}"
         await emit_event(
             session,
             company_id=company_id,
@@ -7160,7 +7236,7 @@ async def receive_return(
             actor_id=user.id,
             location_id=None,
             source="return",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=_step_key(key, "line", _ridx),
             metadata_={"source_return_cn": entity_id},
         )
         cost_price = item_data["cost_price"]
@@ -7174,6 +7250,7 @@ async def receive_return(
             "received_at": now,
         })
 
+    result = {"received_items": received_items, "total_cogs_reversed": total_cogs}
     await emit_event(
         session,
         company_id=company_id,
@@ -7189,8 +7266,8 @@ async def receive_return(
         actor_id=user.id,
         location_id=None,
         source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
+        idempotency_key=key,
+        metadata_={"request": digest, "result": result},
     )
 
     await auto_je.create_for_return_received(
@@ -7199,11 +7276,11 @@ async def receive_return(
         user_id=user.id,
         cn_id=entity_id,
         total_cogs=total_cogs,
-        je_suffix=received_items[0]["item_id"].split(":")[-1] if received_items else str(uuid.uuid4()),
+        je_suffix=key,
     )
 
     await session.commit()
-    return {"received_items": received_items, "total_cogs_reversed": total_cogs}
+    return result
 
 
 @router.delete("/{entity_id}/receive-return")
