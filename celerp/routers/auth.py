@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-
 import asyncio
 import hashlib
 import logging
@@ -15,12 +13,13 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
+from celerp.services import bootstrap
 from celerp.services.auth import (
     AuthContext,
     decode_refresh_token,
@@ -39,10 +38,6 @@ from celerp.services.auth import (
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
-
-# Fixed key for the transaction-scoped advisory lock that serializes first-admin
-# bootstrap across workers. Distinct from the session-tracker advisory keys.
-_BOOTSTRAP_LOCK_KEY = 0x43454C4552500001
 
 
 async def _issue_tokens(
@@ -84,74 +79,6 @@ class LoginRequest(BaseModel):
     password: str
 
 
-def _setup_code_hash() -> str:
-    """The one-time setup-code hash for a headless install, or '' if none required."""
-    from celerp.config import read_config
-    return read_config().get("auth", {}).get("setup_code_hash", "") or ""
-
-
-def _verify_setup_code(provided: str | None) -> bool:
-    """Validate the one-time setup capability. Return whether one is configured."""
-    required = _setup_code_hash()
-    if not required:
-        return False
-    import hmac as _hmac
-    value = (provided or "").strip()
-    if not value or not _hmac.compare_digest(
-        hashlib.sha256(value.encode()).hexdigest(), required
-    ):
-        raise HTTPException(status_code=403, detail="Invalid or missing setup code.")
-    return True
-
-
-_BOOTSTRAP_LOCAL_LOCK = asyncio.Lock()
-
-
-@asynccontextmanager
-async def _bootstrap_restore_lock():
-    """Serialize restore-based bootstrap with first-admin registration."""
-    from celerp.db import engine
-
-    if engine.dialect.name != "postgresql":
-        async with _BOOTSTRAP_LOCAL_LOCK:
-            yield
-        return
-
-    async with engine.connect() as conn:
-        await conn.execute(
-            text("SELECT pg_advisory_lock(:key)"),
-            {"key": _BOOTSTRAP_LOCK_KEY},
-        )
-        await conn.commit()
-        try:
-            yield
-        finally:
-            await conn.execute(
-                text("SELECT pg_advisory_unlock(:key)"),
-                {"key": _BOOTSTRAP_LOCK_KEY},
-            )
-            await conn.commit()
-
-
-def _clear_setup_code() -> None:
-    """Best-effort cleanup after the first admin has already committed.
-
-    The DB user row is the authoritative one-time registration gate. Config-lock
-    contention here must never turn a successful registration into a 500 that
-    tells the operator to retry an operation that already completed.
-    """
-    from celerp.config import _update_config, config_path
-    try:
-        _update_config(lambda cfg: cfg.get("auth", {}).pop("setup_code_hash", None))
-    except Exception as exc:
-        logger.warning("setup-code config cleanup deferred after registration: %s",
-                       type(exc).__name__)
-    try:
-        (config_path().parent / "setup-code").unlink()
-    except OSError:
-        pass
-
-
 @router.get("/bootstrap-status")
 async def bootstrap_status(session: AsyncSession = Depends(get_session)) -> dict:
     """Public endpoint: returns whether the system has been bootstrapped.
@@ -161,7 +88,7 @@ async def bootstrap_status(session: AsyncSession = Depends(get_session)) -> dict
     Once any user exists, registration is locked out from the public UI.
     """
     count = (await session.execute(select(User))).scalars().first()
-    return {"bootstrapped": count is not None, "setup_code_required": bool(_setup_code_hash())}
+    return {"bootstrapped": count is not None, "setup_code_required": bool(bootstrap.setup_code_hash())}
 
 
 @router.post("/register")
@@ -187,13 +114,13 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         # Authenticate the headless setup capability before joining the bootstrap
         # lock queue. An unauthenticated caller must not be able to consume the one
         # global serialization point simply by submitting an invalid setup code.
-        required = _verify_setup_code(payload.setup_code)
+        required = bootstrap.verify_setup_code(payload.setup_code)
 
         # Serialize first-admin bootstrap across workers BEFORE reading user state,
         # so two authenticated callers cannot both observe an empty install and
         # proceed. The production request lock_timeout bounds abnormal contention;
         # the lock is released automatically on commit or rollback.
-        await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _BOOTSTRAP_LOCK_KEY})
+        await bootstrap.lock_bootstrap(session)
 
         existing = (await session.execute(select(User))).scalars().first()
         if existing is not None:
@@ -269,7 +196,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     # failure cannot claim a second admin: log it and still return the token pair.
     if required:
         try:
-            await asyncio.to_thread(_clear_setup_code)
+            await asyncio.to_thread(bootstrap.clear_setup_code)
         except Exception:
             logger.warning("Setup-code cleanup failed after first-admin bootstrap", exc_info=True)
 

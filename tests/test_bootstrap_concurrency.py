@@ -81,14 +81,14 @@ async def _bootstrap_lock_waiters(engine) -> int:
     pg_locks is cluster-wide, so a concurrent xdist worker on another database
     of the shared test server can be waiting on an advisory lock legitimately.
     """
-    from celerp.routers.auth import _BOOTSTRAP_LOCK_KEY
+    from celerp.services.bootstrap import BOOTSTRAP_LOCK_KEY
 
     async with engine.connect() as probe:
         return (await probe.execute(text(
             "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted "
             "AND ((classid::bigint << 32) | objid::bigint) = :key "
             "AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
-        ), {"key": _BOOTSTRAP_LOCK_KEY})).scalar_one()
+        ), {"key": BOOTSTRAP_LOCK_KEY})).scalar_one()
 
 
 async def _wait_for_advisory_wait(engine, task) -> None:
@@ -125,7 +125,8 @@ async def test_bootstrap_race_serializes_to_single_owner(real_engine):
     has committed the first (and only) bootstrap."""
     from fastapi import HTTPException
 
-    from celerp.routers.auth import register, RegisterRequest, _BOOTSTRAP_LOCK_KEY
+    from celerp.routers.auth import register, RegisterRequest
+    from celerp.services.bootstrap import BOOTSTRAP_LOCK_KEY
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company, User
 
@@ -135,7 +136,7 @@ async def test_bootstrap_race_serializes_to_single_owner(real_engine):
 
     try:
         # A takes the SAME transaction-scoped advisory lock the route uses.
-        await session_a.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _BOOTSTRAP_LOCK_KEY})
+        await session_a.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": BOOTSTRAP_LOCK_KEY})
 
         # B starts a real registration; it must block on the lock before it can
         # read user state or create anything.
@@ -188,7 +189,8 @@ async def test_bootstrapped_register_rejects_before_waiting_on_lock(real_engine)
     """Once an owner exists, public registration never queues on the bootstrap lock."""
     from fastapi import HTTPException
 
-    from celerp.routers.auth import register, RegisterRequest, _BOOTSTRAP_LOCK_KEY
+    from celerp.routers.auth import register, RegisterRequest
+    from celerp.services.bootstrap import BOOTSTRAP_LOCK_KEY
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company, User
 
@@ -215,7 +217,7 @@ async def test_bootstrapped_register_rejects_before_waiting_on_lock(real_engine)
         # the queue would block here until production lock_timeout; the fast path
         # must instead return the established 403 immediately.
         await session_a.execute(
-            text("SELECT pg_advisory_xact_lock(:k)"), {"k": _BOOTSTRAP_LOCK_KEY}
+            text("SELECT pg_advisory_xact_lock(:k)"), {"k": BOOTSTRAP_LOCK_KEY}
         )
         payload = RegisterRequest(
             company_name="ShouldNotExist", email="later@example.com",
@@ -242,13 +244,14 @@ async def test_bootstrap_lock_timeout_fails_closed_without_partial_state(real_en
     """
     from fastapi import HTTPException
 
-    from celerp.routers.auth import register, RegisterRequest, _BOOTSTRAP_LOCK_KEY
+    from celerp.routers.auth import register, RegisterRequest
+    from celerp.services.bootstrap import BOOTSTRAP_LOCK_KEY
 
     maker = lambda: AsyncSession(bind=real_engine, expire_on_commit=False)
     session_a = maker()
     session_b = maker()
     try:
-        await session_a.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _BOOTSTRAP_LOCK_KEY})
+        await session_a.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": BOOTSTRAP_LOCK_KEY})
         payload = RegisterRequest(
             company_name="TimeoutCo", email="timeout@example.com", name="Owner", password="validpass1"
         )
@@ -274,19 +277,20 @@ async def test_wrong_setup_code_is_rejected_before_bootstrap_lock(real_engine):
 
     from fastapi import HTTPException
 
-    from celerp.routers.auth import register, RegisterRequest, _BOOTSTRAP_LOCK_KEY
+    from celerp.routers.auth import register, RegisterRequest
+    from celerp.services.bootstrap import BOOTSTRAP_LOCK_KEY
 
     maker = lambda: AsyncSession(bind=real_engine, expire_on_commit=False)
     session_a = maker()
     session_b = maker()
     try:
-        await session_a.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _BOOTSTRAP_LOCK_KEY})
+        await session_a.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": BOOTSTRAP_LOCK_KEY})
         digest = hashlib.sha256(b"correct-code").hexdigest()
         payload = RegisterRequest(
             company_name="WrongCodeCo", email="wrong@example.com", name="Owner",
             password="validpass1", setup_code="wrong-code",
         )
-        with patch("celerp.routers.auth._setup_code_hash", return_value=digest):
+        with patch("celerp.services.bootstrap.setup_code_hash", return_value=digest):
             task = asyncio.create_task(register(payload, session=session_b))
             with pytest.raises(HTTPException) as exc:
                 await asyncio.wait_for(task, timeout=1.0)
@@ -304,14 +308,15 @@ async def test_wrong_setup_code_is_rejected_before_bootstrap_lock(real_engine):
 @pytest.mark.asyncio
 async def test_bootstrap_waiter_succeeds_after_holder_rolls_back(real_engine):
     """If the current lock holder aborts without bootstrapping, the waiter proceeds."""
-    from celerp.routers.auth import register, RegisterRequest, _BOOTSTRAP_LOCK_KEY
+    from celerp.routers.auth import register, RegisterRequest
+    from celerp.services.bootstrap import BOOTSTRAP_LOCK_KEY
 
     maker = lambda: AsyncSession(bind=real_engine, expire_on_commit=False)
     session_a = maker()
     session_b = maker()
     task_b = None
     try:
-        await session_a.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _BOOTSTRAP_LOCK_KEY})
+        await session_a.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": BOOTSTRAP_LOCK_KEY})
         payload = RegisterRequest(
             company_name="RecoveredCo", email="recovered@example.com", name="Owner",
             password="validpass1",
@@ -383,8 +388,8 @@ async def test_setup_code_cleanup_failure_after_commit_still_issues_tokens(clien
 
     digest = hashlib.sha256(b"code123").hexdigest()
 
-    with patch("celerp.routers.auth._setup_code_hash", return_value=digest), \
-         patch("celerp.routers.auth._clear_setup_code", side_effect=OSError("config write failed")):
+    with patch("celerp.services.bootstrap.setup_code_hash", return_value=digest), \
+         patch("celerp.services.bootstrap.clear_setup_code", side_effect=OSError("config write failed")):
         r = await client.post(
             "/auth/register",
             json={
