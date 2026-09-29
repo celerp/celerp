@@ -550,7 +550,7 @@ class TestItemCreateModel:
 class TestTimestampFields:
     """created_at/updated_at are system-managed Projection columns, not CIF fields.
 
-    CIFBundleItem and CIFBundleDocument intentionally omit these fields — Celerp stamps
+    CIFBundleItem and CIFBundleDocument intentionally omit these fields; Celerp stamps
     created_at on INSERT via ProjectionEngine; external provenance timestamps
     are discarded.
     """
