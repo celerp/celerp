@@ -354,6 +354,17 @@ async def load_run(engine, run_id):
         return await s.get(MigrationRun, run_id)
 
 
+async def resume_run(engine, run_id) -> None:
+    """Request a start of a stopped run as its owner, then run it to its next stop."""
+    from celerp.services import migrations
+
+    async with maker(engine)() as s:
+        run = await migrations.get_owned_migration_run(s, run_id, (await load_run(engine, run_id)).created_by_user_id)
+        await migrations.request_start(s, run)
+        await s.commit()
+    await migrations.run_migration(run_id)
+
+
 async def creator_run(session, run_id):
     """The run as its creator controls it, through the service's ownership check."""
     from celerp.models.migration import MigrationRun

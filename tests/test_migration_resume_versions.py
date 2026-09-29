@@ -19,11 +19,11 @@ from migration_support import (
     count,
     fake_bytes,
     load_run,
-    maker,
     migrate_as_owner,
     migration_env,  # noqa: F401 - fixture
     real_client,  # noqa: F401 - fixture
     real_engine,  # noqa: F401 - fixture
+    resume_run,
     save_decisions,
     scan_upload,
     staged_run,
@@ -42,16 +42,6 @@ async def _stop_midway(engine, sink, run_id) -> None:
     await migrations.run_migration(run_id)
     run = await load_run(engine, run_id)
     assert run.status == "failed" and run.phase_state[PHASE]["cursor"] == 2
-
-
-async def _resume(engine, run_id) -> None:
-    from celerp.services import migrations
-
-    async with maker(engine)() as s:
-        run = await migrations.get_run_for_company(s, run_id, (await load_run(engine, run_id)).company_id)
-        await migrations.request_start(s, run)
-        await s.commit()
-    await migrations.run_migration(run_id)
 
 
 async def _maps(engine, run_id) -> list:
@@ -73,7 +63,7 @@ async def test_resume_under_the_same_versions_continues(real_engine, migration_e
     run_id, company_id, _ = await staged_run(real_engine)
     await _stop_midway(real_engine, sink, run_id)
 
-    await _resume(real_engine, run_id)
+    await resume_run(real_engine, run_id)
 
     run = await load_run(real_engine, run_id)
     assert run.status == "ready_to_finalize", run.error_summary
@@ -94,7 +84,7 @@ async def test_resume_after_an_importer_upgrade_is_refused_before_any_sink_call(
     else:
         await _cif_version(real_engine, run_id, "1")
 
-    await _resume(real_engine, run_id)
+    await resume_run(real_engine, run_id)
 
     run = await load_run(real_engine, run_id)
     assert len(sink.events) == calls
@@ -116,17 +106,17 @@ async def test_journey_upgrade_during_a_stopped_migration(real_client, real_engi
 
     sink = migration_env["sink"]
     owner_token = await register_admin(real_client)
-    token, run_id = await migrate_as_owner(real_client, owner_token)
+    run_id = await migrate_as_owner(real_client, owner_token)
     await _stop_midway(real_engine, sink, uuid.UUID(run_id))
     calls = len(sink.events)
     migration_env["adapter"].adapter_version = "2"
 
-    r = await real_client.post(f"/migrations/{run_id}/start", headers=auth(token))
+    r = await real_client.post(f"/migrations/{run_id}/start", headers=auth(owner_token))
     assert r.status_code == 202, r.text
     await migrations.run_migration(uuid.UUID(run_id))
     assert len(sink.events) == calls
 
-    r = await real_client.get(f"/migrations/{run_id}", headers=auth(token))
+    r = await real_client.get(f"/migrations/{run_id}", headers=auth(owner_token))
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "failed"
     assert r.json()["error_summary"]["message"] == RESTART
@@ -135,7 +125,7 @@ async def test_journey_upgrade_during_a_stopped_migration(real_client, real_engi
                                json={"name": "Back room", "type": "warehouse"})
     assert r.status_code == 200, r.text
 
-    r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
+    r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(owner_token))
     assert r.status_code == 200, r.text
     assert await count(real_engine, "migration_runs", "id = :r", r=uuid.UUID(run_id)) == 0
     r = await real_client.get("/companies/me", headers=auth(owner_token))

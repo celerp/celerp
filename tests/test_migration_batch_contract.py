@@ -18,11 +18,11 @@ from migration_support import (
     count,
     fake_spec,
     load_run,
-    maker,
     migrate_as_owner,
     migration_env,  # noqa: F401 - fixture
     real_client,  # noqa: F401 - fixture
     real_engine,  # noqa: F401 - fixture
+    resume_run,
     staged_run,
 )
 from test_helpers import register_admin
@@ -62,16 +62,6 @@ def _reject(external_id: str):
     return change
 
 
-async def _resume(engine, run_id) -> None:
-    from celerp.services import migrations
-
-    async with maker(engine)() as s:
-        run = await migrations.get_run_for_company(s, run_id, (await load_run(engine, run_id)).company_id)
-        await migrations.request_start(s, run)
-        await s.commit()
-    await migrations.run_migration(run_id)
-
-
 def _location_batches(sink) -> list[list[str]]:
     return [ids for kind, ids in sink.events if kind == "import_batch" and ids[0].startswith("loc-")]
 
@@ -107,7 +97,7 @@ async def test_one_rejected_record_rolls_back_its_whole_batch_and_resume_imports
     assert run.phase_state["company_settings"]["status"] == "done"
 
     _heal(sink)
-    await _resume(real_engine, run_id)
+    await resume_run(real_engine, run_id)
 
     run = await load_run(real_engine, run_id)
     assert run.status == "ready_to_finalize", run.error_summary
@@ -176,7 +166,7 @@ async def test_a_batch_of_idempotent_replays_succeeds(real_engine, migration_env
     await migrations.run_migration(run_id)
     assert (await load_run(real_engine, run_id)).status == "ready_to_finalize"
 
-    await _resume(real_engine, run_id)  # a re-run replays every phase; every record already exists
+    await resume_run(real_engine, run_id)  # a re-run replays every phase; every record already exists
 
     run = await load_run(real_engine, run_id)
     assert run.status == "ready_to_finalize", run.error_summary
@@ -233,7 +223,7 @@ async def test_journey_interrupted_migration_is_retry_safe(real_client, real_eng
 
     sink = migration_env["sink"]
     owner_token = await register_admin(real_client)
-    token, run_id = await migrate_as_owner(real_client, owner_token)
+    run_id = await migrate_as_owner(real_client, owner_token)
     rid = uuid.UUID(run_id)
     company_id = (await load_run(real_engine, rid)).company_id
     _tamper(sink, _reject("loc-2"))
@@ -251,7 +241,7 @@ async def test_journey_interrupted_migration_is_retry_safe(real_client, real_eng
     assert r.status_code == 200, r.text
 
     _heal(sink)
-    r = await real_client.post(f"/migrations/{run_id}/start", headers=auth(token))
+    r = await real_client.post(f"/migrations/{run_id}/start", headers=auth(owner_token))
     assert r.status_code == 202, r.text
     await migrations.run_migration(rid)
 
