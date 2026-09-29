@@ -2135,6 +2135,7 @@
   "documents.another_document": "เอกสารอื่น",
   "documents.applied_amount": "นำไปหักแล้ว: {amount}",
   "documents.applied_to": "นำไปใช้กับ",
+  "documents.audit_lines_locked": "ไม่สามารถลบรายการของการตรวจนับที่ยืนยันแล้วได้ รายการสินค้าจะถูกล็อกเมื่อยืนยันการตรวจนับ",
   "documents.audit_no_locations": "สร้างสถานที่ก่อน (ตั้งค่า > สินค้าคงคลัง > สถานที่) จึงจะตรวจนับได้",
   "documents.audit_pick_location_hint": "เลือกสถานที่ที่จะตรวจนับ จากนั้นสแกนบาร์โค้ดเพื่อยืนยันสต็อกและปรับปรุง",
   "documents.audit_prepopulate_hint": "รายการตรวจนับถูกกรอกล่วงหน้าด้วยสินค้าที่มีอยู่ในสถานที่นี้",

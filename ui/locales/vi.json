@@ -2135,6 +2135,7 @@
   "documents.another_document": "tài liệu khác",
   "documents.applied_amount": "Đã áp dụng: {amount}",
   "documents.applied_to": "Áp dụng cho",
+  "documents.audit_lines_locked": "Không thể xóa dòng của đợt kiểm kê đã hoàn tất. Danh sách mặt hàng bị khóa sau khi hoàn tất.",
   "documents.audit_no_locations": "Hãy tạo vị trí trước (Cài đặt > Hàng tồn kho > Vị trí) để kiểm toán.",
   "documents.audit_pick_location_hint": "Chọn một vị trí để kiểm kê. Sau đó, quét mã vạch để xác nhận số lượng hàng tồn kho và điều chỉnh số lượng.",
   "documents.audit_prepopulate_hint": "Báo cáo kiểm kê đã được điền sẵn các mặt hàng có trong kho tại vị trí này.",

@@ -7091,7 +7091,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Table(
                     *([_line_colgroup] if _line_colgroup else []),
                     _line_thead,
-                    Tbody(*rows, id=line_body_id),
+                    Tbody(*rows, id=line_body_id, data_line_count=str(len(line_items))),
                     cls="data-table doc-lines" + (" doc-lines--invoice" if is_invoice_layout else "")
                         + (" doc-lines--status" if _draft_show_item_status else "")
                         + (" doc-lines--no-money" if pol["no_money"] and not pol["customs"] else "")
@@ -7251,6 +7251,7 @@ window._L = {_json.dumps({
     "confirm_set_available": t("documents.confirm_set_available"),
     "could_not_set_reserved": t("documents.could_not_set_reserved"),
     "could_not_set_available": t("documents.could_not_set_available"),
+    "audit_lines_locked": t("documents.audit_lines_locked"),
 })};
 """ + (f"""
 /* Item-status badges, serialized from the Python _STATUS_BADGE dict (the
@@ -7303,6 +7304,8 @@ function _celerpDocTypeParam() {{
         const swapped = document.getElementById('{line_body_id}');
         htmx.process(swapped);
         swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+        // The installed rows are the stored window now, so the next save replaces exactly them.
+        if (swapped.dataset.lineCount != null) _CELERP_ORIGINAL_COUNT = Number(swapped.dataset.lineCount);
         celerpUpdateTotals();
         _celerpHadLines = true;
         if (version != null) _celerpEntityVersion = version;
@@ -8688,6 +8691,13 @@ async function celerpCsvImport(input, entityId) {{
     _hideBtns(); _update();
   }};
   window.liBulkDeleteConfirmed=function(){{
+    // A counting audit's item list is locked: keep every row and say why.
+    if(!window._CELERP_CAN_EDIT_LINES){{
+      if(window.celerpToast) celerpToast(_L.audit_lines_locked,'error');
+      if(sel) sel.value='';
+      _hideBtns();
+      return;
+    }}
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{cb.closest('tr').remove();}});
     celerpUpdateTotals(); celerpAutoSave();
     if(sel) sel.value='';

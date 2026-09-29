@@ -2135,6 +2135,7 @@
   "documents.another_document": "別の書類",
   "documents.applied_amount": "適用済み：{amount}",
   "documents.applied_to": "適用先",
+  "documents.audit_lines_locked": "確定済みの棚卸の行は削除できません。確定後は品目リストがロックされます。",
   "documents.audit_no_locations": "監査を行うには、まず保管場所を作成してください（[設定] > [在庫] > [保管場所]）。",
   "documents.audit_pick_location_hint": "棚卸しを行う保管場所を選択してください。その後、バーコードをスキャンして在庫を確認し、調整してください。",
   "documents.audit_prepopulate_hint": "監査画面には、この拠点の在庫品目があらかじめ入力されています。",

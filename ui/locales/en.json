@@ -2258,6 +2258,7 @@
   "documents.another_document": "another document",
   "documents.applied_amount": "Applied: {amount}",
   "documents.applied_to": "Applied To",
+  "documents.audit_lines_locked": "Lines of a finalized audit cannot be deleted. Its item list is locked once the audit is finalized.",
   "documents.audit_no_locations": "Create a location first (Settings > Inventory > Locations) to audit it.",
   "documents.audit_pick_location_hint": "Pick a location to count. Then scan barcodes to confirm stock and adjust it.",
   "documents.audit_prepopulate_hint": "The audit is pre-populated with the stocked items at this location.",

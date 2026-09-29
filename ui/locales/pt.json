@@ -2135,6 +2135,7 @@
   "documents.another_document": "outro documento",
   "documents.applied_amount": "Aplicado: {amount}",
   "documents.applied_to": "Aplicado a",
+  "documents.audit_lines_locked": "As linhas de uma auditoria finalizada não podem ser excluídas. A lista de itens fica bloqueada após a finalização.",
   "documents.audit_no_locations": "Crie primeiro um local (Configurações > Estoque > Locais) para auditá-lo.",
   "documents.audit_pick_location_hint": "Escolha um local para contar. Em seguida, escaneie os códigos de barras para confirmar o estoque e ajustá-lo.",
   "documents.audit_prepopulate_hint": "A auditoria é preenchida automaticamente com os itens estocados neste local.",

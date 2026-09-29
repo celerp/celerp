@@ -2135,6 +2135,7 @@
   "documents.another_document": "مستند آخر",
   "documents.applied_amount": "تم تطبيقه على: {amount}",
   "documents.applied_to": "تم تطبيقه على",
+  "documents.audit_lines_locked": "لا يمكن حذف بنود جرد تم اعتماده. تُقفل قائمة الأصناف بعد اعتماد الجرد.",
   "documents.audit_no_locations": "قم بإنشاء موقع أولاً (الإعدادات > المخزون > المواقع) لتدقيقه.",
   "documents.audit_pick_location_hint": "اختر موقعًا لإجراء الجرد. ثم امسح الرموز الشريطية ضوئيًا لتأكيد المخزون وتعديله.",
   "documents.audit_prepopulate_hint": "يتم ملء الجرد مسبقًا بالبنود المخزنة في هذا الموقع.",

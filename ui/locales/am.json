@@ -2239,6 +2239,7 @@
   "documents.another_document": "ሌላ ሰነድ",
   "documents.applied_amount": "ተተግብሯል: {amount}",
   "documents.applied_to": "ተተግብሯል",
+  "documents.audit_lines_locked": "የተጠናቀቀ ቆጠራ መስመሮች ሊሰረዙ አይችሉም። ቆጠራው ከተጠናቀቀ በኋላ የዕቃ ዝርዝሩ ይቆለፋል።",
   "documents.audit_no_locations": "ኦዲት ለማድረግ መጀመሪያ ቦታ (ቅንጅቶች > ክምችት > ቦታዎች) ይፍጠሩ።",
   "documents.audit_pick_location_hint": "ለመቁጠር ቦታ ይምረጡ። ከዚያ ክምችትን ለማረጋገጥ ባርኮዶችን ይቃኙ እና ያስተካክሉት።",
   "documents.audit_prepopulate_hint": "ኦዲቱ አስቀድሞ በዚህ ቦታ ላይ በተከማቹ ዕቃዎች ተሞልቷል።",

@@ -18,13 +18,13 @@ pytestmark = pytest.mark.browser
 _AUDIT_LINES = 105
 
 
-def _seed_audit(api) -> tuple[str, dict[str, str]]:
-    """A draft audit over more lines than one page holds. Returns its id and a
-    sku -> barcode map of its items."""
+def _seed_audit(api, n_lines: int = _AUDIT_LINES) -> tuple[str, dict[str, str]]:
+    """A draft audit over `n_lines` items (by default more than one page holds). Returns
+    its id and a sku -> barcode map of its items."""
     tag = uuid.uuid4().hex[:6]
     loc_id = api.post("/companies/me/locations", json={"name": f"Pg-{tag}", "type": "warehouse"}).json()["id"]
     barcodes = {}
-    for i in range(_AUDIT_LINES):
+    for i in range(n_lines):
         sku, bc = f"PG-{tag}-{i:03d}", str(uuid.uuid4().int)[:12]
         r = api.post("/items", json={"status": "available", "sku": sku, "name": f"Thing {i}", "sell_by": "piece",
                                      "quantity": 1, "barcode": bc, "location_id": str(loc_id)})
@@ -96,12 +96,9 @@ def test_draft_clean_navigation_does_not_save(page, ui_server, api):
 
 
 def _make_dirty(page) -> None:
-    # What any row edit does: the rendered rows change and the line revision advances.
-    page.evaluate("""() => {
-        const q = document.querySelector('#line-body input[data-name=quantity]');
-        q.value = '7';
-        window._celerpLineRevision += 1;
-    }""")
+    """Type a new quantity into the first row, as a user would. Leaving the field (the
+    next click) commits the edit, so the page is dirty when the pager is used."""
+    page.locator("#line-body input[data-name=quantity]").first.fill("7")
 
 
 def test_draft_dirty_navigation_saves_once_then_moves(page, ui_server, api):
@@ -153,3 +150,51 @@ def test_audit_scan_and_mark_on_page_two_stay_on_page_two(page, ui_server, api):
     page.wait_for_timeout(500)
     assert _active(page) == "2"
     assert len(_row_skus(page)) == _AUDIT_LINES - 100, "Mark as scanned swapped page 1's rows under the page-2 pager"
+
+
+def test_finalized_audit_delete_selected_keeps_rows_and_explains(page, ui_server, api):
+    """A finalized audit's item list is locked: Delete selected must leave every row in
+    place, say why, and leave nothing unsaved behind."""
+    audit_id, _ = _seed_audit(api, 3)
+    _finalize(page, ui_server, audit_id)
+    writes = _line_writes(page)
+    page.goto(f"{ui_server}/lists/{audit_id}", wait_until="domcontentloaded")
+    before = _row_skus(page)
+    assert len(before) == 3
+    page.locator("#line-body tr").first.locator(".li-select").check()
+    page.select_option("#li-bulk-select", "li-delete")
+    page.locator("#li-bulk-delete-btn").click()
+    toast = page.locator(".toast-container .toast--error")
+    toast.wait_for(state="visible", timeout=5000)
+    assert "cannot be deleted" in toast.inner_text()
+    assert _row_skus(page) == before
+    page.wait_for_timeout(600)
+    assert page.evaluate("_celerpLinesDirty()") is False
+    assert writes == []
+
+
+def test_draft_scan_then_edit_saves_every_line_once(page, ui_server, api):
+    """A scan adds its line on top of the page. The next autosave must store exactly the
+    lines on screen, not the new line plus a repeat of the one it pushed down."""
+    entity_id = _seed_draft(api, 3)
+    tag = uuid.uuid4().hex[:6]
+    bc = str(uuid.uuid4().int)[:12]
+    r = api.post("/items", json={"status": "available", "sku": f"SC-{tag}", "name": f"Scanned {tag}",
+                                 "sell_by": "piece", "quantity": 1, "barcode": bc})
+    assert r.status_code in (200, 201), r.text
+    page.goto(f"{ui_server}/lists/{entity_id}?limit=25", wait_until="domcontentloaded")
+    assert page.locator("#line-body tr").count() == 3
+    page.locator("#scan-bar-input").fill(bc)
+    with page.expect_response(lambda r: r.url.endswith("/scan")):
+        page.locator("#scan-bar-add").click()
+    page.wait_for_function("document.querySelectorAll('#line-body tr').length === 4", timeout=8000)
+
+    with page.expect_response(lambda r: r.request.method == "POST" and r.url.endswith("/lines")) as saved:
+        qty = page.locator("#line-body tr").nth(1).locator("input[data-name=quantity]")
+        qty.fill("5")
+        qty.press("Tab")
+    assert saved.value.ok
+    stored = api.get(f"/lists/{entity_id}").json().get("line_items", [])
+    descriptions = [li.get("description") for li in stored]
+    assert len(stored) == 4, descriptions
+    assert len(set(descriptions)) == 4, descriptions
