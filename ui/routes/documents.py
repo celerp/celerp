@@ -18,7 +18,7 @@ from ui.api_client import APIError
 from celerp.services.units import default_receive_as
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
-from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
+from ui.components.table import search_bar, EMPTY, pagination, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
 from celerp.services.payment_terms import due_date_for_terms
@@ -727,90 +727,40 @@ def _action_error(msg: str):
     )
 
 
-def _compact_pages(page: int, total_pages: int) -> list[int | None]:
-    """Page numbers to show in a compact pager: first, current +/- 1, last, with `None`
-    marking an ellipsis gap. Drives the doc-history pager so the real page count (and the
-    last page) is reachable up front (#154)."""
-    out: list[int | None] = []
-    if page > 2:
-        out.append(1)
-    if page > 3:
-        out.append(None)
-    if page > 1:
-        out.append(page - 1)
-    out.append(page)
-    if page < total_pages:
-        out.append(page + 1)
-    if page < total_pages - 2:
-        out.append(None)
-    if page < total_pages - 1:
-        out.append(total_pages)
-    return out
+_LINE_PAGE_CAP = 100
 
 
-def _list_line_pager(entity_id: str, offset: int, limit: int, total: int, editable: bool = False) -> FT | None:
-    """Pager for the list-detail line table, reusing the compact-page layout and the
-    HTMX outerHTML-swap shape used by the document history pager. Each control swaps
-    the lines container in place, so paging never reloads the page. Returns None when
-    the whole list fits in one page (nothing to page through).
+def _line_window(params) -> tuple[int, int]:
+    """The (offset, limit) window of list lines a request addresses, from its query or form
+    params. Limit is capped so one request never renders more than one bounded page."""
+    try:
+        offset = max(0, int(params.get("offset", 0)))
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        limit = int(params.get("limit", _LINE_PAGE_CAP))
+    except (TypeError, ValueError):
+        limit = _LINE_PAGE_CAP
+    return offset, max(1, min(limit, _LINE_PAGE_CAP))
 
-    On an editable (draft) list, paging must not silently drop unsaved row edits, so
-    each control routes through `celerpPageNav`, which saves the current page first
-    (slice-PATCH under optimistic-concurrency check) and only then swaps. A clean page
-    navigates straight through. On a finalized list there is nothing to save, so the
-    controls swap directly via HTMX."""
+
+def _list_line_section_id(entity_id: str) -> str:
+    """DOM id of a list's line section (rows + pager), the swap target for line paging.
+    Entity ids carry colons, which break CSS selectors."""
+    return "list-line-section-" + entity_id.replace(":", "-").replace("/", "-")
+
+
+def _list_line_pager(entity_id: str, offset: int, limit: int, total: int, save_first: bool = False) -> FT | None:
+    """Pager for a list's line table, or None when every line fits on one page. Controls
+    swap the line section in place. `save_first` (a draft whose rows are editable) routes
+    them through celerpPageNav, which saves unsaved row edits before leaving the page."""
     if total <= limit:
         return None
-    limit = max(1, limit)
-    total_pages = max(1, (total + limit - 1) // limit)
-    page = (offset // limit) + 1
-    safe_id = entity_id.replace(":", "-").replace("/", "-")
-    target = f"#list-line-section-{safe_id}"
-
-    def _btn(p: int, active: bool = False):
-        target_offset = (p - 1) * limit
-        if editable:
-            return Button(
-                str(p),
-                type="button",
-                cls=f"btn btn--ghost btn--xs{'  btn--active' if active else ''}",
-                onclick=f"celerpPageNav({target_offset}, {limit})",
-            )
-        return Button(
-            str(p),
-            cls=f"btn btn--ghost btn--xs{'  btn--active' if active else ''}",
-            hx_get=f"/lists/{entity_id}?offset={target_offset}&limit={limit}",
-            hx_target=target,
-            hx_select=target,
-            hx_swap="outerHTML",
-        )
-
-    page_btns = [
-        Span("...", cls="text-muted") if p is None else _btn(p, active=(p == page))
-        for p in _compact_pages(page, total_pages)
-    ]
-    if editable:
-        per_page_select = Select(
-            *[Option(str(n), value=str(n), selected=(limit == n)) for n in (25, 50, 100)],
-            cls="per-page-select",
-            onchange="celerpPageNav(0, parseInt(this.value, 10))",
-            name="limit",
-        )
-    else:
-        per_page_select = Select(
-            *[Option(str(n), value=str(n), selected=(limit == n)) for n in (25, 50, 100)],
-            cls="per-page-select",
-            hx_get=f"/lists/{entity_id}?offset=0",
-            hx_target=target,
-            hx_select=target,
-            hx_swap="outerHTML",
-            hx_include="this",
-            name="limit",
-        )
-    return Div(
-        Div(*page_btns, cls="history-page-btns"),
-        Div(Span(t("documents.show_label"), cls="text-muted"), per_page_select, cls="history-per-page"),
-        cls="history-footer list-line-pager",
+    return server_pager(
+        offset, limit, total, lambda o, l: f"/lists/{entity_id}?offset={o}&limit={l}",
+        page_sizes=(25, 50, 100),
+        hx_target=None if save_first else "#" + _list_line_section_id(entity_id),
+        nav_js="celerpPageNav" if save_first else None,
     )
 
 
@@ -3866,7 +3816,6 @@ celerpUpdateBulkAlloc();
             total = int(resp.get("total", len(entries))) if isinstance(resp, dict) else len(entries)
         except Exception:
             entries, total = [], 0
-        total_pages = max(1, (total + per_page - 1) // per_page)
         from ui.components.activity import format_timestamp, detail_from_entry, _event_display, _is_uuid
         EMPTY = "--"
         def _row(e: dict):
@@ -3880,33 +3829,10 @@ celerpUpdateBulkAlloc();
             actor_display = actor if (actor and not _is_uuid(actor)) else EMPTY
             return Tr(event_cell, Td(ts_display), Td(actor_display), Td(detail or EMPTY))
         rows = [_row(e) for e in entries]
-        def _page_btn(p: int, label: str = None, active: bool = False):
-            return Button(
-                label or str(p),
-                cls=f"btn btn--ghost btn--xs{'  btn--active' if active else ''}",
-                hx_get=f"/docs/{entity_id}/history?page={p}&per_page={per_page}",
-                hx_target=f"#doc-history-{safe_id}",
-                hx_swap="outerHTML",
-            )
-        # Compact page list from the real total: first … current±1 … last, so the full
-        # page count shows up front and the last page is directly reachable (#154).
-        page_btns = [
-            Span("…", cls="text-muted") if p is None else _page_btn(p, active=(p == page))
-            for p in _compact_pages(page, total_pages)
-        ]
-        per_page_select = Select(
-            *[Option(str(n), value=str(n), selected=(per_page == n)) for n in (10, 20, 50, 100)],
-            cls="per-page-select",
-            hx_get=f"/docs/{entity_id}/history?page=1",
-            hx_target=f"#doc-history-{safe_id}",
-            hx_swap="outerHTML",
-            hx_include="this",
-            name="per_page",
-        )
-        footer = Div(
-            Div(*page_btns, cls="history-page-btns"),
-            Div(Span(t("documents.show_label"), cls="text-muted"), per_page_select, cls="history-per-page"),
-            cls="history-footer",
+        footer = server_pager(
+            offset, per_page, total,
+            lambda o, l: f"/docs/{entity_id}/history?page={o // l + 1}&per_page={l}",
+            page_sizes=(10, 20, 50, 100), hx_target=f"#doc-history-{safe_id}",
         )
         if not entries and page == 1:
             content = P(t("documents.no_activity_recorded"), cls="empty-state-msg")
@@ -4243,16 +4169,7 @@ celerpUpdateBulkAlloc();
         # pass; instead read the requested window (limit hard-capped at 100) and render
         # only that page, with a pager to reach the rest. Off-page lines stay in place -
         # this only bounds what is fetched and rendered per request.
-        _PAGE_CAP = 100
-        try:
-            _line_offset = max(0, int(request.query_params.get("offset", 0)))
-        except (TypeError, ValueError):
-            _line_offset = 0
-        try:
-            _line_limit = int(request.query_params.get("limit", _PAGE_CAP))
-        except (TypeError, ValueError):
-            _line_limit = _PAGE_CAP
-        _line_limit = max(1, min(_line_limit, _PAGE_CAP))
+        _line_offset, _line_limit = _line_window(request.query_params)
         try:
             resp = await api.get_list_page(token, entity_id, offset=_line_offset, limit=_line_limit)
         except APIError as e:
@@ -4572,15 +4489,15 @@ celerpUpdateBulkAlloc();
             return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
 
-    async def _audit_line_tbody(token: str, entity_id: str) -> FT:
+    async def _audit_line_tbody(token: str, entity_id: str, offset: int, limit: int) -> FT:
         """Render the editable audit tbody for #line-body swap.
 
-        Reads one bounded page (so backend top-insert ordering is preserved per GDR 2.n) and
-        enriches the On-hand column from the item_meta that page carries, never pulling the whole
-        list through the unbounded read. It emits the shared editable row set.
+        Reads the page the user is viewing (offset/limit as the pager rendered it), so the swapped
+        rows always match the pager around them, and enriches the On-hand column from the
+        item_meta that page carries, never pulling the whole list through the unbounded read.
+        It emits the shared editable row set.
         """
-        _PAGE_CAP = 100
-        resp = await api.get_list_page(token, entity_id, offset=0, limit=_PAGE_CAP)
+        resp = await api.get_list_page(token, entity_id, offset=offset, limit=limit)
         lst = resp.get("list", {}) or {}
         line_items = resp.get("items", []) or []
         # On-hand comes from the page's own item_meta (quantity), so no extra metadata round-trip is
@@ -4702,7 +4619,7 @@ celerpUpdateBulkAlloc();
         # audit is editable, so it reloads like every other building list to keep its inputs.
         html = ""
         if (lst.get("list_type") or "") == "audit" and lst.get("status") in (_LF, _LC):
-            html = to_xml(await _audit_line_tbody(token, entity_id))
+            html = to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form)))
         # The scanned write advanced the list projection version; hand the fresh version back so the
         # client's optimistic-lock token tracks it (a later line save must not 409 on a stale version).
         return _JSON({"scanned": (res or {}).get("scanned", 0),
@@ -4725,7 +4642,7 @@ celerpUpdateBulkAlloc();
             await api.set_scanned(token, entity_id, ids or None, scanned)
         except APIError as e:
             return _R(str(e.detail), status_code=e.status or 400)
-        return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
+        return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form))))
 
     @app.post("/lists/{entity_id}/line/{item_id}")
     async def list_audit_set_count(request: Request, entity_id: str, item_id: str):
@@ -5971,11 +5888,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     _can_delete = role_has_permission(_s, role, "delete_documents")
     _can_pay = role_has_permission(_s, role, "record_payments")
     # The interactive line section renders while BUILDING (draft, any type) or COUNTING (a finalized
-    # audit: scan-to-count + editable Counted cells). Line structure edits are draft-only; a finalized
-    # audit only gates the Counted cells open (pol["counted_editable"]). Without the edit
-    # permission there are no line controls (the API enforces it; the UI must not offer
-    # controls that would 403).
-    is_editable = (is_draft or (pol["audit"] and status == _LF)) and _can_edit
+    # audit: scan-to-count + editable Counted cells). Counting never implies building: line structure
+    # (and the page-save path that persists it) is draft-only, while a finalized audit only gates the
+    # Counted cells open (pol["counted_editable"]). Without the edit permission there are no line
+    # controls (the API enforces it; the UI must not offer controls that would 403).
+    can_edit_lines = is_draft and _can_edit
+    can_count_audit = pol["audit"] and status == _LF and _can_edit
+    is_editable = can_edit_lines or can_count_audit
 
     def _static_ident_cell_content(li: dict):
         """Identifier for a read-only line cell per the company mode: the primary
@@ -7187,7 +7106,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             ),
             (_list_line_pager(entity_id, line_offset, line_limit,
                               line_total if line_total is not None else len(line_items),
-                              editable=True) if is_list else None),
+                              save_first=can_edit_lines) if is_list else None),
             Div(
                 # Hidden only on a locked (counting) audit manifest. A draft audit is editable like any
                 # other building list, so it keeps the "Add item" affordance alongside scan-to-add.
@@ -7256,6 +7175,7 @@ function _celerpPatchListField(input, url, persistFirst=false) {{
    of lines, so a save overwrites exactly the positions this page occupies and leaves
    every off-page row untouched. Docs are never paged (offset 0). */
 window._CELERP_LINE_OFFSET = {int(line_offset)};
+window._CELERP_LINE_LIMIT = {int(line_limit)};
 /* Length of the stored window this page loaded. A save REPLACES exactly
    [offset, offset+original_count) so a shorter submitted page truncates deleted rows and
    a longer one inserts; after each save it becomes the count just written. */
@@ -7286,6 +7206,9 @@ function _celerpUnitFromTotal(total, qty) {{
 window._CELERP_DOC_TYPE = {repr(doc_type)};
 window._CELERP_IS_LIST = {repr("true" if is_list else "false")};
 window._CELERP_IS_DRAFT = {repr("true" if is_draft else "false")};
+// A counting (finalized) audit renders this section too, but its line structure is locked:
+// nothing on it may write the line array.
+window._CELERP_CAN_EDIT_LINES = {"true" if can_edit_lines else "false"};
 /* Translated UI strings resolved in Python at render time (R2: never splice
    translated text into JS source; hand it over as one config object). */
 window._L = {_json.dumps({
@@ -7371,7 +7294,9 @@ function _celerpDocTypeParam() {{
     // a submission run against stale rows.
     async function _installListBody(html, version) {{
         if (!html) {{
-            const page = await fetch(location.href);
+            // The page being viewed, not location.href: in-place paging never changes the URL.
+            const page = await fetch(_CELERP_BASE + _CELERP_EID + '?offset=' + _CELERP_LINE_OFFSET
+                + '&limit=' + _CELERP_LINE_LIMIT);
             const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
             const fresh = doc.getElementById('{line_body_id}');
             html = fresh ? fresh.outerHTML : '';
@@ -7418,7 +7343,8 @@ function _celerpDocTypeParam() {{
         const performScan = async () => {{
             let data;
             try {{
-                const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey}});
+                const fd = new URLSearchParams({{barcode: raw, run_key: pendingRunKey,
+                    offset: _CELERP_LINE_OFFSET, limit: _CELERP_LINE_LIMIT}});
                 if (plSelect) fd.append('price_list', plSelect.value);
                 const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
                 if (!resp.ok) {{
@@ -8340,6 +8266,7 @@ function _celerpCollectLines() {{
     return lines;
 }}
 async function _celerpPersistOnce() {{
+    if (!window._CELERP_CAN_EDIT_LINES) return true;
     const revision = window._celerpLineRevision;
     const lines = _celerpCollectLines();
     // A null return means the collector aborted on an invalid quantity and has
@@ -8435,17 +8362,19 @@ function _celerpPersist() {{
     window._celerpLineRevision += 1;
     return _celerpMutate(_celerpPersistOnce);
 }}
-/* Save the current page, then swap to another page of the same list. Paging a draft must
-   never silently drop unsaved edits, so a failed save (including a stale-version conflict)
+/* Swap to another page of the same draft list. Paging must never silently drop unsaved
+   edits: a dirty page saves first, and a failed save (including a stale-version conflict)
    holds the current page in place with its message showing. A clean page saves nothing and
    swaps straight through. */
-async function celerpPageNav(offset, limit) {{
-    const ok = await _celerpPersist();
-    if (!ok) return;
-    const url = _CELERP_BASE + _CELERP_EID + '?offset=' + offset + '&limit=' + limit;
-    const safeId = _CELERP_EID.replace(/[:/]/g, '-');
-    const sel = '#list-line-section-' + safeId;
-    const target = document.getElementById('list-line-section-' + safeId);
+async function celerpPageNav(url) {{
+    if (_celerpLinesDirty()) {{
+        clearTimeout(_celerpSaveTimer);
+        _celerpSaveTimer = null;
+        const ok = await _celerpMutate(_celerpPersistOnce);
+        if (!ok) return;
+    }}
+    const sel = '#{_list_line_section_id(entity_id)}';
+    const target = document.querySelector(sel);
     if (target) {{
         // The list route returns the whole page, so extract just the lines section from it
         // (hx select) before swapping it in place.
@@ -8748,6 +8677,7 @@ async function celerpCsvImport(input, entityId) {{
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{ if(cb.value) ids.push(cb.value); }});
     var fd=new URLSearchParams();
     fd.append('scanned', scanned?'1':'0');
+    fd.append('offset', window._CELERP_LINE_OFFSET); fd.append('limit', window._CELERP_LINE_LIMIT);
     ids.forEach(function(id){{ fd.append('selected', id); }});
     try{{
       var resp=await fetch('/lists/{entity_id}/set-scanned', {{method:'POST', body:fd}});
@@ -8791,10 +8721,9 @@ async function celerpCsvImport(input, entityId) {{
             cls="lines-section",
         )
         if is_list:
-            # Wrap the editable list lines in the pager's swap target so a page control can
-            # replace the whole section (rows + pager) in place after saving the current page.
-            _draft_safe_id = entity_id.replace(":", "-").replace("/", "-")
-            lines_section = Div(lines_section, id=f"list-line-section-{_draft_safe_id}")
+            # Wrap the interactive list lines in the pager's swap target so a page control can
+            # replace the whole section (rows + pager) in place.
+            lines_section = Div(lines_section, id=_list_line_section_id(entity_id))
     else:
         # Show checkboxes + bulk toolbar on finalized docs when celerp-labels is installed
         # or when doc type supports per-line fulfill/revert
@@ -8987,7 +8916,6 @@ async function celerpCsvImport(input, entityId) {{
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
         _fin_total = line_total if line_total is not None else len(line_items)
-        _fin_safe_id = entity_id.replace(":", "-").replace("/", "-")
         _fin_pager = _list_line_pager(entity_id, line_offset, line_limit, _fin_total) if is_list else None
         lines_section = Div(
             _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, show_reserve=_fin_show_reserve, is_inbound=_is_vendor_doc, inbound_line_items=line_items if _is_vendor_doc else None, locations=locations) if _fin_show_bulk else None,
@@ -9168,7 +9096,7 @@ async function celerpCsvImport(input, entityId) {{
             _fin_pager,
         )
         if is_list:
-            lines_section = Div(lines_section, id=f"list-line-section-{_fin_safe_id}")
+            lines_section = Div(lines_section, id=_list_line_section_id(entity_id))
 
     # --- Totals ---
     # Compute gross (pre-discount) and net (post-discount) subtotals. Every per-line amount is

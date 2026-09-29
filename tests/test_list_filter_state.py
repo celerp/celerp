@@ -154,9 +154,8 @@ class TestListPageState:
         assert "type=audit" in active[0] and "from=2026-01-01" in active[0], active
         assert list_lists.call_args.args[1].get("all_issued") == "1"
         assert summary.call_args.args[1] == {"list_type": "audit", "date_from": "2026-01-01", "date_to": "2026-03-31"}
-        page_hrefs = _hrefs(r.text, "page-btn")
-        per_page = re.findall(r"window.location='([^\"]*)\"", r.text)
-        assert per_page and "type=audit" in per_page[0] and "from=2026-01-01" in per_page[0], per_page
+        per_page = re.findall(r'<option value="([^"]*per_page=[^"]*)"', r.text)
+        assert per_page and all("type=audit" in u and "from=2026-01-01" in u for u in per_page), per_page
 
     @pytest.mark.asyncio
     async def test_list_draft_card_counts_every_draft_unless_dates_are_chosen(self, ui_client):
