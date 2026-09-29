@@ -142,6 +142,7 @@ _BLOCKER_REASONS = {
 _MODE_LABELS = {CIFMode.FULL_HISTORY: "Full history", CIFMode.CUTOVER: "Cutover"}
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _PREPARED_BY_MAX = 200
+COMPANY_NAME_MAX = 200
 
 
 class MigrationError(HTTPException):

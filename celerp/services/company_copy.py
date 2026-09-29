@@ -35,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company, User
 from celerp.services.attachments import LocalBackend, is_plain_name, company_attachment_dir, get_backend
-from celerp.services.migrations import MigrationError, company_tables, validate_prepared_by
+from celerp.services.migrations import COMPANY_NAME_MAX, MigrationError, company_tables, validate_prepared_by
 from celerp.services.provisioning import provision_copied_company
 
 logger = logging.getLogger(__name__)
@@ -259,12 +259,25 @@ def _check_manifest(manifest: dict) -> None:
         raise CopyError(422, DAMAGED) from None
     if not (isinstance(manifest.get("created_at"), str)
             and isinstance(manifest.get("handoff_id"), str) and _UUID.fullmatch(manifest["handoff_id"])
-            and isinstance(company, dict) and isinstance(company.get("name"), str) and company["name"].strip()
+            and isinstance(company, dict) and isinstance(company.get("name"), str)
+            and company["name"].strip() and len(company["name"]) <= COMPANY_NAME_MAX
             and isinstance(company.get("id"), str) and _UUID.fullmatch(company["id"])
             and isinstance(company.get("settings"), dict)
             and all(isinstance(meta, dict) and isinstance(meta.get("columns"), list)
-                    and all(isinstance(c, str) for c in meta["columns"]) for meta in manifest["tables"].values())):
+                    and all(isinstance(c, str) for c in meta["columns"]) for meta in manifest["tables"].values())
+            and not _has_nul(manifest)):
         raise CopyError(422, DAMAGED)
+
+
+def _has_nul(value) -> bool:
+    """Whether any text in a manifest value holds a NUL character, which the database cannot store."""
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, dict):
+        return any(_has_nul(k) or _has_nul(v) for k, v in value.items())
+    if isinstance(value, list):
+        return any(_has_nul(v) for v in value)
+    return False
 
 
 def _member(zf: zipfile.ZipFile, name: str) -> bytes:
@@ -390,7 +403,7 @@ async def open_copy(session: AsyncSession, copy: CopyFile, *, owner: User) -> Co
         for table, meta in manifest["tables"].items():
             lines = [_remap(line, back) for line in await _rows(session, table, company.id)]
             if len(lines) != meta["rows"] or _table_hash(lines) != meta["sha256"]:
-                raise CopyError(500, f"The opened company did not match the copy ({table}). Nothing was kept.")
+                raise CopyError(422, f"The opened company did not match the copy ({table}). Nothing was kept.")
         if files:
             folder = company_attachment_dir(str(company.id))
             folder.mkdir(parents=True, exist_ok=True)

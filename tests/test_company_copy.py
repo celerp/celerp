@@ -260,7 +260,7 @@ async def test_failed_verification_keeps_nothing(real_engine, real_client, tmp_p
     monkeypatch.setattr(cc, "_insert", dropping)
     before = await _snapshot(real_engine)
     r = await _open(real_client, token, data)
-    assert r.status_code == 500 and "Nothing was kept" in r.json()["detail"]
+    assert r.status_code == 422 and "Nothing was kept" in r.json()["detail"]
     assert await _snapshot(real_engine) == before
     assert sorted(p.name for p in (tmp_path / "static" / "attachments").iterdir()) == [str(a)]
 
@@ -407,6 +407,16 @@ def _missing_column(data: bytes) -> bytes:
     return _rezip(m)
 
 
+def _extra_key(data: bytes) -> bytes:
+    row = json.loads(_members(data)["tables/locations.jsonl"].split(b"\n")[0])
+    return _with_table(data, "locations", [json.dumps({**row, "extra": 1}).encode()])
+
+
+def _with_company(data: bytes, **changes) -> bytes:
+    manifest = json.loads(_members(data)["manifest.json"])
+    return _with_manifest(data, company={**manifest["company"], **changes})
+
+
 @pytest.mark.parametrize("change, message", [
     (_tampered, "damaged or was changed"),
     (lambda d: _with_manifest(d, created_at=None), "damaged or was changed"),
@@ -418,6 +428,10 @@ def _missing_column(data: bytes) -> bytes:
     (lambda d: _with_table(d, "locations", [b"not json"]), "damaged or was changed"),
     (_duplicated_row, "damaged or was changed"),
     (_missing_column, "damaged or was changed"),
+    (_extra_key, "did not match the copy"),
+    (lambda d: _with_company(d, name="Alpha\u0000Trading"), "damaged or was changed"),
+    (lambda d: _with_company(d, name="A" * 300), "damaged or was changed"),
+    (lambda d: _with_settings(d, {"note": "a\u0000b"}), "damaged or was changed"),
     (lambda d: b"not a copy", "not a Celerp company copy"),
     (lambda d: _rezip({"manifest.json": b'{"format": "other"}'}), "not a Celerp company copy"),
     (_newer_format, "newer version of Celerp"),
@@ -550,6 +564,11 @@ async def test_bootstrap_open_copy(real_engine, real_client, tmp_path, monkeypat
     assert preview["company_name"] == "Alpha Trading" and preview["prepared_by"] == "Example Accounting"
     assert await count(real_engine, "companies") == 0
 
+    for name, email in (("New\u0000Owner", "new@example.com"), ("New Owner", "a" * 320 + "@example.com")):
+        body = {"upload_token": preview["upload_token"], "name": name, "email": email, "password": "newownerpw1"}
+        r = await real_client.post("/company-copies/bootstrap/open", json=body, headers={"X-Setup-Code": code_config})
+        assert r.status_code == 422, r.text
+    assert await count(real_engine, "users") == 0
     body = {"upload_token": preview["upload_token"], "name": "New Owner", "email": "new@example.com",
             "password": "newownerpw1"}
     r = await real_client.post("/company-copies/bootstrap/open", json=body, headers={"X-Setup-Code": code_config})

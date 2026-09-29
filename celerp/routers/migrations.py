@@ -80,7 +80,6 @@ router = APIRouter(prefix="/migrations", tags=["migrations"], route_class=_Migra
 OWNER_ONLY = "Only the company owner can move a company into Celerp."
 BOOTSTRAPPED = "System already bootstrapped. Contact your admin."
 BOOTSTRAP: store.ScanOwner = ("bootstrap", None)
-_NAME_MAX = 200
 
 
 class ScanTokenIn(BaseModel):
@@ -188,9 +187,14 @@ def _company_name(value: str, errors: dict) -> str:
     name = value.strip()
     if not name:
         errors["company_name"] = "Enter a company name."
-    elif len(name) > _NAME_MAX:
-        errors["company_name"] = f"The company name must be at most {_NAME_MAX} characters."
+    elif len(name) > migrations.COMPANY_NAME_MAX:
+        errors["company_name"] = f"The company name must be at most {migrations.COMPANY_NAME_MAX} characters."
+    elif "\x00" in name:
+        errors["company_name"] = "The company name contains a character that cannot be saved."
     return name
+
+
+_EMAIL_MAX = 320  # users.email is String(320)
 
 
 def owner_account(name: str, email: str, password: str, errors: dict) -> tuple[str, str]:
@@ -199,7 +203,9 @@ def owner_account(name: str, email: str, password: str, errors: dict) -> tuple[s
     name, email = name.strip(), email.strip()
     if not name:
         errors["name"] = "Enter your name."
-    if "@" not in email:
+    elif "\x00" in name:
+        errors["name"] = "Your name contains a character that cannot be saved."
+    if "@" not in email or "\x00" in email or len(email) > _EMAIL_MAX:
         errors["email"] = "Enter a valid email address."
     try:
         validate_password(password)
