@@ -101,15 +101,15 @@ def _items(book: Book) -> list[CIFItem]:
 def _line(book: Book, doc: Document, line: Line) -> CIFLineItem:
     """One line, tax exclusive: an item line posts to inventory, and a tax-inclusive
     source price is carried as the tax-exclusive price its net implies."""
-    unit_price, discount = line.unit_price, line.discount or None
+    unit_price, discount_percent = line.unit_price, line.discount_percent
     if doc.include_tax:
         unit_price = round_money(line.net / line.quantity, book.currency_code(doc.currency)) if line.quantity else line.net
-        discount = None
+        discount_percent = None
     return CIFLineItem(item_external_id=line.item, description=line.description,
                        account_external_id=INVENTORY if line.item else line.account,
                        tax_code_external_id=line.tax_code,
                        tax_account_external_id=book.tax_codes[line.tax_code].account if line.tax_code else None,
-                       quantity=line.quantity, unit_price=unit_price, discount=discount,
+                       quantity=line.quantity, unit_price=unit_price, discount_percent=discount_percent,
                        tax_amount=line.tax, total_price=line.net)
 
 

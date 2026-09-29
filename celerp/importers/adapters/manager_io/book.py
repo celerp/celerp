@@ -151,7 +151,8 @@ class Item:
 
 @dataclass
 class Line:
-    """A priced line. `net` excludes tax and is after discount; figures are in the record currency."""
+    """A priced line. `net` excludes tax and is after discount; figures are in the record currency.
+    A line discount is either a percentage (`discount_percent`) or an exact amount (`discount`)."""
     account: str | None
     item: str | None
     description: str | None
@@ -159,6 +160,7 @@ class Line:
     unit_price: Decimal
     discount: Decimal
     tax_code: str | None
+    discount_percent: Decimal | None = None
     net: Decimal = Decimal(0)
     tax: Decimal = Decimal(0)
     contact: str | None = None                 # party line of a settlement
@@ -384,7 +386,10 @@ def _line_discounts(msg: Message, lines: list[Message], parsed: list[Line], flag
         return
     exact = msg.int(kind, 0) == 1
     for raw, line in zip(lines, parsed):
-        line.discount = _money(raw.decimal(24)) if exact else -_money(raw.decimal(23))  # negative marks a percentage
+        if exact:
+            line.discount = _money(raw.decimal(24))
+        else:
+            line.discount_percent = _money(raw.decimal(23)) or None
 
 
 def _due(msg: Message, issue: date, kind: int, days: int, on: int) -> date | None:
@@ -596,8 +601,8 @@ def _price_lines(book: Book, currency: str | None, lines: list[Line], include_ta
     code = book.currency_code(currency)
     for line in lines:
         gross = round_money(line.quantity * line.unit_price, code) if line.net == 0 else line.net
-        if line.discount < 0:                                       # a percentage, marked negative on decode
-            line.discount = round_money(gross * -line.discount / 100, code)
+        if line.discount_percent is not None:
+            line.discount = round_money(gross * line.discount_percent / 100, code)
         amount = gross - line.discount
         rate = book.tax_codes[line.tax_code].rate if line.tax_code else Decimal(0)
         if include_tax:
@@ -745,6 +750,23 @@ def _receipt_verdicts(book: Book) -> None:
                          "journal entry naming the customer or supplier.")
 
 
+def _document_verdicts(book: Book) -> None:
+    """A document whose line form Celerp cannot keep is carried with exact totals, reported per record."""
+    for key, doc in book.documents.items():
+        if book.is_blocked(key):
+            continue
+        lost = []
+        if any(ln.discount and (ln.discount_percent is None or doc.include_tax) for ln in doc.lines):
+            lost.append(("line discount amount", "Celerp line discounts are percentages. A discount entered as "
+                         "an amount, or on amounts including tax, is kept in the line total only."))
+        if doc.include_tax and any(ln.tax for ln in doc.lines):
+            lost.append(("amounts including tax", "Amounts entered including tax are shown excluding tax. "
+                         "Editing the document later recomputes tax from those amounts, which can differ by a cent."))
+        if lost:
+            book.accept(doc.source_type, key, label=f"{doc.source_type} ({', '.join(w for w, _ in lost)})",
+                        klass=CoverageClass.MAPPED_WITH_LOSS, note=" ".join(n for _, n in lost))
+
+
 def _master_verdicts(book: Book) -> None:
     """A master whose attribute Celerp cannot hold is carried without it, reported per record.
     An inactive item is not listed: it becomes an archived item."""
@@ -792,6 +814,7 @@ def read_book(reader: ManagerReader) -> Book:
         book.accounts.setdefault(key, Account(key, TYPE_NAMES[key], label, None, None, account_type, control))
     _resolve(book)
     _receipt_verdicts(book)
+    _document_verdicts(book)
     _master_verdicts(book)
     book.history = {"changes": reader.row_count("Changes"), "emails": reader.row_count("Emails")}
     return book

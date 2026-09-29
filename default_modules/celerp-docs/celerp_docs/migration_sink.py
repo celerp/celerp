@@ -50,6 +50,7 @@ SETTLEMENT = "settlement"
 ITEM = "item"
 CONTACT = "contact"
 ACCOUNT = "account"
+TAX = "tax"
 PAYABLE_CODE = "2110"
 
 # Celerp status of an imported document, by type and source status. Issued sales
@@ -125,6 +126,15 @@ class DocsMigrationSink:
         return out
 
 
+async def _tax_rates(context: SinkContext, docs: Sequence[CIFDocument]) -> dict[str, tuple[str, float]]:
+    """Source tax code -> (Celerp tax name, rate) for the tax codes this run imported."""
+    names = await mapped_targets(context, TAX, [li.tax_code_external_id for d in docs for li in d.line_items])
+    company = await context.session.get(Company, context.company_id)
+    rates = {str(t.get("name", "")).strip().lower(): (t.get("name"), float(t.get("rate") or 0))
+             for t in (company.settings or {}).get("taxes") or []}
+    return {code: rates[name.strip().lower()] for code, name in names.items() if name.strip().lower() in rates}
+
+
 async def _base_currency(context: SinkContext) -> str:
     company = await context.session.get(Company, context.company_id)
     return str((company.settings or {}).get("currency") or "USD").upper()
@@ -146,13 +156,14 @@ async def _import_documents(context: SinkContext, records: Sequence[CIFSourceRec
     accounts = await mapped_targets(context, ACCOUNT, [
         a for d in docs for li in d.line_items for a in (li.account_external_id, li.tax_account_external_id)
     ])
+    taxes = await _tax_rates(context, docs)
     names = {}
     for contact_id in contacts.values():
         row = await context.session.get(Projection, (context.company_id, contact_id))
         names[contact_id] = (row.state or {}).get("name") if row else None
     prepared = [
         "" if isinstance(r, CIFDocument) and r.doc_type == DocumentType.DEBIT_NOTE
-        else _doc_record(context, r, base, contacts, items, accounts, names)
+        else _doc_record(context, r, base, contacts, items, accounts, taxes, names)
         for r in records
     ]
 
@@ -185,9 +196,13 @@ def _doc_record(
     contacts: dict[str, str],
     items: dict[str, str],
     accounts: dict[str, str],
+    taxes: dict[str, tuple[str, float]],
     names: dict[str, str | None],
 ) -> DocImportRecord | str:
-    """The document import record for one source document, or why there is none."""
+    """The document import record for one source document, or why there is none.
+
+    Lines take the normal Celerp shape: quantity, the source unit price, a percentage
+    discount, the line's tax by code and rate, and the line total, which is exact."""
     if not isinstance(record, CIFDocument):
         return f"Record type {type(record).__name__} is not a document."
     label = f"Document {record.ref or record.source_external_id}"
@@ -207,12 +222,20 @@ def _doc_record(
             item_id = items.get(line.item_external_id)
             if item_id is None:
                 return f"{label}: item {line.item_external_id} was not imported."
+        line_taxes = None
+        if line.tax_code_external_id:
+            if line.tax_code_external_id not in taxes:
+                return f"{label}: tax code {line.tax_code_external_id} was not imported."
+            code, rate = taxes[line.tax_code_external_id]
+            line_taxes = [{"code": code, "rate": rate, "amount": _money(line.tax_amount or Decimal(0), base)}]
         lines.append({k: v for k, v in {
             "item_id": item_id,
             "description": line.description,
             "account_code": accounts.get(line.account_external_id) if line.account_external_id else None,
             "quantity": float(line.quantity),
-            "unit_price": _money(line.unit_price, base),
+            "unit_price": to_stored_float(line.unit_price),
+            "discount_pct": to_stored_float(line.discount_percent) if line.discount_percent else None,
+            "taxes": line_taxes,
             "line_total": _money(line.total_price, base),
         }.items() if v is not None})
     tax = record.tax_total or Decimal(0)

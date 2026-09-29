@@ -1021,6 +1021,10 @@ async def housekeeping(session: AsyncSession) -> None:
     await sweep_cleanup_tasks(session)
 
 
+_PACK_LOSSES = {CoverageClass.MAPPED_WITH_LOSS.value: "With loss",
+                CoverageClass.UNSUPPORTED_NONFINANCIAL.value: "Not moved"}
+
+
 def reconciliation_pack_csv(run: MigrationRun) -> str:
     """The stored verification report as CSV, with the run's identity above the rows."""
     adapter = get_adapter(run.source_system)
@@ -1040,7 +1044,15 @@ def reconciliation_pack_csv(run: MigrationRun) -> str:
     ):
         writer.writerow([label, value])
     writer.writerow([])
-    writer.writerow(["Check", "Key", "Currency", "Source", "Celerp", "Difference", "Rule", "Result"])
+    # What was carried with loss or not moved, so the pack records it beside the checks.
+    losses = [e for e in (run.coverage or {}).get("entries", []) if e["coverage_class"] in _PACK_LOSSES]
+    if losses:
+        writer.writerow(["Source type", "Count", "Carried", "Note"])
+        for entry in losses:
+            writer.writerow([csv_safe(entry["source_type"]), entry["count"], _PACK_LOSSES[entry["coverage_class"]],
+                             csv_safe(entry.get("note") or "--")])
+        writer.writerow([])
+    writer.writerow(["Check","Key", "Currency", "Source", "Celerp", "Difference", "Rule", "Result"])
     for row in report["rows"]:
         # Figures are Celerp-formatted decimals; only the text columns can carry a formula.
         writer.writerow([csv_safe(row["check"]), csv_safe(row["key"]), csv_safe(row["currency"] or ""),

@@ -395,7 +395,7 @@ class CIFLineItem(BaseModel):
     weight: CIFDecimal | None = None
     weight_unit: str | None = None            # e.g. "kg", "g", "oz", "ct", "lb"
     unit_price: CIFDecimal
-    discount: CIFDecimal | None = None
+    discount_percent: CIFDecimal | None = None   # a line discount as a percentage of quantity x unit price
     tax_amount: CIFDecimal | None = None
     total_price: CIFDecimal
     cost_basis: CIFDecimal | None = None      # cost at time of sale

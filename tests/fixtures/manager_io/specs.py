@@ -294,3 +294,27 @@ def inactive_masters() -> list[Obj]:
 def build_inactive_masters(path: Path) -> Path:
     """The basic books plus the inactive masters."""
     return write_manager_file(path, [*basic_objects(), *inactive_masters()], basic_blobs())
+
+
+def _variant(label: str, day: int, line: dict, header: dict | None = None) -> Obj:
+    return obj("SalesInvoice", label, {1: date(2026, 1, day), 2: label, 3: k("CA"), **(header or {}), 49: [
+        {2: k("S1"), 17: label.lower(), **line}]})
+
+
+def line_variant_objects() -> list[Obj]:
+    """One unpaid invoice per line form: a percentage and a fixed discount, tax exclusive,
+    tax inclusive, no tax, and a price whose line amount rounds at the currency precision."""
+    vat = k("VAT")
+    return [
+        *masters(),
+        _variant("LPCT", 5, {18: D("2"), 19: D("125"), 23: D("20")}, {31: True, 32: 0}),
+        _variant("LFIX", 6, {18: D("1"), 19: D("100"), 24: D("15")}, {31: True, 32: 1}),
+        _variant("LEXC", 7, {18: D("2"), 19: D("50"), 21: vat}),
+        _variant("LINC", 8, {18: D("1"), 19: D("55"), 21: vat}, {8: True}),
+        _variant("LNOT", 9, {18: D("1"), 19: D("30")}),
+        _variant("LRND", 10, {18: D("3"), 19: D("3.335"), 21: vat}),
+    ]
+
+
+def build_line_variants(path: Path) -> Path:
+    return write_manager_file(path, line_variant_objects())

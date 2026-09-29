@@ -436,6 +436,54 @@ async def test_manager_inactive_item_stays_unavailable_and_purchase_price_is_not
     assert "purchase_price" not in widget
 
 
+# Invoice -> (stored line fields, line taxes as (code, rate, amount), subtotal, tax, total).
+_LINE_VARIANTS = {
+    "LPCT": ({"quantity": 2, "unit_price": 125, "discount_pct": 20, "line_total": 200}, [], 200, 0, 200),
+    "LFIX": ({"quantity": 1, "unit_price": 100, "line_total": 85}, [], 85, 0, 85),
+    "LEXC": ({"quantity": 2, "unit_price": 50, "line_total": 100}, [("VAT 10%", 10, 10)], 100, 10, 110),
+    "LINC": ({"quantity": 1, "unit_price": 50, "line_total": 50}, [("VAT 10%", 10, 5)], 50, 5, 55),
+    "LNOT": ({"quantity": 1, "unit_price": 30, "line_total": 30}, [], 30, 0, 30),
+    "LRND": ({"quantity": 3, "unit_price": 3.335, "line_total": 10.01}, [("VAT 10%", 10, 1)], 10.01, 1, 11.01),
+}
+
+
+async def test_manager_document_lines_use_the_celerp_line_shape(real_engine, monkeypatch, tmp_path):
+    """Each line form lands as a normal Celerp line (quantity, unit price, discount, tax,
+    line total) whose totals the document money rules recompute exactly, and the forms
+    Celerp cannot keep are listed in the reconciliation pack."""
+    import copy
+    import csv
+    import io
+
+    from celerp.services import migrations
+    from celerp_docs.doc_money import document_money
+    from fixtures.manager_io import specs
+    from fixtures.manager_io.support import ref
+
+    source = specs.build_line_variants(tmp_path / "lines.manager")
+    run, rejected = await migrate(real_engine, source.read_bytes(), source.name, {"mode": "full_history"},
+                                  monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    maps = {m.source_external_id: m.target_entity_id for m in await _maps(real_engine, run)
+            if m.target_entity_type == "doc"}
+    docs = await _projections(real_engine, run, "doc")
+    for label, (fields, taxes, subtotal, tax, total) in _LINE_VARIANTS.items():
+        doc = docs[maps[ref(label)]]
+        (line,) = doc["line_items"]
+        assert {key: line.get(key) for key in (*fields, "discount_pct")} == {"discount_pct": None, **fields}, label
+        assert [(t["code"], t["rate"], t["amount"]) for t in line.get("taxes", [])] == taxes, label
+        assert (doc["subtotal"], doc["tax"], doc["total"]) == (subtotal, tax, total), label
+        money = document_money(doc, copy.deepcopy(doc["line_items"]), "USD", keep_unrated_tax=False)
+        assert (money["subtotal"], money["tax"], money["total"]) == (subtotal, tax, total), label
+
+    pack = list(csv.reader(io.StringIO(migrations.reconciliation_pack_csv(run))))
+    losses = {row[0]: row for row in pack[pack.index(["Source type", "Count", "Carried", "Note"]) + 1:]
+              if row and row[0].startswith("SalesInvoice")}
+    assert set(losses) == {"SalesInvoice (line discount amount)", "SalesInvoice (amounts including tax)"}
+    assert all(row[1:3] == ["1", "With loss"] and row[3] for row in losses.values())
+
+
 async def test_sample_migration_finalizes_and_reconciles(real_engine, monkeypatch, tmp_path):
     """The shipped sample migrates and finalizes into a company named as the sample,
     and its completion page says so."""

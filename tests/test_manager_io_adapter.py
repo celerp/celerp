@@ -160,7 +160,9 @@ def test_manager_decoder_resource_limits(tmp_path):
         count, klass, note = coverage[source_type]
         assert (count, klass) == (1, CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER), source_type
         assert note and len(note) <= 300 and "\\x" not in note
-    assert coverage["SalesInvoice"][0] == 3 and coverage["JournalEntry"][0] == 1
+    # The readable invoices are still classified: INV2 was entered including tax.
+    assert (coverage["SalesInvoice"][0], coverage["SalesInvoice (amounts including tax)"][0]) == (2, 1)
+    assert coverage["JournalEntry"][0] == 1
     with pytest.raises(ScanError, match="cannot be migrated"):
         adapter().build_manifest([art], FULL)
 
@@ -282,7 +284,7 @@ def test_manager_mapping_preserves_source_semantics():
     assert (line.quantity, line.unit_price, line.tax_amount, line.total_price) == (
         Decimal("2"), Decimal("50"), Decimal("10"), Decimal("100"))
     (line,) = documents[ref("INV3")].line_items
-    assert (line.discount, line.total_price) == (Decimal("50"), Decimal("200"))
+    assert (line.discount_percent, line.total_price) == (Decimal("20"), Decimal("200"))
 
     # A receipt against income accounts keeps its ledger effect as a journal, reported as a loss of form.
     fallback = next(j for j in bundle.journals if j.source_external_id == f"{ref('R2')}:journal")
@@ -636,3 +638,29 @@ def test_master_attributes_celerp_cannot_hold_are_each_reported(tmp_path):
     }
     assert coverage["InventoryItem"][:2] == (1, CoverageClass.MAPPED)
     assert coverage["Customer"][:2] == (1, CoverageClass.MAPPED)
+
+
+# ── Document lines ────────────────────────────────────────────────────────────
+
+def test_document_line_forms_carry_their_exact_fields_and_report_the_rest(tmp_path):
+    # A percentage discount has an exact Celerp line field; a fixed discount amount and
+    # amounts entered including tax do not. Their accounting is exact either way, so each
+    # is carried in the line total and reported as a loss, never blocked.
+    manifest = adapter().build_manifest([artifact(specs.build_line_variants(tmp_path / "lines.manager"))], FULL)
+    lines = {d.source_external_id: d.line_items[0] for d in manifest.bundle.documents}
+    assert (lines[ref("LPCT")].discount_percent, lines[ref("LPCT")].total_price) == (Decimal("20"), Decimal("200"))
+    assert (lines[ref("LFIX")].discount_percent, lines[ref("LFIX")].unit_price,
+            lines[ref("LFIX")].total_price) == (None, Decimal("100"), Decimal("85"))
+    assert (lines[ref("LINC")].unit_price, lines[ref("LINC")].tax_amount,
+            lines[ref("LINC")].total_price) == (Decimal("50"), Decimal("5"), Decimal("50"))
+    assert (lines[ref("LRND")].unit_price, lines[ref("LRND")].tax_amount,
+            lines[ref("LRND")].total_price) == (Decimal("3.335"), Decimal("1.00"), Decimal("10.01"))
+
+    coverage = _coverage(manifest)
+    assert coverage["SalesInvoice"][:2] == (4, CoverageClass.MAPPED)
+    count, klass, note = coverage["SalesInvoice (line discount amount)"]
+    assert (count, klass) == (1, CoverageClass.MAPPED_WITH_LOSS)
+    assert "line total" in note
+    count, klass, note = coverage["SalesInvoice (amounts including tax)"]
+    assert (count, klass) == (1, CoverageClass.MAPPED_WITH_LOSS)
+    assert "excluding tax" in note
