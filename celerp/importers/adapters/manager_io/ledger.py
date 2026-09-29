@@ -185,13 +185,14 @@ def _states(book: Book, keys: set[str]) -> dict[str, DocumentState]:
     return states
 
 
-def _stock(postings: list[Posting]) -> dict[str, tuple[Decimal, Decimal]]:
-    stock: dict[str, tuple[Decimal, Decimal]] = {}
+def stock(postings: list[Posting]) -> dict[str, tuple[Decimal, Decimal]]:
+    """Quantity and base value held per item after the given postings."""
+    held: dict[str, tuple[Decimal, Decimal]] = {}
     for p in postings:
         if p.item:
-            qty, value = stock.get(p.item, (ZERO, ZERO))
-            stock[p.item] = (qty + p.quantity, value + p.amount)
-    return stock
+            qty, value = held.get(p.item, (ZERO, ZERO))
+            held[p.item] = (qty + p.quantity, value + p.amount)
+    return held
 
 
 def _latest_rates(book: Book) -> tuple[date | None, dict[str, Decimal]]:
@@ -287,7 +288,7 @@ def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
         ledger.opening = [Posting(ledger.opening_key, "opening", cutover, account, amount, amount, contact=contact)
                           for (account, contact), amount in sorted(balance.items(), key=lambda kv: (kv[0][0], kv[0][1] or ""))
                           if amount]
-        held, carried_stock = _stock(ledger.postings), _stock(carried)
+        held, carried_stock = stock(ledger.postings), stock(carried)
         for item, (qty, value) in sorted(held.items()):
             c_qty, c_value = carried_stock.get(item, (ZERO, ZERO))
             if qty - c_qty or value - c_value:
