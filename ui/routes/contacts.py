@@ -7,7 +7,7 @@ import asyncio as _asyncio
 import json as _json
 import logging
 from datetime import date, datetime, timezone as _tz
-from urllib.parse import quote_plus as _quote_plus
+from urllib.parse import quote_plus as _quote_plus, urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fasthtml.common import *
@@ -18,7 +18,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title
-from ui.components.table import search_bar, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
+from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_section as _shared_files_section, _DOCUMENT_TAGS
 from celerp.services.currencies import CURRENCY_CODES as _CURRENCY_CODES
@@ -712,7 +712,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
     label = t(f"nav.{nav_key}")
     base_url = f"/contacts/{contact_type}s"
     create_url = f"/contacts/create?type={contact_type}"
-    search_url = "/contacts/content"
+    search_url = f"/contacts/content?type={contact_type}"
     schema = _contact_schema(contact_type)
     et = f"{contact_type}s"
 
@@ -730,7 +730,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
     return await base_shell(
         page_header(
             label,
-            search_bar(placeholder=t("contacts.search_placeholder", scope=label.lower()), target="#contacts-content", url=search_url,
+            search_bar(placeholder=t("contacts.search_placeholder", scope=label.lower()), target="#contacts-content", url=search_url, value=q,
                        label=t("contacts.search_scope", scope=label.lower())),
             Button(t("contacts.new_type", type=label[:-1]), hx_post=create_url, hx_swap="none", cls="btn btn--primary") if _can_edit else "",
             A(t("btn.export_csv"), href=f"{base_url}/export/csv", cls="btn btn--secondary") if _can_import_export else "",
@@ -1107,7 +1107,11 @@ def setup_routes(app):
         # Placeholder entries bubble to the top so users notice them
         _placeholder = f"New {contact_type.title()}"
         contacts = sorted(contacts, key=lambda c: (0 if (c.get("name") or "").strip() == _placeholder else 1))
-        return _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency)
+        page_query = urlencode([(k, v) for k, v in request.query_params.multi_items() if k != "type"])
+        return search_results(
+            _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency),
+            f"/contacts/{contact_type}s?{page_query}",
+        )
 
     # ── /contacts/create ─────────────────────────────────────────────────
 

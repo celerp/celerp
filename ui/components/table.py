@@ -2473,7 +2473,7 @@ def pagination(page: int, total: int, per_page: int, base_url: str, extra_params
 
 
 def search_bar(placeholder: str = "", target: str = "#data-table", url: str = "",
-               help: FT | None = None, label: str = "") -> FT:
+               help: FT | None = None, label: str = "", value: str = "") -> FT:
     placeholder = placeholder or t("table.search_dots")
     # Enter key → insert comma (for barcode scanner multi-scan: each scan ends with Enter,
     # becoming a comma-separated OR query without submitting the form).
@@ -2488,6 +2488,7 @@ def search_bar(placeholder: str = "", target: str = "#data-table", url: str = ""
     inp = Input(
         type="search",
         name="q",
+        value=value,
         placeholder=placeholder,
         hx_get=url,
         hx_trigger="input changed delay:300ms",
@@ -2508,6 +2509,13 @@ def search_bar(placeholder: str = "", target: str = "#data-table", url: str = ""
     # Small centered scope label ("Search available inventory") so the on-page
     # box is instantly distinguishable from the global header search.
     return Div(Small(label, cls="search-scope-label"), inner, cls="search-scope")
+
+
+def search_results(fragment: FT, page_url: str):
+    """The response to a search_bar or sort request: the result fragment, with the page's own
+    URL for the address bar, so a reload or a shared link opens the whole page."""
+    from starlette.responses import HTMLResponse
+    return HTMLResponse(to_xml(fragment), headers={"HX-Push-Url": page_url})
 
 
 def table_search(table_id: str, placeholder: str = "") -> FT:

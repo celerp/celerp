@@ -274,7 +274,9 @@ class TestPickedPageSize:
 
         fetch = AsyncMock(side_effect=_page)
         with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
-             patch(f"ui.api_client.{api_fn}", new=fetch):
+             patch(f"ui.api_client.{api_fn}", new=fetch), \
+             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_SUMMARY)), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
             r = await ui_client.get(f"{path}&q=a&page=2&per_page=100", cookies=_cookies())
         assert r.status_code == 200
         params = fetch.call_args.args[1]
@@ -338,3 +340,101 @@ class TestPickedPageSize:
         assert r.status_code == 200
         assert "26-50 of 60" in r.text
         assert "SUB-025" in r.text and "SUB-050" not in r.text and "SUB-024" not in r.text
+
+
+class TestLiveSearchResults:
+    """Typing in the search box replaces the whole result area, so the pager and the
+    status cards describe the matches rather than the list before the search."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("page, content_id", [
+        ("/docs?type=invoice", "doc-content"),
+        ("/lists?type=audit", "list-content"),
+    ])
+    async def test_search_box_targets_the_result_area(self, ui_client, page, content_id):
+        listed = AsyncMock(return_value={"items": [_DOC], "total": 120})
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_docs", new=listed), patch("ui.api_client.list_lists", new=listed), \
+             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_SUMMARY)), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
+            r = await ui_client.get(page, cookies=_cookies())
+        assert r.status_code == 200
+        box = next(i for i in re.findall(r"<input[^>]*>", r.text) if 'id="search-input"' in i)
+        assert f'hx-target="#{content_id}"' in box, box
+        area = re.search(rf'<div[^>]*id="{content_id}"', r.text)
+        assert area, content_id
+        after = r.text[area.start():]
+        assert 'class="status-card' in after and "pagination" in after
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path, api_fn, summary_fn, prefix, content_id", [
+        ("/docs/search?type=invoice&q=ruby", "list_docs", "get_doc_summary", "INV", "doc-content"),
+        ("/lists/search?type=audit&q=ruby", "list_lists", "get_list_summary", "AUD", "list-content"),
+    ])
+    async def test_search_pager_counts_the_matches(self, ui_client, path, api_fn, summary_fn, prefix, content_id):
+        rows = [{**_DOC, "entity_id": f"d{i}", "ref_id": f"{prefix}-{i:03d}", "list_type": "audit"} for i in range(120)]
+
+        async def _page(_token, params):
+            return {"items": rows[params["offset"]:params["offset"] + params["limit"]], "total": len(rows)}
+
+        fetch = AsyncMock(side_effect=_page)
+        summary = AsyncMock(return_value={"count_by_status": {"final": 120}, "all_issued_count": 120, "draft_count": 0})
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch(f"ui.api_client.{api_fn}", new=fetch), \
+             patch(f"ui.api_client.{summary_fn}", new=summary):
+            r = await ui_client.get(path, cookies=_cookies(), headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        assert re.match(rf'\s*<div[^>]*id="{content_id}"', r.text), r.text[:200]
+        limit = fetch.call_args.args[1]["limit"]
+        assert f"1-{limit} of 120" in r.text
+        page_links = [u.replace("&amp;", "&") for u in re.findall(r'<a href="(/(?:docs|lists)\?[^"]*page=2[^"]*)"', r.text)]
+        assert page_links and all("q=ruby" in u for u in page_links), page_links
+        assert summary.call_args.args[1].get("q") == "ruby", summary.call_args
+        assert 'class="status-card' in r.text
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path, page_url", [
+        ("/docs/search?type=invoice&view=drafts&per_page=100&q=ruby", "/docs?type=invoice&view=drafts&per_page=100&q=ruby"),
+        ("/lists/search?type=audit&per_page=100&q=ruby", "/lists?q=ruby&type=audit&per_page=100"),
+        ("/contacts/content?type=vendor&q=ruby&sort=name&dir=asc", "/contacts/vendors?q=ruby&sort=name&dir=asc"),
+    ])
+    async def test_search_address_is_the_page(self, ui_client, path, page_url):
+        """The address bar after a search opens the whole page with the same results on reload."""
+        from urllib.parse import parse_qs, urlsplit
+        empty = AsyncMock(return_value={"items": [], "total": 0})
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_docs", new=empty), patch("ui.api_client.list_lists", new=empty), \
+             patch("ui.api_client.list_contacts", new=empty), \
+             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_SUMMARY)), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
+            r = await ui_client.get(path, cookies=_cookies(), headers={"HX-Request": "true"})
+        assert r.status_code == 200
+        pushed = urlsplit(r.headers.get("HX-Push-Url", ""))
+        expected = urlsplit(page_url)
+        assert (pushed.path, parse_qs(pushed.query)) == (expected.path, parse_qs(expected.query)), r.headers
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("page", ["/docs?type=invoice&q=ruby", "/lists?type=audit&q=ruby", "/contacts/vendors?q=ruby"])
+    async def test_search_box_shows_the_active_search(self, ui_client, page):
+        listed = AsyncMock(return_value={"items": [_DOC], "total": 1})
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_docs", new=listed), patch("ui.api_client.list_lists", new=listed), \
+             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})), \
+             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_SUMMARY)), \
+             patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={"count_by_status": {}})):
+            r = await ui_client.get(page, cookies=_cookies())
+        assert r.status_code == 200
+        box = next(i for i in re.findall(r"<input[^>]*>", r.text) if 'id="search-input"' in i)
+        assert 'value="ruby"' in box, box
+
+    @pytest.mark.asyncio
+    async def test_vendor_search_stays_on_vendors(self, ui_client):
+        listed = AsyncMock(return_value={"items": [], "total": 0})
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_contacts", new=listed):
+            r = await ui_client.get("/contacts/vendors", cookies=_cookies())
+            box = next(i for i in re.findall(r"<input[^>]*>", r.text) if 'id="search-input"' in i)
+            search_url = re.search(r'hx-get="([^"]*)"', box).group(1).replace("&amp;", "&")
+            await ui_client.get(f"{search_url}{'&' if '?' in search_url else '?'}q=ruby", cookies=_cookies(),
+                                headers={"HX-Request": "true"})
+        assert listed.call_args.args[1]["contact_type"] == "vendor", listed.call_args

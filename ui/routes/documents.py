@@ -18,7 +18,7 @@ from ui.api_client import APIError
 from celerp.services.units import default_receive_as
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
-from ui.components.table import search_bar, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
+from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum
 from celerp.services.doc_balance import PAID_TOLERANCE, awaiting_status_param, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.money import to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, resolve_price
@@ -461,6 +461,77 @@ async def _list_page_dates(request: Request, state: dict[str, str], company: dic
         return "", "", "all"
     date_from, date_to = _resolve_preset(default_preset)
     return date_from, date_to, default_preset
+
+
+async def _doc_results(token: str, state: dict[str, str], date_from: str, date_to: str,
+                       page: int, per_page: int) -> tuple[list[dict], int, dict]:
+    """(docs on the page, filtered total, summary) for a document list state."""
+    import asyncio as _asyncio
+    params = _doc_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
+    docs_resp, summary = await _asyncio.gather(
+        api.list_docs(token, params),
+        api.get_doc_summary(token, _summary_params(params, _DOC_SUMMARY_KEYS)),
+    )
+    docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
+    total = docs_resp.get("total", len(docs)) if isinstance(docs_resp, dict) else len(docs)
+    return docs, total, summary if isinstance(summary, dict) else {}
+
+
+def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, summary: dict,
+                  page: int, per_page: int, currency: str | None, lang: str) -> FT:
+    """Summary, status cards, table and pager for a document list state: the page embeds it
+    and the live search replaces it, so all four always describe the same result set."""
+    doc_type = state.get("type", "")
+    status = state.get("status", "")
+    # The status cards keep the dates and sort; the sort links and pages keep everything.
+    cards_base_url = "/docs?" + urlencode({"type": doc_type, **{k: v for k, v in state.items() if k not in _DOC_STATUS_KEYS and k != "type"}})
+    return Div(
+        _summary_bar(summary, doc_type, currency, lang),
+        _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang,
+                          status_in=state.get("status_in", ""), overdue_only=bool(state.get("overdue_only")),
+                          unfulfilled_only=bool(state.get("unfulfilled_only")),
+                          not_restocked=bool(state.get("not_restocked")), not_stocked=bool(state.get("not_stocked")),
+                          all_issued=_doc_api_params(state, "", "", limit=None).get("all_issued") == "1",
+                          converted_to_type=state.get("converted_to_type", ""), base_url=cards_base_url),
+        _doc_table(
+            docs,
+            sort=state.get("sort", "date"),
+            sort_dir=state.get("dir", "desc"),
+            base_params={**state, "page": str(page)},
+            doc_type=doc_type,
+            lang=lang,
+            currency=currency,
+            is_drafts_view=state.get("view") == "drafts" or status == "draft",
+        ),
+        pagination(page, total_count, per_page, "/docs", _state_query(state, without=("per_page",))),
+        id="doc-content",
+    )
+
+
+async def _list_results(token: str, state: dict[str, str], date_from: str, date_to: str,
+                        page: int, per_page: int) -> tuple[list[dict], int, dict]:
+    """(lists on the page, filtered total, summary) for a lists page state."""
+    params = _list_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
+    result = await api.list_lists(token, params)
+    lists = result.get("items", [])
+    summary = await api.get_list_summary(token, _summary_params(params, _LIST_SUMMARY_KEYS))
+    return lists, result.get("total", len(lists)), summary
+
+
+def _lists_content(state: dict[str, str], lists: list[dict], total_count: int, summary: dict,
+                   page: int, per_page: int, lang: str) -> FT:
+    """Status cards, table and pager for a lists page state: the page embeds it and the live
+    search replaces it, so all three always describe the same result set."""
+    all_issued = _list_api_params(state, "", "", limit=None).get("all_issued") == "1"
+    return Div(
+        _list_status_cards(summary, "all_issued" if all_issued else state.get("status", ""),
+                           converted_to_type=state.get("converted_to_type", ""),
+                           base_url="/lists?" + _state_query(state, without=_LIST_STATUS_KEYS),
+                           dates_chosen=any(state.get(k) for k in _DATE_KEYS)),
+        _list_table(lists, lang=lang),
+        pagination(page, total_count, per_page, "/lists", _state_query(state, without=("per_page",))),
+        id="list-content",
+    )
 
 _DOC_TYPES = ["invoice", "purchase_order", "bill", "receipt", "credit_note", "memo", "consignment_in", "list"]
 # Doc types that support per-line inventory item status display (fetch + render).
@@ -1205,18 +1276,8 @@ def setup_routes(app):
         q = state.get("q", "")
         doc_type = state.get("type", "")
         status = state.get("status", "")
-        status_in = state.get("status_in", "")
-        contact_id = state.get("contact_id", "")
-        overdue_only = bool(state.get("overdue_only"))
-        unfulfilled_only = bool(state.get("unfulfilled_only"))
-        not_restocked = bool(state.get("not_restocked"))
-        not_stocked = bool(state.get("not_stocked"))
-        converted_to_type = state.get("converted_to_type", "")
         view = state.get("view", "")  # "drafts" = drafts-only mode
-        ids = ",".join(x.strip() for x in state.get("ids", "").split(",") if x.strip())
         page = _page_number(request)
-        sort = state.get("sort", "date")
-        sort_dir = state.get("dir", "desc")
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
             company = await api.get_company(token)
@@ -1228,27 +1289,17 @@ def setup_routes(app):
         # Drafts are segregated: only shown when ?view=drafts or explicit ?status=draft.
         # All other views exclude drafts by default (like email treats Drafts).
         is_drafts_view = view == "drafts" or status == "draft"
-        params = _doc_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
-        all_issued = params.get("all_issued") == "1"
         has_status_filter = any(state.get(k) for k in _DOC_STATUS_KEYS)
         try:
-            import asyncio as _asyncio
-            docs_resp, summary = await _asyncio.gather(
-                api.list_docs(token, params),
-                api.get_doc_summary(token, _summary_params(params, _DOC_SUMMARY_KEYS)),
-            )
-            docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
-            draft_count = summary.get("draft_count", 0) if isinstance(summary, dict) else 0
+            docs, total_count, summary = await _doc_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            docs_resp, docs, summary, draft_count = {}, [], {}, 0
+            docs, total_count, summary = [], 0, {}
+        draft_count = summary.get("draft_count", 0)
 
-        # Links that switch one dimension keep every other: the date bar keeps the filters,
-        # the status cards keep the dates and sort, the sort links and pages keep everything.
+        # The date bar keeps the filters when it switches the dates.
         date_bar_extra = _state_query(state, without=_DATE_KEYS)
-        cards_base_url = "/docs?" + urlencode({"type": doc_type, **{k: v for k, v in state.items() if k not in _DOC_STATUS_KEYS and k != "type"}})
-        total_count = docs_resp.get("total", len(docs)) if isinstance(docs_resp, dict) else len(docs)
 
         # Auto-redirect to drafts when no finalized docs exist but drafts do.
         # Prevents the "where did my draft go?" confusion for new users.
@@ -1271,8 +1322,9 @@ def setup_routes(app):
                 section_title,
                 search_bar(
                     placeholder=t("documents.search_docs_placeholder"),
-                    target="#doc-table",
+                    target="#doc-content",
                     url=search_url,
+                    value=q,
                     label=t("documents.search_section", section=section_title.lower()),
                 ),
                 Button(
@@ -1286,19 +1338,7 @@ def setup_routes(app):
             ),
             _doc_type_intro(doc_type),
             _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{date_bar_extra}" if date_bar_extra else "", lang=lang),
-            _summary_bar(summary, doc_type, currency, lang),
-            _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang, status_in=status_in, overdue_only=overdue_only, unfulfilled_only=unfulfilled_only, not_restocked=not_restocked, not_stocked=not_stocked, all_issued=all_issued, converted_to_type=converted_to_type, base_url=cards_base_url),
-            _doc_table(
-                docs,
-                sort=sort,
-                sort_dir=sort_dir,
-                base_params={**state, "page": str(page)},
-                doc_type=doc_type,
-                lang=lang,
-                currency=currency,
-                is_drafts_view=is_drafts_view,
-            ),
-            pagination(page, total_count, per_page, "/docs", _state_query(state, without=("per_page",))),
+            _docs_content(state, docs, total_count, summary, page, per_page, currency, lang),
             title=page_title(section_label_key),
             nav_active=_doc_nav_key(doc_type),
             lang=lang,
@@ -1319,19 +1359,14 @@ def setup_routes(app):
         date_from, date_to, _preset = await _doc_list_dates(request, state, company)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
-            params = _doc_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
-            docs = (await api.list_docs(token, params)).get("items", [])
+            docs, total_count, summary = await _doc_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
-            docs = []
-        return _doc_table(
-            docs,
-            sort=state.get("sort", "date"),
-            sort_dir=state.get("dir", "desc"),
-            base_params={**state, "page": str(page)},
-            doc_type=state.get("type", ""),
-            lang=get_lang(request),
-            currency=company.get("currency") or None,
-            is_drafts_view=state.get("view") == "drafts" or state.get("status") == "draft",
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            docs, total_count, summary = [], 0, {}
+        return search_results(
+            _docs_content(state, docs, total_count, summary, page, per_page, company.get("currency") or None, get_lang(request)),
+            "/docs?" + _state_query(state),
         )
 
     @app.get("/docs/export/csv")
@@ -3878,8 +3913,6 @@ celerpUpdateBulkAlloc();
         state = _list_page_state(request)
         q = state.get("q", "")
         list_type = state.get("type", "")
-        status = state.get("status", "")
-        converted_to_type_list = state.get("converted_to_type", "")
         page = _page_number(request)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
@@ -3887,20 +3920,14 @@ celerpUpdateBulkAlloc();
         except APIError:
             company = {}
         date_from, date_to, preset = await _list_page_dates(request, state, company)
-        params = _list_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
-        all_issued_list = params.get("all_issued") == "1"
         try:
-            result = await api.list_lists(token, params)
-            lists = result.get("items", [])
-            filtered_total = result.get("total", len(lists))
-            summary = await api.get_list_summary(token, _summary_params(params, _LIST_SUMMARY_KEYS))
+            lists, filtered_total, summary = await _list_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             lists, summary, filtered_total = [], {}, 0
         lang = get_lang(request)
         _lists_extra = _state_query(state, without=_DATE_KEYS)
-        cards_base_url = "/lists?" + _state_query(state, without=_LIST_STATUS_KEYS)
         _role = _get_role(request)
         _settings = company.get("settings") or {}
         # Audits are location-bound, not blank drafts: send the user through the location picker.
@@ -3914,8 +3941,8 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             page_header(
                 t("page.lists", lang),
-                search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-table",
-                           url="/lists/search?" + _state_query(state, without=("q",)),
+                search_bar(placeholder=t("documents.search_ref_customer_short"), target="#list-content",
+                           url="/lists/search?" + _state_query(state, without=("q",)), value=q,
                            label=t("documents.search_lists")),
                 _new_btn if role_has_permission(_settings, _role, "edit_documents") else "",
                 A(t("btn.export_csv"), href="/lists/export/csv?" + _state_query(state), cls="btn btn--secondary") if role_has_permission(_settings, _role, "import_export_data") else "",
@@ -3926,10 +3953,7 @@ celerpUpdateBulkAlloc();
             _list_type_tabs(list_type, state),
             # Self-explanatory page: the shipping tab says what these are and what to do next.
             (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
-            _list_status_cards(summary, "all_issued" if all_issued_list else status, converted_to_type=converted_to_type_list, base_url=cards_base_url,
-                               dates_chosen=any(state.get(k) for k in _DATE_KEYS)),
-            _list_table(lists, lang=lang),
-            pagination(page, filtered_total, per_page, "/lists", _state_query(state, without=("per_page",))),
+            _lists_content(state, lists, filtered_total, summary, page, per_page, lang),
             title=page_title("page.lists"),
             nav_active="lists",
             request=request,
@@ -3966,12 +3990,16 @@ celerpUpdateBulkAlloc();
         date_from, date_to, _preset = await _list_page_dates(request, state, company)
         per_page = per_page_value(state.get("per_page"), _PER_PAGE)
         try:
-            params = _list_api_params(state, date_from, date_to, limit=per_page, offset=(page - 1) * per_page)
-            lists = (await api.list_lists(token, params)).get("items", [])
+            lists, filtered_total, summary = await _list_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
             logger.warning("API error on lists_search: %s", e.detail)
-            lists = []
-        return _list_table(lists, lang=get_lang(request))
+            lists, filtered_total, summary = [], 0, {}
+        return search_results(
+            _lists_content(state, lists, filtered_total, summary, page, per_page, get_lang(request)),
+            "/lists?" + _state_query(state),
+        )
 
     @app.get("/lists/export/csv")
     async def lists_export_csv(request: Request):
