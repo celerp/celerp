@@ -250,16 +250,39 @@ def setup_routes(app):
 
     @app.get("/setup/new-company")
     async def new_company_page(request: Request):
-        """Entry point for adding a second (or nth) company workspace."""
+        """Entry point for adding a second (or nth) company workspace: start
+        fresh or move a company in from another system."""
         token = request.cookies.get(COOKIE_NAME)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        lang = get_lang(request)
-        error = request.query_params.get("error", "")
-        reason = request.query_params.get("reason", "")
-        notice = flash(t("setup.company_deactivated_notice"), kind="info") if reason == "deactivated" else ""
+        from ui.routes.migrations import COMPANY, chooser, choice_card
+        deactivated = request.query_params.get("reason", "") == "deactivated"
+        # A deactivated company leaves nothing to go back to.
+        back = "" if deactivated else P(
+            A(t("btn.back_to_settings"), href="/settings/general?tab=company", cls="auth-link"),
+            cls="auth-alt-action",
+        )
         return auth_shell(
-            Div(notice, _new_company_form(error=error, lang=lang, hide_back=reason == "deactivated")) if notice else _new_company_form(error=error, lang=lang),
+            flash(t("setup.company_deactivated_notice"), kind="info") if deactivated else "",
+            chooser(
+                t("setup.new_company_title"),
+                t("setup.new_company_choose_subtitle"),
+                [
+                    choice_card(t("setup.card_fresh"), t("setup.card_new_desc"), href="/setup/new-company/fresh"),
+                    choice_card(t("setup.card_move"), t("setup.card_move_desc"), href=COMPANY.base),
+                ],
+                back,
+            ),
+            title=page_title("setup.new_company_title"),
+        )
+
+    @app.get("/setup/new-company/fresh")
+    async def new_company_fresh_page(request: Request):
+        token = request.cookies.get(COOKIE_NAME)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        return auth_shell(
+            _new_company_form(error=request.query_params.get("error", ""), lang=get_lang(request)),
             title=page_title("setup.new_company_title"),
         )
 
@@ -272,13 +295,13 @@ def setup_routes(app):
         form = await request.form()
         company_name = str(form.get("company_name", "")).strip()
         if not company_name:
-            return RedirectResponse("/setup/new-company?error=Company+name+required", status_code=302)
+            return RedirectResponse("/setup/new-company/fresh?error=Company+name+required", status_code=302)
         from ui.api_client import create_company as api_create
         try:
             new_access, new_refresh = await api_create(token, company_name)
         except APIError as e:
             import urllib.parse
-            return RedirectResponse(f"/setup/new-company?error={urllib.parse.quote(e.detail)}", status_code=302)
+            return RedirectResponse(f"/setup/new-company/fresh?error={urllib.parse.quote(e.detail)}", status_code=302)
         from ui.config import set_session_cookies
         resp = RedirectResponse("/setup/company", status_code=302)
         set_session_cookies(resp, new_access, new_refresh, request)
@@ -606,12 +629,9 @@ def _cloud_form() -> FT:
     )
 
 
-def _new_company_form(error: str = "", lang: str = "en", hide_back: bool = False) -> FT:
+def _new_company_form(error: str = "", lang: str = "en") -> FT:
     """Simple name-entry form for creating a new company workspace."""
-    back_link = None if hide_back else P(
-        A(t("btn.back_to_settings", lang), href="/settings/general?tab=company", cls="auth-link"),
-        cls="auth-footer-text",
-    )
+    back_link = P(A(t("btn.back", lang), href="/setup/new-company", cls="auth-link"), cls="auth-footer-text")
     return Div(
         Div(
             Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
