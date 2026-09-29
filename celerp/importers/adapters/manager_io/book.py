@@ -652,6 +652,8 @@ def _resolve_settlement(book: Book, s: Settlement) -> None:
             _check(line.contact in book.contacts, "a customer or supplier")
         if line.tax_code:
             _check(line.tax_code in book.tax_codes, "a tax code")
+    if any(line.net <= 0 for line in s.party_lines):
+        raise Blocked("unsupported feature", "A zero or negative customer or supplier amount.")
     _price_lines(book, s.currency, s.other_lines, s.include_tax)
 
 
