@@ -3,11 +3,13 @@
 """Screen Manager attachments. Every name, size, hash and content type in the file is untrusted.
 
 An attachment is accepted only when its name is a plain file name with an
-accepted extension, it belongs to a record Celerp carries, its content is
+accepted extension, it belongs to a carried record that Celerp can attach files
+to (a contact, a document or an item), its content is
 stored in the business file within the size cap, the stored hash matches the
 content, and the content's signature matches the extension. Anything else is
 rejected with a reason and reported; a rejected attachment never blocks the
-ledger.
+ledger. A file on a record that cannot hold files (a receipt, payment,
+transfer, journal entry or debit note) is reported as not moved.
 """
 
 from __future__ import annotations
@@ -36,12 +38,13 @@ FILE_TYPES: dict[str, tuple[str, tuple[bytes, ...]]] = {
     "csv": ("text/csv", ()),
     "txt": ("text/plain", ()),
 }
-# Record types an attachment can belong to: the ones that become Celerp records.
-TARGET_TYPES = frozenset({
-    "SalesInvoice", "PurchaseInvoice", "CreditNote", "DebitNote", "Receipt", "Payment",
-    "InterAccountTransfer", "JournalEntry", "Customer", "Supplier", "InventoryItem",
-})
+# Record types an attachment can belong to: the ones that become Celerp contacts,
+# documents and items, the entities Celerp attaches files to.
+TARGET_TYPES = frozenset({"SalesInvoice", "PurchaseInvoice", "CreditNote", "Customer", "Supplier", "InventoryItem"})
+# Carried record types that become ledger entries, which hold no files.
+NOT_ATTACHABLE = frozenset({"DebitNote", "Receipt", "Payment", "InterAccountTransfer", "JournalEntry"})
 REJECTED = "Attachment (rejected)"
+NOT_MOVED = "Attachment (record cannot hold files)"
 
 
 @dataclass(frozen=True)
@@ -116,6 +119,12 @@ def screen(book: Book, reader: ManagerReader) -> Screened:
     screened = Screened()
     for key, ref in book.attachments.items():
         if book.is_blocked(key):
+            continue
+        if book.names.get(ref.target or "") in NOT_ATTACHABLE:
+            screened.rejected[key] = "Its record is a payment, transfer or journal entry, which cannot hold files."
+            book.accept("Attachment", key, label=NOT_MOVED, klass=CoverageClass.UNSUPPORTED_NONFINANCIAL,
+                        note=("Files attached to receipts, payments, transfers, journal entries and debit notes "
+                              "are not moved to Celerp. Keep a copy of them from the source."))
             continue
         try:
             screened.accepted[key] = _check(book, reader, ref)[0]

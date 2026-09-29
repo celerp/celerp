@@ -264,3 +264,17 @@ def build_fx(path: Path) -> Path:
 
 def build_cutover(path: Path) -> Path:
     return write_manager_file(path, cutover_objects())
+
+
+# Attachment label -> the basic record it is attached to: a customer, an item, a receipt
+# settling an invoice, a receipt kept whole as a journal, a transfer, a journal and a debit note.
+ATTACHMENT_TARGETS = {"ACON": "CA", "AITEM": "WID", "AREC": "R1", "AFALL": "R2", "ATRF": "IAT1", "AJE": "JE1",
+                      "ADN": "DN1"}
+
+
+def build_attachment_targets(path: Path) -> Path:
+    """The basic books with one more attachment on each record in ATTACHMENT_TARGETS."""
+    objects = [*basic_objects(), *(attachment_object(label, f"{label.lower()}.png", PNG, k(target))
+                                   for label, target in ATTACHMENT_TARGETS.items())]
+    blobs = (*basic_blobs(), *(Blob(k(label), f"{label.lower()}.png", "image/png", PNG) for label in ATTACHMENT_TARGETS))
+    return write_manager_file(path, objects, blobs)

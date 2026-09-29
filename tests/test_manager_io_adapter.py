@@ -582,3 +582,26 @@ def test_settlement_on_account_lines_are_a_contact_journal(tmp_path, kind, lines
         assert all(klass != CoverageClass.UNSUPPORTED_FINANCIAL_BLOCKER for _, klass, _ in coverage.values())
     else:
         assert f"{kind} (journal fallback)" not in coverage
+
+
+# ── Attachment targets ────────────────────────────────────────────────────────
+
+def test_attachments_move_only_to_records_that_hold_files(tmp_path):
+    # Celerp attaches files to contacts, documents and items. A file on a receipt, payment,
+    # transfer, journal or debit note has no destination: it is reported, never put in the
+    # manifest, and never stops the migration.
+    art = artifact(specs.build_attachment_targets(tmp_path / "targets.manager"))
+    manifest = adapter().build_manifest([art], FULL)
+    moved = {(a.source_external_id, a.target_source_type, a.target_source_external_id)
+             for a in manifest.bundle.attachments}
+    assert moved == {(ref("ATT1"), "SalesInvoice", ref("INV1")), (ref("ACON"), "Customer", ref("CA")),
+                     (ref("AITEM"), "InventoryItem", ref("WID"))}
+    coverage = _coverage(manifest)
+    assert coverage["Attachment"][:2] == (3, CoverageClass.MAPPED)
+    count, klass, note = coverage["Attachment (record cannot hold files)"]
+    assert (count, klass) == (5, CoverageClass.UNSUPPORTED_NONFINANCIAL)
+    assert "not moved" in note
+    assert "Attachment (rejected)" not in coverage
+    rejected = {row["source_external_id"] for row in manifest.source_summary["attachments"]["rejected"]}
+    assert rejected == {ref(label) for label in ("AREC", "AFALL", "ATRF", "AJE", "ADN")}
+    assert len(manifest.bundle.documents) == 7

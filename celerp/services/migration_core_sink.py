@@ -213,7 +213,10 @@ class CoreMigrationSink:
 
 async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tuple[str, str | None]:
     """Store one source file and attach it to the imported record it belongs to, as the
-    upload routes do. Returns the stored file id, or the reason the file was not attached."""
+    upload routes do. Returns the stored file id, or the reason the file was not attached.
+
+    The adapter sends only files for records that can hold them, so a file for any other
+    record is a defect in the adapter: it fails the batch rather than being skipped."""
     key = context.idempotency_key(record, "attached")
     replay = await find_event_by_idempotency(context.session, context.company_id, key)
     if replay is not None:
@@ -229,7 +232,7 @@ async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tup
         return "", "Its target record was not imported; the file was not attached."
     entity_type, entity_id = target
     if entity_type not in FILE_ATTACHED_EVENTS:
-        return "", f"Files cannot be attached to a {entity_type.replace('_', ' ')}; the file was not attached."
+        raise ValueError(f"A {entity_type.replace('_', ' ')} cannot hold files; the adapter sent a file for one.")
     try:
         content = await asyncio.to_thread(context.read_attachment, record.source_external_id)
     except ScanError as exc:

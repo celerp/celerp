@@ -362,6 +362,53 @@ async def test_manager_on_account_money_reaches_the_customer_statement(real_engi
     assert D(str(statement["closing_balance"])) == D("-15")
 
 
+async def test_manager_attachments_land_on_contacts_documents_and_items(real_engine, monkeypatch, tmp_path):
+    """Files on an invoice, a customer and an item are stored on those records; files on
+    records Celerp cannot attach to are reported and the financial migration still completes."""
+    from fixtures.manager_io import specs
+    from fixtures.manager_io.support import ref
+
+    source = specs.build_attachment_targets(tmp_path / "targets.manager")
+    run, rejected = await migrate(real_engine, source.read_bytes(), source.name, {"mode": "full_history"},
+                                  monkeypatch, tmp_path)
+    assert rejected == []
+    _passing(run)
+    maps = {(m.source_type, m.source_external_id): m for m in await _maps(real_engine, run)}
+    for label, target, entity_type, file_name in (("ATT1", "INV1", "doc", "receipt-scan.png"),
+                                                  ("ACON", "CA", "contact", "acon.png"),
+                                                  ("AITEM", "WID", "item", "aitem.png")):
+        owner = next(m for (_, key), m in maps.items() if key == ref(target) and m.target_entity_type == entity_type)
+        files = (await _projections(real_engine, run, entity_type))[owner.target_entity_id]["files"]
+        assert [f["id"] for f in files if f["filename"] == file_name] == [
+            maps[("Attachment", ref(label))].target_entity_id]
+    for label in ("AREC", "AFALL", "ATRF", "AJE", "ADN"):
+        assert ("Attachment", ref(label)) not in maps
+
+
+async def test_attachment_for_a_record_that_cannot_hold_files_fails_its_batch(real_engine, monkeypatch, tmp_path):
+    """The attachment sink refuses a file whose target cannot hold files: the batch fails
+    whole and the phase cursor does not move."""
+    from celerp.importers.adapters.manager_io import mappings
+    from fixtures.manager_io.support import BASIC, ref
+
+    build = mappings._attachments
+
+    def with_transfer_file(book, screened):
+        good = build(book, screened)
+        return [*good, good[0].model_copy(update={"source_external_id": "stray", "target_source_type":
+                                                  "InterAccountTransfer", "target_source_external_id": ref("IAT1")})]
+
+    monkeypatch.setattr(mappings, "_attachments", with_transfer_file)
+    run, _ = await migrate(real_engine, BASIC.read_bytes(), "basic.manager", {"mode": "full_history"},
+                           monkeypatch, tmp_path)
+    assert run.status == "failed"
+    assert (run.error_summary["phase"], run.error_summary["batch_cursor"]) == ("attachments", 0)
+    assert run.phase_state["attachments"]["cursor"] == 0
+    assert "cannot hold files" in run.error_summary["message"]
+    # The good file in the same batch was rolled back with it.
+    assert not [m for m in await _maps(real_engine, run) if m.source_type == "Attachment"]
+
+
 async def test_sample_migration_finalizes_and_reconciles(real_engine, monkeypatch, tmp_path):
     """The shipped sample migrates and finalizes into a company named as the sample,
     and its completion page says so."""
