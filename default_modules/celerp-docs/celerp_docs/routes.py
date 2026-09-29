@@ -3327,7 +3327,10 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
 
 @router.post("/{entity_id}/receive")
 async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
+    # A receipt adds to the quantity and cost of the lots it reads, so it waits for any
+    # receipt or cost change in flight and reads what that one committed.
+    await lock_item_code_namespace(session, company_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     doc_type = row.state.get("doc_type")
     if doc_type not in ("purchase_order", "bill", "consignment_in"):
         raise HTTPException(status_code=409, detail="receive is only valid for bills, purchase orders, and consignment_in documents")
@@ -3402,32 +3405,53 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     def _creates_parcel(it) -> bool:
         return not (it.item_id and not is_inbound) and it.receive_as == "stock"
 
+    # One pricing for the whole receipt: what each received line cost is both what it adds
+    # to its lot and what a purchase order receipt books, so the two cannot disagree.
+    doc_label = {"purchase_order": "purchase order", "bill": "bill"}.get(doc_type, "document")
+    priced: list[tuple[float, float, float | None]] = []  # (conversion, stock quantity, cost)
+    for it in payload.received_items:
+        if it.item_id and not is_inbound:
+            conversion = item_conversion_map.get(it.item_id, 1)
+        elif it.receive_as == "stock":
+            _sku = (it.sku or (it.name or "").strip().upper().replace(" ", "-")[:40]).strip()
+            conversion = (
+                (item_conversion_map.get(it.item_id) if it.item_id else None)
+                or doc_line_conversion.get(_sku)
+                or sku_conversion_map.get(_sku)
+                or 1
+            )
+        else:
+            conversion = 1
+        stock_qty = float(it.quantity_received) * conversion
+        cost: float | None = None
+        if is_consignment:
+            # Consigned goods are not bought, so only a cost given on the receipt applies.
+            cost = float(it.cost_price) * stock_qty if it.cost_price is not None else None
+        elif doc_type == "purchase_order" or it.receive_as == "stock":
+            cost = await _received_goods_cost(session, company_id, row.state, it, stock_qty)
+            if cost is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(f"{it.sku or it.name or it.item_id}: no line on this {doc_label} prices it, "
+                            f"so the received goods cannot be costed. Add it to the {doc_label} first."),
+                )
+        priced.append((conversion, stock_qty, cost))
+
     _new_parcel_count = sum(1 for it in payload.received_items if _creates_parcel(it))
     _recv_barcodes = await allocate_internal_codes(session, company_id, _new_parcel_count) if _new_parcel_count else []
     _recv_barcode_idx = 0
 
-    for it in payload.received_items:
+    for it, (conversion, stock_qty_received, received_cost) in zip(payload.received_items, priced):
         if it.item_id and not is_inbound:
             # PO (outbound-style): adjust quantity on the canonical catalog item.
             item = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
             if item is None:
                 raise HTTPException(status_code=404, detail=f"Item not found: {it.item_id}")
-            conversion = item_conversion_map.get(it.item_id, 1)
-            stock_qty_received = float(it.quantity_received) * conversion
             new_qty = float(item.state.get("quantity", 0) or 0) + stock_qty_received
-            adjustment: dict = {"new_qty": new_qty}
             # The receipt adds what these goods cost to the lot's basis, so a delivery at a new
             # price moves the lot's unit cost to the weighted average of old and new stock.
-            old_basis = goods_basis(item.state)
-            received_cost = await _received_goods_cost(session, company_id, row.state, it, stock_qty_received)
-            if received_cost is not None:
-                adjustment["cost_base"] = round_basis((old_basis or 0.0) + received_cost)
-            elif old_basis is not None:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(f"{item.state.get('sku') or it.item_id}: no line on this purchase order prices it, "
-                            "so the received stock cannot be costed. Add it to the order first."),
-                )
+            adjustment: dict = {"new_qty": new_qty,
+                                "cost_base": round_basis((goods_basis(item.state) or 0.0) + received_cost)}
             await emit_event(
                 session, company_id=company_id, entity_id=it.item_id, entity_type="item", event_type="item.quantity.adjusted",
                 data=adjustment,
@@ -3504,38 +3528,26 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 _v = _doc_val or _payload_val
                 if _v:
                     item_data[_f] = _v
-            # Resolve conversion factor: prefer the item_id-keyed factor (specific
-            # lot/template) when the line carries item_id, then doc-line override,
-            # then sku factor, then 1.
-            conversion = (
-                (item_conversion_map.get(it.item_id) if it.item_id else None)
-                or doc_line_conversion.get(_sku.strip())
-                or sku_conversion_map.get(_sku.strip())
-                or 1
-            )
             # Payload values always take precedence for the fields below
             item_data.update({
                 "sku": _sku,
                 "name": it.name,
-                "quantity": float(it.quantity_received) * conversion,
+                "quantity": stock_qty_received,
                 "location_id": payload.location_id,
             })
             # Fresh sequential barcode per physical lot (unique + scannable), taken
             # from the batch allocated under the code-namespace lock above.
             item_data["barcode"] = _recv_barcodes[_recv_barcode_idx]
             _recv_barcode_idx += 1
-            if it.cost_price is not None:
-                # Emit cost_total when quantity is known (cost_total is the primitive)
-                _recv_qty = float(it.quantity_received) * conversion
-                item_data["cost_total"] = it.cost_price * _recv_qty if _recv_qty else it.cost_price
+            if received_cost is not None:
+                item_data["cost_total"] = received_cost
             # Attach the per-unit landed cost allocated to this goods line: the projection derives
             # cost_total = cost_base + Σ(unit × quantity), so the parcel carries its landed share.
             _landed = bill_alloc.get(_sku.strip(), {})
             if _landed:
                 item_data["landed_contributions"] = {f"{entity_id}::{k}": u for k, u in _landed.items()}
-                _recv_qty_total = float(it.quantity_received) * conversion
                 for _k, _u in _landed.items():
-                    landed_drawdown[_k] = round_basis(landed_drawdown.get(_k, 0.0) + _u * _recv_qty_total)
+                    landed_drawdown[_k] = round_basis(landed_drawdown.get(_k, 0.0) + _u * stock_qty_received)
             if is_consignment:
                 item_data["consignment_flag"] = "in"
                 # Pair the new parcel with the consignment doc: inventory renders the
@@ -3572,24 +3584,15 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     )
 
     if doc_type == "purchase_order":
-        # A purchase order recognises goods + AP at receipt (its accounting point): Dr inventory / Cr AP.
-        po_total = float(row.state.get("total", 0) or 0)
-        if po_total == 0:
-            po_total = sum(
-                float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
-                for li in row.state.get("line_items", [])
-            )
-        _rcv_company = await session.get(Company, company_id)
-        _rcv_base_currency = (_rcv_company.settings.get("currency", "USD") if _rcv_company else "USD")
-        await auto_je.create_for_po_received(
-            session,
-            company_id=company_id,
-            user_id=user.id,
-            po_id=entity_id,
-            doc=row.state,
-            total=po_total,
-            unique_suffix=str(uuid.uuid4()),
-            base_currency=_rcv_base_currency,
+        # A purchase order books the goods this receipt brought in: Dr inventory / Cr AP. The
+        # bill it becomes books only what its receipts have not.
+        debits: dict[str, float] = {}
+        for it, (_, _, received_cost) in zip(payload.received_items, priced):
+            account = auto_je.po_receipt_account(row.state, it.receive_as)
+            debits[account] = debits.get(account, 0.0) + received_cost
+        await auto_je.create_for_po_receipt(
+            session, company_id=company_id, user_id=user.id, po_id=entity_id,
+            receipt_key=str(uuid.uuid4()), debits=debits,
             receive_date=datetime.now(timezone.utc).date().isoformat(),
         )
     elif doc_type == "bill" and landed_drawdown:
@@ -7320,16 +7323,25 @@ async def undo_receive(
 ) -> dict:
     """Undo a goods-received on a bill.
 
-    Disposes all inventory items created by the receive and reverses the AP/Inventory JE.
-    Clears received_items and received_item_ids on the bill projection.
+    Archives the parcels the receipts created and returns the landed cost they
+    capitalised. The bill still stands, so what it booked stays booked. Clears
+    received_items and received_item_ids on the bill projection.
     """
-    row = await _get_doc(session, company_id, entity_id)
+    await lock_item_code_namespace(session, company_id)
+    row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("doc_type") != "bill":
         raise HTTPException(status_code=409, detail="undo-receive is only valid for bills")
     received_item_ids = state.get("received_item_ids") or []
     if not received_item_ids:
         raise HTTPException(status_code=409, detail="No received goods to revert")
+    stock_lines = sum(1 for x in state.get("received_items") or [] if (x.get("receive_as") or "stock") == "stock")
+    if stock_lines != len(received_item_ids):
+        raise HTTPException(
+            status_code=409,
+            detail=("Some goods on this document were added to stock already on hand, so the receipt "
+                    "cannot be reverted here. Correct those quantities with a stock adjustment."),
+        )
 
     now = datetime.now(timezone.utc).isoformat()
 
@@ -7392,20 +7404,8 @@ async def undo_receive(
         metadata_={},
     )
 
-    po_total = float(state.get("total", 0) or 0)
-    if po_total == 0:
-        po_total = sum(
-            float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
-            for li in state.get("line_items", [])
-        )
-    await auto_je.create_for_receive_undone(
-        session,
-        company_id=company_id,
-        user_id=user.id,
-        bill_id=entity_id,
-        doc=state,
-        total_cost=po_total,
-        unique_suffix=undo_suffix,
+    await auto_je.void_landed_capitalisation(
+        session, company_id=company_id, user_id=user.id, doc_id=entity_id, undo_key=undo_suffix,
     )
 
     await session.commit()

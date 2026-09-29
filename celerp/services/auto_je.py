@@ -490,6 +490,39 @@ async def create_for_cn_application(session, *, company_id, user_id, doc_id: str
     )
 
 
+def po_receipt_account(doc: dict, receive_as: str = "stock") -> str:
+    """The account a purchase order receipt debits: stock by the order's purchase kind."""
+    if receive_as in ("expense", "asset"):
+        return {"expense": "6950", "asset": "1210"}[receive_as]
+    purchase_kind = str(doc.get("purchase_kind") or "inventory").strip().lower()
+    return {"expense": "6950", "asset": "1210"}.get(purchase_kind, _INVENTORY_ACCT)
+
+
+async def _post_po_receipt(session, *, company_id, user_id, po_id: str, receipt_key: str | None,
+                           debits: dict[str, float], receive_date: str | None) -> None:
+    """Dr each receipt account / Cr AP (2110) for the sum of the rounded debits."""
+    currency = await company_currency(session, company_id)
+    rounded = {acct: round_money(amount, currency) for acct, amount in debits.items()}
+    total = sum(rounded.values(), _Dec(0))
+    if total <= 0:
+        return
+    entries = [{"account": acct, "debit": to_stored_float(amt), "credit": 0.0} for acct, amt in rounded.items() if amt]
+    entries.append({"account": "2110", "debit": 0.0, "credit": to_stored_float(total)})
+    suffix = f":{receipt_key}" if receipt_key else ""
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{po_id}:rcv{suffix}",
+        idem_create=je_idempotency_key(po_id, f"po.received{suffix}", "c"),
+        idem_posted=je_idempotency_key(po_id, f"po.received{suffix}", "p"),
+        memo=f"Auto JE for {po_id} received",
+        ts=receive_date,
+        entries=entries,
+        metadata_={"trigger": "doc.received", "doc_id": po_id},
+    )
+
+
 async def create_for_po_received(
     session,
     *,
@@ -498,39 +531,47 @@ async def create_for_po_received(
     po_id: str,
     total: float,
     doc: dict | None = None,
-    unique_suffix: str | None = None,
     base_currency: str = "USD",
     receive_date: str | None = None,
 ) -> None:
-    purchase_kind = str((doc or {}).get("purchase_kind") or "inventory").strip().lower()
-    debit_account = {
-        "inventory": _INVENTORY_ACCT,
-        "expense": "6950",
-        "asset": "1210",
-    }.get(purchase_kind, _INVENTORY_ACCT)
-
+    """Receipt entry for a purchase order imported as already received: its whole total."""
     rate = require_doc_rate(doc or {}, base_currency)
-    base_total = to_base(float(total), rate, base_currency)
-
-    # suffix=None means "first receive" - use fixed key for backward compat with doctor/duplicate checks
-    # suffix provided means "re-receive after revert" - use unique key to avoid idempotency collision
-    suffix = unique_suffix if unique_suffix is not None else "0"
-    idem_suffix = f":{suffix}" if unique_suffix is not None else ""
-    await _emit_auto_posted_je(
-        session,
-        company_id=company_id,
-        user_id=user_id,
-        je_id=f"je:auto:{po_id}:rcv{idem_suffix}",
-        idem_create=je_idempotency_key(po_id, f"po.received{idem_suffix}", "c"),
-        idem_posted=je_idempotency_key(po_id, f"po.received{idem_suffix}", "p"),
-        memo=f"Auto JE for {po_id} received",
-        ts=receive_date,
-        entries=[
-            {"account": debit_account, "debit": base_total, "credit": 0.0},
-            {"account": "2110", "debit": 0.0, "credit": base_total},
-        ],
-        metadata_={"trigger": "doc.received", "doc_id": po_id, "purchase_kind": purchase_kind},
+    await _post_po_receipt(
+        session, company_id=company_id, user_id=user_id, po_id=po_id, receipt_key=None,
+        debits={po_receipt_account(doc or {}): to_base(float(total), rate, base_currency)},
+        receive_date=receive_date,
     )
+
+
+async def create_for_po_receipt(
+    session, *, company_id, user_id, po_id: str, receipt_key: str, debits: dict[str, float],
+    receive_date: str | None = None,
+) -> None:
+    """Receipt entry for one batch of goods received on a purchase order.
+
+    debits are what the received goods cost per account, in the books' currency:
+    the same amounts the receipt adds to the lots' cost."""
+    await _post_po_receipt(
+        session, company_id=company_id, user_id=user_id, po_id=po_id, receipt_key=receipt_key,
+        debits=debits, receive_date=receive_date,
+    )
+
+
+async def _doc_receipt_booked(session, company_id, doc_id: str) -> dict[str, _Dec]:
+    """Net debit per account of the posted receipt entries of a document."""
+    prefix = f"je:auto:{doc_id}:rcv"
+    rows = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+        Projection.entity_id.startswith(prefix, autoescape=True),
+    ))).scalars().all()
+    net: dict[str, _Dec] = {}
+    for row in rows:
+        if row.state.get("status") != "posted" or not (row.entity_id == prefix or row.entity_id.startswith(f"{prefix}:")):
+            continue
+        for e in row.state.get("entries") or []:
+            net[e["account"]] = net.get(e["account"], _Dec(0)) + to_decimal(e.get("debit") or 0) - to_decimal(e.get("credit") or 0)
+    return net
 
 
 # Landed-cost clearing accounts: capitalisable import charges park here at bill posting and
@@ -622,7 +663,8 @@ async def create_for_bill_conversion(
 ) -> None:
     """Create JE when a bill is finalized (direct bill) or when a PO is converted to a bill.
 
-    Debit per-line expense/inventory accounts, credit AP (2110).
+    Debit per-line expense/inventory accounts, credit AP (2110), less what the
+    document's purchase order receipts already booked.
     Line-level account_code takes priority; otherwise defaults to 1130 (inventory)
     for lines with SKU, 6950 (misc expense) for lines without.
     """
@@ -692,6 +734,19 @@ async def create_for_bill_conversion(
     debits[largest] += to_decimal(base_total) - sum(debits, _Dec(0))
     entries = [{"account": acct, "debit": to_stored_float(d), "credit": 0.0} for (acct, _), d in zip(lines, debits)]
     entries.append({"account": "2110", "debit": 0.0, "credit": base_total})
+    # What the document's purchase order receipts already booked is not booked again, so
+    # receiving before or after finalizing ends in the same books.
+    booked = await _doc_receipt_booked(session, company_id, doc_id)
+    if booked:
+        net: dict[str, _Dec] = {}
+        for e in entries:
+            net[e["account"]] = net.get(e["account"], _Dec(0)) + to_decimal(e["debit"]) - to_decimal(e["credit"])
+        for acct, amount in booked.items():
+            net[acct] = net.get(acct, _Dec(0)) - amount
+        entries = [{"account": acct, "debit": to_stored_float(max(v, _Dec(0))), "credit": to_stored_float(max(-v, _Dec(0)))}
+                   for acct, v in net.items() if v]
+        if not entries:
+            return
 
     await _emit_auto_posted_je(
         session,
@@ -1332,43 +1387,20 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
     )
 
 
-async def create_for_receive_undone(
-    session,
-    *,
-    company_id,
-    user_id,
-    bill_id: str,
-    doc: dict | None = None,
-    total_cost: float,
-    unique_suffix: str,
-) -> None:
-    """Reverse the PO-received JE when goods-received is undone: Debit AP (2110) / Credit Inventory account.
-
-    unique_suffix must be unique per call so repeated undo attempts each get their own JE.
-    """
-    if total_cost <= 0:
-        return
-    purchase_kind = str((doc or {}).get("purchase_kind") or "inventory").strip().lower()
-    credit_account = {
-        "inventory": _INVENTORY_ACCT,
-        "expense": "6950",
-        "asset": "1210",
-    }.get(purchase_kind, _INVENTORY_ACCT)
-    await _emit_auto_posted_je(
-        session,
-        company_id=company_id,
-        user_id=user_id,
-        je_id=f"je:auto:{bill_id}:rcv:undo:{unique_suffix}",
-        idem_create=je_idempotency_key(bill_id, f"receive.undo.{unique_suffix}", "c"),
-        idem_posted=je_idempotency_key(bill_id, f"receive.undo.{unique_suffix}", "p"),
-        memo=f"Auto JE for {bill_id} goods-received undone",
-        ts=__import__("datetime").date.today().isoformat(),
-        entries=[
-            {"account": "2110", "debit": float(total_cost), "credit": 0.0},
-            {"account": credit_account, "debit": 0.0, "credit": float(total_cost)},
-        ],
-        metadata_={"trigger": "doc.receive_undone", "doc_id": bill_id, "purchase_kind": purchase_kind},
-    )
+async def void_landed_capitalisation(session, *, company_id, user_id, doc_id: str, undo_key: str) -> None:
+    """Return the landed cost a bill's receipts capitalised to the clearing accounts."""
+    prefix = f"je:auto:{doc_id}:landed-cap:"
+    rows = (await session.execute(_select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+        Projection.entity_id.startswith(prefix, autoescape=True),
+    ))).scalars().all()
+    for row in rows:
+        await _void_je_if_posted(
+            session, company_id=company_id, user_id=user_id, doc_id=doc_id, je_id=row.entity_id,
+            idem_key=f"{row.entity_id}:void:{undo_key}", reason="Goods received undone",
+            trigger="doc.receive_undone",
+        )
 
 
 async def create_for_mfg_completed(session, *, company_id, user_id, order_id: str, input_cost: float, waste_cost: float) -> None:

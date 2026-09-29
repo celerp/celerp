@@ -123,7 +123,7 @@ async def test_receive_po_create_item_from_sku_name(client):
     r = await client.post("/docs", headers=_h(tok), json={
         "doc_type": "purchase_order",
         "contact_id": "s2",
-        "line_items": [],
+        "line_items": [{"sku": "SKU-NEW", "name": "New Widget", "quantity": 5, "unit_price": 4}],
         "subtotal": 20,
         "tax": 0,
         "total": 20,

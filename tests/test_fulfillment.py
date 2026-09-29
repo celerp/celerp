@@ -638,17 +638,17 @@ async def test_revert_bill_with_received_goods_names_return_goods(client, auth, 
     """A bill whose goods were received cannot revert to draft; the 409 names the Return Goods
     action on the bill's lines as the way to clear it."""
     h = auth["headers"]
+    sku = f"RG-{uuid.uuid4().hex[:6]}"
     r = await client.post("/docs", headers=h, json={
         "doc_type": "bill",
         "ref_id": f"BILL-{uuid.uuid4().hex[:6]}",
-        "line_items": [{"name": "Received widget", "sku": f"RG-{uuid.uuid4().hex[:6]}", "quantity": 2,
+        "line_items": [{"name": "Received widget", "sku": sku, "quantity": 2,
                         "unit_price": 15.0, "sell_by": "piece"}],
         "subtotal": 30, "tax": 0, "total": 30,
     })
     assert r.status_code == 200, r.text
     bill_id = r.json()["id"]
     assert (await client.post(f"/docs/{bill_id}/finalize", headers=h)).status_code == 200
-    sku = r.json()["line_items"][0]["sku"] if r.json().get("line_items") else None
     received = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
         "location_id": "",
         "received_items": [{"sku": sku, "name": "Received widget", "quantity_received": 2.0}],

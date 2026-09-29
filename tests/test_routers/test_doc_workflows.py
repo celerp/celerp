@@ -334,7 +334,7 @@ async def test_po_receive_quotation_convert_and_credit_note_adjustment(client, s
     po = await client.post(
         "/docs",
         headers=_h(token),
-        json={"doc_type": "purchase_order", "contact_id": "supplier:1", "line_items": [{"quantity": 2}, {"quantity": 3}], "subtotal": 50, "tax": 0, "total": 50},
+        json={"doc_type": "purchase_order", "contact_id": "supplier:1", "line_items": [{"quantity": 2, "unit_price": 10}, {"quantity": 3, "unit_price": 10}], "subtotal": 50, "tax": 0, "total": 50},
     )
     po_id = po.json()["id"]
 

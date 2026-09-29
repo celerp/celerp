@@ -689,8 +689,9 @@ async def test_doctor_ghost_events_clean_data(client, session):
 # --- Doctor fix: PO missing JE (fix path) with no existing JE ---
 
 @pytest.mark.asyncio
-async def test_doctor_fix_po_missing_je(client, session):
-    """Import a received PO via lifecycle event (no hook), then doctor fix creates JE."""
+async def test_doctor_does_not_post_an_order_total_for_a_receipt(client, session):
+    """Each receipt books the goods it brought in, so a received order owes no
+    separate entry for its total and Doctor must not post one."""
     import uuid as _uuid
     token = await _register(client)
     entity_id = f"doc:po-missing-{_uuid.uuid4().hex[:8]}"
@@ -710,14 +711,11 @@ async def test_doctor_fix_po_missing_je(client, session):
         {"location_id": "loc:default", "received_items": []},
     )
 
-    # Doctor fix: creates the missing PO received JE
     r2 = await client.post("/admin/doctor?checks=missing_jes&fix=true", headers=_h(token))
     assert r2.status_code == 200
-    data = r2.json()
-    missing = next(c for c in data["results"] if c["check"] == "missing_jes")
-    # Should find at least the PO (received, no JE) and fix it
-    assert missing["found"] >= 1
-    assert missing["fixed"] >= 1
+    missing = next(c for c in r2.json()["results"] if c["check"] == "missing_jes")
+    assert [d for d in missing["details"] if d.get("doc_id") == entity_id] == []
+    assert missing["fixed"] == 0
 
 
 # --- Connector sync error paths ---

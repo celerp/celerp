@@ -141,7 +141,7 @@ async def test_po_receive_creates_inventory_or_adjusts_and_je(client):
     po = await client.post(
         "/docs",
         headers=_h(token),
-        json={"doc_type": "purchase_order", "contact_id": "contact:sup", "line_items": [{"quantity": 2}, {"quantity": 3}], "subtotal": 50, "tax": 0, "total": 50},
+        json={"doc_type": "purchase_order", "contact_id": "contact:sup", "line_items": [{"quantity": 2, "unit_price": 10}, {"quantity": 3, "unit_price": 10}], "subtotal": 50, "tax": 0, "total": 50},
     )
     po_id = po.json()["id"]
 
