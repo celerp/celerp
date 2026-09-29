@@ -712,3 +712,46 @@ async def test_prepared_by_is_validated_and_persisted(client, session, migration
     # The owner is on an inactive staged company; move another company from it with no preparer.
     _, second_run = await migrate_as_owner(client, owner_token, prepared_by="")
     assert (await session.get(MigrationRun, uuid.UUID(second_run))).prepared_by is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("names", [("Raced Co", "Raced Co"), ("Raced Co", "Other Co")])
+async def test_concurrent_start_from_scan_starts_one_migration(real_client, real_engine, migration_env, names):
+    """Two simultaneous starts from one scan create one company and one run; the other is refused."""
+    from celerp.services import migrations
+
+    admin_token = await register_admin(real_client)
+    companies = await count(real_engine, "companies")
+    r = await scan_upload(real_client, fake_bytes(), token=admin_token)
+    scan_token = r.json()["scan_token"]
+    assert (await save_decisions(real_client, scan_token, token=admin_token)).status_code == 200
+
+    async def start(name):
+        return await real_client.post("/migrations/start-from-scan", headers=auth(admin_token),
+                                      json={"scan_token": scan_token, "company_name": name})
+
+    results = await asyncio.gather(*(start(name) for name in names))
+    assert sorted(r.status_code for r in results) == [201, 409], [r.text for r in results]
+    refused = next(r for r in results if r.status_code == 409)
+    assert refused.json()["detail"] == migrations.SCAN_ALREADY_STARTED
+    assert await count(real_engine, "companies") == companies + 1
+    assert await count(real_engine, "migration_runs") == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_bootstrap_start_starts_one_migration(real_client, real_engine, migration_env):
+    """Two simultaneous first-run starts from one scan create one owner, one company and one run."""
+    r = await scan_upload(real_client, fake_bytes())
+    scan_token = r.json()["scan_token"]
+    assert (await save_decisions(real_client, scan_token)).status_code == 200
+
+    async def start():
+        return await real_client.post("/migrations/bootstrap/start", json={
+            "scan_token": scan_token, "company_name": "Moved Co", "name": "Owner",
+            "email": "owner@example.com", "password": "ownerpw123"})
+
+    results = await asyncio.gather(start(), start())
+    assert sorted(r.status_code for r in results) == [201, 409], [r.text for r in results]
+    assert await count(real_engine, "users") == 1
+    assert await count(real_engine, "companies") == 1
+    assert await count(real_engine, "migration_runs") == 1

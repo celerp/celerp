@@ -209,6 +209,7 @@ async def _start(session: AsyncSession, *, user: User, company_name: str, scan: 
     """Stage the company, claim the scan and persist the run as running, in one commit.
 
     Returns the token pair for the new company plus the run id; the caller schedules the runner."""
+    await migrations.lock_scan_for_start(session, scan)
     company = await provision_migration_company(session, owner=user, company_name=company_name)
     run = await migrations.create_run(session, company=company, user=user, scan=scan, decisions=decisions)
     try:

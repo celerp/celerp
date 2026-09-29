@@ -69,6 +69,7 @@ STALE_AFTER = timedelta(seconds=120)
 
 NOT_FOUND = "Migration not found."
 ALREADY_RUNNING = "Migration is already running."
+SCAN_ALREADY_STARTED = "This upload was already used to start a migration, or it was replaced."
 NO_UNFINISHED = "This company has no unfinished migration to discard."
 NOTHING_TO_MIGRATE = "The source file contains no records to migrate."
 
@@ -291,8 +292,25 @@ def _lock_key(run_id: uuid.UUID) -> str:
     return f"migration:{run_id}"
 
 
+async def _try_key_lock(session: AsyncSession, key: str) -> bool:
+    return bool(await session.scalar(text("SELECT pg_try_advisory_xact_lock(hashtext(:k))"), {"k": key}))
+
+
 async def _try_xact_lock(session: AsyncSession, run_id: uuid.UUID) -> bool:
-    return bool(await session.scalar(text("SELECT pg_try_advisory_xact_lock(hashtext(:k))"), {"k": _lock_key(run_id)}))
+    return await _try_key_lock(session, _lock_key(run_id))
+
+
+async def lock_scan_for_start(session: AsyncSession, scan: store.ScanSession) -> None:
+    """Hold the scan for one start until the caller's transaction ends.
+
+    Call before anything is provisioned: a second start from the same scan is refused
+    while the first is in progress, and after it commits, because the scan is gone."""
+    if not await _try_key_lock(session, f"migration-scan:{scan.token}"):
+        raise MigrationError(409, SCAN_ALREADY_STARTED)
+    try:
+        store.load_scan(scan.token, owner=scan.owner)
+    except store.ScanStoreError:
+        raise MigrationError(409, SCAN_ALREADY_STARTED) from None
 
 
 def _illegal(action: str, run: MigrationRun) -> MigrationError:
