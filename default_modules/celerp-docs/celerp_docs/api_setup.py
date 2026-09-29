@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """API route registration for celerp-docs module."""
 
+from celerp.importers.sinks import register_sink
 from celerp_docs.routes import router as docs_router, lists_router
 
 
@@ -9,6 +10,9 @@ def setup_api_routes(app) -> None:
     from celerp_docs.routes_share import public_router as share_public_router, router as share_router
     from celerp_docs.routes_payments import public_router as pay_public_router, router as pay_router
     from celerp_docs.received import router as received_router
+    from celerp_docs.migration_sink import SINK
+
+    register_sink(SINK)
     # share.public_router and received_router must come before docs.router so
     # /docs/import and /docs/received aren't swallowed by /docs/{entity_id}
     app.include_router(share_public_router, tags=["share-public"])

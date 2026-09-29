@@ -4658,127 +4658,13 @@ async def batch_import_docs(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> BatchImportResult:
-    from sqlalchemy import select as _select
+    from celerp_docs import import_service
 
-    from celerp.models.ledger import LedgerEntry
-
-    keys = [r.idempotency_key for r in body.records]
-    existing_keys = set((await session.execute(
-        _select(LedgerEntry.idempotency_key).where(
-            LedgerEntry.company_id == company_id,
-            LedgerEntry.idempotency_key.in_(keys),
-        )
-    )).scalars().all())
-
-    # Pre-check existing entity_ids for doc.created events (entity guard)
-    create_entity_ids = [r.entity_id for r in body.records if r.event_type == "doc.created"]
-    existing_entities: set[str] = set()
-    if create_entity_ids:
-        existing_entities = set((await session.execute(
-            _select(Projection.entity_id).where(
-                Projection.company_id == company_id,
-                Projection.entity_id.in_(create_entity_ids),
-            )
-        )).scalars().all())
-
-    created = skipped = updated = 0
-    skipped_existing = 0
-    errors: list[str] = []
-    _batch_company = await session.get(Company, company_id)
-    _batch_base_currency = (_batch_company.settings.get("currency", "USD") if _batch_company else "USD")
-    # Fail authorization before the first row writes, so a mixed-status import cannot
-    # partially apply before discovering that the caller lacks a lifecycle permission.
-    for rec in body.records:
-        if rec.event_type == "doc.created":
-            _assert_doc_import_permissions(settings, role, rec.data)
-    for rec in body.records:
-        if rec.event_type != "doc.created":
-            if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
-            skipped += 1
-            continue
-
-        # A row names an existing document either by the key an earlier import gave it or,
-        # for one made in the app, by its id; with upsert on, either is updated.
-        if rec.idempotency_key in existing_keys:
-            replay = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
-            if replay is None or replay.event_type != "doc.created" or replay.entity_id != rec.entity_id:
-                if len(errors) < 10:
-                    errors.append(f"{rec.entity_id}: idempotency key belongs to another operation")
-                skipped += 1
-                continue
-            if not body.upsert:
-                skipped += 1
-                continue
-        elif rec.entity_id in existing_entities:
-            if not body.upsert:
-                skipped_existing += 1
-                continue
-        if rec.idempotency_key in existing_keys or rec.entity_id in existing_entities:
-            try:
-                row = await _get_doc(session, company_id, rec.entity_id)
-                fields_changed = _doc_import_fields_changed(row.state, rec.data)
-                if not fields_changed:
-                    skipped += 1
-                    continue
-                canonical_patch = json.dumps(fields_changed, sort_keys=True, separators=(",", ":"), default=str)
-                upsert_idem = (
-                    f"{rec.idempotency_key}:upsert:"
-                    f"{hashlib.sha256(canonical_patch.encode()).hexdigest()}"
-                )
-                result = await patch_doc(
-                    rec.entity_id,
-                    DocPatch(fields_changed=fields_changed, idempotency_key=upsert_idem),
-                    company_id=company_id,
-                    _=None,
-                    role=role,
-                    settings=settings,
-                    user=user,
-                    session=session,
-                )
-                if result.get("event_id") is None:
-                    skipped += 1
-                else:
-                    updated += 1
-            except Exception as exc:
-                if len(errors) < 10:
-                    errors.append(f"{rec.entity_id}: {exc}")
-            continue
-
-        try:
-            await _lock_imported_contact(session, company_id, "doc", rec.data)
-            await _assert_import_number_free(session, company_id, "doc", rec.data)
-            if auto_je.import_auto_je_kind(rec.data) is not None:
-                _require_doc_rate_http(rec.data, _batch_base_currency)
-            entry = await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=rec.entity_id,
-                entity_type="doc",
-                event_type="doc.created",
-                data=rec.data,
-                actor_id=user.id,
-                location_id=None,
-                source=rec.source,
-                idempotency_key=rec.idempotency_key,
-                metadata_=_import_metadata(rec.source_ts),
-            )
-            existing_keys.add(rec.idempotency_key)
-            existing_entities.add(entry.entity_id)
-            if not getattr(entry, "was_deduped", False):
-                await _import_auto_je(
-                    session, company_id, user.id, entry.entity_id, rec.data,
-                    base_currency=_batch_base_currency,
-                )
-                created += 1
-            else:
-                skipped += 1
-        except Exception as exc:
-            if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {exc}")
-
+    outcome = await import_service.import_doc_records(
+        session, company_id, user, role, settings, body.records, upsert=body.upsert,
+    )
     await session.commit()
-    return BatchImportResult(created=created, skipped=skipped + skipped_existing, updated=updated, errors=errors)
+    return BatchImportResult(**outcome.route_counts())
 
 
 # ---------------------------------------------------------------------------
