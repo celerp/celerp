@@ -16,6 +16,7 @@ from copy import deepcopy
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event
+from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS
 from celerp.services.terms import DEFAULT_TERMS_CONDITIONS as _DEFAULT_TERMS_CONDITIONS, normalize_terms_templates
 
 
@@ -1477,17 +1478,6 @@ _VERTICAL_ITEMS: dict[str, list[dict]] = {
 }
 
 
-# --- Default payment terms (used when no vertical match) ---
-_DEFAULT_PAYMENT_TERMS: list[dict] = [
-    {"name": "Pay in Advance", "days": 0, "description": "Full payment before delivery"},
-    {"name": "Cash on Delivery", "days": 0, "description": "Payment on receipt of goods"},
-    {"name": "Deposit (50%)", "days": 0, "description": "50% deposit upfront, balance on delivery"},
-    {"name": "Net 7", "days": 7, "description": "Due within 7 days"},
-    {"name": "Net 15", "days": 15, "description": "Due within 15 days"},
-    {"name": "Net 30", "days": 30, "description": "Due within 30 days"},
-    {"name": "Net 60", "days": 60, "description": "Due within 60 days"},
-]
-
 # Industry-specific payment terms
 _VERTICAL_PAYMENT_TERMS: dict[str, list[dict]] = {
     "gemstones": [
@@ -1607,7 +1597,7 @@ _VERTICAL_TERMS_CONDITIONS: dict[str, list[dict]] = {
 
 def payment_terms_for(vertical: str | None) -> list[dict]:
     """The system default payment terms for a business type (generic when it has none)."""
-    return deepcopy(_VERTICAL_PAYMENT_TERMS.get(vertical or "", _DEFAULT_PAYMENT_TERMS))
+    return deepcopy(_VERTICAL_PAYMENT_TERMS.get(vertical or "", DEFAULT_PAYMENT_TERMS))
 
 
 def terms_conditions_for(vertical: str | None) -> list[dict]:

@@ -217,3 +217,15 @@ async def test_lifecycle_permission_required(client):
     r = await _set(client, admin_h, "gemstones")
     assert r.status_code == 403
     assert (await _settings(client, h)).get("vertical") is None
+
+
+@pytest.mark.asyncio
+async def test_generic_payment_terms_are_the_list_users_see(client):
+    import celerp.routers.companies as companies
+    import celerp.services.payment_terms as payment_terms
+    assert companies.DEFAULT_PAYMENT_TERMS is payment_terms.DEFAULT_PAYMENT_TERMS
+    h = await _owner(client)
+    await _patch_settings(client, h, {"payment_terms": []})
+    shown = (await client.get("/companies/me/payment-terms", headers=h)).json()
+    assert shown == payment_terms_for(None)
+    assert "Net 90" in [t["name"] for t in shown]
