@@ -2647,20 +2647,22 @@ celerpUpdateBulkAlloc();
             # from the ordinary patch and let the backend repricer update header + lines
             # atomically. This also covers contact-driven/default price-list changes.
             new_pl = patch.pop("price_list", None)
+            version = None
             # ref_id edits go through /renumber (works on finalized docs; patch_doc rejects them)
             if field == "ref_id":
                 await api.renumber_doc(token, entity_id, value)
             elif patch:
-                await api.patch_doc(token, entity_id, patch)
+                # Pin repricing to the exact version this patch produced. A version read
+                # afterwards could be another user's newer contact, which this reprice
+                # must not overwrite; with the patch's own version it is refused instead.
+                version = (await api.patch_doc(token, entity_id, patch)).get("version")
             if new_pl:
-                # Read the projection after any companion patch and pin repricing to
-                # that authoritative version. Do not infer projection state from a
-                # transport return value.
-                current = await api.get_doc(token, entity_id)
-                expected_version = current.get("version")
-                if expected_version is None:
+                if not patch:
+                    # A direct price-list change writes nothing before the reprice.
+                    version = (await api.get_doc(token, entity_id)).get("version")
+                if version is None:
                     raise APIError(409, "Reload the document before repricing")
-                await api.reprice_doc(token, entity_id, new_pl, int(expected_version))
+                await api.reprice_doc(token, entity_id, new_pl, int(version))
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return _action_error(str(e.detail))
@@ -2987,7 +2989,7 @@ celerpUpdateBulkAlloc();
             if isinstance(e.data, dict) and e.data.get("conflicts"):
                 payload["reserved_conflicts"] = e.data["conflicts"]
             return JSONResponse(payload, status_code=400)
-        return JSONResponse({"ok": True, "version": result.get("event_id")})
+        return JSONResponse({"ok": True, "version": result.get("version")})
 
     async def _proxy_reprice(request: Request, entity_id: str, reprice_fn):
         """Transport-only Web UI adapter; all repricing semantics live in celerp-docs."""
@@ -5231,9 +5233,8 @@ async def _select_list_contact(token: str, entity_id: str, contact_id: str) -> N
                 if contact.get("currency"):
                     patch["currency"] = contact["currency"]
                 price_list = await _contact_price_list(token, contact)
-    await api.patch_list(token, entity_id, patch)
+    version = (await api.patch_list(token, entity_id, patch)).get("version")
     if price_list:
-        version = (await api.get_list(token, entity_id)).get("version")
         if version is None:
             raise APIError(409, "Reload the list before repricing")
         await api.reprice_list(token, entity_id, price_list, int(version))

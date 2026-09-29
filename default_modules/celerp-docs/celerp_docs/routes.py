@@ -1573,7 +1573,7 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
         if replay is not None:
             if replay.event_type != "doc.updated" or replay.entity_id != entity_id:
                 raise HTTPException(status_code=409, detail="Idempotency key was already used for another operation")
-            return {"event_id": replay.id}
+            return {"event_id": replay.id, "version": replay.id}
     # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
     _FINALIZED_EDITABLE_FIELDS = {
         "description", "customer_note", "internal_note",
@@ -1710,7 +1710,7 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
         if old != new:
             effective[k] = {"old": old, "new": new}
     if not effective:
-        return {"event_id": None}
+        return {"event_id": None, "version": row.version}
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
         data={"fields_changed": effective, "idempotency_key": payload.idempotency_key},
@@ -1718,7 +1718,9 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
     await session.commit()
-    return {"event_id": entry.id}
+    # entry.id is the document's new version, so a follow-up versioned write (a contact-driven
+    # reprice) pins exactly the state this patch produced, as patch_list does.
+    return {"event_id": entry.id, "version": entry.id}
 
 
 async def _sender_reply_to(session: AsyncSession, company_id, user) -> str:

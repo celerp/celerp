@@ -121,10 +121,12 @@ async def test_list_contact_display_shows_name_not_id(ui_client):
 # ── Selection: snapshot, precedence, repricing ─────────────────────────────
 
 @pytest.mark.asyncio
-async def test_list_contact_selection_snapshots_customer_and_reprices_at_post_patch_version(ui_client):
-    pre, post = _list(version=10), _list(version=11, contact_id="contact:alice")
+async def test_list_contact_selection_snapshots_customer_and_reprices_at_patch_version(ui_client):
+    # A read after the patch would see version 12 (another user's newer customer); the
+    # reprice must pin 11, the version this patch produced, so a stale reprice is refused.
+    pre, newer = _list(version=10), _list(version=12, contact_id="contact:bob")
     with (
-        patch("ui.api_client.get_list", new=AsyncMock(side_effect=[pre, post])) as mock_get,
+        patch("ui.api_client.get_list", new=AsyncMock(side_effect=[pre, newer])) as mock_get,
         patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACT)),
         patch("ui.api_client.patch_list", new=AsyncMock(return_value={"version": 11})) as mock_patch,
         patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
@@ -150,14 +152,14 @@ async def test_list_contact_selection_snapshots_customer_and_reprices_at_post_pa
     }
     # The price list is not a header write: the repricer owns header + lines.
     assert mock_reprice.await_args.args[1:] == ("list:Q-1", "Wholesale", 11)
-    assert mock_get.await_count == 2
+    assert mock_get.await_count == 1
 
 
 @pytest.mark.asyncio
 async def test_list_contact_without_price_list_falls_back_to_company_default(ui_client):
     contact = {k: v for k, v in _CONTACT.items() if k != "price_list"}
     with (
-        patch("ui.api_client.get_list", new=AsyncMock(side_effect=[_list(), _list(version=12)])),
+        patch("ui.api_client.get_list", new=AsyncMock(return_value=_list())),
         patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
         patch("ui.api_client.patch_list", new=AsyncMock(return_value={"version": 12})),
         patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
@@ -193,7 +195,7 @@ async def test_list_reprice_error_is_reported(ui_client):
     """A rejected reprice (stale version, missing price permission) surfaces, never a silent redirect."""
     from ui.api_client import APIError
     with (
-        patch("ui.api_client.get_list", new=AsyncMock(side_effect=[_list(), _list(version=11)])),
+        patch("ui.api_client.get_list", new=AsyncMock(return_value=_list())),
         patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACT)),
         patch("ui.api_client.patch_list", new=AsyncMock(return_value={"version": 11})),
         patch("ui.api_client.reprice_list", new=AsyncMock(side_effect=APIError(403, "Missing permission: set_sales_doc_prices"))),
@@ -233,11 +235,13 @@ async def test_document_contact_selection_uses_the_same_snapshot(ui_client):
 
     doc = {"entity_id": "doc:INV-1", "doc_type": "invoice", "status": "draft", "version": 5,
            "issue_date": "2026-01-01"}
+    # After the patch (version 6) another user's contact change moved the document to 7.
+    newer = {**doc, "version": 7, "contact_id": "contact:bob"}
     with (
-        patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
+        patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc, newer, newer])),
         patch("ui.api_client.get_contact", new=AsyncMock(return_value=_CONTACT)),
         patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[{"name": "Net 30", "days": 30}])),
-        patch("ui.api_client.patch_doc", new=AsyncMock()) as mock_patch,
+        patch("ui.api_client.patch_doc", new=AsyncMock(return_value={"event_id": 6, "version": 6})) as mock_patch,
         patch("ui.api_client.reprice_doc", new=AsyncMock(return_value={"ok": True})) as mock_reprice,
     ):
         r = await ui_client.patch("/docs/doc:INV-1/field/contact_id", data={"value": "contact:alice"},
@@ -249,4 +253,6 @@ async def test_document_contact_selection_uses_the_same_snapshot(ui_client):
     assert sent["payment_terms"] == "Net 30"
     assert sent["due_date"] == "2026-01-31"
     assert sent["currency"] == "EUR"
-    assert mock_reprice.await_args.args[1:] == ("doc:INV-1", "Wholesale", 5)
+    # Repriced at the version the contact patch produced, never a later read.
+    assert mock_reprice.await_args.args[1:] == ("doc:INV-1", "Wholesale", 6)
+    assert mock_reprice.await_count == 1

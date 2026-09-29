@@ -11141,9 +11141,9 @@ class TestDocPaymentTermsAutoPopulate:
         doc_post = {**doc_pre, "version": 11, "payment_terms": "Net 30", "due_date": "2026-01-31", "contact_id": "ct:1", "price_list": "Retail"}
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
-            patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc_pre, doc_post, doc_post])),
+            patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc_pre, doc_post])),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
-            patch("ui.api_client.patch_doc", new=AsyncMock()) as mock_patch,
+            patch("ui.api_client.patch_doc", new=AsyncMock(return_value={"event_id": 11, "version": 11})) as mock_patch,
             patch("ui.api_client.reprice_doc", new=AsyncMock(return_value={
                 "ok": True, "version": 12, "repriced": 0, "skipped": [], "price_list": "Retail",
             })) as mock_reprice,
