@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Regression coverage for the final PR 357 invariant fixes."""
+"""Currency precision, stock audit and contact reference invariants."""
 from __future__ import annotations
 
 import asyncio
@@ -8,7 +8,7 @@ import types
 import uuid
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event

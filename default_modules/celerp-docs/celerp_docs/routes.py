@@ -2584,7 +2584,6 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                 ),
             )
     amount = to_stored_float(amount_d)
-    outstanding = to_stored_float(outstanding_d)
     body["amount"] = amount
     bank_code = body.get("bank_account")
     if not bank_code:
