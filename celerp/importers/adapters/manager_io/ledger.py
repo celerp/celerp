@@ -1,0 +1,297 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: BUSL-1.1
+"""The general-ledger effect of a decoded Manager book, and what a migration imports.
+
+Postings are computed from the source records alone, so the same numbers serve
+both the CIF conversion and the independent source-side reconciliation
+expectations. Amounts are base currency, debit positive; `native` holds the
+same amount in the record's own currency.
+
+Full history imports every record. Cutover imports the documents still open at
+the cutover date, the settlement portions allocated to them, one opening
+journal carrying every other balance, and an opening stock position per item.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import date
+from decimal import Decimal
+
+from celerp.importers.adapters.base import MigrationDecisions, ScanError
+from celerp.importers.adapters.manager_io.book import AP, AR, FX_GAIN, INVENTORY, Book, Document, Settlement
+from celerp.importers.schema import CIFMode
+from celerp.services.money import round_money
+
+ZERO = Decimal(0)
+SALES_TYPES = ("SalesInvoice", "CreditNote")
+# Sign of the customer or supplier balance posting: an invoice and a debit note raise a debit there.
+PARTY_SIGN = {"SalesInvoice": 1, "CreditNote": -1, "PurchaseInvoice": -1, "DebitNote": 1}
+
+
+@dataclass(frozen=True)
+class Posting:
+    record: str
+    part: str                                  # document, settlement, fx, fallback, transfer, journal, opening
+    date: date
+    account: str
+    amount: Decimal                            # base currency, debit positive
+    native: Decimal                            # the same amount in the record currency
+    contact: str | None = None
+    item: str | None = None
+    quantity: Decimal = ZERO
+    description: str | None = None
+    document: str | None = None                # the document a settlement posting settles
+
+
+@dataclass(frozen=True)
+class DocumentState:
+    amount_paid: Decimal
+    amount_outstanding: Decimal
+    status: str
+
+
+@dataclass
+class Ledger:
+    book: Book
+    mode: CIFMode
+    cutover: date | None
+    postings: list[Posting] = field(default_factory=list)          # every posting in scope
+    states: dict[str, DocumentState] = field(default_factory=dict)
+    documents: list[str] = field(default_factory=list)             # imported document keys
+    allocations: dict[str, list[tuple[str, Decimal]]] = field(default_factory=dict)  # imported, native
+    settlement_amounts: dict[str, Decimal] = field(default_factory=dict)             # imported, native
+    opening: list[Posting] = field(default_factory=list)
+    opening_stock: dict[str, tuple[Decimal, Decimal]] = field(default_factory=dict)
+    realized: Decimal = ZERO
+    unrealized: dict | None = None
+
+    @property
+    def opening_key(self) -> str:
+        return f"opening:{self.cutover.isoformat()}" if self.cutover else "opening"
+
+    def balances(self, postings: list[Posting] | None = None) -> dict[str, Decimal]:
+        out: dict[str, Decimal] = defaultdict(lambda: ZERO)
+        for p in self.postings if postings is None else postings:
+            out[p.account] += p.amount
+        return dict(out)
+
+    def imported_postings(self) -> list[Posting]:
+        """Postings the imported records carry, excluding the opening journal."""
+        docs = set(self.documents)
+        if self.mode == CIFMode.FULL_HISTORY:
+            return list(self.postings)
+        return [p for p in self.postings if (p.part == "document" and p.record in docs)
+                or (p.part == "settlement" and p.document in docs)]
+
+
+def _base(book: Book, native: Decimal, rate: Decimal | None) -> Decimal:
+    return native if rate is None else round_money(native * rate, book.base_code)
+
+
+def _document_postings(book: Book, doc: Document) -> list[Posting]:
+    party_sign = PARTY_SIGN[doc.source_type]
+    party = AR if doc.source_type in SALES_TYPES else AP
+    out: list[Posting] = []
+    for line in doc.lines:
+        account = INVENTORY if line.item else line.account
+        qty = -party_sign * line.quantity if line.item else ZERO
+        out.append(Posting(doc.key, "document", doc.date, account, -party_sign * _base(book, line.net, doc.rate),
+                           -party_sign * line.net, item=line.item, quantity=qty, description=line.description))
+        if line.tax:
+            tax_account = book.tax_codes[line.tax_code].account
+            out.append(Posting(doc.key, "document", doc.date, tax_account,
+                               -party_sign * _base(book, line.tax, doc.rate), -party_sign * line.tax))
+    total_base = -sum((p.amount for p in out), ZERO)
+    out.append(Posting(doc.key, "document", doc.date, party, total_base, party_sign * doc.total, contact=doc.contact))
+    return out
+
+
+def _settlement_postings(book: Book, s: Settlement) -> list[Posting]:
+    bank_sign = 1 if s.source_type == "Receipt" else -1
+    party = AR if s.source_type == "Receipt" else AP
+    out: list[Posting] = []
+    for line in s.party_lines:
+        settled = _base(book, line.net, s.rate)
+        out.append(Posting(s.key, "settlement", s.date, party, -bank_sign * settled, -bank_sign * line.net,
+                           contact=line.contact, description=line.description, document=line.document))
+        out.append(Posting(s.key, "settlement", s.date, s.bank, bank_sign * settled, bank_sign * line.net,
+                           description=line.description, document=line.document))
+        doc = book.documents.get(line.document) if line.document else None
+        if doc is not None and book.is_foreign(doc.currency):
+            difference = bank_sign * (settled - _base(book, line.net, doc.rate))
+            if difference:
+                out.append(Posting(s.key, "fx", s.date, party, difference, ZERO, contact=line.contact))
+                out.append(Posting(s.key, "fx", s.date, FX_GAIN, -difference, ZERO))
+    other: list[Posting] = []
+    for line in s.other_lines:
+        other.append(Posting(s.key, "fallback", s.date, line.account, -bank_sign * _base(book, line.net, s.rate),
+                             -bank_sign * line.net, contact=line.contact, description=line.description))
+        if line.tax:
+            other.append(Posting(s.key, "fallback", s.date, book.tax_codes[line.tax_code].account,
+                                 -bank_sign * _base(book, line.tax, s.rate), -bank_sign * line.tax))
+    if other:
+        native = bank_sign * sum((ln.net + ln.tax for ln in s.other_lines), ZERO)
+        other.append(Posting(s.key, "fallback", s.date, s.bank, -sum((p.amount for p in other), ZERO), native,
+                             description=s.description))
+    return out + other
+
+
+def _postings(book: Book, keys: set[str]) -> list[Posting]:
+    out: list[Posting] = []
+    for key in sorted(keys, key=lambda k: _record_date(book, k)):
+        if key in book.documents:
+            out += _document_postings(book, book.documents[key])
+        elif key in book.settlements:
+            out += _settlement_postings(book, book.settlements[key])
+        elif key in book.transfers:
+            t = book.transfers[key]
+            out.append(Posting(key, "transfer", t.date, t.from_bank, -t.amount, -t.amount, description=t.description))
+            out.append(Posting(key, "transfer", t.date, t.to_bank, t.amount, t.amount, description=t.description))
+        else:
+            j = book.journals[key]
+            for line in j.lines:
+                amount = line.debit - line.credit
+                out.append(Posting(key, "journal", j.date, line.account, amount, amount, contact=line.contact,
+                                   description=line.description))
+    return out
+
+
+def _record_date(book: Book, key: str) -> tuple[date, str]:
+    for group in (book.documents, book.settlements, book.transfers, book.journals):
+        if key in group:
+            return group[key].date, key
+    raise KeyError(key)
+
+
+def _states(book: Book, keys: set[str]) -> dict[str, DocumentState]:
+    """Paid and outstanding per document from the settlements and notes in scope."""
+    paid: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    for key in keys:
+        if key in book.settlements:
+            for line in book.settlements[key].party_lines:
+                if line.document:
+                    paid[line.document] += line.net
+        elif key in book.documents and book.documents[key].applies_to:
+            note = book.documents[key]
+            paid[note.applies_to] += note.total
+            paid[key] += note.total
+    states = {}
+    for key in keys & set(book.documents):
+        total = book.documents[key].total
+        outstanding = total - paid[key]
+        states[key] = DocumentState(paid[key], outstanding, "paid" if outstanding <= 0 else "awaiting_payment")
+    return states
+
+
+def _stock(postings: list[Posting]) -> dict[str, tuple[Decimal, Decimal]]:
+    stock: dict[str, tuple[Decimal, Decimal]] = {}
+    for p in postings:
+        if p.item:
+            qty, value = stock.get(p.item, (ZERO, ZERO))
+            stock[p.item] = (qty + p.quantity, value + p.amount)
+    return stock
+
+
+def _latest_rates(book: Book) -> tuple[date | None, dict[str, Decimal]]:
+    latest: dict[str, tuple[date, Decimal]] = {}
+    for rate in sorted(book.rates, key=lambda r: (r.effective, r.key)):
+        latest[rate.currency] = (rate.effective, rate.rate)
+    as_of = max((d for d, _ in latest.values()), default=None)
+    return as_of, {key: r for key, (_, r) in latest.items()}
+
+
+def _unrealized(book: Book, postings: list[Posting]) -> dict | None:
+    """Revaluation of foreign bank and contact balances at the latest rate. Reported, not posted."""
+    foreign = [c for c in book.currencies.values() if c.code != book.base_code]
+    if not foreign:
+        return None
+    as_of, rates = _latest_rates(book)
+    base: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    native: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    currency_of: dict[str, str] = {}
+    for account in book.accounts.values():
+        if account.control == "bank" and book.is_foreign(account.currency):
+            currency_of[account.key] = account.currency
+    for contact in book.contacts.values():
+        if book.is_foreign(contact.currency):
+            currency_of[contact.key] = contact.currency
+    for p in postings:
+        holder = p.account if p.account in currency_of else (
+            p.contact if p.account in (AR, AP) and p.contact in currency_of else None)
+        if holder:
+            base[holder] += p.amount
+            native[holder] += p.native
+    entries = {}
+    for holder, currency in currency_of.items():
+        if currency not in rates:
+            continue
+        difference = round_money(native[holder] * rates[currency], book.base_code) - base[holder]
+        if difference:
+            entries[holder] = difference
+    return {
+        "as_of": as_of.isoformat() if as_of else None,
+        "rates": {book.currencies[c].code: str(r) for c, r in rates.items()},
+        "entries": {k: str(v) for k, v in entries.items()},
+        "net": str(sum(entries.values(), ZERO)),
+    }
+
+
+def _check_cutover(book: Book, cutover: date | None) -> date:
+    if cutover is None:
+        raise ScanError("Choose a cutover date.")
+    dated = book.dated_records()
+    if dated and cutover < dated[0][0]:
+        raise ScanError("The cutover date is before the first transaction in this business file.")
+    if any(book.is_foreign(a.currency) for a in book.accounts.values()) or any(
+            book.is_foreign(c.currency) for c in book.contacts.values()):
+        raise ScanError("Cutover is not available yet for a business with foreign currency balances. "
+                        "Use Full history.")
+    return cutover
+
+
+def build_ledger(book: Book, decisions: MigrationDecisions) -> Ledger:
+    """The postings and imported records for one migration. The book must carry no blockers."""
+    records = {k for _, k in book.dated_records()}
+    if decisions.mode == CIFMode.CUTOVER:
+        cutover = _check_cutover(book, decisions.cutover_date)
+        records = {k for d, k in book.dated_records() if d <= cutover}
+    else:
+        cutover = None
+    ledger = Ledger(book, decisions.mode, cutover)
+    ledger.postings = _postings(book, records)
+    ledger.states = _states(book, records)
+    ledger.realized = sum((p.amount for p in ledger.postings if p.part == "fx" and p.account == FX_GAIN), ZERO)
+
+    documents = sorted((k for k in records if k in book.documents), key=lambda k: _record_date(book, k))
+    if cutover is not None:
+        documents = [k for k in documents if ledger.states[k].amount_outstanding != 0]
+    ledger.documents = documents
+    imported = set(documents)
+    for key in sorted((k for k in records if k in book.settlements), key=lambda k: _record_date(book, k)):
+        lines = book.settlements[key].party_lines
+        if cutover is not None:
+            lines = [ln for ln in lines if ln.document in imported]
+        if lines:
+            ledger.settlement_amounts[key] = sum((ln.net for ln in lines), ZERO)
+            ledger.allocations[key] = [(ln.document, ln.net) for ln in lines if ln.document]
+
+    if cutover is not None:
+        carried = ledger.imported_postings()
+        balance: dict[tuple[str, str | None], Decimal] = defaultdict(lambda: ZERO)
+        for p in ledger.postings:
+            balance[(p.account, p.contact)] += p.amount
+        for p in carried:
+            balance[(p.account, p.contact)] -= p.amount
+        ledger.opening = [Posting(ledger.opening_key, "opening", cutover, account, amount, amount, contact=contact)
+                          for (account, contact), amount in sorted(balance.items(), key=lambda kv: (kv[0][0], kv[0][1] or ""))
+                          if amount]
+        held, carried_stock = _stock(ledger.postings), _stock(carried)
+        for item, (qty, value) in sorted(held.items()):
+            c_qty, c_value = carried_stock.get(item, (ZERO, ZERO))
+            if qty - c_qty or value - c_value:
+                ledger.opening_stock[item] = (qty - c_qty, value - c_value)
+    else:
+        ledger.unrealized = _unrealized(book, ledger.postings)
+    return ledger
