@@ -10,6 +10,9 @@ the runner owns the transaction of every batch.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import mimetypes
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -17,6 +20,8 @@ from typing import Literal
 
 from sqlalchemy import select
 
+from celerp.events.engine import find_event_by_idempotency
+from celerp.importers.adapters.base import ScanError
 from celerp.importers.schema import (
     CIFAttachment,
     CIFCompanyProfile,
@@ -37,6 +42,8 @@ from celerp.importers.sinks import (
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
 from celerp.models.migration import MigrationEntityMap
+from celerp.models.projections import Projection
+from celerp.services.attachments import FILE_ATTACHED_EVENTS, attach_file, item_file_role, store_file
 from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.money import currency_dp
 
@@ -243,9 +250,8 @@ class CoreMigrationSink:
             location_id, error = await _import_location(context, record)
             return "location", str(location_id), error
         if isinstance(record, CIFAttachment):
-            return "attachment", record.sha256, (
-                "Attachment files are not available to import; the file was not attached."
-            )
+            file_id, error = await _import_attachment(context, record)
+            return "attachment", file_id, error
         return "", "", f"Record type {type(record).__name__} does not belong to the company settings."
 
     async def reconcile(
@@ -253,6 +259,45 @@ class CoreMigrationSink:
     ) -> list[DestinationMeasurement]:
         # Every reconciliation measure belongs to a domain sink.
         return []
+
+
+async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tuple[str, str | None]:
+    """Store one source file and attach it to the imported record it belongs to, as the
+    upload routes do. Returns the stored file id, or the reason the file was not attached."""
+    key = context.idempotency_key(record, "attached")
+    replay = await find_event_by_idempotency(context.session, context.company_id, key)
+    if replay is not None:
+        return replay.data["file_id"], None
+    target = (await context.session.execute(
+        select(MigrationEntityMap.target_entity_type, MigrationEntityMap.target_entity_id).where(
+            MigrationEntityMap.migration_run_id == context.run_id,
+            MigrationEntityMap.source_type == record.target_source_type,
+            MigrationEntityMap.source_external_id == record.target_source_external_id,
+        )
+    )).one_or_none()
+    if target is None:
+        return "", "Its target record was not imported; the file was not attached."
+    entity_type, entity_id = target
+    if entity_type not in FILE_ATTACHED_EVENTS:
+        return "", f"Files cannot be attached to a {entity_type.replace('_', ' ')}; the file was not attached."
+    try:
+        content = await asyncio.to_thread(context.read_attachment, record.source_external_id)
+    except ScanError as exc:
+        return "", f"{exc} The file was not attached."
+    if hashlib.sha256(content).hexdigest() != record.sha256:
+        return "", "The file content does not match its recorded hash; the file was not attached."
+    mime = record.declared_content_type or mimetypes.guess_type(record.file_name)[0] or "application/octet-stream"
+    try:
+        meta = await store_file(str(context.company_id), content, record.file_name, mime)
+    except ValueError as exc:
+        return "", f"{exc}; the file was not attached."
+    document_tag, is_hero = None, None
+    if entity_type == "item":
+        row = await context.session.get(Projection, {"company_id": context.company_id, "entity_id": entity_id})
+        is_hero, document_tag = item_file_role(row.state.get("files", []), mime)
+    await attach_file(context.session, context.company_id, entity_type, entity_id, meta, context.user_id,
+                      source="migration", idempotency_key=key, document_tag=document_tag, is_hero=is_hero)
+    return meta["id"], None
 
 
 def _check_currency(code: str) -> str | None:

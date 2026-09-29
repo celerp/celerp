@@ -37,7 +37,7 @@ from celerp.services.business_time import business_date_at
 from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.line_measures import line_label, splitting_allowed
 from celerp.services.document_lines import line_item_id
-from celerp.services.attachments import store_upload
+from celerp.services.attachments import attach_file, store_upload
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
@@ -7757,30 +7757,7 @@ async def upload_doc_file(
     except ValueError as exc:
         raise HTTPException(status_code=413, detail=str(exc))
 
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="doc",
-        event_type="doc.file_attached",
-        data={
-            "entity_id": entity_id,
-            "entity_type": "doc",
-            "file_id": meta["id"],
-            "filename": meta["filename"],
-            "mime": meta["mime"],
-            "size": meta["size"],
-            "url": meta["url"],
-            "document_tag": None,
-            "description": None,
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
-        },
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
+    entry = await attach_file(session, company_id, "doc", entity_id, meta, user.id)
     await session.commit()
     return {"event_id": entry.id, **meta}
 

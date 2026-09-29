@@ -29,7 +29,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from functools import lru_cache
+from functools import lru_cache, partial
 
 from fastapi import HTTPException
 from sqlalchemy import select, text, update
@@ -534,6 +534,7 @@ async def _run_locked(run_id: uuid.UUID) -> None:
             adapter, artifacts, decisions = _source(run)
             manifest = await asyncio.to_thread(adapter.build_manifest, artifacts, decisions)
             steps = _phase_steps(manifest)
+            read_attachment = partial(adapter.read_attachment, artifacts)
         except Exception as exc:  # a missing source, adapter or module sink: nothing was written
             await _fail(maker, run_id, first_pending or _P.RECONCILIATION, 0, exc)
             return
@@ -560,7 +561,8 @@ async def _run_locked(run_id: uuid.UUID) -> None:
             try:
                 async with maker() as s:
                     await lock_company(s, company_id)
-                    context = SinkContext(session=s, company_id=company_id, user_id=user_id, run_id=run_id)
+                    context = SinkContext(session=s, company_id=company_id, user_id=user_id, run_id=run_id,
+                                          read_attachment=read_attachment)
                     result = await batch[0].sink.import_batch(context, [b.record for b in batch])
                     await _record_mappings(s, run_id, batch[0].group, result.mappings, targets)
                     for error in result.errors:
@@ -642,7 +644,8 @@ async def _verification(session: AsyncSession, run: MigrationRun) -> dict:
     """Compare the source's own figures with what Celerp now holds. Raises on a provider failure."""
     adapter, artifacts, decisions = _source(run)
     expectations = await asyncio.to_thread(adapter.source_expectations, artifacts, decisions)
-    context = SinkContext(session=session, company_id=run.company_id, user_id=run.created_by_user_id, run_id=run.id)
+    context = SinkContext(session=session, company_id=run.company_id, user_id=run.created_by_user_id, run_id=run.id,
+                          read_attachment=partial(adapter.read_attachment, artifacts))
     measured: dict[tuple, Decimal] = {}
     for sink in _registered_sinks():
         for m in await sink.reconcile(context, expectations):

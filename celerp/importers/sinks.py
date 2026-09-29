@@ -11,7 +11,7 @@ module internals. Registration is limited to bundled first-party modules.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -51,6 +51,8 @@ class SinkContext:
     company_id: uuid.UUID
     user_id: uuid.UUID
     run_id: uuid.UUID
+    # The content of one source attachment by its source id; blocking, raises ScanError.
+    read_attachment: Callable[[str], bytes]
 
     def idempotency_key(self, record: CIFSourceRecord, operation: str) -> str:
         return f"migration:{self.run_id}:{record.source_type}:{record.source_external_id}:{operation}"

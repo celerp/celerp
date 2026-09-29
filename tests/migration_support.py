@@ -162,6 +162,9 @@ class FakeAdapter:
             ))
         return ReconciliationExpectations(expectations=rows)
 
+    def read_attachment(self, artifacts, key: str) -> bytes:
+        raise ScanError("The fake source carries no attachments.")
+
 
 class FakeSink:
     """Writes locations with deterministic ids, so a replayed batch is skipped, not duplicated."""
