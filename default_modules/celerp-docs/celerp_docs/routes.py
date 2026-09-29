@@ -2448,34 +2448,29 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     if reference and any(p.get("reference") == reference and p.get("status") != "deleted"
                          for p in doc_state.get("payments", [])):
         raise HTTPException(status_code=409, detail="Payment already recorded")
-    outstanding = float(doc_state.get("amount_outstanding", doc_state.get("total", 0)) or 0)
-    if outstanding <= 0:
+    doc_currency = str(doc_state.get("currency") or "USD")
+    outstanding_d = round_money(
+        doc_state.get("amount_outstanding", doc_state.get("total", 0)) or 0, doc_currency)
+    if outstanding_d <= 0:
         raise HTTPException(status_code=409, detail="Invoice already fully paid")
-    from celerp.services.money import to_decimal as _to_d
-    amount = float(body["amount"])
-    if source == "stripe" and _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
-        # An online charge already happened at Stripe; if a manual payment
-        # landed while the customer was checking out, apply what the invoice
-        # can still absorb and keep the real charge on record - the surplus
-        # is a genuine overpayment for the merchant to refund or credit.
-        body["charged_amount"] = amount
-        amount = float(outstanding)
-        body["amount"] = amount
-    elif clamp_overshoot and _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
-        # The bulk waterfall allocates off an unlocked pre-read and asks explicitly to
-        # clamp (clamp_overshoot=True); when the doc shrank before this locked apply, pay
-        # what it can still absorb and let the caller report the applied amount. No
-        # charged_amount: this is not an online overpayment on record, just a stale
-        # allocation clamped to the fresh balance. A manual single-doc payment keys the
-        # default clamp_overshoot=False, so its overshoot 409s below as it always has.
-        amount = float(outstanding)
-        body["amount"] = amount
-    # 1-cent tolerance covers display rounding on the final payment. Without an explicit
-    # clamp request a payment is a specific instrument for a specific amount, so an
-    # overshoot is a 409 (a manual caller sees it; the bulk caller skips it) rather than
-    # a silent partial.
-    elif _to_d(amount) - _to_d(outstanding) > _to_d("0.01"):
-        raise HTTPException(status_code=409, detail=f"Payment {amount} exceeds amount outstanding {outstanding}")
+    amount_d = round_money(body["amount"], doc_currency)
+    if amount_d > outstanding_d:
+        if source == "stripe":
+            body["charged_amount"] = to_stored_float(amount_d)
+            amount_d = outstanding_d
+        elif clamp_overshoot:
+            amount_d = outstanding_d
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Payment {to_stored_float(amount_d)} exceeds amount outstanding "
+                    f"{to_stored_float(outstanding_d)}"
+                ),
+            )
+    amount = to_stored_float(amount_d)
+    outstanding = to_stored_float(outstanding_d)
+    body["amount"] = amount
     bank_code = body.get("bank_account")
     if not bank_code:
         raise HTTPException(status_code=422, detail="bank_account is required")
@@ -2497,7 +2492,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                 f"document converts at 1, not {body['conversion_rate']}."
             ),
         )
-    body["remaining_balance"] = max(0.0, outstanding - amount)
+    body["remaining_balance"] = to_stored_float(max(Decimal(0), outstanding_d - amount_d))
     payment_index = await _alloc_payment_index(
         session, company_id, doc_state.get("payments", []),
         key_doc_id=entity_id, key_type="invoice.paid")
@@ -6275,9 +6270,7 @@ async def _fulfill_lines_impl(
             _cycle = int(state.get("fulfill_cycle") or 0)
             for _idx in sorted(actual_cogs_by_line):
                 _recognized = float((_recognized_allocs.get(str(_idx)) or {}).get("amount") or 0)
-                _delta = round(actual_cogs_by_line[_idx] - _recognized, 2)
-                if abs(_delta) <= 0.005:
-                    continue
+                _delta = actual_cogs_by_line[_idx] - _recognized
                 await auto_je.create_for_doc_cogs_adjustment(
                     session, company_id=cid, user_id=uid, doc_id=entity_id,
                     delta=_delta, cycle_tag=f"fulfill-{_cycle}:l{_idx}",
@@ -7799,59 +7792,85 @@ async def adjust_audit(
     _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Audit terminal action: overwrite each counted line's item qty to its count (finalized ->
-    closed). The magnitude and the shrinkage/overage JE are computed against the LIVE item qty at
-    adjust time (decision 5.2) — `new_qty = counted`, `delta = counted - live`. Uncounted (blank)
-    lines are skipped and reported. Reversible via undo-adjust."""
-    # Lock the projection: the terminal action reads every counted line, adjusts stock, and writes the
-    # line_items array back (read-modify-write), so it must serialize against a concurrent count/scan.
+    """Apply a finalized audit against fresh, locked inventory state."""
     row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Finalize the count before adjusting stock")
     cycle = int(row.state.get("adjust_count") or 0)
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
-    shrink_val = 0.0
-    over_val = 0.0
+    audit_location = str(row.state.get("location_id") or "")
+    counted_ids = sorted({
+        str(l.get("item_id")) for l in lines
+        if l.get("counted_qty") is not None and l.get("item_id")
+    })
+    locked: dict[str, Projection] = {}
+    if counted_ids:
+        locked = {
+            p.entity_id: p for p in (await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_type == "item",
+                    Projection.entity_id.in_(counted_ids),
+                ).order_by(Projection.entity_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )).scalars().all()
+        }
+
+    shrink_val = Decimal(0)
+    over_val = Decimal(0)
     adjusted = 0
     skipped = 0
     for l in lines:
         cq = l.get("counted_qty")
         if cq is None:
-            skipped += 1  # report-and-skip (item qty untouched)
+            skipped += 1
             continue
-        item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
-        if item is None or item.entity_type != "item":
-            continue
-        live = float(item.state.get("quantity") or 0)  # LIVE qty drives the delta + JE (decision 5.2)
+        item_id = str(l.get("item_id") or "")
+        item = locked.get(item_id)
+        item_location = str(item.location_id or item.state.get("location_id") or "") if item else ""
+        if (item is None or (item.state.get("status") or "available") != "available"
+                or (audit_location and item_location != audit_location)):
+            raise HTTPException(
+                status_code=409,
+                detail=f"{l.get('sku') or item_id or 'Item'} changed after the audit was finalized; recount it.",
+            )
+        live = float(item.state.get("quantity") or 0)
         cqf = float(cq)
         if abs(cqf - live) < 1e-9:
-            continue  # no change
+            continue
         unit_cost = auto_je.lot_unit_cost(item.state)
+        value = abs(to_decimal(live) - to_decimal(cqf)) * to_decimal(unit_cost)
         if cqf < live:
-            shrink_val += (live - cqf) * unit_cost
+            shrink_val += value
         else:
-            over_val += (cqf - live) * unit_cost
+            over_val += value
         await emit_event(
-            session, company_id=company_id, entity_id=l["item_id"], entity_type="item",
+            session, company_id=company_id, entity_id=item_id, entity_type="item",
             event_type="item.quantity.adjusted",
             data={"new_qty": cqf, "reason": "audit", "source_list_id": entity_id, "prior_qty": live},
             actor_id=user.id, location_id=None, source="audit", idempotency_key=str(uuid.uuid4()),
             metadata_={"audit_id": entity_id},
         )
         l["prior_qty"] = live
+        l["adjustment_unit_cost"] = unit_cost
         l["adjusted"] = True
         adjusted += 1
     if shrink_val > 0:
         await _validate_writeoff_account(session, company_id, auto_je._AUDIT_SHRINKAGE_ACCT)
     await auto_je.create_for_audit_adjustment(
         session, company_id=company_id, user_id=user.id, list_id=entity_id,
-        shrinkage_value=shrink_val, overage_value=over_val, cycle=cycle,
+        shrinkage_value=float(shrink_val), overage_value=float(over_val), cycle=cycle,
     )
     await _emit_list(session, company_id, entity_id, "list.closed",
                      {"result": "stock_adjusted", "line_items": lines, "adjust_count": cycle + 1}, user)
+    currency = await auto_je.company_currency(session, company_id)
     await session.commit()
-    return {"adjusted": adjusted, "skipped": skipped,
-            "shrinkage_value": round(shrink_val, 2), "overage_value": round(over_val, 2)}
+    return {
+        "adjusted": adjusted, "skipped": skipped,
+        "shrinkage_value": to_stored_float(round_money(shrink_val, currency)),
+        "overage_value": to_stored_float(round_money(over_val, currency)),
+    }
 
 
 @lists_router.post("/{entity_id}/undo-adjust")
@@ -7860,26 +7879,65 @@ async def undo_audit_adjust(
     _: None = require_permission("adjust_inventory"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Reverse the last stock adjustment (manager/owner): restore each item's prior quantity and void
-    the audit JE. Reopens the audit (closed -> finalized) so it can be re-counted or re-adjusted."""
-    # Lock the projection: undo reads each adjusted line, restores its prior qty, and writes the
-    # line_items array back (read-modify-write), so it must serialize against a concurrent re-adjust.
+    """Undo only while stock still equals the quantity this audit applied."""
     row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != CLOSED or row.state.get("result") != "stock_adjusted":
         raise HTTPException(status_code=409, detail="This audit has no adjustment to undo")
     cycle = int(row.state.get("adjust_count") or 1) - 1
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
-    for l in lines:
-        if l.get("adjusted") and l.get("prior_qty") is not None:
-            await emit_event(
-                session, company_id=company_id, entity_id=l["item_id"], entity_type="item",
-                event_type="item.quantity.adjusted",
-                data={"new_qty": float(l["prior_qty"]), "reason": "audit_undo", "source_list_id": entity_id},
-                actor_id=user.id, location_id=None, source="audit", idempotency_key=str(uuid.uuid4()),
-                metadata_={"audit_id": entity_id},
+    audit_location = str(row.state.get("location_id") or "")
+    targets = [l for l in lines if l.get("adjusted") and l.get("prior_qty") is not None]
+    item_ids = sorted({str(l.get("item_id")) for l in targets if l.get("item_id")})
+    locked: dict[str, Projection] = {}
+    if item_ids:
+        locked = {
+            p.entity_id: p for p in (await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_type == "item",
+                    Projection.entity_id.in_(item_ids),
+                ).order_by(Projection.entity_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )).scalars().all()
+        }
+    for l in targets:
+        item_id = str(l.get("item_id") or "")
+        item = locked.get(item_id)
+        applied = l.get("counted_qty")
+        item_location = str(item.location_id or item.state.get("location_id") or "") if item else ""
+        if (item is None or applied is None or (item.state.get("status") or "available") != "available"
+                or (audit_location and item_location != audit_location)):
+            raise HTTPException(
+                status_code=409,
+                detail=f"{l.get('sku') or item_id or 'Item'} changed after this audit; its adjustment cannot be undone safely.",
             )
-            l.pop("adjusted", None)
-            l.pop("prior_qty", None)
+        if abs(float(item.state.get("quantity") or 0) - float(applied)) > 1e-9:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{l.get('sku') or item_id}: stock changed after this audit; undo would overwrite later activity.",
+            )
+        recorded_cost = l.get("adjustment_unit_cost")
+        if recorded_cost is not None:
+            current_cost = auto_je.lot_unit_cost(item.state)
+            tolerance = 1e-9 * max(1.0, abs(float(recorded_cost)))
+            if abs(current_cost - float(recorded_cost)) > tolerance:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{l.get('sku') or item_id}: item cost changed after this audit; undo would misstate inventory value.",
+                )
+    for l in targets:
+        item_id = str(l["item_id"])
+        await emit_event(
+            session, company_id=company_id, entity_id=item_id, entity_type="item",
+            event_type="item.quantity.adjusted",
+            data={"new_qty": float(l["prior_qty"]), "reason": "audit_undo", "source_list_id": entity_id},
+            actor_id=user.id, location_id=None, source="audit", idempotency_key=str(uuid.uuid4()),
+            metadata_={"audit_id": entity_id},
+        )
+        l.pop("adjusted", None)
+        l.pop("prior_qty", None)
+        l.pop("adjustment_unit_cost", None)
     await auto_je.void_for_audit_adjustment(session, company_id=company_id, user_id=user.id,
                                             list_id=entity_id, cycle=cycle)
     await _emit_list(session, company_id, entity_id, "list.reopened", {"line_items": lines}, user)

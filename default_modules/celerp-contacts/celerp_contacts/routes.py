@@ -833,11 +833,12 @@ async def bulk_delete_contacts(
             raise HTTPException(status_code=404, detail=f"Contact '{cid}' not found.")
         contact_rows.append(row)
 
-    # Block deletion if any Document or List (regardless of status) names the contact.
+    # Block deletion if any Document, List or Deal (regardless of status) names the contact.
     # Provide a detailed breakdown by type so the user knows exactly what's linked.
     # blocking: {contact_id: {doc_type or list_type: count}}
     blocking: dict[str, dict[str, int]] = {}
-    for dr in await lock_referencing_records(session, company_id, payload.contact_ids):
+    for dr in await lock_referencing_records(
+            session, company_id, payload.contact_ids, entity_types=("doc", "list", "deal")):
         cid = dr.state["contact_id"]
         kind = dr.state.get("doc_type") or dr.state.get("list_type") or dr.entity_type
         blocking.setdefault(cid, {})
@@ -848,7 +849,7 @@ async def bulk_delete_contacts(
         for cid, type_counts in blocking.items():
             summary = ", ".join(f"{n} {dt}(s)" for dt, n in sorted(type_counts.items()))
             parts.append(f"{names.get(cid, cid)}: {summary}")
-        detail = "Cannot delete contact(s) with associated documents or lists: " + "; ".join(parts)
+        detail = "Cannot delete contact(s) with associated documents, lists, or deals: " + "; ".join(parts)
         raise HTTPException(status_code=422, detail=detail)
 
     for row in contact_rows:
@@ -1019,7 +1020,7 @@ async def merge_contacts_service(
             metadata_={},
         )
 
-    # 9. Re-point Documents and Lists (contact_id + contact_name, regardless of status)
+    # 9. Re-point Documents and Lists (contact_id + contact_name, regardless of status).
     source_ids = set(payload.source_contact_ids)
     docs_updated = 0
     for dr in await lock_referencing_records(session, company_id, source_ids):
@@ -1041,30 +1042,25 @@ async def merge_contacts_service(
         )
         docs_updated += 1
 
-    # 10. Re-point deals
-    deal_rows = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type == "deal",
+    # 10. Deals use their optional module's crm.deal projection handler, but share
+    # the same deterministic reference lock when that projection is present.
+    for dr in await lock_referencing_records(
+            session, company_id, source_ids, entity_types=("deal",)):
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=dr.entity_id,
+            entity_type="deal",
+            event_type="crm.deal.updated",
+            data={"fields_changed": {
+                "contact_id": {"old": dr.state["contact_id"], "new": payload.target_contact_id},
+            }},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
         )
-    )).scalars().all()
-    for dr in deal_rows:
-        if dr.state.get("contact_id") in source_ids:
-            await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=dr.entity_id,
-                entity_type="deal",
-                event_type="crm.deal.updated",
-                data={"fields_changed": {
-                    "contact_id": {"old": dr.state["contact_id"], "new": payload.target_contact_id},
-                }},
-                actor_id=user.id,
-                location_id=None,
-                source="api",
-                idempotency_key=str(uuid.uuid4()),
-                metadata_={},
-            )
 
     # 11. Notes: NOT re-parented. Contact detail page queries merged_from IDs.
     # No events emitted for notes.

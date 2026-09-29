@@ -1374,8 +1374,8 @@ async def upsert_opening_inventory_je(
 
     Computes gap = catalog_cost_total (stocked, non-consignment, non-archived)
     minus the sum of all JE-backed balances on 1130 / 1130-P (excluding the OB
-    JE itself).  If gap > ฿0.01, emits/updates je:auto:opening-inventory:{company_id}
-    (debit 1130-OB, credit 3200).  If gap is negligible, voids the OB JE.
+    JE itself). The gap is rounded once to the company currency; a positive representable
+    amount emits/updates je:auto:opening-inventory:{company_id}, while zero voids the OB JE.
 
     When the gap changes (more stock added), voids the old JE and posts a fresh
     one so the amount stays current.  Idempotent: safe to call on every render.
@@ -1448,7 +1448,6 @@ async def upsert_opening_inventory_je(
     from celerp.models.company import Company as _Company
     company_obj = await session.get(_Company, company_id)
     base_currency = (company_obj.settings or {}).get("currency", "USD") if company_obj else "USD"
-    needed = float(round_money(gap, base_currency)) if gap >= _Dec("0.01") else 0.0
 
     # Current OB JE amount (0 if not posted)
     current_amount = 0.0
@@ -1458,7 +1457,13 @@ async def upsert_opening_inventory_je(
                 current_amount = float(entry.get("debit") or 0)
                 break
 
-    if abs(needed - current_amount) < 0.01:
+    needed_d = round_money(gap, base_currency)
+    if needed_d < 0:
+        needed_d = _Dec("0")
+    current_d = round_money(current_amount, base_currency)
+    needed = to_stored_float(needed_d)
+
+    if needed_d == current_d:
         # Amount is correct - but also void+repost if the JE is missing a ts (dateless legacy)
         if not (ob_proj and ob_proj.state.get("status") == "posted" and not ob_proj.state.get("ts")):
             return  # already correct and has a date, nothing to do
@@ -1478,7 +1483,7 @@ async def upsert_opening_inventory_je(
     try:
         if ob_proj and ob_proj.state.get("status") == "posted":
             await _check_period_lock(session, company_id, je_void_data("", ob_proj.state))
-        if needed >= 0.01:
+        if needed_d > 0:
             await _check_period_lock(session, company_id, {"ts": today})
     except _HTTPExc as exc:
         if exc.status_code == 422 and "locked" in str(exc.detail).lower():
@@ -1502,7 +1507,7 @@ async def upsert_opening_inventory_je(
             metadata_={"trigger": "opening_inventory.auto"},
         )
 
-    if needed < 0.01:
+    if needed_d <= 0:
         return  # gap closed, no new JE needed
 
     await _emit_auto_posted_je(
