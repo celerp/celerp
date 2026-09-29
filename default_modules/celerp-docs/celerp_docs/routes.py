@@ -2561,11 +2561,21 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
 async def refund_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("record_payments"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     _reject_if_closed(row.state, "refund a payment")
-    paid = float(row.state.get("amount_paid", 0) or 0)
-    if payload.amount > paid + 1e-9:
+    currency = str(row.state.get("currency") or "USD").upper()
+    if payload.currency and str(payload.currency).upper() != currency:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Refund currency {str(payload.currency).upper()} does not match document currency {currency}",
+        )
+    paid = round_money(row.state.get("amount_paid", 0) or 0, currency)
+    amount_d = round_money(payload.amount, currency)
+    if amount_d <= 0:
+        raise HTTPException(status_code=422, detail="Refund amount must be positive")
+    if amount_d > paid:
         raise HTTPException(status_code=409, detail="Refund exceeds amount paid")
     refund_data = payload.model_dump(exclude_none=True)
-    refund_data.setdefault("currency", row.state.get("currency", "USD"))
+    refund_data["amount"] = to_stored_float(amount_d)
+    refund_data["currency"] = currency
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.refunded",
         data=refund_data, actor_id=user.id, location_id=None, source="api",
@@ -2662,7 +2672,11 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
                 if not _exact:
                     _exact = [
                         c for c in _linked
-                        if abs(float(c[1].get("amount") or 0) - float(payment.get("amount") or 0)) < 0.005
+                        if round_money(
+                            c[1].get("amount") or 0, row.state.get("currency") or "USD"
+                        ) == round_money(
+                            payment.get("amount") or 0, row.state.get("currency") or "USD"
+                        )
                         and str(c[1].get("payment_date") or "")[:10] == str(payment.get("payment_date") or "")[:10]
                     ]
                 for pi, pp in (_exact or _linked)[:1]:
@@ -2904,12 +2918,25 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
     if cn_contact and inv_contact and cn_contact != inv_contact:
         raise HTTPException(status_code=422, detail="Credit note and invoice must belong to the same contact")
 
-    cn_outstanding = float(cn.get("amount_outstanding", cn.get("total", 0)) or 0)
-    inv_outstanding = float(inv.get("amount_outstanding", inv.get("total", 0)) or 0)
-    if payload.amount > cn_outstanding + 1e-9:
+    cn_currency = str(cn.get("currency") or "USD").upper()
+    inv_currency = str(inv.get("currency") or "USD").upper()
+    if cn_currency != inv_currency:
+        raise HTTPException(
+            status_code=422,
+            detail="Credit note and invoice must use the same currency",
+        )
+    amount_d = round_money(payload.amount, cn_currency)
+    if amount_d <= 0:
+        raise HTTPException(status_code=422, detail="Application amount must be positive")
+    cn_outstanding = round_money(
+        cn.get("amount_outstanding", cn.get("total", 0)) or 0, cn_currency)
+    inv_outstanding = round_money(
+        inv.get("amount_outstanding", inv.get("total", 0)) or 0, inv_currency)
+    if amount_d > cn_outstanding:
         raise HTTPException(status_code=409, detail="Amount exceeds credit note balance")
-    if payload.amount > inv_outstanding + 1e-9:
+    if amount_d > inv_outstanding:
         raise HTTPException(status_code=409, detail="Amount exceeds invoice outstanding")
+    amount = to_stored_float(amount_d)
 
     payment_date = payload.date or datetime.now(timezone.utc).date().isoformat()
     _cn_company = await session.get(Company, company_id)
@@ -2929,7 +2956,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
         session, company_id=company_id, entity_id=payload.target_doc_id, entity_type="doc",
         event_type="doc.payment.received",
         data={
-            "amount": payload.amount, "method": "credit_note",
+            "amount": amount, "method": "credit_note",
             "source_doc_id": entity_id, "payment_date": payment_date,
             "currency": cn.get("currency", "USD"),
             "index": inv_pay_index,
@@ -2945,7 +2972,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.received",
         data={
-            "amount": payload.amount, "method": "applied",
+            "amount": amount, "method": "applied",
             "target_doc_id": payload.target_doc_id, "payment_date": payment_date,
             "currency": cn.get("currency", "USD"),
             "index": payment_idx,
@@ -2956,7 +2983,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
     )
     await auto_je.create_for_cn_application(
         session, company_id=company_id, user_id=user.id,
-        doc_id=payload.target_doc_id, cn_id=entity_id, amount=payload.amount,
+        doc_id=payload.target_doc_id, cn_id=entity_id, amount=amount,
         payment_index=payment_idx, payment_date=payment_date,
         base_currency=_cn_base_currency,
         conversion_rate=_cn_rate,
@@ -2990,9 +3017,15 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
         raise HTTPException(status_code=409, detail="Only credit notes can be refunded")
     if cn.get("status") in ("draft", "void"):
         raise HTTPException(status_code=409, detail="Credit note must be issued before refunding")
-    cn_outstanding = float(cn.get("amount_outstanding", cn.get("total", 0)) or 0)
-    if payload.amount > cn_outstanding + 1e-9:
+    currency = str(cn.get("currency") or "USD").upper()
+    amount_d = round_money(payload.amount, currency)
+    if amount_d <= 0:
+        raise HTTPException(status_code=422, detail="Refund amount must be positive")
+    cn_outstanding = round_money(
+        cn.get("amount_outstanding", cn.get("total", 0)) or 0, currency)
+    if amount_d > cn_outstanding:
         raise HTTPException(status_code=409, detail="Refund amount exceeds credit note balance")
+    amount = to_stored_float(amount_d)
 
     payment_date = payload.date
     if not payload.bank_account:
@@ -3008,9 +3041,9 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.received",
         data={
-            "amount": payload.amount, "method": "refund",
+            "amount": amount, "method": "refund",
             "bank_account": bank_code, "reference": payload.reference,
-            "payment_date": payment_date, "currency": cn.get("currency", "USD"),
+            "payment_date": payment_date, "currency": currency,
             "index": payment_index,
         },
         actor_id=user.id, location_id=None, source="api",
@@ -3019,7 +3052,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
     # JE: debit AR, credit bank
     await auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-        amount=payload.amount, payment_index=payment_index,
+        amount=amount, payment_index=payment_index,
         bank_account_code=bank_code, doc_type="credit_note",
         payment_date=payment_date,
         base_currency=_refund_base_currency,

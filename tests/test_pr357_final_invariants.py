@@ -408,3 +408,50 @@ async def test_legacy_audit_undo_without_cost_identity_fails_closed(_db_engine):
             await db.rollback()
     finally:
         await _cleanup(factory, company_id, user_id)
+
+
+@pytest.mark.asyncio
+async def test_credit_application_rejects_mixed_document_currencies(client, session):
+    auth = await _auth_company(session, "USD")
+    ids = {}
+    for doc_type, currency in (("credit_note", "EUR"), ("invoice", "USD")):
+        doc_id = f"doc:{uuid.uuid4()}"
+        ids[doc_type] = doc_id
+        await emit_event(
+            session, company_id=auth["company_id"], entity_id=doc_id, entity_type="doc",
+            event_type="doc.created",
+            data={"doc_type": doc_type, "status": "final", "currency": currency,
+                  "total": 10.0, "amount_outstanding": 10.0, "line_items": []},
+            actor_id=auth["user_id"], location_id=None, source="test",
+            idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+    await session.commit()
+    r = await client.post(
+        f"/docs/{ids['credit_note']}/apply-to-invoice",
+        headers=auth["headers"],
+        json={"target_doc_id": ids["invoice"], "amount": 1.0},
+    )
+    assert r.status_code == 422, r.text
+    assert "same currency" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_kwd_credit_refund_rejects_sub_minor_unit_amount(client, session):
+    auth = await _auth_company(session, "KWD")
+    doc_id = f"doc:{uuid.uuid4()}"
+    await emit_event(
+        session, company_id=auth["company_id"], entity_id=doc_id, entity_type="doc",
+        event_type="doc.created",
+        data={"doc_type": "credit_note", "status": "final", "currency": "KWD",
+              "total": 1.0, "amount_outstanding": 1.0, "line_items": []},
+        actor_id=auth["user_id"], location_id=None, source="test",
+        idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    r = await client.post(
+        f"/docs/{doc_id}/cn-refund",
+        headers=auth["headers"],
+        json={"amount": 0.0004, "date": "2026-09-29", "bank_account": "1111"},
+    )
+    assert r.status_code == 422, r.text
+    assert "must be positive" in r.json()["detail"]
