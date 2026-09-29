@@ -14,10 +14,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-import shutil
 import time
 import uuid
 from pathlib import Path
+from typing import BinaryIO
 
 from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -26,11 +26,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.routers.auth import limiter
-from celerp.routers.migrations import ensure_not_bootstrapped, user_owner
+from celerp.routers.migrations import ensure_not_bootstrapped, owner_account, user_owner
 from celerp.services import bootstrap
 from celerp.services import company_copy as cc
+from celerp.services import migration_scan_store as scan_store
 from celerp.services.migrations import MigrationError, validate_prepared_by
-from celerp.services.auth import MIN_PASSWORD_LENGTH, AuthContext, issue_token_pair, validate_password
+from celerp.services.auth import AuthContext, issue_token_pair
 from celerp.services.provisioning import create_install_owner
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ router = APIRouter(prefix="/company-copies", tags=["company-copies"])
 UPLOAD_AGAIN = "This upload is no longer available. Choose the file again."
 _BOOTSTRAP = "bootstrap"
 _KEEP_SECONDS = 24 * 3600
+_CHUNK = 1024 * 1024
 
 
 def _root() -> Path:
@@ -53,8 +55,11 @@ def _purge(folder: Path) -> None:
         return
     cutoff = time.time() - _KEEP_SECONDS
     for f in folder.rglob("*"):
-        if f.is_file() and f.stat().st_mtime < cutoff:
-            f.unlink(missing_ok=True)
+        try:
+            if f.is_file() and f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+        except FileNotFoundError:
+            continue  # removed by another request meanwhile
 
 
 def _error(exc: cc.CopyError) -> JSONResponse:
@@ -102,6 +107,18 @@ def _staged(owner: str, token: str) -> Path:
     return _root() / "uploads" / f"{owner}-{token}{cc.SUFFIX}"
 
 
+def _save(source: BinaryIO, dest: Path) -> None:
+    """Write an upload to ``dest``, refusing it once it passes the upload cap the
+    migration scans use."""
+    size = 0
+    with open(dest, "wb") as out:
+        while chunk := source.read(_CHUNK):
+            size += len(chunk)
+            if size > scan_store.MAX_AGGREGATE_BYTES:
+                raise cc.CopyError(413, cc.TOO_LARGE)
+            out.write(chunk)
+
+
 async def _read(file: UploadFile, owner: str, session: AsyncSession) -> dict:
     """Stage an uploaded copy, check it, and return its preview with the upload token."""
     _purge(_root() / "uploads")
@@ -109,8 +126,7 @@ async def _read(file: UploadFile, owner: str, session: AsyncSession) -> dict:
     path = _staged(owner, token)
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with open(path, "wb") as out:
-            await asyncio.to_thread(shutil.copyfileobj, file.file, out)
+        await asyncio.to_thread(_save, file.file, path)
         copy = await asyncio.to_thread(cc.read_copy, path)
         await cc.check_schema(session, copy)
     except BaseException:
@@ -186,15 +202,7 @@ async def bootstrap_open(request: Request, payload: BootstrapOpenIn, session: As
     await ensure_not_bootstrapped(session)
     required = bootstrap.verify_setup_code(x_setup_code)
     errors: dict[str, str] = {}
-    name, email = payload.name.strip(), payload.email.strip()
-    if not name:
-        errors["name"] = "Enter your name."
-    if "@" not in email:
-        errors["email"] = "Enter a valid email address."
-    try:
-        validate_password(payload.password)
-    except ValueError:
-        errors["password"] = f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+    name, email = owner_account(payload.name, payload.email, payload.password, errors)
     if errors:
         raise HTTPException(status_code=422, detail=errors)
     await bootstrap.lock_bootstrap(session)

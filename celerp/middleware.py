@@ -78,10 +78,12 @@ class MaxBodySizeMiddleware:
         # size and the per-file 50 MB limit in store_upload(); a .celerp-backup restore is
         # a trusted whole-instance archive (DB + files) that is inherently large. The two
         # migration scan uploads stream to disk under their own per-file and total caps, and a
-        # company copy carries the company's attachment files.
+        # company copy, which carries the company's attachment files, is staged under the
+        # same total cap.
         if scope.get("path", "").endswith(
             ("/items/files/bulk", "/items/attachments/bulk", "/backup/import", "/backup/import-bootstrap",
-             "/migrations/bootstrap/scan", "/migrations/scan", "/company-copies/read")
+             "/migrations/bootstrap/scan", "/migrations/scan", "/company-copies/read",
+             "/company-copies/bootstrap/read")
         ):
             await self.app(scope, receive, send)
             return

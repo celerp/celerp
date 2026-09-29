@@ -193,6 +193,21 @@ def _company_name(value: str, errors: dict) -> str:
     return name
 
 
+def owner_account(name: str, email: str, password: str, errors: dict) -> tuple[str, str]:
+    """Check the first owner's name, email and password, recording each problem in
+    ``errors``; returns the trimmed name and email."""
+    name, email = name.strip(), email.strip()
+    if not name:
+        errors["name"] = "Enter your name."
+    if "@" not in email:
+        errors["email"] = "Enter a valid email address."
+    try:
+        validate_password(password)
+    except ValueError:
+        errors["password"] = f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+    return name, email
+
+
 async def _prepare(scan: store.ScanSession):
     return await asyncio.to_thread(migrations.prepare_start, scan)
 
@@ -292,15 +307,7 @@ async def bootstrap_start(payload: BootstrapStartIn, session: AsyncSession = Dep
         decisions = await _prepare(scan)
         errors: dict[str, str] = {}
         company_name = _company_name(payload.company_name, errors)
-        name, email = payload.name.strip(), payload.email.strip()
-        if not name:
-            errors["name"] = "Enter your name."
-        if "@" not in email:
-            errors["email"] = "Enter a valid email address."
-        try:
-            validate_password(payload.password)
-        except ValueError:
-            errors["password"] = f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+        name, email = owner_account(payload.name, payload.email, payload.password, errors)
         if errors:
             raise HTTPException(status_code=422, detail=errors)
         user = await create_install_owner(session, name=name, email=email, password=payload.password)

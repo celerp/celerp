@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company, User
 from celerp.services.attachments import LocalBackend, is_plain_name, company_attachment_dir, get_backend
-from celerp.services.migrations import company_tables
+from celerp.services.migrations import MigrationError, company_tables, validate_prepared_by
 from celerp.services.provisioning import provision_copied_company
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,7 @@ FULL_BACKUP = "This is a full Celerp backup. Use Restore a Celerp backup instead
 NOT_A_COPY = "This file is not a Celerp company copy."
 DAMAGED = "This company copy is damaged or was changed after it was made. Ask for a new copy."
 NEWER = "This company copy was made by a newer version of Celerp. Update Celerp, then open it again."
+TOO_LARGE = "This file is larger than a company copy upload allows."
 
 
 class CopyError(Exception):
@@ -232,6 +233,7 @@ def read_copy(path: Path) -> CopyFile:
                 raise CopyError(422, DAMAGED)
             if set(tables) - set(COPY_TABLES):
                 raise CopyError(422, NEWER)
+            _check_manifest(manifest)
             names = set(zf.namelist())
             for table, meta in tables.items():
                 lines = _member_lines(zf, f"tables/{table}.jsonl", names)
@@ -242,13 +244,26 @@ def read_copy(path: Path) -> CopyFile:
                     raise CopyError(422, DAMAGED)
                 if _sha(_member(zf, f"attachments/{name}")) != digest:
                     raise CopyError(422, DAMAGED)
-            company = manifest.get("company") or {}
-            if not isinstance(company.get("name"), str) or not company["name"].strip() \
-                    or not _UUID.fullmatch(str(company.get("id", ""))):
-                raise CopyError(422, DAMAGED)
-    except (zipfile.BadZipFile, OSError, KeyError, TypeError, AttributeError):
+    except (zipfile.BadZipFile, OSError, KeyError, TypeError, AttributeError, ValueError):
         raise CopyError(422, DAMAGED) from None
     return CopyFile(path=path, manifest=manifest)
+
+
+def _check_manifest(manifest: dict) -> None:
+    """The manifest fields a copy is opened from, each of the type the export writes."""
+    company = manifest.get("company")
+    try:
+        validate_prepared_by(manifest.get("prepared_by"))
+    except MigrationError:
+        raise CopyError(422, DAMAGED) from None
+    if not (isinstance(manifest.get("created_at"), str)
+            and isinstance(manifest.get("handoff_id"), str) and _UUID.fullmatch(manifest["handoff_id"])
+            and isinstance(company, dict) and isinstance(company.get("name"), str) and company["name"].strip()
+            and isinstance(company.get("id"), str) and _UUID.fullmatch(company["id"])
+            and isinstance(company.get("settings"), dict)
+            and all(isinstance(meta, dict) and isinstance(meta.get("columns"), list)
+                    and all(isinstance(c, str) for c in meta["columns"]) for meta in manifest["tables"].values())):
+        raise CopyError(422, DAMAGED)
 
 
 def _member(zf: zipfile.ZipFile, name: str) -> bytes:
@@ -273,15 +288,55 @@ async def check_schema(session: AsyncSession, copy: CopyFile) -> None:
 
 # ── Opening a copy ───────────────────────────────────────────────────────────
 
-def _id_map(copy: CopyFile, tables: dict[str, list[str]]) -> dict[str, str]:
+def _objects(lines: list[str]) -> list[dict]:
+    """The rows of one table; a row that is not a JSON object means the file is damaged."""
+    try:
+        rows = [json.loads(line) for line in lines]
+    except ValueError:
+        raise CopyError(422, DAMAGED) from None
+    if not all(isinstance(row, dict) for row in rows):
+        raise CopyError(422, DAMAGED)
+    return rows
+
+
+def _row_ids(rows: list[dict]) -> set[str]:
+    return {row["id"] for row in rows if isinstance(row.get("id"), str) and _UUID.fullmatch(row["id"])}
+
+
+def _id_map(copy: CopyFile, tables: dict[str, list[dict]]) -> dict[str, str]:
     """Fresh ids for the source company and every copied row keyed by a uuid."""
     ids = {copy.manifest["company"]["id"]}
-    for lines in tables.values():
-        for line in lines:
-            row_id = json.loads(line).get("id")
-            if isinstance(row_id, str) and _UUID.fullmatch(row_id):
-                ids.add(row_id)
+    for rows in tables.values():
+        ids |= _row_ids(rows)
     return {old: str(uuid.uuid4()) for old in ids}
+
+
+async def _foreign_keys(session: AsyncSession, table: str) -> list[tuple[str, str]]:
+    """(column, referenced table) for every foreign key of one table, from the database itself."""
+    return [tuple(r) for r in (await session.execute(text(
+        "SELECT kcu.column_name, ccu.table_name FROM information_schema.table_constraints tc "
+        "JOIN information_schema.key_column_usage kcu "
+        "ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema "
+        "JOIN information_schema.constraint_column_usage ccu "
+        "ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema "
+        "WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = current_schema() AND tc.table_name = :t"),
+        {"t": table})).all()]
+
+
+async def _check_references(session: AsyncSession, copy: CopyFile, tables: dict[str, list[dict]]) -> None:
+    """Refuse a copy whose rows point outside it: every foreign key is empty or names the
+    copy's own company or a row the copy itself carries in the referenced table. The ids
+    are checked before they are remapped; the remap maps exactly these ids, so the check
+    holds for the rows as inserted."""
+    owned = {table: _row_ids(rows) for table, rows in tables.items()}
+    owned["companies"] = {copy.manifest["company"]["id"]}
+    for table, rows in tables.items():
+        for column, target in await _foreign_keys(session, table):
+            allowed = owned.get(target, set())
+            for row in rows:
+                value = row.get(column)
+                if value is not None and not (isinstance(value, str) and value in allowed):
+                    raise CopyError(422, DAMAGED)
 
 
 def _remap(line: str, mapping: dict[str, str]) -> str:
@@ -310,7 +365,9 @@ async def open_copy(session: AsyncSession, copy: CopyFile, *, owner: User) -> Co
         names = set(zf.namelist())
         source = {t: _member_lines(zf, f"tables/{t}.jsonl", names) for t in manifest["tables"]}
         files = {name: _member(zf, f"attachments/{name}") for name in manifest["attachments"]}
-    mapping = _id_map(copy, source)
+    rows = {table: _objects(lines) for table, lines in source.items()}
+    await _check_references(session, copy, rows)
+    mapping = _id_map(copy, rows)
     back = {new: old for old, new in mapping.items()}
     settings = {
         **_copied_settings(manifest["company"].get("settings")),

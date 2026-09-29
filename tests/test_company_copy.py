@@ -5,6 +5,7 @@ checked record for record, and refused whole when anything is wrong."""
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
@@ -364,8 +365,44 @@ def _full_backup(_: bytes) -> bytes:
     return buf.getvalue()
 
 
+def _with_manifest(data: bytes, **changes) -> bytes:
+    """The copy with manifest fields changed; a value of None removes the field."""
+    m = _members(data)
+    manifest = json.loads(m["manifest.json"])
+    for key, value in changes.items():
+        if value is None:
+            manifest.pop(key, None)
+        else:
+            manifest[key] = value
+    m["manifest.json"] = json.dumps(manifest).encode()
+    return _rezip(m)
+
+
+def _with_settings(data: bytes, settings) -> bytes:
+    manifest = json.loads(_members(data)["manifest.json"])
+    return _with_manifest(data, company={**manifest["company"], "settings": settings})
+
+
+def _with_table(data: bytes, table: str, lines: list[bytes]) -> bytes:
+    """The copy with one table's rows replaced and its manifest hash made to match."""
+    m = _members(data)
+    manifest = json.loads(m["manifest.json"])
+    m[f"tables/{table}.jsonl"] = b"\n".join(lines)
+    text_lines = sorted(line.decode("utf-8", "replace") for line in lines)
+    manifest["tables"][table].update(rows=len(lines), sha256=hashlib.sha256("\n".join(text_lines).encode()).hexdigest())
+    m["manifest.json"] = json.dumps(manifest).encode()
+    return _rezip(m)
+
+
 @pytest.mark.parametrize("change, message", [
     (_tampered, "damaged or was changed"),
+    (lambda d: _with_manifest(d, created_at=None), "damaged or was changed"),
+    (lambda d: _with_manifest(d, handoff_id="not-a-uuid"), "damaged or was changed"),
+    (lambda d: _with_manifest(d, prepared_by="Line one\nLine two"), "damaged or was changed"),
+    (lambda d: _with_settings(d, "not settings"), "damaged or was changed"),
+    (lambda d: _with_table(d, "locations", [b"\xff\xfe"]), "damaged or was changed"),
+    (lambda d: _with_table(d, "locations", [b"[1, 2]"]), "damaged or was changed"),
+    (lambda d: _with_table(d, "locations", [b"not json"]), "damaged or was changed"),
     (lambda d: b"not a copy", "not a Celerp company copy"),
     (lambda d: _rezip({"manifest.json": b'{"format": "other"}'}), "not a Celerp company copy"),
     (_newer_format, "newer version of Celerp"),
@@ -384,6 +421,72 @@ async def test_open_rejects_bad_file(real_engine, real_client, tmp_path, monkeyp
     assert r.status_code == 422 and message in r.json()["detail"], r.text
     assert await _snapshot(real_engine) == before
     assert not any((tmp_path / "company_copies" / "uploads").iterdir())
+
+
+async def test_open_rejects_foreign_reference(real_engine, real_client, tmp_path, monkeypatch):
+    """A row pointing at a record outside the copy (another company's location) is refused
+    before anything is written."""
+    from celerp.config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    user = await _owner(real_engine)
+    a = await _company(real_engine, user, "Alpha Trading", "alpha-marker")
+    b = await _company(real_engine, user, "Beta Trading", "beta-marker")
+    token = await _token(real_engine, user, a)
+    data, _ = await _make_copy(real_client, token)
+    async with real_engine.connect() as conn:
+        own, foreign = [(await conn.execute(text("SELECT id::text FROM locations WHERE company_id = :c"),
+                                            {"c": c})).scalar_one() for c in (a, b)]
+    m = _members(data)
+    for table in ("ledger", "projections"):
+        lines = m[f"tables/{table}.jsonl"].split(b"\n")
+        data = _with_table(data, table, [line.replace(own.encode(), foreign.encode()) for line in lines])
+    before = await _snapshot(real_engine)
+    r = await _open(real_client, token, data)
+    assert r.status_code == 422 and "damaged or was changed" in r.json()["detail"], r.text
+    assert await _snapshot(real_engine) == before
+
+
+async def test_bootstrap_read_takes_large_files(real_engine, real_client, tmp_path, monkeypatch):
+    """A copy file larger than the request body cap still reaches the fresh-installation read."""
+    from celerp.config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    big = b"\0" * (11 * 1024 * 1024)
+    r = await real_client.post("/company-copies/bootstrap/read", files={"file": ("a.celerp-company", big)})
+    assert r.status_code == 422 and "not a Celerp company copy" in r.json()["detail"], r.text
+
+
+async def test_read_refuses_file_over_cap(real_engine, real_client, tmp_path, monkeypatch):
+    """A copy file over the upload cap is refused and nothing is kept."""
+    from celerp.config import settings
+    from celerp.services import migration_scan_store
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    user = await _owner(real_engine)
+    token = await _token(real_engine, user, await _company(real_engine, user, "Alpha Trading", "alpha-marker"))
+    data, _ = await _make_copy(real_client, token)
+    monkeypatch.setattr(migration_scan_store, "MAX_AGGREGATE_BYTES", len(data) - 1)
+    r = await real_client.post("/company-copies/read", files={"file": ("a.celerp-company", data)}, headers=auth(token))
+    assert r.status_code == 413 and "larger" in r.json()["detail"], r.text
+    assert not any((tmp_path / "company_copies" / "uploads").iterdir())
+
+
+async def test_purge_tolerates_vanished_file(tmp_path, monkeypatch):
+    """A file removed by another request while old uploads are cleared is skipped."""
+    import os
+    from pathlib import Path
+
+    from celerp.routers.company_copy import _purge
+    old = tmp_path / "old.celerp-company"
+    old.write_bytes(b"x")
+    os.utime(old, (0, 0))
+    real_is_file = Path.is_file
+
+    def vanishing(self):
+        found = real_is_file(self)
+        self.unlink(missing_ok=True)
+        return found
+    monkeypatch.setattr(Path, "is_file", vanishing)
+    _purge(tmp_path)
+    assert not old.exists()
 
 
 async def test_open_rejects_unauthorized(real_engine, real_client, tmp_path, monkeypatch):
