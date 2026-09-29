@@ -1362,7 +1362,7 @@ def setup_routes(app):
             docs, total_count, summary = await _doc_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             docs, total_count, summary = [], 0, {}
         return search_results(
             _docs_content(state, docs, total_count, summary, page, per_page, company.get("currency") or None, get_lang(request)),
@@ -3993,7 +3993,7 @@ celerpUpdateBulkAlloc();
             lists, filtered_total, summary = await _list_results(token, state, date_from, date_to, page, per_page)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             logger.warning("API error on lists_search: %s", e.detail)
             lists, filtered_total, summary = [], 0, {}
         return search_results(

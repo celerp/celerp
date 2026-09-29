@@ -438,3 +438,19 @@ class TestLiveSearchResults:
             await ui_client.get(f"{search_url}{'&' if '?' in search_url else '?'}q=ruby", cookies=_cookies(),
                                 headers={"HX-Request": "true"})
         assert listed.call_args.args[1]["contact_type"] == "vendor", listed.call_args
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", [
+        "/docs/search?type=invoice&q=ruby", "/lists/search?type=audit&q=ruby", "/contacts/content?type=vendor&q=ruby",
+    ])
+    async def test_expired_session_during_search_opens_login(self, ui_client, path):
+        """An expired session while searching takes the whole window to the login page."""
+        from ui.api_client import APIError
+        expired = AsyncMock(side_effect=APIError(401, "expired"))
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+             patch("ui.api_client.list_docs", new=expired), patch("ui.api_client.list_lists", new=expired), \
+             patch("ui.api_client.list_contacts", new=expired), \
+             patch("ui.api_client.get_doc_summary", new=expired), \
+             patch("ui.api_client.get_list_summary", new=expired):
+            r = await ui_client.get(path, cookies=_cookies(), headers={"HX-Request": "true"})
+        assert r.headers.get("HX-Redirect", "").startswith("/login"), (r.status_code, dict(r.headers))

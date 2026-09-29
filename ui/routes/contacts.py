@@ -1094,7 +1094,7 @@ def setup_routes(app):
             resp = await api.list_contacts(token, params)
         except APIError as e:
             if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+                raise
             resp = {"items": [], "total": 0}
         try:
             company = await api.get_company(token)
