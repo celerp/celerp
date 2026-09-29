@@ -1,12 +1,11 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""The canonical Celerp Import Format, version 2: strict Decimal money, balanced
-journals, unambiguous dates, provenance on every entity, one version everywhere,
+"""The migration Celerp Import Format, version 2: strict Decimal money, balanced
+journals, unambiguous dates, provenance on every entity, one migration version,
 and explicit precision-aware reconciliation tolerances."""
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 from decimal import Decimal
@@ -17,9 +16,8 @@ from pydantic import BaseModel, ValidationError
 
 from celerp.importers.adapters.base import MigrationDecisions
 from celerp.importers.schema import (
-    CIF_VERSION,
+    MIGRATION_CIF_VERSION,
     CIFAccount,
-    CIFBatch,
     CIFCompanyProfile,
     CIFDocument,
     CIFExchangeRate,
@@ -37,7 +35,6 @@ from fixtures.manager_io.support import BASIC, adapter, artifact
 
 REPO = Path(__file__).resolve().parents[1]
 FULL = MigrationDecisions(mode=CIFMode.FULL_HISTORY)
-V1 = "1"  # the retired version, named so the literal scan below does not match this file
 PROVENANCE = {"source_system": "manager_io", "source_type": "Journal", "source_external_id": "j-1"}
 
 
@@ -120,44 +117,20 @@ def _python_sources() -> list[Path]:
     return [REPO / p for p in listed.stdout.split() if "/migrations/versions/" not in p]
 
 
-def test_cif_v2_replaces_v1_everywhere(tmp_path, capsys):
-    assert CIF_VERSION == "2"
-    for model in (CIFImportManifest, CIFBatch):
-        assert model.model_fields["cif_version"].default == "2"
-    with pytest.raises(ValidationError, match="Unsupported CIF version '1'"):
-        CIFImportManifest.model_validate(_manifest(cif_version=V1))
-    with pytest.raises(ValidationError, match="Unsupported CIF version '1'"):
-        CIFBatch.model_validate({"cif_version": V1, "source": "s", "source_system": "x"})
-
-    from celerp.importers.importer import load_manifest
-    v1 = tmp_path / "v1.json"
-    v1.write_text(json.dumps(_manifest(cif_version=V1)))
-    with pytest.raises(SystemExit):
-        load_manifest(v1)
-    assert "Unsupported CIF version '1'" in capsys.readouterr().err
-    v2 = tmp_path / "v2.json"
-    v2.write_text(json.dumps(_manifest()))
-    assert load_manifest(v2).cif_version == "2"
-
+def test_the_migration_manifest_is_cif_v2_and_each_version_is_defined_once():
     manifest = adapter().build_manifest([artifact(BASIC)], FULL)
-    assert manifest.cif_version == "2"
+    assert manifest.cif_version == MIGRATION_CIF_VERSION == "2"
     assert CIFImportManifest.model_validate(manifest.model_dump()).bundle == manifest.bundle
 
-    # The v1 bundle entities keyed themselves by a bare `external_id`; v2 has none.
+    # The CIF v1 bundle entities keyed themselves by a bare `external_id`; migration entities have none.
     for model in _bundle_entity_models():
         assert "external_id" not in model.model_fields, model
 
-    definitions, v1_literals = [], []
-    version_def = re.compile(r"^\s*CIF_VERSION\s*=", re.M)
-    v1_literal = re.compile(r"""cif_version["']?\s*[:=]\s*["']1["']""")
-    for path in _python_sources():
-        text = path.read_text(encoding="utf-8", errors="replace")
-        if version_def.search(text):
-            definitions.append(path.relative_to(REPO).as_posix())
-        if v1_literal.search(text):
-            v1_literals.append(path.relative_to(REPO).as_posix())
-    assert definitions == ["celerp/importers/schema.py"]
-    assert v1_literals == []
+    for constant in ("CIF_VERSION", "MIGRATION_CIF_VERSION"):
+        definition = re.compile(rf"^\s*{constant}\s*=", re.M)
+        defined_in = [path.relative_to(REPO).as_posix() for path in _python_sources()
+                      if definition.search(path.read_text(encoding="utf-8", errors="replace"))]
+        assert defined_in == ["celerp/importers/schema.py"], constant
 
 
 def test_reconciliation_requires_explicit_tolerance_rule():

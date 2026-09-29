@@ -3,21 +3,24 @@
 """
 Celerp Import Format (CIF) - canonical intermediate format for all data imports.
 
-Two layers:
-  1. CIFRecord / CIFBatch  - low-level JSONL format (one ledger event per line).
-                             Used by the streaming importer for large datasets.
-  2. CIFImportBundle / CIFImportManifest - higher-level typed bundle format.
-                             Source adapters produce a manifest; the bundle
-                             importer and the migration runner read it.
+Two compatibility surfaces, versioned separately:
+  1. CIF (CIF_VERSION) - the standalone import formats:
+       CIFRecord / CIFBatch - low-level JSONL format (one ledger event per line),
+                              used by the streaming importer for large datasets.
+       CIFBundleManifest    - typed bundle of items, contacts and documents,
+                              read by the bundle importer.
+  2. Migration CIF (MIGRATION_CIF_VERSION) - CIFImportBundle / CIFImportManifest,
+       produced by a source adapter and read only by the migration runner.
 
-Every bundle entity carries its source provenance (`source_system`,
+Every migration bundle entity carries its source provenance (`source_system`,
 `source_type`, `source_external_id`). References between entities hold the
 referenced entity's `source_external_id`. Money, rates and quantities are
 Decimal: binary floats, NaN and Infinity are rejected, and dates must be
 unambiguous ISO 8601.
 
-Schema versioning: bump CIF_VERSION when fields change in a breaking way.
-Only the current version is accepted.
+Schema versioning: bump the constant of the surface whose fields change in a
+breaking way. The migration manifest accepts only the current migration version;
+a migration run records it and resumes only under it.
 """
 
 from __future__ import annotations
@@ -40,14 +43,16 @@ from pydantic import (
 from celerp.compat import StrEnum
 
 
-CIF_VERSION = "2"
+CIF_VERSION = "1"
+MIGRATION_CIF_VERSION = "2"
 
 
 # ── Shared field types ─────────────────────────────────────────────────────────
 
-def _require_current_version(value: str) -> str:
-    if value != CIF_VERSION:
-        raise ValueError(f"Unsupported CIF version {value!r}. This Celerp reads CIF version {CIF_VERSION}.")
+def _require_migration_version(value: str) -> str:
+    if value != MIGRATION_CIF_VERSION:
+        raise ValueError(f"Unsupported migration CIF version {value!r}. "
+                         f"This Celerp reads migration CIF version {MIGRATION_CIF_VERSION}.")
     return value
 
 
@@ -81,7 +86,7 @@ def _strict_datetime(value: Any) -> Any:
     raise ValueError(f"Ambiguous or invalid date and time {value!r}. Use ISO 8601 (YYYY-MM-DDTHH:MM).")
 
 
-CIFVersion = Annotated[str, AfterValidator(_require_current_version)]
+MigrationCIFVersion = Annotated[str, AfterValidator(_require_migration_version)]
 CIFDecimal = Annotated[Decimal, BeforeValidator(_reject_float), Field(allow_inf_nan=False)]
 CIFDate = Annotated[date, BeforeValidator(_strict_date)]
 CIFDateTime = Annotated[datetime, BeforeValidator(_strict_datetime)]
@@ -104,7 +109,7 @@ class CIFEntityType(StrEnum):
 class CIFRecord(BaseModel):
     """One record in a CIF file. Maps 1:1 to a ledger event."""
 
-    cif_version: CIFVersion = CIF_VERSION
+    cif_version: str = CIF_VERSION
 
     # Target entity - must be stable and unique within this import batch
     entity_id: str = Field(..., description="Stable ID for the entity, e.g. 'item:gc:472043'")
@@ -159,7 +164,7 @@ class CIFRecord(BaseModel):
 class CIFBatch(BaseModel):
     """A complete import batch. Written/read as JSONL (one CIFRecord per line)."""
 
-    cif_version: CIFVersion = CIF_VERSION
+    cif_version: str = CIF_VERSION
     source: str
     source_system: str
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -167,7 +172,84 @@ class CIFBatch(BaseModel):
     notes: str | None = None
 
 
-# ── Bundle entities: provenance base ───────────────────────────────────────────
+# ── CIF bundle (standalone bundle importer) ────────────────────────────────────
+
+class CIFBundleItem(BaseModel):
+    """A single inventory item."""
+    external_id: str                          # source system ID (e.g. "gc:472043")
+    sku: str | None = None
+    name: str
+    description: str | None = None
+    weight: Decimal | None = None
+    weight_unit: str | None = None            # e.g. "kg", "g", "oz", "ct", "lb"
+    sell_by: str | None = None                # "piece" or "weight" - how price is quoted
+    cost_per_unit: Decimal | None = None      # cost per unit of weight (generic)
+    total_cost: Decimal | None = None
+    wholesale_price: Decimal | None = None
+    retail_price: Decimal | None = None
+    status: Literal["available", "memo_out", "production", "sold", "void"]
+    category: str | None = None
+    parent_external_id: str | None = None     # split lineage
+    barcode: str | None = None
+    source_ref: str | None = None             # original ref number
+    location_name: str | None = None          # resolved to location_id at import time
+    attributes: dict[str, Any] = Field(default_factory=dict)  # industry-specific fields
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CIFBundleContact(BaseModel):
+    """A customer or supplier contact."""
+    external_id: str
+    name: str
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CIFBundleLineItem(BaseModel):
+    """A line item on an invoice."""
+    item_external_id: str
+    quantity: Decimal
+    weight: Decimal | None = None
+    weight_unit: str | None = None            # e.g. "kg", "g", "oz", "ct", "lb"
+    unit_price: Decimal
+    total_price: Decimal
+    cost_basis: Decimal | None = None         # cost at time of sale
+
+
+class CIFBundleDocument(BaseModel):
+    """An invoice, PO, or credit note."""
+    external_id: str
+    doc_type: Literal["invoice", "purchase_order", "credit_note"]
+    status: Literal["draft", "awaiting_payment", "paid", "void"]
+    contact_external_id: str | None = None
+    ref: str | None = None
+    total: Decimal
+    amount_paid: Decimal
+    amount_outstanding: Decimal
+    payment_due_date: date | None = None
+    line_items: list[CIFBundleLineItem] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CIFBundle(BaseModel):
+    """Complete set of entities for one bundle import."""
+    items: list[CIFBundleItem] = Field(default_factory=list)
+    contacts: list[CIFBundleContact] = Field(default_factory=list)
+    documents: list[CIFBundleDocument] = Field(default_factory=list)
+
+
+class CIFBundleManifest(BaseModel):
+    """Top-level wrapper written to my_company_cif.json."""
+    cif_version: str = CIF_VERSION
+    source: str                               # e.g. "mycompany_2026"
+    exported_at: datetime
+    bundle: CIFBundle
+    stats: dict[str, Any] = Field(default_factory=dict)
+
+
+# ── Migration bundle entities: provenance base ─────────────────────────────────
 
 class CIFSourceRecord(BaseModel):
     """Provenance shared by every bundle entity."""
@@ -504,7 +586,7 @@ class ReconciliationExpectations(BaseModel):
     expectations: list[ReconciliationExpectation] = Field(default_factory=list)
 
 
-# ── Bundle and manifest ────────────────────────────────────────────────────────
+# ── Migration bundle and manifest ──────────────────────────────────────────────
 
 class CIFImportBundle(BaseModel):
     """Complete set of entities for one import."""
@@ -537,8 +619,8 @@ class CIFImportBundle(BaseModel):
 
 
 class CIFImportManifest(BaseModel):
-    """Top-level wrapper produced by a source adapter."""
-    cif_version: CIFVersion = CIF_VERSION
+    """Top-level wrapper produced by a source adapter for the migration runner."""
+    cif_version: MigrationCIFVersion = MIGRATION_CIF_VERSION
     source: str                               # human label, e.g. "mycompany_2026"
     source_system: NonEmptyStr                # adapter key, e.g. "manager_io"
     source_schema_version: str | None = None

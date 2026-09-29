@@ -39,7 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.importers.adapters.base import Artifact, MigrationDecisions, ScanError, SourceAdapter
 from celerp.importers.adapters.registry import get_adapter
 from celerp.importers.schema import (
-    CIF_VERSION,
+    MIGRATION_CIF_VERSION,
     CIFImportManifest,
     CIFMode,
     CoverageClass,
@@ -341,7 +341,7 @@ async def create_run(session: AsyncSession, *, company: Company, user: User, sca
             source_system=adapter.key, source_artifact_name=first.original_name,
             prepared_by=decisions.prepared_by, source_artifact_sha256=first.sha256,
             source_schema_version=scan.scan.source_schema_version, adapter_version=adapter.adapter_version,
-            cif_version=CIF_VERSION, mode=str(decisions.mode), status=_S.READY.value, phase_state={},
+            cif_version=MIGRATION_CIF_VERSION, mode=str(decisions.mode), status=_S.READY.value, phase_state={},
             coverage={"entries": [c.model_dump(mode="json") for c in scan.scan.coverage]},
             mapping_decisions=store.decisions_json(decisions),
             source_summary={
@@ -565,7 +565,7 @@ class IncompatibleImporterVersion(Exception):
 def _require_same_importer(run: MigrationRun, adapter: SourceAdapter) -> None:
     """A run resumes only under the adapter and migration CIF versions it started with:
     a changed importer can include, identify or order records differently."""
-    if run.adapter_version != adapter.adapter_version or run.cif_version != CIF_VERSION:
+    if run.adapter_version != adapter.adapter_version or run.cif_version != MIGRATION_CIF_VERSION:
         raise IncompatibleImporterVersion()
 
 
